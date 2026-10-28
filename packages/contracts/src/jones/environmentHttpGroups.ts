@@ -1,3 +1,4 @@
+import { makeRemoteAdmissionHttpGroup } from "./remoteAdmissionHttp.ts";
 import {
   WorkstreamsNativeOwnerRequest,
   WorkstreamsNativeOwnerResponse,
@@ -14,11 +15,28 @@ import {
   JonesUpdateDownloadInput,
   JonesUpdateExactInput,
   JonesNativePrepareInput,
+  JonesQuitPreparation,
   JonesUpdateInstallInput,
+  JonesUpdateReconcileInput,
+  JonesUpdateRecordRetiredInput,
   JonesUpdateState,
 } from "./jonesUpdates.ts";
+import {
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflightInput,
+  JonesRecoveryPreflight,
+} from "./jonesOperations.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
 import { SettlementOriginsRequest, SettlementOriginsResult } from "./settlementOrigins.ts";
+import {
+  SettlementRestoreInspectRequest,
+  SettlementRestoreInspectResult,
+} from "./settlementRestore.ts";
 import { makeFleetUpdatesHttpGroup } from "./fleetUpdates/http.ts";
 import { makePreviewCompanionHttpGroup } from "./previewCompanionHttp.ts";
 import { JonesSourceRelation, JonesSourceRelationQuery } from "./jonesSourceRelation.ts";
@@ -61,9 +79,21 @@ import {
   WorkstreamAppearance,
 } from "./workstreamAppearance.ts";
 
+import {
+  EnvironmentWorkstreamOperationConflictError as WorkstreamOperationConflictError,
+  WorkstreamOperationSubmitRequest,
+  WorkstreamOperationSubmitResponse,
+  WorkstreamOperationReadRequest,
+  WorkstreamOperationReadResponse,
+  WorkstreamSetupStatus,
+} from "./workstreamOperations.ts";
+
 import { WorkstreamsRegistrationContextAcceptedResponse } from "./workstreamsRegistrationContext.ts";
 import {
   WorkstreamsNativeContextResponse,
+  WorkstreamsNativeContextResponseV2,
+  WorkstreamsNativeAttestationResponseV2,
+  WorkstreamsNativeSettlementResponseV2,
   WorkstreamsNativeAttestationRequest,
   WorkstreamsNativeAttestationResponse,
   WorkstreamsNativeSettlementRequest,
@@ -136,6 +166,12 @@ export type EnvironmentConversationLibraryError =
   typeof EnvironmentConversationLibraryErrorSchema.Type;
 
 export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
+
+export const EnvironmentWorkstreamOperationConflictError = WorkstreamOperationConflictError.pipe(
+  HttpApiSchema.status(409),
+);
+export type EnvironmentWorkstreamOperationConflictError =
+  typeof EnvironmentWorkstreamOperationConflictError.Type;
 
 export const makeJonesHttpGroups = ({
   OptionalBearerHeaders,
@@ -357,6 +393,38 @@ export const makeJonesHttpGroups = ({
           EnvironmentHttpBadRequestError,
         ],
       }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationSubmit", "/api/workstreams/operations/submit", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationSubmitRequest,
+        success: WorkstreamOperationSubmitResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentWorkstreamOperationConflictError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationRead", "/api/workstreams/operations/read", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamOperationReadRequest,
+        success: WorkstreamOperationReadResponse,
+        error: [
+          EnvironmentHttpBadRequestError,
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("setupStatus", "/api/workstreams/setup-status", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamSetupStatus,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
   class EnvironmentWorkstreamsNativeHttpApi extends HttpApiGroup.make("workstreamsNative")
@@ -418,6 +486,53 @@ export const makeJonesHttpGroups = ({
           EnvironmentHttpBadRequestError,
         ],
       }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.get("contextV2", "/api/workstreams/native/v2/context", {
+        headers: OptionalBearerHeaders,
+        success: WorkstreamsNativeContextResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("attestationsV2", "/api/workstreams/native/v2/attestations", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeAttestationRequest,
+        success: WorkstreamsNativeAttestationResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementsV2", "/api/workstreams/native/v2/settlements", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("settlementLookupV2", "/api/workstreams/native/v2/settlements/lookup", {
+        headers: OptionalBearerHeaders,
+        payload: WorkstreamsNativeSettlementRequest,
+        success: WorkstreamsNativeSettlementResponseV2,
+        error: [
+          EnvironmentScopeRequiredError,
+          EnvironmentInternalError,
+          EnvironmentHttpBadRequestError,
+        ],
+      }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
   class EnvironmentWorkQueueMetadataHttpApi extends HttpApiGroup.make("workQueueMetadata").add(
@@ -437,12 +552,44 @@ export const makeJonesHttpGroups = ({
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+  class EnvironmentSettlementRestoreHttpApi extends HttpApiGroup.make("settlementRestore").add(
+    HttpApiEndpoint.post("inspect", "/api/jones/settlement-restores/inspect", {
+      headers: OptionalBearerHeaders,
+      payload: SettlementRestoreInspectRequest,
+      success: SettlementRestoreInspectResult,
+      error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
   class EnvironmentJonesUpdatesHttpApi extends HttpApiGroup.make("jonesUpdates")
+    .add(
+      HttpApiEndpoint.post("reconcile", "/api/jones-updates/reconcile", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateReconcileInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recordRetired", "/api/jones-updates/record-retired", {
+        headers: OptionalBearerHeaders,
+        payload: JonesUpdateRecordRetiredInput,
+        success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
     .add(
       HttpApiEndpoint.post("prepareNative", "/api/jones-updates/prepare-native", {
         headers: OptionalBearerHeaders,
         payload: JonesNativePrepareInput,
         success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("prepareQuit", "/api/jones-updates/prepare-quit", {
+        headers: OptionalBearerHeaders,
+        success: JonesQuitPreparation,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     )
@@ -493,6 +640,46 @@ export const makeJonesHttpGroups = ({
         success: JonesUpdateState,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationStart", "/api/jones-updates/operations/start", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationStartInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationStop", "/api/jones-updates/operations/stop", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationStopInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationFence", "/api/jones-updates/operations/fence", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationFenceInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationRead", "/api/jones-updates/operations/read", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationReadInput,
+        success: JonesOperationReadResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recoveryPreflight", "/api/jones-updates/recovery-preflight", {
+        headers: OptionalBearerHeaders,
+        payload: JonesRecoveryPreflightInput,
+        success: JonesRecoveryPreflight,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
     ) {}
 
   class EnvironmentImportedHistoryHttpApi extends HttpApiGroup.make("jonesImportedHistory")
@@ -522,6 +709,13 @@ export const makeJonesHttpGroups = ({
     ) {}
 
   return {
+    EnvironmentRemoteAdmissionHttpApi: makeRemoteAdmissionHttpGroup({
+      OptionalBearerHeaders,
+      EnvironmentAuthenticatedAuth,
+      EnvironmentScopeRequiredError,
+      EnvironmentInternalError,
+      EnvironmentHttpBadRequestError,
+    }),
     EnvironmentFleetUpdatesHttpApi: makeFleetUpdatesHttpGroup({
       OptionalBearerHeaders,
       EnvironmentAuthenticatedAuth,
@@ -540,6 +734,7 @@ export const makeJonesHttpGroups = ({
     EnvironmentJonesUpdatesHttpApi,
     EnvironmentWorkQueueMetadataHttpApi,
     EnvironmentSettlementOriginsHttpApi,
+    EnvironmentSettlementRestoreHttpApi,
     EnvironmentVoiceReviewHttpApi,
     EnvironmentHostStatusHttpApi,
     EnvironmentConversationLibraryHttpApi,

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import type { SettlementEntry } from "@t3tools/client-runtime/jones/settlement-notifications";
+import {
+  createSettlementNotificationController,
+  type SettlementEntry,
+} from "@t3tools/client-runtime/jones/settlement-notifications";
 import { createLocalStorageSettlementStore, SETTLEMENT_STORAGE_PREFIX } from "./localStorageStore";
 
 class MemoryStorage implements Storage {
@@ -38,6 +41,58 @@ const inbox = (entries: SettlementEntry[], acknowledged: string[] = []) =>
   JSON.stringify({ version: 1, entries, acknowledged });
 
 describe("settlement localStorage persistence", () => {
+  it("retains project bullets after an old tab overwrites the entry and both tabs reload", async () => {
+    const storage = new MemoryStorage();
+    const rich = {
+      ...entry("a"),
+      projectRemaining: ["Finish the separate slice", "Review the follow-up"],
+    };
+    await createLocalStorageSettlementStore(() => storage, events).saveInbox(inbox([rich]));
+    const overwriteFromOldTab = () =>
+      storage.setItem(
+        `${SETTLEMENT_STORAGE_PREFIX}entry.${encodeURIComponent(rich.id)}`,
+        JSON.stringify({ version: 1, entry: entry("a") }),
+      );
+    overwriteFromOldTab();
+    const reopened = createSettlementNotificationController({
+      store: createLocalStorageSettlementStore(() => storage, events),
+    });
+    await reopened.hydrate();
+    expect(reopened.getSnapshot().visible[0]?.projectRemaining).toEqual(rich.projectRemaining);
+    reopened.dismiss([rich.id]);
+    await reopened.flush();
+    overwriteFromOldTab();
+    const afterDismissal = createSettlementNotificationController({
+      store: createLocalStorageSettlementStore(() => storage, events),
+    });
+    await afterDismissal.hydrate();
+    expect(afterDismissal.getSnapshot().visible).toEqual([]);
+  });
+
+  it("ignores orphaned, mismatched, invalid, and future project records", async () => {
+    const storage = new MemoryStorage();
+    const store = createLocalStorageSettlementStore(() => storage, events);
+    const existing = entry("existing");
+    const orphan = entry("orphan");
+    await store.saveInbox(inbox([existing]));
+    storage.setItem(
+      `${SETTLEMENT_STORAGE_PREFIX}projectRemaining.${encodeURIComponent(orphan.id)}`,
+      JSON.stringify({ version: 1, id: orphan.id, projectRemaining: ["Orphan bullet"] }),
+    );
+    for (const record of [
+      "{",
+      JSON.stringify({ version: 1, id: orphan.id, projectRemaining: ["Wrong identity"] }),
+      JSON.stringify({ version: 1, id: existing.id, projectRemaining: ["Two\nlines"] }),
+      JSON.stringify({ version: 2, id: existing.id, projectRemaining: ["Future"] }),
+    ]) {
+      storage.setItem(
+        `${SETTLEMENT_STORAGE_PREFIX}projectRemaining.${encodeURIComponent(existing.id)}`,
+        record,
+      );
+      expect(JSON.parse((await store.loadInbox())!).entries).toEqual([existing]);
+    }
+  });
+
   it("preserves another tab's addition and acknowledgement across stale saves and reopen", async () => {
     const storage = new MemoryStorage();
     const first = createLocalStorageSettlementStore(() => storage, events);

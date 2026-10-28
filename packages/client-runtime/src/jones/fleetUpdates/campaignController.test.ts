@@ -85,17 +85,18 @@ function fixture(committed = false) {
             ? entry
             : {
                 ...entry,
-                members: entry.members.map((member) =>
-                  member !== old
-                    ? member
-                    : {
-                        ...member,
-                        phase: request.input.phase,
-                        ...(request.input.expectedInstalledSource === undefined
-                          ? {}
-                          : { expectedInstalledSource: request.input.expectedInstalledSource }),
-                      },
-                ),
+                members: entry.members.map((member) => {
+                  if (member !== old) return member;
+                  const { reason: _reason, ...previous } = member;
+                  return {
+                    ...previous,
+                    phase: request.input.phase,
+                    ...(request.input.reason === undefined ? {} : { reason: request.input.reason }),
+                    ...(request.input.expectedInstalledSource === undefined
+                      ? {}
+                      : { expectedInstalledSource: request.input.expectedInstalledSource }),
+                  };
+                }),
               },
         ),
       };
@@ -172,14 +173,66 @@ describe("fleet campaign driver", () => {
     expect(f.state().campaigns[0]?.members[0]?.phase).toBe("committed");
   });
 
-  it("stages the frozen SHA and never activates from a prepared campaign", async () => {
+  it("does not stage or activate before the laptop commit and generation are proved", async () => {
     const f = fixture();
     await advanceFleetCampaigns(f.driver);
-    expect(f.operation()?.input.targetSource).toBe(source);
-    expect(f.state().campaigns[0]?.members[0]?.phase).toBe("staged");
+    expect(f.operation()).toBeNull();
+    expect(f.state().campaigns[0]?.members[0]?.phase).toBe("waiting");
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
     expect(
       f.driver.host.mock.calls.filter(([, input]) => input.action === "activate"),
     ).toHaveLength(0);
+    expect(f.driver.host.mock.calls.filter(([, input]) => input.action === "stage")).toHaveLength(
+      0,
+    );
+    const state = f.state();
+    f.setState({
+      ...state,
+      campaigns: state.campaigns.map((c) => ({ ...c, committedGeneration: "native-generation" })),
+    });
+    await advanceFleetCampaigns(f.driver);
+    expect(f.operation()).toBeNull();
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
+    f.setState({
+      ...state,
+      campaigns: state.campaigns.map((c) => {
+        const { committedGeneration: _generation, ...unproved } = c;
+        return { ...unproved, phase: "committed" };
+      }),
+    });
+    await advanceFleetCampaigns(f.driver);
+    expect(f.operation()).toBeNull();
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
+    expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual([
+      "status",
+      "status",
+      "status",
+    ]);
+    f.setState({
+      ...f.state(),
+      campaigns: f.state().campaigns.map((c) => ({
+        ...c,
+        phase: "committed",
+        committedGeneration: "native-generation",
+      })),
+    });
+    await advanceFleetCampaigns(f.driver);
+    expect(f.operation()?.input.targetSource).toBe(source);
+    expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual([
+      "status",
+      "status",
+      "status",
+      "status",
+      "stage",
+      "activate",
+    ]);
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBeUndefined();
   });
 
   it("reconciles a lost acceptance without duplicating native activation", async () => {
@@ -282,6 +335,8 @@ it("retires an occupied old stage before driving a newer campaign, including aft
         ...old,
         campaignId: "66666666-6666-4666-8666-666666666666",
         targetSource: "c".repeat(40),
+        phase: "committed",
+        committedGeneration: "new-native-generation",
         members: [{ ...old.members[0]!, operationId: nextId, phase: "waiting" }],
       },
     ],
@@ -318,7 +373,7 @@ it("retires an occupied old stage before driving a newer campaign, including aft
       : result;
   });
   await advanceFleetCampaigns(f.driver);
-  expect(f.state().campaigns[1]?.members[0]?.phase).toBe("staged");
+  expect(f.state().campaigns[1]?.members[0]?.phase).toBe("pending");
   expect(f.operation()?.input.targetSource).toBe("c".repeat(40));
 });
 
@@ -362,4 +417,89 @@ it("keeps uncertain native acceptance occupying its host while observing it", as
   await advanceFleetCampaigns(f.driver);
   expect(f.driver.host.mock.calls.map(([, request]) => request.action)).toEqual(["status"]);
   expect(f.state().campaigns[1]?.members[0]?.phase).toBe("waiting");
+});
+
+describe("hosts that follow the laptop themselves", () => {
+  const laptopSource = "d".repeat(40);
+  const laptop = {
+    repository: "Jones-Systems/Jones-Code",
+    sha: laptopSource,
+    tree: "e".repeat(40),
+  };
+  const followerHost = (f: ReturnType<typeof fixture>, leaderSource: string | null) => {
+    const legacy = f.driver.host.getMockImplementation()!;
+    const leaders: string[] = [];
+    f.driver.host.mockImplementation(async (id, request) => {
+      if (request.action === "leader") {
+        // The host checks this provenance against the repository before following it.
+        expect(request.input).toMatchObject({
+          repository: laptop.repository,
+          committedTree: laptop.tree,
+        });
+        leaders.push(request.input.committedSource);
+        leaderSource = request.input.committedSource;
+      }
+      const status = await legacy(id, request);
+      return { ...status, follower: { protocol: 1, leaderSource, state: "preparing" } };
+    });
+    return leaders;
+  };
+
+  it("publishes the laptop's committed source and stops driving campaigns for them", async () => {
+    const f = fixture(true);
+    const leaders = followerHost(f, null);
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
+    expect(leaders).toEqual([laptopSource]);
+    expect(f.state().campaigns[0]!.members[0]).toMatchObject({ phase: "superseded" });
+    expect(f.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain("stage");
+    expect(f.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain("activate");
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
+    expect(leaders).toEqual([laptopSource]);
+  });
+
+  it("keeps settling an activation the campaign already dispatched", async () => {
+    const f = fixture(true);
+    followerHost(f, laptopSource);
+    f.setState({
+      ...f.state(),
+      campaigns: f.state().campaigns.map((campaign) => ({
+        ...campaign,
+        members: campaign.members.map((member) => ({ ...member, phase: "reconciling" as const })),
+      })),
+    });
+    f.setOperation({
+      input: {
+        operationId,
+        enrollmentId: enrollment.enrollmentId,
+        environmentId,
+        targetSource: source,
+        expectedInstalledSource: installed,
+      },
+      phase: "committed",
+      continueRunningThreads: false,
+      currentVersion: "preview-old",
+      stagedHandle: "server-handle",
+    });
+    await advanceFleetCampaigns({ ...f.driver, committedSource: async () => laptop });
+    expect(f.state().campaigns[0]!.members[0]!.phase).toBe("committed");
+  });
+
+  it("keeps campaigns when the laptop cannot prove its committed source or the host is older", async () => {
+    const unproven = fixture(true);
+    const published = followerHost(unproven, null);
+    await advanceFleetCampaigns({ ...unproven.driver, committedSource: async () => undefined });
+    for (const malformed of [
+      { ...laptop, repository: "someone/else" },
+      { ...laptop, tree: "not-a-tree" },
+    ])
+      await advanceFleetCampaigns({ ...unproven.driver, committedSource: async () => malformed });
+    expect(published).toEqual([]);
+    expect(unproven.operation()?.phase).toBe("pending");
+    const older = fixture(true);
+    await advanceFleetCampaigns({ ...older.driver, committedSource: async () => laptop });
+    expect(older.operation()?.phase).toBe("pending");
+    expect(older.driver.host.mock.calls.map(([, request]) => request.action)).not.toContain(
+      "leader",
+    );
+  });
 });

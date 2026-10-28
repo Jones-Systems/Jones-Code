@@ -1,5 +1,23 @@
+import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
+import type {
+  OpenRequest,
+  WakeCommit,
+} from "../jones/threadResultDependencies/DependencyCommit.ts";
+import { makeOwnerSelectionStore } from "../jones/threadConfiguration/ownerSelectionStore.ts";
+import type { ModelSelection } from "@t3tools/contracts";
+import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
+import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
+import * as CodexFailoverStore from "../jones/codexFailover/CodexFailoverStore.ts";
+import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
+import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
+import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
+import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
+import * as UpdateAdmissionFence from "../jones/updates/UpdateAdmissionFence.ts";
 import {
   makeDeletionAdmission,
   type DeletionAdmissionInput,
@@ -18,6 +36,7 @@ import {
 } from "../jones/settlementOrigins/projectRemaining.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStopSqlite.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
+import { makeSettlementRestoreStore } from "../jones/settlementRestore/store.ts";
 import { importedApplicationAttachmentSha256V1 as nativeChoiceDigest } from "../jones/importedHistory/ImportedApplicationAttachmentInventory.ts";
 import * as ImportedChoice from "../jones/importedHistory/ImportedHistoryChoice.ts";
 import { readApplicationBirthRecord } from "../jones/importedHistory/ApplicationBirth.ts";
@@ -71,6 +90,7 @@ import { identityForRequest } from "@t3tools/provider-core/server/ProviderAdapte
 import { replayAndBufferProjectedLiveEvents } from "./LiveStreamBudget.ts";
 import type { UnsequencedProjectEvent } from "../persistence/OrchestrationEventStore.ts";
 import { isPublicStoredOrchestrationEvent, projectDomainEventForWire } from "./WireProjection.ts";
+import { makeRunOutcomeRecorder, type RunOutcome } from "./RunMetrics.ts";
 
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
@@ -158,6 +178,12 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly writeHistoricalTerminal?: (
+    input: HistoricalTerminalHistory.HistoricalTerminalInput,
+  ) => Effect.Effect<
+    { readonly handled: boolean; readonly storedEvents: ReadonlyArray<OrchestrationV2StoredEvent> },
+    EventSinkV2Error
+  >;
   readonly readDeletionWorktreeRemovalStartForTarget?: (
     threadId: ThreadId,
     target: DeletionWorktreeRemovalTargetV1,
@@ -234,6 +260,7 @@ export interface EventSinkV2Shape {
   >;
 
   readonly write: (input: {
+    readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
@@ -242,6 +269,11 @@ export interface EventSinkV2Shape {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
     };
+    /** Return no events if another thread owns this native session at commit time. */
+    readonly unlessNativeThreadOwned?: Pick<
+      OrchestrationV2ProviderThread,
+      "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
+    >;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -255,12 +287,22 @@ export interface EventSinkV2Shape {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
     };
+    /**
+     * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
+     * The batch must not also change that run's lifecycle.
+     */
+    readonly updateDelegatedCompletionOnly?: boolean;
+    readonly unlessNativeThreadOwned?: Pick<
+      OrchestrationV2ProviderThread,
+      "driver" | "providerInstanceId" | "appThreadId" | "nativeThreadRef"
+    >;
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
     readonly effects: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2>;
   }) => Effect.Effect<ReadonlyArray<OrchestrationV2StoredEvent>, EventSinkV2Error>;
   readonly writeIfRunCurrent: (input: {
+    readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
@@ -284,13 +326,9 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only when the provider thread is still owned by the
-   * expected run attempt and ordinal. Used for late post-terminal
-   * provider_thread updates so a completed or superseded attempt cannot clobber
-   * a newer attempt that already claimed the thread.
-   */
+  /** Commits only if the expected attempt and ordinal still own the provider thread, protecting newer attempts. */
   readonly writeIfProviderThreadOwner: (input: {
+    readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
     readonly runtimeIdentityPreviousRequest?: RequestedRuntimeIdentity;
     readonly runtimeEvidence?: ProviderRuntimeEvidenceCapture;
@@ -313,12 +351,7 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only while the stored provider thread still equals
-   * `expected`, the row its writer read, so a read-modify-write of the row
-   * cannot overwrite an update published in between. The whole row is
-   * compared because not every writer moves `updatedAt`.
-   */
+  /** Commits only if the full provider row equals expected; some writers do not advance updatedAt. */
   readonly writeIfProviderThreadUnchanged: (input: {
     readonly expected: OrchestrationV2ProviderThread;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -330,9 +363,17 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly codexFailover?: CodexFailoverCommitContext | undefined;
+    readonly taskContinuation?: TaskContinuationCommitContext | undefined;
+    readonly resultRequest?: OpenRequest | undefined;
+    readonly dependencyWake?: WakeCommit | undefined;
+    readonly threadTitle?: ThreadTitleCommitContext | undefined;
     readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
+    readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
+    readonly threadSelfConfiguration?: ThreadSelfConfigurationCommitContext;
+    readonly ownerSelection?: ModelSelection | undefined;
     readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
     readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
@@ -448,6 +489,9 @@ const layerBase: Layer.Layer<
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
+    // Jones: keeps new provider work out of a process that is handing off to an update.
+    const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
+    if (Option.isSome(admission)) yield* admission.value.attach;
     const deletionAdmission = yield* makeDeletionAdmission.pipe(Effect.provide(NodePath.layer));
     const nativeCreation = yield* Effect.serviceOption(
       NativeCreationRepository.NativeCreationRepository,
@@ -482,6 +526,7 @@ const layerBase: Layer.Layer<
     const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
     const eventStore = yield* EventStore.EventStoreV2;
+    const historicalTerminals = yield* HistoricalTerminalHistory.make;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
     const projectStore = yield* ProjectStore.ProjectStoreV2;
     const turnItemPositions = yield* TurnItemPositionStore.TurnItemPositionStoreV2;
@@ -490,8 +535,9 @@ const layerBase: Layer.Layer<
       OrchestrationV2DomainEvent["type"],
       PubSub.PubSub<OrchestrationV2StoredEvent>
     >();
-    const publishLiveEvents = (events: ReadonlyArray<OrchestrationV2StoredEvent>) =>
-      Effect.gen(function* () {
+    const publishLiveEvents =
+      /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
+      Effect.fnUntraced(function* (events: ReadonlyArray<OrchestrationV2StoredEvent>) {
         yield* PubSub.publishAll(liveEvents, events);
         for (const [type, pubsub] of liveEventsByType) {
           yield* PubSub.publishAll(
@@ -500,26 +546,42 @@ const layerBase: Layer.Layer<
           );
         }
       });
-    const publishStoredEvents = (events: ReadonlyArray<OrchestrationV2RecordedStoredEvent>) =>
-      eventStore
-        .publishCommitted(events)
-        .pipe(Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))));
+    const runOutcomes = makeRunOutcomeRecorder((threadId) =>
+      // One payload row; unlike the shell, it still resolves a deleted child thread.
+      projectionStore
+        .getThread(threadId)
+        .pipe(Effect.map((thread) => thread.lineage.relationshipToParent === "subagent")),
+    );
+    // Recorded before publication, so an interrupted publish cannot lose a committed outcome.
+    const publishStoredEvents = (
+      events: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+      outcomes: ReadonlyArray<RunOutcome>,
+    ) =>
+      runOutcomes
+        .record(outcomes)
+        .pipe(
+          Effect.andThen(eventStore.publishCommitted(events)),
+          Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))),
+        );
 
-    // Transactions commit one at a time, but each writer publishes after its
-    // commit. If a writer is descheduled in between, a later commit reaches
-    // subscribers first, and clients drop any event at or below the newest
-    // sequence they have applied. So a writer takes this lane as the last step
-    // of its transaction and holds it until it has published. Publishing never
-    // waits, so a writer that holds the transaction while it waits for the
-    // lane is not blocked for long.
+    // Commit order can differ from publication order if a writer is descheduled; clients discard older sequences.
+    // Take this lane last inside the transaction and hold it through publication to preserve that order.
+    // Publication never waits, so a transaction waiting for the lane blocks only briefly.
     const jonesTables = makeJonesTablePresence(sql);
+    const dependencies = makeDependencyStore(sql, jonesTables);
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
+    const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
+    const ownerSelections = makeOwnerSelectionStore(sql, jonesTables);
+    const codexFailoverStore = yield* CodexFailoverStore.make;
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
     ) =>
-      Effect.suspend(() => {
+      Effect.uninterruptibleMask((restore) => {
+        const changedThreadIds = new Set<ThreadId>();
+        let dependencySequence = 0;
         let holdsLane = false;
         const takeLane = publishLane.take(1).pipe(
           Effect.andThen(
@@ -529,10 +591,37 @@ const layerBase: Layer.Layer<
           ),
           Effect.uninterruptible,
         );
+        // Cancellation may roll back the transaction's work. Once it commits,
+        // every subscriber must hear about it before this writer can exit.
+        // Otherwise a failed child run can leave its parent's task running.
         return sql
-          .withTransaction(Effect.tap(transaction, () => takeLane))
+          .withTransaction(
+            restore(transaction).pipe(
+              Effect.provideService(DependencyChangedThreads, changedThreadIds),
+              Effect.tap(() =>
+                changedThreadIds.size === 0
+                  ? Effect.void
+                  : dependencies.sequence.pipe(
+                      Effect.tap((sequence) =>
+                        Effect.sync(() => {
+                          dependencySequence = sequence;
+                        }),
+                      ),
+                    ),
+              ),
+              Effect.tap(() => takeLane),
+            ),
+          )
           .pipe(
             Effect.tap(publish),
+            Effect.tap(() =>
+              changedThreadIds.size > 0 && Option.isSome(dependencyChanges)
+                ? dependencyChanges.value.publish({
+                    threadIds: [...changedThreadIds],
+                    sequence: dependencySequence,
+                  })
+                : Effect.void,
+            ),
             Effect.ensuring(
               Effect.suspend(() => (holdsLane ? publishLane.release(1) : Effect.void)),
             ),
@@ -541,8 +630,9 @@ const layerBase: Layer.Layer<
 
     // A user can answer after terminal normalization reads the pending request.
     // Recheck inside the write transaction so stale cleanup cannot erase answers.
-    const guardUserInputCancellations = (events: ReadonlyArray<OrchestrationV2DomainEvent>) =>
-      Effect.gen(function* () {
+    const guardUserInputCancellations =
+      /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
+      Effect.fnUntraced(function* (events: ReadonlyArray<OrchestrationV2DomainEvent>) {
         const staleRequests = new Set<RuntimeRequestId>();
         const staleNodes = new Set<NodeId>();
         for (const event of events) {
@@ -584,115 +674,128 @@ const layerBase: Layer.Layer<
         });
       });
 
-    const guardRuntimeIdentity = (
+    const guardRuntimeIdentity = Effect.fn("EventSink.guardRuntimeIdentity")(function* (
       input: Pick<
         Parameters<EventSinkV2Shape["write"]>[0],
         | "events"
+        | "historicalTerminal"
         | "runtimeEvidence"
         | "runtimeIdentityObservation"
         | "runtimeIdentityBoundary"
         | "runtimeIdentityRequest"
         | "runtimeIdentityPreviousRequest"
-      >,
-    ) =>
-      Effect.gen(function* () {
-        const capture = input.runtimeEvidence;
-        const update = input.events.find((event) => event.type === "provider-thread.updated");
-        if (input.runtimeIdentityBoundary !== undefined) {
-          if (update?.type !== "provider-thread.updated") return null;
-          const records = yield* projectionStore.getThreadRecords(update.threadId, [
-            "providerThreads",
-          ]);
-          const current =
-            records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
-          if (
-            (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
-              (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
-                records.thread.activeProviderThreadId !==
-                  input.runtimeIdentityBoundary.expectedActiveProviderThreadId)) ||
-            (capture !== undefined && !runtimeEvidenceMatches(current, capture)) ||
-            (current?.runtimeIdentity?.runtimeGeneration ?? null) !==
-              input.runtimeIdentityBoundary.expectedGeneration ||
-            (current !== null &&
-              (current.appThreadId !== update.payload.appThreadId ||
-                current.providerInstanceId !== update.payload.providerInstanceId ||
-                current.driver !== update.payload.driver))
-          )
-            return null;
-          return input.events.map((event) =>
-            event.type === "provider-thread.updated" && event.payload.id === update.payload.id
-              ? {
-                  ...event,
-                  payload: {
-                    ...event.payload,
-                    runtimeIdentity:
-                      event.payload.runtimeIdentity === undefined
-                        ? undefined
-                        : {
-                            ...event.payload.runtimeIdentity,
-                            evidenceRevision: (current?.runtimeIdentity?.evidenceRevision ?? 0) + 1,
-                          },
-                  },
-                }
-              : event,
-          );
-        }
-        if (capture === undefined) return input.events;
-        const current =
-          (yield* projectionStore.getThreadRecords(capture.threadId, [
-            "providerThreads",
-          ])).providerThreads.find((thread) => thread.id === capture.providerThreadId) ?? null;
-        if (!runtimeEvidenceMatches(current, capture) || current === null) return null;
-        const identity = current.runtimeIdentity!;
+      > & { readonly effects?: ReadonlyArray<EffectOutbox.PendingOrchestrationEffectV2> },
+    ) {
+      if (input.historicalTerminal !== undefined) {
         if (
-          input.runtimeIdentityRequest !== undefined &&
-          capture.evidenceRevision !== identity.evidenceRevision
-        ) {
-          const previous = input.runtimeIdentityPreviousRequest;
-          if (
-            previous === undefined ||
-            identity.requested.providerInstanceId !== previous.providerInstanceId ||
-            identity.requested.providerDriver !== previous.providerDriver ||
-            identity.requested.model !== previous.model ||
-            identity.requested.serviceTier !== previous.serviceTier
-          )
-            return null;
-        }
-        if (input.runtimeIdentityObservation !== undefined) {
-          const requested = input.runtimeIdentityObservation;
-          if (
-            identity.requested.providerInstanceId !== requested.providerInstanceId ||
-            identity.requested.providerDriver !== requested.providerDriver ||
-            identity.requested.model !== requested.model ||
-            identity.requested.serviceTier !== requested.serviceTier ||
-            identity.evidenceRevision !== capture.evidenceRevision
-          )
-            return null;
-        }
+          input.runtimeIdentityBoundary !== undefined ||
+          input.runtimeIdentityObservation !== undefined ||
+          input.runtimeIdentityRequest !== undefined ||
+          input.runtimeIdentityPreviousRequest !== undefined ||
+          (input.effects?.length ?? 0) > 0
+        )
+          return null;
+        const historical = yield* historicalTerminals.select(input.historicalTerminal);
+        if (historical === "stale" || historical === "deferred") return null;
+        if (historical !== "ordinary") return [historical];
+      }
+      const capture = input.runtimeEvidence;
+      const update = input.events.find((event) => event.type === "provider-thread.updated");
+      if (input.runtimeIdentityBoundary !== undefined) {
+        if (update?.type !== "provider-thread.updated") return null;
+        const records = yield* projectionStore.getThreadRecords(update.threadId, [
+          "providerThreads",
+        ]);
+        const current =
+          records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
+        if (
+          (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
+            (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
+              records.thread.activeProviderThreadId !==
+                input.runtimeIdentityBoundary.expectedActiveProviderThreadId)) ||
+          (capture !== undefined && !runtimeEvidenceMatches(current, capture)) ||
+          (current?.runtimeIdentity?.runtimeGeneration ?? null) !==
+            input.runtimeIdentityBoundary.expectedGeneration ||
+          (current !== null &&
+            (current.appThreadId !== update.payload.appThreadId ||
+              current.providerInstanceId !== update.payload.providerInstanceId ||
+              current.driver !== update.payload.driver))
+        )
+          return null;
         return input.events.map((event) =>
-          event.type === "provider-thread.updated" && event.payload.id === current.id
+          event.type === "provider-thread.updated" && event.payload.id === update.payload.id
             ? {
                 ...event,
                 payload: {
                   ...event.payload,
                   runtimeIdentity:
-                    input.runtimeIdentityObservation === undefined
-                      ? input.runtimeIdentityRequest === undefined
-                        ? identity
-                        : {
-                            ...identityForRequest(input.runtimeIdentityRequest, identity),
-                            evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
-                          }
+                    event.payload.runtimeIdentity === undefined
+                      ? undefined
                       : {
-                          ...identity,
-                          observed: event.payload.runtimeIdentity!.observed,
-                          evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                          ...event.payload.runtimeIdentity,
+                          evidenceRevision: (current?.runtimeIdentity?.evidenceRevision ?? 0) + 1,
                         },
                 },
               }
             : event,
         );
-      });
+      }
+      if (capture === undefined) return input.events;
+      const current =
+        (yield* projectionStore.getThreadRecords(capture.threadId, [
+          "providerThreads",
+        ])).providerThreads.find((thread) => thread.id === capture.providerThreadId) ?? null;
+      if (!runtimeEvidenceMatches(current, capture) || current === null) return null;
+      const identity = current.runtimeIdentity!;
+      if (
+        input.runtimeIdentityRequest !== undefined &&
+        capture.evidenceRevision !== identity.evidenceRevision
+      ) {
+        const previous = input.runtimeIdentityPreviousRequest;
+        if (
+          previous === undefined ||
+          identity.requested.providerInstanceId !== previous.providerInstanceId ||
+          identity.requested.providerDriver !== previous.providerDriver ||
+          identity.requested.model !== previous.model ||
+          identity.requested.serviceTier !== previous.serviceTier
+        )
+          return null;
+      }
+      if (input.runtimeIdentityObservation !== undefined) {
+        const requested = input.runtimeIdentityObservation;
+        if (
+          identity.requested.providerInstanceId !== requested.providerInstanceId ||
+          identity.requested.providerDriver !== requested.providerDriver ||
+          identity.requested.model !== requested.model ||
+          identity.requested.serviceTier !== requested.serviceTier ||
+          identity.evidenceRevision !== capture.evidenceRevision
+        )
+          return null;
+      }
+      return input.events.map((event) =>
+        event.type === "provider-thread.updated" && event.payload.id === current.id
+          ? {
+              ...event,
+              payload: {
+                ...event.payload,
+                runtimeIdentity:
+                  input.runtimeIdentityObservation === undefined
+                    ? input.runtimeIdentityRequest === undefined
+                      ? identity
+                      : {
+                          ...identityForRequest(input.runtimeIdentityRequest, identity),
+                          evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                        }
+                    : {
+                        ...identity,
+                        observed: event.payload.runtimeIdentity!.observed,
+                        evidenceRevision: (identity.evidenceRevision ?? 0) + 1,
+                      },
+              },
+            }
+          : event,
+      );
+    });
 
     const normalizeEvents = (events: ReadonlyArray<OrchestrationV2DomainEvent>) => {
       const runOrdinals = new Map(
@@ -717,8 +820,14 @@ const layerBase: Layer.Layer<
       );
     };
 
-    const applyStoredEvents = (storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>) =>
-      Effect.gen(function* () {
+    const applyStoredEvents =
+      /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
+      Effect.fnUntraced(function* (
+        storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+      ) {
+        // Jones: capture settlement before the projection replaces the prior state.
+        if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
+          yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
@@ -745,10 +854,18 @@ const layerBase: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
+        yield* acceptDependencyEvents(
+          dependencies,
+          storedEvents.filter(isPublicStoredOrchestrationEvent).map((stored) => stored.event),
+        );
+        // Read lineage here, on the connection this transaction holds; see makeRunOutcomeRecorder.
+        return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
 
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
-      input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0],
+      input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0] & {
+        readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
+      },
     ) {
       yield* Effect.annotateCurrentSpan({
         "orchestration_v2.command_id": input.commandId ?? null,
@@ -756,10 +873,48 @@ const layerBase: Layer.Layer<
         "orchestration_v2.thread_id": input.events[0]?.threadId ?? null,
       });
 
-      return yield* commitThenPublish(
+      const { committed } = yield* commitThenPublish(
         Effect.gen(function* () {
-          const identityEvents = yield* guardRuntimeIdentity(input);
-          if (identityEvents === null) return [];
+          // Check ownership in the same transaction that claims the native session.
+          const imported = input.unlessNativeThreadOwned;
+          if (imported?.nativeThreadRef != null) {
+            const owners = yield* sql`
+              SELECT provider_thread_id
+              FROM orchestration_v2_projection_provider_threads
+              WHERE driver = ${imported.driver}
+                AND provider_instance_id = ${imported.providerInstanceId}
+                AND thread_id IS NOT ${imported.appThreadId}
+                AND json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${imported.nativeThreadRef.nativeId}
+              LIMIT 1
+            `;
+            if (owners.length > 0) return { committed: [], outcomes: [] };
+          }
+          // Checkpoint capture can finish after a cohort writer reads its parent run.
+          // Merge in this transaction so the event log and projection keep that completion.
+          const events = input.updateDelegatedCompletionOnly
+            ? yield* Effect.forEach(input.events, (event) =>
+                Effect.gen(function* () {
+                  if (event.type !== "run.updated") return event;
+                  const { runs } = yield* projectionStore.getThreadRecords(
+                    event.threadId,
+                    ["runs"],
+                    { runIds: [event.payload.id] },
+                  );
+                  const current = runs[0];
+                  return current === undefined
+                    ? event
+                    : {
+                        ...event,
+                        payload: {
+                          ...current,
+                          delegatedCompletion: event.payload.delegatedCompletion,
+                        },
+                      };
+                }),
+              )
+            : input.events;
+          const identityEvents = yield* guardRuntimeIdentity({ ...input, events });
+          if (identityEvents === null) return { committed: [], outcomes: [] };
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
               ? yield* guardUserInputCancellations(identityEvents)
@@ -771,23 +926,26 @@ const layerBase: Layer.Layer<
               events: normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          yield* applyStoredEvents(committed);
+          const outcomes = yield* applyStoredEvents(committed);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           if (Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.linkEffects({
               storedEvents: committed,
               effects: input.effects,
             });
-          return committed;
+          return { committed, outcomes };
         }).pipe(Effect.withTracerEnabled(false)),
-        (storedEvents) =>
+        ({ committed, outcomes }) =>
           Effect.gen(function* () {
+            historicalTerminals.rememberCommitted(input.effects, committed);
             if (input.effects.length > 0) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
-            yield* publishStoredEvents(storedEvents);
+            yield* publishStoredEvents(committed, outcomes);
           }),
       );
+      return committed;
     });
 
     const writeIfRunCurrentEffect = Effect.fn("orchestrationV2.EventSink.writeIfRunCurrent")(
@@ -842,22 +1000,23 @@ const layerBase: Layer.Layer<
                 events: normalized,
               })
               .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-            yield* applyStoredEvents(storedEvents);
+            const outcomes = yield* applyStoredEvents(storedEvents);
             yield* effectOutbox.enqueue(input.effects ?? []);
             if (Option.isSome(checkoutIntent))
               yield* checkoutIntent.value.linkEffects({
                 storedEvents,
                 effects: input.effects ?? [],
               });
-            return { committed: true as const, storedEvents };
+            return { committed: true as const, storedEvents, outcomes };
           }),
           (result) =>
             Effect.gen(function* () {
               if (!result.committed) return;
+              historicalTerminals.rememberCommitted(input.effects ?? [], result.storedEvents);
               if (input.effects !== undefined && input.effects.length > 0) {
                 yield* effectOutbox.notifyAvailable(input.effects.length);
               }
-              yield* publishStoredEvents(result.storedEvents);
+              yield* publishStoredEvents(result.storedEvents, result.outcomes);
             }),
         );
       },
@@ -900,6 +1059,7 @@ const layerBase: Layer.Layer<
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           }
 
@@ -908,6 +1068,7 @@ const layerBase: Layer.Layer<
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           const normalized = yield* normalizeEvents(
             input.guardPendingUserInputCancellations === true
@@ -920,10 +1081,13 @@ const layerBase: Layer.Layer<
               events: normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          yield* applyStoredEvents(storedEvents);
-          return { committed: true as const, storedEvents };
+          const outcomes = yield* applyStoredEvents(storedEvents);
+          return { committed: true as const, storedEvents, outcomes };
         }),
-        (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+        (result) =>
+          result.committed
+            ? publishStoredEvents(result.storedEvents, result.outcomes)
+            : Effect.void,
       );
     });
 
@@ -948,6 +1112,7 @@ const layerBase: Layer.Layer<
             return {
               committed: false as const,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           }
 
@@ -955,15 +1120,19 @@ const layerBase: Layer.Layer<
           const storedEvents = yield* eventStore
             .append({ events: normalized })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          yield* applyStoredEvents(storedEvents);
-          return { committed: true as const, storedEvents };
+          const outcomes = yield* applyStoredEvents(storedEvents);
+          return { committed: true as const, storedEvents, outcomes };
         }),
-        (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+        (result) =>
+          result.committed
+            ? publishStoredEvents(result.storedEvents, result.outcomes)
+            : Effect.void,
       );
     });
 
-    const existingCommandResult = (commandId: CommandId) =>
-      Effect.gen(function* () {
+    const existingCommandResult =
+      /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
+      Effect.fnUntraced(function* (commandId: CommandId) {
         const existing = yield* commandReceipts.getByCommandId(commandId);
         if (Option.isNone(existing)) {
           return yield* Effect.die(
@@ -1049,12 +1218,10 @@ const layerBase: Layer.Layer<
                   effect.nativeCreationExecutionReference.effectId !== effect.id),
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native queued effect differs from its acceptance binding",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native queued effect differs from its acceptance binding",
+            });
           }
           if (
             input.nativeCreation !== undefined &&
@@ -1064,12 +1231,10 @@ const layerBase: Layer.Layer<
                 effect.nativeCreationExecutionReference === undefined,
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native provider start is missing its execution envelope",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native provider start is missing its execution envelope",
+            });
           }
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
@@ -1109,12 +1274,10 @@ const layerBase: Layer.Layer<
                 nativeCreation.value.recordExecutionAcceptance === undefined ||
                 boundary === undefined
               )
-                return yield* Effect.fail(
-                  new NativeCreationRepository.NativeCreationRepositoryError({
-                    code: "unresolved_claim",
-                    message: "Native receipt retry has no native acceptance owner",
-                  }),
-                );
+                return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                  code: "unresolved_claim",
+                  message: "Native receipt retry has no native acceptance owner",
+                });
               yield* nativeCreation.value.recordExecutionAcceptance({
                 ...input.nativeCreation,
                 eventId: boundary.event.id,
@@ -1124,8 +1287,14 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          if (input.threadSelfConfiguration)
+            input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
+          if (input.codexFailover?.revalidate)
+            input = { ...input, events: yield* input.codexFailover.revalidate(input) };
           if (input.providerConversationReselection)
             yield* input.providerConversationReselection.revalidate(input);
+          if (input.taskContinuation) yield* input.taskContinuation.accept(input);
+          if (input.threadTitle) yield* input.threadTitle.accept;
 
           if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
             const receipt: CommandReceiptStore.CommandReceiptV2 = {
@@ -1150,10 +1319,17 @@ const layerBase: Layer.Layer<
               effectId: null,
               reason: choice.rejectionReason,
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-            return { receipt, storedEvents: [], committed: true as const, cancelledEffectIds: [] };
+            return {
+              receipt,
+              storedEvents: [],
+              outcomes: [],
+              committed: true as const,
+              cancelledEffectIds: [],
+            };
           }
           if (ordinary !== undefined && Option.isSome(checkoutIntent))
             yield* checkoutIntent.value.validate(ordinary);
+          yield* WorkspaceLifecycle.validateCommand(input.ordinaryCheckoutCommand, input.events);
           const normalized = yield* normalizeEvents(input.events);
           const storedEvents = yield* eventStore
             .append({
@@ -1161,13 +1337,27 @@ const layerBase: Layer.Layer<
               events: normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          const sequence = storedEvents.at(-1)?.sequence;
+          const sequence =
+            storedEvents.at(-1)?.sequence ??
+            (input.effects.length === 0
+              ? undefined
+              : yield* eventStore.latestSequence({ threadId: input.threadId }));
           if (sequence === undefined) {
             return yield* Effect.die(
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
-          yield* applyStoredEvents(storedEvents);
+          const outcomes = yield* applyStoredEvents(storedEvents);
+          if (input.resultRequest) yield* dependencies.open(input.resultRequest);
+          if (input.dependencyWake) yield* dependencies.admitWake(input.dependencyWake);
+          yield* acceptDependencyEvents(
+            dependencies,
+            storedEvents.map((stored) => stored.event),
+            input,
+            false,
+          );
+          if (input.codexFailover?.accept) yield* input.codexFailover.accept(input);
+          if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
             commandId: input.commandId,
@@ -1191,6 +1381,34 @@ const layerBase: Layer.Layer<
               yield* checkoutIntent.value.linkEffects({ storedEvents, effects: input.effects });
           }
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
+          yield* ownerSelections.commit({
+            threadId: input.threadId,
+            commandId: input.commandId,
+            sequence: receipt.resultSequence,
+            events: input.events,
+            record: input.ownerSelection,
+            recordedAt: input.acceptedAt,
+          });
+          if (input.ownerSelection !== undefined)
+            yield* codexFailoverStore.clearQueuedOverrides(
+              input.threadId,
+              DateTime.formatIso(input.acceptedAt),
+            );
+          const restored = input.settlementRestore
+            ? storedEvents.find(
+                (stored) =>
+                  stored.event.type === "thread.unsettled" &&
+                  stored.event.threadId === input.threadId,
+              )
+            : undefined;
+          if (input.settlementRestore && restored !== undefined)
+            yield* settlementRestores.recordRestore({
+              threadId: input.threadId,
+              settleCommandId: input.settlementRestore.settleCommandId,
+              restoreCommandId: input.commandId,
+              restoredAt: restored.event.occurredAt,
+              sequence: receipt.resultSequence,
+            });
           if (input.selfSettlementProjectRemaining)
             yield* recordSelfSettlementProjectRemaining(
               sql,
@@ -1279,12 +1497,10 @@ const layerBase: Layer.Layer<
               input.nativeCreation.command.threadId !== input.threadId ||
               input.nativeCreation.command.type !== input.commandType
             ) {
-              return yield* Effect.fail(
-                new NativeCreationRepository.NativeCreationRepositoryError({
-                  code: "unresolved_claim",
-                  message: "Native acceptance owner is unavailable or differs from the receipt",
-                }),
-              );
+              return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                code: "unresolved_claim",
+                message: "Native acceptance owner is unavailable or differs from the receipt",
+              });
             }
             const event = storedEvents.at(-1)!;
             yield* nativeCreation.value.recordExecutionAcceptance({
@@ -1300,10 +1516,12 @@ const layerBase: Layer.Layer<
                   threadId: input.threadId,
                   ...input.cancelUnsettledEffects,
                 });
-          return { receipt, storedEvents, committed: true as const, cancelledEffectIds };
+          return { receipt, storedEvents, outcomes, committed: true as const, cancelledEffectIds };
         }),
         (result) =>
           Effect.gen(function* () {
+            if (result.committed && result.receipt.status === "accepted")
+              historicalTerminals.rememberCommitted(input.effects, result.storedEvents);
             yield* effectOutbox.signalCancellations(result.cancelledEffectIds);
             if (
               result.committed &&
@@ -1312,7 +1530,7 @@ const layerBase: Layer.Layer<
             ) {
               yield* effectOutbox.notifyAvailable(input.effects.length);
             }
-            if (result.committed) yield* publishStoredEvents(result.storedEvents);
+            if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
       );
       return {
@@ -1340,9 +1558,9 @@ const layerBase: Layer.Layer<
         const intentId = CommandId.make(`${policy.createCommandId}:preflight-intent`);
         const outcomeId = CommandId.make(`${policy.createCommandId}:preflight-outcome`);
         const reject = (detail: string) => new Error(detail);
-        const payload = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(QueueDispatchCommand),
-        )(binding.canonicalPayload);
+        const payload = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
+          binding.canonicalPayload,
+        );
         if (
           payload.type !== "thread.turn.start" ||
           payload.bootstrap === undefined ||
@@ -1420,6 +1638,7 @@ const layerBase: Layer.Layer<
                 receipt: existing.value,
                 committed: false,
                 storedEvents: [] as ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
+                outcomes: [] as ReadonlyArray<RunOutcome>,
               };
             }
             if (
@@ -1499,7 +1718,7 @@ const layerBase: Layer.Layer<
               return yield* Effect.fail(
                 reject("Preflight journal binding was not committed exactly."),
               );
-            yield* applyStoredEvents(storedEvents);
+            const outcomes = yield* applyStoredEvents(storedEvents);
             const receipt: CommandReceiptStore.CommandReceiptV2 = {
               commandId: input.commandId,
               threadId: policy.threadId,
@@ -1510,9 +1729,12 @@ const layerBase: Layer.Layer<
               error: null,
             };
             yield* commandReceipts.upsert(receipt);
-            return { receipt, committed: true, storedEvents };
+            return { receipt, committed: true, storedEvents, outcomes };
           }),
-          (result) => (result.committed ? publishStoredEvents(result.storedEvents) : Effect.void),
+          (result) =>
+            result.committed
+              ? publishStoredEvents(result.storedEvents, result.outcomes)
+              : Effect.void,
         );
         const readback = yield* readPreflight(input.commandId);
         if (
@@ -1535,6 +1757,7 @@ const layerBase: Layer.Layer<
             return {
               receipt: existing.value,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           const legacy = input.legacyGuardRejection;
           let events: ReadonlyArray<OrchestrationV2DomainEvent> = [];
@@ -1697,6 +1920,7 @@ const layerBase: Layer.Layer<
             return {
               receipt: (yield* existingCommandResult(input.commandId)).receipt,
               storedEvents: [] as ReadonlyArray<OrchestrationV2StoredEvent>,
+              outcomes: [] as ReadonlyArray<RunOutcome>,
             };
           }
           const storedEvents =
@@ -1706,7 +1930,7 @@ const layerBase: Layer.Layer<
                   commandId: input.commandId,
                   events,
                 })).filter(isPublicStoredOrchestrationEvent);
-          yield* applyStoredEvents(storedEvents);
+          const outcomes = yield* applyStoredEvents(storedEvents);
           const receipt = {
             ...reserved,
             resultSequence:
@@ -1715,9 +1939,9 @@ const layerBase: Layer.Layer<
           };
           yield* commandReceipts.upsert(receipt);
           yield* captureSettlementProof(receipt, storedEvents);
-          return { receipt, storedEvents };
+          return { receipt, storedEvents, outcomes };
         }),
-        (committed) => publishStoredEvents(committed.storedEvents),
+        (committed) => publishStoredEvents(committed.storedEvents, committed.outcomes),
       );
       return result.receipt;
     });
@@ -1892,6 +2116,34 @@ const layerBase: Layer.Layer<
 
     const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     return EventSinkV2.of({
+      writeHistoricalTerminal: (input) => {
+        const attempt = commitThenPublish(
+          Effect.gen(function* () {
+            const selected = yield* historicalTerminals.select(input);
+            if (selected === "ordinary")
+              return { handled: false, deferred: false, storedEvents: [], outcomes: [] };
+            if (selected === "stale" || selected === "deferred")
+              return {
+                handled: true,
+                deferred: selected === "deferred",
+                storedEvents: [],
+                outcomes: [],
+              };
+            const storedEvents = (yield* eventStore.append({ events: [selected] })).filter(
+              isPublicStoredOrchestrationEvent,
+            );
+            const outcomes = yield* applyStoredEvents(storedEvents);
+            return { handled: true, deferred: false, storedEvents, outcomes };
+          }),
+          (result) => publishStoredEvents(result.storedEvents, result.outcomes),
+        );
+        // Even a no-write commit traverses the publication lane. Retry the DB
+        // admission once after an earlier commit has installed its locator.
+        return attempt.pipe(
+          Effect.flatMap((result) => (result.deferred ? attempt : Effect.succeed(result))),
+          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 1, cause })),
+        );
+      },
       readDeletionWorktreeRemovalStartForTarget: (threadId, target) =>
         deletionAdmission
           .readTarget(threadId, target)
@@ -2053,71 +2305,75 @@ const layerBase: Layer.Layer<
               }),
           ),
         ),
-      canPromoteQueuedAtToolBoundary: (input) =>
-        Effect.gen(function* () {
-          if (input.boundary.event.type !== "node.updated") return false;
-          const node = input.boundary.event.payload;
-          const births = input.births ?? new Map();
-          for (const runId of [input.activeRunId, input.queuedRunId]) {
-            if (births.has(runId)) continue;
-            const rows = yield* sql<{ sequence: number; eligible: number }>`SELECT sequence,
+      canPromoteQueuedAtToolBoundary: Effect.fn("EventSink.canPromoteQueuedAtToolBoundary")(
+        (input) =>
+          Effect.gen(function* () {
+            if (input.boundary.event.type !== "node.updated") return false;
+            const node = input.boundary.event.payload;
+            const births = input.births ?? new Map();
+            for (const runId of [input.activeRunId, input.queuedRunId]) {
+              if (births.has(runId)) continue;
+              const rows = yield* sql<{ sequence: number; eligible: number }>`SELECT sequence,
               CASE WHEN json_type(payload_json, '$.queuedToolBoundaryEligible') = 'true' THEN 1 ELSE 0 END AS eligible FROM orchestration_events
             WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
               AND event_type = 'run.created' AND json_extract(payload_json, '$.id') = ${runId}
             ORDER BY sequence DESC LIMIT 1`;
-            if (rows[0] === undefined) {
-              births.set(runId, null);
-              continue;
-            }
-            const settings = yield* sql<{ runtime_mode: string; interaction_mode: string }>`SELECT
+              if (rows[0] === undefined) {
+                births.set(runId, null);
+                continue;
+              }
+              const settings = yield* sql<{ runtime_mode: string; interaction_mode: string }>`SELECT
             json_extract(payload_json, '$.runtimeMode') AS runtime_mode, json_extract(payload_json, '$.interactionMode') AS interaction_mode
             FROM orchestration_events WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
               AND event_type LIKE 'thread.%' AND sequence < ${rows[0].sequence} AND json_type(payload_json, '$.runtimeMode') = 'text'
             ORDER BY sequence DESC LIMIT 1`;
-            births.set(
-              runId,
-              settings[0] === undefined
-                ? null
-                : {
-                    sequence: rows[0].sequence,
-                    queuedToolBoundaryEligible: rows[0].eligible === 1,
-                    runtimeMode: settings[0].runtime_mode,
-                    interactionMode: settings[0].interaction_mode,
-                  },
-            );
-          }
-          const queued = births.get(input.queuedRunId);
-          const active = births.get(input.activeRunId);
-          if (
-            queued == null ||
-            queued.queuedToolBoundaryEligible !== true ||
-            active == null ||
-            queued.sequence >= input.boundary.sequence ||
-            queued.runtimeMode !== input.runtimeMode ||
-            queued.interactionMode !== input.interactionMode ||
-            active.runtimeMode !== input.runtimeMode ||
-            active.interactionMode !== input.interactionMode
-          )
-            return false;
-          const updates = yield* sql<{ sequence: number }>`SELECT sequence FROM orchestration_events
+              births.set(
+                runId,
+                settings[0] === undefined
+                  ? null
+                  : {
+                      sequence: rows[0].sequence,
+                      queuedToolBoundaryEligible: rows[0].eligible === 1,
+                      runtimeMode: settings[0].runtime_mode,
+                      interactionMode: settings[0].interaction_mode,
+                    },
+              );
+            }
+            const queued = births.get(input.queuedRunId);
+            const active = births.get(input.activeRunId);
+            if (
+              queued == null ||
+              queued.queuedToolBoundaryEligible !== true ||
+              active == null ||
+              queued.sequence >= input.boundary.sequence ||
+              queued.runtimeMode !== input.runtimeMode ||
+              queued.interactionMode !== input.interactionMode ||
+              active.runtimeMode !== input.runtimeMode ||
+              active.interactionMode !== input.interactionMode
+            )
+              return false;
+            const updates = yield* sql<{
+              sequence: number;
+            }>`SELECT sequence FROM orchestration_events
           WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
             AND sequence > ${active.sequence} AND event_type IN ('message.created', 'message.updated') AND json_extract(payload_json, '$.id') = ${input.messageId}
           ORDER BY sequence DESC LIMIT 1`;
-          if (updates[0] === undefined || updates[0].sequence >= input.boundary.sequence)
-            return false;
-          const completions = yield* sql<{
-            sequence: number;
-          }>`SELECT sequence FROM orchestration_events
+            if (updates[0] === undefined || updates[0].sequence >= input.boundary.sequence)
+              return false;
+            const completions = yield* sql<{
+              sequence: number;
+            }>`SELECT sequence FROM orchestration_events
           WHERE application_event_version = 2 AND aggregate_kind = 'thread' AND stream_id = ${input.threadId}
             AND sequence > ${active.sequence} AND event_type = 'node.updated' AND json_extract(payload_json, '$.id') = ${node.id}
             AND json_extract(payload_json, '$.providerTurnId') = ${node.providerTurnId}
             AND json_extract(payload_json, '$.status') = 'completed' ORDER BY sequence ASC LIMIT 1`;
-          if (completions[0]?.sequence !== input.boundary.sequence) return false;
-          const fences = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
+            if (completions[0]?.sequence !== input.boundary.sequence) return false;
+            const fences = yield* sql`SELECT 1 FROM orchestration_v2_projection_runs
           WHERE thread_id = ${input.threadId} AND run_id = ${input.queuedRunId}
             AND json_extract(payload_json, '$.queueHeld') = 1 LIMIT 1`;
-          return fences.length === 0;
-        }).pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+            return fences.length === 0;
+          }).pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      ),
       readByCommandId: (input) =>
         eventStore.readByCommandId(input).pipe(
           Stream.filter(isPublicStoredOrchestrationEvent),
@@ -2132,10 +2388,7 @@ const layerBase: Layer.Layer<
   }),
 );
 
-/**
- * Keeping the outbox instance shared with the worker is important because enqueue notifications
- * are in-memory wakeups backed by the durable SQL queue.
- */
+/** Share the worker's outbox instance: enqueue wakeups are in-memory. */
 export const layerFromStores = layerBase;
 
 export const layer: Layer.Layer<

@@ -1,0 +1,12 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "staged-selection-recovery",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/updates/recoverStagedSelection.ts",
+    "apps/server/src/jones/updates/recoverStagedSelection.test.ts",
+    "docs/operations/staged-selection-recovery.md"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

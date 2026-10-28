@@ -1,3 +1,7 @@
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
+import * as Logger from "effect/Logger";
+import * as ThreadMetadataReads from "./threadMetadataReads.ts";
 import * as WorktreeSetupTracker from "../../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../../terminal/Manager.ts";
@@ -77,10 +81,9 @@ const adapter = {
 interface HarnessOptions {
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
-  readonly remoteExists?: GitWorkflow.GitWorkflowService["Service"]["remoteExists"];
-  readonly fetchRemote?: GitWorkflow.GitWorkflowService["Service"]["fetchRemote"];
+  readonly resolveWorktreeBaseRemote?: GitWorkflow.GitWorkflowService["Service"]["resolveWorktreeBaseRemote"];
+  readonly fetchWorktreeBaseCommit?: GitWorkflow.GitWorkflowService["Service"]["fetchWorktreeBaseCommit"];
   readonly listRefs?: GitWorkflow.GitWorkflowService["Service"]["listRefs"];
-  readonly resolveRemoteTrackingCommitIfExists?: GitWorkflow.GitWorkflowService["Service"]["resolveRemoteTrackingCommitIfExists"];
   readonly renameBranch?: GitWorkflow.GitWorkflowService["Service"]["renameBranch"];
   readonly runSetup?: ProjectSetupScriptRunner.ProjectSetupScriptRunner["Service"]["runForThread"];
   readonly generateTitle?: TextGeneration.TextGeneration["Service"]["generateThreadTitle"];
@@ -137,6 +140,7 @@ function makeHarness(options: HarnessOptions = {}) {
       bootstrap: () => Effect.die("unused"),
       update: () => Effect.die("unused"),
       delete: () => Effect.die("unused"),
+      listPage: () => Effect.die("unused"),
       getById: (id) =>
         Effect.succeed(
           id === projectId
@@ -145,7 +149,7 @@ function makeHarness(options: HarnessOptions = {}) {
               ? Option.some(otherProject)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(project)),
+      getByWorkspaceRoot: () => Effect.succeedSome(project),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -154,7 +158,12 @@ function makeHarness(options: HarnessOptions = {}) {
       createWorktree,
       hasCommit: () => Effect.succeed(false),
       renameBranch,
-      fetchRemote: options.fetchRemote ?? (() => Effect.void),
+      resolveWorktreeBaseRemote:
+        options.resolveWorktreeBaseRemote ??
+        (({ refName }) => Effect.succeed({ remoteName: "origin", branchName: refName })),
+      fetchWorktreeBaseCommit:
+        options.fetchWorktreeBaseCommit ??
+        (() => Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" })),
       listRefs:
         options.listRefs ??
         (() =>
@@ -165,14 +174,7 @@ function makeHarness(options: HarnessOptions = {}) {
             nextCursor: null,
             totalCount: 0,
           })),
-      resolveRemoteTrackingCommitIfExists:
-        options.resolveRemoteTrackingCommitIfExists ??
-        (() => Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" })),
-      remoteExists: options.remoteExists ?? (() => Effect.succeed(true)),
-      remoteBranchExists: () => Effect.die("The origin base must use a single commit lookup"),
       removeWorktree,
-      resolveRemoteTrackingCommit: () =>
-        Effect.die("The origin base must use a single commit lookup"),
     }),
     Layer.succeed(ProjectSetupScriptRunner.ProjectSetupScriptRunner, {
       runForThread: runSetup,
@@ -186,10 +188,13 @@ function makeHarness(options: HarnessOptions = {}) {
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
-        folderForThread: () => Effect.succeed(Option.none()),
+        isScratchProject: () => Effect.succeed(false),
+        folderForThread: () => Effect.succeedNone,
       }),
   );
+  const metadata = ThreadMetadataReads.layer.pipe(Layer.provide(database));
   const launch = ThreadLaunch.layer.pipe(
+    Layer.provide(metadata),
     Layer.provide(
       Layer.mergeAll(
         externalServices,
@@ -228,6 +233,7 @@ function makeHarness(options: HarnessOptions = {}) {
   );
   return {
     layer: Layer.mergeAll(
+      metadata,
       launch,
       receipts,
       EventStore.layer.pipe(Layer.provide(database)),
@@ -276,18 +282,15 @@ function launchInput(input: {
   };
 }
 
-function waitUntil<E, R>(predicate: () => Effect.Effect<boolean, E, R>): Effect.Effect<void, E, R> {
+function waitUntil<E, R>(threadId: ThreadId, predicate: () => Effect.Effect<boolean, E, R>) {
   return Effect.gen(function* () {
-    for (let attempt = 0; attempt < 200; attempt += 1) {
-      if (yield* predicate()) return;
-      yield* Effect.promise(
-        () =>
-          new Promise<void>((resolve) => {
-            setImmediate(resolve);
-          }),
-      );
-    }
-    assert.fail("Condition was not reached before timeout.");
+    const threads = yield* ThreadManagement.ThreadManagementService;
+    const reached = yield* threads.streamStoredEventsFrom({ threadId }).pipe(
+      Stream.filterEffect(() => predicate()),
+      Stream.runHead,
+    );
+    if (Option.isNone(reached))
+      assert.fail("Thread events ended before the condition was reached.");
   });
 }
 
@@ -506,76 +509,56 @@ it.effect("preserves an explicit V2 base without looking up the default", () => 
 });
 
 it.effect.each([
-  {
-    name: "local base",
-    base: "main",
-    refs: [],
-    expectedBranch: "main",
-    expectedStart: "pinned-origin-sha",
-    fetchRef: "main",
-  },
+  { name: "local base", base: "main", remoteName: "origin", branchName: "main", missing: false },
   {
     name: "origin base",
     base: "origin/release",
-    refs: [worktreeBaseRef("origin/release", { isRemote: true, remoteName: "origin" })],
-    expectedBranch: "release",
-    expectedStart: "pinned-origin-sha",
-    fetchRef: "origin/release",
+    remoteName: "origin",
+    branchName: "release",
+    missing: false,
   },
   {
     name: "local origin-prefixed branch",
     base: "origin/release",
-    refs: [worktreeBaseRef("origin/release")],
-    expectedBranch: "origin/release",
-    expectedStart: "pinned-origin-sha",
-    fetchRef: undefined,
+    remoteName: "origin",
+    branchName: "origin/release",
+    missing: false,
   },
   {
     name: "other remote",
     base: "upstream/release",
-    refs: [worktreeBaseRef("upstream/release", { isRemote: true, remoteName: "upstream" })],
-    expectedBranch: null,
-    expectedStart: "upstream/release",
-    fetchRef: undefined,
+    remoteName: "upstream",
+    branchName: "release",
+    missing: false,
   },
   {
     name: "missing origin branch",
     base: "local-only",
-    refs: [],
-    expectedBranch: "local-only",
-    expectedStart: "local-only",
-    fetchRef: "local-only",
+    remoteName: "origin",
+    branchName: "local-only",
+    missing: true,
   },
 ])(
   "pins the fetched V2 worktree base with one lookup for $name",
-  ({ base, refs, expectedBranch, expectedStart, fetchRef }) => {
+  ({ base, remoteName, branchName, missing }) => {
     const operations: string[] = [];
-    const fetchRemote = vi.fn((_: Parameters<NonNullable<HarnessOptions["fetchRemote"]>>[0]) =>
-      Effect.sync(() => {
-        operations.push("fetch");
-      }),
-    );
-    const resolveRemoteTrackingCommitIfExists = vi.fn(
-      (_: Parameters<NonNullable<HarnessOptions["resolveRemoteTrackingCommitIfExists"]>>[0]) =>
+    const resolveWorktreeBaseRemote = vi.fn(
+      (_: Parameters<NonNullable<HarnessOptions["resolveWorktreeBaseRemote"]>>[0]) =>
         Effect.sync(() => {
           operations.push("resolve");
-          return base === "local-only"
-            ? null
-            : { commitSha: "pinned-origin-sha", remoteRefName: `origin/${expectedBranch}` };
+          return { remoteName, branchName };
         }),
     );
-    const harness = makeHarness({
-      listRefs: () =>
-        Effect.succeed({
-          refs,
-          isRepo: true,
-          hasPrimaryRemote: true,
-          nextCursor: null,
-          totalCount: refs.length,
+    const fetchWorktreeBaseCommit = vi.fn(
+      (_: Parameters<NonNullable<HarnessOptions["fetchWorktreeBaseCommit"]>>[0]) =>
+        Effect.sync(() => {
+          operations.push("fetch");
+          return missing
+            ? null
+            : { commitSha: "pinned-origin-sha", remoteRefName: `${remoteName}/${branchName}` };
         }),
-      fetchRemote,
-      resolveRemoteTrackingCommitIfExists,
-    });
+    );
+    const harness = makeHarness({ resolveWorktreeBaseRemote, fetchWorktreeBaseCommit });
     return Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
@@ -594,30 +577,27 @@ it.effect.each([
         ),
         Stream.runHead,
       );
-      assert.deepEqual(operations, expectedBranch === null ? ["fetch"] : ["fetch", "resolve"]);
-      assert.equal(fetchRemote.mock.calls.length, 1);
-      assert.equal(fetchRemote.mock.calls[0]?.[0].refName, fetchRef);
+      assert.deepEqual(operations, ["resolve", "fetch"]);
+      assert.deepEqual(resolveWorktreeBaseRemote.mock.calls, [[{ cwd: "/repo", refName: base }]]);
+      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [[{ cwd: "/repo", refName: base }]]);
       assert.equal(
-        resolveRemoteTrackingCommitIfExists.mock.calls.length,
-        expectedBranch === null ? 0 : 1,
+        harness.createWorktree.mock.calls[0]?.[0].refName,
+        missing ? base : "pinned-origin-sha",
       );
-      if (expectedBranch !== null)
-        assert.equal(
-          resolveRemoteTrackingCommitIfExists.mock.calls[0]?.[0].branchName,
-          expectedBranch,
-        );
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, expectedStart);
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, base);
+      assert.equal(
+        harness.createWorktree.mock.calls[0]?.[0].baseRefName,
+        missing ? base : `refs/remotes/${remoteName}/${branchName}`,
+      );
     }).pipe(Effect.provide(harness.layer));
   },
 );
 
 it.effect("keeps lookup failures visible without creating a worktree or starting its run", () => {
   const harness = makeHarness({
-    resolveRemoteTrackingCommitIfExists: () =>
+    fetchWorktreeBaseCommit: () =>
       Effect.fail(
         new GitCommandError({
-          operation: "GitVcsDriver.resolveRemoteTrackingCommitIfExists",
+          operation: "GitVcsDriver.fetchWorktreeBaseCommit",
           cwd: "/repo",
           command: "git rev-parse",
           detail: "Remote ref lookup failed",
@@ -703,7 +683,7 @@ it.effect(
             workspace: { type: "worktree" },
           }),
         );
-        yield* waitUntil(() =>
+        yield* waitUntil(launched.threadId, () =>
           threads
             .getThreadProjection(launched.threadId)
             .pipe(
@@ -722,7 +702,7 @@ it.effect(
           threadId: launched.threadId,
           runId: failed.runs[0]!.id,
         });
-        yield* waitUntil(() =>
+        yield* waitUntil(launched.threadId, () =>
           outbox
             .listByCommandId(CommandId.make("command:launch:reuse:retry:release"))
             .pipe(Effect.map((effects) => effects.length === 1)),
@@ -751,12 +731,13 @@ it.effect.each([
   { caseName: "the origin remote is missing", hasOrigin: false },
   { caseName: "the base branch exists only locally", hasOrigin: true },
 ])("uses the local V2 worktree base when $caseName", ({ hasOrigin }) => {
-  const fetchRemote = vi.fn(() => Effect.void);
-  const remoteLookup = vi.fn(() => Effect.succeed(null));
+  const fetchWorktreeBaseCommit = vi.fn(() => Effect.succeed(null));
+  const resolveWorktreeBaseRemote = vi.fn(() =>
+    Effect.succeed(hasOrigin ? { remoteName: "origin", branchName: "main" } : null),
+  );
   const harness = makeHarness({
-    remoteExists: () => Effect.succeed(hasOrigin),
-    fetchRemote,
-    resolveRemoteTrackingCommitIfExists: remoteLookup,
+    resolveWorktreeBaseRemote,
+    fetchWorktreeBaseCommit,
   });
   return Effect.gen(function* () {
     const launches = yield* ThreadLaunch.ThreadLaunchService;
@@ -774,13 +755,13 @@ it.effect.each([
         },
       }),
     );
-    yield* waitUntil(() =>
+    yield* waitUntil(launched.threadId, () =>
       threads
         .getThreadProjection(launched.threadId)
         .pipe(Effect.map((projection) => projection.runs[0]?.status === "starting")),
     );
-    assert.equal(fetchRemote.mock.calls.length, hasOrigin ? 1 : 0);
-    assert.equal(remoteLookup.mock.calls.length, hasOrigin ? 1 : 0);
+    assert.equal(fetchWorktreeBaseCommit.mock.calls.length, hasOrigin ? 1 : 0);
+    assert.equal(resolveWorktreeBaseRemote.mock.calls.length, 1);
     assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "main");
     assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, "main");
     assert.equal(
@@ -793,33 +774,18 @@ it.effect.each([
 it.effect(
   "prefers an exact local branch found on a later ref page over an ambiguous origin ref",
   () => {
-    const listRefs = vi.fn((input: Parameters<NonNullable<HarnessOptions["listRefs"]>>[0]) =>
-      Effect.succeed({
-        refs:
-          input.cursor === undefined
-            ? [worktreeBaseRef("origin/release", { isRemote: true, remoteName: "origin" })]
-            : [worktreeBaseRef("origin/release")],
-        isRepo: true,
-        hasPrimaryRemote: true,
-        nextCursor: input.cursor === undefined ? 1 : null,
-        totalCount: 2,
-      }),
+    const listRefs = vi.fn(() => Effect.die("Exact base resolution must not page display refs"));
+    const resolveWorktreeBaseRemote = vi.fn(() =>
+      Effect.succeed({ remoteName: "origin", branchName: "origin/release" }),
     );
-    const remoteLookup = vi.fn(
-      (input: Parameters<NonNullable<HarnessOptions["resolveRemoteTrackingCommitIfExists"]>>[0]) =>
+    const fetchWorktreeBaseCommit = vi.fn(
+      (_: Parameters<NonNullable<HarnessOptions["fetchWorktreeBaseCommit"]>>[0]) =>
         Effect.succeed({
           commitSha: "local-origin-prefixed-sha",
-          remoteRefName: `origin/${input.branchName}`,
+          remoteRefName: "origin/origin/release",
         }),
     );
-    const fetchRemote = vi.fn(
-      (_: Parameters<NonNullable<HarnessOptions["fetchRemote"]>>[0]) => Effect.void,
-    );
-    const harness = makeHarness({
-      listRefs,
-      resolveRemoteTrackingCommitIfExists: remoteLookup,
-      fetchRemote,
-    });
+    const harness = makeHarness({ listRefs, resolveWorktreeBaseRemote, fetchWorktreeBaseCommit });
     return Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const threads = yield* ThreadManagement.ThreadManagementService;
@@ -836,20 +802,21 @@ it.effect(
           },
         }),
       );
-      yield* waitUntil(() =>
+      yield* waitUntil(launched.threadId, () =>
         threads
           .getThreadProjection(launched.threadId)
           .pipe(Effect.map((projection) => projection.runs[0]?.status === "starting")),
       );
-      assert.deepEqual(
-        listRefs.mock.calls.map(([input]) => input.cursor),
-        [undefined, 1],
-      );
-      assert.equal(remoteLookup.mock.calls.length, 1);
-      assert.equal(remoteLookup.mock.calls[0]?.[0].branchName, "origin/release");
-      assert.isUndefined(fetchRemote.mock.calls[0]?.[0].refName);
+      assert.equal(listRefs.mock.calls.length, 0);
+      assert.equal(resolveWorktreeBaseRemote.mock.calls.length, 1);
+      assert.deepEqual(fetchWorktreeBaseCommit.mock.calls, [
+        [{ cwd: "/repo", refName: "origin/release" }],
+      ]);
       assert.equal(harness.createWorktree.mock.calls[0]?.[0].refName, "local-origin-prefixed-sha");
-      assert.equal(harness.createWorktree.mock.calls[0]?.[0].baseRefName, "origin/release");
+      assert.equal(
+        harness.createWorktree.mock.calls[0]?.[0].baseRefName,
+        "refs/remotes/origin/origin/release",
+      );
     }).pipe(Effect.provide(harness.layer));
   },
 );
@@ -969,4 +936,159 @@ it.effect.each([
       assert.equal(harness.createWorktree.mock.calls.length, 0);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+it.live(
+  "rename discovers only matching IDs across passes and continues after a guarded child rejects",
+  () =>
+    Effect.gen(function* () {
+      const generation = yield* Deferred.make<void>();
+      const allowGeneration = yield* Deferred.make<void>();
+      const discoveryDone = yield* Deferred.make<void>();
+      const harness = makeHarness({
+        generateBranchName: () =>
+          Deferred.succeed(generation, undefined).pipe(
+            Effect.andThen(Deferred.await(allowGeneration)),
+            Effect.as({ branch: "generated-branch" }),
+          ),
+      });
+      const warnings: unknown[] = [];
+      const logger = Logger.make((options) => {
+        warnings.push(options.message);
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
+        const sql = yield* SqlClient.SqlClient;
+        const parent = ThreadId.make("metadata-rename:parent");
+        const child = ThreadId.make("metadata-rename:child");
+        const grandchild = ThreadId.make("metadata-rename:grandchild");
+        const archived = ThreadId.make("metadata-rename:archived");
+        const rejected = ThreadId.make("metadata-rename:rejected");
+        const otherPath = ThreadId.make("metadata-rename:other-path");
+        const otherBranch = ThreadId.make("metadata-rename:other-branch");
+        const invalid = ThreadId.make("metadata-rename:invalid");
+        let oldBranch = "";
+        const create = (id: ThreadId, path = "/repo-worktrees/feature", branch = oldBranch) =>
+          threads
+            .dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`${id}:create`),
+              threadId: id,
+              projectId,
+              title: id,
+              modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch,
+              worktreePath: path,
+              createdBy: "user",
+              creationSource: "web",
+            })
+            .pipe(
+              Effect.tap(
+                () => sql`UPDATE orchestration_v2_projection_threads
+        SET payload_json = json_set(payload_json, '$.lineage.parentThreadId', ${id === grandchild ? child : parent},
+          '$.lineage.relationshipToParent', 'subagent', '$.lineage.rootThreadId', ${parent})
+        WHERE thread_id = ${id}`,
+              ),
+            );
+        const input = launchInput({
+          command: "metadata-rename:launch",
+          thread: parent,
+          message: "Rename this shared worktree",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        yield* launches.launch(input);
+        yield* Deferred.await(generation);
+        const createdBranch = harness.createWorktree.mock.calls[0]![0].newRefName;
+        assert.isDefined(createdBranch);
+        oldBranch = createdBranch;
+        yield* create(child);
+        yield* create(archived);
+        yield* threads.dispatch({
+          type: "thread.archive",
+          commandId: CommandId.make(`${archived}:archive`),
+          threadId: archived,
+        });
+        yield* create(rejected);
+        yield* create(otherPath, "/different");
+        yield* create(otherBranch, "/repo-worktrees/feature", "different");
+        yield* create(invalid, "/different");
+        yield* sql`UPDATE orchestration_v2_projection_threads SET payload_json = '{}'
+        WHERE thread_id = ${invalid}`;
+        const actualDispatch = threads.dispatch;
+        const actualListIds = metadata.listIds;
+        const dispatched: ThreadId[] = [];
+        const discoveryStatements: string[] = [];
+        const capture: Statement.Transformer = (statement) => {
+          discoveryStatements.push(statement.compile()[0]);
+          return Effect.succeed(statement);
+        };
+        const dispatchSpy = vi.spyOn(threads, "dispatch").mockImplementation((command) =>
+          Effect.gen(function* () {
+            if (
+              command.type === "thread.metadata.update" &&
+              command.commandId.includes(":branch-rename")
+            ) {
+              dispatched.push(command.threadId);
+              if (command.threadId === child) yield* create(grandchild).pipe(Effect.orDie);
+              if (command.threadId === rejected) {
+                // Keep the row discoverable after a real guard rejection. Only the
+                // visited set prevents this unchanged row from being dispatched again.
+                return yield* actualDispatch({ ...command, expectedBranch: "stale-selection" });
+              }
+            }
+            return yield* actualDispatch(command);
+          }),
+        );
+        const listSpy = vi.spyOn(metadata, "listIds").mockImplementation((query) =>
+          actualListIds(query).pipe(
+            Effect.provideService(Statement.CurrentTransformer, capture),
+            Effect.tap((ids) =>
+              ids.every((id) => id === rejected) && dispatched.includes(grandchild)
+                ? Deferred.succeed(discoveryDone, undefined)
+                : Effect.void,
+            ),
+          ),
+        );
+        yield* Deferred.succeed(allowGeneration, undefined).pipe(
+          Effect.andThen(Deferred.await(discoveryDone).pipe(Effect.timeout("5 seconds"))),
+          Effect.ensuring(
+            Effect.sync(() => {
+              dispatchSpy.mockRestore();
+              listSpy.mockRestore();
+            }),
+          ),
+        );
+        // Parent first; a grandchild inserted during dispatch requires a second discovery pass.
+        assert.equal(dispatched[0], parent);
+        assert.sameMembers(dispatched, [parent, child, grandchild, archived, rejected]);
+        assert.equal(new Set(dispatched).size, dispatched.length);
+        for (const id of [parent, child, grandchild, archived]) {
+          assert.equal((yield* threads.getThreadProjection(id)).thread.branch, "generated-branch");
+        }
+        assert.equal((yield* threads.getThreadProjection(rejected)).thread.branch, oldBranch);
+        assert.equal((yield* threads.getThreadProjection(otherPath)).thread.branch, oldBranch);
+        assert.equal((yield* threads.getThreadProjection(otherBranch)).thread.branch, "different");
+        assert.isTrue(
+          discoveryStatements.some((query) =>
+            query.includes("orchestration_v2_projection_threads"),
+          ),
+        );
+        assert.isFalse(
+          discoveryStatements.some((query) =>
+            /orchestration_events|projection_(runs|turn_items|provider_threads)/.test(query),
+          ),
+        );
+        assert.include(JSON.stringify(warnings), "Shared thread worktree branch update failed");
+      }).pipe(
+        Effect.provide(
+          harness.layer.pipe(
+            Layer.provideMerge(Logger.layer([logger], { mergeWithExisting: false })),
+          ),
+        ),
+      );
+    }),
 );

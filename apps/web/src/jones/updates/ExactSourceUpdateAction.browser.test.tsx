@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+import { act, render as renderScreen, type Screen } from "../../../test/render";
 import type { JonesAction } from "@t3tools/client-runtime/jones/updates";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -7,16 +9,49 @@ import type {
 } from "@t3tools/contracts/jones/jonesUpdates";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import { page, userEvent } from "vite-plus/test/browser";
+import "../../index.css";
 import {
   ExactSourceUpdateAction,
   performExactSourceStep,
+  performConfirmedInstall,
   type ExactSourceHost,
+  type ExactSourceTarget,
 } from "./ExactSourceUpdateAction";
 
-const environmentId = EnvironmentId.make("exact-source-host");
+// The real journal persists across controls and remounts in this suite. Its synthetic
+// storage port serializes admission without depending on a browser task's Web Lock timing.
+const journalStorage = vi.hoisted(() => ({
+  disk: new Map<string, string>(),
+  lock: Promise.resolve(),
+}));
+vi.mock("@t3tools/client-runtime/jones/updates/action-journal", async (original) => {
+  const actual =
+    await original<typeof import("@t3tools/client-runtime/jones/updates/action-journal")>();
+  return {
+    ...actual,
+    createJonesActionJournal: () =>
+      actual.createJonesActionJournal({
+        getItem: (key) => journalStorage.disk.get(key) ?? null,
+        setItem: (key, value) => {
+          journalStorage.disk.set(key, value);
+        },
+        withLock: (work) => {
+          const next = journalStorage.lock.then(work);
+          journalStorage.lock = next.then(
+            () => undefined,
+            () => undefined,
+          );
+          return next;
+        },
+      }),
+  };
+});
+import { webJonesJournal } from "../installStatus/executionJournal";
+
+let environmentId = EnvironmentId.make("exact-source-host");
+let sequence = 0;
 const target = "a".repeat(40);
 const other = "b".repeat(40);
 const currentVersion = "0.1.0-preview.20261019.39341000929.1";
@@ -41,6 +76,7 @@ const hostState = (overrides: Partial<JonesUpdateState> = {}): JonesUpdateState 
   revision: 1,
   capability: { check: true, download: true, install: true, exactSource: true },
   currentVersion,
+  environmentId,
   installedSource: {
     repository: "Jones-Systems/Jones-Code",
     sha: "e".repeat(40),
@@ -63,11 +99,9 @@ function createHost(initial: JonesUpdateState | null) {
       Promise.reject(new Error("No handler for this request.")),
     dialog: async () => true,
   };
-  let render = () => {};
-  const snapshot = () => ({
-    observation: { state, freshness },
-    canOperate: true,
-  });
+  let view: ExactSourceHost["snapshot"] = { observation: { state, freshness }, canOperate: true };
+  const listeners = new Set<() => void>();
+  const snapshot = () => view;
   const host: ExactSourceHost = {
     get snapshot() {
       return snapshot();
@@ -90,40 +124,64 @@ function createHost(initial: JonesUpdateState | null) {
     set: (next: JonesUpdateState | null, nextFreshness: "fresh" | "stale" = "fresh") => {
       state = next;
       freshness = nextFreshness;
-      render();
+      view = { observation: { state, freshness }, canOperate: true };
+      for (const listener of listeners) listener();
+      return Promise.resolve();
     },
-    onChange: (callback: () => void) => {
-      render = callback;
+    snapshot,
+    subscribe: (listener: () => void) => {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
     },
   };
 }
 
 let container: HTMLDivElement;
-let root: Root;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+let root: Screen;
+let renderDisposables: AsyncDisposableStack;
+async function setupFixture1() {
+  environmentId = EnvironmentId.make(`exact-source-host-${++sequence}`);
+  const stack = new AsyncDisposableStack();
+  renderDisposables = stack;
+  stack.defer(async () => {
+    await journalStorage.lock;
+    vi.unstubAllGlobals();
+  });
+  try {
+    container = document.createElement("div");
+    document.body.append(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
+    await act(() => webJonesJournal.load());
 
-async function mount(world: ReturnType<typeof createHost>) {
-  const draw = () =>
-    root.render(
-      <ExactSourceUpdateAction
-        environmentId={environmentId}
-        label="Mac Mini"
-        targetSource={target}
-        host={world.host}
-      />,
-    );
-  world.onChange(() => act(draw));
-  await act(async () => draw());
+    return stack;
+  } catch (error) {
+    await stack.disposeAsync();
+    throw error;
+  }
+}
+
+function FixtureAction({
+  world,
+  targetProps,
+}: {
+  readonly world: ReturnType<typeof createHost>;
+  readonly targetProps: Partial<ExactSourceTarget>;
+}) {
+  const snapshot = useSyncExternalStore(world.subscribe, world.snapshot, world.snapshot);
+  return (
+    <ExactSourceUpdateAction
+      environmentId={environmentId}
+      label="Mac Mini"
+      targetSource={target}
+      host={{ ...world.host, snapshot }}
+      {...targetProps}
+    />
+  );
+}
+async function mount(world: ReturnType<typeof createHost>, props: Partial<ExactSourceTarget> = {}) {
+  await root.rerender(<FixtureAction world={world} targetProps={props} />);
 }
 const buttons = () => [...container.querySelectorAll("button")].map((node) => node.textContent);
 const click = async (name: string) => {
@@ -137,9 +195,10 @@ const status = () => container.querySelector('[role="status"]')?.textContent ?? 
 
 describe("exact-source action", () => {
   it("downloads by source, then installs only after a confirmation bound to the staged handle", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     world.handlers.run = async () => {
-      world.set(stagedTarget());
+      await world.set(stagedTarget());
       return AsyncResult.success(stagedTarget());
     };
     await mount(world);
@@ -170,10 +229,11 @@ describe("exact-source action", () => {
   });
 
   it("refuses an install when the host changed while the dialog was open", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget());
     world.handlers.dialog = async () => {
       // Another client staged a different build behind this dialog.
-      world.set(
+      await world.set(
         hostState({
           phase: "staged",
           revision: 3,
@@ -187,22 +247,32 @@ describe("exact-source action", () => {
     await click("Install aaaaaaa");
     expect(world.requests).toEqual([]);
     expect(buttons()).toEqual([]);
-    expect(status()).toContain("bbbbbbb");
+    expect(status()).toContain("changed");
   });
 
-  it("does not resend an install whose response was lost, and resumes once the host moves", async () => {
+  it("does not resend an install whose response was lost when source or revision moves", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget());
     world.handlers.run = async () => AsyncResult.failure(Cause.fail(new Error("socket closed")));
     await mount(world);
     await click("Install aaaaaaa");
     expect(world.requests).toHaveLength(1);
-    expect(buttons()).toEqual([]);
-    expect(status()).toContain("will not be sent again");
+    expect(container.querySelectorAll("button:not([aria-disabled=true])")).toHaveLength(0);
+    expect(status()).toContain("may have been accepted");
+    await act(() => container.querySelector("button")!.focus());
+    await expect
+      .element(page.getByRole("tooltip"))
+      .toHaveTextContent(
+        "The request may have been accepted. Its effect is unknown. This host cannot provide a bound receipt; nothing will be resent.",
+      );
+    await userEvent.keyboard("{Enter} ");
+    expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(1);
     // The same staged state is not evidence that the install failed.
-    world.set(stagedTarget(2));
-    expect(buttons()).toEqual([]);
-    // Once the host reports movement the notice reconciles from the host's own state.
-    world.set(
+    await world.set(stagedTarget(2));
+    expect(container.querySelectorAll("button:not([aria-disabled=true])")).toHaveLength(0);
+    // Source equality and revision movement cannot prove the original operation outcome.
+    await world.set(
       hostState({
         phase: "committed",
         revision: 5,
@@ -210,11 +280,20 @@ describe("exact-source action", () => {
       }),
     );
     expect(buttons()).toEqual([]);
-    expect(status()).toContain("already runs source aaaaaaa");
+    expect(status()).toContain("may have been accepted");
+    expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(1);
+    await root.rerender(null);
+    await mount(world);
+    await world.set(stagedTarget(6));
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await click("Install aaaaaaa");
+    expect(status()).toContain("may have been accepted");
     expect(world.requests).toHaveLength(1);
   });
 
   it("stays in the notice with the host's progress while a download transitions", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     let finish: (result: AtomCommandResult<JonesUpdateState | null, unknown>) => void = () => {};
     world.handlers.run = () => new Promise((resolve) => (finish = resolve));
@@ -222,16 +301,17 @@ describe("exact-source action", () => {
     await click("Download aaaaaaa");
     // A second click while the request is outstanding must not send another.
     expect(buttons()).toEqual(["Downloading…"]);
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
     await click("Downloading…");
     expect(world.requests).toHaveLength(1);
-    world.set(hostState({ phase: "downloading", revision: 2, message: "Downloading build" }));
+    await world.set(hostState({ phase: "downloading", revision: 2, message: "Downloading build" }));
     expect(buttons()).toEqual(["Downloading…"]);
     await act(async () => {
-      world.set(stagedTarget(3));
+      await world.set(stagedTarget(3));
       finish(AsyncResult.success(stagedTarget(3)));
     });
     expect(buttons()).toEqual(["Install aaaaaaa"]);
-    world.set(
+    await world.set(
       hostState({
         phase: "checking",
         revision: 4,
@@ -244,6 +324,7 @@ describe("exact-source action", () => {
   });
 
   it("shows the refusal when a download stages another source than the target", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     world.handlers.run = async () => {
       const wrong = hostState({
@@ -252,17 +333,17 @@ describe("exact-source action", () => {
         stagedHandle: "handle-9",
         provenance: build(other),
       });
-      world.set(wrong);
+      await world.set(wrong);
       return AsyncResult.success(wrong);
     };
     await mount(world);
     await click("Download aaaaaaa");
-    expect(status()).toContain("bbbbbbb");
-    expect(status()).toContain("will not be installed from this notice");
+    expect(status()).toContain("did not confirm the selected download");
     expect(buttons()).toEqual([]);
   });
 
   it("reports a host refusal and a failed download without installing anything", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     world.handlers.run = async () =>
       AsyncResult.success(
@@ -273,11 +354,12 @@ describe("exact-source action", () => {
     expect(status()).toBe("Candidate is not newer than installed.");
     world.handlers.run = async () => AsyncResult.failure(Cause.fail(new Error("timeout")));
     await click("Download aaaaaaa");
-    expect(status()).toContain("download request did not finish");
+    expect(status()).toContain("may have been accepted");
     expect(world.requests.every((request) => request.action === "downloadExact")).toBe(true);
   });
 
   it("lets an older host download only an offer that already is the target", async () => {
+    await using _fixture = await setupFixture1();
     const legacy = { check: true, download: true, install: true };
     const mismatch = createHost(hostState({ capability: legacy }));
     await mount(mismatch);
@@ -285,7 +367,7 @@ describe("exact-source action", () => {
     expect(status()).toContain("bbbbbbb");
     expect(mismatch.requests).toEqual([]);
     await act(async () => root.unmount());
-    root = createRoot(container);
+    root = renderDisposables.use(await renderScreen(null, { container, router: false }));
 
     const match = createHost(hostState({ capability: legacy, provenance: build(target, 42) }));
     match.handlers.run = async () => AsyncResult.success(hostState({ phase: "downloading" }));
@@ -296,20 +378,154 @@ describe("exact-source action", () => {
     ]);
   });
 
+  it("confirms replacement once and holds a lost response across selection changes", async () => {
+    await using _fixture = await setupFixture1();
+    const staged = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "old-handle",
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+    });
+    const world = createHost(staged);
+    await mount(world, { allowReplace: true, allowInstall: false, buttonLabel: "Match laptop" });
+    world.handlers.dialog = async () => false;
+    await click("Match laptop");
+    expect(world.requests).toEqual([]);
+    world.handlers.dialog = async () => true;
+    world.handlers.run = async () => AsyncResult.failure(Cause.fail(new Error("response lost")));
+    await click("Match laptop");
+    expect(status()).toContain("effect is unknown");
+    expect(world.requests).toHaveLength(1);
+    expect(world.dialogs.at(-1)).toContain("Nothing installs until you choose Install");
+    await click("Match laptop");
+    expect(world.requests).toHaveLength(1);
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await act(() => container.querySelector("button")!.focus());
+    await expect
+      .element(page.getByRole("tooltip"))
+      .toHaveTextContent(
+        "The request may have been accepted. Its effect is unknown. This host cannot provide a bound receipt; nothing will be resent.",
+      );
+    expect(container.querySelector("button")?.getAttribute("aria-describedby")).toBe(
+      page.getByRole("tooltip").element().id,
+    );
+    await userEvent.keyboard("{Enter} ");
+    expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(2);
+    expect(world.requests[0]).toMatchObject({
+      action: "downloadExact",
+      input: {
+        targetSource: target,
+        replace: {
+          environmentId,
+          currentVersion,
+          expectedInstalledSource: staged.installedSource!.sha,
+          stagedHandle: "old-handle",
+          sourceSha: other,
+          operationId: expect.any(String),
+        },
+      },
+    });
+    const replacement = world.requests[0];
+    if (replacement?.action !== "downloadExact") throw new Error("Expected exact download");
+    expect(replacement.input.replace?.operationId).toMatch(
+      /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+    );
+    await world.set({ ...staged, stagedHandle: "new-handle" });
+    await click("Match laptop");
+    expect(world.requests).toHaveLength(1);
+    expect(world.requests.every((request) => request.action === "downloadExact")).toBe(true);
+    await root.rerender(null);
+    await mount(world, {
+      targetSource: "c".repeat(40),
+      allowReplace: true,
+      allowInstall: false,
+      buttonLabel: "Match laptop",
+    });
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await click("Match laptop");
+    expect(world.requests).toHaveLength(1);
+    expect(world.dialogs).toHaveLength(2);
+  });
+
+  it("refuses replacement if the laptop target or selected host binding changes during confirmation", async () => {
+    await using _fixture = await setupFixture1();
+    const staged = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "old-handle",
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+    });
+    const world = createHost(staged);
+    let laptopSource: string | undefined = target;
+    await mount(world, {
+      allowReplace: true,
+      readTargetSource: () => laptopSource,
+      buttonLabel: "Match laptop",
+    });
+    world.handlers.dialog = async () => {
+      laptopSource = undefined;
+      return true;
+    };
+    await click("Match laptop");
+    expect(status()).toContain("laptop's verified installed build changed");
+    expect(world.requests).toEqual([]);
+    laptopSource = target;
+    world.handlers.dialog = async () => {
+      await world.set({ ...staged, currentVersion: "changed" });
+      return true;
+    };
+    await click("Match laptop");
+    expect(status()).toContain("changed while this was pending");
+    expect(world.requests).toEqual([]);
+  });
+
+  it("keeps Match laptop visible and guards activation when state or replacement capability is unavailable", async () => {
+    await using _fixture = await setupFixture1();
+    const world = createHost(null);
+    await mount(world, {
+      allowReplace: true,
+      allowInstall: false,
+      buttonLabel: "Match laptop",
+      compact: true,
+    });
+    expect(buttons()).toEqual(["Match laptop"]);
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    await click("Match laptop");
+    await world.set(hostState({ environmentId, phase: "staged", stagedHandle: "old-handle" }));
+    await click("Match laptop");
+    expect(container.querySelector("button")?.getAttribute("aria-disabled")).toBe("true");
+    expect(world.requests).toEqual([]);
+  });
+
   it("offers nothing while the host observation is stale or the host has no updater", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(hostState());
     await mount(world);
-    world.set(hostState(), "stale");
+    await world.set(hostState(), "stale");
     expect(buttons()).toEqual([]);
     expect(status()).toContain("Waiting");
-    world.set(null);
+    await world.set(null);
     expect(status()).toContain("does not support Jones updates");
     expect(world.requests).toEqual([]);
   });
 });
 
 describe("performExactSourceStep", () => {
-  it("treats an interrupted request as cancelled, not as an unknown install", async () => {
+  it("keeps interruption after possible dispatch unknown", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget());
     world.handlers.run = async () => AsyncResult.failure(Cause.interrupt());
     const outcome = await performExactSourceStep({
@@ -322,10 +538,11 @@ describe("performExactSourceStep", () => {
       },
       host: world.host,
     });
-    expect(outcome).toEqual({ kind: "cancelled" });
+    expect(outcome).toMatchObject({ kind: "unknown" });
   });
 
   it("records the revision an unknown install was sent against", async () => {
+    await using _fixture = await setupFixture1();
     const world = createHost(stagedTarget(6));
     world.handlers.run = () => Promise.reject(new Error("connection reset"));
     const outcome = await performExactSourceStep({
@@ -342,5 +559,34 @@ describe("performExactSourceStep", () => {
       kind: "unknown",
       unresolvedInstall: { stagedHandle: "handle-1", revision: 6 },
     });
+  });
+});
+
+describe("Connections install confirmation", () => {
+  it("cancels without sending and rechecks the selection and permission after confirmation", async () => {
+    environmentId = EnvironmentId.make(`exact-source-host-${++sequence}`);
+    const staged = { ...stagedTarget(), environmentId };
+    const world = createHost(staged);
+    const input = { environmentId, currentVersion, stagedHandle: "handle-1" };
+    world.handlers.dialog = async () => false;
+    expect(
+      await performConfirmedInstall({ input, host: world.host, label: "Mac Mini" }),
+    ).toBeNull();
+    expect(world.requests).toEqual([]);
+    world.handlers.dialog = async () => {
+      await world.set({ ...staged, stagedHandle: "changed" });
+      return true;
+    };
+    expect(await performConfirmedInstall({ input, host: world.host, label: "Mac Mini" })).toContain(
+      "Nothing was sent",
+    );
+    expect(world.requests).toEqual([]);
+    await world.set(staged);
+    world.handlers.dialog = async () => true;
+    world.handlers.run = async () => AsyncResult.success({ ...staged, phase: "installing" });
+    expect(
+      await performConfirmedInstall({ input, host: world.host, label: "Mac Mini" }),
+    ).toBeNull();
+    expect(world.requests).toEqual([{ action: "install", input }]);
   });
 });

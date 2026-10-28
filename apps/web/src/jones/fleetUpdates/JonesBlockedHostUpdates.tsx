@@ -1,3 +1,6 @@
+import { Tooltip, TooltipTrigger, TooltipPopup } from "../../components/ui/tooltip";
+import { outcomeBuildDetail } from "../updates/buildPairs";
+import { jonesUpdatePresentation } from "@t3tools/client-runtime/jones/updates";
 import { useEffect, useRef, useState } from "react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
@@ -60,6 +63,7 @@ export function JonesBlockedHostUpdates({
     return run(environmentId, request);
   };
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Read qualified host update state on environment selection and fence responses when that owner retires.
   useEffect(() => {
     void run(environmentId, { action: "state" });
     return () => {
@@ -80,9 +84,19 @@ export function JonesBlockedHostUpdates({
           : "Source relationship has not been verified."}
       </p>
       {state?.outcome ? (
-        <p>
-          {state.outcome.status}: {state.outcome.fromVersion} → {state.outcome.targetVersion}
-        </p>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <p
+                tabIndex={0}
+                aria-label={`${jonesUpdatePresentation(state).outcomeMessage}; ${outcomeBuildDetail(state)}`}
+              />
+            }
+          >
+            {jonesUpdatePresentation(state).outcomeMessage}
+          </TooltipTrigger>
+          <TooltipPopup side="top">{outcomeBuildDetail(state)}</TooltipPopup>
+        </Tooltip>
       ) : null}
       <div className="flex flex-wrap gap-2">
         <Button

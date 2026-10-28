@@ -1,3 +1,6 @@
+import { routeLaptopDownload, routeLaptopInstall } from "../installStatus/entrypoints";
+import { jonesBuildLabel, jonesBuildLabels } from "./buildVersion";
+import { outcomeBuildRefs } from "./buildPairs";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
@@ -7,6 +10,25 @@ import type {
   DesktopUpdateActionResult,
   DesktopUpdateState,
 } from "@t3tools/contracts";
+
+export function desktopUpdateVersionLabel(state: DesktopUpdateState, version: string): string {
+  const jones = state.jones;
+  if (!jones) return version;
+  const ref =
+    version === jones.currentVersion
+      ? { version, startedAt: jones.currentBuildStartedAt, sourceSha: jones.installedSource?.sha }
+      : version === jones.provenance?.version
+        ? {
+            version,
+            startedAt: jones.provenance.buildStartedAt,
+            sourceSha: jones.provenance.sourceSha,
+          }
+        : { version };
+  const label = jonesBuildLabel(ref);
+  return label.text === version
+    ? version
+    : `${label.text} (${version}; ${label.detail}${ref.sourceSha ? `; source ${ref.sourceSha}` : ""})`;
+}
 
 export function getJonesDesktopUpdateBlockedMessage(
   state: DesktopUpdateState | null,
@@ -39,10 +61,15 @@ export function getJonesDesktopUpdateOutcomeMessage(state: DesktopUpdateState): 
   const outcome = jones.outcome;
   if (outcome?.status === jones.phase) {
     const update = jones.updateId === undefined ? "Update" : `Update ${jones.updateId}`;
+    const [from, target] = jonesBuildLabels(outcomeBuildRefs(jones));
+    const identity =
+      from!.text !== outcome.fromVersion || target!.text !== outcome.targetVersion
+        ? ` (${outcome.fromVersion} → ${outcome.targetVersion})`
+        : "";
     const reason = outcome.reason ? ` ${outcome.reason}` : "";
     return outcome.status === "committed"
-      ? `${update} committed: ${outcome.fromVersion} → ${outcome.targetVersion}.${reason}`
-      : `${update} rolled back: ${outcome.targetVersion} did not commit; ${outcome.fromVersion} remains active.${reason}`;
+      ? `${update} committed: ${from!.text} → ${target!.text}${identity}.${reason}`
+      : `${update} rolled back: ${target!.text} did not commit; ${from!.text} remains active${identity}.${reason}`;
   }
   return (
     jones.message ??
@@ -54,12 +81,13 @@ export function getJonesDesktopUpdateOutcomeMessage(state: DesktopUpdateState): 
 }
 
 export async function installLocalDesktopUpdate(
-  bridge: Pick<DesktopBridge, "installUpdate" | "fleetUpdates">,
+  bridge: Pick<DesktopBridge, "installUpdate" | "fleetUpdates" | "installPlan">,
   state: DesktopUpdateState | null,
 ): Promise<DesktopUpdateActionResult> {
   const blocked = getJonesDesktopUpdateBlockedMessage(state, "install");
   if (blocked) return Promise.reject(new Error(blocked));
   if (!state?.jones) return bridge.installUpdate();
+  if (bridge.installPlan) return routeLaptopInstall(bridge, state);
   const campaignId = await prepareOptionalLocalFleetCampaign(bridge, state);
   return campaignId === undefined
     ? bridge.installUpdate(state.jones.stagedHandle)
@@ -72,10 +100,11 @@ export function getJonesDesktopUpdateRefusal(result: DesktopUpdateActionResult):
 }
 
 export async function downloadLocalDesktopUpdate(
-  bridge: Pick<DesktopBridge, "downloadUpdate" | "fleetUpdates">,
+  bridge: Pick<DesktopBridge, "downloadUpdate" | "fleetUpdates" | "installPlan">,
   state: DesktopUpdateState | null,
 ): Promise<DesktopUpdateActionResult> {
   if (!state?.jones) return bridge.downloadUpdate();
+  if (bridge.installPlan) return routeLaptopDownload(bridge, state);
   const blocked = getJonesDesktopUpdateBlockedMessage(state, "download");
   if (blocked) return Promise.reject(new Error(blocked));
   const provenance = state.jones.provenance;

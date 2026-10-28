@@ -187,6 +187,10 @@
       "types": "./src/server/jones/ProviderEventOrigin.ts",
       "import": "./src/server/jones/ProviderEventOrigin.ts"
     },
+    "./server/jones/GoalContinuityContext": {
+      "types": "./src/server/jones/GoalContinuityContext.ts",
+      "import": "./src/server/jones/GoalContinuityContext.ts"
+    },
     "./server/jones/ProviderRuntimeBindingDiagnostics": {
       "types": "./src/server/jones/ProviderRuntimeBindingDiagnostics.ts",
       "import": "./src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
@@ -195,13 +199,18 @@
       "types": "./src/server/jones/runtimeTypes.ts",
       "import": "./src/server/jones/runtimeTypes.ts"
     },
+    "./server/jones/ThreadTitleAssessment": {
+      "types": "./src/server/jones/ThreadTitleAssessment.ts",
+      "import": "./src/server/jones/ThreadTitleAssessment.ts"
+    },
     "./server/jones/AppIdentity": {
       "types": "./src/server/jones/AppIdentity.ts",
       "import": "./src/server/jones/AppIdentity.ts"
     }
   },
   "scripts": {
-    "typecheck": "tsc-rs --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

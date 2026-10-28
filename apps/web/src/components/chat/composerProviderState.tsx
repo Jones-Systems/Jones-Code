@@ -26,6 +26,7 @@ import {
   shouldRenderTraitsControls,
   TraitsMenuContent,
   TraitsPicker,
+  type PromptUltrathink,
 } from "./TraitsPicker";
 
 export type ComposerProviderStateInput = {
@@ -62,8 +63,8 @@ type TraitsRenderInput = {
   models: ReadonlyArray<ServerProviderModel>;
   modelOptions: ReadonlyArray<ProviderOptionSelection> | undefined;
   reportedModelSelection?: ModelSelection | null | undefined;
-  prompt: string;
-  onPromptChange: (prompt: string) => void;
+  promptUltrathink: PromptUltrathink;
+  onPromptEdit: (edit: (prompt: string) => string) => void;
   planModeEnabled: boolean;
   size?: ComposerControlSize;
   hidden?: boolean;
@@ -75,10 +76,7 @@ export function getComposerPromptInjectionState(prompt: string): ComposerPromptI
   return isClaudeUltrathinkPrompt(prompt) ? "ultrathink" : "none";
 }
 
-/**
- * Cursor ACP can report `fastMode: true` as the provider default. T3 only
- * treats Fast as selected when the user chose it (draft/sticky/settings).
- */
+/** Cursor ACP can default Fast to true; T3 requires a user selection. */
 export function withImplicitFastModeDefault(
   caps: ModelCapabilities,
   modelOptions: ReadonlyArray<ProviderOptionSelection> | null | undefined,
@@ -209,10 +207,7 @@ export function getComposerProviderState(input: ComposerProviderStateInput): Com
   };
 }
 
-/**
- * `cursor` is an expanded caret in `prompt`; the result's `cursor` keeps it on
- * the same character when the Ultrathink prefix is added or removed.
- */
+/** Expanded caret positions stay on the same character across Ultrathink prefix changes. */
 export function getComposerReasoningStep(input: {
   provider: ProviderDriverKind;
   instanceId: ProviderInstanceId;
@@ -249,7 +244,7 @@ export function getComposerReasoningStep(input: {
   if (!step) return null;
   const modelOptions = "modelOptions" in step ? { modelOptions: step.modelOptions } : {};
   if (step.prompt === prompt) return { prompt, cursor, ...modelOptions };
-  // Adding the prefix also trims the prompt, so the kept text starts right after the prefix.
+  // Adding the prefix also trims the prompt.
   const keptStart = "modelOptions" in step ? 0 : step.prompt.length - prompt.trim().length;
   const offset =
     "modelOptions" in step
@@ -274,8 +269,8 @@ function renderTraitsControl(
     model,
     models,
     reportedModelSelection,
-    prompt,
-    onPromptChange,
+    promptUltrathink,
+    onPromptEdit,
     planModeEnabled,
     size,
     hidden,
@@ -292,7 +287,7 @@ function renderTraitsControl(
       models,
       model,
       modelOptions: resolvedModelOptions,
-      prompt,
+      promptUltrathink,
       planModeEnabled,
       displayCapabilities,
     })
@@ -310,8 +305,8 @@ function renderTraitsControl(
       model={model}
       modelOptions={resolvedModelOptions}
       reportedModelSelection={reportedModelSelection}
-      prompt={prompt}
-      onPromptChange={onPromptChange}
+      promptUltrathink={promptUltrathink}
+      onPromptEdit={onPromptEdit}
       planModeEnabled={planModeEnabled}
       {...(size !== undefined ? { size } : {})}
       {...(hidden !== undefined ? { hidden } : {})}

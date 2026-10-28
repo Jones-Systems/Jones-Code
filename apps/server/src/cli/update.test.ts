@@ -1,25 +1,46 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
-import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
-import * as Duration from "effect/Duration";
+import { assert, it } from "@effect/vitest";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as HttpClient from "effect/http/HttpClient";
-import * as HttpClientResponse from "effect/http/HttpClientResponse";
-import * as TestClock from "effect/testing/TestClock";
-import * as HostProcess from "@t3tools/shared/HostProcess";
+import { HttpClient, HttpClientResponse } from "effect/http";
+import { afterEach, vi } from "vite-plus/test";
 
+import { repointLauncher, resolveLauncherPath, resolveNewestVersion } from "./update.ts";
+import { describe } from "@effect/vitest";
+import { cliReleaseIndexPageUrl } from "@t3tools/shared/cliRelease";
+import * as Duration from "effect/Duration";
+import * as TestClock from "effect/testing/TestClock";
 import { SERVICE_LAUNCHER_PROTOCOL } from "../cloud/serviceProtocol.ts";
-import {
-  isJonesBootServiceCgroup,
-  assertReleaseUpdateAllowed,
-  repointLauncher,
-  resolveLauncherPath,
-  resolveNewestVersion,
-} from "./update.ts";
+import { isJonesBootServiceCgroup, assertReleaseUpdateAllowed } from "./update.ts";
+
+afterEach(() => vi.restoreAllMocks());
+
+it.effect("authenticates each release page until the requested channel is found", () =>
+  Effect.gen(function* () {
+    const pages: string[] = [];
+    const httpClient = HttpClient.make((request) => {
+      const url = new URL(request.url);
+      assert.equal(url.origin, "https://api.github.com");
+      assert.equal(url.pathname, "/repos/pingdotgg/t3code/releases");
+      assert.equal(request.headers.accept, "application/vnd.github+json");
+      assert.equal(request.headers.authorization, "Bearer gh-token");
+      const page = url.searchParams.get("page") ?? "";
+      pages.push(page);
+      const tag_name = page === "1" ? "v1.2.4-preview.20260101.1" : "v1.2.3";
+      return Effect.succeed(HttpClientResponse.fromWeb(request, Response.json([{ tag_name }])));
+    });
+    const version = yield* resolveNewestVersion("stable").pipe(
+      Effect.provideService(HostProcess.Environment, { GH_TOKEN: "gh-token" }),
+      Effect.provideService(HttpClient.HttpClient, httpClient),
+    );
+    assert.equal(version, "1.2.3");
+    assert.deepStrictEqual(pages, ["1", "2"]);
+  }),
+);
 
 it.layer(NodeServices.layer)("t3 update launcher", (it) => {
   it.effect("refuses version-only updates of a preview or desktop-owned home", () =>
@@ -310,4 +331,23 @@ it("recognizes only the Jones service cgroup for legacy server lineage", () => {
   assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/t3code.service"));
   assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/not-jones-code.service"));
   assert.isFalse(isJonesBootServiceCgroup("0::/user.slice/jones-code.service-extra"));
+});
+
+it("recognizes only the exact adopted system unit outside the user hierarchy", () => {
+  assert.isTrue(
+    isJonesBootServiceCgroup("0::/system.slice/t3code.service/child", "t3code.service"),
+  );
+  assert.isTrue(
+    isJonesBootServiceCgroup(
+      "0::/hostdev.slice/host-tooling-t3.service",
+      "host-tooling-t3.service",
+    ),
+  );
+  assert.isFalse(isJonesBootServiceCgroup("0::/system.slice/not-t3code.service", "t3code.service"));
+  assert.isFalse(
+    isJonesBootServiceCgroup(
+      "0::/user.slice/user-1000.slice/user@1000.service/app.slice/t3code.service",
+      "t3code.service",
+    ),
+  );
 });

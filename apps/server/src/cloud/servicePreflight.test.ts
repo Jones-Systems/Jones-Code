@@ -1,39 +1,28 @@
-import { expect, it } from "@effect/vitest";
-
 import {
   decodeServicePreflightResult,
   qualifiedServicePreflightFailure,
-  runServicePreflight,
 } from "./servicePreflight.ts";
+import { expect, it } from "@effect/vitest";
+
+import { runServicePreflight } from "./servicePreflight.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 
-it.each([1, 2])("blocks legacy launcher protocol %i", (launcherProtocol) => {
-  expect(
-    runServicePreflight({
-      databasePath: "/missing/state.sqlite",
-      launcherProtocol,
-      version: "1.2.3",
-    }),
-  ).toEqual({
-    status: "blocked",
-    version: "1.2.3",
-    reason:
-      "This release requires a newer T3 Code service launcher. Update it on the server machine.",
+// regression: #13239 a stale CLI shadowing the updated one kept "updating" to itself
+it.each([1])("blocks legacy launcher protocol %i with exact recovery steps", (launcherProtocol) => {
+  const result = runServicePreflight({
+    databasePath: "/missing/state.sqlite",
+    launcherProtocol,
+    version: "9.8.7",
   });
-});
 
-it("accepts the current launcher protocol", () => {
-  expect(
-    runServicePreflight({
-      databasePath: "/missing/state.sqlite",
-      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-      version: "1.2.3",
-    }),
-  ).toEqual({
-    status: "ready",
-    version: "1.2.3",
-    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-  });
+  expect(result).toMatchObject({ status: "blocked", version: "9.8.7" });
+  const reason = result.status === "blocked" ? result.reason : "";
+  expect(reason).toMatch(new RegExp(`\\b${launcherProtocol}\\b`));
+  expect(reason).toMatch(new RegExp(`\\b${SERVICE_LAUNCHER_PROTOCOL}\\b`));
+  expect(reason).toContain("curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=9.8.7 sh");
+  expect(reason).toContain("~/.local/bin/t3 service install");
+  expect(reason).toContain("t3 --version");
+  expect(reason).toContain("which -a t3");
 });
 
 it("advertises only the supplied bundled startup gate capability", () => {
@@ -50,6 +39,31 @@ it("advertises only the supplied bundled startup gate capability", () => {
     launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
     startupGateProtocol: 1,
   });
+});
+
+it("requires historical-receipt capability only for the additional stage format", () => {
+  const ready = {
+    status: "ready",
+    version: "1.2.3",
+    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+    startupGateProtocol: 1,
+  };
+  const input = { code: 0, stdout: JSON.stringify(ready), version: "1.2.3" };
+  expect(qualifiedServicePreflightFailure(input)).toBeUndefined();
+  expect(
+    qualifiedServicePreflightFailure({ ...input, requiredQualifiedRecoveryProtocol: 1 }),
+  ).toContain("qualified-recovery-unsupported");
+  const supported = { ...ready, qualifiedRecoveryProtocol: 1 };
+  expect(decodeServicePreflightResult(supported)).toEqual(supported);
+  expect(
+    qualifiedServicePreflightFailure({
+      ...input,
+      stdout: JSON.stringify(supported),
+      requiredQualifiedRecoveryProtocol: 1,
+    }),
+  ).toBeUndefined();
+  for (const qualifiedRecoveryProtocol of [null, undefined, 0, 2, "1", true])
+    expect(decodeServicePreflightResult({ ...ready, qualifiedRecoveryProtocol })).toBeUndefined();
 });
 
 it("preserves ordinary preflight without inferring qualified support", () => {

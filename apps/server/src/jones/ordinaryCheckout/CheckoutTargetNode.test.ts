@@ -9,6 +9,7 @@ import * as ServerConfig from "../../config.ts";
 import * as Git from "../../vcs/GitVcsDriver.ts";
 import * as Target from "./CheckoutTarget.ts";
 import * as Observation from "./CheckoutTargetNode.ts";
+import * as CheckoutSource from "../workspaceLifecycle/CheckoutSource.ts";
 
 const scratch = process.env.JONES_CHECKOUT_TEST_SCRATCH;
 it.effect.skipIf(!scratch)(
@@ -37,7 +38,8 @@ it.effect.skipIf(!scratch)(
           Layer.provide(ServerConfig.layerTest(root, path.join(root, "state"))),
           Layer.provideMerge(NodeServices.layer),
         );
-        const testLayer = Target.layer.pipe(
+        const testLayer = CheckoutSource.layer.pipe(
+          Layer.provideMerge(Target.layer),
           Layer.provideMerge(Observation.layer),
           Layer.provideMerge(gitLayer),
         );
@@ -81,6 +83,30 @@ it.effect.skipIf(!scratch)(
           assert.strictEqual(nested.checkoutKey, original.checkoutKey);
           assert.notEqual(other.checkoutKey, original.checkoutKey);
           assert.strictEqual(other.gitCommonDirectory, original.gitCommonDirectory);
+          const sources = yield* CheckoutSource.CheckoutSourceObservation;
+          const source = yield* sources.capture({
+            ...input,
+            worktreePath: linked,
+            threadBranch: "linked",
+          });
+          yield* git.execute({
+            operation: "CheckoutSource.test",
+            cwd: linked,
+            args: [
+              "-c",
+              "user.name=Synthetic",
+              "-c",
+              "user.email=synthetic@example.invalid",
+              "-c",
+              `core.hooksPath=${templates}`,
+              "commit",
+              "--allow-empty",
+              "-m",
+              "next synthetic source",
+            ],
+            env: { GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
+          });
+          assert.isTrue(Exit.isFailure(yield* Effect.exit(sources.revalidate(source))));
           const plainInput = { ...input, projectRoot: plain };
           assert.strictEqual((yield* targets.capture(plainInput)).branch, null);
           const plainMarker = path.join(plain, ".git");

@@ -10,6 +10,8 @@ import { ProviderInstanceIcon } from "../../components/chat/ProviderInstanceIcon
 import { Button } from "../../components/ui/button";
 import { PROVIDER_PRESENTATION } from "../../components/usage/usageProviders";
 
+import { formatCachePercent, formatCacheWrite } from "./UsageTotals";
+
 const USAGE_PROVIDER_DETAILS_ID = "usage-provider-details";
 
 export function UsageProviderSummary({
@@ -68,8 +70,12 @@ export function UsageTokenDetails({
         />
         <DetailMetric label="Cached input" value={formatTokens(detail.totals.cachedInputTokens)} />
         <DetailMetric
-          label="Cache creation"
-          value={formatTokens(detail.totals.cacheCreationTokens)}
+          label="Cache write"
+          value={formatCacheWrite(detail.totals.cacheCreationTokens)}
+        />
+        <DetailMetric
+          label="Cache %"
+          value={formatCachePercent(detail.totals.cachedInputTokens, detail.totalTokens)}
         />
         <DetailMetric label="Output" value={formatTokens(detail.totals.outputTokens)} />
         <DetailMetric
@@ -147,7 +153,9 @@ function DetailMetric({ label, value }: { readonly label: string; readonly value
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
       <dt className="text-xs text-muted-foreground">{label}</dt>
-      <dd className="text-base font-medium text-foreground tabular-nums">{value}</dd>
+      <dd className="text-base font-medium text-foreground whitespace-nowrap tabular-nums">
+        {value}
+      </dd>
     </div>
   );
 }

@@ -185,6 +185,85 @@ function findElement(
 describe("Workstream sidebar binding cancellation", () => {
   afterEach(() => hooks.reset());
 
+  it("closes a pending detail request and ignores its late response", async () => {
+    let resolveDetail!: (value: WorkstreamDetailView) => void;
+    const controller = {
+      data,
+      placementInventory: { identities: [], totalIdentities: 0, coverage: "complete", json: "[]" },
+      loading: false,
+      loadDetail: vi.fn(
+        () =>
+          new Promise<WorkstreamDetailView>((resolve) => {
+            resolveDetail = resolve;
+          }),
+      ),
+      loadReference: vi.fn(),
+      refresh: vi.fn(),
+    } as unknown as WorkstreamListView;
+    const render = () => {
+      hooks.beginRender();
+      return WorkstreamSidebarSection({ controller });
+    };
+    const click = (tree: unknown, label: string) => {
+      const button = findElement(
+        tree,
+        (el) =>
+          containsText(el.props.children, label) &&
+          (el.type === "button" || el.props.onClick !== undefined),
+      );
+      expect(button).toBeTruthy();
+      (button!.props.onClick as () => void)();
+    };
+    click(render(), "Alpha");
+    click(render(), "Close");
+    resolveDetail(detailWithReference);
+    await Promise.resolve();
+    expect(containsText(render(), "Alpha detail")).toBe(false);
+    click(render(), "Alpha");
+    click(render(), "Alpha");
+    resolveDetail(detailWithReference);
+    await Promise.resolve();
+    expect(containsText(render(), "Alpha detail")).toBe(false);
+  });
+
+  it("keeps management collapsed and closes only unhandled Escape in the panel", async () => {
+    const controller = {
+      data,
+      placementInventory: { identities: [], totalIdentities: 0, coverage: "complete", json: "[]" },
+      loading: false,
+      loadDetail: vi.fn(async () => detailWithReference),
+      loadReference: vi.fn(async () => ({ latest_observation: null })),
+      refresh: vi.fn(),
+    } as unknown as WorkstreamListView;
+    const render = () => {
+      hooks.beginRender();
+      return WorkstreamSidebarSection({ controller, memberLabel: () => "Friendly member" });
+    };
+    const initial = render();
+    const title = findElement(
+      initial,
+      (el) => el.type === "button" && containsText(el.props.children, "Alpha"),
+    )!;
+    (title.props.onClick as () => void)();
+    await Promise.resolve();
+    const opened = render();
+    expect(containsText(opened, "Friendly member")).toBe(true);
+    const disclosure = findElement(opened, (el) => el.type === "details")!;
+    expect(disclosure.props.open).not.toBe(true);
+    expect(containsText(disclosure, "Record member completed")).toBe(true);
+    const panel = findElement(opened, (el) => el.props.id === "workstream-detail-panel")!;
+    const key = panel.props.onKeyDown as (event: unknown) => void;
+    key({ key: "Escape", defaultPrevented: true });
+    expect(findElement(render(), (el) => el.props.id === "workstream-detail-panel")).toBeTruthy();
+    key({
+      key: "Escape",
+      defaultPrevented: false,
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    });
+    expect(findElement(render(), (el) => el.props.id === "workstream-detail-panel")).toBeFalsy();
+  });
+
   it("presents owner completion separately from member, PR, and settlement evidence", async () => {
     const controller = {
       placementInventory: {
@@ -390,7 +469,7 @@ describe("Workstream sidebar binding cancellation", () => {
     await Promise.resolve();
     hooks.beginRender();
     const unverified = WorkstreamSidebarSection({ controller: unverifiedController });
-    expect(containsText(unverified, "T3 settlement unavailable: reference is ")).toBe(true);
+    expect(containsText(unverified, "T3 settlement unavailable:")).toBe(true);
     expect(containsText(unverified, "expired")).toBe(true);
     expect(containsText(unverified, "Request T3 thread settlement")).toBe(false);
   });
@@ -717,6 +796,13 @@ describe("Workstream sidebar binding cancellation", () => {
       (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
     ) as ReactElement<{ onClick: () => void }> | undefined;
     reboundAlpha?.props.onClick();
+    hooks.beginRender();
+    const closed = WorkstreamSidebarSection({ controller });
+    const reopenAlpha = findElement(
+      closed,
+      (element) => element.type === "button" && containsText(element.props.children, "Alpha"),
+    )!;
+    (reopenAlpha.props.onClick as () => void)();
     await Promise.resolve();
 
     hooks.beginRender();

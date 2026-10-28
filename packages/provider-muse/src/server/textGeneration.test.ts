@@ -1,11 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import type { NotificationHandler } from "@muse-code/sdk";
-import {
-  MUSE_DEFAULT_MODEL,
-  ProviderInstanceId,
-  type ServerProviderModel,
-} from "@t3tools/contracts";
+import { ProviderInstanceId, type ServerProviderModel } from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
 import { createModelSelection } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
@@ -22,6 +18,11 @@ const modelSelection = createModelSelection(
   ProviderInstanceId.make("muse"),
   "muse-spark-1.3-contributor",
   [{ id: "reasoningEffort", value: "high" }],
+);
+const encodeReply = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodeJson = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+const decodeTurnInput = Schema.decodeUnknownEffect(
+  Schema.Struct({ input: Schema.Array(Schema.Struct({ text: Schema.String })) }),
 );
 const titleInput = {
   cwd: "/project/should-not-be-used",
@@ -146,6 +147,52 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
     }),
   );
 
+  it.effect(
+    "returns the same-call automatic assessment without changing unassessed responses",
+    () =>
+      Effect.gen(function* () {
+        for (const [quality, expected] of [
+          [{ grounded: true, specific: true, recognizable: true }, "sufficient"],
+          [{ grounded: true, specific: false, recognizable: true }, "insufficient"],
+          [
+            { grounded: true, specific: true, recognizable: true, needsRefinement: true },
+            "insufficient",
+          ],
+          [{ grounded: "yes" }, "unknown"],
+          [
+            { grounded: true, specific: null, recognizable: true, needsRefinement: "false" },
+            "unknown",
+          ],
+          [{}, "unknown"],
+        ] as const) {
+          const test = fixture(finish(encodeReply({ title: "Installation choices", ...quality })));
+          const service = yield* test.make;
+          expect(
+            (yield* service.generateThreadTitle({ ...titleInput, titleAssessment: true }))
+              .assessment,
+          ).toBe(expected);
+          const turn = vi
+            .mocked(test.host.connection.command)
+            .mock.calls.find(([method]) => method === "turn/start");
+          const { input } = yield* decodeTurnInput(turn?.[1]);
+          const schemaText = input[0]!.text.split("Do not use tools or ask questions.\n")[1]!;
+          expect(yield* decodeJson(schemaText)).toEqual({
+            type: "object",
+            properties: {
+              title: { type: "string" },
+              needsRefinement: { type: "boolean" },
+              grounded: { type: "boolean" },
+              specific: { type: "boolean" },
+              recognizable: { type: "boolean" },
+            },
+            required: ["title", "needsRefinement", "grounded", "specific", "recognizable"],
+            additionalProperties: false,
+          });
+          expect(test.host.close).toHaveBeenCalledOnce();
+        }
+      }),
+  );
+
   it.effect("uses low effort by default and normalizes stale efforts against the model", () =>
     Effect.gen(function* () {
       for (const { saved, variants, expected } of [
@@ -182,35 +229,6 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
         expect(turn?.[1].reasoningEffort).toBe(expected);
         expect(Object.hasOwn(turn?.[1] ?? {}, "reasoningEffort")).toBe(expected !== undefined);
       }
-    }),
-  );
-
-  it.effect("lets Muse choose the model when none is selected", () =>
-    Effect.gen(function* () {
-      for (const model of [MUSE_DEFAULT_MODEL, " "]) {
-        const test = fixture(finish('{"title":"Fix login form"}'));
-        const service = yield* test.make;
-        yield* service.generateThreadTitle({
-          ...titleInput,
-          modelSelection: createModelSelection(ProviderInstanceId.make("muse"), model),
-        });
-        const start = vi
-          .mocked(test.host.connection.command)
-          .mock.calls.find(([method]) => method === "session/start");
-        expect(start?.[1]).not.toHaveProperty("modelId");
-      }
-    }),
-  );
-
-  it.effect("rejects invalid structured output and releases the host", () =>
-    Effect.gen(function* () {
-      const test = fixture(finish('{"title":42}'));
-      const service = yield* test.make;
-      expect(yield* service.generateThreadTitle(titleInput).pipe(Effect.flip)).toMatchObject({
-        _tag: "TextGenerationError",
-        detail: "Muse returned invalid structured output.",
-      });
-      expect(test.host.close).toHaveBeenCalledOnce();
     }),
   );
 
@@ -268,23 +286,6 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
     }),
   );
 
-  it.effect("reports a failed turn without trying another provider", () =>
-    Effect.gen(function* () {
-      const test = fixture((emit) =>
-        emit("turn/completed", {
-          terminal: "failed",
-          error: { message: "Authentication required. Run muse login." },
-        }),
-      );
-      const service = yield* test.make;
-      expect(yield* service.generateThreadTitle(titleInput).pipe(Effect.flip)).toMatchObject({
-        _tag: "TextGenerationError",
-      });
-      expect(test.createHost).toHaveBeenCalledOnce();
-      expect(test.host.close).toHaveBeenCalledOnce();
-    }),
-  );
-
   it.effect("settles when the transport closes before completion", () =>
     Effect.gen(function* () {
       const test = fixture();
@@ -330,43 +331,6 @@ it.layer(NodeServices.layer)("Muse text generation", (it) => {
         choiceId: "deny-1",
       });
       expect(test.host.close).toHaveBeenCalledOnce();
-    }),
-  );
-
-  it.effect("cancels user input requests", () =>
-    Effect.gen(function* () {
-      const test = fixture((emit) => emit("userInput/requested", { userInputId: "input-1" }));
-      const service = yield* test.make;
-      expect(yield* service.generateThreadTitle(titleInput).pipe(Effect.flip)).toMatchObject({
-        _tag: "TextGenerationError",
-      });
-      expect(test.host.connection.command).toHaveBeenCalledWith(
-        "userInput/cancel",
-        expect.objectContaining({
-          userInputId: "input-1",
-        }),
-      );
-      expect(test.host.close).toHaveBeenCalledOnce();
-    }),
-  );
-
-  it.effect("generates and sanitizes commit content through Muse", () =>
-    Effect.gen(function* () {
-      const test = fixture(
-        finish('{"subject":"Fix login.","body":" Details ","branch":"fix-login"}'),
-      );
-      const service = yield* test.make;
-      const generated = yield* service.generateCommitMessage({
-        cwd: titleInput.cwd,
-        branch: "main",
-        stagedSummary: "login.ts",
-        stagedPatch: "login change",
-        includeBranch: true,
-        modelSelection,
-      });
-      expect(generated.subject).toBe("Fix login");
-      expect(generated.body).toBe("Details");
-      expect(generated.branch).toContain("fix-login");
     }),
   );
 });

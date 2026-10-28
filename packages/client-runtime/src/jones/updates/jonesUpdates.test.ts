@@ -19,6 +19,9 @@ import {
   compareJonesSource,
   createJonesUpdateAtoms,
   jonesExactSourceResultError,
+  jonesInstallRefusal,
+  jonesFollowerHold,
+  jonesFollowerSummary,
   jonesUpdateActionError,
   jonesCandidatePresentation,
   jonesUpdatePresentation,
@@ -32,6 +35,7 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
+  PrimaryConnectionTarget,
   RelayConnectionTarget,
   type PreparedConnection,
 } from "../../connection/model.ts";
@@ -53,6 +57,46 @@ const staged: JonesUpdateState = {
   capability: { check: true, download: true, install: true },
   stagedHandle: "fixed-stage",
 };
+
+it("projects settlement only from reported evidence and preserves old-server status", () => {
+  expect(jonesUpdatePresentation(staged)).toMatchObject({
+    canReconcile: false,
+    settled: false,
+    settlementMessage: undefined,
+  });
+  const failed = {
+    ...staged,
+    phase: "error" as const,
+    updateId: "11111111-1111-4111-8111-111111111111",
+    settlement: "none" as const,
+    launcherSettlement: "supported" as const,
+  };
+  expect(jonesUpdatePresentation(failed)).toMatchObject({
+    canReconcile: true,
+    settled: false,
+    settlementMessage: "Previous attempt needs reconciliation",
+  });
+  expect(
+    jonesUpdatePresentation({ ...failed, launcherSettlement: "unsupported" }).canReconcile,
+  ).toBe(false);
+  for (const settlement of ["launcher-recorded", "legacy-reconciled"] as const) {
+    const state = { ...failed, settlement, cause: "backup refused" };
+    expect(jonesUpdatePresentation(state)).toMatchObject({
+      canReconcile: false,
+      settled: true,
+      settlementMessage: "Update did not start: backup refused. Nothing changed.",
+    });
+    expect(jonesUpdateActionError(AsyncResult.success(state))).toBeNull();
+    expect(
+      jonesUpdateActionError(
+        AsyncResult.success({ ...state, phase: "blocked", message: "Build lookup failed." }),
+      ),
+    ).toBe("Build lookup failed.");
+  }
+  const refused = { ...failed, settlementRefusal: "restore-pending" as const };
+  expect(jonesUpdatePresentation(refused).refusalMessage).toBe("Recovery is still pending.");
+  expect(jonesUpdateActionError(AsyncResult.success(refused))).toBe("Recovery is still pending.");
+});
 it.effect(
   "keeps relay update polling authenticated while transmitting zero and later revision cursors",
   () =>
@@ -122,6 +166,8 @@ it.effect(
           }),
       });
       const calls: Array<{ url: string; proofHtu: string; method: string }> = [];
+      const posts: Array<{ url: string; input: unknown }> = [];
+      let loseReply = false;
       const polled = yield* Deferred.make<void>();
       const observedRevision = yield* Deferred.make<void>();
       let releaseFetch = () => {};
@@ -131,6 +177,12 @@ it.effect(
       const fetchFn: typeof fetch = async (request, init) => {
         const url = String(request);
         const proof = JSON.parse(new Headers(init?.headers).get("dpop")!);
+        if (init?.method === "POST") {
+          expect(proof).toEqual({ method: "POST", htu: normalizeDpopHtu(url) });
+          posts.push({ url, input: JSON.parse(String(init.body)) });
+          if (loseReply) throw new TypeError("Synthetic lost reconciliation response");
+          return Response.json({ ...staged, settlementRefusal: "restore-pending" });
+        }
         calls.push({ url, proofHtu: proof.htu, method: init?.method ?? "GET" });
         if (calls.length === 3) Deferred.doneUnsafe(polled, Effect.void);
         if (proof.htu !== normalizeDpopHtu(url) || proof.method !== (init?.method ?? "GET"))
@@ -158,7 +210,8 @@ it.effect(
         ),
       );
       const registry = AtomRegistry.make();
-      const value = createJonesUpdateAtoms(runtime).value(target.environmentId);
+      const updates = createJonesUpdateAtoms(runtime);
+      const value = updates.value(target.environmentId);
       const observed: Array<number> = [];
       let unsubscribe = () => {};
       let unmount = () => {};
@@ -197,6 +250,31 @@ it.effect(
       yield* Deferred.await(observedRevision);
       expect(observed).toEqual([0, 7]);
       expect(registry.get(value)?.revision).toBe(7);
+      const input = {
+        operationId: "11111111-1111-4111-8111-111111111111",
+        requestId: "22222222-2222-4222-8222-222222222222",
+      };
+      const result = yield* Effect.promise(() =>
+        updates.action.run(registry, {
+          environmentId: target.environmentId,
+          input: { action: "reconcile", input },
+        }),
+      );
+      expect(result).toMatchObject({
+        _tag: "Success",
+        value: { settlementRefusal: "restore-pending" },
+      });
+      expect(posts).toEqual([{ url: `${origin}/api/jones-updates/reconcile`, input }]);
+      loseReply = true;
+      expect(
+        yield* Effect.promise(() =>
+          updates.action.run(registry, {
+            environmentId: target.environmentId,
+            input: { action: "reconcile", input },
+          }),
+        ),
+      ).toMatchObject({ _tag: "Failure" });
+      expect(posts).toHaveLength(2);
     }).pipe(Effect.scoped),
 );
 it.effect("starts observation after an initially disconnected mount prepares its connection", () =>
@@ -308,7 +386,7 @@ it("keeps restart pending until a host outcome arrives and presents rollback rea
     jonesUpdatePresentation({ ...staged, phase: "installing", updateId: "native-id" }),
   ).toMatchObject({
     busy: true,
-    message: "Installing — server restarting. Waiting for the launcher outcome.",
+    message: "Installing. Server restarting. Waiting for the launcher outcome.",
     outcomeMessage: undefined,
   });
   expect(
@@ -478,12 +556,14 @@ it("presents an offered build's version before download and leaves an older host
   expect(jonesCandidatePresentation({ ...available, provenance: offered })).toEqual({
     label: "Available",
     version: offered.version,
+    buildStartedAt: undefined,
     sourceSha: offered.sourceSha,
   });
   const { version: _version, ...older } = offered;
   expect(jonesCandidatePresentation({ ...available, provenance: older })).toEqual({
     label: "Available",
     version: undefined,
+    buildStartedAt: undefined,
     sourceSha: offered.sourceSha,
   });
   expect(jonesCandidatePresentation({ ...staged, provenance: offered })?.label).toBe("Downloaded");
@@ -560,6 +640,30 @@ describe("exact-source action resolution", () => {
   const unavailable = (decision: ReturnType<typeof resolve>) =>
     decision.status === "unavailable" ? decision.reason : decision.step.kind;
 
+  it("lets a host that follows its laptop take only the laptop's installed source", () => {
+    const leader = { role: "follower" as const, leaderSource: target };
+    expect(resolve(hostState({ policy: leader }))).toMatchObject({ status: "ready" });
+    const other = resolve(
+      hostState({ policy: { role: "follower", leaderSource: "b".repeat(40) } }),
+    );
+    expect(unavailable(other)).toBe("follows-laptop");
+    expect(other.status === "unavailable" ? other.message : "").toContain("bbbbbbb");
+    expect(
+      unavailable(resolve(hostState({ policy: { role: "follower", leaderSource: null } }))),
+    ).toBe("follows-laptop");
+    const staged = hostState({
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: { ...offered, sourceSha: "c".repeat(40) },
+      policy: leader,
+    });
+    expect(jonesFollowerHold(staged)).toContain("aaaaaaa");
+    expect(jonesFollowerHold({ ...staged, provenance: targetBuild })).toBeUndefined();
+    const { policy: _policy, ...standalone } = staged;
+    expect(jonesFollowerHold(standalone)).toBeUndefined();
+    expect(jonesFollowerSummary(staged)).toBe("Follows its laptop · takes only source aaaaaaa");
+  });
+
   it("downloads the target by source when the host advertises exact selection, whatever it offers", () => {
     // The host's own latest offer must never decide the target.
     const decision = resolve(hostState({ phase: "available", provenance: offered }));
@@ -609,6 +713,100 @@ describe("exact-source action resolution", () => {
     );
   });
 
+  it("offers replacement only with explicit opt-in, native capability and a complete host binding", () => {
+    const staged = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "old-handle",
+      provenance: offered,
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+    });
+    expect(unavailable(resolve(staged))).toBe("staged-other");
+    expect(resolve(staged, { allowReplace: true, subject: "this laptop" })).toEqual({
+      status: "ready",
+      step: {
+        kind: "replace-exact",
+        targetSource: target,
+        replace: {
+          environmentId,
+          currentVersion: staged.currentVersion,
+          expectedInstalledSource: installed.sha,
+          stagedHandle: "old-handle",
+          sourceSha: offered.sourceSha,
+        },
+      },
+    });
+    const { installedSource: _installedSource, ...withoutInstalled } = staged;
+    const { provenance: _provenance, ...withoutProvenance } = staged;
+    for (const changed of [
+      { ...staged, capability: { ...staged.capability, replaceStaged: false } },
+      { ...staged, environmentId: EnvironmentId.make("another-host") },
+      withoutInstalled,
+      withoutProvenance,
+    ])
+      expect(unavailable(resolve(changed, { allowReplace: true }))).toBe("staged-other");
+    expect(unavailable(resolve(staged, { allowReplace: true, freshness: "stale" }))).toBe(
+      "waiting",
+    );
+    expect(
+      unavailable(resolve({ ...staged, provenance: targetBuild }, { allowInstall: false })),
+    ).toBe("already-downloaded");
+  });
+
+  it("rejects missing or competing target provenance throughout preparation", () => {
+    const step = { kind: "download-exact", targetSource: target } as const;
+    for (const phase of ["downloading", "verifying", "staged"] as const) {
+      expect(
+        jonesExactSourceResultError(
+          step,
+          AsyncResult.success(hostState({ phase, provenance: offered })),
+          target,
+        ),
+      ).toContain(offered.sourceSha.slice(0, 7));
+      expect(
+        jonesExactSourceResultError(step, AsyncResult.success(hostState({ phase })), target),
+      ).toContain("did not report");
+      expect(
+        jonesExactSourceResultError(
+          step,
+          AsyncResult.success(hostState({ phase, provenance: targetBuild })),
+          target,
+        ),
+      ).toBeNull();
+    }
+  });
+
+  it("revalidates the complete install selection and follower policy after confirmation", () => {
+    const state = hostState({
+      environmentId,
+      phase: "staged",
+      stagedHandle: "handle-1",
+      provenance: targetBuild,
+    });
+    const input = {
+      environmentId,
+      currentVersion: state.currentVersion!,
+      stagedHandle: "handle-1",
+    };
+    expect(jonesInstallRefusal(input, { state, freshness: "fresh" })).toBeUndefined();
+    for (const changed of [
+      { ...state, stagedHandle: "competing-handle" },
+      { ...state, currentVersion: "changed" },
+      { ...state, environmentId: EnvironmentId.make("another-host") },
+      { ...state, phase: "installing" as const },
+      { ...state, capability: { ...state.capability, install: false } },
+      { ...state, policy: { role: "follower" as const, leaderSource: "b".repeat(40) } },
+    ])
+      expect(jonesInstallRefusal(input, { state: changed, freshness: "fresh" })).toBeDefined();
+    expect(jonesInstallRefusal(input, { state, freshness: "stale" })).toBeDefined();
+  });
+
   it("names the other staged source and offers nothing for it", () => {
     const decision = resolve(
       hostState({ phase: "staged", stagedHandle: "handle-1", provenance: offered }),
@@ -618,6 +816,23 @@ describe("exact-source action resolution", () => {
       reason: "staged-other",
       message: expect.stringContaining(offered.sourceSha.slice(0, 7)),
     });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain(`this app needs ${target.slice(0, 7)}`);
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("Installing it there will not match this app");
+  });
+
+  it("directs an unknown staged source to review without claiming it matches the app", () => {
+    const decision = resolve(hostState({ phase: "staged", stagedHandle: "handle-1" }));
+    expect(decision).toMatchObject({ status: "unavailable", reason: "staged-other" });
+    if (decision.status !== "unavailable") throw new Error("Expected a source refusal");
+    expect(decision.message).toContain("no reported source");
+    expect(decision.message).toContain("will not be installed from this notice");
+    expect(decision.message).toContain("Settings → Connections");
+    expect(decision.message).toContain("review this host's downloaded update");
+    expect(decision.message).toContain("cannot confirm it matches this app");
   });
 
   it("lets an older host download only an offer that already is the target", () => {
@@ -775,9 +990,195 @@ describe("exact-source action resolution", () => {
     expect(
       jonesExactSourceResultError(
         step,
-        AsyncResult.success(hostState({ phase: "downloading" })),
+        AsyncResult.success(hostState({ phase: "downloading", provenance: targetBuild })),
         target,
       ),
     ).toBeNull();
   });
 });
+
+it("presents same-minute outcomes with exact-version stamps without changing identity", () => {
+  const fromVersion = "0.0.45-preview.20261020.100.1";
+  const targetVersion = "0.0.45-preview.20261020.101.1";
+  const state: JonesUpdateState = {
+    ...staged,
+    currentVersion: fromVersion,
+    currentBuildStartedAt: "2026-10-20T21:13:43Z",
+    provenance: { ...offered, version: targetVersion, buildStartedAt: "2026-10-20T21:13:47Z" },
+    outcome: { status: "committed", fromVersion, targetVersion },
+  };
+  const original = JSON.stringify(state);
+  expect(jonesUpdatePresentation(state).outcomeMessage).toBe(
+    "Installed: 1020·1713:43 → 1020·1713:47",
+  );
+  expect(JSON.stringify(state)).toBe(original);
+  expect(jonesCandidatePresentation(state)).toMatchObject({
+    version: targetVersion,
+    buildStartedAt: "2026-10-20T21:13:47Z",
+    sourceSha: offered.sourceSha,
+  });
+  expect(
+    jonesUpdatePresentation({
+      ...state,
+      outcome: {
+        status: "blocked",
+        fromVersion: `${fromVersion}0`,
+        targetVersion: `${targetVersion}0`,
+      },
+    }).outcomeMessage,
+  ).toBe(`Blocked: ${fromVersion}0 → ${targetVersion}0`);
+});
+
+it.effect(
+  "Stop bypasses a long operation request while later operation reads remain serialized",
+  () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("operation-lanes");
+      const target = new PrimaryConnectionTarget({
+        environmentId,
+        label: "Synthetic primary",
+        httpBaseUrl: "http://updates.example.test",
+        wsBaseUrl: "ws://updates.example.test/ws",
+      });
+      const prepared: PreparedConnection = {
+        environmentId,
+        label: target.label,
+        target,
+        httpBaseUrl: "http://updates.example.test",
+        socketUrl: "ws://updates.example.test/ws",
+        httpAuthorization: null,
+      };
+      const supervisor = EnvironmentSupervisor.of({
+        target,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none()),
+        prepared: yield* SubscriptionRef.make(Option.some(prepared)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const run: EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor, supervisor);
+      const environmentRegistry = EnvironmentRegistry.of({
+        run,
+      } as unknown as EnvironmentRegistry["Service"]);
+      const entered = yield* Deferred.make<void>();
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const calls: string[] = [];
+      const payloads: unknown[] = [];
+      const operationId = "11111111-1111-4111-8111-111111111111";
+      const stopId = "22222222-2222-4222-8222-222222222222";
+      const input = {
+        operationId,
+        environmentId,
+        expectedInstalledSource: "a".repeat(40),
+        action: { kind: "download-exact" as const, targetSource: "b".repeat(40) },
+      };
+      const stopInput = { environmentId, operationId, stopId };
+      const readInput = { environmentId, operationIds: [operationId] };
+      const receipt = {
+        ...input,
+        protocol: 1,
+        phase: "accepted",
+        acceptedAt: "2026-10-27T05:00:00Z",
+        updatedAt: "2026-10-27T05:00:00Z",
+      };
+      const stopReceipt = {
+        ...receipt,
+        phase: "stop-requested",
+        stop: { stopId, requestedAt: receipt.updatedAt },
+      };
+      const fetchFn: typeof fetch = async (request, init) => {
+        const path = new URL(String(request)).pathname;
+        calls.push(path);
+        expect(init?.credentials).toBe("include");
+        if (path.includes("/operations/")) payloads.push(JSON.parse(String(init?.body)));
+        if (path.endsWith("/operations/start")) {
+          Deferred.doneUnsafe(entered, Effect.void);
+          await released;
+          return Response.json(receipt);
+        }
+        if (path.endsWith("/operations/stop")) return Response.json(stopReceipt);
+        if (path.endsWith("/operations/read"))
+          return Response.json({ receipts: [{ operationId, receipt }] });
+        return Response.json(staged);
+      };
+      const runtime = Atom.runtime(
+        Layer.mergeAll(
+          Layer.succeed(EnvironmentRegistry, environmentRegistry),
+          layerRemoteHttpClient(fetchFn),
+        ),
+      );
+      const registry = AtomRegistry.make();
+      const pending: Array<Promise<unknown>> = [];
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          release();
+          try {
+            await Promise.allSettled(pending);
+          } finally {
+            registry.dispose();
+          }
+        }),
+      );
+      const updates = createJonesUpdateAtoms(runtime);
+      const started = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationStart", input },
+      });
+      pending.push(started);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Effect.promise(() => started).pipe(
+          Effect.flatMap((result) =>
+            Effect.die(
+              new Error("operationStart settled before entering the held fetch", { cause: result }),
+            ),
+          ),
+        ),
+      );
+      const read = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationRead", input: readInput },
+      });
+      pending.push(read);
+      const stopped = updates.stop.run(registry, {
+        environmentId,
+        input: { action: "operationStop", input: stopInput },
+      });
+      pending.push(stopped);
+      expect(yield* Effect.promise(() => stopped)).toMatchObject({
+        _tag: "Success",
+        value: stopReceipt,
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+      ]);
+      const checked = updates.action.run(registry, { environmentId, input: { action: "check" } });
+      pending.push(checked);
+      expect(yield* Effect.promise(() => checked)).toMatchObject({
+        _tag: "Success",
+        value: staged,
+      });
+      release();
+      expect(yield* Effect.promise(() => started)).toMatchObject({
+        _tag: "Success",
+        value: receipt,
+      });
+      expect(yield* Effect.promise(() => read)).toMatchObject({
+        _tag: "Success",
+        value: { receipts: [{ operationId, receipt }] },
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+        "/api/jones-updates/check",
+        "/api/jones-updates/operations/read",
+      ]);
+      expect(payloads).toEqual([input, stopInput, readInput]);
+    }).pipe(Effect.scoped),
+);

@@ -9,7 +9,9 @@ import {
   FleetEnrollmentInput,
   FleetHostError,
   FleetHostStatus,
+  FleetLeaderInput,
   FleetOperationId,
+  FleetPlanDirectiveInput,
   FleetStageInput,
   FleetRetireInput,
 } from "./host.ts";
@@ -58,6 +60,18 @@ export function makeFleetUpdatesHttpGroup({
       HttpApiEndpoint.post("activate", `${FLEET_UPDATES_HTTP_BASE}/activate`, {
         ...common,
         payload: FleetActivateInput,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.put("leader", `${FLEET_UPDATES_HTTP_BASE}/leader`, {
+        ...common,
+        payload: FleetLeaderInput,
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.put("planDirective", `${FLEET_UPDATES_HTTP_BASE}/plan-directive`, {
+        ...common,
+        payload: FleetPlanDirectiveInput,
       }).middleware(EnvironmentAuthenticatedAuth),
     );
 }

@@ -377,11 +377,16 @@ async function populateFixture(root: string, options: FixtureOptions) {
         await NodeFSP.rm(NodePath.join(proc, "4242"), { recursive: true });
         return inspection();
       case "install-launcher":
+      case "install-launcher-pointer":
         if (options.installResult === "unknown")
           return { status: "unknown", reason: "daemon-reload" };
-        await NodeFSP.writeFile(NodePath.join(dropins, OWNED_SYSTEM_DROPIN), ownedText);
-        unitState.owned = sha(ownedText);
-        unitState.exec = `launcher ${newVersion}`;
+        const installedText =
+          request.operation === "install-launcher-pointer"
+            ? ownedText.replace(launcherEntry, NodePath.join(base, "runtime/launcher/t3-launcher"))
+            : ownedText;
+        await NodeFSP.writeFile(NodePath.join(dropins, OWNED_SYSTEM_DROPIN), installedText);
+        unitState.owned = sha(installedText);
+        unitState.exec = `${request.operation === "install-launcher-pointer" ? "pointer" : "launcher"} ${newVersion}`;
         unitState.stopped = options.installedAs ?? unitState.stopped;
         return inspection();
       case "start":
@@ -1093,4 +1098,71 @@ it("fences user adoption from a home that holds a system adoption record", () =>
         },
       ),
     ).rejects.toThrow(/system-unit adoption record/);
+  }));
+
+it("refuses a priority drop-in with untrusted root metadata", () =>
+  fixture(async (f) => {
+    const priority = NodePath.join(f.dropins, "90-jones-priority.conf");
+    await NodeFSP.writeFile(priority, "[Service]\nNice=-15\n");
+    const rootFile = f.host.rootFile;
+    const run = f.host.run;
+    const host: SystemAdoptionHost = {
+      ...f.host,
+      rootFile: async (path) =>
+        path === priority
+          ? { uid: 1000, gid: 0, mode: 0o100644, bytes: Buffer.from("[Service]\nNice=-15\n") }
+          : rootFile(path),
+      run: async (command) => {
+        const output = await run(command);
+        return command.command === "systemctl" ? `${output}Nice=-15\n` : output;
+      },
+    };
+    await expect(planSystemAdoption(f.input, host)).rejects.toThrow(/priority/);
+  }));
+
+it("plans adoption with the exact independently installed priority policy", () =>
+  fixture(async (f) => {
+    const priority = NodePath.join(f.dropins, "90-jones-priority.conf");
+    await NodeFSP.writeFile(priority, "[Service]\nNice=-15\n");
+    const rootFile = f.host.rootFile;
+    const run = f.host.run;
+    const host: SystemAdoptionHost = {
+      ...f.host,
+      rootFile: async (path) =>
+        path === priority
+          ? { uid: 0, gid: 0, mode: 0o100644, bytes: Buffer.from("[Service]\nNice=-15\n") }
+          : rootFile(path),
+      run: async (command) => {
+        const output = await run(command);
+        return command.command === "systemctl" ? `${output}Nice=-15\n` : output;
+      },
+    };
+    const plan = await planSystemAdoption(f.input, host);
+    expect(
+      plan.plan.unit.records.some((entry) => entry.startsWith("dropin 90-jones-priority.conf ")),
+    ).toBe(true);
+    await NodeFSP.writeFile(NodePath.join(f.dropins, "jones-later.conf"), "[Service]\nNice=-15\n");
+    await expect(planSystemAdoption(f.input, host)).rejects.toThrow(/priority/);
+  }));
+
+it("binds pointer bootstrap into the reviewed system plan and uses only the closed pointer request", () =>
+  fixture(async (f) => {
+    const input = { ...f.input, launcherPointer: true };
+    const before = await tree(f.root);
+    const planned = await planSystemAdoption(input, f.host);
+    expect(await tree(f.root)).toEqual(before);
+    expect(planned.plan.ownedDropin.text).toContain(
+      `ExecStart=${f.base}/runtime/launcher/t3-launcher __service-launcher`,
+    );
+    expect(planned.plan.launcherPointer?.shimSha256).toMatch(/^[a-f0-9]{64}$/);
+    const result = await adoptSystemHost(
+      { ...input, approvedPlanSha256: planned.planSha256 },
+      f.host,
+    );
+    expect(result.state).toBe("adopted");
+    expect(f.events).toContain("control install-launcher-pointer");
+    expect(f.events).not.toContain("control install-launcher");
+    expect(await NodeFSP.readlink(NodePath.join(f.runtime, "launcher/current"))).toBe(
+      `../versions/${newVersion}`,
+    );
   }));

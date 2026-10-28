@@ -1,3 +1,8 @@
+import { userEvent } from "vite-plus/test/browser";
+import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
+import { readPreparedConnection } from "../../state/session";
+import { readThreadShell } from "../../state/entities";
+import { THREAD_CONTEXT_DROP_EVENT } from "../../components/chat/threadContextDrag";
 import { listenForWorkspaceFileDragEnd } from "./workspaceFileDragLifecycle";
 import { makeWorkspaceFileDropHandlers } from "../../components/chat/workspaceFileDrop";
 import { seedUserInputDraftAnswers } from "@t3tools/client-runtime/state/thread-requests";
@@ -26,10 +31,8 @@ import {
   ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
-import { act, useEffect, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { useEffect, useState } from "react";
+import { expect, it, vi } from "vite-plus/test";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
 import {
   buildPendingUserInputAnswers,
@@ -44,10 +47,29 @@ vi.mock(import("../../components/ChatMarkdown"), async (importOriginal) => ({
   default: (({ text }: { text: string }) => <p>{text}</p>) as never,
 }));
 
+vi.mock(import("../../state/entities"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  readThreadShell: vi.fn(),
+}));
+
 vi.mock(import("../../lib/imageCompression"), async (importOriginal) => {
   const original = await importOriginal();
   return { ...original, prepareImageForAttachment: vi.fn(original.prepareImageForAttachment) };
 });
+
+const { excerptRequest } = vi.hoisted(() => ({ excerptRequest: vi.fn() }));
+vi.mock(import("../../state/use-atom-command"), () => ({ useAtomCommand: () => excerptRequest }));
+vi.mock(import("../../state/session"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  readPreparedConnection: vi.fn(() => ({ httpBaseUrl: "http://synthetic.invalid" }) as never),
+}));
+const capturedExcerpt = {
+  status: "captured" as const,
+  capturedAt: "2026-10-21T00:00:00.000Z",
+  sourceSnapshotSequence: 12,
+  earlierHistory: "omitted" as const,
+  text: "Synthetic bounded thread excerpt",
+};
 
 const threadRef = {
   environmentId: EnvironmentId.make("question-test"),
@@ -120,6 +142,7 @@ function Harness({
           existing[id],
           value,
           questions.find((q) => q.id === id),
+          { notes: capability === "message" },
         ),
       })),
     onPrevious: () => setIndex((i) => Math.max(0, i - 1)),
@@ -150,6 +173,7 @@ function Harness({
           attachmentCapabilities={capabilities}
           answers={resolvedDrafts}
           questionIndex={index}
+          onSelectQuestion={setIndex}
           {...cardCallbacks}
           onToggleOption={(id, value) =>
             setAnswers((existing) => ({
@@ -158,13 +182,16 @@ function Harness({
                 questions.find((q) => q.id === id)!,
                 existing[id],
                 value,
+                { notes: capability === "message" },
               ),
             }))
           }
           onAdvance={() => {
             if (index < questions.length - 1) setIndex(index + 1);
             else {
-              const result = buildPendingUserInputAnswers(questions, resolvedDrafts);
+              const result = buildPendingUserInputAnswers(questions, resolvedDrafts, {
+                notes: capability === "message",
+              });
               if (!result) return;
               setResult(
                 Object.fromEntries(
@@ -180,9 +207,11 @@ function Harness({
                       ];
                     return [
                       q.id,
-                      projectPendingUserInputAnswer(result[q.id], draft?.threadContexts ?? []) as
-                        | string
-                        | string[],
+                      projectPendingUserInputAnswer(
+                        result[q.id],
+                        draft?.threadContexts ?? [],
+                        threadRef.environmentId,
+                      ) as string | string[],
                     ];
                   }),
                 ),
@@ -221,25 +250,51 @@ function Harness({
   );
 }
 
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  for (const id of ["approach", "second"])
-    clearQuestionAttachmentDraft(
-      questionAttachmentDraftId(threadRef.environmentId, threadRef.threadId, "request", id),
-    );
-  useAttachmentUploadStore.setState({ uploadsByImageId: {} });
-  container.remove();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+      await act(async () => screen?.unmount());
+      for (const id of ["approach", "second"])
+        clearQuestionAttachmentDraft(
+          questionAttachmentDraftId(threadRef.environmentId, threadRef.threadId, "request", id),
+        );
+      useAttachmentUploadStore.setState({ uploadsByImageId: {} });
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.restoreAllMocks();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    }
+  }
+  try {
+    vi.mocked(readPreparedConnection).mockReturnValue({
+      httpBaseUrl: "http://synthetic.invalid",
+    } as never);
+    excerptRequest.mockReset();
+    excerptRequest.mockImplementation(async ({ input }: { input: { threadId: string } }) => ({
+      _tag: "Success",
+      value: { threadId: input.threadId, excerpt: capturedExcerpt },
+    }));
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
 
 function answerField() {
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
@@ -275,7 +330,8 @@ async function key(init: KeyboardEventInit) {
 }
 
 it("ignores digits, Shift+Enter and IME while typing, then submits once with Enter", async () => {
-  await act(async () => root.render(<Harness />));
+  await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("1 custom answer");
   await key({ key: "1" });
   expect(answerField().value).toBe("1 custom answer");
@@ -288,8 +344,12 @@ it("ignores digits, Shift+Enter and IME while typing, then submits once with Ent
 });
 
 it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Enter", async (value) => {
-  await act(async () =>
-    root.render(<Harness questions={[{ ...question, initialAnswer: "  original\n  " }]} />),
+  await using _fixture = await setupTest();
+  await act(
+    async () =>
+      await root.rerender(
+        <Harness questions={[{ ...question, initialAnswer: "  original\n  " }]} />,
+      ),
   );
   expect(answerField().value).toBe("  original\n  ");
   await typeAnswer(value);
@@ -298,56 +358,48 @@ it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Enter", asy
   expect(output("messages")).toBe("[]");
 });
 
-it("saves each free-form answer with Enter, advances one question, and sends on the last", async () => {
-  const questions = [0, 1, 2].map((index) => ({
-    ...question,
-    id: `question-${index}`,
-    header: `Question ${index + 1}`,
-    options: [],
-    initialAnswer: "",
-  }));
-  await act(async () => root.render(<Harness questions={questions} />));
-  for (const [index, answer] of ["First answer", "Second answer", "Third answer"].entries()) {
-    expect(container.textContent).toContain(`${index + 1}/3`);
-    await typeAnswer(answer);
-    expect((await key({})).defaultPrevented).toBe(true);
-    if (index < 2) {
-      expect(output("answer")).toBe("null");
-      expect(answerField().value).toBe("");
+it.each(["live", "message"] as const)(
+  "saves each %s free-form answer with Enter, advances one question, and sends on the last",
+  async (capability) => {
+    await using _fixture = await setupTest();
+    const questions = [0, 1, 2].map((index) => ({
+      ...question,
+      id: `question-${index}`,
+      header: `Question ${index + 1}`,
+      options: [],
+      initialAnswer: "",
+    }));
+    await act(async () => root.rerender(<Harness questions={questions} capability={capability} />));
+    for (const [index, answer] of ["First answer", "Second answer", "Third answer"].entries()) {
+      expect(container.textContent).toContain(`${index + 1}/3`);
+      await typeAnswer(answer);
+      expect((await key({})).defaultPrevented).toBe(true);
+      if (index < 2) {
+        expect(output("answer")).toBe("null");
+        expect(answerField().value).toBe("");
+      }
     }
-  }
-  expect(output("answer")).toBe(
-    JSON.stringify({
-      "question-0": "First answer",
-      "question-1": "Second answer",
-      "question-2": "Third answer",
-    }),
-  );
-  expect(output("messages")).toBe("[]");
-});
+    expect(output("answer")).toBe(
+      JSON.stringify({
+        "question-0": "First answer",
+        "question-1": "Second answer",
+        "question-2": "Third answer",
+      }),
+    );
+    expect(output("messages")).toBe("[]");
+  },
+);
 
-it("inserts a newline with Shift+Enter in a prefilled answer, then submits with Enter", async () => {
-  await act(async () =>
-    root.render(<Harness questions={[{ ...question, options: [], initialAnswer: "First line" }]} />),
-  );
-  answerField().focus();
-  answerField().setSelectionRange(answerField().value.length, answerField().value.length);
-  await act(async () => userEvent.keyboard("{Shift>}{Enter}{/Shift}Second line"));
-  expect(answerField().value).toBe("First line\nSecond line");
-  expect(output("answer")).toBe("null");
-  await act(async () => userEvent.keyboard("{Enter}"));
-  expect(output("answer")).toBe(JSON.stringify({ approach: "First line\nSecond line" }));
-  expect(output("messages")).toBe("[]");
-});
-
-it("keeps each answer across Next, Back, minimize and restore", async () => {
-  await act(async () =>
-    root.render(
-      <Harness questions={[question, { ...question, id: "second", header: "Second" }]} />,
-    ),
+it("keeps each answer across Continue, Back, minimize and restore", async () => {
+  await using _fixture = await setupTest();
+  await act(
+    async () =>
+      await root.rerender(
+        <Harness questions={[question, { ...question, id: "second", header: "Second" }]} />,
+      ),
   );
   await typeAnswer("First answer");
-  await act(async () => button("Next").click());
+  await act(async () => button("Continue").click());
   await typeAnswer("Second answer");
   await act(async () => button("Back").click());
   expect(answerField().value).toBe("First answer");
@@ -362,16 +414,17 @@ it("keeps each answer across Next, Back, minimize and restore", async () => {
       .click(),
   );
   expect(answerField().value).toBe("First answer");
-  await act(async () => button("Next").click());
+  await act(async () => button("Continue").click());
   expect(answerField().value).toBe("Second answer");
   await act(async () => button("Send").click());
   expect(output("answer")).toBe('{"approach":"First answer","second":"Second answer"}');
   expect(output("messages")).toBe("[]");
 });
 
-it("choosing an option replaces the custom answer and auto-submits without sending a message", async () => {
-  vi.useFakeTimers();
-  await act(async () => root.render(<Harness />));
+it("choosing a live option replaces custom text but waits for explicit Send", async () => {
+  await using _fixture = await setupTest();
+  using _timers = fakeTimers();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Discard this answer");
   const option = [...container.querySelectorAll("button")].find((b) =>
     b.textContent?.includes("Incremental"),
@@ -379,6 +432,8 @@ it("choosing an option replaces the custom answer and auto-submits without sendi
   await act(async () => option.click());
   expect(answerField().value).toBe("");
   await act(async () => vi.advanceTimersByTime(200));
+  expect(output("answer")).toBe("null");
+  await act(async () => button("Send").click());
   expect(output("answer")).toBe('{"approach":"Incremental"}');
   expect(output("messages")).toBe("[]");
   expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Thread message"]')!.value).toBe(
@@ -386,9 +441,10 @@ it("choosing an option replaces the custom answer and auto-submits without sendi
   );
 });
 
-it("typing cancels a pending option auto-advance", async () => {
-  vi.useFakeTimers();
-  await act(async () => root.render(<Harness />));
+it("typing replaces a live choice without advancing or sending", async () => {
+  await using _fixture = await setupTest();
+  using _timers = fakeTimers();
+  await act(async () => await root.rerender(<Harness />));
   await act(async () =>
     [...container.querySelectorAll("button")]
       .find((b) => b.textContent?.includes("Incremental"))!
@@ -404,9 +460,13 @@ it("typing cancels a pending option auto-advance", async () => {
 it.each([false, true])(
   "preserves options-only selection with multiSelect=%s",
   async (multiSelect) => {
-    vi.useFakeTimers();
-    await act(async () =>
-      root.render(<Harness questions={[{ ...question, allowCustomAnswer: false, multiSelect }]} />),
+    await using _fixture = await setupTest();
+    using _timers = fakeTimers();
+    await act(
+      async () =>
+        await root.rerender(
+          <Harness questions={[{ ...question, allowCustomAnswer: false, multiSelect }]} />,
+        ),
     );
     expect(container.querySelector('[aria-label="Your answer"]')).toBeNull();
     await act(async () =>
@@ -415,10 +475,8 @@ it.each([false, true])(
         .click(),
     );
     await act(async () => vi.advanceTimersByTime(200));
-    if (multiSelect) {
-      expect(output("answer")).toBe("null");
-      await act(async () => button("Send").click());
-    }
+    expect(output("answer")).toBe("null");
+    await act(async () => button("Send").click());
     expect(output("answer")).toBe(
       JSON.stringify({ approach: multiSelect ? ["Incremental"] : "Incremental" }),
     );
@@ -427,9 +485,10 @@ it.each([false, true])(
 );
 
 it("omits Skip and dismisses only through the question header without a thread submit", async () => {
-  await act(async () => root.render(<Harness />));
+  await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   expect(button("Skip")).toBeUndefined();
-  await act(async () => root.render(<Harness dismissible capability="message" />));
+  await act(async () => await root.rerender(<Harness dismissible capability="message" />));
   expect(button("Skip")).toBeUndefined();
   await act(async () =>
     container.querySelector<HTMLButtonElement>("[data-pending-user-input-dismiss]")!.click(),
@@ -442,7 +501,8 @@ it("omits Skip and dismisses only through the question header without a thread s
 it.each([{ disabled: true }, { responding: true }, { capability: "not_resumable" as const }])(
   "blocks card actions while unavailable: %o",
   async (state) => {
-    await act(async () => root.render(<Harness {...state} />));
+    await using _fixture = await setupTest();
+    await act(async () => await root.rerender(<Harness {...state} />));
     expect(answerField().disabled).toBe(true);
     expect(button(state.responding ? "Sending…" : "Send").disabled).toBe(true);
     await act(async () =>
@@ -455,11 +515,12 @@ it.each([{ disabled: true }, { responding: true }, { capability: "not_resumable"
 );
 
 it("does not steal focus when a question arrives", async () => {
+  await using _fixture = await setupTest();
   const focused = document.createElement("textarea");
   document.body.append(focused);
   focused.focus();
   try {
-    await act(async () => root.render(<Harness />));
+    await act(async () => await root.rerender(<Harness />));
     expect(document.activeElement).toBe(focused);
   } finally {
     focused.remove();
@@ -474,14 +535,18 @@ const capabilities = {
 };
 
 it("pastes files into the answer draft only, blocks until ready, then submits them with the answer", async () => {
+  await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
     "request",
     "approach",
   );
-  await act(async () =>
-    root.render(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
+  await act(
+    async () =>
+      await root.rerender(
+        <Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />,
+      ),
   );
   await typeAnswer("Read this file");
   const clipboardData = new DataTransfer();
@@ -514,6 +579,7 @@ it("pastes files into the answer draft only, blocks until ready, then submits th
 });
 
 it("uses the inline paperclip picker for the question while preserving normal attachments", async () => {
+  await using _fixture = await setupTest();
   const normalFile = {
     type: "file" as const,
     id: "normal-file",
@@ -525,8 +591,11 @@ it("uses the inline paperclip picker for the question while preserving normal at
   const store = useComposerDraftStore.getState();
   store.addFiles(threadRef, [normalFile], { appendReference: false });
   try {
-    await act(async () =>
-      root.render(<Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />),
+    await act(
+      async () =>
+        await root.rerender(
+          <Harness capabilities={{ ...capabilities, supportsAttachmentUploads: true }} />,
+        ),
     );
     await typeAnswer("Question response");
     const picker = container.querySelector<HTMLInputElement>('input[type="file"]')!;
@@ -586,6 +655,7 @@ it("uses the inline paperclip picker for the question while preserving normal at
 });
 
 it("releases a failed image preparation so the written answer can still be sent", async () => {
+  await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
@@ -599,7 +669,7 @@ it("releases a failed image preparation so the written answer can still be sent"
         rejectPreparation = reject;
       }),
   );
-  await act(async () => root.render(<Harness capabilities={capabilities} />));
+  await act(async () => await root.rerender(<Harness capabilities={capabilities} />));
   await typeAnswer("Answer survives attachment failure");
   const clipboardData = new DataTransfer();
   clipboardData.items.add(new File(["image"], "failed.png", { type: "image/png" }));
@@ -625,6 +695,7 @@ it("releases a failed image preparation so the written answer can still be sent"
 });
 
 it("shows legacy unavailable attachments and removes them without changing the thread draft", async () => {
+  await using _fixture = await setupTest();
   const key = questionAttachmentDraftId(
     threadRef.environmentId,
     threadRef.threadId,
@@ -645,7 +716,7 @@ it("shows legacy unavailable attachments and removes them without changing the t
     ],
     { appendReference: false },
   );
-  await act(async () => root.render(<Harness />));
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Answer without the file");
   expect(button("Send").disabled).toBe(true);
   await act(async () =>
@@ -658,36 +729,67 @@ it("shows legacy unavailable attachments and removes them without changing the t
   );
 });
 
-it("pastes a thread reference into the answer without adding context to the thread draft", async () => {
-  const record = threadContextRecord(
-    { environmentId: threadRef.environmentId, threadId: ThreadId.make("related") },
-    "Related thread",
-  );
-  const clipboardData = new DataTransfer();
-  clipboardData.setData("text/plain", formatInlineContextReference(threadContextReference(record)));
-  clipboardData.setData(
-    COMPOSER_CONTEXT_CLIPBOARD_MIME,
-    encodeComposerContextFragment({
-      version: 1,
-      source: { environmentId: threadRef.environmentId },
-      records: [record],
-    })!,
-  );
-  await act(async () => root.render(<Harness />));
-  await act(async () =>
-    answerField().dispatchEvent(
-      new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
-    ),
-  );
-  expect(
-    useComposerDraftStore.getState().getComposerDraft(threadRef)?.threadContexts ?? [],
-  ).toEqual([]);
-  await act(async () => button("Send").click());
-  expect(output("answer")).toBe(
-    JSON.stringify({ approach: formatThreadLink(record.threadId, "Related thread") }),
-  );
-  expect(output("messages")).toBe("[]");
-});
+it.each(["question-test", "foreign-environment"])(
+  "pastes a %s thread with bounded source context without exporting or uploading files",
+  async (source) => {
+    await using _fixture = await setupTest();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const record = threadContextRecord(
+      { environmentId: EnvironmentId.make(source), threadId: ThreadId.make("related") },
+      "Related thread",
+    );
+    const clipboardData = new DataTransfer();
+    clipboardData.setData(
+      "text/plain",
+      formatInlineContextReference(threadContextReference(record)),
+    );
+    clipboardData.setData(
+      COMPOSER_CONTEXT_CLIPBOARD_MIME,
+      encodeComposerContextFragment({
+        version: 1,
+        source: { environmentId: record.environmentId },
+        records: [record],
+      })!,
+    );
+    await act(async () => await root.rerender(<Harness />));
+    await act(async () =>
+      answerField().dispatchEvent(
+        new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+      ),
+    );
+    expect(
+      useComposerDraftStore.getState().getComposerDraft(threadRef)?.threadContexts ?? [],
+    ).toEqual([]);
+    const answerDraft = useComposerDraftStore
+      .getState()
+      .getComposerDraft(
+        questionAttachmentDraftId(
+          threadRef.environmentId,
+          threadRef.threadId,
+          "request",
+          question.id,
+        ),
+      );
+    expect(answerDraft?.threadContexts).toEqual([{ ...record, excerpt: capturedExcerpt }]);
+    expect(excerptRequest).toHaveBeenCalledWith({
+      environmentId: record.environmentId,
+      input: { threadId: record.threadId },
+    });
+    expect(answerDraft?.files ?? []).toEqual([]);
+    expect(answerField().value).toBe(formatInlineContextReference(threadContextReference(record)));
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+    await act(async () => button("Send").click());
+    const sentAnswer = JSON.parse(output("answer")!) as { approach: string };
+    expect(sentAnswer.approach).toContain(
+      source === "question-test"
+        ? formatThreadLink(record.threadId, "Related thread")
+        : "environmentId: foreign-environment",
+    );
+    expect(sentAnswer.approach).toContain("Synthetic bounded thread excerpt");
+    expect(output("messages")).toBe("[]");
+  },
+);
 
 function WorkspaceDropHarness({ onWorkspaceFiles }: { onWorkspaceFiles: (files: File[]) => void }) {
   const [active, setActive] = useState(false);
@@ -709,8 +811,11 @@ function WorkspaceDropHarness({ onWorkspaceFiles }: { onWorkspaceFiles: (files: 
 }
 
 it("clears the workspace overlay after a stopped reply drop and attaches only to the reply", async () => {
+  await using _fixture = await setupTest();
   const onWorkspaceFiles = vi.fn();
-  await act(async () => root.render(<WorkspaceDropHarness onWorkspaceFiles={onWorkspaceFiles} />));
+  await act(
+    async () => await root.rerender(<WorkspaceDropHarness onWorkspaceFiles={onWorkspaceFiles} />),
+  );
   const dataTransfer = new DataTransfer();
   dataTransfer.items.add(
     new File(["screenshot contents"], "screenshot.txt", { type: "text/plain" }),
@@ -770,7 +875,8 @@ it("clears the workspace overlay after a stopped reply drop and attaches only to
 });
 
 it("clears the workspace overlay on dragend and disposes global listeners", async () => {
-  await act(async () => root.render(<WorkspaceDropHarness onWorkspaceFiles={vi.fn()} />));
+  await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<WorkspaceDropHarness onWorkspaceFiles={vi.fn()} />));
   const dataTransfer = new DataTransfer();
   dataTransfer.items.add(new File(["file"], "answer.txt", { type: "text/plain" }));
   await act(async () =>
@@ -791,4 +897,256 @@ it("clears the workspace overlay on dragend and disposes global listeners", asyn
   window.dispatchEvent(new Event("drop"));
   window.dispatchEvent(new Event("dragend"));
   expect(clearDrag).not.toHaveBeenCalled();
+});
+
+it.each(["question-test", "foreign-environment"])(
+  "drops a %s thread without exporting or uploading its history",
+  async (source) => {
+    await using _fixture = await setupTest();
+    const ref = { environmentId: EnvironmentId.make(source), threadId: ThreadId.make("dropped") };
+    vi.mocked(readThreadShell).mockReturnValue({ title: "Dropped thread" } as never);
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    await act(async () => await root.rerender(<Harness />));
+    await act(async () =>
+      container
+        .querySelector("[data-thread-context-drop]")!
+        .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+    );
+    const draft = useComposerDraftStore
+      .getState()
+      .getComposerDraft(
+        questionAttachmentDraftId(
+          threadRef.environmentId,
+          threadRef.threadId,
+          "request",
+          question.id,
+        ),
+      );
+    const record = threadContextRecord(ref, "Dropped thread");
+    expect(draft?.threadContexts).toEqual([{ ...record, excerpt: capturedExcerpt }]);
+    expect(excerptRequest).toHaveBeenCalledWith({
+      environmentId: ref.environmentId,
+      input: { threadId: ref.threadId },
+    });
+    expect(draft?.files ?? []).toEqual([]);
+    expect(answerField().value).toBe(
+      formatInlineContextReference(threadContextReference(record)) + " ",
+    );
+    expect(fetchSpy).not.toHaveBeenCalled();
+  },
+);
+
+it("blocks question submission while thread context is captured, then submits the snapshot", async () => {
+  await using _fixture = await setupTest();
+  let resolve!: (value: unknown) => void;
+  excerptRequest.mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const ref = {
+    environmentId: EnvironmentId.make("foreign-environment"),
+    threadId: ThreadId.make("pending-thread"),
+  };
+  vi.mocked(readThreadShell).mockReturnValue({ title: "Pending thread" } as never);
+  await act(async () => await root.rerender(<Harness />));
+  await act(async () =>
+    container
+      .querySelector("[data-thread-context-drop]")!
+      .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+  );
+  expect(button("Send").disabled).toBe(true);
+  expect(output("answer")).toBe("null");
+  await act(async () =>
+    resolve({ _tag: "Success", value: { threadId: ref.threadId, excerpt: capturedExcerpt } }),
+  );
+  expect(button("Send").disabled).toBe(false);
+  await act(async () => button("Send").click());
+  expect(output("answer")).toContain("Synthetic bounded thread excerpt");
+});
+
+it("copies a captured question reference without requesting a newer snapshot", async () => {
+  await using _fixture = await setupTest();
+  const record = {
+    ...threadContextRecord(
+      {
+        environmentId: EnvironmentId.make("foreign-environment"),
+        threadId: ThreadId.make("copied"),
+      },
+      "Copied",
+    ),
+    excerpt: capturedExcerpt,
+  };
+  const clipboardData = new DataTransfer();
+  clipboardData.setData("text/plain", formatInlineContextReference(threadContextReference(record)));
+  clipboardData.setData(
+    COMPOSER_CONTEXT_CLIPBOARD_MIME,
+    encodeComposerContextFragment({
+      version: 1,
+      source: { environmentId: record.environmentId },
+      records: [record],
+    })!,
+  );
+  await act(async () => await root.rerender(<Harness />));
+  await act(async () =>
+    answerField().dispatchEvent(
+      new ClipboardEvent("paste", { clipboardData, bubbles: true, cancelable: true }),
+    ),
+  );
+  expect(excerptRequest).not.toHaveBeenCalled();
+  await act(async () => button("Send").click());
+  expect(output("answer")).toContain("Synthetic bounded thread excerpt");
+});
+
+it("keeps disconnected source identity without trying the current environment", async () => {
+  await using _fixture = await setupTest();
+  vi.mocked(readPreparedConnection).mockReturnValue(null);
+  const ref = {
+    environmentId: EnvironmentId.make("disconnected-source"),
+    threadId: ThreadId.make("unavailable"),
+  };
+  vi.mocked(readThreadShell).mockReturnValue({ title: "Unavailable thread" } as never);
+  await act(async () => await root.rerender(<Harness />));
+  await act(async () =>
+    container
+      .querySelector("[data-thread-context-drop]")!
+      .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+  );
+  expect(readPreparedConnection).toHaveBeenCalledWith(ref.environmentId);
+  expect(excerptRequest).not.toHaveBeenCalled();
+  expect(button("Send").disabled).toBe(false);
+  await act(async () => button("Send").click());
+  expect(output("answer")).toContain("source_disconnected");
+  expect(output("answer")).toContain("environmentId: disconnected-source");
+});
+
+it("does not apply a capture after its question component unmounts", async () => {
+  await using _fixture = await setupTest();
+  let resolve!: (value: unknown) => void;
+  excerptRequest.mockImplementation(
+    () =>
+      new Promise((done) => {
+        resolve = done;
+      }),
+  );
+  const ref = {
+    environmentId: EnvironmentId.make("foreign-environment"),
+    threadId: ThreadId.make("late-thread"),
+  };
+  vi.mocked(readThreadShell).mockReturnValue({ title: "Late thread" } as never);
+  await act(async () => await root.rerender(<Harness />));
+  await act(async () =>
+    container
+      .querySelector("[data-thread-context-drop]")!
+      .dispatchEvent(new CustomEvent(THREAD_CONTEXT_DROP_EVENT, { detail: [ref] })),
+  );
+  await act(async () => await root.rerender(<div />));
+  await act(async () =>
+    resolve({ _tag: "Success", value: { threadId: ref.threadId, excerpt: capturedExcerpt } }),
+  );
+  const target = questionAttachmentDraftId(
+    threadRef.environmentId,
+    threadRef.threadId,
+    "request",
+    question.id,
+  );
+  expect(useComposerDraftStore.getState().getComposerDraft(target)?.threadContexts).toEqual([
+    threadContextRecord(ref, "Late thread"),
+  ]);
+  expect(useQuestionAttachmentPreparation.getState().counts[target]).toBe(0);
+});
+
+it("jumps freely with native sibling buttons, expands the current collapsed question and preserves drafts", async () => {
+  await using _fixture = await setupTest();
+  await act(async () =>
+    root.rerender(
+      <Harness
+        capability="message"
+        dismissible
+        questions={[question, { ...question, id: "second" }, { ...question, id: "last" }]}
+      />,
+    ),
+  );
+  await typeAnswer("First draft");
+  const dot = (i: number) =>
+    container.querySelector<HTMLButtonElement>(`button[aria-label^="Question ${i} of 3,"]`)!;
+  expect(
+    container.querySelector("button button, button textarea, button a, button [role=button]"),
+  ).toBeNull();
+  const collapse = () =>
+    container.querySelector<HTMLButtonElement>("[data-pending-user-input-toggle]")!;
+  await act(() => collapse().click());
+  expect(collapse().getAttribute("data-pending-user-input-toggle")).toBe("collapsed");
+  await act(() => dot(1).focus());
+  await userEvent.keyboard("{Enter}");
+  expect(collapse().getAttribute("data-pending-user-input-toggle")).toBe("expanded");
+  expect(document.activeElement).toBe(dot(1));
+  await userEvent.keyboard("{Tab}");
+  expect(document.activeElement).toBe(dot(2));
+  await userEvent.keyboard(" ");
+  expect(document.activeElement).toBe(dot(2));
+  expect(dot(2).getAttribute("aria-current")).toBe("step");
+  expect(answerField().value).toBe("");
+  await act(() => dot(3).click());
+  expect(button("Send").getAttribute("aria-disabled")).toBe("true");
+  const reason = container.querySelector(
+    `#${CSS.escape(button("Send").getAttribute("aria-describedby")!)}`,
+  );
+  expect(reason?.textContent).toBe("Answer question 2 to send · 1 of 3 answered");
+  await act(() => button("Send").click());
+  await act(() => button("Send").focus());
+  await userEvent.keyboard("{Enter} ");
+  expect(output("answer")).toBe("null");
+  await act(() => dot(1).click());
+  expect(answerField().value).toBe("First draft");
+  await act(() => button("Continue").click());
+  await typeAnswer("Second draft");
+  await act(() => dot(3).click());
+  await typeAnswer("Last draft");
+  await act(() => button("Send").click());
+  expect(output("answer")).toBe(
+    JSON.stringify({ approach: "First draft", second: "Second draft", last: "Last draft" }),
+  );
+});
+
+it("keeps choice plus multiline note until Clear choice and sends with Enter", async () => {
+  await using _fixture = await setupTest();
+  using _timers = fakeTimers();
+  await act(async () => root.rerender(<Harness capability="message" />));
+  await act(() =>
+    container.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!.click(),
+  );
+  await act(() => vi.advanceTimersByTime(500));
+  expect(output("answer")).toBe("null");
+  await typeAnswer("First line\nSecond line");
+  expect(container.textContent).toContain("Note (optional): sent with your choice");
+  expect(answerField().value).toBe("First line\nSecond line");
+  expect(container.textContent).not.toContain("Sends:");
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect((await key({ shiftKey: true })).defaultPrevented).toBe(false);
+  expect(output("answer")).toBe("null");
+  await act(() => button("Clear choice").click());
+  expect(answerField().value).toBe("First line\nSecond line");
+  expect(container.querySelector('button[aria-pressed="true"]')).toBeNull();
+  expect((await key({})).defaultPrevented).toBe(true);
+  expect(output("answer")).toBe(JSON.stringify({ approach: "First line\nSecond line" }));
+});
+
+it("inserts a newline with Shift+Enter and sends its choice and note with Enter", async () => {
+  await using _fixture = await setupTest();
+  await act(async () => root.rerender(<Harness capability="message" />));
+  await act(() =>
+    container.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!.click(),
+  );
+  await typeAnswer("First paragraph");
+  await act(() => answerField().focus());
+  answerField().setSelectionRange(answerField().value.length, answerField().value.length);
+  await userEvent.keyboard("{Shift>}{Enter}{/Shift}Second paragraph");
+  expect(answerField().value).toBe("First paragraph\nSecond paragraph");
+  expect(output("answer")).toBe("null");
+  await userEvent.keyboard("{Enter}");
+  expect(output("answer")).toBe(
+    JSON.stringify({ approach: "Incremental\nNote: First paragraph\nSecond paragraph" }),
+  );
 });

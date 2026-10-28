@@ -16,8 +16,9 @@ const reasons: Record<
 > = {
   descriptor_absent: "source descriptor unavailable",
   build_unavailable: "build identity unavailable",
-  contract_mismatch: "source contract differs",
-  source_mismatch: "enrolled source or build differs",
+  contract_mismatch:
+    "the running app build differs from the enrolled build; refresh enrollment for this running build, then refresh here",
+  source_mismatch: "this environment is not enrolled; enroll this environment, then refresh here",
   authority_mismatch: "source authority differs",
   generation_mismatch: "source generation differs",
   authority_fenced: "source authority is fenced",

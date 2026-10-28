@@ -4,8 +4,8 @@ import {
   type UserProfileCustomPage,
   UserProfileView,
 } from "@clerk/expo/native-components";
-import { StackActions, useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useNavigation } from "@react-navigation/native";
+import { useEffect, useLayoutEffect, useState } from "react";
 import { View } from "react-native";
 
 import { hasCloudPublicConfig } from "../cloud/publicConfig";
@@ -25,7 +25,7 @@ export function SettingsAuthRouteScreen() {
 
   useLayoutEffect(() => {
     if (!hasCloudPublicConfig()) {
-      navigation.dispatch(StackActions.replace("SettingsContent"));
+      navigation.goBack();
     }
   }, [navigation]);
 
@@ -35,25 +35,22 @@ export function SettingsAuthRouteScreen() {
 function ConfiguredSettingsAuthRouteScreen() {
   const { isLoaded, isSignedIn } = useAuth({ treatPendingAsSignedOut: false });
   const navigation = useNavigation();
-  const handleHostBack = useCallback(
-    () => navigation.dispatch(StackActions.popTo("SettingsContent")),
-    [navigation],
-  );
-  const hasBeenSignedIn = useRef(isSignedIn);
-  if (isSignedIn) {
-    hasBeenSignedIn.current = true;
-  }
+  const handleHostBack = () => navigation.goBack();
+  // Once signed in, stay on the profile view so signing out pops back instead of
+  // flashing the sign-in form.
+  const [hasBeenSignedIn, setHasBeenSignedIn] = useState(isSignedIn === true);
+  if (isSignedIn && !hasBeenSignedIn) setHasBeenSignedIn(true);
 
   useEffect(() => {
-    if (hasBeenSignedIn.current && isLoaded && isSignedIn === false) {
-      navigation.dispatch(StackActions.popTo("SettingsContent"));
+    if (hasBeenSignedIn && isLoaded && isSignedIn === false) {
+      navigation.goBack();
     }
-  }, [isLoaded, isSignedIn, navigation]);
+  }, [hasBeenSignedIn, isLoaded, isSignedIn, navigation]);
 
   return (
     <View collapsable={false} className="flex-1 overflow-hidden bg-sheet">
       {isLoaded ? (
-        hasBeenSignedIn.current ? (
+        hasBeenSignedIn ? (
           <UserProfileView
             customPages={USER_PROFILE_CUSTOM_PAGES}
             isDismissible={false}

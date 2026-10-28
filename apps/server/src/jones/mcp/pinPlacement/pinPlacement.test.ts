@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts";
 import * as McpInvocationContext from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import * as ThreadHandlers from "../../../mcp/toolkits/thread/handlers.ts";
@@ -120,23 +121,21 @@ const makeEnvironment = (
     NodeCrypto.layer,
     Layer.mock(ThreadSearch.ThreadSearch)({}),
     Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
+    Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+      list: (query) =>
+        Effect.sync(() => {
+          expect(query).toEqual({ location: "active" });
+          return {
+            snapshotSequence: commands.length,
+            threads: [...shells.values()].filter(
+              (thread) => thread.archivedAt === null && thread.deletedAt === null,
+            ),
+          };
+        }),
+    }),
     Layer.mock(ThreadManagement.ThreadManagementService)({
       getThreadShell: (id) => Effect.succeed(shells.get(id) ?? null),
       getProjectThreadRecords: ({ threadId }) => Effect.succeed(records(threadId)),
-      getShellSnapshot: (options) =>
-        Effect.sync(() => {
-          const all = [...shells.values()];
-          const archived = all.filter((thread) => thread.archivedAt !== null);
-          return {
-            schemaVersion: 1,
-            snapshotSequence: commands.length,
-            threads:
-              options?.location === "archive"
-                ? []
-                : all.filter((thread) => thread.archivedAt === null),
-            archivedThreads: options?.location === "archive" ? archived : [],
-          };
-        }),
       dispatch: (command) =>
         Effect.sync(() => {
           commands.push(command);

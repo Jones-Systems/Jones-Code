@@ -1,0 +1,116 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "install-status-panel",
+  "jonesOwnedPaths": [
+    "apps/desktop/src/jones/installPlan/coordinator.test.ts",
+    "apps/desktop/src/jones/installPlan/coordinator.ts",
+    "apps/desktop/src/jones/installPlan/ipc.test.ts",
+    "apps/desktop/src/jones/installPlan/ipc.ts",
+    "apps/desktop/src/jones/installPlan/store.test.ts",
+    "apps/desktop/src/jones/installPlan/store.ts",
+    "apps/desktop/src/jones/storage/privateJsonStore.ts",
+    "apps/desktop/src/jones/updates/jonesNativeRecovery.test.ts",
+    "apps/desktop/src/jones/updates/recoveryPreflight.test.ts",
+    "apps/desktop/src/jones/updates/recoveryPreflight.ts",
+    "apps/desktop/src/jones/updates/stagingAdmission.test.ts",
+    "apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx",
+    "apps/mobile/src/jones/updates/actionJournal.test.ts",
+    "apps/mobile/src/jones/updates/actionJournal.ts",
+    "apps/server/src/jones/updates/operations/ledger.test.ts",
+    "apps/server/src/jones/updates/operations/ledger.ts",
+    "apps/server/src/jones/updates/operations/operations.test.ts",
+    "apps/server/src/jones/updates/operations/operations.ts",
+    "apps/server/src/jones/updates/operations/recoveryPreflight.test.ts",
+    "apps/server/src/jones/updates/operations/recoveryPreflight.ts",
+    "apps/server/src/jones/updates/preparation/lifecycle.test.ts",
+    "apps/server/src/jones/updates/preparation/lifecycle.ts",
+    "apps/web/src/jones/fleetUpdates/FleetController.test.tsx",
+    "apps/web/src/jones/installStatus/InstallPlanController.tsx",
+    "apps/web/src/jones/installStatus/InstallStatusPanel.browser.test.tsx",
+    "apps/web/src/jones/installStatus/InstallStatusPanel.tsx",
+    "apps/web/src/jones/installStatus/actions.ts",
+    "apps/web/src/jones/installStatus/bulkUpdates.ts",
+    "apps/web/src/jones/installStatus/checkFeedback.ts",
+    "apps/web/src/jones/installStatus/connectionHost.ts",
+    "apps/web/src/jones/installStatus/copy.ts",
+    "apps/web/src/jones/installStatus/entrypoints.test.ts",
+    "apps/web/src/jones/installStatus/entrypoints.ts",
+    "apps/web/src/jones/installStatus/execution.test.ts",
+    "apps/web/src/jones/installStatus/execution.ts",
+    "apps/web/src/jones/installStatus/executionJournal.test.ts",
+    "apps/web/src/jones/installStatus/executionJournal.ts",
+    "apps/web/src/jones/installStatus/panelUi.test.ts",
+    "apps/web/src/jones/installStatus/panelUi.ts",
+    "apps/web/src/jones/installStatus/presentation.ts",
+    "apps/web/src/jones/installStatus/production.ts",
+    "apps/web/src/jones/installStatus/recoveryReview.browser.test.tsx",
+    "apps/web/src/jones/installStatus/recoveryReview.tsx",
+    "apps/web/src/jones/installStatus/services.ts",
+    "apps/web/src/jones/installStatus/useInstallPlan.ts",
+    "apps/web/src/jones/installStatus/webReviewAuthority.test.ts",
+    "apps/web/src/jones/installStatus/webReviewAuthority.ts",
+    "apps/web/src/jones/updates/fixtures/install-preview-plan.ts",
+    "apps/web/src/jones/updates/productionReview.browser.test.tsx",
+    "packages/client-runtime/src/jones/installPlan/index.ts",
+    "packages/client-runtime/src/jones/installPlan/model.test.ts",
+    "packages/client-runtime/src/jones/installPlan/model.ts",
+    "packages/client-runtime/src/jones/installPlan/presentation.test.ts",
+    "packages/client-runtime/src/jones/installPlan/presentation.ts",
+    "packages/client-runtime/src/jones/installPlan/runner.test.ts",
+    "packages/client-runtime/src/jones/installPlan/runner.ts",
+    "packages/client-runtime/src/jones/updates/actionJournal.test.ts",
+    "packages/client-runtime/src/jones/updates/actionJournal.ts",
+    "packages/client-runtime/src/jones/updates/executor.test.ts",
+    "packages/client-runtime/src/jones/updates/executor.ts",
+    "packages/client-runtime/src/jones/updates/targetStatus.test.ts",
+    "packages/client-runtime/src/jones/updates/targetStatus.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/installPlan.ts"
+    },
+    {
+      "from": "apps/desktop/src/ipc/DesktopIpcHandlers.ts",
+      "to": "apps/desktop/src/jones/installPlan/ipc.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "packages/contracts/src/jones/installPlan.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/installPlan/store.ts"
+    },
+    {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/installPlan/coordinator.ts"
+    },
+    {
+      "from": "apps/web/src/AppRoot.tsx",
+      "to": "apps/web/src/jones/installStatus/InstallPlanController.tsx"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
+      "to": "apps/web/src/jones/installStatus/InstallStatusPanel.tsx"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "apps/web/src/jones/installStatus/checkFeedback.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "apps/web/src/jones/installStatus/entrypoints.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
+      "to": "apps/web/src/jones/installStatus/useInstallPlan.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/useUpdateEverything.ts",
+      "to": "apps/web/src/jones/installStatus/bulkUpdates.ts"
+    }
+  ]
+}

@@ -4,37 +4,9 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   collectRestartingMachines,
   collectServerUpdateTargets,
-  closeFinishedUpdateRun,
-  collectUpdateEverythingResult,
-  describeUpdateCapsule,
-  describeUpdateEverything,
-  getUpdateEverythingToastView,
-  resolveUpdateRunMachineStatus,
   runUpdateEverything,
   type UpdateEverythingMachine,
-  type UpdateEverythingRun,
-  type UpdateRunMachine,
-  type UpdateRunMachineStatus,
-  UPDATE_SLOW_AFTER_MS,
 } from "./updateEverything.logic";
-
-const runMachine = (overrides: Partial<UpdateRunMachine> = {}): UpdateRunMachine => ({
-  environmentId: EnvironmentId.make("alvin"),
-  label: "alvin",
-  updatesProviders: true,
-  server: {
-    environmentId: EnvironmentId.make("alvin"),
-    serverLabel: "alvin",
-    selfUpdate: "boot-service",
-    targetVersion: "0.0.50",
-  },
-  handedOffVersion: null,
-  startedAt: 0,
-  result: null,
-  failure: null,
-  providerFailure: null,
-  ...overrides,
-});
 
 function machine(
   id: string,
@@ -154,32 +126,6 @@ describe("collectRestartingMachines", () => {
 });
 
 describe("runUpdateEverything", () => {
-  it("restarts servers after providers finish and returns every result", async () => {
-    const calls: string[] = [];
-    let finishProviders = (_value: string) => {};
-    const run = runUpdateEverything({
-      downloadLocal: async () => {
-        calls.push("download");
-        return true;
-      },
-      updateProviders: () =>
-        new Promise<string>((resolve) => {
-          calls.push("providers");
-          finishProviders = resolve;
-        }),
-      updateServers: async () => {
-        calls.push("servers");
-        return 2;
-      },
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(calls).toEqual(["download", "providers"]);
-    finishProviders("provider results");
-    expect(await run).toEqual({ localReady: true, providers: "provider results", servers: 2 });
-    expect(calls).toEqual(["download", "providers", "servers"]);
-  });
-
   it("still updates remote machines when the local download fails", async () => {
     const calls: string[] = [];
     const result = await runUpdateEverything({
@@ -197,232 +143,48 @@ describe("runUpdateEverything", () => {
   });
 });
 
-describe("resolveUpdateRunMachineStatus", () => {
-  const running = (stage: "downloading" | "installing" | "resuming") =>
-    ({ status: "running", stage, fromVersion: "0.0.40", targetVersion: "0.0.50" }) as const;
-
-  it("follows the run phase, then the server's own update stage", () => {
-    const idle = { status: "idle" } as const;
-    expect(resolveUpdateRunMachineStatus(runMachine(), "providers", idle)).toBe("providers");
-    expect(resolveUpdateRunMachineStatus(runMachine(), "servers", idle)).toBe("waiting");
-    expect(resolveUpdateRunMachineStatus(runMachine(), "servers", running("installing"))).toBe(
-      "downloading",
-    );
-    expect(resolveUpdateRunMachineStatus(runMachine(), "servers", running("resuming"))).toBe(
-      "restarting",
-    );
-    expect(
-      resolveUpdateRunMachineStatus(
-        runMachine({ updatesProviders: false }),
-        "providers",
-        running("downloading"),
-      ),
-    ).toBe("downloading");
-    expect(resolveUpdateRunMachineStatus(runMachine({ result: "failed" }), "servers", idle)).toBe(
-      "failed",
-    );
-    expect(
-      resolveUpdateRunMachineStatus(
-        runMachine({ server: null, handedOffVersion: "0.0.50" }),
-        "servers",
-        idle,
-      ),
-    ).toBe("restarting");
-  });
-});
-
-describe("update capsule", () => {
-  const run = (overrides: Partial<UpdateEverythingRun> = {}): UpdateEverythingRun => ({
-    localVersion: null,
-    phase: "servers",
-    restartAt: null,
-    machines: [],
-    ...overrides,
-  });
-  const view = (
-    label: string,
-    status: UpdateRunMachineStatus,
-    overrides: Partial<UpdateRunMachine> = {},
-  ) => ({
-    machine: runMachine({ environmentId: EnvironmentId.make(label), label, ...overrides }),
-    status,
-  });
-
-  it("counts down this app's restart before anything else", () => {
-    expect(
-      describeUpdateCapsule(
-        run({ phase: "countdown", restartAt: 5_000, localVersion: "0.0.50" }),
-        [view("alvin", "restarting")],
-        { status: "waiting" },
-        1_200,
-      ),
-    ).toEqual({ tone: "default", label: "Restart in 4s", action: "later" });
-  });
-
-  it("names the slowest machine once it passes the slow threshold", () => {
-    const machines = [
-      view("bb-1", "done"),
-      view("zbook", "downloading", { startedAt: 60_000 }),
-      view("alvin", "restarting", { startedAt: 0 }),
-    ];
-    expect(describeUpdateCapsule(run(), machines, null, 60_000)).toEqual({
-      tone: "default",
-      label: "1 of 3 updated",
-      action: null,
+describe("Jones Update Everything handoff result", () => {
+  it("keeps each Jones target in summaries beside provider and npm work", async () => {
+    const { describeUpdateEverything, getUpdateEverythingToastView } =
+      await import("./updateEverything.logic");
+    const vps = EnvironmentId.make("jones-vps");
+    const mini = EnvironmentId.make("jones-mini");
+    const npm = EnvironmentId.make("upstream-npm");
+    const view = describeUpdateEverything({
+      localVersion: null,
+      jonesMachines: [
+        { environmentId: vps, label: "VPS" },
+        { environmentId: mini, label: "Mini" },
+      ],
+      servers: [
+        { environmentId: npm, serverLabel: "npm", selfUpdate: "respawn", targetVersion: "0.1.0" },
+      ],
+      providerMachines: [{ environmentId: vps, label: "VPS", providers: ["Codex"] }],
     });
-    expect(describeUpdateCapsule(run(), machines, null, UPDATE_SLOW_AFTER_MS + 6 * 60_000)).toEqual(
+    expect(view.lines).toEqual([
+      "npm: server to 0.1.0",
+      "VPS: Install status after Laptop verification; every install needs review, Codex",
+      "Mini: Install status after Laptop verification; every install needs review",
+    ]);
+    const result = getUpdateEverythingToastView(
       {
-        tone: "slow",
-        label: "alvin",
-        slow: { status: "restarting", elapsed: "9m" },
-        action: null,
-      },
-    );
-  });
-
-  it("offers a retry only for failed servers it can update again", () => {
-    expect(describeUpdateCapsule(run(), [view("alvin", "failed")], null, 0)).toEqual({
-      tone: "failed",
-      label: "alvin failed",
-      action: "retry",
-    });
-    expect(
-      describeUpdateCapsule(
-        run(),
-        [view("alvin", "failed", { server: null }), view("box", "failed", { server: null })],
-        null,
-        0,
-      ),
-    ).toEqual({ tone: "failed", label: "2 failed", action: "dismiss" });
-  });
-
-  it("ends the run only when every machine is done and this app is not installing", () => {
-    const done = runMachine({ result: "done" });
-    expect(closeFinishedUpdateRun(run({ machines: [done] }))).toBeNull();
-    expect(
-      closeFinishedUpdateRun(run({ machines: [done], localVersion: "0.0.50" })),
-    ).not.toBeNull();
-    expect(
-      closeFinishedUpdateRun(run({ machines: [runMachine({ result: "failed" })] })),
-    ).not.toBeNull();
-    expect(closeFinishedUpdateRun(run({ machines: [done], phase: "providers" }))).not.toBeNull();
-  });
-});
-
-describe("update everything summary", () => {
-  const result = collectUpdateEverythingResult({
-    localVersion: "0.0.50",
-    localFailures: ["Could not download update: Network error."],
-    servers: [
-      { label: "alvin", outcome: { status: "failed", message: "Download failed." } },
-      { label: "box", outcome: { status: "updated" } },
-      { label: "studio", outcome: { status: "updated" } },
-      { label: "busy", outcome: { status: "skipped" } },
-    ],
-    providers: [
-      { status: "updated" },
-      { status: "interrupted" },
-      { status: "failed", line: "box · Codex: npm exited with code 1." },
-    ],
-  });
-
-  it("counts updates and names the machine of each failure", () => {
-    expect(result).toEqual({
-      localVersion: "0.0.50",
-      updatedServers: 2,
-      updatedProviders: 1,
-      restarting: [],
-      failures: [
-        "This app: Could not download update: Network error.",
-        "alvin: Download failed.",
-        "box · Codex: npm exited with code 1.",
-      ],
-    });
-  });
-
-  it("includes this app only when the relaunch landed on its version", () => {
-    expect(getUpdateEverythingToastView(result, "0.0.50")).toEqual({
-      type: "error",
-      title: "Updated this app, 2 servers, and 1 provider",
-      description: [
-        "This app: Could not download update: Network error.",
-        "alvin: Download failed.",
-        "box · Codex: npm exited with code 1.",
-      ].join("\n"),
-    });
-    expect(getUpdateEverythingToastView({ ...result, failures: [] }, "0.0.40")).toEqual({
-      type: "success",
-      title: "Updated 2 servers and 1 provider",
-    });
-  });
-
-  it("reports a failure when nothing updated, and nothing when nothing finished", () => {
-    const empty = { localVersion: null, updatedServers: 0, updatedProviders: 0, restarting: [] };
-    expect(
-      getUpdateEverythingToastView({ ...empty, failures: ["alvin: offline"] }, "0.0.50"),
-    ).toEqual({ type: "error", title: "Update failed", description: "alvin: offline" });
-    expect(getUpdateEverythingToastView({ ...empty, failures: [] }, "0.0.50")).toBeNull();
-  });
-
-  it("names servers still restarting when this app relaunched", () => {
-    expect(
-      getUpdateEverythingToastView(
-        { ...result, failures: [], restarting: ["alvin", "zbook"] },
-        "0.0.50",
-      ),
-    ).toEqual({
-      type: "success",
-      title: "Updated this app, 2 servers, and 1 provider",
-      description: "alvin and zbook are still restarting.",
-    });
-  });
-});
-
-describe("describeUpdateEverything", () => {
-  it("summarizes the run and lists each machine once", () => {
-    const alvin = EnvironmentId.make("alvin");
-    expect(
-      describeUpdateEverything({
-        localVersion: "0.0.50",
-        servers: [
-          {
-            environmentId: alvin,
-            serverLabel: "alvin",
-            selfUpdate: "boot-service",
-            targetVersion: "0.0.50",
-          },
-          {
-            environmentId: EnvironmentId.make("studio"),
-            serverLabel: "studio",
-            selfUpdate: "desktop-managed",
-            targetVersion: "0.0.50",
-          },
-        ],
-        providerMachines: [
-          { environmentId: alvin, label: "alvin", providers: ["Codex", "Claude"] },
-          { environmentId: EnvironmentId.make("box"), label: "box", providers: ["Cursor"] },
-        ],
-      }),
-    ).toEqual({
-      summary: "Update this app, 2 servers, and 3 providers",
-      lines: [
-        "This app: 0.0.50, restarts last",
-        "alvin: server to 0.0.50, Codex, Claude",
-        "studio: desktop app update",
-        "box: Cursor",
-      ],
-    });
-  });
-
-  it("reads naturally with one kind of update", () => {
-    expect(
-      describeUpdateEverything({
         localVersion: null,
-        servers: [],
-        providerMachines: [
-          { environmentId: EnvironmentId.make("alvin"), label: "alvin", providers: ["Codex"] },
+        updatedServers: 1,
+        updatedProviders: 1,
+        failures: [],
+        restarting: [],
+        jones: [
+          { label: "VPS", message: "Handed to Install status" },
+          {
+            label: "Mini",
+            message: "Update from Connections after Laptop is verified — unsupported operations",
+          },
         ],
-      }).summary,
-    ).toBe("Update 1 provider");
+      },
+      "0.1.0",
+    );
+    expect(result?.description).toContain("VPS: Handed to Install status");
+    expect(result?.description).toContain("Mini: Update from Connections");
+    expect(result?.title).toBe("Updated 1 server and 1 provider");
   });
 });

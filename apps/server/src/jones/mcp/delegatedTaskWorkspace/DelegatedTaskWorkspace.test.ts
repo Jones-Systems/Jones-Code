@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it, vi } from "@effect/vitest";
 import {
@@ -33,6 +34,7 @@ import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts"
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ProviderReplayHarness from "../../../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../../../persistence/Sqlite.ts";
+import * as RemoteDelegation from "../../../peer/RemoteDelegation.ts";
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
@@ -340,11 +342,9 @@ const hqProjectRecord = {
 } as const;
 
 /**
- * Real orchestrator, thread management and launch preparation over in-memory
- * SQLite; Git, setup scripts and provider execution are fakes. As with the
- * real runner, setup reports a completion only when preparation observes it;
- * that completion blocks until released so each case observes the prepared
- * child before it starts.
+ * Use real orchestrator, thread management and launch preparation over in-memory SQLite;
+ * Git, setup and providers are fakes. Like production, setup completion is reported only when preparation
+ * observes it; block that completion until each case observes the prepared child before launch.
  */
 function makeHarness(
   listWorktreePaths: GitVcsDriver.GitVcsDriver["Service"]["listWorktreePaths"],
@@ -428,10 +428,11 @@ function makeHarness(
               ? Option.some(hqProjectRecord)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(projectRecord)),
+      getByWorkspaceRoot: () => Effect.succeedSome(projectRecord),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
+      listPage: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,
@@ -467,6 +468,7 @@ function makeHarness(
           Effect.andThen(observed ? Effect.void : Deferred.succeed(setupEntered, undefined)),
           Effect.as({
             status: "started" as const,
+            writeCompletion: Effect.void,
             async: options.setupAsync === true,
             scriptId: "setup",
             scriptName: "Setup",
@@ -493,10 +495,11 @@ function makeHarness(
     ProviderRegistryMock.layer([claudeProvider]),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
       namedProjectsRoot: "/projects",
-      folderForThread: () => Effect.succeed(Option.none()),
+      folderForThread: () => Effect.succeedNone,
     }),
   );
   const launch = ThreadLaunch.layer.pipe(
+    Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(database))),
     Layer.provide(
       Layer.mergeAll(
         externalServices,
@@ -532,6 +535,7 @@ function makeHarness(
     ),
     Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
+    Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
   );
   return {
     layer: Layer.merge(base, service),
@@ -718,6 +722,8 @@ describe("delegate_task workspaceStrategy through the orchestrator", () => {
           clientRequestId: "hq-t1",
         };
         const delegated = yield* service.delegateTask(scope, input);
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
 
         // Separate provider session and thread, linked to the caller as its subagent.
@@ -761,6 +767,7 @@ describe("delegate_task workspaceStrategy through the orchestrator", () => {
         yield* threads.streamStoredEventsFrom({ threadId: delegated.childThreadId }).pipe(
           Stream.filter(
             (stored) =>
+              stored.commandId?.endsWith(":cancel-workspace") === true &&
               stored.event.type === "thread.metadata-updated" &&
               stored.event.payload.worktreePath === null,
           ),
@@ -795,6 +802,8 @@ describe("delegate_task workspaceStrategy through the orchestrator", () => {
           },
           clientRequestId: "hq-t2",
         });
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
         assert.deepEqual(harness.listWorktrees.mock.calls, [["/repo"]]);
         assert.equal(harness.createWorktree.mock.calls.length, 0);
@@ -881,6 +890,8 @@ describe("cross-project delegate_task", () => {
           clientRequestId: "hq-cross-t1",
         };
         const delegated = yield* service.delegateTask(scope, input);
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
 
         // Admission and setup use the target project, not the caller's.
@@ -1130,6 +1141,8 @@ describe("delegated existing-worktree setup", () => {
           clientRequestId: "sync-setup",
           ...request,
         });
+        if (delegated.childThreadId === null)
+          return yield* Effect.die("Local delegation must return a child thread");
         yield* Deferred.await(harness.setupEntered);
         yield* assertHeldInSetup(harness, delegated.childThreadId);
 
@@ -1154,6 +1167,8 @@ describe("delegated existing-worktree setup", () => {
         clientRequestId: "async-setup",
         workspaceStrategy: { type: "existing_worktree", worktreePath: "/repo-worktrees/lane" },
       });
+      if (delegated.childThreadId === null)
+        return yield* Effect.die("Local delegation must return a child thread");
       // The async setup is never allowed to finish, yet the agent is released.
       yield* awaitReleased(delegated.childThreadId);
       assert.deepEqual(harness.setupObserved, [true]);

@@ -1,7 +1,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { ExecutionEnvironmentDescriptor } from "./environment.ts";
+import { ExecutionEnvironmentCapabilities, ExecutionEnvironmentDescriptor } from "./environment.ts";
 
 const decodeDescriptor = Schema.decodeUnknownSync(ExecutionEnvironmentDescriptor);
 
@@ -14,6 +14,74 @@ const descriptor = {
 } as const;
 
 describe("ExecutionEnvironmentDescriptor", () => {
+  it("keeps workstream operations absent on old descriptors and decodes the advertised contract", () => {
+    expect(decodeDescriptor(descriptor)).toEqual(descriptor);
+    expect(decodeDescriptor(descriptor).capabilities.workstreamOperations).toBeUndefined();
+    const workstreamOperations = { contract: "workstream-operations/1.0.0" };
+    const advertised = {
+      ...descriptor,
+      capabilities: { ...descriptor.capabilities, workstreamOperations },
+    };
+    expect(decodeDescriptor(advertised)).toEqual(advertised);
+    expect(() =>
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: {
+          ...descriptor.capabilities,
+          workstreamOperations: { contract: "workstream-operations/2.0.0" },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("retains default excess-property stripping for old and new capability decoders", () => {
+    const { workstreamOperations: _operations, ...legacyFields } =
+      ExecutionEnvironmentCapabilities.fields;
+    const decodeLegacy = Schema.decodeUnknownSync(Schema.Struct(legacyFields));
+    const advertised = {
+      ...descriptor.capabilities,
+      workstreamOperations: { contract: "workstream-operations/1.0.0", futureOption: true },
+      futureCapability: true,
+    };
+    expect(decodeLegacy(advertised)).toEqual(descriptor.capabilities);
+    expect(decodeDescriptor({ ...descriptor, capabilities: advertised }).capabilities).toEqual({
+      ...descriptor.capabilities,
+      workstreamOperations: { contract: "workstream-operations/1.0.0" },
+    });
+    expect(Schema.decodeSync(ExecutionEnvironmentCapabilities)({})).toEqual({
+      repositoryIdentity: false,
+    });
+  });
+
+  it("keeps queued-run start opt-in without inferring it from other queue capabilities", () => {
+    expect(decodeDescriptor(descriptor).capabilities.queuedRunStart).toBeUndefined();
+    expect(
+      decodeDescriptor({
+        ...descriptor,
+        capabilities: {
+          ...descriptor.capabilities,
+          threadStop: true,
+          queuedToolBoundaryDelivery: true,
+        },
+      }).capabilities.queuedRunStart,
+    ).toBeUndefined();
+    for (const queuedRunStart of [true, false]) {
+      expect(
+        decodeDescriptor({
+          ...descriptor,
+          capabilities: { ...descriptor.capabilities, queuedRunStart },
+        }).capabilities.queuedRunStart,
+      ).toBe(queuedRunStart);
+    }
+  });
+  it("round-trips old descriptors and accepts an optional build time", () => {
+    expect(decodeDescriptor(descriptor)).toEqual(descriptor);
+    const stamped = { ...descriptor, jonesBuildStartedAt: "2026-10-20T21:13:43Z" };
+    expect(decodeDescriptor(stamped)).toEqual(stamped);
+    expect(() =>
+      decodeDescriptor({ ...descriptor, jonesBuildStartedAt: "2026-02-30T12:00:00Z" }),
+    ).toThrow();
+  });
   it("accepts older descriptors without claiming a Jones source", () => {
     expect(decodeDescriptor(descriptor).jonesSource).toBeUndefined();
     const jonesSource = {

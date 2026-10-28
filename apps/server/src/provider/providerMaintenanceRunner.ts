@@ -31,7 +31,9 @@ import * as ProviderRegistry from "./ProviderRegistry.ts";
 import { makeProviderMaintenanceCommandCoordinator } from "./providerMaintenanceCommandCoordinator.ts";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
+  invalidateLatestProviderVersion,
   makeTargetedProviderUpdateAction,
+  resolveLatestProviderUpdateAction,
   resolveLatestProviderVersion,
   type ProviderMaintenanceCommandAction,
 } from "@t3tools/provider-core/server/maintenanceResolver";
@@ -42,8 +44,7 @@ const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
 const UPDATE_TIMEOUT_MS = 5 * 60_000;
 const UPDATE_OUTPUT_MAX_BYTES = 10_000;
-// Every progress publish resends the provider list to each client, so the
-// installer's output is sampled rather than forwarded line by line.
+// Sample installer output because every progress update resends the provider list to all clients.
 const UPDATE_PROGRESS_INTERVAL = Duration.seconds(1);
 const UPDATE_PROGRESS_MAX_LENGTH = 200;
 // An installer may write for minutes without a line ending; only its tail matters.
@@ -97,9 +98,7 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
   }) {
     const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
       function* () {
-        // On Windows the update tools are batch shims (e.g. `npm` -> `npm.cmd`), which a bare
-        // ChildProcess.spawn cannot launch (spawn npm ENOENT); resolveSpawnCommand finds the
-        // real `.cmd` and routes it through the shell.
+        // Windows batch shims require shell dispatch through resolveSpawnCommand.
         const resolved = yield* resolveSpawnCommand(input.command, input.args);
         const child = yield* input.spawner
           .spawn(
@@ -241,14 +240,30 @@ function commandOutput(result: ProviderMaintenanceCommandResult): string | null 
   return truncateText(output, UPDATE_OUTPUT_MAX_BYTES);
 }
 
+// Updaters print their reason last, usually on stderr.
+function lastOutputLine(result: ProviderMaintenanceCommandResult): string | null {
+  for (const output of [result.stderr, result.stdout]) {
+    const line = output
+      .split(/\r\n|\r|\n/)
+      .map(toProgressLine)
+      .findLast(Boolean);
+    if (line) {
+      return line;
+    }
+  }
+  return null;
+}
+
 function failureMessage(result: ProviderMaintenanceCommandResult): string {
   if (result.timedOut) {
     return "Update timed out.";
   }
-  if (result.exitCode !== null && result.exitCode !== 0) {
-    return `Update command exited with code ${result.exitCode}.`;
-  }
-  return "Update command failed.";
+  const summary =
+    result.exitCode !== null && result.exitCode !== 0
+      ? `Update command exited with code ${result.exitCode}`
+      : "Update command failed";
+  const reason = lastOutputLine(result);
+  return reason ? `${summary}: ${reason}` : `${summary}.`;
 }
 
 function makeUpdateState(input: {
@@ -267,7 +282,7 @@ function makeUpdateState(input: {
   };
 }
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
   const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
   const manifestService = yield* ModelManifest.ModelManifest;
@@ -299,24 +314,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
       maintenanceCapabilities: ProviderMaintenanceCapabilities,
       instanceId: ProviderInstanceId,
     ): Effect.fn.Return<VerifiedProviderRefresh> {
-      yield* providerRegistry.refreshInstance(instanceId);
-      const providers = yield* providerRegistry.getProviders;
-      const siblings = providers.filter(
-        (candidate) => candidate.driver === provider && candidate.instanceId !== instanceId,
-      );
-      yield* Effect.forEach(
-        siblings,
-        (sibling) =>
-          providerRegistry.refreshInstance(sibling.instanceId).pipe(
-            Effect.catchCause(() =>
-              Effect.logWarning("Provider sibling refresh failed", {
-                provider,
-                instanceId: sibling.instanceId,
-              }),
-            ),
-          ),
-        { concurrency: 1, discard: true },
-      );
+      const providers = yield* providerRegistry.refreshAfterUpdate(provider, instanceId);
       const refreshedProvider = providers.find(
         (candidate) => candidate.driver === provider && candidate.instanceId === instanceId,
       );
@@ -403,9 +401,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               ).pipe(Effect.asVoid);
             yield* setRunningMessage("Checking for the latest version");
 
-            // The cached capabilities chose the lock; re-derive ownership
-            // now so the command that runs matches the executable as it is
-            // at click time, not as it was at the last health refresh.
+            // Recheck ownership after acquiring the cached lock in case the executable changed.
             const fresh = yield* providerRegistry.getProviderMaintenanceCapabilitiesForInstance(
               instanceId,
               provider,
@@ -423,9 +419,11 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             }
 
             const manifest = yield* manifestService.current;
+            // Check compatibility against what an unpinned command would install now.
             const candidateVersion =
               targetVersion ??
-              (yield* resolveLatestProviderVersion(fresh).pipe(
+              (yield* invalidateLatestProviderVersion(fresh).pipe(
+                Effect.andThen(resolveLatestProviderVersion(fresh)),
                 Effect.provideService(HttpClient.HttpClient, httpClient),
                 Effect.provideService(
                   ProviderLatestVersions.ProviderLatestVersions,
@@ -442,7 +440,7 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             const command =
               targetVersion !== undefined
                 ? makeTargetedProviderUpdateAction(fresh, targetVersion)
-                : fresh.update;
+                : resolveLatestProviderUpdateAction(fresh, candidateVersion);
             const rejected =
               targetVersion !== undefined
                 ? !command ||
@@ -466,6 +464,13 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             const result = yield* runMaintenanceCommand(command, setRunningMessage);
             const finishedAt = yield* nowIso;
             if (result.timedOut || result.exitCode !== 0) {
+              yield* Effect.logWarning("Provider update command failed", {
+                provider,
+                command: describeCommand(command),
+                exitCode: result.exitCode,
+                timedOut: result.timedOut,
+                output: commandOutput(result),
+              });
               return yield* finish(
                 makeUpdateState({
                   status: "failed",
@@ -478,16 +483,30 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             }
 
             yield* setRunningMessage("Verifying the installed version");
-            // Homebrew's "latest" moves once the upgrade lands; read it again.
             const verified = yield* providerRegistry.getProviderMaintenanceCapabilitiesForInstance(
               instanceId,
               provider,
               { fresh: true },
             );
+            yield* invalidateLatestProviderVersion(verified).pipe(
+              Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
+            );
             const verification = yield* verifyRefreshedProvider(provider, verified, instanceId);
-            // Cursor's `about` probe can fail transiently on a healthy binary;
-            // an unreadable version remains uncertain until a later refresh.
-            const outcome = resolveProviderUpdateVerification({ ...verification, targetVersion });
+            // An unreadable version is uncertain even after an updater exits successfully.
+            const outcome = resolveProviderUpdateVerification({
+              ...verification,
+              provider:
+                verification.provider === undefined
+                  ? undefined
+                  : {
+                      ...verification.provider,
+                      version:
+                        verification.provider.installedVersion !== undefined
+                          ? verification.provider.installedVersion
+                          : verification.provider.version,
+                    },
+              targetVersion,
+            });
             return yield* finish(
               makeUpdateState({
                 ...outcome,

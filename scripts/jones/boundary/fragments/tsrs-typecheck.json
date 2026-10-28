@@ -1,0 +1,201 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "tsrs-typecheck",
+  "jonesOwnedPaths": [],
+  "hookPaths": [
+    "apps/mobile/package.json",
+    "apps/mobile/vite.config.ts",
+    "apps/server/package.json",
+    "apps/server/vite.config.ts",
+    "apps/web/tsconfig.json",
+    "infra/relay/package.json",
+    "infra/relay/vite.config.ts",
+    "infra/task-cache/package.json",
+    "infra/task-cache/vite.config.ts",
+    "oxlint-plugin-t3code/package.json",
+    "oxlint-plugin-t3code/vite.config.mjs",
+    "packages/client-runtime/vite.config.ts",
+    "packages/contracts/vite.config.ts",
+    "packages/effect-acp/package.json",
+    "packages/effect-acp/vite.config.ts",
+    "packages/effect-codex-app-server/package.json",
+    "packages/effect-codex-app-server/vite.config.ts",
+    "packages/provider-acp-registry/package.json",
+    "packages/provider-acp-registry/vite.config.ts",
+    "packages/provider-acp/package.json",
+    "packages/provider-acp/vite.config.ts",
+    "packages/provider-core/package.json",
+    "packages/provider-core/vite.config.ts",
+    "packages/provider-cursor/package.json",
+    "packages/provider-cursor/vite.config.ts",
+    "packages/provider-grok/package.json",
+    "packages/provider-grok/vite.config.ts",
+    "packages/provider-muse/package.json",
+    "packages/provider-muse/vite.config.ts",
+    "packages/provider-opencode/package.json",
+    "packages/provider-opencode/vite.config.ts",
+    "packages/provider-pi/package.json",
+    "packages/provider-pi/vite.config.ts",
+    "packages/provider-testing/package.json",
+    "packages/provider-testing/vite.config.ts",
+    "packages/shared/vite.config.ts",
+    "packages/source-control-azure-devops/package.json",
+    "packages/source-control-azure-devops/vite.config.ts",
+    "packages/source-control-bitbucket/package.json",
+    "packages/source-control-bitbucket/vite.config.ts",
+    "packages/source-control-core/package.json",
+    "packages/source-control-core/vite.config.ts",
+    "packages/source-control-definitions/package.json",
+    "packages/source-control-definitions/vite.config.ts",
+    "packages/source-control-forgejo/package.json",
+    "packages/source-control-forgejo/vite.config.ts",
+    "packages/source-control-gitcafe/package.json",
+    "packages/source-control-gitcafe/vite.config.ts",
+    "packages/source-control-github/package.json",
+    "packages/source-control-github/vite.config.ts",
+    "packages/source-control-gitlab/package.json",
+    "packages/source-control-gitlab/vite.config.ts",
+    "packages/source-control-testing/package.json",
+    "packages/source-control-testing/vite.config.ts",
+    "packages/ssh/package.json",
+    "packages/ssh/vite.config.ts",
+    "packages/tailscale/package.json",
+    "packages/tailscale/vite.config.ts",
+    "scripts/vite.config.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/desktop/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "apps/mobile/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "apps/server/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "apps/web/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "infra/relay/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "infra/task-cache/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "oxlint-plugin-t3code/vite.config.mjs",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/client-runtime/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/contracts/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/effect-acp/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/effect-codex-app-server/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-acp-registry/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-acp/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-core/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-cursor/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-grok/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-muse/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-opencode/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-pi/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/provider-testing/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/shared/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-azure-devops/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-bitbucket/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-core/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-definitions/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-forgejo/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-gitcafe/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-github/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-gitlab/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/source-control-testing/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/ssh/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "packages/tailscale/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    },
+    {
+      "from": "scripts/vite.config.ts",
+      "to": "scripts/jones/tsrs/task-cache.ts"
+    }
+  ]
+}

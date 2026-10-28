@@ -13,6 +13,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import * as Electron from "electron";
+import { isThreadMonitorWindow } from "../jones/threadMonitor/roles.ts";
 
 import {
   activateWindowsForeground,
@@ -127,11 +128,10 @@ export class ElectronWindow extends Context.Service<
   }
 >()("@t3tools/desktop/electron/ElectronWindow") {}
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const platform = yield* HostProcess.Platform;
-  // The focus worker loads a native accessibility module. Start it on the first
-  // capture reveal so users who never capture pay nothing at launch.
+  // Lazy-load native accessibility on capture reveal to avoid startup cost for other users.
   let windowsForegroundFocus: ReturnType<typeof startWindowsForegroundFocusThread> | undefined;
   const ensureWindowsForegroundFocus = () => {
     windowsForegroundFocus ??= startWindowsForegroundFocusThread(
@@ -182,7 +182,9 @@ export const make = Effect.gen(function* () {
       return main;
     }
 
-    const first = Option.fromNullishOr((yield* listWindows)[0] ?? null);
+    const first = Option.fromNullishOr(
+      (yield* listWindows).find((window) => !isThreadMonitorWindow(window)) ?? null,
+    );
     if (Option.isNone(first) || (yield* isWindowDestroyed(first.value))) {
       return Option.none<Electron.BrowserWindow>();
     }
@@ -201,7 +203,11 @@ export const make = Effect.gen(function* () {
           cause,
         }),
     }).pipe(Effect.orDie);
-    if (Option.isSome(focused) && !(yield* isWindowDestroyed(focused.value))) {
+    if (
+      Option.isSome(focused) &&
+      !isThreadMonitorWindow(focused.value) &&
+      !(yield* isWindowDestroyed(focused.value))
+    ) {
       return focused;
     }
     return yield* currentMainOrFirst;
@@ -324,9 +330,11 @@ export const make = Effect.gen(function* () {
             cause,
           }),
       }).pipe(Effect.orDie),
-    sendAll: (channel, ...args) =>
-      Effect.gen(function* () {
+    sendAll:
+      /* Window broadcasts run for streamed updates; avoid a span per broadcast. */
+      Effect.fnUntraced(function* (channel, ...args) {
         for (const window of yield* listWindows) {
+          if (isThreadMonitorWindow(window)) continue;
           if (yield* isWindowDestroyed(window)) {
             continue;
           }
@@ -346,6 +354,7 @@ export const make = Effect.gen(function* () {
     destroyAll: Effect.gen(function* () {
       let firstFailure: Cause.Cause<never> | undefined;
       for (const window of yield* listWindows) {
+        if (yield* isWindowDestroyed(window)) continue;
         const exit = yield* Effect.exit(
           Effect.try({
             try: () => window.destroy(),
@@ -372,6 +381,7 @@ export const make = Effect.gen(function* () {
     ) {
       const windows = yield* listWindows;
       for (const window of windows) {
+        if (isThreadMonitorWindow(window)) continue;
         if (yield* isWindowDestroyed(window)) {
           continue;
         }

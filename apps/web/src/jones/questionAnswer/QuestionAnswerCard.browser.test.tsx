@@ -1,3 +1,4 @@
+import { act, render as renderTest, type Screen } from "../../../test/render";
 import { seedUserInputDraftAnswers } from "@t3tools/client-runtime/state/thread-requests";
 import {
   EnvironmentId,
@@ -5,9 +6,8 @@ import {
   ThreadId,
   type UserInputQuestion,
 } from "@t3tools/contracts";
-import { act, useState } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import { useState } from "react";
+import { expect, it, vi } from "vite-plus/test";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
 import { ComposerBanner } from "../../components/chat/ComposerBanner";
 import "../../index.css";
@@ -64,6 +64,7 @@ function Harness({
           existing[id],
           value,
           questions.find((q) => q.id === id),
+          { notes: capability === "message" },
         ),
       })),
     onPrevious: () => setIndex((i) => Math.max(0, i - 1)),
@@ -93,6 +94,7 @@ function Harness({
           respondingRequestIds={[]}
           answers={answers}
           questionIndex={index}
+          onSelectQuestion={setIndex}
           {...cardCallbacks}
           onToggleOption={(id, value) =>
             setAnswers((existing) => ({
@@ -101,12 +103,18 @@ function Harness({
                 questions.find((q) => q.id === id)!,
                 existing[id],
                 value,
+                { notes: capability === "message" },
               ),
             }))
           }
           onAdvance={() => {
             if (index < questions.length - 1) setIndex(index + 1);
-            else setResult(buildPendingUserInputAnswers(questions, answers));
+            else
+              setResult(
+                buildPendingUserInputAnswers(questions, answers, {
+                  notes: capability === "message",
+                }),
+              );
           }}
           onDismiss={() => setDismissed(true)}
         />
@@ -124,20 +132,37 @@ function Harness({
   );
 }
 
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-});
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+      await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
+    }
+  }
+  try {
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
 
 function answerField() {
   const field = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
@@ -162,7 +187,8 @@ function output(id: string) {
 }
 
 it("answers inside the card without sending or changing the independent thread draft", async () => {
-  await act(async () => root.render(<Harness />));
+  await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("My written answer");
   await act(async () => button("Send").click());
   expect(output("answer")).toBe(JSON.stringify({ approach: "My written answer" }));
@@ -173,7 +199,8 @@ it("answers inside the card without sending or changing the independent thread d
 });
 
 it("sending the thread message leaves the question and its written answer pending", async () => {
-  await act(async () => root.render(<Harness />));
+  await using _fixture = await setupTest();
+  await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Keep this answer");
   await act(async () => button("Send thread message").click());
   expect(output("answer")).toBe("null");
@@ -181,14 +208,16 @@ it("sending the thread message leaves the question and its written answer pendin
   expect(answerField().value).toBe("Keep this answer");
 });
 
-it("aligns the one-line answer and Send with the option content, then caps growth at four lines", async () => {
+it("aligns the one-line answer and Send with the option content, then caps growth at ten lines", async () => {
+  await using _fixture = await setupTest();
   container.style.width = "680px";
-  await act(async () =>
-    root.render(
-      <ComposerBanner.Root>
-        <Harness />
-      </ComposerBanner.Root>,
-    ),
+  await act(
+    async () =>
+      await root.rerender(
+        <ComposerBanner.Root>
+          <Harness />
+        </ComposerBanner.Root>,
+      ),
   );
   const field = answerField();
   const style = getComputedStyle(field);
@@ -217,8 +246,8 @@ it("aligns the one-line answer and Send with the option content, then caps growt
 
   await typeAnswer("One\nTwo");
   expect(field.getBoundingClientRect().height).toBeCloseTo(2 * lineHeight + inset, 0);
-  await typeAnswer("One\nTwo\nThree\nFour\nFive\nSix");
-  expect(field.getBoundingClientRect().height).toBeCloseTo(4 * lineHeight + inset, 0);
+  await typeAnswer(Array.from({ length: 12 }, (_, i) => `Line ${i}`).join("\n"));
+  expect(field.getBoundingClientRect().height).toBeCloseTo(10 * lineHeight + inset, 0);
   expect(field.scrollHeight).toBeGreaterThan(field.clientHeight);
   field.scrollTop = field.scrollHeight;
   expect(field.scrollTop).toBeGreaterThan(0);

@@ -73,14 +73,14 @@ const make = Effect.gen(function* () {
     .pipe(
       Effect.catch((cause) =>
         cause.reason._tag === "NotFound"
-          ? Effect.succeed(undefined)
+          ? Effect.undefined
           : Effect.fail(new RenderHostSelectionReadError({ reason: "unreadable", cause })),
       ),
     );
   const decoded =
     stored === undefined
       ? Option.some(empty())
-      : Schema.decodeUnknownOption(Schema.fromJsonString(Stored))(stored);
+      : Schema.decodeOption(Schema.fromJsonString(Stored))(stored);
   if (Option.isNone(decoded)) return yield* new RenderHostSelectionReadError({ reason: "invalid" });
   let state: typeof Stored.Type = decoded.value;
   const bindings = new Map<string, { key: DesktopTabKey; selection: PreviewRenderHostSelection }>();

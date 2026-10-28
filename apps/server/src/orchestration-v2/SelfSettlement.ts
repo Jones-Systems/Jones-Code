@@ -23,8 +23,8 @@ type Owner = {
   readonly providerThreadId: ProviderThreadId;
 };
 
-function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId): boolean {
-  const automatic = new Set(
+function automaticMessageIds(projection: SettlementProjection): ReadonlySet<string> {
+  return new Set(
     projection.messages
       .filter(
         (message) =>
@@ -32,6 +32,15 @@ function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId):
       )
       .map((message) => message.id),
   );
+}
+
+function blocksSettlement(
+  projection: SettlementProjection,
+  exceptRunId: RunId,
+  dependencies?: { readonly outgoing: number; readonly owed: number },
+): boolean {
+  if (dependencies && (dependencies.outgoing > 0 || dependencies.owed > 0)) return true;
+  const automatic = automaticMessageIds(projection);
   return (
     projection.runs.some(
       (run) =>
@@ -47,10 +56,23 @@ function blocksSettlement(projection: SettlementProjection, exceptRunId: RunId):
   );
 }
 
+// Acceptance and completion share this rule so an accepted request is not silently dropped.
+// Work withdrawn before it started and queued automatic wakeups leave the turn final.
+function hasSuccessorWork(projection: SettlementProjection, run: OrchestrationV2Run): boolean {
+  const automatic = automaticMessageIds(projection);
+  return projection.runs.some(
+    (candidate) =>
+      candidate.ordinal > run.ordinal &&
+      !(candidate.status === "cancelled" && candidate.startedAt === null) &&
+      !(candidate.status === "queued" && automatic.has(candidate.userMessageId)),
+  );
+}
+
 export function selfSettlementRun(
   projection: SettlementProjection,
   caller: Caller,
   owner: Owner | null,
+  dependencies?: { readonly outgoing: number; readonly owed: number },
 ): OrchestrationV2Run | undefined {
   const run = projection.runs
     .toSorted((a, b) => b.ordinal - a.ordinal)
@@ -74,7 +96,8 @@ export function selfSettlementRun(
         attempt.providerInstanceId === owner.instanceId &&
         (attempt.status === "pending" || attempt.status === "running"),
     ) ||
-    blocksSettlement(projection, run.id)
+    blocksSettlement(projection, run.id, dependencies) ||
+    hasSuccessorWork(projection, run)
   )
     return undefined;
   return run;
@@ -83,33 +106,19 @@ export function selfSettlementRun(
 export function selfSettlementTerminalDisposition(
   projection: SettlementProjection,
   terminalRunId: RunId,
+  dependencies?: { readonly outgoing: number; readonly owed: number },
 ): "ignore" | "cancel" | "settle" {
   const intent = projection.thread.selfSettlement;
   if (intent == null) return "ignore";
   const run = projection.runs.find((candidate) => candidate.id === intent.runId);
-  if (
-    run === undefined ||
-    projection.runs.some(
-      (candidate) =>
-        candidate.ordinal > run.ordinal &&
-        !(
-          candidate.status === "queued" &&
-          projection.messages.some(
-            (message) =>
-              message.id === candidate.userMessageId &&
-              (message.notification !== undefined || message.delegatedCompletion !== undefined),
-          )
-        ),
-    )
-  )
-    return "cancel";
+  if (run === undefined || hasSuccessorWork(projection, run)) return "cancel";
   if (terminalRunId !== intent.runId) return "ignore";
   if (["starting", "running", "waiting"].includes(run.status)) return "ignore";
   if (
     run.status !== "completed" ||
     projection.thread.deletedAt !== null ||
     projection.thread.archivedAt !== null ||
-    blocksSettlement(projection, run.id)
+    blocksSettlement(projection, run.id, dependencies)
   )
     return "cancel";
   return "settle";
@@ -121,6 +130,7 @@ export function cancelsSelfSettlement(command: OrchestrationV2ServerCommand): bo
   return [
     "thread.settle",
     "thread.unsettle",
+    "thread.settlement.restore",
     "thread.pin",
     "thread.unpin",
     "thread.snooze",

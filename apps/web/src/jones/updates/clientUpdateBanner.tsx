@@ -1,3 +1,4 @@
+import { ClientServerBuildLabels } from "./ClientServerBuildLabels";
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 import { InfoIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -62,10 +63,7 @@ export function useClientUpdateBanners({
         title: `${environment.label}: ${notice.kind === "server-newer" ? "Client update available" : "Different preview sources"}`,
         description: (
           <span className="break-words">
-            {notice.hint} Client {notice.clientVersion}
-            {notice.clientSourceSha ? ` (${notice.clientSourceSha.slice(0, 12)})` : ""}; Server{" "}
-            {notice.serverVersion}
-            {notice.serverSourceSha ? ` (${notice.serverSourceSha.slice(0, 12)})` : ""}.
+            {notice.hint} <ClientServerBuildLabels builds={notice} />.
           </span>
         ),
         // The target is always this app's own source; a newer-server notice has no exact action.

@@ -43,6 +43,24 @@ const activationOccupied = new Set(["dispatching", "reconciling", "pending"]);
 const occupied = new Set([...inFlight, "retiring"]);
 const terminal = new Set(["current", "committed", "rolled-back", "blocked", "superseded"]);
 
+/** Ends a campaign's unstarted members; a member with a host stage retires it first. */
+function retireUnfinished(campaign: FleetDesktopCampaign): FleetDesktopCampaign {
+  return {
+    ...campaign,
+    members: campaign.members.map((member) =>
+      terminal.has(member.phase) || occupied.has(member.phase)
+        ? member
+        : {
+            ...member,
+            phase:
+              member.expectedInstalledSource === undefined
+                ? ("superseded" as const)
+                : ("retiring" as const),
+          },
+    ),
+  };
+}
+
 function prepare(state: FleetDesktopState, input: FleetPrepareCampaignInput): FleetDesktopState {
   const existing = state.campaigns.find((campaign) => campaign.campaignId === input.campaignId);
   if (existing !== undefined) {
@@ -66,23 +84,14 @@ function prepare(state: FleetDesktopState, input: FleetPrepareCampaignInput): Fl
         phase: "waiting",
       })),
   };
+  // Hosts keep catching up to the laptop's committed build while the next one is only prepared.
+  const committed = state.campaigns.findLast((previous) => previous.phase === "committed");
   return {
     ...state,
     campaigns: [
-      ...state.campaigns.map((previous) => ({
-        ...previous,
-        members: previous.members.map((member) =>
-          terminal.has(member.phase) || occupied.has(member.phase)
-            ? member
-            : {
-                ...member,
-                phase:
-                  member.expectedInstalledSource === undefined
-                    ? ("superseded" as const)
-                    : ("retiring" as const),
-              },
-        ),
-      })),
+      ...state.campaigns.map((previous) =>
+        previous === committed ? previous : retireUnfinished(previous),
+      ),
       campaign,
     ],
   };
@@ -105,10 +114,12 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
   if (inFlight.has(member.phase) && !inFlight.has(input.phase) && !terminal.has(input.phase))
     throw new Error("An accepted operation must be reconciled before its state can change.");
   if (
-    ["dispatching", "install-blocked", "reconciling", "pending"].includes(input.phase) &&
+    ["staging", "dispatching", "install-blocked", "reconciling", "pending"].includes(input.phase) &&
     (campaign.phase !== "committed" || campaign.committedGeneration === undefined)
   ) {
-    throw new Error("The laptop update has not committed; remote activation is forbidden.");
+    throw new Error(
+      "The laptop update has not committed; remote preparation and activation are forbidden.",
+    );
   }
   if (input.phase === "staging" || input.phase === "dispatching") {
     const enrolled = state.enrollments.some(
@@ -177,6 +188,8 @@ function updateMember(state: FleetDesktopState, input: FleetUpdateMemberInput): 
 export function createDesktopFleetStore(options: {
   readonly home: string;
   readonly profile: string | undefined;
+  readonly isPlanManaged?: (targetSource: string) => Promise<boolean>;
+  readonly withUnmanagedTarget?: <A>(targetSource: string, work: () => Promise<A>) => Promise<A>;
 }): DesktopFleetStore {
   const runtime = NodePath.join(options.home, "runtime");
   const profileKey = NodeCrypto.createHash("sha256")
@@ -289,33 +302,43 @@ export function createDesktopFleetStore(options: {
     return result;
   };
   return {
-    request: (request) =>
-      transact((state) => {
-        if (!validRequest(request)) throw new Error("Invalid fleet request.");
-        let next = state;
-        switch (request.action) {
-          case "read":
-            break;
-          case "enroll":
-            next = {
-              ...state,
-              enrollments: [
-                ...state.enrollments.filter(
-                  (entry) => entry.environmentId !== request.enrollment.environmentId,
-                ),
-                request.enrollment,
-              ],
-            };
-            break;
-          case "prepare":
-            next = prepare(state, request.input);
-            break;
-          case "updateMember":
-            next = updateMember(state, request.input);
-            break;
-        }
-        return { state: next, result: next };
-      }),
+    request: async (request) => {
+      if (
+        request.action === "prepare" &&
+        (await options.isPlanManaged?.(request.input.targetSource))
+      )
+        throw new Error("This build is managed by the update plan.");
+      const perform = () =>
+        transact((state) => {
+          if (!validRequest(request)) throw new Error("Invalid fleet request.");
+          let next = state;
+          switch (request.action) {
+            case "read":
+              break;
+            case "enroll":
+              next = {
+                ...state,
+                enrollments: [
+                  ...state.enrollments.filter(
+                    (entry) => entry.environmentId !== request.enrollment.environmentId,
+                  ),
+                  request.enrollment,
+                ],
+              };
+              break;
+            case "prepare":
+              next = prepare(state, request.input);
+              break;
+            case "updateMember":
+              next = updateMember(state, request.input);
+              break;
+          }
+          return { state: next, result: next };
+        });
+      return request.action === "prepare" && options.withUnmanagedTarget !== undefined
+        ? options.withUnmanagedTarget(request.input.targetSource, perform)
+        : perform();
+    },
     bindInstall: (binding) =>
       transact((state) => {
         const campaign = state.campaigns.find((entry) => entry.campaignId === binding.campaignId);
@@ -364,36 +387,47 @@ export function createDesktopFleetStore(options: {
         };
       }),
     recordOutcome: (proof) =>
-      transact((state) => ({
-        state: {
-          ...state,
-          campaigns: state.campaigns.map((campaign) => {
-            if (
-              campaign.installation?.transactionId !== proof.transactionId ||
-              campaign.phase !== "installing"
-            )
-              return campaign;
-            if (
-              proof.status === "committed" &&
-              proof.activeSource === campaign.targetSource &&
-              proof.activeGeneration === proof.transactionId &&
-              proof.activeGeneration !== campaign.installation.fromGeneration
-            ) {
-              return {
-                ...campaign,
-                phase: "committed",
-                committedGeneration: proof.activeGeneration,
-              };
-            }
-            if (
-              proof.status === "rolled-back" &&
-              proof.activeGeneration === campaign.installation.fromGeneration
-            )
-              return { ...campaign, phase: "rolled-back" };
-            return { ...campaign, phase: "blocked" };
-          }),
-        },
-        result: undefined,
-      })),
+      transact((state) => {
+        let committed: FleetDesktopCampaign | undefined;
+        const campaigns = state.campaigns.map((campaign): FleetDesktopCampaign => {
+          if (
+            campaign.installation?.transactionId !== proof.transactionId ||
+            campaign.phase !== "installing"
+          )
+            return campaign;
+          if (
+            proof.status === "committed" &&
+            proof.activeSource === campaign.targetSource &&
+            proof.activeGeneration === proof.transactionId &&
+            proof.activeGeneration !== campaign.installation.fromGeneration
+          ) {
+            committed = {
+              ...campaign,
+              phase: "committed",
+              committedGeneration: proof.activeGeneration,
+            };
+            return committed;
+          }
+          if (
+            proof.status === "rolled-back" &&
+            proof.activeGeneration === campaign.installation.fromGeneration
+          )
+            return { ...campaign, phase: "rolled-back" };
+          return { ...campaign, phase: "blocked" };
+        });
+        return {
+          state: {
+            ...state,
+            // The newly committed build replaces the one hosts were catching up to.
+            campaigns:
+              committed === undefined
+                ? campaigns
+                : campaigns.map((campaign) =>
+                    campaign === committed ? campaign : retireUnfinished(campaign),
+                  ),
+          },
+          result: undefined,
+        };
+      }),
   };
 }

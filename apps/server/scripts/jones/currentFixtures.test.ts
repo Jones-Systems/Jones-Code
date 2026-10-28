@@ -178,6 +178,21 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 111, name: "ClientSettlementCommands" },
           { id: 112, name: "ClientLaunchRequests" },
           { id: 114, name: "SelfSettlementProjectItems" },
+          { id: 115, name: "ScheduledWebhookPendingRuns" },
+          { id: 116, name: "RemoteAdmission" },
+          { id: 117, name: "RemoteDelegationIntents" },
+          { id: 118, name: "RemoteAdmissionIntegration" },
+          { id: 119, name: "PeerEnvironmentLinks" },
+          { id: 120, name: "SettlementRestores" },
+          { id: 121, name: "RemoteTaskObservations" },
+          { id: 122, name: "ThreadLinks" },
+          { id: 123, name: "WorkspaceLifecycle" },
+          { id: 124, name: "TaskContinuations" },
+          { id: 129, name: "CodexFailover" },
+          { id: 130, name: "ThreadTitleRefinement" },
+          { id: 132, name: "OwnerSelections" },
+          { id: 133, name: "ThreadResultDependencies" },
+          { id: 134, name: "GoalContinuity" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

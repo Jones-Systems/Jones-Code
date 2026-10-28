@@ -77,12 +77,9 @@ export const resolveDelegatedTaskProject = Effect.fn("jones.delegatedTaskWorkspa
 );
 
 /**
- * Resolves the explicit `workspaceStrategy` of a `delegate_task` call. The
- * child is still created through `delegated_task.request`, so it keeps the
- * subagent record, lineage, completion wake, task_status and task_cancel; the
- * strategy only defers its start until the checkout is prepared. Returns
- * undefined when no explicit strategy applies, leaving legacy `isolation` to
- * its existing resolution.
+ * Explicit workspaceStrategy defers launch until checkout preparation; delegated_task.request still owns
+ * the subagent, lineage, completion wake, task_status and task_cancel.
+ * Return undefined without an explicit strategy, preserving legacy isolation resolution.
  */
 export const resolveExplicitDelegatedTaskWorkspace = Effect.fn(
   "jones.delegatedTaskWorkspace.resolveExplicit",

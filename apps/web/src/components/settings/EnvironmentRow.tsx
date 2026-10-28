@@ -49,11 +49,8 @@ export function environmentTransportLabel(
 }
 
 /**
- * One machine in a grouped settings list: icon, name, a single subtitle line,
- * and controls on the right. Every environment list on the Connections page
- * uses this so the lists share one rhythm. A row with content `below` keeps
- * its icon and controls on the name's line, as the header of a taller row,
- * and gives the subtitle and that content the row's full width.
+ * Shared Connections row layout keeps icon, name and controls aligned with one subtitle line.
+ * With below content, retain controls beside the name and give subtitle/content the full row width.
  */
 export function EnvironmentRow({
   kind,
@@ -81,23 +78,26 @@ export function EnvironmentRow({
     <div
       className={cn(
         "grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 px-3 py-2.5 sm:px-4",
-        dimmed && "opacity-60",
         className,
       )}
     >
-      <EnvironmentMachineIcon aria-hidden kind={kind} className="size-4 text-muted-foreground" />
+      <EnvironmentMachineIcon
+        aria-hidden
+        kind={kind}
+        className={cn("size-4 text-muted-foreground", dimmed && "opacity-60")}
+      />
       {header ? (
-        name
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>{name}</div>
       ) : (
-        <div className="min-w-0">
+        <div className={cn("min-w-0", dimmed && "opacity-60")}>
           {name}
           {line}
         </div>
       )}
-      {/* In a header, this box is the name's line height; taller controls center on that line. */}
-      <div className={cn("flex shrink-0 items-center gap-1", header && "h-5")}>{children}</div>
+      {/* Reserve at least the name's line height, and let taller controls push the subtitle below. */}
+      <div className={cn("flex shrink-0 items-center gap-1", header && "min-h-5")}>{children}</div>
       {header ? (
-        <div className="col-span-2 col-start-2 min-w-0">
+        <div className={cn("col-span-2 col-start-2 min-w-0", dimmed && "opacity-60")}>
           {line}
           {below}
         </div>

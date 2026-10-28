@@ -2,15 +2,18 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  ThreadId,
   type DesktopUpdateStatusReport,
   type JonesUpdateState,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 import * as ServerConfig from "../../config.ts";
 import * as SelfUpdate from "../../cloud/selfUpdate.ts";
@@ -18,11 +21,13 @@ import * as Launcher from "../../cloud/serviceLauncherClient.ts";
 import * as Startup from "../../serverRuntimeStartup.ts";
 import * as DesktopReceiver from "../../resourceTelemetry/DesktopTelemetryReceiver.ts";
 import * as JonesUpdates from "./service.ts";
+import * as UpdateAdmissionFence from "./UpdateAdmissionFence.ts";
 import { prepareNativeContinuationReceipt } from "./nativePreparation.ts";
+import { isJonesRuntime } from "./qualification.ts";
 
-// Qualification has its own contract tests; this fixture exercises the qualified desktop branch.
+// Runtime qualification is controlled independently of quit readiness in these fixtures.
 vi.mock("./qualification.ts", () => ({
-  isJonesRuntime: () => true,
+  isJonesRuntime: vi.fn(() => true),
   isPreviewRuntime: () => false,
 }));
 vi.mock(import("./nativePreparation.ts"), async (importOriginal) => ({
@@ -89,6 +94,7 @@ it.effect("hands desktop installation to its controller before any continuation 
     let preparations = 0;
     const dependencies = Layer.mergeAll(
       ServerConfig.layer({ ...config, mode: "desktop" }),
+      UpdateAdmissionFence.layer,
       Layer.succeed(HostProcess.Platform, "darwin"),
       Layer.succeed(HostProcess.Architecture, "arm64"),
       Layer.mock(SelfUpdate.ServerSelfUpdate)({
@@ -100,6 +106,8 @@ it.effect("hands desktop installation to its controller before any continuation 
         requiresQualifiedTrialGate: false,
       }),
       Layer.mock(Startup.ServerRuntimeStartup)({
+        awaitCommandReady: Effect.void,
+        enqueueCommand: (effect) => effect,
         markRunningProviderSessionsForContinuation: Effect.die("Unexpected server preparation"),
         markOptedInProviderSessionsForContinuation: Effect.sync(() => {
           preparations += 1;
@@ -173,4 +181,100 @@ it.effect("hands desktop installation to its controller before any continuation 
       expect(requestId).toBe(requested);
     }).pipe(Effect.provide(JonesUpdates.layer.pipe(Layer.provide(dependencies))));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([
+  { gate: "ready", mode: "desktop", qualified: true },
+  { gate: "ready", mode: "desktop", qualified: false },
+  { gate: "pending", mode: "desktop", qualified: true },
+  { gate: "failed", mode: "desktop", qualified: true },
+  { gate: "shutdown", mode: "desktop", qualified: true },
+  { gate: "mark-failed", mode: "desktop", qualified: true },
+  { gate: "ready", mode: "web", qualified: false },
+] as const)("prepares quit with $gate gate in $mode mode (qualified $qualified)", (scenario) =>
+  Effect.gen(function* () {
+    vi.mocked(isJonesRuntime).mockReturnValue(scenario.qualified);
+    const fs = yield* FileSystem.FileSystem;
+    const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-quit-prepare-" });
+    const config = yield* ServerConfig.ServerConfig.pipe(
+      Effect.provide(ServerConfig.layerTest(process.cwd(), baseDir)),
+    );
+    const gate = yield* Startup.makeCommandGate;
+    const error = new Startup.ServerRuntimeStartupError({
+      mode: scenario.mode,
+      host: null,
+      port: 0,
+      cause: "synthetic command gate failure",
+    });
+    if (scenario.gate !== "pending" && scenario.gate !== "failed") {
+      yield* gate.signalCommandReady;
+    }
+    if (scenario.gate === "failed" || scenario.gate === "shutdown") {
+      yield* gate.failCommandReady(error);
+    }
+    let waits = 0;
+    let enqueues = 0;
+    let marks = 0;
+    const dependencies = Layer.mergeAll(
+      ServerConfig.layer({ ...config, mode: scenario.mode }),
+      UpdateAdmissionFence.layer,
+      Layer.succeed(HostProcess.Platform, "darwin"),
+      Layer.succeed(HostProcess.Architecture, "arm64"),
+      Layer.mock(SelfUpdate.ServerSelfUpdate)({}),
+      Layer.mock(Launcher.ServiceLauncherClient)({
+        managed: false,
+        requiresQualifiedTrialGate: false,
+      }),
+      Layer.mock(Startup.ServerRuntimeStartup)({
+        awaitCommandReady: Effect.sync(() => {
+          waits += 1;
+        }).pipe(Effect.andThen(gate.awaitCommandReady)),
+        enqueueCommand: (effect) =>
+          Effect.sync(() => {
+            enqueues += 1;
+          }).pipe(Effect.andThen(gate.enqueueCommand(effect))),
+        markOptedInProviderSessionsForContinuation: Effect.gen(function* () {
+          marks += 1;
+          if (scenario.gate === "mark-failed") return yield* error;
+          return [ThreadId.make("quit-thread-one"), ThreadId.make("quit-thread-two")];
+        }),
+      }),
+      Layer.mock(DesktopReceiver.DesktopTelemetryReceiver)({
+        desktopUpdates: Effect.succeed({ latest: Option.none(), changes: Stream.empty }),
+      }),
+    );
+    yield* Effect.gen(function* () {
+      const updates = yield* JonesUpdates.JonesUpdates;
+      const result =
+        scenario.gate === "pending"
+          ? yield* Effect.gen(function* () {
+              const fiber = yield* updates.prepareQuit.pipe(Effect.forkChild);
+              yield* TestClock.adjust("250 millis");
+              return yield* Fiber.join(fiber);
+            })
+          : yield* updates.prepareQuit;
+      const prepared = scenario.mode === "desktop" && scenario.gate === "ready";
+      expect(result).toEqual({ prepared, threadCount: prepared ? 2 : 0 });
+      expect(waits).toBe(scenario.mode === "desktop" ? 1 : 0);
+      expect(enqueues).toBe(
+        scenario.mode === "desktop" && ["ready", "shutdown", "mark-failed"].includes(scenario.gate)
+          ? 1
+          : 0,
+      );
+      expect(marks).toBe(prepared || scenario.gate === "mark-failed" ? 1 : 0);
+      if (scenario.gate === "pending") {
+        yield* gate.signalCommandReady;
+        yield* Effect.yieldNow;
+        expect(marks).toBe(0);
+      }
+    }).pipe(Effect.provide(JonesUpdates.layer.pipe(Layer.provide(dependencies))));
+  }).pipe(
+    Effect.ensuring(
+      Effect.sync(() => {
+        vi.mocked(isJonesRuntime).mockReturnValue(true);
+      }),
+    ),
+    Effect.scoped,
+    Effect.provide(NodeServices.layer),
+  ),
 );

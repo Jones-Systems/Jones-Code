@@ -1,4 +1,10 @@
-import { CommandId, OrchestratorMcpFailure, type ClientLaunchLookup } from "@t3tools/contracts";
+import { claimForCaller } from "../../linkedThreads/launch.ts";
+import {
+  CommandId,
+  OrchestratorMcpFailure,
+  type LinkedThreadOriginLink,
+  type ClientLaunchLookup,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -13,6 +19,7 @@ import * as Project from "../../../project/ProjectService.ts";
 import * as Git from "../../../vcs/GitVcsDriver.ts";
 import type { Caller } from "../../../mcp/threadAccess.ts";
 import { unavailable } from "../../../mcp/threadAccess.ts";
+import { callerLinkOrigin } from "../../../mcp/linkOrigin.ts";
 import type { StartedModes, ThreadStartGate } from "../../../mcp/McpToolAccess.ts";
 import {
   clientLaunchIds,
@@ -26,11 +33,10 @@ interface Claim {
 }
 const isMcpFailure = Schema.is(OrchestratorMcpFailure);
 const fenceReason = "jones-client-launch:v1:fenced";
-const readClaim = (commandId: CommandId) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    return (yield* sql<Claim>`SELECT request_digest, message_requested FROM jones_mcp_client_launch_requests WHERE command_id = ${commandId}`)[0];
-  }).pipe(Effect.mapError(unavailable));
+const readClaim = Effect.fn("ClientLaunchService.readClaim")(function* (commandId: CommandId) {
+  const sql = yield* SqlClient.SqlClient;
+  return (yield* sql<Claim>`SELECT request_digest, message_requested FROM jones_mcp_client_launch_requests WHERE command_id = ${commandId}`)[0];
+}, Effect.mapError(unavailable));
 const readReceipt = (commandId: CommandId) =>
   Receipts.CommandReceiptStoreV2.pipe(
     Effect.flatMap((receipts) => receipts.getByCommandId(commandId)),
@@ -152,11 +158,40 @@ export const fence = Effect.fn("jones.clientLaunch.fence")(function* (
   return { ...result, state: result.state };
 });
 
+// Linked launches use upstream IDs; Jones receipts cannot establish absence or fence that work.
+const assertLocalReceiptCaller = (caller: Caller) =>
+  callerLinkOrigin(caller) === undefined
+    ? Effect.void
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "capability_denied",
+          message:
+            "Launch lookup and fencing are unavailable for linked-environment work. Retry the original launch with the same clientRequestId and unchanged request; a Jones receipt cannot prove its outcome.",
+        }),
+      );
+
+export const lookupForCaller = Effect.fn("jones.clientLaunch.lookupForCaller")(function* (
+  caller: Caller,
+  clientRequestId: string,
+) {
+  yield* assertLocalReceiptCaller(caller);
+  return yield* lookup(caller.scope.requestNamespace, clientRequestId);
+});
+
+export const fenceForCaller = Effect.fn("jones.clientLaunch.fenceForCaller")(function* (
+  caller: Caller,
+  clientRequestId: string,
+) {
+  yield* assertLocalReceiptCaller(caller);
+  return yield* fence(caller.scope.requestNamespace, clientRequestId);
+});
+
 export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   input: ClientLaunchRequest,
   caller: Caller,
   modes: StartedModes,
   gate: ThreadStartGate,
+  navigationExcluded = false,
 ) {
   if (
     input.scratch !== undefined ||
@@ -213,38 +248,39 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
   };
   const invoke = (request: ThreadLaunch.ThreadLaunchInput) =>
     launches.launch(request).pipe(Effect.mapError(unavailable));
+  let originLink: LinkedThreadOriginLink | undefined;
   let replayed = receipt?.status === "accepted";
-  const continueAccepted = () =>
-    Effect.gen(function* () {
-      const claim = yield* readClaim(ids.commandId);
-      if (claim?.request_digest !== digest)
-        return yield* new OrchestratorMcpFailure({
-          code: "request_conflict",
-          message: "The key belongs to a different launch request.",
-        });
-      const state = yield* lookup(caller.scope.requestNamespace, input.clientRequestId);
-      if (state.threadDeleted)
-        return yield* new OrchestratorMcpFailure({
-          code: "orchestration_error",
-          message: "The recorded launch thread was deleted; this key cannot relaunch it.",
-        });
-      const shell = yield* threads.getThreadShell(ids.threadId).pipe(Effect.mapError(unavailable));
-      if (shell === null) return yield* unavailable();
-      if (
-        state.initialMessage === "pending" ||
-        (state.initialMessage === "accepted" && state.preparation === "unscheduled")
-      ) {
-        yield* gate.continueWithin(
-          shell,
-          invoke({
-            ...common,
-            modelSelection: shell.modelSelection,
-            runtimeMode: shell.runtimeMode,
-            interactionMode: shell.interactionMode,
-          }),
-        );
-      }
-    });
+  const continueAccepted = Effect.fn("ClientLaunchService.continueAccepted")(function* () {
+    const claim = yield* readClaim(ids.commandId);
+    if (claim?.request_digest !== digest)
+      return yield* new OrchestratorMcpFailure({
+        code: "request_conflict",
+        message: "The key belongs to a different launch request.",
+      });
+    originLink = yield* claimForCaller(caller, ids.threadId, ids.commandId, navigationExcluded);
+    const state = yield* lookup(caller.scope.requestNamespace, input.clientRequestId);
+    if (state.threadDeleted)
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message: "The recorded launch thread was deleted; this key cannot relaunch it.",
+      });
+    const shell = yield* threads.getThreadShell(ids.threadId).pipe(Effect.mapError(unavailable));
+    if (shell === null) return yield* unavailable();
+    if (
+      state.initialMessage === "pending" ||
+      (state.initialMessage === "accepted" && state.preparation === "unscheduled")
+    ) {
+      yield* gate.continueWithin(
+        shell,
+        invoke({
+          ...common,
+          modelSelection: shell.modelSelection,
+          runtimeMode: shell.runtimeMode,
+          interactionMode: shell.interactionMode,
+        }),
+      );
+    }
+  });
   if (replayed) {
     yield* continueAccepted();
   } else {
@@ -318,6 +354,12 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
               Effect.mapError(unavailable),
             );
           }
+          originLink = yield* claimForCaller(
+            caller,
+            ids.threadId,
+            ids.commandId,
+            navigationExcluded,
+          );
         }),
       )
       .pipe(Effect.mapError((error) => (isMcpFailure(error) ? error : unavailable())));
@@ -328,7 +370,16 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
       yield* continueAccepted();
     } else {
       const result = yield* gate
-        .continueWithin(modes, invoke({ ...common, modelSelection, ...modes }))
+        .continueWithin(
+          modes,
+          invoke({
+            ...common,
+            modelSelection,
+            runtimeMode: modes.runtimeMode,
+            interactionMode: modes.interactionMode,
+            ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
+          }),
+        )
         .pipe(
           Effect.catch((error) =>
             Effect.gen(function* () {
@@ -363,6 +414,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
     runId: state.runId,
     status: state.runStatus,
     replayed,
+    ...(originLink === undefined ? {} : { originLink }),
     requestDigest: digest,
     initialMessage: state.initialMessage,
     preparation: state.preparation,

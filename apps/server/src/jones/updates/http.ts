@@ -1,6 +1,7 @@
 import {
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
+  AuthEnvironmentMaintainScope,
   EnvironmentHttpApi,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -23,11 +24,67 @@ export const jonesUpdatesHttpApiLayer = HttpApiBuilder.group(
       const updates = yield* JonesUpdates;
       const sourceRelation = yield* SourceRelation.JonesSourceRelation;
       return handlers
+        .handle("operationStart", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.operationStart(payload);
+          }),
+        )
+        .handle("operationStop", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.operationStop(payload);
+          }),
+        )
+        .handle("operationFence", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.operationFence(payload);
+          }),
+        )
+        .handle("operationRead", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+            yield* noStore;
+            return yield* updates.operationRead(payload);
+          }),
+        )
+        .handle("recoveryPreflight", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.recoveryPreflight(payload);
+          }),
+        )
+        .handle("reconcile", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.reconcile(payload);
+          }),
+        )
+        .handle("recordRetired", ({ payload }) =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthEnvironmentMaintainScope);
+            yield* noStore;
+            return yield* updates.recordRetired(payload);
+          }),
+        )
         .handle("prepareNative", ({ payload }) =>
           Effect.gen(function* () {
             yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
             yield* noStore;
             return yield* updates.prepareNative(payload);
+          }),
+        )
+        .handle("prepareQuit", () =>
+          Effect.gen(function* () {
+            yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
+            yield* noStore;
+            return yield* updates.prepareQuit;
           }),
         )
         .handle("state", ({ query }) =>

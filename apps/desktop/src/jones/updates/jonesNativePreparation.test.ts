@@ -13,6 +13,7 @@ import {
   jonesNativeBootstrapCredential,
   jonesPreparationText,
   prepareJonesNativeInstall,
+  prepareJonesQuit,
 } from "./jonesNativePreparation.ts";
 
 const active = {
@@ -32,15 +33,24 @@ const active = {
 } as const;
 
 async function withBackend(
-  respond: (path: string | undefined) => { status: number; body: unknown },
+  respond: (
+    path: string | undefined,
+    request: NodeHttp.IncomingMessage,
+    body: string,
+  ) => { status: number; body: unknown } | undefined,
   body: (listener: string, paths: Array<string | undefined>) => Promise<void>,
 ) {
   const paths: Array<string | undefined> = [];
   const server = NodeHttp.createServer((request, response) => {
-    request.resume();
+    let requestBody = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk: string) => {
+      requestBody += chunk;
+    });
     request.on("end", () => {
       paths.push(request.url);
-      const reply = respond(request.url);
+      const reply = respond(request.url, request, requestBody);
+      if (reply === undefined) return;
       response.statusCode = reply.status;
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify(reply.body));
@@ -191,3 +201,89 @@ it("sends the durable attempt independently of the staged artifact to the native
     });
   }
 });
+
+it("authorizes quit preparation before sending an empty-body bearer request", async () => {
+  const requests: Array<{
+    method: string | undefined;
+    authorization: string | undefined;
+    body: string;
+  }> = [];
+  await withBackend(
+    (path, request, body) => {
+      requests.push({ method: request.method, authorization: request.headers.authorization, body });
+      if (path === "/oauth/token") {
+        return { status: 200, body: { access_token: "fixture-access" } };
+      }
+      return { status: 200, body: { prepared: true, threadCount: 2, futureField: true } };
+    },
+    async (listener, paths) => {
+      expect(await prepareJonesQuit({ listener, bootstrapToken: "fixture-bootstrap" })).toEqual({
+        prepared: true,
+        threadCount: 2,
+      });
+      expect(paths).toEqual(["/oauth/token", "/api/jones-updates/prepare-quit"]);
+      expect(requests.map((request) => request.method)).toEqual(["POST", "POST"]);
+      expect(requests[0]!.authorization).toBeUndefined();
+      const form = new URLSearchParams(requests[0]!.body);
+      expect(form.get("subject_token")).toBe("fixture-bootstrap");
+      expect(form.get("scope")).toBe("orchestration:operate");
+      expect(requests[1]!.body).toBe("");
+      expect(requests[1]!.authorization).toBe("Bearer fixture-access");
+    },
+  );
+});
+
+it("treats an unrecognized quit response as not prepared", async () =>
+  withBackend(
+    (path) => ({
+      status: 200,
+      body: path === "/oauth/token" ? { access_token: "fixture-access" } : { threadCount: -1 },
+    }),
+    async (listener) => {
+      expect(await prepareJonesQuit({ listener, bootstrapToken: "fixture-bootstrap" })).toEqual({
+        prepared: false,
+        threadCount: 0,
+      });
+    },
+  ));
+
+it("refuses non-loopback and non-http listeners before sending a request", async () =>
+  withBackend(
+    () => ({ status: 200, body: {} }),
+    async (listener, paths) => {
+      for (const invalid of [
+        listener.replace("127.0.0.1", "192.0.2.1"),
+        listener.replace("http:", "https:"),
+      ]) {
+        await expect(
+          prepareJonesQuit({ listener: invalid, bootstrapToken: "fixture-bootstrap" }),
+        ).rejects.toThrow("Native preparation requires the exact loopback listener.");
+      }
+      expect(paths).toEqual([]);
+    },
+  ));
+
+it("rejects an inactive authorization socket using the requested inactivity timeout", async () =>
+  withBackend(
+    () => undefined,
+    async (listener, paths) => {
+      await expect(
+        prepareJonesQuit({ listener, bootstrapToken: "fixture-bootstrap", timeoutMs: 25 }),
+      ).rejects.toThrow("Native preparation authorization transport failed (TIMEOUT).");
+      expect(paths).toEqual(["/oauth/token"]);
+    },
+  ));
+
+it("applies the requested inactivity timeout to the quit request too", async () =>
+  withBackend(
+    (path) =>
+      path === "/oauth/token"
+        ? { status: 200, body: { access_token: "fixture-access" } }
+        : undefined,
+    async (listener, paths) => {
+      await expect(
+        prepareJonesQuit({ listener, bootstrapToken: "fixture-bootstrap", timeoutMs: 25 }),
+      ).rejects.toThrow("Native quit preparation transport failed (TIMEOUT).");
+      expect(paths).toEqual(["/oauth/token", "/api/jones-updates/prepare-quit"]);
+    },
+  ));

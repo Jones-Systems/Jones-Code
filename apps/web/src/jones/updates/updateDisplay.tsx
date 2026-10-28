@@ -2,7 +2,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../../lib/utils";
 import { toastManager } from "../../components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
-import { compactJonesVersion } from "./buildVersion";
+import { jonesBuildLabel, type JonesBuildLabel, type JonesBuildLabelForm } from "./buildVersion";
 
 function useCopyValue(label: string) {
   return useCopyToClipboard<{ value: string }>({
@@ -24,37 +24,44 @@ const COPY_BUTTON_CLASSNAME =
   "cursor-pointer rounded-sm text-left outline-none hover:underline focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring";
 
 /**
- * A build as `0.45 · 5620`. The tooltip carries the exact version and source commit,
+ * A build-time label. The tooltip carries the exact version, build time and source commit,
  * and a click copies the exact version.
  */
 export function BuildVersion({
   label,
   version,
   sourceSha,
+  startedAt,
+  form,
+  buildLabel,
 }: {
   /** Names the build for assistive technology and the copy toast, e.g. "installed version". */
   readonly label: string;
   readonly version: string;
   readonly sourceSha?: string | undefined;
+  readonly startedAt?: string | undefined;
+  readonly form?: JonesBuildLabelForm | undefined;
+  readonly buildLabel?: JonesBuildLabel | undefined;
 }) {
   const copy = useCopyValue(label);
-  const { core, run } = compactJonesVersion(version);
+  const display = buildLabel ?? jonesBuildLabel({ version, sourceSha, startedAt }, form);
   return (
     <Tooltip>
       <TooltipTrigger
         render={
           <button
             type="button"
-            aria-label={`Copy ${label} ${version}`}
+            aria-label={`Copy ${label} ${version}; ${display.spoken}`}
             className={cn(COPY_BUTTON_CLASSNAME, "whitespace-nowrap tabular-nums")}
             onClick={() => copy(version, { value: version })}
           />
         }
       >
-        <span className="font-medium text-foreground">{core}</span>
-        {run !== undefined ? <span className="text-muted-foreground"> · {run}</span> : null}
+        <span className="font-medium text-foreground">{display.text}</span>
       </TooltipTrigger>
       <TooltipPopup side="top" variant="code">
+        {display.detail}
+        <br />
         {version}
         {sourceSha !== undefined ? (
           <>

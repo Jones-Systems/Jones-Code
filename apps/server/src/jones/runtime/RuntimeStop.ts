@@ -1,3 +1,4 @@
+import * as RestartPreparation from "../orchestration/RestartPreparation.ts";
 import {
   EnvironmentAuthenticatedPrincipal,
   StopCurrentThreadRuntimeInput,
@@ -54,6 +55,7 @@ export class CurrentRuntimeStop extends Context.Service<
 >()("t3/jones/runtime/RuntimeStop/CurrentRuntimeStop") {}
 const make = Effect.gen(function* () {
   const eventSink = yield* EventSink.EventSinkV2;
+  const restartPreparation = yield* RestartPreparation.RestartPreparation;
   const manager = yield* ProviderSessions.ProviderSessionManagerV2;
   const sessions = yield* AuthSessions.AuthSessionRepository;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
@@ -81,7 +83,8 @@ const make = Effect.gen(function* () {
           reason: "captured_runtime_stop_unavailable",
           backgroundCoverage: "partial" as const,
         };
-      const captured = yield* manager.captureCurrentThreadRuntimeStop(threadId);
+      const held = yield* restartPreparation.captureHeldRuntimeStop(threadId);
+      const captured = held ?? (yield* manager.captureCurrentThreadRuntimeStop(threadId));
       if (captured === null || !(yield* captured.isCurrent))
         return {
           status: "unavailable" as const,
@@ -103,7 +106,7 @@ const make = Effect.gen(function* () {
   const observe = Effect.fn("CurrentRuntimeStop.observe")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeUnknownEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_observation")));
       if (input.target.binding.threadId !== input.threadId)
@@ -152,7 +155,7 @@ const make = Effect.gen(function* () {
   const stop = Effect.fn("CurrentRuntimeStop.stop")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeUnknownEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_request")));
       if (input.target.binding.threadId !== input.threadId)
@@ -201,7 +204,8 @@ const make = Effect.gen(function* () {
           backgroundCoverage: "partial" as const,
         };
       }
-      const captured = yield* manager.captureCurrentThreadRuntimeStop(input.threadId);
+      const held = yield* restartPreparation.captureHeldRuntimeStop(input.threadId);
+      const captured = held ?? (yield* manager.captureCurrentThreadRuntimeStop(input.threadId));
       if (
         captured === null ||
         nativeCreationCanonicalJson({
@@ -337,6 +341,7 @@ const make = Effect.gen(function* () {
           );
           captures.delete(commandId);
           if (Exit.isFailure(completion)) return yield* error("runtime_stop_completion_unknown");
+          yield* restartPreparation.resolveAfterTeardown(capture.binding);
         }),
       );
     },

@@ -3,7 +3,6 @@ import type {
   ProviderInstanceId,
   ProviderSessionId,
 } from "@t3tools/contracts";
-import { WORK_MODE_INTERVAL_MS } from "@t3tools/shared/jones/workMode";
 import * as DateTime from "effect/DateTime";
 import { threadShellFromProjection } from "../../orchestration-v2/ProjectionStore.ts";
 import { workModeCandidate, workModeContext } from "./Policy.ts";
@@ -26,12 +25,10 @@ export function workModeRetainsSession(input: {
   )
     return false;
 
-  // Residency must survive the default 30-minute eviction before dispatch is
-  // due at 55 minutes. Only the inactivity threshold uses this advanced clock;
-  // snooze remains governed by the real clock above.
-  const eligibilityNowMs = nowMs + WORK_MODE_INTERVAL_MS;
-  if (workModeCandidate(shell, eligibilityNowMs) === null) return false;
-  const owner = workModeContext(projection, eligibilityNowMs);
+  // Keep eligible sessions resident before dispatch is due, using the real clock
+  // so the initial age guard and snooze cannot be advanced by retention.
+  if (workModeCandidate(shell, nowMs) === null) return false;
+  const owner = workModeContext(projection, nowMs, { ignoreInterval: true });
   return (
     owner !== null &&
     owner.providerSessionId === input.providerSessionId &&

@@ -14,6 +14,7 @@ import { NativeStoreAuthorityPersistenceError } from "../../../environment/nativ
 import { deriveNativeEnrollmentSession } from "./request.ts";
 import { makeNativeEnrollments, type NativeEnrollmentPorts } from "./service.ts";
 import { enrollmentRequest as request } from "./testFixtures.ts";
+import { makeNativeEnrollmentOperations } from "./operations.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -25,7 +26,7 @@ const ports: NativeEnrollmentPorts = {
       storeGeneration: request.context.store_generation,
     }),
   },
-  build: Effect.succeed(Option.some(request.context.build)),
+  build: Effect.succeedSome(request.context.build),
 };
 const fixture = Effect.gen(function* () {
   yield* TestClock.setTime(Date.parse(request.session.issued_at));
@@ -143,7 +144,7 @@ it.effect("authority absence and wrong source, generation or build fail before r
     assert.notStrictEqual(wrongSha, request.context.build.sha);
     const wrongBuild = yield* f.make({
       ...ports,
-      build: Effect.succeed(Option.some({ ...request.context.build, sha: wrongSha })),
+      build: Effect.succeedSome({ ...request.context.build, sha: wrongSha }),
     });
     assert.strictEqual((yield* Effect.flip(wrongBuild.reserve(request))).code, "build_mismatch");
     for (const context of [
@@ -212,4 +213,100 @@ it.effect("a missing enrollment table fails closed without creating it", () =>
       0,
     );
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "historical readback survives a build upgrade without renewing records or credentials",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      yield* f.enrollments.reserve(request);
+      const upgraded = yield* f.make({
+        ...ports,
+        build: Effect.succeedSome({
+          ...request.context.build,
+          sha: "b".repeat(40),
+          tree: "c".repeat(40),
+        }),
+      });
+      const operations = makeNativeEnrollmentOperations({
+        enrollments: upgraded,
+        materialize: () => Effect.die("readback must not materialize credentials"),
+        credential: {
+          observe: () => Effect.succeed({ sha256: "a".repeat(64) }),
+          publish: () => Effect.die("readback must not publish credentials"),
+        },
+      });
+      const receipt = yield* operations.readback(request, "a".repeat(64));
+      assert.strictEqual(receipt.state, "unchanged");
+      assert.strictEqual(receipt.reason, "complete");
+      assert.deepEqual(receipt.native_context, request.context);
+      assert.strictEqual((yield* operations.plan(request)).reason, "qualification_failed");
+      assert.strictEqual((yield* operations.apply(request, null)).reason, "qualification_failed");
+      assert.strictEqual((yield* f.sql`SELECT * FROM auth_sessions`).length, 1);
+      assert.strictEqual((yield* f.sql`SELECT * FROM workstreams_native_enrollments`).length, 1);
+    }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "historical readback rejects changed enrollment, authority, build and session evidence",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const credential = {
+        observe: () => Effect.succeed({ sha256: "a".repeat(64) }),
+        publish: () => Effect.die("readback must not publish"),
+      };
+      const operations = (enrollments: typeof f.enrollments) =>
+        makeNativeEnrollmentOperations({
+          enrollments,
+          credential,
+          materialize: () => Effect.die("readback must not issue"),
+        });
+      const absent = yield* operations(f.enrollments).readback(request, "a".repeat(64));
+      assert.strictEqual(absent.reason, "records_absent");
+      assert.strictEqual((yield* f.sql`SELECT * FROM auth_sessions`).length, 0);
+      assert.strictEqual((yield* f.sql`SELECT * FROM workstreams_native_enrollments`).length, 0);
+      yield* f.enrollments.reserve(request);
+      assert.strictEqual(
+        (yield* operations(f.enrollments).readback(
+          { ...request, registry_origin: "https://changed.invalid" },
+          "a".repeat(64),
+        )).reason,
+        "enrollment_conflict",
+      );
+      const changed = yield* f.make({
+        ...ports,
+        authority: {
+          readCurrent: Effect.succeed({
+            environmentId: request.context.source_instance_id,
+            authorityNamespace: request.context.authority_namespace,
+            storeGeneration: request.context.store_generation + 1,
+          }),
+        },
+      });
+      assert.strictEqual(
+        (yield* operations(changed).readback(request, "a".repeat(64))).reason,
+        "qualification_failed",
+      );
+      const missingBuild = yield* f.make({ ...ports, build: Effect.succeedNone });
+      assert.strictEqual(
+        (yield* operations(missingBuild).readback(request, "a".repeat(64))).reason,
+        "qualification_failed",
+      );
+      yield* TestClock.setTime(Date.parse(request.session.expires_at));
+      assert.strictEqual(
+        (yield* operations(f.enrollments).readback(request, "a".repeat(64))).reason,
+        "session_conflict",
+      );
+      yield* TestClock.setTime(Date.parse(request.session.issued_at));
+      yield* f.sessions.revoke({
+        sessionId: request.session.session_id,
+        revokedAt: DateTime.makeUnsafe(request.session.issued_at),
+      });
+      assert.strictEqual(
+        (yield* operations(f.enrollments).readback(request, "a".repeat(64))).reason,
+        "session_conflict",
+      );
+    }).pipe(Effect.provide(memory)),
 );

@@ -118,10 +118,8 @@ const make = Effect.gen(function* () {
     const history = yield* repository.readWorkspaceClaim(input.claimId);
     if (history.intent.claimId !== input.claimId)
       return yield* denied("conflict", "Workspace claim authority differs");
-    const actorSessionId = yield* Schema.decodeUnknownEffect(AuthSessionId)(
-      history.intent.actorSessionId,
-    );
-    const guard = yield* Schema.decodeUnknownEffect(NativeCreationGuard)({
+    const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(history.intent.actorSessionId);
+    const guard = yield* Schema.decodeEffect(NativeCreationGuard)({
       schema: "t3.native-creation-guard/v1",
       grantId: history.intent.grantId,
       grantRevision: history.intent.grantRevision,
@@ -185,8 +183,8 @@ const make = Effect.gen(function* () {
           "Workspace already has external effect history requiring qualified recovery",
         );
       let proof: NativeWorkspaceProof | undefined;
-      const revalidate = (stage: Authority.NativeCreationStage) =>
-        Effect.gen(function* () {
+      const revalidate = Effect.fn("NativeCreationWorkspacePreparation.revalidate")(
+        function* (stage: Authority.NativeCreationStage) {
           yield* authorize(stage);
           const admitted = yield* repository.readWorkspaceAdmission!(input.claimId);
           const current = yield* ports.inspect(intent, proof);
@@ -199,11 +197,11 @@ const make = Effect.gen(function* () {
               "Workspace path admission, birth or Git registration changed",
             );
           if (proof) yield* ports.verify(basis, proof);
-        }).pipe(
-          Effect.mapError(() =>
-            denied("conflict", "Current workspace authority or physical identity changed"),
-          ),
-        );
+        },
+        Effect.mapError(() =>
+          denied("conflict", "Current workspace authority or physical identity changed"),
+        ),
+      );
       const effectId = (stage: string) =>
         nativeCreationSha256(nativeCreationCanonicalJson({ claimId: input.claimId, stage, basis }));
       const timestamp = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -343,6 +341,7 @@ const make = Effect.gen(function* () {
       yield* repository.recordWorkspaceVerified!(verified);
       return verified;
     },
+    Effect.scoped,
     Effect.mapError((cause) =>
       Schema.is(NativeWorkspaceError)(cause)
         ? cause

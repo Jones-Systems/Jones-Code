@@ -32,8 +32,9 @@ import {
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
-import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
+import { usePrimarySettings } from "../../hooks/useSettings";
+import { resolveHour12 } from "../../timestampFormat";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { environmentPresentations } from "../../state/presentation";
 import { primaryServerKeybindingsAtom, serverEnvironment } from "../../state/server";
@@ -66,7 +67,7 @@ import {
 } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { SidebarInset } from "../ui/sidebar";
+import { AppRouteModal, AppRouteModalClose } from "../AppRouteModal";
 import { Skeleton } from "../ui/skeleton";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -78,7 +79,6 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -96,7 +96,6 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
-import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import { SavedTokenAccounting } from "../../jones/usage/SavedTokenAccounting";
 import { UsageRangePicker } from "../../jones/usage/UsageRangePicker";
@@ -104,6 +103,8 @@ import { useUsageWindow } from "../../jones/usage/useUsageWindow";
 import { useUsageProviderDetails } from "../../jones/usage/useUsageProviderDetails";
 import { UsageProviderDetails, UsageProviderSummary } from "../../jones/usage/UsageProviderDetails";
 import { UsageModelRow } from "../../jones/usage/UsageModelRow";
+import { UsageTotals } from "../../jones/usage/UsageTotals";
+import { UsageModelTableHead } from "../../jones/usage/UsageModelTableHead";
 
 function isUsageMetric(value: string | null | undefined): value is UsageMetric {
   return METRIC_OPTIONS.some((option) => option.value === value);
@@ -129,10 +130,7 @@ function usageLoading(
   };
 }
 
-/**
- * The model whose detail dialog is open. It lives outside UsagePage so opening
- * or closing the dialog renders only its host, not the whole usage page.
- */
+/** Keep dialog selection outside UsagePage so opening/closing rerenders only its host. */
 const selectedUsageModelKeyAtom = Atom.make<string | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("usage:selected-model-key"),
@@ -190,8 +188,8 @@ export function UsagePage() {
     selectMetric: selectWindowMetric,
     refreshUsageWindow,
   } = useUsageWindow();
-  useEscapeToGoBack();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
+  const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const shortcutTitle = (
     option: (typeof METRIC_OPTIONS)[number] | (typeof WINDOW_OPTIONS)[number],
   ) => {
@@ -222,7 +220,9 @@ export function UsagePage() {
   const refreshingUsage = isRefreshing && !showingLimits;
   const showingKept = shown !== null && shown.window !== window;
   const presentations = useAtomValue(environmentPresentations.presentationsAtom);
-  const providersByEnvironment = useAtomValue(environmentPresentations.providersByEnvironmentAtom);
+  const presentationsWithProviders = useAtomValue(
+    environmentPresentations.presentationsWithProvidersAtom,
+  );
   const cursorAccessEnvironments = hiddenProviders.has("cursor")
     ? []
     : cursorKeychainAccessEnvironments(selectedEnvironments);
@@ -328,15 +328,15 @@ export function UsagePage() {
       : enumerateHourStarts(shownWindow.sinceTime, shownWindow.untilTime);
   const showChatGptSharing =
     !hiddenProviders.has("codex") &&
-    [...providersByEnvironment].some(
-      ([id, providers]) =>
+    [...presentationsWithProviders].some(
+      ([id, presentation]) =>
         (selectedEnvironmentIds === null || selectedEnvironmentIds.has(id)) &&
-        providers.some(usesChatGptSharing),
+        (presentation.serverConfig?.providers ?? []).some(usesChatGptSharing),
     );
 
   const windowLabel =
     shownHourly && shownWindow.sinceTime !== undefined && shownWindow.untilTime !== undefined
-      ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone)}`
+      ? `${formatDateTimeShort(shownWindow.sinceTime, shownWindow.timeZone, hour12)} to ${formatDateTimeShort(shownWindow.untilTime, shownWindow.timeZone, hour12)}`
       : `${formatDayShort(shownWindow.sinceDay)} to ${formatDayShort(shownWindow.untilDay)}`;
   const desktopWindowLabel =
     windowSelection.kind === "hours"
@@ -359,7 +359,7 @@ export function UsagePage() {
     onClear: clearCustomWindow,
   };
   const topbarContent = (
-    <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 xl:flex">
+    <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="min-w-0">
         <WorkspaceBreadcrumbItem>
           <h1>Usage</h1>
@@ -392,7 +392,7 @@ export function UsagePage() {
           {desktopWindowLabel}
         </span>
       ) : null}
-      <div className="ms-auto hidden min-w-0 items-center justify-end gap-2 xl:flex">
+      <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
         <ToggleGroup
           aria-label="Usage metric"
           variant="segmented"
@@ -436,7 +436,7 @@ export function UsagePage() {
           <RefreshIcon size="sm" refreshing={isRefreshing} />
         </Button>
       </div>
-      <div className="ms-auto flex min-w-0 items-center justify-end gap-1 xl:hidden">
+      <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
         <Select
           value={metric}
           onValueChange={(value) => {
@@ -508,9 +508,12 @@ export function UsagePage() {
   );
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-        <WorkspacePageHeader electron={isElectron}>{topbarContent}</WorkspacePageHeader>
+    <AppRouteModal label="Usage">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 border-b ps-5 pe-2">
+          {topbarContent}
+          <AppRouteModalClose />
+        </header>
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
@@ -565,6 +568,7 @@ export function UsagePage() {
                     : JSON.stringify([...selectedEnvironmentIds].sort())
                 }
                 shownWindow={shownWindow}
+                hour12={hour12}
                 days={days}
                 hours={hours}
                 showingKept={showingKept}
@@ -596,6 +600,7 @@ export function UsagePage() {
             resolution: shownHourly ? "hour" : "day",
             timeZone: shownWindow.timeZone,
             referenceTime: shownWindow.untilTime,
+            hour12,
           }}
           onSetPrice={(model) => setPriceDialog({ model })}
         />
@@ -610,7 +615,7 @@ export function UsagePage() {
           }}
         />
       ) : null}
-    </SidebarInset>
+    </AppRouteModal>
   );
 }
 
@@ -618,6 +623,7 @@ function UsageOverview({
   merged,
   providerSelectionScope,
   shownWindow,
+  hour12,
   days,
   hours,
   showingKept,
@@ -633,6 +639,7 @@ function UsageOverview({
   readonly merged: MergedUsage;
   readonly providerSelectionScope: string;
   readonly shownWindow: UsageSummaryInput;
+  readonly hour12: boolean;
   readonly days: readonly string[];
   readonly hours: readonly string[];
   readonly showingKept: boolean;
@@ -649,8 +656,8 @@ function UsageOverview({
   const providerTriggers = useRef(new Map<UsageProviderKind, HTMLButtonElement>());
   const shownHourly = shownWindow.resolution === "hour";
   const loading = usageLoading(showingKept, selectedEnvironments, refreshingUsage, hiddenProviders);
-  // A primitive copy: reading `loading.partial` in the JSX would keep `loading` alive
-  // across every derivation below and fold them into one cache scope.
+  // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
+  // scope.
   const loadingPartial = loading.partial === true;
   const {
     detailBreakdown,
@@ -663,9 +670,8 @@ function UsageOverview({
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
   const providersWithData = new Set(providersWithUsage(merged.providers));
-  // `everyProvider` marks shown providers as loading; only `loading.providers`, which excludes
-  // hidden ones, may add a provider that has no data yet.
-  // Filtering a fresh copy, not the shared module array, lets the compiler cache this on its own.
+  // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
+  // cache independently.
   const activeProviders = [...PROVIDER_ORDER].filter(
     (provider) => providersWithData.has(provider) || loading.providers.has(provider),
   );
@@ -829,7 +835,7 @@ function UsageOverview({
                     )}
                   >
                     {awaitingData
-                      ? "—"
+                      ? "-"
                       : metric === "cost"
                         ? formatUsd(totals?.costUsd ?? 0)
                         : formatTokens(totals?.totalTokens ?? 0)}
@@ -866,6 +872,7 @@ function UsageOverview({
             referenceTime={shownWindow.untilTime}
             resolution={shownHourly ? "hour" : "day"}
             timeZone={shownWindow.timeZone}
+            hour12={hour12}
           />
         </div>
       </section>
@@ -881,33 +888,7 @@ function UsageOverview({
       ) : (
         <section className="flex flex-col gap-2">
           <h2 className="text-sm font-medium text-foreground">Totals</h2>
-          <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
-            <Metric
-              loading={loadingPartial}
-              label="Processed tokens"
-              value={formatTokens(merged.totalTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Cached input"
-              value={formatTokens(merged.cachedInputTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Uncached input"
-              value={formatTokens(merged.uncachedInputTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Output"
-              value={formatTokens(merged.outputTokens)}
-            />
-            <Metric
-              loading={loadingPartial}
-              label="Cache savings"
-              value={formatUsd(merged.costQuality.cacheSavingsUsd)}
-            />
-          </div>
+          <UsageTotals usage={merged} loading={loadingPartial} />
         </section>
       )}
 
@@ -985,118 +966,119 @@ function UsageOverview({
             : `Shares are within ${PROVIDER_PRESENTATION[focusedProvider].label}'s API estimate. The summary and chart include all providers.`}
         </p>
         {breakdown === "model" ? (
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-border text-right text-xs text-muted-foreground">
-                <th className="py-2 pr-3 text-left font-normal">#</th>
-                <th className="w-full py-2 text-left font-normal">Model</th>
-                <th className="py-2 pl-6 font-normal">Cost</th>
-                <th className="hidden py-2 pl-6 font-normal sm:table-cell">Share</th>
-                <th className="py-2 pl-6 font-normal">Tokens</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdownModels.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="py-6 text-center text-muted-foreground">
-                    No activity in this window.
-                  </td>
-                </tr>
-              ) : (
-                breakdownModels.map((model, index) => {
-                  const key = `${model.provider}:${model.model}`;
-                  return (
-                    <UsageModelRow
-                      key={key}
-                      model={model}
-                      index={index}
-                      metric={metric}
-                      breakdownPeak={breakdownPeak}
-                      loading={loadingProviders.has(model.provider)}
-                      expanded={expandedModelKey === key}
-                      onSelect={() => onSelectModel(key)}
-                      onToggle={() => setExpandedModelKey(expandedModelKey === key ? null : key)}
-                    />
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        ) : (
-          <table className="w-full table-fixed text-sm">
-            <colgroup>
-              <col className="w-2/5" />
-              {breakdownProviders.map((provider) => (
-                <col key={provider} style={{ width: timeValueColumnWidth }} />
-              ))}
-              <col style={{ width: timeValueColumnWidth }} />
-              <col style={{ width: timeValueColumnWidth }} />
-            </colgroup>
-            <thead>
-              <tr className="border-b border-border text-left text-xs text-muted-foreground">
-                <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
-                {breakdownProviders.map((provider) => (
-                  <th key={provider} className="py-2 text-right font-normal">
-                    {PROVIDER_PRESENTATION[provider].label}
-                  </th>
-                ))}
-                <th className="py-2 text-right font-normal">Total</th>
-                <th className="py-2 text-right font-normal">Tokens</th>
-              </tr>
-            </thead>
-            <tbody>
-              {breakdownPeriods.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={breakdownProviders.length + 3}
-                    className="py-6 text-center text-muted-foreground"
-                  >
-                    No activity in this window.
-                  </td>
-                </tr>
-              ) : (
-                breakdownPeriods.map((period) => (
-                  <tr
-                    key={"hourStart" in period ? period.hourStart : period.day}
-                    className="border-b border-border/50 transition-colors hover:bg-muted/50"
-                  >
-                    <td className="py-2 text-foreground">
-                      {"hourStart" in period
-                        ? formatHourShort(period.hourStart, shownWindow.timeZone)
-                        : formatDayShort(period.day)}
-                    </td>
-                    {breakdownProviders.map((provider) => (
-                      <td
-                        key={provider}
-                        className={cn(
-                          "py-2 text-right text-muted-foreground tabular-nums",
-                          figureClass(loadingProviders.has(provider)),
-                        )}
-                      >
-                        {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
-                      </td>
-                    ))}
-                    <td
-                      className={cn(
-                        "py-2 text-right text-foreground tabular-nums",
-                        figureClass(loadingPartial),
-                      )}
-                    >
-                      {formatUsd(period.costUsd)}
-                    </td>
-                    <td
-                      className={cn(
-                        "py-2 text-right text-muted-foreground tabular-nums",
-                        figureClass(loadingPartial),
-                      )}
-                    >
-                      {formatTokens(period.totalTokens)}
+          <div className="@container">
+            <table className="w-full text-sm">
+              <UsageModelTableHead />
+              <tbody>
+                {breakdownModels.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-6 text-center text-muted-foreground">
+                      No activity in this window.
                     </td>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+                ) : (
+                  breakdownModels.map((model, index) => {
+                    const key = `${model.provider}:${model.model}`;
+                    return (
+                      <UsageModelRow
+                        key={key}
+                        model={model}
+                        index={index}
+                        metric={metric}
+                        breakdownPeak={breakdownPeak}
+                        loading={loadingProviders.has(model.provider)}
+                        expanded={expandedModelKey === key}
+                        onSelect={() => onSelectModel(key)}
+                        onToggle={() => setExpandedModelKey(expandedModelKey === key ? null : key)}
+                      />
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div
+            className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+            role="region"
+            aria-label="Usage breakdown by time"
+            tabIndex={0}
+          >
+            <table className="w-full text-sm whitespace-nowrap">
+              <colgroup>
+                <col className="w-2/5" />
+                {breakdownProviders.map((provider) => (
+                  <col key={provider} style={{ width: timeValueColumnWidth }} />
+                ))}
+                <col style={{ width: timeValueColumnWidth }} />
+                <col style={{ width: timeValueColumnWidth }} />
+              </colgroup>
+              <thead>
+                <tr className="border-b border-border text-left text-xs text-muted-foreground">
+                  <th className="py-2 font-normal">{shownHourly ? "Hour" : "Day"}</th>
+                  {breakdownProviders.map((provider) => (
+                    <th key={provider} className="py-2 pl-4 text-right font-normal">
+                      {PROVIDER_PRESENTATION[provider].label}
+                    </th>
+                  ))}
+                  <th className="py-2 pl-4 text-right font-normal">Total</th>
+                  <th className="py-2 pl-4 text-right font-normal">Tokens</th>
+                </tr>
+              </thead>
+              <tbody>
+                {breakdownPeriods.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={breakdownProviders.length + 3}
+                      className="py-6 text-center text-muted-foreground"
+                    >
+                      No activity in this window.
+                    </td>
+                  </tr>
+                ) : (
+                  breakdownPeriods.map((period) => (
+                    <tr
+                      key={"hourStart" in period ? period.hourStart : period.day}
+                      className="border-b border-border/50 transition-colors hover:bg-muted/50"
+                    >
+                      <td className="py-2 text-foreground">
+                        {"hourStart" in period
+                          ? formatHourShort(period.hourStart, shownWindow.timeZone, hour12)
+                          : formatDayShort(period.day)}
+                      </td>
+                      {breakdownProviders.map((provider) => (
+                        <td
+                          key={provider}
+                          className={cn(
+                            "py-2 pl-4 text-right text-muted-foreground tabular-nums",
+                            figureClass(loadingProviders.has(provider)),
+                          )}
+                        >
+                          {formatUsd(period.byProvider.get(provider)?.costUsd ?? 0)}
+                        </td>
+                      ))}
+                      <td
+                        className={cn(
+                          "py-2 pl-4 text-right text-foreground tabular-nums",
+                          figureClass(loadingPartial),
+                        )}
+                      >
+                        {formatUsd(period.costUsd)}
+                      </td>
+                      <td
+                        className={cn(
+                          "py-2 pl-4 text-right text-muted-foreground tabular-nums",
+                          figureClass(loadingPartial),
+                        )}
+                      >
+                        {formatTokens(period.totalTokens)}
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
       </section>
     </div>
@@ -1250,27 +1232,6 @@ function ProviderMark({
 
 function figureClass(loading: boolean) {
   return cn("transition-opacity", loading && "opacity-40 delay-150");
-}
-
-function Metric({
-  label,
-  value,
-  loading,
-}: {
-  readonly label: string;
-  readonly value: string;
-  readonly loading: boolean;
-}) {
-  return (
-    <div className="flex min-w-0 flex-col gap-0.5">
-      <span className="text-xs text-muted-foreground">{label}</span>
-      <span
-        className={cn("text-base font-medium text-foreground tabular-nums", figureClass(loading))}
-      >
-        {value}
-      </span>
-    </div>
-  );
 }
 
 function UsageCoverageNotice({
@@ -1547,7 +1508,15 @@ function UsageSkeleton() {
       <section className="flex flex-col gap-2">
         <h2 className="text-sm font-medium text-foreground">Totals</h2>
         <MetricSkeletons
-          labels={["Processed tokens", "Cached input", "Uncached input", "Output", "Cache savings"]}
+          labels={[
+            "Processed tokens",
+            "Cached input",
+            "Uncached input",
+            "Cache write",
+            "Output",
+            "Cache savings",
+            "Cache %",
+          ]}
         />
       </section>
 
@@ -1572,7 +1541,7 @@ function UsageSkeleton() {
 
 function MetricSkeletons({ labels }: { readonly labels: readonly string[] }) {
   return (
-    <div className="grid grid-cols-2 gap-x-6 gap-y-4 py-1 md:grid-cols-5">
+    <div className="flex flex-wrap justify-between gap-x-6 gap-y-4 py-1">
       {labels.map((label) => (
         <div key={label} className="flex flex-col gap-0.5">
           <span className="text-xs text-muted-foreground">{label}</span>

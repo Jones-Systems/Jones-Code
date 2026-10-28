@@ -18,10 +18,12 @@ it("keeps lazy Linux imports and worker bundles from executing desktop startup t
       "src/snapShot/GlobalShiftShortcutWorker.ts",
       "src/snapShot/RegionSnapShotWorker.ts",
       "src/snapShot/SnapShotAccessibilityWorker.ts",
+      "src/jones/updates/jonesStagingWorker.ts",
     ];
     await Promise.all([
       NodeFSP.mkdir(NodePath.join(directory, "src/electron"), { recursive: true }),
       NodeFSP.mkdir(NodePath.join(directory, "src/snapShot"), { recursive: true }),
+      NodeFSP.mkdir(NodePath.join(directory, "src/jones/updates"), { recursive: true }),
     ]);
     await Promise.all([
       NodeFSP.writeFile(
@@ -41,7 +43,7 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
       ...workerEntries.map((entry) =>
         NodeFSP.writeFile(
           NodePath.join(directory, entry),
-          'import { shared } from "../shared.ts"; process.emit("worker", shared.value);',
+          `import { shared } from "${NodePath.posix.relative(NodePath.posix.dirname(entry), "src/shared.ts")}"; process.emit("worker", shared.value);`,
         ),
       ),
     ]);
@@ -107,7 +109,7 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
     for (const entry of workerEntries) {
       load(NodePath.join(outputDirectory, entry.replace(/^src\//, "").replace(/\.ts$/, ".cjs")));
     }
-    assert.deepEqual(workers, [42, 42, 42, 42]);
+    assert.deepEqual(workers, [42, 42, 42, 42, 42]);
     assert.deepEqual(startups, [42]);
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true });
@@ -128,6 +130,9 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       "src/app/DesktopUserDataOverride.ts",
       "src/jones/previewCompanion/CompanionProduct.ts",
       "src/jones/updates/jonesNativeStartup.ts",
+      "src/jones/updates/jonesNativeHelperSource.ts",
+      "src/jones/updates/jonesSigningSource.ts",
+      "src/jones/updates/jonesPairedStateSource.ts",
       "src/jones/updates/jonesColdDarwinLayout.ts",
     ];
     const sharedPackageDirectory = NodePath.join(directory, "node_modules/@t3tools/shared");
@@ -317,6 +322,9 @@ export const startBackend = startJonesColdBackend;
               };
             if (specifier === "electron")
               return {
+                dialog: {
+                  showErrorBox: (title, content) => operations.push({ dialog: { title, content } }),
+                },
                 app: {
                   isPackaged: true,
                   getAppPath: () => "/fixture/app",
@@ -340,6 +348,7 @@ export const startBackend = startJonesColdBackend;
             if (
               [
                 "node:child_process",
+                "node:util",
                 "node:process",
                 "node:stream",
                 "node:timers",
@@ -394,17 +403,26 @@ export const startBackend = startJonesColdBackend;
       T3CODE_JONES_COLD_CHANNEL_FD: "8",
     });
     cold.load();
-    assert.equal(cold.operations.length, 2);
-    assert.match(cold.operations[0], /^stderr:Jones Code refused native startup: /);
-    assert.equal(cold.operations[1], "exit:1");
+    assert.equal(cold.operations.length, 3);
+    assert.ok(cold.operations[0].dialog.title);
+    assert.match(cold.operations[0].dialog.content, /ownership-unknown/);
+    assert.match(cold.operations[0].dialog.content, /docs\/user\/updating.md#if-an-update-fails/);
+    assert.match(cold.operations[1], /^stderr:Jones Code refused native startup: /);
+    assert.equal(cold.operations[2], "exit:1");
     assert.throws(() => cold.main().resolvePermit());
     const refused = runBoot(undefined, undefined, "native failure\n" + "x".repeat(2000));
     refused.load();
-    assert.equal(refused.operations.length, 2);
-    assert.match(refused.operations[0], /^stderr:Jones Code refused native startup: /);
-    assert.ok(refused.operations[0].length < 600);
-    assert.equal(refused.operations[0].split("\n").length, 2);
-    assert.equal(refused.operations[1], "exit:1");
+    assert.equal(refused.operations.length, 3);
+    assert.ok(refused.operations[0].dialog.title);
+    assert.match(refused.operations[0].dialog.content, /ownership-unknown/);
+    assert.match(
+      refused.operations[0].dialog.content,
+      /docs\/user\/updating.md#if-an-update-fails/,
+    );
+    assert.match(refused.operations[1], /^stderr:Jones Code refused native startup: /);
+    assert.ok(refused.operations[1].length < 600);
+    assert.equal(refused.operations[1].split("\n").length, 2);
+    assert.equal(refused.operations[2], "exit:1");
     const invalid = runBoot("relative/profile");
     assert.throws(invalid.load, /must be an absolute path/);
     assert.deepEqual(invalid.operations, []);

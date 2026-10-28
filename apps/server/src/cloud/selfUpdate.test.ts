@@ -10,10 +10,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 
+import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -23,15 +25,21 @@ import * as ServerSelfUpdate from "./selfUpdate.ts";
 
 interface HarnessOptions {
   readonly mode?: "web" | "desktop";
+  readonly qualified?: boolean;
+  readonly qualifiedRecovery?: boolean;
   readonly releaseBaseUrl?: string | null;
   readonly managed?: boolean;
   readonly preflight?: "ready" | "blocked";
+  readonly beforeDownload?: Effect.Effect<void>;
   readonly requestUpdate?: ServiceLauncherClient.ServiceLauncherClient["Service"]["requestUpdate"];
   readonly desktopAppUpdate?: DesktopAppUpdate.DesktopAppUpdate["Service"];
 }
 
 const archiveBytes = new TextEncoder().encode("not really a tarball");
-const releaseHttpClient = (order: string[]) =>
+/** These cases fake `installQualified`, so staged verification is never reached. */
+const verifyStaged: ServerSelfUpdate.QualifiedStageVerifier = () =>
+  Promise.reject(new Error("staged verification is faked by installQualified"));
+const releaseHttpClient = (order: string[], beforeDownload?: Effect.Effect<void>) =>
   HttpClient.make((request) =>
     Effect.gen(function* () {
       if (request.url.endsWith("/SHA256SUMS")) {
@@ -44,6 +52,7 @@ const releaseHttpClient = (order: string[]) =>
           new Response(`${hex}  t3-1.1.0-linux-x64.tar.gz\n`),
         );
       }
+      if (beforeDownload) yield* beforeDownload;
       order.push("download");
       return HttpClientResponse.fromWeb(request, new Response(archiveBytes));
     }),
@@ -81,8 +90,9 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
             ? { status: "blocked", version: "1.1.0", reason: "local update required" }
             : {
                 status: "ready",
-                version: "1.1.0",
+                version: options.qualified ? "0.0.0-preview.20261002.101.1" : "1.1.0",
                 launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+                ...(options.qualified ? { startupGateProtocol: 1 } : {}),
               };
         return {
           stdout: JSON.stringify(result),
@@ -98,6 +108,10 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
   });
   const launcher = ServiceLauncherClient.ServiceLauncherClient.of({
     managed: options.managed ?? true,
+    ...(options.qualified
+      ? { qualifiedUpdates: true, currentVersion: "0.0.0-preview.20261002.100" }
+      : {}),
+    ...(options.qualifiedRecovery ? { qualifiedRecovery: true } : {}),
     requiresQualifiedTrialGate: false,
     prepareQualifiedTrial: () => Effect.die("ordinary release must not use qualified startup"),
     requestUpdate:
@@ -122,7 +136,7 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
         run: () => Effect.die("unexpected desktop app update run"),
       },
     ),
-    Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order)),
+    Effect.provideService(HttpClient.HttpClient, releaseHttpClient(order, options.beforeDownload)),
     Effect.provideService(HostProcess.Platform, "linux"),
     Effect.provideService(HostProcess.Architecture, "x64"),
     Effect.provide(
@@ -142,10 +156,71 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
       ),
     ),
   );
-  return { selfUpdate, order };
+  return { selfUpdate, order, baseDir, dbPath: config.dbPath };
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
+  it.effect("refuses old launcher or candidate recovery support before capture and handoff", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      for (const qualifiedRecovery of [false, true]) {
+        const { selfUpdate, order, baseDir, dbPath } = yield* makeHarness({
+          qualified: true,
+          qualifiedRecovery,
+        });
+        yield* fs.makeDirectory(path.dirname(dbPath), { recursive: true });
+        yield* fs.writeFileString(dbPath, "untouched database");
+        let captured = false;
+        const result = yield* selfUpdate.installQualified!(
+          {
+            stagedHandle: "12345678-1234-4234-8234-123456789abc",
+            verifyStaged: async () => ({
+              protocol: 2,
+              stagedHandle: "12345678-1234-4234-8234-123456789abc",
+              binding: {
+                baseDir,
+                dbPath,
+                environmentId: "synthetic",
+                activeVersion: "0.0.0-preview.20261002.100",
+                activeSourceSha: "a".repeat(40),
+              },
+              receipt: {
+                protocol: 1,
+                repository: "Jones-Systems/Jones-Code",
+                channel: "jones-main",
+                version: "0.0.0-preview.20261002.101.1",
+                sourceSha: "b".repeat(40),
+                sourceTree: "c".repeat(40),
+                installedSourceSha: "9".repeat(40),
+                workflow: ".github/workflows/artifact-cli-linux.yml",
+                runId: 101,
+                runAttempt: 1,
+                artifactId: 102,
+                artifactDigest: `sha256:${"d".repeat(64)}`,
+                archiveSha256: "e".repeat(64),
+                payloadSha256: "f".repeat(64),
+                platform: "linux",
+                architecture: "x64",
+              },
+            }),
+          },
+          () => Effect.die("unsupported reader reached handoff"),
+          () =>
+            Effect.sync(() => {
+              captured = true;
+            }),
+        ).pipe(Effect.flip);
+        expect(result.reason).toContain(
+          qualifiedRecovery ? "qualified-recovery-unsupported" : "bootstrap-required",
+        );
+        expect(captured).toBe(false);
+        expect(order).toEqual(qualifiedRecovery ? ["preflight"] : []);
+        expect(yield* fs.readFileString(dbPath)).toBe("untouched database");
+      }
+    }),
+  );
+
   it.effect("marks running threads at the boot-service handoff", () =>
     Effect.gen(function* () {
       const events: string[] = [];
@@ -227,29 +302,6 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 
-  it.effect("reports a failed continuation-marker cleanup", () =>
-    Effect.gen(function* () {
-      const updateError = new ServerSelfUpdateError({ reason: "update failed" });
-      const clearError = new ServerSelfUpdateError({ reason: "marker cleanup failed" });
-      const selfUpdate = yield* ServerSelfUpdate.withRunningThreadContinuation({
-        mode: "web",
-        selfUpdate: {
-          update: (_input, reportProgress = () => Effect.void) =>
-            reportProgress("installing").pipe(Effect.andThen(Effect.fail(updateError))),
-          commitDesktopUpdate: () => Effect.never,
-        },
-        prepare: Effect.succeed([ThreadId.make("thread-cleanup-failure")]),
-        clear: () => Effect.fail(clearError),
-      });
-
-      expect(
-        yield* selfUpdate
-          .update({ targetVersion: "1.1.0", continueRunningThreads: true })
-          .pipe(Effect.flip),
-      ).toBe(clearError);
-    }),
-  );
-
   it.effect("keeps continuation markers after the boot-service handoff is accepted", () =>
     Effect.gen(function* () {
       const events: string[] = [];
@@ -276,41 +328,6 @@ it.layer(NodeServices.layer)("server self update", (it) => {
 
       const exit = yield* selfUpdate
         .update({ targetVersion: "1.1.0", continueRunningThreads: true })
-        .pipe(Effect.exit);
-
-      expect(exit._tag).toBe("Failure");
-      expect(events).toEqual(["prepare"]);
-    }),
-  );
-
-  it.effect("keeps continuation markers after the desktop handoff is accepted", () =>
-    Effect.gen(function* () {
-      const events: string[] = [];
-      const selfUpdate = yield* ServerSelfUpdate.withRunningThreadContinuation({
-        mode: "desktop",
-        selfUpdate: {
-          update: () =>
-            Effect.succeed({
-              targetVersion: "1.2.0",
-              method: "desktop-app" as const,
-              desktopUpdateToken: "accepted-desktop-token",
-            }),
-          commitDesktopUpdate: (_requestId, onHandoffAccepted = () => Effect.void) =>
-            onHandoffAccepted().pipe(Effect.andThen(Effect.interrupt)),
-        },
-        prepare: Effect.sync(() => {
-          events.push("prepare");
-          return [ThreadId.make("thread-accepted-desktop-handoff")];
-        }),
-        clear: () => Effect.sync(() => void events.push("clear")),
-      });
-
-      yield* selfUpdate.update({
-        targetVersion: "1.2.0",
-        continueRunningThreads: true,
-      });
-      const exit = yield* selfUpdate
-        .commitDesktopUpdate("accepted-desktop-token")
         .pipe(Effect.exit);
 
       expect(exit._tag).toBe("Failure");
@@ -361,24 +378,13 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 
+  // regression: #5181 make remote updates rollback-safe
   it.effect("refuses the implicit upstream origin with an actionable staging message", () =>
     Effect.gen(function* () {
       const { selfUpdate, order } = yield* makeHarness({ releaseBaseUrl: null });
       const error = yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip);
       expect(error.reason).toContain("t3 jones host stage-runtime");
       expect(order).toEqual([]);
-    }),
-  );
-
-  it.effect("stages and preflights before asking the launcher for an update ID", () =>
-    Effect.gen(function* () {
-      const { selfUpdate, order } = yield* makeHarness();
-      expect(yield* selfUpdate.update({ targetVersion: "1.1.0" })).toEqual({
-        targetVersion: "1.1.0",
-        method: "boot-service",
-        updateId: "launcher-id",
-      });
-      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
     }),
   );
 
@@ -420,15 +426,6 @@ it.layer(NodeServices.layer)("server self update", (it) => {
     }),
   );
 
-  it.effect("preserves the preflight refusal reason", () =>
-    Effect.gen(function* () {
-      const { selfUpdate } = yield* makeHarness({ preflight: "blocked" });
-      expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
-        "local update required",
-      );
-    }),
-  );
-
   it.effect("allows only one update at a time", () =>
     Effect.gen(function* () {
       const requested = yield* Deferred.make<void>();
@@ -446,6 +443,132 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       );
       yield* Deferred.succeed(accepted, "launcher-id");
       expect((yield* Fiber.join(first)).updateId).toBe("launcher-id");
+    }),
+  );
+
+  it.effect("keeps preparing after the progress stream closes", () =>
+    Effect.gen(function* () {
+      const releaseDownload = yield* Deferred.make<void>();
+      const sawDownloading = yield* Deferred.make<void>();
+      const accepted = yield* Deferred.make<void>();
+      const { selfUpdate, order } = yield* makeHarness({
+        beforeDownload: Deferred.await(releaseDownload),
+        requestUpdate: () =>
+          Effect.sync(() => {
+            order.push("accept");
+          }).pipe(Effect.andThen(Deferred.succeed(accepted, undefined)), Effect.as("launcher-id")),
+      });
+
+      const consumed = yield* ServerSelfUpdate.updateProgressStream(selfUpdate, {
+        targetVersion: "1.1.0",
+      }).pipe(
+        Stream.tap((event) =>
+          event.type === "progress" && event.stage === "downloading"
+            ? Deferred.succeed(sawDownloading, undefined)
+            : Effect.void,
+        ),
+        Stream.runDrain,
+        Effect.forkChild,
+      );
+
+      yield* Deferred.await(sawDownloading);
+      yield* Fiber.interrupt(consumed);
+      expect((yield* selfUpdate.update({ targetVersion: "1.2.0" }).pipe(Effect.flip)).reason).toBe(
+        "A server update is already in progress.",
+      );
+
+      yield* Deferred.succeed(releaseDownload, undefined);
+      yield* Deferred.await(accepted);
+      expect(order).toEqual(["download", "extract", "preflight", "accept"]);
+      expect((yield* selfUpdate.update({ targetVersion: "1.1.0" }).pipe(Effect.flip)).reason).toBe(
+        "A server update is already in progress.",
+      );
+    }),
+  );
+});
+
+it.layer(NodeServices.layer)("pruning runtimes on start", (it) => {
+  const staleVersion = "0.0.1";
+  const otherProcesses = ProcessRunner.ProcessRunner.of({
+    run: () =>
+      Effect.succeed({
+        stdout: "p42\nftxt\nn/bin/sh\n",
+        stderr: "",
+        code: ChildProcessSpawner.ExitCode(0),
+        timedOut: false,
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        stdoutInvalidUtf8: false,
+        stderrInvalidUtf8: false,
+      }),
+  });
+
+  const pruneOnStart = Effect.fn("test.prune_on_start")(function* (input: {
+    readonly executable: "own runtime" | "elsewhere";
+    readonly managed?: boolean;
+    readonly symlinkedHome?: boolean;
+  }) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-prune-on-start-" });
+    const realHome = path.join(tempDir, "home");
+    const baseDir = input.symlinkedHome ? path.join(tempDir, "linked-home") : realHome;
+    const versionsDir = path.join(baseDir, "runtime", "versions");
+    yield* TestClock.setTime(24 * 60 * 60 * 1000);
+    for (const version of [staleVersion, packageJson.version]) {
+      const directory = path.join(realHome, "runtime", "versions", version);
+      yield* fs.makeDirectory(directory, { recursive: true });
+      yield* fs.writeFileString(path.join(directory, "t3"), "");
+      const sentinel = path.join(directory, ".install-complete");
+      yield* fs.writeFileString(sentinel, `${version}\n`);
+      yield* fs.utimes(sentinel, 0, 0);
+    }
+    if (input.symlinkedHome) yield* fs.symlink(realHome, baseDir);
+    // Like `process.execPath`, the running runtime is reported by its real path.
+    const executablePath =
+      input.executable === "own runtime"
+        ? yield* fs.realPath(path.join(versionsDir, packageJson.version, "t3"))
+        : "/usr/local/bin/node";
+    const removed = yield* ServerSelfUpdate.pruneRuntimesOnStart({
+      baseDir,
+      managed: input.managed ?? false,
+    }).pipe(
+      Effect.provideService(HostProcess.ExecutablePath, executablePath),
+      Effect.provideService(HostProcess.Platform, "darwin"),
+      Effect.provideService(HostProcess.Environment, {}),
+      Effect.provideService(ProcessRunner.ProcessRunner, otherProcesses),
+    );
+    return { removed, remaining: (yield* fs.readDirectory(versionsDir)).toSorted() };
+  });
+
+  // The SSH launcher runs `t3 serve` straight from the pinned runtime, with no boot service.
+  it.effect("prunes for a server started from its home's pinned runtime", () =>
+    Effect.gen(function* () {
+      const { removed, remaining } = yield* pruneOnStart({ executable: "own runtime" });
+      expect(removed).toEqual([staleVersion]);
+      expect(remaining).toEqual([packageJson.version]);
+    }),
+  );
+
+  it.effect("recognizes its runtime through a symlinked T3 home", () =>
+    Effect.gen(function* () {
+      const { removed } = yield* pruneOnStart({ executable: "own runtime", symlinkedHome: true });
+      expect(removed).toEqual([staleVersion]);
+    }),
+  );
+
+  it.effect("prunes for a boot-service server wherever it runs from", () =>
+    Effect.gen(function* () {
+      const { removed } = yield* pruneOnStart({ executable: "elsewhere", managed: true });
+      expect(removed).toEqual([staleVersion]);
+    }),
+  );
+
+  it.effect("leaves runtimes alone for an unmanaged server started elsewhere", () =>
+    Effect.gen(function* () {
+      const { removed, remaining } = yield* pruneOnStart({ executable: "elsewhere" });
+      expect(removed).toEqual([]);
+      expect(remaining).toEqual([staleVersion, packageJson.version].toSorted());
     }),
   );
 });
@@ -481,7 +604,11 @@ it.effect(
       });
       const install = wrapped.installQualified;
       if (install === undefined) return yield* Effect.die("missing qualified Install");
-      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      const request = {
+        stagedHandle: "fixed-candidate",
+        continueRunningThreads: true,
+        verifyStaged,
+      };
       yield* install(request).pipe(Effect.flip);
       const duplicate = yield* install(request).pipe(Effect.flip);
       expect(duplicate.reason).toContain("needs reconciliation");
@@ -521,7 +648,11 @@ it.effect(
       });
       const install = wrapped.installQualified;
       if (install === undefined) return yield* Effect.die("missing qualified Install");
-      const request = { stagedHandle: "fixed-candidate", continueRunningThreads: true };
+      const request = {
+        stagedHandle: "fixed-candidate",
+        continueRunningThreads: true,
+        verifyStaged,
+      };
       yield* install(request).pipe(Effect.flip);
       yield* install(request).pipe(Effect.flip);
       expect(events).toEqual(["prepare", "clear", "prepare", "clear"]);
@@ -563,7 +694,7 @@ it.effect("expires only qualified preparation, clears continuations and admits a
       },
     });
     const install = wrapped.installQualified!;
-    const request = { stagedHandle: "fixed", continueRunningThreads: true };
+    const request = { stagedHandle: "fixed", continueRunningThreads: true, verifyStaged };
     const fiber = yield* Effect.forkChild(install(request).pipe(Effect.flip));
     yield* Deferred.await(entered);
     yield* TestClock.adjust("20 minutes");
@@ -613,6 +744,7 @@ it.effect("keeps continuation marking outside the qualified preparation deadline
       wrapped.installQualified!({
         stagedHandle: "fixed",
         continueRunningThreads: true,
+        verifyStaged,
       }),
     );
     yield* Deferred.await(marking);

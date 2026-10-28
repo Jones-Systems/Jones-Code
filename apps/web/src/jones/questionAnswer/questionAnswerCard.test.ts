@@ -139,7 +139,7 @@ describe("normal message delivery while a question is pending", () => {
       event,
       intent: {
         keybindings: DEFAULT_RESOLVED_KEYBINDINGS,
-        isMobileViewport: false,
+        isSoftwareKeyboardOpen: false,
         isDraftThread: false,
         isRunning: true,
         sendShortcut: "enter",
@@ -154,5 +154,27 @@ describe("normal message delivery while a question is pending", () => {
       onSubmit: () => {},
     });
     expect(promoted).toBe(0);
+  });
+});
+
+it("describes the final all-question gate for message responses", () => {
+  const progress = derivePendingUserInputProgress(
+    [question, { ...question, id: "last" }],
+    { last: { customAnswer: "Final" } },
+    1,
+    { notes: true },
+  );
+  expect(progress).toMatchObject({ answeredByIndex: [false, true], firstUnansweredIndex: 0 });
+  expect(
+    deriveQuestionAnswerFooterState({
+      progress,
+      prompt: { responseCapability: "message", dismissible: true },
+      disabled: false,
+      isResponding: false,
+    }),
+  ).toMatchObject({
+    primaryLabel: "Send",
+    primaryDisabled: true,
+    blockedReason: "Answer question 1 to send · 1 of 2 answered",
   });
 });

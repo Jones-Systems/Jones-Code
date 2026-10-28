@@ -187,7 +187,7 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       );
       assert.isTrue(Option.isNone(yield* f.claim));
       assert.equal(
-        DateTime.toEpochMillis(Option.getOrThrow(yield* f.outbox.nextClaimableAt)),
+        DateTime.toEpochMillis(Option.getOrThrow(yield* f.outbox.nextClaimableAt())),
         DateTime.toEpochMillis(f.now) + 1000,
       );
       yield* TestClock.adjust("999 millis");
@@ -223,7 +223,7 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
           assert.isFalse(yield* f.succeed(first.id));
         }
         assert.isTrue(Option.isNone(yield* f.claim));
-        assert.isTrue(Option.isNone(yield* f.outbox.nextClaimableAt));
+        assert.isTrue(Option.isNone(yield* f.outbox.nextClaimableAt()));
         assert.equal(Option.getOrThrow(yield* f.outbox.get(f.second.id)).status, "pending");
       }).pipe(Effect.scoped, Effect.provide(Layer.fresh(TestLayer))),
   );
@@ -300,7 +300,7 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
       else
         yield* f.sql`UPDATE orchestration_command_receipts SET result_sequence = 0 WHERE command_id = ${commandId}`;
       assert.isTrue(Option.isNone(yield* f.claim));
-      assert.isTrue(Option.isNone(yield* f.outbox.nextClaimableAt));
+      assert.isTrue(Option.isNone(yield* f.outbox.nextClaimableAt()));
       assert.equal(Option.getOrThrow(yield* f.outbox.get(f.second.id)).status, "pending");
     }),
   );
@@ -415,9 +415,9 @@ it.layer(TestLayer)("orchestration V2 foundation persistence", (it) => {
           if (compiled[0].includes("AS predecessor")) queries.push(compiled);
           return Effect.succeed(statement);
         };
-        yield* f.outbox.nextClaimableAt.pipe(
-          Effect.provideService(Statement.CurrentTransformer, capture),
-        );
+        yield* f.outbox
+          .nextClaimableAt()
+          .pipe(Effect.provideService(Statement.CurrentTransformer, capture));
         assert.equal(
           Option.getOrThrow(
             yield* f.claim.pipe(Effect.provideService(Statement.CurrentTransformer, capture)),

@@ -65,6 +65,9 @@ async function createTwoHostCampaign(
   const host = vi.fn<FleetCampaignDriver["host"]>(async (environmentId, request) => {
     if (offline.has(environmentId)) throw new Error("Synthetic host offline.");
     if (request.action === "enroll") throw new Error("Enrollment belongs to fixture setup.");
+    if (request.action === "leader") throw new Error("This campaign publishes no laptop build.");
+    if (request.action === "planDirective")
+      throw new Error("Manual-review directives belong to plan fixtures.");
     const selectedEnrollment =
       environmentId === enrollment.environmentId ? enrollment : secondEnrollment;
     const operationId =
@@ -445,6 +448,19 @@ describe("native fleet commit gate", () => {
     fixture(async (_home, store) => {
       const state = await store.request({ action: "read" });
       const operationId = state.campaigns[0]!.members[0]!.operationId;
+      await store.bindInstall({
+        campaignId,
+        stagedHandle: stagedHandle,
+        targetSource: source,
+        transactionId: stagedHandle,
+        fromGeneration: "previous",
+      });
+      await store.recordOutcome({
+        transactionId: stagedHandle,
+        status: "committed",
+        activeGeneration: stagedHandle,
+        activeSource: source,
+      });
       await store.request({
         action: "updateMember",
         input: {
@@ -467,19 +483,6 @@ describe("native fleet commit gate", () => {
           },
         }),
       ).rejects.toThrow("source binding changed");
-      await store.bindInstall({
-        campaignId,
-        stagedHandle: stagedHandle,
-        targetSource: source,
-        transactionId: stagedHandle,
-        fromGeneration: "previous",
-      });
-      await store.recordOutcome({
-        transactionId: stagedHandle,
-        status: "committed",
-        activeGeneration: stagedHandle,
-        activeSource: source,
-      });
       await store.request({
         action: "updateMember",
         input: { campaignId, operationId, expectedPhase: "staging", phase: "pending" },
@@ -508,6 +511,44 @@ describe("native fleet commit gate", () => {
     }));
 });
 
+it("keeps hosts catching up to the committed build while the laptop prepares its next one", async () =>
+  fixture(async (home, store) => {
+    const f = await createTwoHostCampaign(home, store);
+    const nextId = "66666666-6666-4666-8666-666666666666";
+    const nextSource = "e".repeat(40);
+    const nextHandle = "f".repeat(64);
+    const nextTransaction = "9".repeat(64);
+    await store.request({
+      action: "prepare",
+      input: { campaignId: nextId, targetSource: nextSource, desktopStagedHandle: nextHandle },
+    });
+    expect((await f.members()).map((member) => member.phase)).toEqual(["waiting", "waiting"]);
+    await advanceFleetCampaigns(f.driver());
+    expect(f.activations).toHaveLength(1);
+    expect([...f.operations.values()].map((operation) => operation.input.targetSource)).toEqual([
+      source,
+      source,
+    ]);
+    // A newer commit replaces the build hosts catch up to; the unstarted host's stage retires.
+    await store.bindInstall({
+      campaignId: nextId,
+      stagedHandle: nextHandle,
+      targetSource: nextSource,
+      transactionId: nextTransaction,
+      fromGeneration: transactionId,
+    });
+    await store.recordOutcome({
+      transactionId: nextTransaction,
+      status: "committed",
+      activeGeneration: nextTransaction,
+      activeSource: nextSource,
+    });
+    expect((await f.members()).map((member) => member.phase).toSorted()).toEqual([
+      "pending",
+      "retiring",
+    ]);
+  }));
+
 it("holds an old unaccepted stage for exact retirement instead of forgetting its occupied slot", async () =>
   fixture(async (_home, store) => {
     const state = await store.request({ action: "read" });
@@ -525,9 +566,26 @@ it("holds an old unaccepted stage for exact retirement instead of forgetting its
     const nextId = "33333333-3333-4333-8333-333333333333";
     const next = await store.request({
       action: "prepare",
-      input: { campaignId: nextId, targetSource: "c".repeat(40), desktopStagedHandle: "new-stage" },
+      input: {
+        campaignId: nextId,
+        targetSource: "c".repeat(40),
+        desktopStagedHandle: "f".repeat(64),
+      },
     });
     expect(next.campaigns[0]?.members[0]?.phase).toBe("retiring");
+    await store.bindInstall({
+      campaignId: nextId,
+      stagedHandle: "f".repeat(64),
+      targetSource: "c".repeat(40),
+      transactionId: "e".repeat(64),
+      fromGeneration: "previous",
+    });
+    await store.recordOutcome({
+      transactionId: "e".repeat(64),
+      status: "committed",
+      activeGeneration: "e".repeat(64),
+      activeSource: "c".repeat(40),
+    });
     const nextOperation = next.campaigns[1]!.members[0]!.operationId;
     await expect(
       store.request({
@@ -642,4 +700,44 @@ it("uses a fresh campaign and host operation after rollback without reusing the 
     expect(final.campaigns.map((campaign) => campaign.phase)).toEqual(["rolled-back", "committed"]);
     expect(final.campaigns[1]?.members[0]?.operationId).toBe(nextOperationId);
     expect(final.campaigns[1]?.committedGeneration).toBe(nextAttempt);
+  }));
+
+it("refuses plan-managed campaign creation without changing enrollment or earlier campaigns", async () =>
+  fixture(async (home, store) => {
+    const before = await store.request({ action: "read" });
+    const guarded = createDesktopFleetStore({
+      home,
+      profile: undefined,
+      isPlanManaged: async (target) => target === "e".repeat(40),
+    });
+    await expect(
+      guarded.request({
+        action: "prepare",
+        input: {
+          campaignId: "66666666-6666-4666-8666-666666666666",
+          targetSource: "e".repeat(40),
+          desktopStagedHandle: "e".repeat(64),
+        },
+      }),
+    ).rejects.toThrow("managed by the update plan");
+    expect(await store.request({ action: "read" })).toEqual(before);
+  }));
+
+it("requires native committed generation before remote staging as well as activation", async () =>
+  fixture(async (_home, store) => {
+    const state = await store.request({ action: "read" });
+    await expect(
+      store.request({
+        action: "updateMember",
+        input: {
+          campaignId,
+          operationId: state.campaigns[0]!.members[0]!.operationId,
+          expectedPhase: "waiting",
+          phase: "staging",
+        },
+      }),
+    ).rejects.toThrow("has not committed");
+    expect((await store.request({ action: "read" })).campaigns[0]?.members[0]?.phase).toBe(
+      "waiting",
+    );
   }));

@@ -1,3 +1,9 @@
+import { applyThemePalette } from "../../../themePalette";
+import { InstallStatusPanel } from "../../installStatus/InstallStatusPanel";
+import { startInstallPlanController } from "../../installStatus/InstallPlanController";
+import { FIXTURE_HOSTS } from "./install-preview-plan";
+import { SidebarEnvironmentFilters } from "../../environmentFilters/SidebarEnvironmentFilters";
+import { requestConfirmDialog } from "../../../confirmDialog";
 import { StrictMode, useEffect, useState, useSyncExternalStore } from "react";
 import { createRoot } from "react-dom/client";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -25,6 +31,7 @@ import type { InstallPreviewFixture } from "./install-preview-bridge";
 
 function ObservedUpdate({ fixture }: { readonly fixture: InstallPreviewFixture }) {
   const state = useDesktopUpdateState();
+  // oxlint-disable-next-line t3code/react-effect-budget -- Expose production update atom observations to the mounted install fixture controller.
   useEffect(() => fixture.observe(state), [fixture, state]);
   return (
     <output data-testid="observed-update" className="block font-mono text-xs">
@@ -178,7 +185,21 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
       setFailure(error instanceof Error ? error.message : String(error));
     }
   };
-  useEffect(() => fixture.mounted(isElectron), [fixture]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register fixture mount readiness after the production controls commit.
+  useEffect(() => {
+    document.documentElement.classList.add("dark");
+    applyThemePalette("t3-chat", "dark");
+    fixture.mounted(isElectron);
+  }, [fixture]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Isolated fixture binds the production runner to scripted native and host receipts.
+  useEffect(() => {
+    const services = fixture.plan.services(fixture.bridge);
+    const controller = startInstallPlanController(
+      { ...services, confirm: async (message) => (await requestConfirmDialog(message)) ?? false },
+      fixture.plan.store,
+    );
+    return controller.close;
+  }, [fixture]);
   return (
     <ToastProvider>
       <AnchoredToastProvider>
@@ -200,16 +221,44 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
               aria-label="Production Settings update controls"
               data-testid="settings-updates"
             >
-              <h2 className="mb-2 font-medium">Settings — About</h2>
+              <h2 className="mb-2 font-medium">Settings. About</h2>
               <SettingsGroup>
                 <AboutVersionSection />
               </SettingsGroup>
             </section>
             <section aria-label="Production sidebar update controls" data-testid="sidebar-updates">
               <h2 className="mb-2 font-medium">Sidebar</h2>
-              <ul className="flex w-64 rounded-lg border bg-sidebar p-3">
-                <SidebarUpdatePill />
-              </ul>
+              <aside
+                className="flex h-[680px] w-80 flex-col rounded-xl border border-sidebar-border bg-sidebar text-sidebar-foreground"
+                data-testid="install-fixture-shell"
+              >
+                <div className="shrink-0 px-3 py-3 text-sm font-medium">Jones Code</div>
+                <div
+                  className="min-h-24 flex-1 overflow-y-auto p-2"
+                  data-testid="install-fixture-thread-list"
+                  tabIndex={0}
+                  aria-label="Fixture threads"
+                >
+                  {Array.from({ length: 30 }, (_, index) => (
+                    <div
+                      key={index}
+                      className="rounded-md px-2 py-3 text-xs hover:bg-sidebar-row-hover"
+                    >
+                      Synthetic thread {index + 1}
+                      <p className="text-muted-foreground">
+                        Fixture workspace · retained conversation
+                      </p>
+                    </div>
+                  ))}
+                </div>
+                <footer className="flex shrink-0 flex-col gap-2 p-2">
+                  <InstallStatusPanel store={fixture.plan.store} />
+                  <SidebarEnvironmentFilters />
+                  <ul className="flex">
+                    <SidebarUpdatePill />
+                  </ul>
+                </footer>
+              </aside>
             </section>
             <section aria-label="Synthetic fixture controls" className="space-y-3 border-t pt-4">
               <h2 className="font-medium">Synthetic fixture controls</h2>
@@ -218,6 +267,47 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
                 updates.
               </p>
               <div className="flex flex-wrap gap-2">
+                {FIXTURE_HOSTS.flatMap(({ label }) =>
+                  (["staged", "committed", "stopped", "held"] as const).map((phase) => (
+                    <button
+                      type="button"
+                      className="rounded border px-2 py-1 text-xs"
+                      key={`${label}-${phase}`}
+                      data-testid={`host-${label}-${phase}`}
+                      onClick={() => {
+                        void fixture.plan
+                          .settleHost(label, phase)
+                          .catch((error: unknown) => setFailure(String(error)));
+                      }}
+                    >
+                      {label}: {phase} receipt (scripted)
+                    </button>
+                  )),
+                )}
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs"
+                  data-testid="laptop-stop-receipt"
+                  onClick={() => control(() => fixture.plan.settleLaptopStop())}
+                >
+                  Laptop stopped receipt (scripted)
+                </button>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs"
+                  data-testid="laptop-held-receipt"
+                  onClick={() => control(() => fixture.plan.settleLaptopStop(true))}
+                >
+                  Laptop held receipt (scripted)
+                </button>
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs"
+                  data-testid="unsupported-Test"
+                  onClick={() => control(() => fixture.plan.setSupported("Test", false))}
+                >
+                  Test: unsupported operations
+                </button>
                 {(["download", "install"] as const).flatMap((action) =>
                   (["reject", "refuse", "accept"] as const).map((outcome) => (
                     <button
@@ -278,6 +368,14 @@ function FixtureScreen({ fixture }: { readonly fixture: InstallPreviewFixture })
                     </button>
                   </>
                 ) : null}
+                <button
+                  type="button"
+                  className="rounded border px-2 py-1 text-xs"
+                  data-testid="newer-build"
+                  onClick={() => control(fixture.newerBuild)}
+                >
+                  Offer newer synthetic build
+                </button>
                 <button
                   type="button"
                   className="rounded border px-2 py-1 text-xs"

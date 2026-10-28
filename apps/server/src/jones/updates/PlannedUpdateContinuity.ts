@@ -89,48 +89,46 @@ export const make = Effect.gen(function* () {
             ),
           );
 
-  const read = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const current = yield* Ref.get(active);
-      if (current === undefined || !current.threadIds.includes(threadId)) return undefined;
-      const rows = yield* sql<{ snapshot_json: string; queue_done: number; work_done: number }>`
+  const read = Effect.fn("PlannedUpdateContinuity.read")(function* (threadId: ThreadId) {
+    const current = yield* Ref.get(active);
+    if (current === undefined || !current.threadIds.includes(threadId)) return undefined;
+    const rows = yield* sql<{ snapshot_json: string; queue_done: number; work_done: number }>`
       SELECT snapshot_json,queue_done,work_done FROM jones_planned_update_threads
       WHERE operation_id=${current.operationId} AND thread_id=${threadId}`;
-      const row = rows[0];
-      if (row === undefined) return undefined;
-      const snapshot = yield* Effect.try(() => decodeSnapshot(row.snapshot_json));
-      return { ...row, snapshot, operationId: current.operationId };
-    });
+    const row = rows[0];
+    if (row === undefined) return undefined;
+    const snapshot = yield* Effect.try(() => decodeSnapshot(row.snapshot_json));
+    return { ...row, snapshot, operationId: current.operationId };
+  });
 
-  const controlsUnchanged = (
+  const controlsUnchanged = Effect.fn("PlannedUpdateContinuity.controlsUnchanged")(function* (
     snapshot: PlannedThreadSnapshot,
     projection: OrchestrationV2ThreadProjection,
-  ) =>
-    Effect.gen(function* () {
-      if (snapshot.receiptRowId !== 0) {
-        const anchor = yield* sql<{
-          command_id: string;
-        }>`SELECT command_id FROM orchestration_command_receipts WHERE rowid=${snapshot.receiptRowId}`;
-        // A missing anchor cannot distinguish pruning/rowid reuse from a quiet thread.
-        if (anchor[0]?.command_id !== snapshot.receiptCommandId) return false;
-      }
-      const receipts = yield* sql<{
+  ) {
+    if (snapshot.receiptRowId !== 0) {
+      const anchor = yield* sql<{
         command_id: string;
-        command_type: string;
-        accepted_at: string;
-      }>`
+      }>`SELECT command_id FROM orchestration_command_receipts WHERE rowid=${snapshot.receiptRowId}`;
+      // A missing anchor cannot distinguish pruning/rowid reuse from a quiet thread.
+      if (anchor[0]?.command_id !== snapshot.receiptCommandId) return false;
+    }
+    const receipts = yield* sql<{
+      command_id: string;
+      command_type: string;
+      accepted_at: string;
+    }>`
       SELECT command_id,command_type,accepted_at FROM orchestration_command_receipts
       WHERE aggregate_kind='thread' AND aggregate_id=${snapshot.threadId}
         AND rowid>${snapshot.receiptRowId} AND status='accepted'`;
-      const ids = continuationRunIds(snapshot, projection);
-      if (receipts.some((receipt) => changesPlannedControl(receipt, snapshot, ids))) return false;
-      const preferences = yield* settings.getSettings;
-      return (
-        snapshot.explicitContinuation ||
-        resolveProjectSettings(preferences, projection.thread.projectId).settings
-          .continueThreadsAfterServerUpdate
-      );
-    });
+    const ids = continuationRunIds(snapshot, projection);
+    if (receipts.some((receipt) => changesPlannedControl(receipt, snapshot, ids))) return false;
+    const preferences = yield* settings.getSettings;
+    return (
+      snapshot.explicitContinuation ||
+      resolveProjectSettings(preferences, projection.thread.projectId).settings
+        .continueThreadsAfterServerUpdate
+    );
+  });
 
   const finish = (threadId: ThreadId, column: "queue_done" | "work_done") =>
     safe(
@@ -226,9 +224,7 @@ export const make = Effect.gen(function* () {
               }>`SELECT binding_json FROM jones_planned_update_continuity WHERE operation_id=${input.operationId}`;
               if (prior[0] !== undefined) {
                 if (prior[0].binding_json !== bindingJson)
-                  return yield* Effect.fail(
-                    new PlannedContinuityBindingError({ reason: "operation-changed" }),
-                  );
+                  return yield* new PlannedContinuityBindingError({ reason: "operation-changed" });
                 return;
               }
               yield* sql`INSERT INTO jones_planned_update_continuity(operation_id,binding_json)
@@ -264,9 +260,7 @@ export const make = Effect.gen(function* () {
             proof.current.activeVersion !== expectedVersion ||
             proof.current.activeSourceSha !== expectedSource
           )
-            return yield* Effect.fail(
-              new PlannedContinuityBindingError({ reason: "generation-mismatch" }),
-            );
+            return yield* new PlannedContinuityBindingError({ reason: "generation-mismatch" });
           const claimed = yield* sql`UPDATE jones_planned_update_continuity SET activated=1
         WHERE operation_id=${proof.operationId} AND activated=0 RETURNING operation_id`;
           if (claimed.length === 0) return;

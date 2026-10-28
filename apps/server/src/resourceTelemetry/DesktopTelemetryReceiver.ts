@@ -207,7 +207,7 @@ const isProtocolMismatch = Schema.is(DesktopTelemetryProtocolMismatch);
 const isDecodeFailed = Schema.is(DesktopTelemetryDecodeFailed);
 const isStreamFailed = Schema.is(DesktopTelemetryStreamFailed);
 
-export function isDesktopTelemetryContactStale(
+function isDesktopTelemetryContactStale(
   lastContactAtMs: Option.Option<number>,
   nowMs: number,
 ): boolean {
@@ -217,7 +217,7 @@ export function isDesktopTelemetryContactStale(
   );
 }
 
-export function resolveDesktopTelemetrySnapshotStaleAfterMs(
+function resolveDesktopTelemetrySnapshotStaleAfterMs(
   activeIntervalMs: number,
   idleIntervalMs: number,
 ): number {
@@ -227,14 +227,14 @@ export function resolveDesktopTelemetrySnapshotStaleAfterMs(
   );
 }
 
-export function initialDesktopTelemetryContactAt(
+function initialDesktopTelemetryContactAt(
   desktopTelemetryFd: number | undefined,
   nowMs: number,
 ): Option.Option<number> {
   return desktopTelemetryFd === undefined ? Option.none() : Option.some(nowMs);
 }
 
-export const recordDesktopTelemetrySampleHealth = Effect.fn(
+const recordDesktopTelemetrySampleHealth = Effect.fn(
   "resourceTelemetry.desktopTelemetryReceiver.recordSampleHealth",
 )(function* (
   health: Ref.Ref<DesktopTelemetryReceiverHealth>,
@@ -327,7 +327,7 @@ export function requireDesktopTelemetryWriteProgress(
     : Effect.fail(new DesktopTelemetryControlStalled({ fd, remainingBytes }));
 }
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -463,8 +463,7 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
 
   if (config.desktopTelemetryFd !== undefined) {
     const fd = config.desktopTelemetryFd;
-    // The parent waits for this server before closing its pipe. Socket reads
-    // can be cancelled; filesystem reads would keep process.exit waiting.
+    // The parent waits before closing; use cancellable socket reads so filesystem reads cannot block exit.
     const readable = yield* Effect.acquireRelease(
       Effect.try({
         try: () => new NodeNet.Socket({ fd, readable: true, writable: false }),

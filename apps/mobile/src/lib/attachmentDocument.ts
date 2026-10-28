@@ -1,3 +1,5 @@
+import { AsyncResult } from "effect/reactivity";
+import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Dialog from "../components/ui/Dialog";
 import { filePreviewDelimiter, parseDelimitedPreview } from "@t3tools/shared/delimitedPreview";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -5,7 +7,7 @@ import { readFilePreviewResponse } from "@t3tools/client-runtime/file-preview";
 import { filePreviewKind, FILE_TEXT_PREVIEW_MAX_BYTES } from "@t3tools/shared/filePreview";
 import { fetch } from "expo/fetch";
 import { File } from "expo-file-system";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { FileBackedComposerAttachment } from "./composerImages";
 import { loadLocalAttachmentPreview } from "./localAttachmentPreview";
@@ -18,9 +20,7 @@ const isLocalUri = (uri: string) => /^(file|content):/.test(uri);
 /** Signed asset URLs live for an hour; treat anything older than this as worth re-minting. */
 const STALE_URL_MS = 5 * 60_000;
 
-/**
- * Captured bytes never resolve against the workspace.
- */
+/** Captured bytes never resolve against the workspace. */
 export function useAttachmentDocument(input: {
   readonly name: string;
   readonly mimeType: string;
@@ -29,29 +29,23 @@ export function useAttachmentDocument(input: {
   readonly environmentId: EnvironmentId | null;
   readonly attachment: FileBackedComposerAttachment | null;
 }) {
-  const kind = filePreviewKind(input);
+  const kind = filePreviewKind(input, { richDocuments: false });
   const delimiter = filePreviewDelimiter(input);
   const shareController = useRef<AbortController | null>(null);
   useEffect(() => () => shareController.current?.abort(), []);
-  const resource = useMemo(
-    () => ({
-      _tag: "attachment" as const,
-      attachmentId: input.attachmentId,
-      fileName: input.name,
-      mimeType: input.mimeType,
-      disposition: "inline" as const,
-    }),
-    [input.attachmentId, input.name, input.mimeType],
-  );
+  const resource = {
+    _tag: "attachment" as const,
+    attachmentId: input.attachmentId,
+    fileName: input.name,
+    mimeType: input.mimeType,
+    disposition: "inline" as const,
+  };
   const environmentId = input.attachment ? null : input.environmentId;
   const refresh = useRefreshAssetUrl(environmentId, resource);
   const [localUri, setLocalUri] = useState<string | null>(null);
   const [remoteUri, setRemoteUri] = useState<string | null>(null);
   const [content, setContent] = useState<{ text: string; truncated: boolean } | null>(null);
-  const table = useMemo(
-    () => (content && delimiter ? parseDelimitedPreview(content.text, delimiter) : null),
-    [content, delimiter],
-  );
+  const table = content && delimiter ? parseDelimitedPreview(content.text, delimiter) : null;
   const [error, setError] = useState<string | null>(null);
   const [contentError, setContentError] = useState<string | null>(null);
   const textReadUrl = useRef<{ uri: string; authorizedAt: number } | null>(null);
@@ -92,8 +86,7 @@ export function useAttachmentDocument(input: {
   }, [attachment, refresh, revision]);
   useEffect(() => {
     if (!attachment) return;
-    // A new attachment must not keep the previous file behind it: `share()` would otherwise
-    // send the old bytes under the new name if this load fails.
+    // Clear old attachment bytes or a failed load could share them under the new name.
     // oxlint-disable-next-line react/set-state-in-effect -- A new attachment invalidates the last one.
     setLocalUri(null);
     setContent(null);
@@ -129,8 +122,7 @@ export function useAttachmentDocument(input: {
     const response = isLocalUri(uri)
       ? Promise.resolve().then(() => ({ ok: true, body: new File(uri).readableStream() }))
       : (async () => {
-          // A signed URL minted when the file opened may have expired by the time the user
-          // switches to source; reauthorize before fetching instead of reading a stale link.
+          // Reauthorize before source reads; the opening URL may have expired.
           const authorized = textReadUrl.current;
           let target = authorized?.uri ?? uri;
           if (!authorized || Date.now() - authorized.authorizedAt > STALE_URL_MS) {
@@ -170,18 +162,19 @@ export function useAttachmentDocument(input: {
       attachment: { name: input.name, mimeType: input.mimeType },
       signal: controller.signal,
     };
-    try {
+    const result = await settlePromise(async () => {
       if (isLocalUri(uri)) await shareLocalAttachment({ ...request, uri });
       else await downloadAndShareAttachment({ ...request, url: (await refresh()) ?? uri });
-    } catch (cause) {
-      if (controller.signal.aborted) return;
+    });
+    if (shareController.current === controller) shareController.current = null;
+    if (controller.signal.aborted) return;
+    setSharing(false);
+    if (AsyncResult.isFailure(result)) {
+      const cause = squashAtomCommandFailure(result);
       Dialog.alert(
         "Could not share file",
         cause instanceof Error ? cause.message : "Please try again.",
       );
-    } finally {
-      if (shareController.current === controller) shareController.current = null;
-      if (!controller.signal.aborted) setSharing(false);
     }
   };
   return {

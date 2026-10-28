@@ -14,14 +14,14 @@ import {
   type T3WorkstreamListResult,
   type Workstream,
   type WorkstreamCapabilities,
-  type WorkstreamCommand,
+  WorkstreamCommand,
   type WorkstreamDeclarationPage,
   type WorkstreamDetail,
   type WorkstreamEdgePage,
   type WorkstreamHistoryPage,
   type WorkstreamMembershipPage,
   type WorkstreamPage,
-  type WorkstreamReceipt,
+  WorkstreamReceipt,
   type WorkstreamReferenceDetail,
   type WorkstreamReferencePage,
   T3PlacementPage,
@@ -65,6 +65,17 @@ export class WorkstreamTransportError extends Schema.TaggedError<WorkstreamTrans
   },
 ) {}
 
+/**
+ * Submit-only evidence that the producer refused this request before business dispatch.
+ * Only an adapter that authenticated the producer's refusal proof and bound it to
+ * this exact submitted request may emit this error.
+ * HTTP status, contract mismatch, missing/invalid proof, and response loss do not qualify.
+ */
+export class WorkstreamVerifiedPreDispatchRefusal extends Schema.TaggedError<WorkstreamVerifiedPreDispatchRefusal>()(
+  "WorkstreamVerifiedPreDispatchRefusal",
+  {},
+) {}
+
 /** Transport detail for a server started without complete control-plane activation. */
 export const WORKSTREAM_ACTIVATION_DISABLED_DETAIL =
   "Workstream control-plane activation is disabled.";
@@ -100,6 +111,19 @@ interface ContractInput {
   readonly contractManifest: typeof WORKSTREAM_CONTRACT_MANIFEST_SHA256;
 }
 
+export type WorkstreamReceiptRead =
+  | { readonly kind: "receipt"; readonly receipt: WorkstreamReceipt }
+  | { readonly kind: "absent" };
+
+export type WorkstreamReceiptRecovery = WorkstreamReceiptRead & {
+  /** Capabilities version observed before the receipt request; absence alone proves nothing. */
+  readonly witness_version: number;
+};
+
+export type WorkstreamRecoverySubmitResult =
+  | { readonly kind: "receipt"; readonly receipt: WorkstreamReceipt }
+  | { readonly kind: "idempotency_conflict" };
+
 import type {
   WorkstreamAppearanceResult,
   WorkstreamAppearanceWrite,
@@ -107,6 +131,17 @@ import type {
 } from "@t3tools/contracts";
 
 export interface WorkstreamTransport {
+  /** Only a verified frozen-contract not_found response may produce absent. */
+  readonly readCommandReceipt?: (
+    input: { readonly commandId: string } & ContractInput,
+  ) => Effect.Effect<WorkstreamReceiptRead, WorkstreamTransportError>;
+  readonly resubmitCommand?: (
+    input: {
+      readonly body: string;
+      readonly command: WorkstreamCommand;
+      readonly idempotencyKey: string;
+    } & ContractInput,
+  ) => Effect.Effect<WorkstreamRecoverySubmitResult, WorkstreamTransportError>;
   readonly getCountsCapabilities?: () => Effect.Effect<
     WorkstreamCountsCapabilities,
     WorkstreamTransportError
@@ -160,7 +195,10 @@ export interface WorkstreamTransport {
       readonly command: WorkstreamCommand;
       readonly idempotencyKey: string;
     } & ContractInput,
-  ) => Effect.Effect<WorkstreamReceipt, WorkstreamTransportError>;
+  ) => Effect.Effect<
+    WorkstreamReceipt,
+    WorkstreamTransportError | WorkstreamVerifiedPreDispatchRefusal
+  >;
 }
 
 export interface WorkstreamGatewayOptions {
@@ -224,6 +262,14 @@ export class WorkstreamGateway extends Context.Service<
     readonly pollCommand: (
       commandId: string,
     ) => Effect.Effect<WorkstreamReceipt, WorkstreamGatewayError>;
+    readonly readReceipt: (
+      commandId: string,
+    ) => Effect.Effect<WorkstreamReceiptRecovery, WorkstreamGatewayError>;
+    /** Sends retained UTF-8 JSON unchanged. Every failure leaves any prior attempt unresolved. */
+    readonly resubmit: (
+      commandId: string,
+      retainedBody: string,
+    ) => Effect.Effect<WorkstreamRecoverySubmitResult, WorkstreamGatewayError>;
     readonly submit: (
       command: WorkstreamCommand,
     ) => Effect.Effect<WorkstreamReceipt, WorkstreamGatewayError>;
@@ -425,7 +471,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
     ) {
       const invalid = (detail: string) =>
         new WorkstreamGatewayError({ reason: "invalid-response", detail });
-      const request = yield* Schema.decodeUnknownEffect(T3PlacementLoadRequest)(input, {
+      const request = yield* Schema.decodeEffect(T3PlacementLoadRequest)(input, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => invalid("Invalid placement inventory.")));
       const authorized = yield* authorize("workstreams:read");
@@ -454,7 +500,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
             ...(cursor === undefined ? {} : { cursor }),
           })
           .pipe(Effect.mapError(transportFailure));
-        const page = yield* Schema.decodeUnknownEffect(T3PlacementPage)(raw, {
+        const page = yield* Schema.decodeEffect(T3PlacementPage)(raw, {
           onExcessProperty: "error",
         }).pipe(
           Effect.mapError(
@@ -558,7 +604,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       };
       if (Buffer.byteLength(canonicalJson(result)) > WORKSTREAM_MAX_RESPONSE_BYTES)
         return yield* invalid("Placement response workload exceeded.");
-      return yield* Schema.decodeUnknownEffect(T3PlacementResult)(result, {
+      return yield* Schema.decodeEffect(T3PlacementResult)(result, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -570,8 +616,11 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         ),
       );
     });
-    const readMetadata: WorkstreamGateway["Service"]["readMetadata"] = (input = {}) =>
-      Effect.gen(function* () {
+    const readMetadata: WorkstreamGateway["Service"]["readMetadata"] = (input = {}) => {
+      const runEffect = Effect.fn("WorkstreamGateway.readMetadata")(function* (): Effect.fn.Return<
+        T3WorkstreamListResult,
+        WorkstreamGatewayError
+      > {
         const authorized = yield* authorize("workstreams:read");
         const request = yield* Effect.try({
           try: () => pageInput(input),
@@ -626,12 +675,14 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         remember(pageCache, cacheKey, { result, at: now() });
         return result;
       });
+      return runEffect();
+    };
 
     const boundRead = <A>(
       run: (request: PageInput & ContractInput) => Effect.Effect<A, WorkstreamTransportError>,
       input?: { readonly limit?: number; readonly cursor?: string },
-    ) =>
-      Effect.gen(function* () {
+    ) => {
+      const runEffect = Effect.fn("WorkstreamGateway.boundRead")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const page = yield* Effect.try({
           try: () => pageInput(input),
@@ -642,12 +693,16 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         );
         return yield* validateContext(value, authorized.binding);
       });
-    const boundDetail = <A>(run: () => Effect.Effect<A, WorkstreamTransportError>) =>
-      Effect.gen(function* () {
+      return runEffect();
+    };
+    const boundDetail = <A>(run: () => Effect.Effect<A, WorkstreamTransportError>) => {
+      const runEffect = Effect.fn("WorkstreamGateway.boundDetail")(function* () {
         const authorized = yield* authorize("workstreams:read");
         const value = yield* run().pipe(Effect.mapError(transportFailure));
         return yield* validateContext(value, authorized.binding);
       });
+      return runEffect();
+    };
     const validateReceipt = (
       receipt: WorkstreamReceipt,
       commandId: string,
@@ -673,65 +728,132 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         );
       return Effect.succeed(receipt);
     };
-    const pollCommand = (commandId: string) =>
-      Effect.gen(function* () {
-        const authorized = yield* authorize("workstreams:read");
-        const receipt = yield* transport
-          .getCommand({ commandId, ...contractInput })
-          .pipe(Effect.mapError(transportFailure));
-        return yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
+    const pollCommand = Effect.fn("WorkstreamGateway.pollCommand")(function* (commandId: string) {
+      const authorized = yield* authorize("workstreams:read");
+      const receipt = yield* transport
+        .getCommand({ commandId, ...contractInput })
+        .pipe(Effect.mapError(transportFailure));
+      return yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
+    });
+    const recoveryFailure = (cause: unknown) =>
+      new WorkstreamGatewayError({
+        reason: "unknown-effect",
+        detail: "Command recovery did not establish an outcome.",
+        cause,
       });
-    const submit = (command: WorkstreamCommand) =>
-      Effect.gen(function* () {
-        const authorized = yield* authorize("workstreams:write").pipe(
+    const readReceipt = Effect.fn("WorkstreamGateway.readReceipt")(function* (
+      commandId: string,
+    ): Effect.fn.Return<WorkstreamReceiptRecovery, WorkstreamGatewayError> {
+      return yield* Effect.gen(function* () {
+        // These reads are separate CP snapshots: the witness must come first.
+        const authorized = yield* authorize("workstreams:read");
+        if (!transport.readCommandReceipt) return yield* recoveryFailure(undefined);
+        const result = yield* transport.readCommandReceipt({ commandId, ...contractInput });
+        if (result.kind === "receipt") {
+          const receipt = yield* Schema.decodeEffect(WorkstreamReceipt)(result.receipt, {
+            onExcessProperty: "error",
+          });
+          yield* validateReceipt(receipt, commandId, undefined, undefined, authorized.binding);
+        }
+        return { ...result, witness_version: authorized.binding.registryVersion };
+      }).pipe(Effect.mapError(recoveryFailure));
+    });
+    const resubmit = Effect.fn("WorkstreamGateway.resubmit")(function* (
+      commandId: string,
+      retainedBody: string,
+    ): Effect.fn.Return<WorkstreamRecoverySubmitResult, WorkstreamGatewayError> {
+      return yield* Effect.gen(function* () {
+        const authorized = yield* authorize("workstreams:write");
+        const command = yield* Schema.decodeEffect(Schema.fromJsonString(WorkstreamCommand))(
+          retainedBody,
+          { onExcessProperty: "error" },
+        );
+        if (command.command_id !== commandId || !transport.resubmitCommand)
+          return yield* recoveryFailure(undefined);
+        // CP atomically checks retained bytes before deciding a fresh command. Local revision,
+        // generation and digest guards cannot resolve an earlier dispatch or an absent index.
+        const result = yield* transport.resubmitCommand({
+          body: retainedBody,
+          command,
+          idempotencyKey: commandId,
+          ...contractInput,
+        });
+        if (result.kind === "receipt") {
+          const receipt = yield* Schema.decodeEffect(WorkstreamReceipt)(result.receipt, {
+            onExcessProperty: "error",
+          });
+          yield* validateReceipt(
+            receipt,
+            commandId,
+            command.action.operation,
+            NodeCrypto.createHash("sha256").update(retainedBody).digest("hex"),
+            authorized.binding,
+          );
+        }
+        pageCache.clear();
+        return result;
+      }).pipe(Effect.mapError(recoveryFailure));
+    });
+    const submit = Effect.fn("WorkstreamGateway.submit")(function* (command: WorkstreamCommand) {
+      const authorized = yield* authorize("workstreams:write").pipe(
+        Effect.mapError((error) =>
+          error.reason === "permission-denied" ||
+          error.reason === "contract-mismatch" ||
+          error.reason === "invalid-response"
+            ? new WorkstreamGatewayError({
+                reason: "authorization-not-current",
+                detail: "Command authorization is not current.",
+                cause: error,
+              })
+            : error,
+        ),
+      );
+      if (
+        command.expected_server_generation !== authorized.binding.serverGeneration ||
+        command.expected_registry_version !== authorized.binding.registryVersion
+      )
+        return yield* new WorkstreamGatewayError({
+          reason: "version-conflict",
+          detail: "Command generation or registry revision is not current.",
+        });
+      const body = canonicalJson(command);
+      const bodySha256 = NodeCrypto.createHash("sha256").update(body).digest("hex");
+      const commandKey = [authorized.key, command.command_id].join("\u0000");
+      const seenDigest = commandDigests.get(commandKey);
+      if (seenDigest !== undefined && seenDigest !== bodySha256)
+        return yield* new WorkstreamGatewayError({
+          reason: "idempotency-conflict",
+          detail: "This command ID was already used with different business bytes.",
+        });
+      remember(commandDigests, commandKey, bodySha256);
+      const replayKey = [authorized.key, command.command_id, bodySha256].join("\u0000");
+      const prior = terminalReceipts.get(replayKey);
+      if (prior) return prior;
+      const receipt = yield* transport
+        .submitCommand({ body, command, idempotencyKey: command.command_id, ...contractInput })
+        .pipe(
           Effect.mapError((error) =>
-            error.reason === "permission-denied" ||
-            error.reason === "contract-mismatch" ||
-            error.reason === "invalid-response"
+            error._tag === "WorkstreamVerifiedPreDispatchRefusal"
               ? new WorkstreamGatewayError({
                   reason: "authorization-not-current",
                   detail: "Command authorization is not current.",
                   cause: error,
                 })
-              : error,
+              : transportFailure(error),
           ),
         );
-        if (
-          command.expected_server_generation !== authorized.binding.serverGeneration ||
-          command.expected_registry_version !== authorized.binding.registryVersion
-        )
-          return yield* new WorkstreamGatewayError({
-            reason: "version-conflict",
-            detail: "Command generation or registry revision is not current.",
-          });
-        const body = canonicalJson(command);
-        const bodySha256 = NodeCrypto.createHash("sha256").update(body).digest("hex");
-        const commandKey = [authorized.key, command.command_id].join("\u0000");
-        const seenDigest = commandDigests.get(commandKey);
-        if (seenDigest !== undefined && seenDigest !== bodySha256)
-          return yield* new WorkstreamGatewayError({
-            reason: "idempotency-conflict",
-            detail: "This command ID was already used with different business bytes.",
-          });
-        remember(commandDigests, commandKey, bodySha256);
-        const replayKey = [authorized.key, command.command_id, bodySha256].join("\u0000");
-        const prior = terminalReceipts.get(replayKey);
-        if (prior) return prior;
-        const receipt = yield* transport
-          .submitCommand({ body, command, idempotencyKey: command.command_id, ...contractInput })
-          .pipe(Effect.mapError(transportFailure));
-        yield* validateReceipt(
-          receipt,
-          command.command_id,
-          command.action.operation,
-          bodySha256,
-          authorized.binding,
-        );
-        if (receipt.state === "committed" || receipt.state === "rejected")
-          remember(terminalReceipts, replayKey, receipt);
-        pageCache.clear();
-        return receipt;
-      });
+      yield* validateReceipt(
+        receipt,
+        command.command_id,
+        command.action.operation,
+        bodySha256,
+        authorized.binding,
+      );
+      if (receipt.state === "committed" || receipt.state === "rejected")
+        remember(terminalReceipts, replayKey, receipt);
+      pageCache.clear();
+      return receipt;
+    });
 
     const readRegistryCounts = Effect.fn("WorkstreamGateway.readRegistryCounts")(function* () {
       if (!transport.getCountsCapabilities || !transport.getRegistryCounts)
@@ -744,7 +866,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const capabilities = yield* transport.getCountsCapabilities().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          Schema.decodeUnknownEffect(WorkstreamCountsCapabilities)(value, {
+          Schema.decodeEffect(WorkstreamCountsCapabilities)(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(
@@ -774,7 +896,7 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       const counts = yield* transport.getRegistryCounts().pipe(
         Effect.mapError(transportFailure),
         Effect.flatMap((value) =>
-          Schema.decodeUnknownEffect(WorkstreamRegistryCounts)(value, {
+          Schema.decodeEffect(WorkstreamRegistryCounts)(value, {
             onExcessProperty: "error",
           }).pipe(
             Effect.mapError(
@@ -811,50 +933,48 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
 
     return WorkstreamGateway.of({
       readRegistryCounts,
-      readAppearance: (ids) =>
-        Effect.gen(function* () {
-          const authorized = yield* authorize("workstreams:read");
-          if (!transport.readAppearance) return { supported: false as const };
-          const result = yield* transport
-            .readAppearance({ workstream_ids: ids })
-            .pipe(Effect.mapError(transportFailure));
-          if (
-            result.supported &&
-            (result.page.owner_id !== authorized.binding.ownerId ||
-              result.page.server_generation !== authorized.binding.serverGeneration ||
-              result.page.items.length !== ids.length ||
-              result.page.items.some((item, index) => item.workstream_id !== ids[index]))
-          ) {
-            return yield* new WorkstreamGatewayError({
-              reason: "invalid-response",
-              detail: "Appearance owner, generation or requested inventory mismatch.",
-            });
-          }
-          return result;
-        }),
-      saveAppearance: (input) =>
-        Effect.gen(function* () {
-          yield* authorize("workstreams:write");
-          if (!transport.saveAppearance)
-            return yield* new WorkstreamGatewayError({
-              reason: "version-conflict",
-              detail: "Appearance editing is unavailable.",
-            });
-          const result = yield* transport
-            .saveAppearance(input)
-            .pipe(Effect.mapError(transportFailure));
-          if (
-            result.workstream_id !== input.workstream_id ||
-            result.border_color !== input.border_color ||
-            (result.version !== input.expected_version &&
-              result.version !== input.expected_version + 1)
-          )
-            return yield* new WorkstreamGatewayError({
-              reason: "invalid-response",
-              detail: "Appearance receipt mismatch.",
-            });
-          return result;
-        }),
+      readAppearance: Effect.fn("WorkstreamGateway.readAppearance")(function* (ids) {
+        const authorized = yield* authorize("workstreams:read");
+        if (!transport.readAppearance) return { supported: false as const };
+        const result = yield* transport
+          .readAppearance({ workstream_ids: ids })
+          .pipe(Effect.mapError(transportFailure));
+        if (
+          result.supported &&
+          (result.page.owner_id !== authorized.binding.ownerId ||
+            result.page.server_generation !== authorized.binding.serverGeneration ||
+            result.page.items.length !== ids.length ||
+            result.page.items.some((item, index) => item.workstream_id !== ids[index]))
+        ) {
+          return yield* new WorkstreamGatewayError({
+            reason: "invalid-response",
+            detail: "Appearance owner, generation or requested inventory mismatch.",
+          });
+        }
+        return result;
+      }),
+      saveAppearance: Effect.fn("WorkstreamGateway.saveAppearance")(function* (input) {
+        yield* authorize("workstreams:write");
+        if (!transport.saveAppearance)
+          return yield* new WorkstreamGatewayError({
+            reason: "version-conflict",
+            detail: "Appearance editing is unavailable.",
+          });
+        const result = yield* transport
+          .saveAppearance(input)
+          .pipe(Effect.mapError(transportFailure));
+        if (
+          result.workstream_id !== input.workstream_id ||
+          result.border_color !== input.border_color ||
+          (result.version !== input.expected_version &&
+            result.version !== input.expected_version + 1)
+        )
+          return yield* new WorkstreamGatewayError({
+            reason: "invalid-response",
+            detail: "Appearance receipt mismatch.",
+          });
+        return result;
+      }),
       readThreadPlacements,
       readSession,
       readMetadata,
@@ -879,6 +999,8 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           input,
         ),
       pollCommand,
+      readReceipt,
+      resubmit,
       submit,
       purgeAuthorization,
     });

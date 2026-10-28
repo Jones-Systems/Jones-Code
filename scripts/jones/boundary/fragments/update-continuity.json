@@ -18,7 +18,10 @@
     "apps/server/src/jones/updates/plannedContinuityStartup.ts",
     "apps/server/src/jones/cloud/shutdownBudget.ts",
     "apps/server/src/jones/cloud/shutdownBudget.test.ts",
-    "apps/server/src/jones/updates/stageRevocation.ts"
+    "apps/server/src/jones/updates/stageRevocation.ts",
+    "apps/desktop/src/jones/updates/jonesQuitPreparation.ts",
+    "apps/desktop/src/jones/updates/jonesQuitPreparation.test.ts",
+    "packages/shared/src/jones/shutdownBudget.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -74,6 +77,14 @@
     {
       "from": "apps/server/src/serviceLauncher.ts",
       "to": "apps/server/src/jones/updates/stageRevocation.ts"
+    },
+    {
+      "from": "apps/desktop/src/app/DesktopApp.ts",
+      "to": "apps/desktop/src/jones/updates/jonesQuitPreparation.ts"
+    },
+    {
+      "from": "apps/desktop/src/backend/DesktopBackendManager.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
     }
   ]
 }

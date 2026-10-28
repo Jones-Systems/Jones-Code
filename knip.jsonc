@@ -3,7 +3,7 @@
   // Exported types are part of our contracts even before they have consumers.
   "rules": { "types": "off", "nsTypes": "off" },
   // These executables are supplied by the OS or installed separately from npm.
-  "ignoreBinaries": ["eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
+  "ignoreBinaries": ["cc", "eas", "file", "mkfifo", "pkill", "pkg-config", "plutil", "sips"],
   "workspaces": {
     ".": {
       // Keep vendored reference repositories outside the root project.
@@ -20,26 +20,43 @@
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
-      // worktree setup (from t3.json) run directly. Retain the CLI archive verifier.
+      // Worktree setup, retained archive verifiers, the macOS signer, and mobile
+      // device CLIs are invoked by path rather than through traced imports.
       "entry": [
+        // These fixture scripts are injected into a browser page by path.
+        "fixtures/*/*.js",
         "knip-schemas.ts",
+        // Retained upstream release CLI; its publishing workflow stays disabled.
+        "resolve-nightly-release.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
         "jones/ci-test-progress-reporter.ts",
+        "jones/ci/chromium-setup.mjs",
+        "jones/ci/chromium-setup.node-test.mjs",
         "jones/server-shard-weights/select.ts",
         "jones/server-shard-weights/aggregate-cli.ts",
         // Xvfb invokes this native Chromium qualifier through a wrapper command.
         "jones/updates/native-startup-chromium.mjs",
+        "jones/updates/digest-benchmark.ts",
         "jones/performance/*.node-test.mjs",
         "jones/performance/*.d.mts",
         "jones/performance/prepare-sources.mjs",
         "jones/performance/fixtures-historical-worker.mjs",
         "jones/performance/migration-restore-worker.mjs",
         "jones/performance/current-qualification-worker.mjs",
+        "sign-macos.ts",
+        "verify-windows-desktop-artifact.ts",
+        // Candidate CI builds and invokes these disposable SEA qualification entries.
+        "jones/native-enrollment/candidate.vite.config.ts",
+        "jones/native-enrollment/sea-fixture.cjs",
+        "jones/native-enrollment/sea-fixture.node-test.mjs",
       ],
+      "ignoreDependencies": ["agent-device", "esbuild"],
       // The `t3` npm package's files: copied into the package, never imported.
-      "ignore": ["npm-launcher/**"],
+      // knip-schemas.test.ts writes a throwaway project to .knip-test-*, which a
+      // knip run beside it in check:changed must not report.
+      "ignore": ["npm-launcher/**", ".knip-test-*/**"],
     },
     "apps/server": {
       // Vite+ pack entries and the launcher used by installed background services.
@@ -56,17 +73,25 @@
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
         "scripts/evaluate-thread-titles.ts",
-        "scripts/measure-pr-preview.ts",
+        "scripts/fetch-expo-schema.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
+        // The physical-host operator and relay launch these fixtures by filename.
+        "integration/jones-e2e/physicalHost.ts",
+        "integration/jones-e2e/physicalHost.worker.ts",
         "src/provider/testFixtures/*.mjs",
+        "src/jones/workstreams/operations/fullAppFixture.ts",
         // Staged native creation substrate is consumed by the deferred L39 execution slice.
         // Analyzer entries preserve these APIs without registering runtime authority or launch.
         "src/jones/nativeCreation/NativeCreationPreparation.ts",
         "src/jones/nativeCreation/NativeCreationAuthority.ts",
         "src/jones/nativeCreation/NativeCreationRepositorySqlite.ts",
+        // graphqlgen reads its config.
+        "graphql.config.ts",
       ],
+      // The generated operations export every selection's class.
+      "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
       // Keep the transitive Effect runtime pinned for standalone npm installs.
       // The Vite+ web build prerequisite.
       // Native and disk-loaded provider packages stay external to the bundle; the
@@ -81,10 +106,12 @@
         "src/snapShot/GlobalShiftShortcutWorker.ts!",
         "src/snapShot/RegionSnapShotWorker.ts!",
         "src/snapShot/SnapShotAccessibilityWorker.ts!",
+        "src/jones/updates/jonesStagingWorker.ts!",
         "src/boot.ts!",
         "src/compileCache.ts!",
         "src/main.ts!",
         "src/preload.ts!",
+        "src/jones/threadMonitor/preload.ts!",
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
@@ -94,8 +121,17 @@
         // The namespace launcher stages and loads these modules by filename.
         "scripts/ui-evidence/probe.mjs",
         "scripts/ui-evidence/runner.mjs",
+        "scripts/ui-evidence/support/pin-oracle.mjs",
         "scripts/ui-evidence/scenarios/example.mjs",
         "scripts/ui-evidence/scenarios/sidebar-rename.mjs",
+        "scripts/ui-evidence/scenarios/sidebar-pin-reload.mjs",
+        "scripts/ui-evidence/scenarios/two-servers-one-client.mjs",
+        "scripts/ui-evidence/scenarios/thread-self-configure.mjs",
+        "scripts/ui-evidence/scenarios/thread-monitor.mjs",
+        "scripts/ui-evidence/scenarios/thread-monitor-requests.mjs",
+        "scripts/ui-evidence/thread-self-configure-support.mjs",
+        // The namespace stages this module and serializes its exported fixture helpers.
+        "scripts/ui-evidence/thread-monitor-provider.mjs",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs
       // electron-builder from this workspace, outside its package scripts.
@@ -116,11 +152,20 @@
         "src/jones/updates/fixtures/client-update-notices-entry.tsx",
         // The PR read fixture HTML loads this synthetic verification entry.
         "src/jones/pullRequestReads/fixtures/pr-read-pause-entry.tsx",
+        "src/jones/workstreams/operationsPreview.tsx",
+        // The independent monitor HTML loads this renderer entry by filename.
+        "src/jones/threadMonitor/entry.tsx",
+        // Evidence fixtures run under node.
+        "test/fixtures/**/*.mjs",
       ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.
       "ignoreIssues": { "src/components/ui/*.tsx": ["exports", "nsExports", "duplicates"] },
+    },
+    "apps/marketing": {
+      // `astro check` runs from the typecheck task in vite.config.ts, which knip does not read.
+      "ignoreDependencies": ["@astrojs/check"],
     },
     "apps/mobile": {
       // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
@@ -136,6 +181,7 @@
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [
         "@expo-google-fonts/dm-sans",
+        "@t3tools/mobile-highlights-native",
         "@t3tools/mobile-review-diff-native",
         "@t3tools/mobile-terminal-native",
       ],
@@ -143,6 +189,19 @@
     "apps/mobile/modules/t3-source-text": {
       // React Native codegen discovers component specifications by filename.
       "entry": ["src/*NativeComponent.ts!"],
+    },
+    "infra/task-cache": {
+      "ignore": ["vendor/**"],
+      // The bootstrap and Vite+ hook are loaded by shell/package configuration.
+      "entry": [
+        "alchemy.run.ts!",
+        "scripts/install.ts",
+        "scripts/install-ci.ts",
+        "src/runHook.ts",
+        "src/flush.ts",
+        "src/nativeRunHook.js",
+        "src/preload.mjs",
+      ],
     },
     "infra/relay": {
       "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!"],
@@ -168,7 +227,7 @@
     },
     "packages/source-control-github": {
       // graphqlgen reads its config; the generated operations export every selection's class.
-      "entry": ["graphql.config.ts"],
+      "entry": ["graphql.config.ts", "scripts/measure-pr-preview.ts"],
       "ignoreIssues": { "**/*.graphql.ts": ["exports", "types", "namespaceMembers"] },
     },
   },

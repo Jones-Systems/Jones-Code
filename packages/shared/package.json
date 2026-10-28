@@ -3,25 +3,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./jones/queuedSteerBatch": {
-      "types": "./src/jones/queuedSteerBatch.ts",
-      "import": "./src/jones/queuedSteerBatch.ts"
-    },
-    "./jones/desktopNativeOwner": {
-      "types": "./src/jones/desktopNativeOwner.ts",
-      "import": "./src/jones/desktopNativeOwner.ts"
-    },
-    "./jones/nativeWriterFence": {
-      "types": "./src/jones/nativeWriterFence.ts",
-      "import": "./src/jones/nativeWriterFence.ts"
-    },
-    "./jones/pinOrder": {
-      "types": "./src/jones/pinOrder.ts",
-      "import": "./src/jones/pinOrder.ts"
-    },
-    "./githubMarkdownLinks": {
-      "types": "./src/githubMarkdownLinks.ts",
-      "import": "./src/githubMarkdownLinks.ts"
+    "./changedFileKind": {
+      "types": "./src/changedFileKind.ts",
+      "import": "./src/changedFileKind.ts"
     },
     "./authScopeOptions": {
       "types": "./src/authScopeOptions.ts",
@@ -67,10 +51,6 @@
       "types": "./src/git.ts",
       "import": "./src/git.ts"
     },
-    "./githubMedia": {
-      "types": "./src/githubMedia.ts",
-      "import": "./src/githubMedia.ts"
-    },
     "./sourceControl": {
       "types": "./src/sourceControl.ts",
       "import": "./src/sourceControl.ts"
@@ -78,6 +58,10 @@
     "./logging": {
       "types": "./src/logging.ts",
       "import": "./src/logging.ts"
+    },
+    "./releaseResource": {
+      "types": "./src/releaseResource.ts",
+      "import": "./src/releaseResource.ts"
     },
     "./observability": {
       "types": "./src/observability.ts",
@@ -199,6 +183,10 @@
       "types": "./src/dpopCommon.ts",
       "import": "./src/dpopCommon.ts"
     },
+    "./telemetryId": {
+      "types": "./src/telemetryId.ts",
+      "import": "./src/telemetryId.ts"
+    },
     "./relayAuth": {
       "types": "./src/relayAuth.ts",
       "import": "./src/relayAuth.ts"
@@ -247,17 +235,13 @@
       "types": "./src/threadTranscript.ts",
       "import": "./src/threadTranscript.ts"
     },
-    "./threadReference": {
-      "types": "./src/threadReference.ts",
-      "import": "./src/threadReference.ts"
+    "./paletteSearch": {
+      "types": "./src/paletteSearch.ts",
+      "import": "./src/paletteSearch.ts"
     },
     "./threadPullRequests": {
       "types": "./src/threadPullRequests.ts",
       "import": "./src/threadPullRequests.ts"
-    },
-    "./changeRequestUrl": {
-      "types": "./src/changeRequestUrl.ts",
-      "import": "./src/changeRequestUrl.ts"
     },
     "./composerTrigger": {
       "types": "./src/composerTrigger.ts",
@@ -314,6 +298,10 @@
     "./previewViewport": {
       "types": "./src/previewViewport.ts",
       "import": "./src/previewViewport.ts"
+    },
+    "./mediaPreview": {
+      "types": "./src/mediaPreview.ts",
+      "import": "./src/mediaPreview.ts"
     },
     "./filePreview": {
       "types": "./src/filePreview.ts",
@@ -399,6 +387,10 @@
       "types": "./src/orchestrationV2BoundedSnapshot.ts",
       "import": "./src/orchestrationV2BoundedSnapshot.ts"
     },
+    "./orchestrationV2DedupedBodies": {
+      "types": "./src/orchestrationV2DedupedBodies.ts",
+      "import": "./src/orchestrationV2DedupedBodies.ts"
+    },
     "./orchestrationV2Timeline": {
       "types": "./src/orchestrationV2Timeline.ts",
       "import": "./src/orchestrationV2Timeline.ts"
@@ -418,10 +410,6 @@
     "./hostClassification": {
       "types": "./src/hostClassification.ts",
       "import": "./src/hostClassification.ts"
-    },
-    "./dateTime": {
-      "types": "./src/dateTime.ts",
-      "import": "./src/dateTime.ts"
     },
     "./cliRelease": {
       "types": "./src/cliRelease.ts",
@@ -471,6 +459,10 @@
       "types": "./src/markdownPipeline.ts",
       "import": "./src/markdownPipeline.ts"
     },
+    "./jones/documentMarkdownAst": {
+      "types": "./src/jones/documentMarkdownAst.ts",
+      "import": "./src/jones/documentMarkdownAst.ts"
+    },
     "./threadFindText": {
       "types": "./src/threadFindText.ts",
       "import": "./src/threadFindText.ts"
@@ -507,6 +499,38 @@
       "types": "./src/PtyAdapter.ts",
       "import": "./src/PtyAdapter.ts"
     },
+    "./markdownMath": {
+      "types": "./src/markdownMath.ts",
+      "import": "./src/markdownMath.ts"
+    },
+    "./cloneUrl": {
+      "types": "./src/cloneUrl.ts",
+      "import": "./src/cloneUrl.ts"
+    },
+    "./jones/shutdownBudget": {
+      "types": "./src/jones/shutdownBudget.ts",
+      "import": "./src/jones/shutdownBudget.ts"
+    },
+    "./jones/workstreamsRegistryBinding": {
+      "types": "./src/jones/workstreamsRegistryBinding.ts",
+      "import": "./src/jones/workstreamsRegistryBinding.ts"
+    },
+    "./jones/queuedSteerBatch": {
+      "types": "./src/jones/queuedSteerBatch.ts",
+      "import": "./src/jones/queuedSteerBatch.ts"
+    },
+    "./jones/desktopNativeOwner": {
+      "types": "./src/jones/desktopNativeOwner.ts",
+      "import": "./src/jones/desktopNativeOwner.ts"
+    },
+    "./jones/nativeWriterFence": {
+      "types": "./src/jones/nativeWriterFence.ts",
+      "import": "./src/jones/nativeWriterFence.ts"
+    },
+    "./jones/pinOrder": {
+      "types": "./src/jones/pinOrder.ts",
+      "import": "./src/jones/pinOrder.ts"
+    },
     "./jones/composerThreadQuery": {
       "types": "./src/jones/composerThreadQuery.ts",
       "import": "./src/jones/composerThreadQuery.ts"
@@ -531,6 +555,10 @@
       "types": "./src/conversationLibrary.ts",
       "import": "./src/conversationLibrary.ts"
     },
+    "./jones/buildTime": {
+      "types": "./src/jones/buildTime.ts",
+      "import": "./src/jones/buildTime.ts"
+    },
     "./jones/jonesActions": {
       "types": "./src/jones/jonesActions.ts",
       "import": "./src/jones/jonesActions.ts"
@@ -538,10 +566,43 @@
     "./jones/threadAttention": {
       "types": "./src/jones/threadAttention.ts",
       "import": "./src/jones/threadAttention.ts"
+    },
+    "./jones/threadReferenceExcerpt": {
+      "types": "./src/jones/threadReferenceExcerpt.ts",
+      "import": "./src/jones/threadReferenceExcerpt.ts"
+    },
+    "./jones/linkedThreads/handoffText": {
+      "types": "./src/jones/linkedThreads/handoffText.ts",
+      "import": "./src/jones/linkedThreads/handoffText.ts"
+    },
+    "./jones/packaging/pnpmProjectLockfile": {
+      "types": "./src/jones/packaging/pnpmProjectLockfile.ts",
+      "import": "./src/jones/packaging/pnpmProjectLockfile.ts"
+    },
+    "./githubMarkdownLinks": {
+      "types": "./src/githubMarkdownLinks.ts",
+      "import": "./src/githubMarkdownLinks.ts"
+    },
+    "./githubMedia": {
+      "types": "./src/githubMedia.ts",
+      "import": "./src/githubMedia.ts"
+    },
+    "./threadReference": {
+      "types": "./src/threadReference.ts",
+      "import": "./src/threadReference.ts"
+    },
+    "./changeRequestUrl": {
+      "types": "./src/changeRequestUrl.ts",
+      "import": "./src/changeRequestUrl.ts"
+    },
+    "./dateTime": {
+      "types": "./src/dateTime.ts",
+      "import": "./src/dateTime.ts"
     }
   },
   "scripts": {
-    "typecheck": "tsc-rs --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {
@@ -551,12 +612,14 @@
     "effect": "catalog:",
     "jose": "catalog:",
     "mdast-util-directive": "catalog:",
+    "mdast-util-to-hast": "^13.2.1",
     "micromark-extension-directive": "catalog:",
     "micromark-util-character": "catalog:",
     "rehype-raw": "catalog:",
     "rehype-sanitize": "catalog:",
     "remark-breaks": "catalog:",
     "remark-gfm": "catalog:",
+    "remark-math": "6.0.0",
     "remark-parse": "catalog:",
     "remark-rehype": "catalog:",
     "unified": "catalog:",
@@ -565,6 +628,7 @@
   "devDependencies": {
     "@effect/platform-node": "catalog:",
     "@effect/vitest": "catalog:",
+    "@types/mdast": "^4.0.4",
     "@types/node": "catalog:",
     "micromark-util-types": "catalog:",
     "vite-plus": "catalog:"

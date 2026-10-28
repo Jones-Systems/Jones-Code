@@ -1,3 +1,8 @@
+import { WorkstreamPicker } from "../../jones/workstreams/WorkstreamPicker";
+import {
+  operationOpen,
+  operationMessage,
+} from "@t3tools/client-runtime/jones/workstreams/operations";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
 import { workstreamBindingKey } from "@t3tools/client-runtime/state/workstreams";
 import {
@@ -69,6 +74,7 @@ export function WorkstreamNativeSidebar({
   const { controller, grouping } = props;
   const statusGrouping = props.summaryGrouping ?? grouping;
   const threadStatusSummaries = summarizeWorkstreamThreadStatuses(statusGrouping);
+  const [pickerThread, setPickerThread] = useState<EnvironmentThreadShell | null>(null);
   const [dragged, setDragged] = useState<EnvironmentThreadShell | null>(null);
   const [dropTarget, setDropTarget] = useState<{
     workstreamId: string | null;
@@ -93,6 +99,7 @@ export function WorkstreamNativeSidebar({
     setError(null);
     setBusy(false);
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Cancel the pointer sensor and pending request when the sidebar binding retires or unmounts.
   useLayoutEffect(() => {
     bindingRef.current = binding;
     sensorRef.current?.cancel();
@@ -175,7 +182,8 @@ export function WorkstreamNativeSidebar({
         await operation();
         return bindingRef.current === startedBinding;
       } catch (cause) {
-        if (bindingRef.current === startedBinding) setError(workstreamFailureMessage(cause));
+        if (bindingRef.current === startedBinding)
+          setError(cause instanceof Error ? cause.message : workstreamFailureMessage(cause));
         return false;
       }
     })().finally(() => {
@@ -253,9 +261,11 @@ export function WorkstreamNativeSidebar({
     return { destination, neighbor, after, sameGroup };
   };
   const pointerActions = useRef({ locate, run, move, reorder: props.reorder, canReorder });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Expose committed drag actions to the long-lived pointer sensor without replacing its gesture owner.
   useLayoutEffect(() => {
     pointerActions.current = { locate, run, move, reorder: props.reorder, canReorder };
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register and clear the sidebar's external-drop bridge for its mounted lifetime.
   useLayoutEffect(() => {
     if (!externalDropRef) return;
     externalDropRef.current = {
@@ -355,6 +365,11 @@ export function WorkstreamNativeSidebar({
               },
             ]
           : []),
+        {
+          id: "assign-workstream:picker",
+          label: "Search or create Workstream…",
+          disabled: !canMove(thread),
+        },
         ...(controller.data?.items ?? []).map((item) => ({
           id: `assign-workstream:group:${item.workstreamId}` as const,
           label: `${item.name}${item.workstreamId === workstreamId ? " (primary)" : secondary.includes(item.workstreamId) ? " (secondary)" : ""}`,
@@ -368,7 +383,9 @@ export function WorkstreamNativeSidebar({
         },
       ],
       onAction: (action) => {
-        if (action === "assign-workstream:remove") run(() => move(thread, null));
+        if (action === "assign-workstream:picker") {
+          if (canMove(thread)) setPickerThread(thread);
+        } else if (action === "assign-workstream:remove") run(() => move(thread, null));
         else {
           const destination = controller.data?.items.find(
             (item) => `assign-workstream:group:${item.workstreamId}` === action,
@@ -378,6 +395,7 @@ export function WorkstreamNativeSidebar({
       },
     };
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register the mounted assignment menu and revoke its imperative handle on unmount.
   useLayoutEffect(() => {
     if (!assignmentMenuRef) return;
     assignmentMenuRef.current = assignmentMenu;
@@ -436,6 +454,37 @@ export function WorkstreamNativeSidebar({
   };
   return (
     <div ref={rootRef}>
+      {pickerThread ? (
+        <WorkstreamPicker
+          key={JSON.stringify([
+            pickerThread.environmentId,
+            pickerThread.id,
+            controller.data?.binding.registryId,
+            controller.data?.binding.ownerId,
+            controller.data?.binding.principalId,
+          ])}
+          controller={controller}
+          thread={pickerThread}
+          commandId={workstreamCommandId}
+          onClose={() => setPickerThread(null)}
+        />
+      ) : null}
+      {controller.operationEntries
+        ?.filter((entry) => entry.result && operationOpen(entry.result))
+        .map((entry) => (
+          <p
+            key={entry.operationId}
+            role="status"
+            className="px-2 py-1 text-xs text-muted-foreground"
+          >
+            {operationMessage(entry.result!)}
+          </p>
+        ))}
+      {controller.operationsError ? (
+        <p role="alert" className="px-2 py-1 text-xs text-destructive">
+          {controller.operationsError}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="px-2 py-1 text-xs text-destructive">
           {error}{" "}
@@ -474,6 +523,16 @@ export function WorkstreamNativeSidebar({
       ) : null}
       <WorkstreamSidebarSection
         controller={controller}
+        memberLabel={(reference) =>
+          reference.identity.provider === "t3"
+            ? threadsByKey.get(
+                nativeWorkstreamThreadKey(
+                  reference.identity.source_instance_id,
+                  reference.identity.native_id,
+                ),
+              )?.title
+            : undefined
+        }
         renderMembers={renderMembers}
         unassignedLabel={hasUnchecked ? otherThreadsLabel : "Unassigned"}
         threadStatusSummaries={threadStatusSummaries}

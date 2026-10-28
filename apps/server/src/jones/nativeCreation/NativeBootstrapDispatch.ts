@@ -75,9 +75,9 @@ export const dispatchNativeBootstrap = Effect.fn("dispatchNativeBootstrap")(
       return yield* denied("stale_grant", "Verified native principal cannot operate orchestration");
     const owner = repository.value;
     const original = preparation.command;
-    const commandId = yield* Schema.decodeUnknownEffect(CommandId)(original.commandId);
-    const threadId = yield* Schema.decodeUnknownEffect(ThreadId)(original.threadId);
-    const messageId = yield* Schema.decodeUnknownEffect(MessageId)(original.message.messageId);
+    const commandId = yield* Schema.decodeEffect(CommandId)(original.commandId);
+    const threadId = yield* Schema.decodeEffect(ThreadId)(original.threadId);
+    const messageId = yield* Schema.decodeEffect(MessageId)(original.message.messageId);
     if (
       commandId !== original.commandId ||
       threadId !== original.threadId ||

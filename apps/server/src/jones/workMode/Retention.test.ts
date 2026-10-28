@@ -1,5 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
-import { CommandId, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  CommandId,
+  MessageId,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { workModeFixture } from "./Fixtures.testkit.ts";
 import { workModeRetainsSession } from "./Retention.ts";
@@ -13,10 +19,27 @@ const input = {
 };
 
 describe("Work mode session retention", () => {
-  it("retains a completed attached context before dispatch is due and beyond nine intervals", () => {
-    for (const nowMs of [0, 30 * 60_000, 55 * 60_000, 9 * 55 * 60_000])
+  it("retains a first eligible context until the initial age limit", () => {
+    for (const nowMs of [0, 30 * 60_000, 55 * 60_000, 90 * 60_000])
       expect(workModeRetainsSession({ ...input, nowMs })).toBe(true);
+    expect(workModeRetainsSession({ ...input, nowMs: 90 * 60_000 + 1 })).toBe(false);
     expect(workModeRetainsSession({ ...input, nowMs: Number.NaN })).toBe(false);
+  });
+
+  it("retains an established native conversation beyond nine intervals", () => {
+    const message = {
+      ...fixture.messages[0]!,
+      id: MessageId.make("work-mode:retained"),
+      text: "@@@@@",
+      createdBy: "system" as const,
+      creationSource: "server" as const,
+    };
+    const projection = {
+      ...fixture,
+      messages: [message],
+      runs: fixture.runs.map((run) => ({ ...run, userMessageId: message.id })),
+    };
+    expect(workModeRetainsSession({ ...input, projection, nowMs: 9 * 55 * 60_000 })).toBe(true);
   });
 
   it("checks snooze against the real clock, including snoozes ending before dispatch is due", () => {

@@ -42,14 +42,10 @@ function genuineActivity<T extends ProjectionStore.ProjectionSettlementCandidate
 }
 
 /**
- * Each keep-warm refresh is a run and a user message, so upstream inactivity
- * settlement would treat every refreshed thread as active and Work would keep
- * it warm forever. While Work is on, measure inactivity from the latest
- * exchange that is not a refresh. The returned view checks the settings current
- * when each thread is decided, so turning Work off during the history read
- * restores upstream anchors. Identity, status and snapshot fields stay as read,
- * so pull-request settlement and the settle command's snapshot guard are
- * unchanged, and a thread whose history cannot be read keeps upstream anchors.
+ * Work refreshes are user-message runs, so upstream inactivity anchors would keep them warm forever.
+ * While Work is enabled, use the latest non-refresh exchange, checking current settings per decision.
+ * Turning Work off mid-read or an unreadable history retains upstream anchors. Preserve identity, status
+ * and snapshot fields so PR settlement and the settle command's snapshot guard remain unchanged.
  */
 export function workModeSettlementActivity<T extends ProjectionStore.ProjectionSettlementCandidate>(
   projections: Pick<ProjectionStore.ProjectionStoreV2["Service"], "getThreadRecords">,

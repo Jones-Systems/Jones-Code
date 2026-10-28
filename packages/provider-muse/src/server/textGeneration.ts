@@ -1,3 +1,4 @@
+import { threadTitleVerdict } from "@t3tools/provider-core/server/jones/ThreadTitleAssessment";
 import {
   DEFAULT_TEXT_GENERATION_REASONING_EFFORT,
   MUSE_DEFAULT_MODEL,
@@ -17,7 +18,10 @@ import * as Schema from "effect/Schema";
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./sdk.ts";
 import { museModelCapabilities, resolveMuseReasoningEffort } from "./modelCatalog.ts";
 import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
-import { investigationUnsupported } from "@t3tools/provider-core/server/textGenerationOperations";
+import {
+  investigationUnsupported,
+  remoteRequestEvaluationUnsupported,
+} from "@t3tools/provider-core/server/textGenerationOperations";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
@@ -338,11 +342,20 @@ export const makeMuseTextGeneration = Effect.fn("makeMuseTextGeneration")(functi
       ...buildThreadTitlePrompt(input),
       modelSelection: input.modelSelection,
     });
-    return { title: sanitizeThreadTitle(generated.title) };
+    return {
+      title: sanitizeThreadTitle(generated.title),
+      ...(input.titleAssessment
+        ? {
+            assessment: threadTitleVerdict(generated),
+            ...(generated.needsRefinement === true ? { needsRefinement: true } : {}),
+          }
+        : {}),
+    };
   });
   const generateReviewGuide: ProviderTextGeneration["generateReviewGuide"] = () =>
     Effect.fail(investigationUnsupported("generateReviewGuide", "Muse Code"));
   return {
+    evaluateRemoteRequest: () => Effect.fail(remoteRequestEvaluationUnsupported("Muse Code")),
     generateCommitMessage,
     generatePrContent,
     generateBranchName,

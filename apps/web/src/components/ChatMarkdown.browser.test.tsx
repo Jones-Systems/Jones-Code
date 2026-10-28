@@ -1,14 +1,29 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
-import { act, type ReactElement } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { AsyncResult } from "effect/reactivity";
+import { type ReactElement } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
 
+import { act, render } from "../../test/render";
+import "../index.css";
+
+import { filesystemEnvironment } from "../state/filesystem";
+import { useRightPanelStore } from "../rightPanelStore";
 import { getSyntaxHighlighterPromise } from "../lib/syntaxHighlighting";
 import { MarkdownFindContext } from "./chat/markdownFindContext";
 import { useThreadFindHighlights } from "./chat/threadFindHighlights";
 import { setMarkdownTaskChecked } from "./files/filePreviewMode";
+
+const { workspaceSearch, filesystemMetadata } = vi.hoisted(() => ({
+  workspaceSearch: vi.fn(),
+  filesystemMetadata: vi.fn(),
+}));
+vi.mock(import("../state/use-atom-query-runner"), async (original) => ({
+  ...(await original()),
+  useAtomQueryRunner: ((family: unknown) =>
+    family === filesystemEnvironment.getMetadata ? filesystemMetadata : workspaceSearch) as never,
+}));
 
 // Atoms derived from the server config run in the real registry over a missing config.
 vi.mock(import("../state/server"), async (original) => {
@@ -20,7 +35,6 @@ vi.mock(import("../state/server"), async (original) => {
     serverEnvironment: { ...actual.serverEnvironment, configValueAtom: (() => noConfig) as never },
   };
 });
-// A standard client session, so environment-owned file links can open.
 vi.mock(import("../state/session"), async (original) => {
   const { AuthStandardClientScopes } = await import("@t3tools/contracts");
   const granted = new Set<string>(AuthStandardClientScopes);
@@ -36,45 +50,70 @@ vi.mock(import("../remoteOpen"), async (original) => ({
   ...(await original()),
   useRemoteOpenResolution: () => ({ state: { mode: "local-exec" }, isResolved: true }) as never,
 }));
-// A rendered diagram is an SVG; real Mermaid layout is not what these tests exercise.
-vi.mock(import("./chat/MermaidDiagram"), async (original) => ({
-  ...(await original()),
-  MermaidDiagram: () => <svg aria-label="Diagram" />,
+const { renderDiagram } = vi.hoisted(() => ({
+  renderDiagram: vi.fn<(source: string) => Promise<string> | undefined>(),
 }));
+// Control rendering latency without running Mermaid layout.
+vi.mock(import("./chat/MermaidDiagram"), async (original) => {
+  const { use } = await import("react");
+  return {
+    ...(await original()),
+    MermaidDiagram: ({ source }: { source: string }) => {
+      const pending = renderDiagram(source);
+      return <svg role="img" aria-label={pending ? use(pending) : "Diagram"} />;
+    },
+  };
+});
+
+const settingsOverrides = vi.hoisted(() => ({ mathRenderingEnabled: false }));
+vi.mock(import("../hooks/useSettings"), async (original) => {
+  const actual = await original();
+  type Settings = ReturnType<typeof actual.getClientSettings>;
+  function useClientSettings<T = Settings>(select?: (settings: Settings) => T): T {
+    const settings = { ...actual.getClientSettings(), ...settingsOverrides };
+    return select ? select(settings) : (settings as T);
+  }
+  return { ...actual, useClientSettings };
+});
 
 import ChatMarkdown from "./ChatMarkdown";
+import { AudioPreview } from "./files/AudioPreview";
 
-const roots: Root[] = [];
-
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+it("keeps compact audio playback loaded across signed URL renewals", async () => {
+  const original =
+    "data:audio/wav;base64,UklGRiUAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQEAAACA";
+  const renewed = `${original}#renewed`;
+  const preview = (src: string, revision = "clip-v1") => (
+    <AudioPreview compact name="clip.wav" src={src} revision={revision} />
+  );
+  await using screen = await render(preview(original));
+  const audio = screen.container.querySelector("audio")!;
+  await act(() => {
+    audio.dispatchEvent(new Event("loadedmetadata"));
+    audio.dispatchEvent(new Event("play"));
+  });
+  await screen.rerender(preview(renewed));
+  expect(screen.container.querySelector("audio")).toBe(audio);
+  expect(audio.getAttribute("src")).toBe(original);
+  await expect.element(screen.getByRole("button", { name: "Pause clip.wav" })).toBeEnabled();
+  await screen.rerender(preview(renewed, "clip-v2"));
+  expect(screen.container.querySelector("audio")).not.toBe(audio);
+  expect(screen.container.querySelector("audio")?.getAttribute("src")).toBe(renewed);
 });
 
-afterEach(async () => {
-  for (const root of roots.splice(0)) await act(async () => root.unmount());
-  document.body.replaceChildren();
-  CSS.highlights.clear();
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-});
-
-async function render(element: ReactElement) {
-  const container = document.body.appendChild(document.createElement("div"));
-  const root = createRoot(container);
-  roots.push(root);
-  await act(async () => root.render(element));
-  return {
-    container,
-    rerender: (next: ReactElement) => act(async () => root.render(next)),
-  };
+function setup() {
+  using resources = new DisposableStack();
+  resources.defer(() => vi.restoreAllMocks());
+  resources.defer(() => CSS.highlights.clear());
+  settingsOverrides.mathRenderingEnabled = false;
+  renderDiagram.mockReset();
+  workspaceSearch.mockReset().mockResolvedValue(AsyncResult.success({ entries: [] }));
+  filesystemMetadata.mockReset().mockResolvedValue(AsyncResult.success({ entries: [null] }));
+  return resources.move();
 }
 
-async function renderText(text: string, props: Partial<Parameters<typeof ChatMarkdown>[0]> = {}) {
-  return (await render(<ChatMarkdown cwd="/tmp/project" text={text} {...props} />)).container;
-}
-
-function linkTexts(container: HTMLElement) {
-  return [...container.querySelectorAll("a")].map((link) => link.textContent);
+function renderText(text: string, props: Partial<Parameters<typeof ChatMarkdown>[0]> = {}) {
+  return render(<ChatMarkdown cwd="/tmp/project" text={text} {...props} />);
 }
 
 function buttonsLabelled(container: HTMLElement, label: string) {
@@ -83,19 +122,73 @@ function buttonsLabelled(container: HTMLElement, label: string) {
   );
 }
 
+function observeCodeTokenization(
+  highlighter: Awaited<ReturnType<typeof getSyntaxHighlighterPromise>>,
+) {
+  const tokenize = vi.fn<(code: string) => void>();
+  const codeToTokens = highlighter.codeToTokens.bind(highlighter);
+  vi.spyOn(highlighter, "codeToTokens").mockImplementation((code, options) => {
+    // Empty input supplies theme metadata for the streaming renderer, not source tokens.
+    if (code !== "") tokenize(code);
+    return codeToTokens(code, options);
+  });
+  const createStreamTokenizer = highlighter.createStreamTokenizer.bind(highlighter);
+  vi.spyOn(highlighter, "createStreamTokenizer").mockImplementation((options) => {
+    const tokenizer = createStreamTokenizer(options);
+    const enqueue = tokenizer.enqueue.bind(tokenizer);
+    vi.spyOn(tokenizer, "enqueue").mockImplementation((chunk) => {
+      if (chunk !== "") tokenize(chunk);
+      return enqueue(chunk);
+    });
+    return tokenizer;
+  });
+  return tokenize;
+}
+
+it("shows unavailable audio when a workspace embed has no thread", async () => {
+  setup();
+  await using screen = await renderText("![recording](clip.wav)");
+  expect(screen.container.textContent).toContain("Audio unavailable");
+  expect(screen.container.textContent).not.toContain("Loading audio");
+  expect(screen.container.querySelector("audio")).toBeNull();
+});
+
 function fileOptions(container: HTMLElement) {
   return [...container.querySelectorAll("button")]
     .map((button) => button.getAttribute("aria-label"))
     .filter((label) => label?.startsWith("File options for "));
 }
 
+function linkTexts(container: HTMLElement) {
+  return [...container.querySelectorAll("a")].map((link) => link.textContent);
+}
+
+describe("ChatMarkdown shell identity", () => {
+  it("visibly disables a destination block when a callback consumer lacks native message identity", async () => {
+    using _fixture = setup();
+    const callback = vi.fn();
+    await using screen = await renderText("```jones-shell environment=mini label=Mini\npwd\n```", {
+      threadRef: { environmentId: EnvironmentId.make("source"), threadId: ThreadId.make("thread") },
+      onRunShellCommand: callback,
+    });
+    const { container } = screen;
+    expect(container.textContent).toContain("no stable identity");
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label^="Run on"]')!;
+    expect(button.disabled).toBe(true);
+    await act(async () => button.click());
+    expect(callback).not.toHaveBeenCalled();
+  });
+});
+
 describe("ChatMarkdown bare anchor placeholders", () => {
   it.each(["<A>", "<a>", "<a >", "<a/>", "<A/>", "<a />"])(
     "preserves unmatched %s without linking later blocks",
     async (token) => {
-      const container = await renderText(
+      using _fixture = setup();
+      await using screen = await renderText(
         `- **"From ${token}"** appears in the header.\n\n- **Tests:** cover inheritance.\n\nThe deferred move continues on B.\n\nSee <a href="https://example.com">the link</a>.`,
       );
+      const { container } = screen;
       expect(container.querySelector("strong")?.textContent).toBe(`"From ${token}"`);
       expect(linkTexts(container)).toEqual(["the link"]);
       expect(container.querySelectorAll("li")).toHaveLength(2);
@@ -108,29 +201,37 @@ describe("ChatMarkdown bare anchor placeholders", () => {
   it.each(["</a>  ", "<div>more</div>\n</a>"])(
     "preserves a paired anchor closing in the raw block %s",
     async (closing) => {
-      const container = await renderText(`See <a>label\n\n${closing}\n\nfinish`);
+      using _fixture = setup();
+      await using screen = await renderText(`See <a>label\n\n${closing}\n\nfinish`);
+      const { container } = screen;
       expect(container.querySelector("p")?.textContent).toBe("See label");
     },
   );
 
   it("preserves a paired anchor after comment-looking raw text", async () => {
-    const container = await renderText("See <a>label<script><!-- </script> --></a>");
+    using _fixture = setup();
+    await using screen = await renderText("See <a>label<script><!-- </script> --></a>");
+    const { container } = screen;
     expect(container.querySelector("p")?.textContent).toBe("See label -->");
   });
 
   it.each(["<!-- </a> -->", '<div title="</a>">more</div>', '<script>"</a>"</script>'])(
     "ignores apparent closing anchors inside %s",
     async (html) => {
-      const container = await renderText(`Before <A>.\n\n${html}\n\nAfter.`);
+      using _fixture = setup();
+      await using screen = await renderText(`Before <A>.\n\n${html}\n\nAfter.`);
+      const { container } = screen;
       expect(container.querySelector("p")?.textContent).toBe("Before <A>.");
       expect(container.querySelectorAll("a")).toHaveLength(0);
     },
   );
 
   it("preserves paired HTML anchors, details, markdown links, and inline code", async () => {
-    const container = await renderText(
+    using _fixture = setup();
+    await using screen = await renderText(
       'Bare <a>label</a>, <a id="section"></a>, `<A>`, and [docs](https://example.com).\n\n<details><summary>More</summary>Details</details>',
     );
+    const { container } = screen;
     expect(linkTexts(container)).toEqual(["label", "", "docs"]);
     expect(container.querySelector("code")?.textContent).toBe("<A>");
     expect(container.querySelector("[data-markdown-details]")?.textContent).toContain("More");
@@ -139,9 +240,10 @@ describe("ChatMarkdown bare anchor placeholders", () => {
 
 describe("ChatMarkdown context references", () => {
   it("renders text and image references through the chip renderer, with readable fallback", async () => {
+    using _fixture = setup();
     const text =
       "See [Terminal output](t3-context://v1/terminal/term-1) and ![Error image](t3-context://v1/image/img-1).";
-    const { container, rerender } = await render(
+    await using screen = await render(
       <ChatMarkdown
         cwd={undefined}
         text={text}
@@ -152,6 +254,7 @@ describe("ChatMarkdown context references", () => {
         )}
       />,
     );
+    const { container, rerender } = screen;
     expect([...container.querySelectorAll("button")].map((button) => button.textContent)).toEqual([
       "terminal: Terminal output",
       "image: Error image",
@@ -163,8 +266,9 @@ describe("ChatMarkdown context references", () => {
   });
 
   it("reads formatted context labels through nested markup instead of the context id", async () => {
+    using _fixture = setup();
     const seen: Array<string> = [];
-    await render(
+    await using _screen = await render(
       <ChatMarkdown
         cwd={undefined}
         text="See [**Bold** `code`](t3-context://v1/terminal/term-1)."
@@ -180,8 +284,10 @@ describe("ChatMarkdown context references", () => {
 
 describe("ChatMarkdown favicon privacy", () => {
   it("suppresses private link images while preserving public links across updates", async () => {
+    using _fixture = setup();
     const markdown = (url: string) => <ChatMarkdown cwd="/tmp/project" text={`[Link](${url})`} />;
-    const { container, rerender } = await render(markdown("https://example.com"));
+    await using screen = await render(markdown("https://example.com"));
+    const { container, rerender } = screen;
     expect([...container.querySelectorAll("img")].map((image) => image.src)).toEqual([
       "https://www.google.com/s2/favicons?domain=example.com&sz=32",
     ]);
@@ -199,6 +305,7 @@ describe("ChatMarkdown favicon privacy", () => {
 
 describe("ChatMarkdown streaming", () => {
   it("runs only a complete single-line shell block after a click", async () => {
+    using _fixture = setup();
     const onRunShellCommand = vi.fn();
     const message = (text: string, isStreaming = false) => (
       <ChatMarkdown
@@ -208,7 +315,8 @@ describe("ChatMarkdown streaming", () => {
         onRunShellCommand={onRunShellCommand}
       />
     );
-    const { container, rerender } = await render(message("```bash\necho hello\n```", true));
+    await using screen = await render(message("```bash\necho hello\n```", true));
+    const { container, rerender } = screen;
     const runButtons = () => buttonsLabelled(container, "Run in terminal");
     expect(runButtons()).toHaveLength(0);
 
@@ -220,6 +328,8 @@ describe("ChatMarkdown streaming", () => {
       "~~~bash\necho tilde\n~~~",
       "> ```bash\n> echo quote\n> ```",
       "````bash\necho four\n````",
+      "- Command\n\n  ```bash\n  echo list\n  ```",
+      "```bash\r\necho crlf\r\n```\r",
     ]) {
       await rerender(message(text));
       expect(runButtons()).toHaveLength(1);
@@ -243,10 +353,12 @@ describe("ChatMarkdown streaming", () => {
   });
 
   it("does not retokenize completed lines when streaming finishes", async () => {
+    using _fixture = setup();
     const highlighter = await getSyntaxHighlighterPromise("typescript");
-    const highlight = vi.spyOn(highlighter, "codeToHast");
+    const highlight = observeCodeTokenization(highlighter);
     const text = "```typescript\nconst completed = 1;\nconst current = 2;";
-    const { rerender } = await render(<ChatMarkdown cwd="/tmp/project" text={text} isStreaming />);
+    await using screen = await render(<ChatMarkdown cwd="/tmp/project" text={text} isStreaming />);
+    const { rerender } = screen;
     await vi.waitFor(() => expect(highlight).toHaveBeenCalled());
     highlight.mockClear();
     await rerender(<ChatMarkdown cwd="/tmp/project" text={text + "\n```"} />);
@@ -254,19 +366,21 @@ describe("ChatMarkdown streaming", () => {
   });
 
   it("recovers highlighting after a failed fence changes without resetting its controls", async () => {
+    using _fixture = setup();
     const highlighter = await getSyntaxHighlighterPromise("text");
-    const codeToHast = highlighter.codeToHast.bind(highlighter);
+    const codeToTokens = highlighter.codeToTokens.bind(highlighter);
     let fail = true;
-    vi.spyOn(highlighter, "codeToHast").mockImplementation((...args) => {
+    vi.spyOn(highlighter, "codeToTokens").mockImplementation((...args) => {
       if (fail) throw new Error("Temporary highlighter failure");
-      return codeToHast(...args);
+      return codeToTokens(...args);
     });
     vi.spyOn(console, "error").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const { container, rerender } = await render(
+    await using screen = await render(
       <ChatMarkdown cwd="/tmp/project" text={"```text\ninitial\n```"} isStreaming />,
     );
+    const { container, rerender } = screen;
     const codeBlock = container.querySelector<HTMLElement>('[data-language="text"]')!;
     const initialWrap = codeBlock.dataset.wrap === "true";
     await act(async () =>
@@ -286,8 +400,9 @@ describe("ChatMarkdown streaming", () => {
   });
 
   it("preserves code controls and details without highlighting an unchanged fence again", async () => {
+    using _fixture = setup();
     const highlighter = await getSyntaxHighlighterPromise("text");
-    const highlight = vi.spyOn(highlighter, "codeToHast");
+    const highlight = observeCodeTokenization(highlighter);
     const writeText = vi
       .spyOn(navigator.clipboard, "writeText")
       .mockImplementation(async () => undefined);
@@ -305,9 +420,8 @@ describe("ChatMarkdown streaming", () => {
       "Streaming reply",
     ].join("\n");
 
-    const { container, rerender } = await render(
-      <ChatMarkdown cwd="/tmp/project" text={text} isStreaming />,
-    );
+    await using screen = await render(<ChatMarkdown cwd="/tmp/project" text={text} isStreaming />);
+    const { container, rerender } = screen;
     const codeBlock = container.querySelector<HTMLElement>('[data-language="text"]')!;
     const initialWrap = codeBlock.dataset.wrap === "true";
     await act(async () => {
@@ -349,6 +463,7 @@ describe("ChatMarkdown streaming", () => {
   });
 
   it("edits the current task text and marker after reusing a renderer", async () => {
+    using _fixture = setup();
     let editedText: string | undefined;
     let rerender: (next: ReactElement) => Promise<void> = async () => {};
     const message = (text: string): ReactElement => (
@@ -361,7 +476,7 @@ describe("ChatMarkdown streaming", () => {
         }}
       />
     );
-    const rendered = await render(message("- [ ] First\n- [ ] Second"));
+    await using rendered = await render(message("- [ ] First\n- [ ] Second"));
     rerender = rendered.rerender;
     const { container } = rendered;
     const checkboxes = () => container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
@@ -375,191 +490,54 @@ describe("ChatMarkdown streaming", () => {
   });
 });
 
-describe("ChatMarkdown skill chips", () => {
-  it("updates digit-leading skill labels when discovered skills change", async () => {
-    const text = "Use $2spec with a $20k budget.";
-    const { container, rerender } = await render(<ChatMarkdown cwd="/tmp/project" text={text} />);
-    expect(container.textContent).not.toContain("2Spec");
+describe("ChatMarkdown workspace file opens", () => {
+  const threadRef = {
+    environmentId: EnvironmentId.make("workspace"),
+    threadId: ThreadId.make("thread"),
+  };
 
-    await rerender(
-      <ChatMarkdown
-        cwd="/tmp/project"
-        text={text}
-        skills={[
-          { name: "2spec", displayName: "2Spec" },
-          { name: "20k", displayName: "MoneySkill" },
-        ]}
-      />,
+  it("keeps a newer absolute file open when an earlier repo-relative lookup finishes", async () => {
+    using _fixture = setup();
+    const result = AsyncResult.success({
+      entries: [{ path: "notes/a.md", kind: "file" }],
+      truncated: false,
+    });
+    let resolvePending!: (value: typeof result) => void;
+    const pending = new Promise<typeof result>((resolve) => {
+      resolvePending = resolve;
+    });
+    workspaceSearch.mockReturnValueOnce(pending);
+    using openFile = vi
+      .spyOn(useRightPanelStore.getState(), "openFile")
+      .mockImplementation(() => {});
+    await using screen = await renderText(
+      "[Notes](physics/notes/a.md) and [Other](/elsewhere/b.md:9)",
+      {
+        cwd: "/school/physics",
+        threadRef,
+      },
     );
-    expect(container.textContent).toContain("2Spec");
-    expect(container.textContent).toContain("$20k budget");
-    expect(container.textContent).not.toContain("MoneySkill");
+    const { container } = screen;
+    const [notes, other] = container.querySelectorAll("a");
+    await act(async () => notes!.click());
+    expect(workspaceSearch).toHaveBeenCalledOnce();
+    expect(openFile).not.toHaveBeenCalled();
 
-    await rerender(<ChatMarkdown cwd="/tmp/project" text={text} skills={[]} />);
-    expect(container.textContent).not.toContain("2Spec");
-  });
-});
+    await act(async () => other!.click());
+    await act(async () => resolvePending(result));
 
-describe("ChatMarkdown file citations", () => {
-  it.each([true, false])(
-    "renders Codex file citations as file chips with parseRawHtml=%s",
-    async (parseRawHtml) => {
-      const container = await renderText(
-        'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx" purpose="output"}.',
-        { lineBreaks: !parseRawHtml, parseRawHtml },
-      );
-      expect(container.textContent).not.toContain("codex-file-citation");
-      expect(fileOptions(container)).toEqual(["File options for report.xlsx"]);
-    },
-  );
-
-  it("leaves an unfinished streaming citation visible until it is complete", async () => {
-    const container = await renderText(
-      'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"',
-      { isStreaming: true },
-    );
-    expect(container.textContent).toContain(":codex-file-citation");
-    expect(fileOptions(container)).toEqual([]);
-  });
-
-  it.each([
-    ':codex-file-citation{purpose="output"}',
-    ':codex-file-citation-extra{path="/tmp/project/outputs/report.xlsx"}',
-    'Example: \\:codex-file-citation{path="/tmp/project/outputs/report.xlsx"}',
-  ])("leaves %s literal", async (text) => {
-    const container = await renderText(text);
-    expect(container.textContent).toContain(text.replace("\\", ""));
-    expect(fileOptions(container)).toEqual([]);
-  });
-
-  it("preserves Codex file citation examples inside code", async () => {
-    const directive = ':codex-file-citation{path="/tmp/project/outputs/report.xlsx"}';
-    const container = await renderText(
-      `Example: \`${directive}\`\n\n\`\`\`text\n${directive}\n\`\`\``,
-    );
-    expect(container.textContent?.match(/:codex-file-citation/g)).toHaveLength(2);
-    expect(fileOptions(container)).toEqual([]);
-  });
-
-  it("does not create a nested link for citations inside link text", async () => {
-    const directive = ':codex-file-citation{path="/tmp/project/outputs/report.xlsx"}';
-    const container = await renderText(`[See ${directive}](https://example.com)`);
-    expect(container.textContent).toContain("codex-file-citation");
-    expect(fileOptions(container)).toEqual([]);
-  });
-
-  it("renders file citations created by over-indented list recovery", async () => {
-    const container = await renderText(
-      '-       Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"}',
-    );
-    expect(container.querySelector("pre")).toBeNull();
-    expect(container.querySelector("li")?.textContent).toContain("Created ");
-    expect(fileOptions(container)).toEqual(["File options for report.xlsx"]);
-  });
-
-  it("disambiguates Codex citations with the same basename", async () => {
-    const container = await renderText(
-      'Changed :codex-file-citation{path="/tmp/project/src/index.ts"} and :codex-file-citation{path="/tmp/project/test/index.ts"}.',
-    );
-    expect(container.textContent).toContain("index.ts · project/src");
-    expect(container.textContent).toContain("index.ts · project/test");
-  });
-
-  it("preserves rejected citations created by over-indented list recovery", async () => {
-    const malformed = await renderText(
-      'Leading text before list.\n\n-       Bad :codex-file-citation{purpose="output"}',
-    );
-    expect(malformed.querySelector("li")?.textContent).toBe(
-      'Bad :codex-file-citation{purpose="output"}',
-    );
-    const nestedLink = await renderText(
-      'Leading text before list.\n\n-       [Bad :codex-file-citation{path="/tmp/project/report.xlsx"}](https://example.com)',
-    );
-    expect(nestedLink.textContent).toContain(
-      'Bad :codex-file-citation{path="/tmp/project/report.xlsx"}',
-    );
-  });
-});
-
-describe("ChatMarkdown Codex follow-up suggestions", () => {
-  it.each([true, false])("renders the label with parseRawHtml=%s", async (parseRawHtml) => {
-    const container = await renderText(
-      'Done.\n\n- :codex-followup[Prepare print version]{prompt="Prepare the document for printing."}',
-      { lineBreaks: !parseRawHtml, parseRawHtml },
-    );
-    expect(container.textContent).toContain("Prepare print version");
-    expect(container.textContent).not.toContain("codex-followup");
-    expect(container.textContent).not.toContain("Prepare the document for printing.");
-  });
-
-  it("keeps the label of a malformed follow-up created by over-indented list recovery", async () => {
-    const container = await renderText("-       Next :codex-followup[Prepare print version]");
-    expect(container.querySelector("li")?.textContent).toBe(
-      "Next :codex-followup[Prepare print version]",
-    );
-  });
-});
-
-const ARTIFACT_TEMPLATE_DIRECTIVE =
-  '::artifact-template{skill_name="artifact-template-hello-world" skill_directory="/Users/test/.codex/skills/artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}';
-
-describe("ChatMarkdown artifact-template cards", () => {
-  it.each([true, false])(
-    "offers the Codex template from its card with parseRawHtml=%s",
-    async (parseRawHtml) => {
-      const onUseArtifactTemplate = vi.fn();
-      const container = await renderText(ARTIFACT_TEMPLATE_DIRECTIVE, {
-        parseRawHtml,
-        onUseArtifactTemplate,
-      });
-      expect(container.textContent).not.toContain("::artifact-template");
-      expect(container.textContent).toContain("Hello World");
-      expect(container.textContent).toContain("Document template");
-      expect(container.querySelector("p div")).toBeNull();
-      const use = [...container.querySelectorAll("button")].find(
-        (button) => button.textContent === "Use template",
-      )!;
-      await act(async () => use.click());
-      expect(onUseArtifactTemplate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          skillName: "artifact-template-hello-world",
-          displayName: "Hello World",
-        }),
-      );
-    },
-  );
-
-  it("renders a passive card outside a composer-backed timeline", async () => {
-    const container = await renderText(ARTIFACT_TEMPLATE_DIRECTIVE);
-    expect(container.textContent).toContain("Hello World");
-    expect(container.textContent).not.toContain("Use template");
-  });
-
-  it.each([
-    '::artifact-template{skill_name="artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}',
-    ARTIFACT_TEMPLATE_DIRECTIVE.slice(0, -1),
-    `\\${ARTIFACT_TEMPLATE_DIRECTIVE}`,
-    ARTIFACT_TEMPLATE_DIRECTIVE.replace("::artifact-template", "::artifact-template-extra"),
-  ])("leaves %s literal", async (text) => {
-    const container = await renderText(text);
-    expect(container.textContent).toContain("::artifact-template");
-    expect(container.textContent).not.toContain("Document template");
-  });
-
-  it("preserves artifact-template examples inside code", async () => {
-    const container = await renderText(
-      `\`${ARTIFACT_TEMPLATE_DIRECTIVE}\`\n\n\`\`\`text\n${ARTIFACT_TEMPLATE_DIRECTIVE}\n\`\`\``,
-    );
-    expect(container.textContent?.match(/::artifact-template/g)).toHaveLength(2);
-    expect(container.textContent).not.toContain("Document template");
+    expect(openFile).toHaveBeenCalledExactlyOnceWith(threadRef, "/elsewhere/b.md", 9);
+    expect(workspaceSearch).toHaveBeenCalledOnce();
   });
 });
 
 describe("ChatMarkdown headings", () => {
   it("exposes headings below the host heading without changing their tags", async () => {
-    const container = await renderText("# Top\n\n## Section\n\n###### Fine print", {
+    using _fixture = setup();
+    await using screen = await renderText("# Top\n\n## Section\n\n###### Fine print", {
       headingLevelOffset: 3,
     });
+    const { container } = screen;
     expect(
       [...container.querySelectorAll("h1, h2, h6")].map((heading) => [
         heading.tagName,
@@ -570,15 +548,18 @@ describe("ChatMarkdown headings", () => {
       ["H2", "5"],
       ["H6", "6"],
     ]);
-    const flat = await renderText("# Top");
+    await using flatScreen = await renderText("# Top");
+    const { container: flat } = flatScreen;
     expect(flat.querySelector("h1")?.hasAttribute("aria-level")).toBe(false);
   });
 
   it("never gives two headings the same id, even when a suffix matches another heading", async () => {
-    const container = await renderText(
+    using _fixture = setup();
+    await using screen = await renderText(
       '## Setup\n\n## Setup\n\n## Setup-1\n\n<h2 id="install-1">Pinned</h2>\n\n## Install\n\n## Install',
       { parseRawHtml: true },
     );
+    const { container } = screen;
     expect([...container.querySelectorAll("h2")].map((heading) => heading.id)).toEqual([
       "user-content-setup",
       "user-content-setup-1",
@@ -609,43 +590,55 @@ describe("ChatMarkdown Windows file links", () => {
     ["backslashes", String.raw`[Open](C:\Users\shawn\project\src\main.ts)`],
     ["reference links", "[Open][source]\n\n[source]: C:/Users/shawn/project/src/main.ts"],
   ])("resolves %s to the workspace file", async (_, text) => {
+    using _fixture = setup();
     for (const parseRawHtml of [true, false]) {
-      const container = await renderWindows(text, parseRawHtml);
+      await using screen = await renderWindows(text, parseRawHtml);
+      const { container } = screen;
       expect(fileHrefs(container)).toEqual(["C:/Users/shawn/project/src/main.ts"]);
     }
   });
 
   it("keeps backslashes CommonMark would read as escapes", async () => {
+    using _fixture = setup();
     for (const parseRawHtml of [true, false]) {
-      const container = await renderWindows(
+      await using screen = await renderWindows(
         String.raw`[settings](C:\Users\shawn\.claude\settings.json)`,
         parseRawHtml,
       );
+      const { container } = screen;
       expect(fileHrefs(container)).toEqual(["C:/Users/shawn/.claude/settings.json"]);
     }
   });
 
   it("distinguishes same-named backslash paths but not the same file twice", async () => {
+    using _fixture = setup();
     for (const parseRawHtml of [true, false]) {
-      const distinct = await renderWindows(
+      await using distinctScreen = await renderWindows(
         String.raw`[Source](C:\Users\shawn\project\src\index.ts) and [Test](C:\Users\shawn\project\test\index.ts)`,
         parseRawHtml,
       );
+      const { container: distinct } = distinctScreen;
       expect(distinct.textContent).toContain("index.ts · project/src");
       expect(distinct.textContent).toContain("index.ts · project/test");
       const path = String.raw`C:\Users\shawn\project\src\main.ts`;
-      const same = await renderWindows(`[Source](${path}) and \`${path}\``, parseRawHtml);
+      await using sameScreen = await renderWindows(
+        `[Source](${path}) and \`${path}\``,
+        parseRawHtml,
+      );
+      const { container: same } = sameScreen;
       expect(fileHrefs(same)).toHaveLength(2);
       expect(same.textContent).not.toContain("main.ts ·");
     }
   });
 
   it("still rejects unsafe schemes", async () => {
+    using _fixture = setup();
     for (const parseRawHtml of [true, false]) {
-      const container = await renderWindows(
+      await using screen = await renderWindows(
         "[unsafe](javascript:alert(1)) and [unknown](d:alert(1))",
         parseRawHtml,
       );
+      const { container } = screen;
       expect(container.innerHTML).not.toContain("javascript:");
       expect(container.innerHTML).not.toContain("d:alert");
       expect(fileHrefs(container)).toEqual([]);
@@ -653,18 +646,231 @@ describe("ChatMarkdown Windows file links", () => {
   });
 });
 
+describe("ChatMarkdown skill chips", () => {
+  it("updates digit-leading skill labels when discovered skills change", async () => {
+    using _fixture = setup();
+    const text = "Use $2spec with a $20k budget.";
+    await using screen = await render(<ChatMarkdown cwd="/tmp/project" text={text} />);
+    const { container, rerender } = screen;
+    expect(container.textContent).not.toContain("2Spec");
+
+    await rerender(
+      <ChatMarkdown
+        cwd="/tmp/project"
+        text={text}
+        skills={[
+          { name: "2spec", displayName: "2Spec" },
+          { name: "20k", displayName: "MoneySkill" },
+        ]}
+      />,
+    );
+    expect(container.textContent).toContain("2Spec");
+    expect(container.textContent).toContain("$20k budget");
+    expect(container.textContent).not.toContain("MoneySkill");
+
+    await rerender(<ChatMarkdown cwd="/tmp/project" text={text} skills={[]} />);
+    expect(container.textContent).not.toContain("2Spec");
+  });
+});
+
+describe("ChatMarkdown file citations", () => {
+  it.each([true, false])(
+    "renders Codex file citations as file chips with parseRawHtml=%s",
+    async (parseRawHtml) => {
+      using _fixture = setup();
+      await using screen = await renderText(
+        'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx" purpose="output"}.',
+        { lineBreaks: !parseRawHtml, parseRawHtml },
+      );
+      const { container } = screen;
+      expect(container.textContent).not.toContain("codex-file-citation");
+      expect(fileOptions(container)).toEqual(["File options for report.xlsx"]);
+    },
+  );
+
+  it("leaves an unfinished streaming citation visible until it is complete", async () => {
+    using _fixture = setup();
+    await using screen = await renderText(
+      'Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"',
+      { isStreaming: true },
+    );
+    const { container } = screen;
+    expect(container.textContent).toContain(":codex-file-citation");
+    expect(fileOptions(container)).toEqual([]);
+  });
+
+  it.each([
+    ':codex-file-citation{purpose="output"}',
+    ':codex-file-citation-extra{path="/tmp/project/outputs/report.xlsx"}',
+    'Example: \\:codex-file-citation{path="/tmp/project/outputs/report.xlsx"}',
+  ])("leaves %s literal", async (text) => {
+    using _fixture = setup();
+    await using screen = await renderText(text);
+    const { container } = screen;
+    expect(container.textContent).toContain(text.replace("\\", ""));
+    expect(fileOptions(container)).toEqual([]);
+  });
+
+  it("preserves Codex file citation examples inside code", async () => {
+    using _fixture = setup();
+    const directive = ':codex-file-citation{path="/tmp/project/outputs/report.xlsx"}';
+    await using screen = await renderText(
+      `Example: \`${directive}\`\n\n\`\`\`text\n${directive}\n\`\`\``,
+    );
+    const { container } = screen;
+    expect(container.textContent?.match(/:codex-file-citation/g)).toHaveLength(2);
+    expect(fileOptions(container)).toEqual([]);
+  });
+
+  it("does not create a nested link for citations inside link text", async () => {
+    using _fixture = setup();
+    const directive = ':codex-file-citation{path="/tmp/project/outputs/report.xlsx"}';
+    await using screen = await renderText(`[See ${directive}](https://example.com)`);
+    const { container } = screen;
+    expect(container.textContent).toContain("codex-file-citation");
+    expect(fileOptions(container)).toEqual([]);
+  });
+
+  it("renders file citations created by over-indented list recovery", async () => {
+    using _fixture = setup();
+    await using screen = await renderText(
+      '-       Created :codex-file-citation{path="/tmp/project/outputs/report.xlsx"}',
+    );
+    const { container } = screen;
+    expect(container.querySelector("pre")).toBeNull();
+    expect(container.querySelector("li")?.textContent).toContain("Created ");
+    expect(fileOptions(container)).toEqual(["File options for report.xlsx"]);
+  });
+
+  it("disambiguates Codex citations with the same basename", async () => {
+    using _fixture = setup();
+    await using screen = await renderText(
+      'Changed :codex-file-citation{path="/tmp/project/src/index.ts"} and :codex-file-citation{path="/tmp/project/test/index.ts"}.',
+    );
+    const { container } = screen;
+    expect(container.textContent).toContain("index.ts · project/src");
+    expect(container.textContent).toContain("index.ts · project/test");
+  });
+
+  it("preserves rejected citations created by over-indented list recovery", async () => {
+    using _fixture = setup();
+    await using malformedScreen = await renderText(
+      'Leading text before list.\n\n-       Bad :codex-file-citation{purpose="output"}',
+    );
+    const { container: malformed } = malformedScreen;
+    expect(malformed.querySelector("li")?.textContent).toBe(
+      'Bad :codex-file-citation{purpose="output"}',
+    );
+    await using nestedLinkScreen = await renderText(
+      'Leading text before list.\n\n-       [Bad :codex-file-citation{path="/tmp/project/report.xlsx"}](https://example.com)',
+    );
+    const { container: nestedLink } = nestedLinkScreen;
+    expect(nestedLink.textContent).toContain(
+      'Bad :codex-file-citation{path="/tmp/project/report.xlsx"}',
+    );
+  });
+});
+
+describe("ChatMarkdown Codex follow-up suggestions", () => {
+  it.each([true, false])("renders the label with parseRawHtml=%s", async (parseRawHtml) => {
+    using _fixture = setup();
+    await using screen = await renderText(
+      'Done.\n\n- :codex-followup[Prepare print version]{prompt="Prepare the document for printing."}',
+      { lineBreaks: !parseRawHtml, parseRawHtml },
+    );
+    const { container } = screen;
+    expect(container.textContent).toContain("Prepare print version");
+    expect(container.textContent).not.toContain("codex-followup");
+    expect(container.textContent).not.toContain("Prepare the document for printing.");
+  });
+
+  it("keeps the label of a malformed follow-up created by over-indented list recovery", async () => {
+    using _fixture = setup();
+    await using screen = await renderText("-       Next :codex-followup[Prepare print version]");
+    const { container } = screen;
+    expect(container.querySelector("li")?.textContent).toBe(
+      "Next :codex-followup[Prepare print version]",
+    );
+  });
+});
+
+const ARTIFACT_TEMPLATE_DIRECTIVE =
+  '::artifact-template{skill_name="artifact-template-hello-world" skill_directory="/Users/test/.codex/skills/artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}';
+
+describe("ChatMarkdown artifact-template cards", () => {
+  it.each([true, false])(
+    "offers the Codex template from its card with parseRawHtml=%s",
+    async (parseRawHtml) => {
+      using _fixture = setup();
+      const onUseArtifactTemplate = vi.fn();
+      await using screen = await renderText(ARTIFACT_TEMPLATE_DIRECTIVE, {
+        parseRawHtml,
+        onUseArtifactTemplate,
+      });
+      const { container } = screen;
+      expect(container.textContent).not.toContain("::artifact-template");
+      expect(container.textContent).toContain("Hello World");
+      expect(container.textContent).toContain("Document template");
+      expect(container.querySelector("p div")).toBeNull();
+      const use = [...container.querySelectorAll("button")].find(
+        (button) => button.textContent === "Use template",
+      )!;
+      await act(async () => use.click());
+      expect(onUseArtifactTemplate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skillName: "artifact-template-hello-world",
+          displayName: "Hello World",
+        }),
+      );
+    },
+  );
+
+  it("renders a passive card outside a composer-backed timeline", async () => {
+    using _fixture = setup();
+    await using screen = await renderText(ARTIFACT_TEMPLATE_DIRECTIVE);
+    const { container } = screen;
+    expect(container.textContent).toContain("Hello World");
+    expect(container.textContent).not.toContain("Use template");
+  });
+
+  it.each([
+    '::artifact-template{skill_name="artifact-template-hello-world" display_name="Hello World" artifact_kind="document"}',
+    ARTIFACT_TEMPLATE_DIRECTIVE.slice(0, -1),
+    `\\${ARTIFACT_TEMPLATE_DIRECTIVE}`,
+    ARTIFACT_TEMPLATE_DIRECTIVE.replace("::artifact-template", "::artifact-template-extra"),
+  ])("leaves %s literal", async (text) => {
+    using _fixture = setup();
+    await using screen = await renderText(text);
+    const { container } = screen;
+    expect(container.textContent).toContain("::artifact-template");
+    expect(container.textContent).not.toContain("Document template");
+  });
+
+  it("preserves artifact-template examples inside code", async () => {
+    using _fixture = setup();
+    await using screen = await renderText(
+      `\`${ARTIFACT_TEMPLATE_DIRECTIVE}\`\n\n\`\`\`text\n${ARTIFACT_TEMPLATE_DIRECTIVE}\n\`\`\``,
+    );
+    const { container } = screen;
+    expect(container.textContent?.match(/::artifact-template/g)).toHaveLength(2);
+    expect(container.textContent).not.toContain("Document template");
+  });
+});
+
 describe("ChatMarkdown in-page links", () => {
   it.each([true, false])(
     "scrolls a table-of-contents link to its heading without touching the URL (parseRawHtml=%s)",
     async (parseRawHtml) => {
+      using _fixture = setup();
       const scrollIntoView = vi
         .spyOn(HTMLElement.prototype, "scrollIntoView")
         .mockImplementation(() => {});
       const href = window.location.href;
-      const container = await renderText(
+      await using screen = await renderText(
         "- [Operating model](#1-operating-model)\n- [Missing](#nowhere)\n\n## 1. Operating model\n\n## 1. Operating model",
         { parseRawHtml },
       );
+      const { container } = screen;
       const headings = [...container.querySelectorAll("h2")];
       expect(headings.map((heading) => heading.id)).toEqual([
         "user-content-1-operating-model",
@@ -702,17 +908,15 @@ describe("ChatMarkdown thread find", () => {
       </div>
     );
   }
-  const frame = () =>
-    act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
   const activeHighlights = () =>
     [...(CSS.highlights.get("t3-thread-find-active") ?? [])].map((range) =>
       (range as Range).toString(),
     );
 
   it("opens a disclosure only when find selects a match inside it", async () => {
-    const container = document.body.appendChild(document.createElement("div"));
-    const root = createRoot(container);
-    roots.push(root);
+    using _fixture = setup();
+    const container = document.createElement("div");
+    await using screen = await render(null, { container });
     const markdown = (
       <ChatMarkdown
         cwd={undefined}
@@ -725,7 +929,7 @@ describe("ChatMarkdown thread find", () => {
     );
     const show = (query: string, activeOccurrence: number) =>
       act(() =>
-        root.render(
+        screen.rerender(
           <FindProbe container={container} query={query} activeOccurrence={activeOccurrence}>
             {markdown}
           </FindProbe>,
@@ -739,27 +943,28 @@ describe("ChatMarkdown thread find", () => {
     await show("", 0);
     expect(container.textContent).not.toContain("nothing here");
     await show("needle", 0);
-    await frame();
-    expect(openStates()).toEqual(["false", "false", "false"]);
-    expect(container.textContent).toContain("nothing here");
-    expect(activeHighlights()).toEqual(["needle"]);
-    expect(CSS.highlights.get("t3-thread-find")?.size ?? 0).toBe(0);
+    await vi.waitFor(() => {
+      expect(openStates()).toEqual(["false", "false", "false"]);
+      expect(container.textContent).toContain("nothing here");
+      expect(activeHighlights()).toEqual(["needle"]);
+      expect(CSS.highlights.get("t3-thread-find")?.size ?? 0).toBe(0);
+    });
 
     await show("needle", 1);
-    await frame();
-    await frame();
-    expect(openStates()).toEqual(["false", "true", "true"]);
-    expect(CSS.highlights.get("t3-thread-find-active")?.size).toBe(1);
+    await vi.waitFor(() => {
+      expect(openStates()).toEqual(["false", "true", "true"]);
+      expect(CSS.highlights.get("t3-thread-find-active")?.size).toBe(1);
+    });
   });
 
   it("keeps Mermaid diagrams rendered until find selects a match in their source", async () => {
-    const container = document.body.appendChild(document.createElement("div"));
-    const root = createRoot(container);
-    roots.push(root);
+    using _fixture = setup();
+    const container = document.createElement("div");
+    await using screen = await render(null, { container });
     const diagram = "```mermaid\ngraph TD; Alpha-->Beta\n```";
     const show = (query: string) =>
       act(() =>
-        root.render(
+        screen.rerender(
           <FindProbe container={container} query={query}>
             <ChatMarkdown cwd={undefined} text={`Needle first.\n\n${diagram}\n\n${diagram}`} />
           </FindProbe>,
@@ -768,12 +973,9 @@ describe("ChatMarkdown thread find", () => {
     const diagrams = () => container.querySelectorAll('svg[aria-label="Diagram"]').length;
 
     await show("Needle");
-    await frame();
-    expect(diagrams()).toBe(2);
+    await vi.waitFor(() => expect(diagrams()).toBe(2));
     await show("Alpha");
-    await frame();
-    await frame();
-    expect(diagrams()).toBe(1);
+    await vi.waitFor(() => expect(diagrams()).toBe(1));
     await vi.waitFor(() => expect(activeHighlights()).toEqual(["Alpha"]));
   });
 
@@ -811,12 +1013,12 @@ describe("ChatMarkdown thread find", () => {
   ])(
     "highlights the indexed occurrences of $query in $text",
     async ({ text, query, count, lineBreaks, user, withTemplate }) => {
+      using _fixture = setup();
       const skills = [{ name: "test-t3-app", displayName: "T3 App Testing" }];
-      const container = document.body.appendChild(document.createElement("div"));
-      const root = createRoot(container);
-      roots.push(root);
+      const container = document.createElement("div");
+      await using screen = await render(null, { container });
       await act(() =>
-        root.render(
+        screen.rerender(
           <FindProbe container={container} query={query}>
             <ChatMarkdown
               text={text}
@@ -829,8 +1031,7 @@ describe("ChatMarkdown thread find", () => {
           </FindProbe>,
         ),
       );
-      await frame();
-      // Lazy blocks such as Mermaid can swap their source text after the first frame,
+      // Lazy blocks such as Mermaid can swap their source text after rendering,
       // emptying a range for a moment, so wait for the highlights to settle.
       await vi.waitFor(() => {
         const ranges = [...CSS.highlights.values()].flatMap((value) => [...value]);

@@ -86,6 +86,7 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     providerSessionId: ProviderSessionId,
     requestId: RuntimeRequestId,
     decision: Schema.optional(ProviderApprovalDecision),
+    feedback: Schema.optional(Schema.String),
     answers: Schema.optional(ProviderUserInputAnswers),
   }),
   Schema.Struct({
@@ -99,6 +100,9 @@ export const OrchestrationEffectRequestV2 = Schema.Union([
     type: Schema.Literal("checkpoint.capture"),
     runId: RunId,
     scopeId: CheckpointScopeId,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("scheduled-tasks.cleanup"),
   }),
   Schema.Struct({
     type: Schema.Literal("terminal.cleanup"),

@@ -1,3 +1,4 @@
+import * as EventSink from "./EventSink.ts";
 import { assert, it } from "@effect/vitest";
 import {
   type ModelSelection,
@@ -190,8 +191,9 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         resumeThread: () => Effect.die("unused resumeThread"),
         startTurn: () => Effect.die("unused startTurn"),
         steerTurn: () => Effect.die("unused steerTurn"),
-        interruptTurn: ({ providerThread: target, providerTurnId: targetTurnId }) =>
+        interruptTurn: ({ providerThread: target, providerTurnId: targetTurnId, preserveGoal }) =>
           Effect.gen(function* () {
+            assert.isTrue(preserveGoal);
             assert.equal(target.providerInstanceId, runtime.instanceId);
             assert.equal(target.providerSessionId, runtime.providerSessionId);
             assert.equal(target.id, providerThreadId);
@@ -226,9 +228,13 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         ProjectionStore.ProjectionStoreV2.of({
           apply: () => Effect.void,
           getLimitRecoveryCandidates: () => Effect.die("unused getLimitRecoveryCandidates"),
+          getOpenRemoteDelegatedTasks: Effect.die("unused getOpenRemoteDelegatedTasks"),
           getShellSnapshot: () => Effect.die("unused getShellSnapshot"),
+          listActiveSubagentThreadIds: () => Effect.die("unused listActiveSubagentThreadIds"),
+          listOlderSettledThreads: () => Effect.die("unused listOlderSettledThreads"),
           readShellSnapshot: () => Effect.die("unused readShellSnapshot"),
           getThreadShell: () => Effect.die("unused getThreadShell"),
+          findGuestShareThreadId: () => Effect.die("unused findGuestShareThreadId"),
           getThread: () => Ref.get(projection).pipe(Effect.map((state) => state.thread)),
           getSettlementCandidates: () => Effect.die("unused getSettlementCandidates"),
           getThreadsWithPullRequests: () => Effect.die("unused getThreadsWithPullRequests"),
@@ -244,6 +250,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
           searchThreadStream: () => Stream.empty,
           getThreadHistoryPage: () => Effect.die("unused"),
           getTimelinePage: () => Effect.die("Unused timeline read"),
+          getTimelinePages: () => Effect.die("Unused timeline read"),
           getMessageCount: () => Effect.die("unused message count"),
           getNextTurnItemOrdinal: () => Effect.die("unused ordinal read"),
           getTurnItem: () => Effect.die("unused turn item read"),
@@ -268,6 +275,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
               })),
             ),
           getCheckpointContext: () => Effect.die("not used"),
+          getCheckpointRollbackContext: () => Effect.die("unused rollback context"),
           getCheckpointCaptureContext: () => Effect.die("not used"),
           getRunMessage: () => Effect.die("not used"),
           isNodeStored: () => Effect.die("not used"),
@@ -298,6 +306,12 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         }),
       );
       const layerControl = ProviderTurnControlService.layer.pipe(
+        Layer.provide(
+          Layer.mock(EventSink.EventSinkV2)({
+            latestSequence: () => Effect.succeed(0),
+            stream: () => Stream.never,
+          }),
+        ),
         Layer.provide(Layer.merge(layerProjection, layerSessionManager)),
       );
 
@@ -341,6 +355,23 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       }).pipe(Effect.provide(layerControl));
 
       const interrupted = yield* Ref.get(interruptedThread);
+      yield* Ref.set(interruptedThread, null);
+      yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        yield* control.interruptAndAwaitTerminal({
+          threadId,
+          providerSessionId: oldSessionId,
+          replacementProviderSessionId: replacementSessionId,
+          providerThreadId,
+          providerTurnId,
+          interruptedAttemptId: attemptId,
+        });
+      }).pipe(Effect.provide(layerControl));
+      assert.isNull(
+        yield* Ref.get(interruptedThread),
+        "persisted terminal evidence must not interrupt again",
+      );
+
       assert.isNotNull(interrupted);
       assert.equal(interrupted?.providerSessionId, oldSessionId);
       assert.equal(interrupted?.providerInstanceId, providerInstanceId);

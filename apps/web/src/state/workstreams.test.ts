@@ -586,9 +586,21 @@ describe("Workstream assignment diagnostics", () => {
   it("uses only sanitized closed reasons", () => {
     expect(
       registrationAvailability({
+        "x-jones-workstreams-t3-availability": "unavailable;reason=contract_mismatch",
+      }),
+    ).toEqual({
+      state: "unavailable",
+      reason:
+        "the running app build differs from the enrolled build; refresh enrollment for this running build, then refresh here",
+    });
+    expect(
+      registrationAvailability({
         "x-jones-workstreams-t3-availability": "unavailable;reason=source_mismatch",
       }),
-    ).toEqual({ state: "unavailable", reason: "enrolled source or build differs" });
+    ).toEqual({
+      state: "unavailable",
+      reason: "this environment is not enrolled; enroll this environment, then refresh here",
+    });
     expect(registrationAvailability({ "x-jones-workstreams-t3-availability": "ready" })).toEqual({
       state: "ready",
       reason: null,

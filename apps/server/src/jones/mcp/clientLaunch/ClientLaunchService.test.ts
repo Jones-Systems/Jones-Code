@@ -1,3 +1,6 @@
+import * as ThreadMetadataReads from "../../orchestration/threadMetadataReads.ts";
+import * as LinkedThreads from "../../linkedThreads/LinkedThreads.ts";
+import * as ServerEnvironment from "../../../environment/ServerEnvironment.ts";
 import * as WorktreeSetupTracker from "../../../project/WorktreeSetupTracker.ts";
 import * as ProjectCloneTracker from "../../../project/ProjectCloneTracker.ts";
 import * as TerminalManager from "../../../terminal/Manager.ts";
@@ -172,6 +175,7 @@ function makeHarness(options: HarnessOptions = {}) {
       bootstrap: () => Effect.die("unused"),
       update: () => Effect.die("unused"),
       delete: () => Effect.die("unused"),
+      listPage: () => Effect.die("unused"),
       getById: (id) =>
         Effect.succeed(
           id === projectId
@@ -180,13 +184,16 @@ function makeHarness(options: HarnessOptions = {}) {
               ? Option.some(otherProject)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(project)),
+      getByWorkspaceRoot: () => Effect.succeedSome(project),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
     }),
     Layer.mock(GitWorkflow.GitWorkflowService)({
       createWorktree,
+      resolveWorktreeBaseRemote: () => Effect.succeed({ remoteName: "origin", branchName: "main" }),
+      fetchWorktreeBaseCommit: () =>
+        Effect.succeed({ commitSha: "remote-main-sha", remoteRefName: "origin/main" }),
       hasCommit: () => Effect.succeed(false),
       renameBranch,
       fetchRemote: options.fetchRemote ?? (() => Effect.void),
@@ -221,10 +228,12 @@ function makeHarness(options: HarnessOptions = {}) {
     options.managedFolders ??
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
-        folderForThread: () => Effect.succeed(Option.none()),
+        isScratchProject: () => Effect.succeed(false),
+        folderForThread: () => Effect.succeedNone,
       }),
   );
   const launch = ThreadLaunch.layer.pipe(
+    Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(database))),
     Layer.provide(
       Layer.mergeAll(
         externalServices,
@@ -283,7 +292,11 @@ function makeHarness(options: HarnessOptions = {}) {
 }
 
 const namespace = "synthetic-launch-service";
-const modes = { runtimeMode: "full-access", interactionMode: "default" } as const;
+const modes = {
+  runtimeMode: "full-access",
+  interactionMode: "default",
+  linkOrigin: undefined,
+} as const;
 const gate: ThreadStartGate = {
   start: Effect.succeed(modes),
   continueWithin: (_target, effect) => effect,
@@ -369,6 +382,7 @@ it.effect.each(["runtime", "interaction"] as const)(
         const restricted = {
           runtimeMode: "approval-required",
           interactionMode: "plan",
+          linkOrigin: undefined,
         } as const;
         const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
         const guarded: ThreadStartGate = {
@@ -425,6 +439,44 @@ it.effect.each(["runtime", "interaction"] as const)(
         assert.equal(state.runId, null);
       }).pipe(Effect.provide(h.layer));
     }),
+);
+
+it.effect.each(["runtime", "interaction"] as const)(
+  "agent launch preserves a stricter inherited %s limit before its initial message",
+  (broaderMode) =>
+    Effect.gen(function* () {
+      const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const { commandId, threadId, messageId } = clientLaunchIds(namespace, "strict-inherited");
+      const error = yield* launches
+        .launch({
+          commandId,
+          threadId,
+          projectId,
+          title: "Inherited limit",
+          modelSelection,
+          runtimeMode: broaderMode === "runtime" ? "full-access" : "approval-required",
+          interactionMode: broaderMode === "interaction" ? "default" : "plan",
+          workspaceStrategy: { type: "root" },
+          initialMessage: { messageId, text: "Task", attachments: [] },
+          createdBy: "agent",
+          creationSource: "mcp",
+        })
+        .pipe(
+          Effect.provideService(DispatchModeLimit, {
+            runtimeMode: "approval-required",
+            interactionMode: "plan",
+            refused,
+          }),
+          Effect.flip,
+        );
+      assert.equal(error._tag, "ThreadLaunchError");
+      assert.equal((yield* Ref.get(refused))?.mode, broaderMode);
+      const threads = yield* ThreadManagement.ThreadManagementService;
+      const projection = yield* threads.getThreadProjection(threadId);
+      assert.lengthOf(projection.messages, 0);
+      assert.lengthOf(projection.runs, 0);
+    }).pipe(Effect.provide(makeHarness().layer)),
 );
 
 it.effect(
@@ -774,4 +826,121 @@ it.effect("T15: a stale unscheduled retry holds progress recorded before reserva
       assert.isFalse(yield* launches.preparationActive(ids.commandId));
     }).pipe(Effect.provide(h.layer));
   }),
+);
+
+it.effect(
+  "linked navigation uses real keyed claims, excludes fences/preflight and survives initial-message refusal",
+  () =>
+    Effect.gen(function* () {
+      const client = yield* caller;
+      const parent = yield* ClientLaunch.launch(
+        { ...input, clientRequestId: "parent", message: undefined },
+        client,
+        modes,
+        gate,
+      );
+      const parentShell = yield* client.threads.getThreadShell(parent.threadId);
+      assert.isNotNull(parentShell);
+      const context: Caller = {
+        ...client,
+        caller: parentShell!,
+        scope: {
+          ...client.scope,
+          client: undefined,
+          thread: {
+            threadId: parent.threadId,
+            providerInstanceId: modelSelection.instanceId,
+            providerSessionId: "synthetic",
+          },
+        },
+      };
+      yield* Effect.gen(function* () {
+        const links = yield* LinkedThreads.LinkedThreads;
+        const request = { ...input, clientRequestId: "child", message: undefined };
+        const first = yield* ClientLaunch.launch(request, context, modes, gate);
+        const replay = yield* ClientLaunch.launch(request, context, modes, gate);
+        assert.equal(first.originLink?.linkId, replay.originLink?.linkId);
+        yield* ClientLaunch.launch(
+          { ...request, clientRequestId: "delegated-excluded" },
+          context,
+          modes,
+          gate,
+          true,
+        );
+        assert.equal(
+          (yield* links.list(
+            { type: "user" },
+            { thread: { environmentId: client.scope.environmentId, threadId: parent.threadId } },
+          )).links.length,
+          1,
+        );
+        assert.isNull(
+          (yield* client.threads.getThreadShell(first.threadId))?.lineage?.parentThreadId ?? null,
+        );
+        yield* ClientLaunch.fence(namespace, "fenced-linked");
+        yield* Effect.exit(
+          ClientLaunch.launch(
+            { ...request, clientRequestId: "fenced-linked" },
+            context,
+            modes,
+            gate,
+          ),
+        );
+        yield* Effect.exit(
+          ClientLaunch.launch(
+            { ...request, clientRequestId: "bad-project", projectId: ProjectId.make("missing") },
+            context,
+            modes,
+            gate,
+          ),
+        );
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        yield* Effect.exit(
+          ClientLaunch.launch(
+            { ...input, clientRequestId: "rejected-message" },
+            context,
+            modes,
+            gate,
+          ).pipe(
+            Effect.provideService(ThreadLaunch.ThreadLaunchService, {
+              ...launches,
+              launch: (value) =>
+                failAfter(launches, "thread")
+                  .launch(value)
+                  .pipe(
+                    Effect.provideService(
+                      ThreadManagement.ThreadManagementService,
+                      context.threads,
+                    ),
+                  ),
+            }),
+          ),
+        );
+        const failedIds = clientLaunchIds(namespace, "rejected-message");
+        const sink = yield* EventSink.EventSinkV2;
+        yield* sink.commitRejectedCommand({
+          commandId: CommandId.make(`${failedIds.commandId}:initial-message`),
+          threadId: failedIds.threadId,
+          commandType: "message.dispatch",
+          rejectedAt: yield* DateTime.now,
+          error: "synthetic refusal",
+        });
+        const listed = yield* links.list(
+          { type: "user" },
+          { thread: { environmentId: client.scope.environmentId, threadId: parent.threadId } },
+        );
+        assert.equal(listed.links.length, 2);
+        assert.isTrue(listed.links.some((link) => link.to.threadId === failedIds.threadId));
+      }).pipe(
+        Effect.provide(
+          LinkedThreads.layer.pipe(
+            Layer.provide(
+              Layer.mock(ServerEnvironment.ServerEnvironment)({
+                getEnvironmentId: Effect.succeed(client.scope.environmentId),
+              }),
+            ),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(makeHarness().layer)),
 );

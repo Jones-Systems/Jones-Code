@@ -1,3 +1,4 @@
+import { InstallStatusPanel } from "../../jones/installStatus/InstallStatusPanel";
 import { SidebarEnvironmentFilters } from "../../jones/environmentFilters/SidebarEnvironmentFilters";
 import { memo } from "react";
 import { CompactSidebarHeader } from "../../jones/sidebarHeader/CompactSidebarHeader";
@@ -150,6 +151,7 @@ export const SidebarChromeFooter = memo(function SidebarChromeFooter() {
       <SidebarThreadUndoNotice />
       <SidebarProviderUpdatePill />
       <SidebarUpdateArchitectureWarning />
+      <InstallStatusPanel />
       <SidebarEnvironmentFilters />
       <SidebarUtilityMenu />
     </SidebarFooter>

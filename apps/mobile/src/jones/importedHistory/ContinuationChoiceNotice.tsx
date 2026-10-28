@@ -1,3 +1,9 @@
+import {
+  importedHistoryContinuationEligible,
+  importedHistoryReasonText,
+} from "@t3tools/client-runtime/jones/imported-history/continuation";
+import * as Option from "effect/Option";
+import { useEnvironmentThread } from "../../state/threads";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { Pressable, View } from "react-native";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
@@ -9,6 +15,7 @@ export function useMobileImportedHistoryChoice(environmentId: EnvironmentId, thr
     [environmentId, threadId],
   );
   const state = useSyncExternalStore(choice.subscribe, choice.snapshot);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Hydrate the mounted thread's persisted continuation choice from secure storage.
   useEffect(() => {
     void choice.hydrate();
   }, [choice]);
@@ -19,10 +26,13 @@ export function ContinuationChoiceNotice(props: {
   threadId: ThreadId;
 }) {
   const { choice, state } = useMobileImportedHistoryChoice(props.environmentId, props.threadId);
-  if (state.notice === null) return null;
+  const projection = Option.getOrNull(
+    useEnvironmentThread(props.environmentId, props.threadId).data,
+  );
+  if (!importedHistoryContinuationEligible(projection) || state.notice === null) return null;
   return (
     <View className="px-3 py-2 gap-2">
-      <Text accessibilityLiveRegion="polite">{state.notice}</Text>
+      <Text accessibilityLiveRegion="polite">{importedHistoryReasonText(state.notice)}</Text>
       {state.pending || state.canStart ? (
         <Pressable
           accessibilityRole="button"
@@ -31,7 +41,7 @@ export function ContinuationChoiceNotice(props: {
             void (state.pending ? choice.observe() : choice.start());
           }}
         >
-          <Text>{state.pending ? "Observe choice" : "Use imported history"}</Text>
+          <Text>{state.pending ? "Check continuation status" : "Start fresh conversation"}</Text>
         </Pressable>
       ) : null}
     </View>

@@ -447,12 +447,14 @@ Traces are best for one request. Metrics are best for trends.
 Good metric families to watch:
 
 - `t3_rpc_request_duration`
+- `t3_orchestration_command_duration`
 - `t3_provider_turn_duration` (how long the provider adapter takes to start a turn, not the turn's run time)
 - `t3_git_command_duration`
 
 Counters tell you volume and failure rate:
 
 - `t3_rpc_requests_total`
+- `t3_orchestration_commands_total`
 - `t3_provider_turns_total`
 - `t3_git_commands_total`
 
@@ -460,8 +462,9 @@ Webhooks have their own families:
 
 - `t3_webhook_deliveries_total` by `outcome` and `source` (`relay` or `direct`). Beyond what the
   sender sees, `queue_full` means a task already had its limit of deliveries waiting,
-  `prompt_too_long` means the filled-in prompt passed the provider limit, and `duplicate` means
-  the relay delivered a request this environment had already run.
+  `prompt_too_long` means the filled-in prompt passed the provider limit, `duplicate` means
+  the relay delivered a request this environment had already run, and `unavailable` means the
+  environment could not record the request, answered 503 and ran nothing.
 - `t3_webhook_runs_total` by `outcome` (`started`, `skipped`, `failed`) for the runs those
   deliveries start, which happen after the sender has its answer.
 - `t3_webhook_held_delay` for how long requests the relay held waited before arriving.
@@ -680,7 +683,30 @@ with a startup warning, rather than sending it to the Settings endpoint.
 Service names are fixed: `t3code-server` for the backend and `t3code-desktop` for the desktop main
 process, both in `service.namespace` `t3code`. `OTEL_SERVICE_NAME` and a `service.name` or
 `service.namespace` in `OTEL_RESOURCE_ATTRIBUTES` are ignored. Tell installations apart with other
-resource attributes, such as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=development`.
+resource attributes, such as `OTEL_RESOURCE_ATTRIBUTES=deployment.environment.name=staging`.
+
+Each process reports its own build, not the one it talks to: the server, the desktop main process,
+the UI, and the mobile app each carry `t3code.release.channel` (`dev`, `stable`, `nightly`, or
+`preview`, from their own version; desktop PR builds count as `preview`, and a server not built by a
+release workflow reports `dev`) and `deployment.environment.name` (`development`, `production`, or
+`staging` for `preview`). On the server and the desktop main process either key in
+`OTEL_RESOURCE_ATTRIBUTES` wins. The UI and mobile app never read that variable: Vercel PR previews
+set `VITE_RELEASE_CHANNEL=preview` because their `APP_VERSION` must stay comparable with the
+server's, and the mobile app maps its build variant (`development`, `preview`, `production`), or
+reports `dev` from a development bundle.
+
+Attributes specific to T3 Code use the `t3code.` prefix. The UI runs as `t3code-web` in both a
+browser and the desktop window, since it is the same code, and `t3code.client.surface` is `desktop`
+or `web`. The server's `t3code.server.managed_by` is `desktop` when the desktop app launched it and
+`standalone` otherwise. The desktop main process reports `t3code.desktop.mode` as `development` or
+`packaged` (formerly `service.mode`; dashboards filtering on that key must switch). Node processes
+also report the semantic `process.runtime.name`, `process.runtime.version`, and
+`process.runtime.description`, and UI traces report `browser.language`, `user_agent.original`, and,
+in Chromium, `browser.platform`, `browser.mobile`, and `browser.brands`.
+
+Every resource also carries a `service.instance.id`: random per process for the server and desktop,
+per page load for the UI, and the Expo session on mobile. A `service.instance.id` in
+`OTEL_RESOURCE_ATTRIBUTES` replaces the generated one on the server and desktop.
 
 If the OTLP URLs are unset, local tracing still works, metrics stay in-process only, and logs stay
 on stdout only.
@@ -771,7 +797,9 @@ gateway for the app session until its registration is removed, independently of
 the active thread. Disconnects and request failures leave its values unavailable
 without selecting another gateway. Requests use the selected environment's
 existing HTTP authorization; the client does not receive collector URLs or
-tokens or substitute its own machine's resources.
+tokens or substitute its own machine's resources. Header remounts and tab visibility
+changes retain the selected gateway's sample and ten-second polling cadence,
+while source samples still expire after thirty seconds.
 
 A shared parent collector can serve all mapped nodes. Each shared slot requires
 an explicit machine GUID from `/api/v3/nodes`; unmapped slots stay unavailable.
@@ -785,13 +813,14 @@ T3CODE_NETDATA_MINI_NODE='<mini-machine-guid>'
 T3CODE_NETDATA_HOME_NODE='<home-machine-guid>'
 ```
 
-| Variable                    | Meaning                                                                                       |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the serving environment.                                |
-| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent, supplied through protected server configuration. |
-| `T3CODE_NETDATA_<ID>_NODE`  | Exact machine GUID for a fixed slot.                                                          |
-| `T3CODE_NETDATA_<ID>_URL`   | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                 |
-| `T3CODE_NETDATA_<ID>_TOKEN` | Per-slot bearer token. A URL override never inherits the shared token.                        |
+| Variable                                  | Meaning                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_URL`                      | Shared parent base URL reachable from the serving environment.                                            |
+| `T3CODE_NETDATA_TOKEN`                    | Optional bearer token for the shared parent, supplied through protected server configuration.             |
+| `T3CODE_NETDATA_<ID>_NODE`                | Exact machine GUID for a fixed slot.                                                                      |
+| `T3CODE_NETDATA_<ID>_URL`                 | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                             |
+| `T3CODE_NETDATA_<ID>_TOKEN`               | Per-slot bearer token. A URL override never inherits the shared token.                                    |
+| `T3CODE_NETDATA_<ID>_STORAGE_MOUNT_POINT` | Optional exact filesystem mount; defaults to `/` on Linux and `/System/Volumes/Data`, then `/`, on macOS. |
 
 Tokens authenticate API reads; they are not Netdata streaming keys. Keep collector
 configuration out of browser build variables. Changing process launch settings
@@ -820,9 +849,20 @@ Missing or invalid available-memory data leaves CPU usable and available RAM
 unavailable; free RAM is never relabeled as available RAM. Every reported byte
 value is integral and bounded by total RAM.
 
+Optional storage fields report one exact `disk.space` filesystem on the selected
+node, never a sum of mounts or physical disks. Free space is `avail`; total is
+`avail + used + reserved_for_root`, including blocks reserved for root.
+The gateway validates the returned node, mount label, individual dimension
+freshness and GiB units. Missing, malformed or stale storage leaves the other
+metrics available. Mount overrides accept absolute paths using letters, digits,
+underscores, dots, slashes and hyphens; pattern syntax is rejected. The Mac
+collector must publish a matching chart; source changes cannot enable it.
+
 The header shows compact whole numbers such as `VPS · 24% · 41`: total-host CPU
-percentage and available RAM in GiB. Tooltips retain units and collector-estimate
-meaning. CPU and RAM colors use their unrounded utilization, and either can raise
+percentage and available RAM in GiB. Hover and keyboard focus show one bullet per
+CPU, available/total RAM, Mac swap I/O and free/total main-filesystem storage
+reading, with units. Available RAM on macOS remains a collector estimate.
+CPU and RAM colors use their unrounded utilization, and either can raise
 the badge background; the RAM color is not a direct measurement of memory
 pressure. The breadcrumb receives its natural width first; complete badges fit
 into the remaining space in VPS, Test, Mini, Home order, with hidden badges

@@ -1,6 +1,7 @@
 import type { DesktopUpdateActionResult, DesktopUpdateState } from "@t3tools/contracts";
 
 import {
+  desktopUpdateVersionLabel,
   getJonesDesktopUpdateBlockedMessage,
   getJonesDesktopUpdateOutcomeMessage,
   getJonesDesktopUpdateRefusal,
@@ -9,26 +10,43 @@ import {
 
 export type DesktopUpdateButtonAction = "download" | "install" | "none";
 
-const DESKTOP_RELEASE_HISTORY_URL = "https://github.com/pingdotgg/t3code/releases";
-const DESKTOP_RELEASE_TAG_URL = `${DESKTOP_RELEASE_HISTORY_URL}/tag`;
+const DEFAULT_DESKTOP_RELEASE_REPOSITORY = "pingdotgg/t3code";
+const GITHUB_REPOSITORY_SEGMENT = /^[A-Za-z0-9._-]+$/u;
 
-/**
- * The main process fills `downloadedVersion` from the updater's `update-downloaded`
- * event, which is dispatched on its own fiber. A download RPC can therefore resolve
- * before that write lands, so fall back to the version the download was started for.
- */
+function isValidRepositorySegment(value: string | undefined): value is string {
+  return (
+    value !== undefined && value !== "." && value !== ".." && GITHUB_REPOSITORY_SEGMENT.test(value)
+  );
+}
+
+function desktopReleaseRepositoryUrl(repository: string | undefined): string {
+  const configuredRepository = repository?.trim() ?? "";
+  const [owner, name, ...extra] = configuredRepository.split("/");
+  const releaseRepository =
+    isValidRepositorySegment(owner) && isValidRepositorySegment(name) && extra.length === 0
+      ? configuredRepository
+      : DEFAULT_DESKTOP_RELEASE_REPOSITORY;
+  return `https://github.com/${releaseRepository}/releases`;
+}
+
+/** The download RPC can beat the updater's downloadedVersion event; fall back to the requested version. */
 export function getDesktopUpdateDownloadedVersion(state: DesktopUpdateState): string | null {
   return state.downloadedVersion ?? state.availableVersion;
 }
 
-export function getDesktopUpdateReleaseUrl(version: string | null): string | null {
+export function getDesktopUpdateReleaseUrl(
+  version: string | null,
+  repository: string | undefined = import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY,
+): string | null {
   const normalizedVersion = version?.trim();
   if (!normalizedVersion) return null;
-  return `${DESKTOP_RELEASE_TAG_URL}/v${encodeURIComponent(normalizedVersion)}`;
+  return `${desktopReleaseRepositoryUrl(repository)}/tag/v${encodeURIComponent(normalizedVersion)}`;
 }
 
-export function getDesktopUpdateReleaseHistoryUrl(): string {
-  return DESKTOP_RELEASE_HISTORY_URL;
+export function getDesktopUpdateReleaseHistoryUrl(
+  repository: string | undefined = import.meta.env.T3CODE_DESKTOP_UPDATE_REPOSITORY,
+): string {
+  return desktopReleaseRepositoryUrl(repository);
 }
 
 export function resolveDesktopUpdateButtonAction(
@@ -91,10 +109,10 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     (state.status === "available" || state.status === "downloaded") &&
     getDesktopUpdateDownloadedVersion(state) === state.notAppliedVersion
   ) {
-    return `Update ${state.notAppliedVersion} did not apply. Click to retry.`;
+    return `Update ${desktopUpdateVersionLabel(state, state.notAppliedVersion)} did not apply. Click to retry.`;
   }
   if (state.status === "available") {
-    return `Update ${state.availableVersion ?? "available"} ready to download`;
+    return `Update ${state.availableVersion ? desktopUpdateVersionLabel(state, state.availableVersion) : "available"} ready to download`;
   }
   if (state.status === "downloading") {
     const progress =
@@ -102,17 +120,17 @@ export function getDesktopUpdateButtonTooltip(state: DesktopUpdateState): string
     return `Downloading update${progress}`;
   }
   if (state.status === "downloaded") {
-    return `Update ${state.downloadedVersion ?? state.availableVersion ?? "ready"} downloaded. Click to restart and install.`;
+    return `Update ${desktopUpdateVersionLabel(state, state.downloadedVersion ?? state.availableVersion ?? "ready")} downloaded. Click to restart and install.`;
   }
   if (state.status === "error") {
     if (state.errorContext === "download" && state.availableVersion) {
-      return `Download failed for ${state.availableVersion}. Click to retry.`;
+      return `Download failed for ${desktopUpdateVersionLabel(state, state.availableVersion)}. Click to retry.`;
     }
     if (state.errorContext === "install" && state.downloadedVersion) {
-      return `Install failed for ${state.downloadedVersion}. Click to retry.`;
+      return `Install failed for ${desktopUpdateVersionLabel(state, state.downloadedVersion)}. Click to retry.`;
     }
     if (state.downloadedVersion) {
-      return `Update ${state.downloadedVersion} downloaded. Click to restart and install.`;
+      return `Update ${desktopUpdateVersionLabel(state, state.downloadedVersion)} downloaded. Click to restart and install.`;
     }
     return state.message ?? "Update failed";
   }
@@ -145,4 +163,20 @@ export function canCheckForUpdate(state: DesktopUpdateState | null): boolean {
   return (
     state.status !== "checking" && state.status !== "downloading" && state.status !== "disabled"
   );
+}
+
+export function getDesktopUpdateDisabledReason(
+  state: Pick<DesktopUpdateState, "enabled" | "status" | "message"> | null,
+): string | null {
+  if (!state || (state.enabled && state.status !== "disabled")) return null;
+  return state.message?.trim() || "Automatic updates are not available in this build.";
+}
+
+export function getDesktopUpdateIdleTooltip(
+  state: Pick<DesktopUpdateState, "enabled" | "status" | "message"> | null,
+) {
+  const disabledReason = getDesktopUpdateDisabledReason(state);
+  return disabledReason
+    ? { title: "Updates unavailable", detail: disabledReason }
+    : { title: "Check for updates", detail: null };
 }

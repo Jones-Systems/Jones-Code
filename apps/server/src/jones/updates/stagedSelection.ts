@@ -10,10 +10,11 @@ import {
   decodeStagedQualifiedRuntime,
   verifyStagedQualifiedRuntime,
   type QualifiedRuntimeBinding,
+  type QualifiedDigestOptions,
   type StagedQualifiedRuntime,
 } from "../cloud/qualifiedRuntime.ts";
 
-function selectionPath(binding: QualifiedRuntimeBinding): string {
+export function selectionPath(binding: QualifiedRuntimeBinding): string {
   const key = NodeCrypto.createHash("sha256").update(JSON.stringify(binding)).digest("hex");
   return NodePath.join(binding.baseDir, "runtime", "jones-updates", "selections", `${key}.json`);
 }
@@ -45,7 +46,10 @@ async function readSelection(path: string): Promise<StagedQualifiedRuntime | und
   }
 }
 
-export async function retainStagedSelection(selection: StagedQualifiedRuntime): Promise<void> {
+export async function retainStagedSelection(
+  selection: StagedQualifiedRuntime,
+  syncDirectory: (directory: string) => Promise<void> = syncSelectionDirectory,
+): Promise<void> {
   const path = selectionPath(selection.binding);
   await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
   const prior = await readSelection(path);
@@ -54,6 +58,14 @@ export async function retainStagedSelection(selection: StagedQualifiedRuntime): 
       throw new Error(
         "This native binding already retains a different staged handle; it was preserved.",
       );
+    // Replay may follow publication whose fsync reply was lost. Establish durability again.
+    const file = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+    try {
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    await syncDirectory(NodePath.dirname(path));
     return;
   }
   const file = await NodeFSP.open(path, "wx", 0o600);
@@ -63,22 +75,25 @@ export async function retainStagedSelection(selection: StagedQualifiedRuntime): 
   } finally {
     await file.close();
   }
-  const parent = await NodeFSP.open(NodePath.dirname(path), "r");
-  try {
-    await parent.sync();
-  } finally {
-    await parent.close();
-  }
+  await syncDirectory(NodePath.dirname(path));
 }
 
 export async function restoreStagedSelection(
   baseDir: string,
   activeVersion: string,
+  host?: { readonly platform: string; readonly architecture: string },
+  options: QualifiedDigestOptions = { mode: "receipt", retainVerification: false },
 ): Promise<StagedQualifiedRuntime | undefined> {
-  const binding = await currentQualifiedRuntimeBinding(baseDir, activeVersion);
+  const binding = await currentQualifiedRuntimeBinding(baseDir, activeVersion, host, options);
   const stored = await readSelection(selectionPath(binding));
   if (stored === undefined) return undefined;
-  const verified = await verifyStagedQualifiedRuntime(baseDir, activeVersion, stored.stagedHandle);
+  const verified = await verifyStagedQualifiedRuntime(
+    baseDir,
+    activeVersion,
+    stored.stagedHandle,
+    host,
+    options,
+  );
   if (JSON.stringify(verified) !== JSON.stringify(stored))
     throw new Error("The retained staged selection changed; native installation is held.");
   return verified;
@@ -115,7 +130,10 @@ export async function retireStagedSelection(
   },
   syncDirectory: (directory: string) => Promise<void> = syncSelectionDirectory,
 ): Promise<void> {
-  const binding = await currentQualifiedRuntimeBinding(baseDir, activeVersion);
+  const binding = await currentQualifiedRuntimeBinding(baseDir, activeVersion, undefined, {
+    mode: "receipt",
+    role: "selection",
+  });
   if (
     binding.environmentId !== expected.environmentId ||
     binding.activeSourceSha !== expected.expectedInstalledSource
@@ -135,7 +153,13 @@ export async function retireStagedSelection(
     stored.receipt.sourceSha !== expected.targetSource
   )
     throw new Error("Another staged selection occupies this binding; it was preserved.");
-  const verified = await verifyStagedQualifiedRuntime(baseDir, activeVersion, stored.stagedHandle);
+  const verified = await verifyStagedQualifiedRuntime(
+    baseDir,
+    activeVersion,
+    stored.stagedHandle,
+    undefined,
+    { mode: "receipt", role: "selection" },
+  );
   if (JSON.stringify(verified) !== JSON.stringify(stored))
     throw new Error("The retained stage changed; its pointer was preserved.");
   await NodeFSP.unlink(path);

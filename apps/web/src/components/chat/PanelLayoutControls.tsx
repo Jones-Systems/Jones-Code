@@ -1,7 +1,10 @@
+import { MonitorToggle } from "../../jones/threadMonitor/MonitorToggle";
 import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
-import { memo, type ReactElement } from "react";
+import { memo, type ReactElement, type ReactNode, type Ref } from "react";
+
+import { cn } from "~/lib/utils";
 
 import type { ThreadPanelPresentation } from "../../rightPanelLayout";
 import { PopoverCreateHandle, PopoverTrigger } from "../ui/popover";
@@ -10,6 +13,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 export interface PanelLayoutControlsProps {
   showThreadPanelControl?: boolean;
+  showMonitorControl?: boolean;
   showTerminalControl?: boolean;
   showRightPanelControl?: boolean;
   terminalAvailable: boolean;
@@ -30,6 +34,7 @@ export interface PanelLayoutControlsProps {
 
 export const PanelLayoutControls = memo(function PanelLayoutControls({
   showThreadPanelControl = true,
+  showMonitorControl = true,
   showTerminalControl = true,
   showRightPanelControl = true,
   terminalAvailable,
@@ -76,6 +81,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
       className="flex h-full shrink-0 items-center gap-1 [-webkit-app-region:no-drag]"
       data-panel-layout-controls
     >
+      {showMonitorControl ? <MonitorToggle /> : null}
       {showThreadPanelControl
         ? threadPanelPresentation === "popover"
           ? threadPanelTooltip(
@@ -113,6 +119,7 @@ export const PanelLayoutControls = memo(function PanelLayoutControls({
               pressed={rightPanelOpen}
               onPressedChange={onToggleRightPanel}
               aria-label="Toggle right panel"
+              data-right-panel-toggle
               variant="ghost"
               size="sm"
               disabled={!rightPanelAvailable}
@@ -159,3 +166,63 @@ export const RightPanelMaximizeControl = memo(function RightPanelMaximizeControl
     </Tooltip>
   );
 });
+
+/** The thread panel toggle on a header whose right side the inline right panel covers. */
+export function ThreadPanelHeaderControl(props: PanelLayoutControlsProps) {
+  return (
+    <div
+      className="absolute top-[var(--workspace-controls-top)] right-[calc(env(safe-area-inset-right)+0.75rem)] z-50 flex h-[var(--workspace-topbar-height)] items-center [-webkit-app-region:no-drag]"
+      data-workspace-titlebar-controls
+    >
+      <PanelLayoutControls
+        {...props}
+        showMonitorControl={false}
+        showTerminalControl={false}
+        showRightPanelControl={false}
+      />
+    </div>
+  );
+}
+
+/** The window's top-right panel controls, with the maximize toggle while the panel is open. */
+export function WorkspaceTitlebarControls({
+  ref,
+  ...props
+}: {
+  readonly ref?: Ref<HTMLDivElement>;
+  readonly showMaximizeControl: boolean;
+  readonly rightPanelOpen: boolean;
+  readonly animationsActive: boolean;
+  readonly maximized: boolean;
+  readonly onToggleMaximized: () => void;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div
+      className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
+      data-workspace-titlebar-controls
+      ref={ref}
+    >
+      {props.showMaximizeControl ? (
+        <span
+          aria-hidden={!props.rightPanelOpen}
+          className={cn(
+            "flex shrink-0",
+            props.animationsActive &&
+              "motion-safe:transition-opacity motion-safe:duration-(--panel-animation-duration) motion-safe:ease-out",
+            props.rightPanelOpen
+              ? "pointer-events-auto opacity-100"
+              : "pointer-events-none absolute right-full mr-1 opacity-0",
+          )}
+          inert={!props.rightPanelOpen}
+        >
+          <RightPanelMaximizeControl
+            maximized={props.maximized}
+            onToggle={props.onToggleMaximized}
+          />
+        </span>
+      ) : null}
+      <div className="pointer-events-auto flex h-full items-center">{props.children}</div>
+    </div>
+  );
+}

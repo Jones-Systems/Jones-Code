@@ -1,3 +1,9 @@
+import { classifiedCheckFeedback } from "../../jones/installStatus/checkFeedback";
+import {
+  canOpenInstallStatusPill,
+  routeInstallStatusPill,
+} from "../../jones/installStatus/entrypoints";
+import { useInstallPlan } from "../../jones/installStatus/useInstallPlan";
 import type { DesktopBridge, DesktopUpdateState } from "@t3tools/contracts";
 import { TriangleAlertIcon } from "lucide-react";
 import { type ComponentProps, useEffect, useId, useRef, useState } from "react";
@@ -15,6 +21,7 @@ import {
   getDesktopUpdateActionError,
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadedVersion,
+  getDesktopUpdateIdleTooltip,
   getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
@@ -60,6 +67,8 @@ export function resolveSidebarUpdateCheckFeedback(state: DesktopUpdateState): {
   if (state.status !== "idle" && state.status !== "up-to-date" && state.status !== "error") {
     return null;
   }
+  const classified = classifiedCheckFeedback(state);
+  if (classified !== null) return classified;
   if (state.jones?.phase === "building") {
     return {
       type: "info",
@@ -117,21 +126,21 @@ export function checkForSidebarUpdate(
     });
 }
 
-export function shouldUseSidebarUpdateReleaseNotesPopover(
+function shouldUseSidebarUpdateReleaseNotesPopover(
   showUpdateDetails: boolean,
   state: DesktopUpdateState | null,
 ): boolean {
   return showUpdateDetails && state?.channel === "nightly" && state.releaseNotes.length > 0;
 }
 
-export function handleSidebarUpdateReleaseNotesPopoverOpenChange(
+function handleSidebarUpdateReleaseNotesPopoverOpenChange(
   _open: boolean,
   details: Pick<SidebarUpdatePopoverChangeDetails, "reason" | "cancel">,
 ): void {
   if (details.reason === "trigger-press") details.cancel();
 }
 
-export function openSidebarUpdateReleaseNotesPopoverOnForwardTab(
+function openSidebarUpdateReleaseNotesPopoverOnForwardTab(
   event: { readonly key: string; readonly shiftKey: boolean },
   handle: Pick<SidebarUpdatePopoverHandle, "open">,
   triggerId: string,
@@ -230,7 +239,10 @@ async function downloadLocalUpdate(
 }
 
 export async function installLocalUpdate(
-  bridge: Pick<DesktopBridge, "getUpdateState" | "installUpdate" | "fleetUpdates" | "openExternal">,
+  bridge: Pick<
+    DesktopBridge,
+    "getUpdateState" | "installUpdate" | "fleetUpdates" | "installPlan" | "openExternal"
+  >,
   reportError: ReportLocalUpdateError = toastUpdateError,
 ): Promise<boolean> {
   try {
@@ -262,6 +274,7 @@ export function SidebarUpdatePill() {
 
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
+  const installPlan = useInstallPlan();
   const [isActionPending, setIsActionPending] = useState(false);
   const [isConfirmingEverything, setIsConfirmingEverything] = useState(false);
   const [checkAnimationKey, setCheckAnimationKey] = useState(0);
@@ -308,15 +321,24 @@ function SidebarUpdateControl() {
     isDownloading,
     showCheckIcon,
   });
-  const tooltip = runsEverything
-    ? everything.summary
-    : showUpdateDetails
-      ? state
-        ? getDesktopUpdateButtonTooltip(state)
-        : "Update available"
-      : showCheckIcon
-        ? "Checking for updates…"
-        : "Check for updates";
+  const idleTooltip =
+    !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state) : null;
+  const opensInstallStatus = canOpenInstallStatusPill(
+    installPlan.native,
+    state,
+    everything.hasUpdates,
+  );
+  const tooltip = opensInstallStatus
+    ? "Open Install status"
+    : runsEverything
+      ? everything.summary
+      : showUpdateDetails
+        ? state
+          ? getDesktopUpdateButtonTooltip(state)
+          : "Update available"
+        : showCheckIcon
+          ? "Checking for updates…"
+          : (idleTooltip?.title ?? "Check for updates");
   const disabled = showCheckIcon
     ? true
     : runsEverything
@@ -324,7 +346,8 @@ function SidebarUpdateControl() {
       : showUpdateDetails
         ? isDesktopUpdateButtonDisabled(state)
         : !canCheckForUpdate(state);
-  const isInteractionDisabled = disabled || isActionPending || isRunningEverything;
+  const isInteractionDisabled =
+    !opensInstallStatus && (disabled || isActionPending || isRunningEverything);
   const showReleaseNotesPopover =
     !isRunningEverything && shouldUseSidebarUpdateReleaseNotesPopover(showUpdateDetails, state);
 
@@ -342,6 +365,20 @@ function SidebarUpdateControl() {
 
   const handleAction = async () => {
     const bridge = window.desktopBridge;
+    if (bridge?.installPlan) {
+      const route = await routeInstallStatusPill(bridge, state, everything.hasUpdates).catch(() => {
+        toastUpdateError(
+          "Install status unavailable",
+          "The native plan could not be read. No update was started.",
+        );
+        return "opened" as const;
+      });
+      if (route === "opened") return;
+      if (route === "last-and-check") {
+        void checkForSidebarUpdate(bridge);
+        return;
+      }
+    }
     if (isInteractionDisabled) return;
 
     if (runsEverything) {
@@ -475,7 +512,7 @@ function SidebarUpdateControl() {
     />
   );
 
-  if (run !== null) {
+  if (run !== null && !opensInstallStatus) {
     const local: UpdateRunLocalState =
       run.localVersion === null
         ? null
@@ -513,7 +550,7 @@ function SidebarUpdateControl() {
   const updateButton = (
     <button
       type="button"
-      aria-label={tooltip}
+      aria-label={idleTooltip?.detail ? `${tooltip}: ${idleTooltip.detail}` : tooltip}
       aria-disabled={isInteractionDisabled || undefined}
       className={cn(
         "inline-flex size-8 items-center justify-center rounded-full outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset",
@@ -592,7 +629,14 @@ function SidebarUpdateControl() {
               side="top"
               variant={showUpdateDetails ? "glass" : "default"}
             >
-              <span className="whitespace-pre-line">{tooltip}</span>
+              {idleTooltip?.detail ? (
+                <div className="text-left">
+                  <div className="font-medium">{idleTooltip.title}</div>
+                  <div className="text-muted-foreground">{idleTooltip.detail}</div>
+                </div>
+              ) : (
+                <span className="whitespace-pre-line">{tooltip}</span>
+              )}
             </TooltipPopup>
           ) : null}
         </Tooltip>

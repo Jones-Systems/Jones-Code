@@ -17,7 +17,7 @@ import {
 import { activationFromEnvironment, resolveWorkstreamActivation } from "./activation.ts";
 
 const environment = {
-  T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
+  T3_WORKSTREAM_CONTROL_PLANE_URL: "https://registry.synthetic.test/",
   T3_WORKSTREAM_OWNER_ID: "owner-synthetic",
   T3_WORKSTREAM_PRINCIPAL_ID: "11111111-1111-4111-8111-111111111111",
   T3_WORKSTREAM_KEY_ID: "key-synthetic",
@@ -182,8 +182,8 @@ describe("Workstreams activation startup snapshot", () => {
       text.replaceAll("\n", "\r\n"),
       text.replace("=3\n", "=3e0\n"),
       text.replace("=3\n", "=9007199254740992\n"),
-      text.replace("http://127.0.0.1:8787/", "http://localhost:8787/"),
-      text.replace("http://127.0.0.1:8787/", "http://127.0.0.1:8787"),
+      text.replace("https://registry.synthetic.test/", "http://localhost:8787/"),
+      text.replace("https://registry.synthetic.test/", "http://127.0.0.1:8787"),
       text.replace(environment.T3_WORKSTREAM_SIGNING_SECRET, "invalid-secret"),
     ]) {
       NodeFS.writeFileSync(file, value);
@@ -321,14 +321,14 @@ vi.mock("node:fs", async (importOriginal) => ({
 it("retains six-value compatibility and binds an optional version to the full activation group", () => {
   const legacy = activationFromEnvironment(environment);
   expect(legacy.state === "enabled" && legacy.value.registrationContextVersion).toBeUndefined();
-  for (const version of ["1.0.0", "2.0.0"] as const) {
+  for (const version of ["1.0.0", "2.0.0", "3.0.0"] as const) {
     const selected = activationFromEnvironment({
       ...environment,
       T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: version,
     });
     expect(selected.state === "enabled" && selected.value.registrationContextVersion).toBe(version);
   }
-  for (const version of ["", "2", "3.0.0", " 2.0.0", "2.0.0\n"]) {
+  for (const version of ["", "2", "4.0.0", " 2.0.0", "2.0.0\n"]) {
     expect(
       activationFromEnvironment({
         ...environment,
@@ -359,7 +359,9 @@ effectIt.effect(
         const configured = makeControlPlaneWorkstreamTransport(resolved, async (url, init) => {
           calls += 1;
           const headers = new Headers(init?.headers);
-          expect(String(url)).toBe("http://127.0.0.1:8787/workstreams/v1/t3/registration-context");
+          expect(String(url)).toBe(
+            "https://registry.synthetic.test/workstreams/v1/t3/registration-context",
+          );
           expect(init?.method).toBe("GET");
           expect(init?.body).toBeUndefined();
           expect(headers.get("x-control-contract-version")).toBe(
@@ -401,7 +403,7 @@ it("rejects malformed staged versions and never overlays a standalone selector o
   const { base, file } = fixture();
   for (const suffix of [
     "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=\n",
-    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=3.0.0\n",
+    "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=4.0.0\n",
     "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\nT3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\n",
     "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\nUNKNOWN=value\n",
   ]) {
@@ -426,4 +428,91 @@ it("rejects malformed staged versions and never overlays a standalone selector o
       T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: "1.0.0",
     }),
   );
+});
+
+const bindingToken = (overrides: Record<string, unknown> = {}) =>
+  Buffer.from(
+    JSON.stringify({
+      protocol: "workstreams-registry-binding/1.0.0",
+      manifest_sha256: "15ce45061966ce9c247192d6ef43724b6638bb0e7ccf7bbe9eae4afdd576f30c",
+      registry_instance_id: "22222222-2222-4222-8222-222222222222",
+      canonical_origin: "https://registry.synthetic.test",
+      owner_id: environment.T3_WORKSTREAM_OWNER_ID,
+      principal_id: environment.T3_WORKSTREAM_PRINCIPAL_ID,
+      authorization_revision: 3,
+      ...overrides,
+    }),
+  ).toString("base64url");
+
+it("loads the exact optional binding stage value and keeps transport separate from identity", () => {
+  const { base, file } = fixture();
+  for (const origin of [
+    "http://127.0.0.1:8787/",
+    "http://[::1]:8787/",
+    "https://transport.synthetic.test/",
+  ]) {
+    const values = {
+      ...environment,
+      T3_WORKSTREAM_CONTROL_PLANE_URL: origin,
+      T3_WORKSTREAM_REGISTRY_BINDING: bindingToken(),
+    };
+    NodeFS.writeFileSync(file, staged(values));
+    const resolved = resolveWorkstreamActivation(base, {});
+    expect(resolved).toEqual(activationFromEnvironment(values));
+    const configured = makeControlPlaneWorkstreamTransport(resolved);
+    expect(configured.activationState).toBe("enabled");
+    expect(configured.binding.registryId).toBe("https://registry.synthetic.test");
+    NodeFS.writeFileSync(
+      file,
+      staged(values) + "T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION=2.0.0\n",
+    );
+    expect(resolveWorkstreamActivation(base, {}).state).toBe("enabled");
+  }
+});
+it.each([
+  { owner_id: "other-owner" },
+  { principal_id: "33333333-3333-4333-8333-333333333333" },
+  { authorization_revision: 4 },
+  { canonical_origin: "http://127.0.0.1" },
+  { manifest_sha256: "a".repeat(64) },
+])("rejects a binding inconsistent with activation: %j", (change) => {
+  const values = { ...environment, T3_WORKSTREAM_REGISTRY_BINDING: bindingToken(change) };
+  expect(activationFromEnvironment(values).state).toBe("invalid");
+  const { base, file } = fixture();
+  NodeFS.writeFileSync(file, staged(values));
+  expect(resolveWorkstreamActivation(base, {}).state).toBe("invalid");
+});
+it("does not merge a binding-only or empty environment selection with a staged file", () => {
+  const { base, file } = fixture();
+  for (const token of ["", bindingToken()]) {
+    expect(resolveWorkstreamActivation(base, { T3_WORKSTREAM_REGISTRY_BINDING: token }).state).toBe(
+      "invalid",
+    );
+  }
+  NodeFS.writeFileSync(
+    file,
+    staged() +
+      `T3_WORKSTREAM_REGISTRY_BINDING=${bindingToken()}\nT3_WORKSTREAM_REGISTRY_BINDING=${bindingToken()}\n`,
+  );
+  expect(resolveWorkstreamActivation(base, {}).state).toBe("invalid");
+});
+
+it("persists opt-in v3 through the shared startup parser with canonical registry identity", () => {
+  const { base, file } = fixture();
+  const values = {
+    ...environment,
+    T3_WORKSTREAM_CONTROL_PLANE_URL: "http://127.0.0.1:8787/",
+    T3_WORKSTREAM_REGISTRY_BINDING: bindingToken(),
+    T3_WORKSTREAM_REGISTRATION_CONTEXT_VERSION: "3.0.0",
+  };
+  const bytes = staged(values);
+  NodeFS.writeFileSync(file, bytes);
+  for (let startup = 0; startup < 2; startup += 1) {
+    const resolved = resolveWorkstreamActivation(base, {});
+    expect(resolved).toEqual(activationFromEnvironment(values));
+    const configured = makeControlPlaneWorkstreamTransport(resolved);
+    expect(configured.registrationContext.registrationContextVersion).toBe("3.0.0");
+    expect(configured.binding.registryId).toBe("https://registry.synthetic.test");
+  }
+  expect(NodeFS.readFileSync(file, "utf8")).toBe(bytes);
 });

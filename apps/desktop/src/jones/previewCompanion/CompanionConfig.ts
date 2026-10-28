@@ -55,8 +55,8 @@ const make = Effect.gen(function* () {
           : Effect.fail(new CompanionConfigError({ operation: "read" })),
       ),
     );
-  const write = (config: DesktopCompanionConfig) =>
-    Effect.gen(function* () {
+  const write = Effect.fn("CompanionConfig.write")(
+    function* (config: DesktopCompanionConfig) {
       const id = yield* crypto.randomUUIDv4();
       const temporary = `${target}.${id}.tmp`;
       const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(
@@ -69,7 +69,10 @@ const make = Effect.gen(function* () {
           Effect.andThen(fs.rename(temporary, target)),
           Effect.ensuring(fs.remove(temporary).pipe(Effect.ignore)),
         );
-    }).pipe(Effect.mapError(() => new CompanionConfigError({ operation: "write" })));
+    },
+    (effect) =>
+      effect.pipe(Effect.mapError(() => new CompanionConfigError({ operation: "write" }))),
+  );
   const initial =
     raw === null
       ? {
@@ -81,7 +84,7 @@ const make = Effect.gen(function* () {
           label: "Browser host",
           browserOnly: productLocked,
         }
-      : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(DesktopCompanionConfig))(raw).pipe(
+      : yield* Schema.decodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(raw).pipe(
           Effect.mapError(() => new CompanionConfigError({ operation: "decode" })),
         );
   if (productLocked && !initial.browserOnly) {
@@ -100,7 +103,7 @@ const make = Effect.gen(function* () {
           ) {
             return yield* new CompanionConfigError({ operation: "decode" });
           }
-          const next = yield* Schema.decodeUnknownEffect(DesktopCompanionConfig)({
+          const next = yield* Schema.decodeEffect(DesktopCompanionConfig)({
             ...input,
             hostId: current.hostId,
           }).pipe(Effect.mapError(() => new CompanionConfigError({ operation: "decode" })));
@@ -128,12 +131,13 @@ export class CompanionBrowserOnlyError extends Schema.TaggedError<CompanionBrows
   }
 }
 
-export const checkLocalEnvironmentEnable = (enabled: boolean) =>
-  Effect.gen(function* () {
+export const checkLocalEnvironmentEnable = Effect.fn("CompanionConfig.checkLocalEnvironmentEnable")(
+  function* (enabled: boolean) {
     if (!enabled) return;
     // Main supplies config; legacy isolated IPC contexts retain ordinary behavior.
     const config = yield* Effect.serviceOption(CompanionConfig);
     if (Option.isSome(config) && browserOnlyStartup(yield* config.value.get)) {
       return yield* new CompanionBrowserOnlyError();
     }
-  });
+  },
+);

@@ -3,6 +3,7 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
+  type ServerConfig,
   ThreadId,
   type ThreadPullRequestLink,
 } from "@t3tools/contracts";
@@ -29,8 +30,9 @@ import * as ConnectionWakeups from "../connection/wakeups.ts";
 import * as Persistence from "../platform/persistence.ts";
 import * as RpcSession from "../rpc/session.ts";
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
-import { makeEnvironmentShellState } from "./shell.ts";
+import { type EnvironmentShellState, makeEnvironmentShellState } from "./shell.ts";
 import * as ShellSnapshotLoader from "./shellSnapshotHttp.ts";
+import { threadFamilyRowsMissingFromShell } from "./threadFamilies.ts";
 import { v2Project, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 
 const TARGET = new PrimaryConnectionTarget({
@@ -65,468 +67,700 @@ function session(client: WsRpcProtocolClient): RpcSession.RpcSession {
   };
 }
 
+const makePersistenceHarness = Effect.fn("test.makeShellPersistenceHarness")(function* (
+  saveShell: Persistence.EnvironmentCacheStore["Service"]["saveShell"],
+  config: Partial<ServerConfig> = {},
+) {
+  const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+  const subscribeInputs = yield* Queue.unbounded<unknown>();
+  const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
+  const client = {
+    [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input: unknown) =>
+      Stream.unwrap(Queue.offer(subscribeInputs, input).pipe(Effect.as(Stream.fromQueue(events)))),
+  } as unknown as WsRpcProtocolClient;
+  const baseSession = session(client);
+  const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+    target: TARGET,
+    state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+    session: yield* SubscriptionRef.make(
+      Option.some({
+        ...baseSession,
+        initialConfig: baseSession.initialConfig.pipe(
+          Effect.map((initial) => ({ ...initial, ...config })),
+        ),
+      }),
+    ),
+    prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+    connect: Effect.void,
+    disconnect: Effect.void,
+    retryNow: Effect.void,
+  });
+  const cache = Persistence.EnvironmentCacheStore.of({
+    loadShell: () => Effect.succeedNone,
+    saveShell,
+    loadThread: () => Effect.succeedNone,
+    saveThread: () => Effect.void,
+    removeThread: () => Effect.void,
+    loadServerConfig: () => Effect.succeedNone,
+    saveServerConfig: () => Effect.void,
+    loadVcsRefs: () => Effect.succeedNone,
+    saveVcsRefs: () => Effect.void,
+    removeVcsRefs: () => Effect.void,
+    clearVcsRefs: () => Effect.void,
+    clear: () => Effect.void,
+  });
+  const state = yield* makeEnvironmentShellState().pipe(
+    Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+    Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+    Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, {
+      load: () => Effect.succeedNone,
+    }),
+    Effect.provideService(ConnectionWakeups.ConnectionWakeups, {
+      changes: Stream.fromQueue(wakeups),
+    }),
+  );
+  const send = Effect.fn("test.sendShellItem")(function* (
+    item: OrchestrationV2ShellStreamItem,
+    ready: (snapshot: OrchestrationV2ShellSnapshot) => boolean,
+  ) {
+    const previous = yield* SubscriptionRef.get(state);
+    yield* Queue.offer(events, item);
+    return yield* SubscriptionRef.changes(state).pipe(
+      Stream.filter((value) => value !== previous),
+      Stream.map((value) => value.snapshot),
+      Stream.filter(Option.isSome),
+      Stream.map((value) => value.value),
+      Stream.filter(ready),
+      Stream.runHead,
+      Effect.map(Option.getOrThrow),
+    );
+  });
+  yield* send({ kind: "snapshot", snapshot: LIVE_SHELL_SNAPSHOT }, () => true);
+  return { state, send, subscribeInputs, wakeups, supervisor };
+});
+
 describe("environment shell synchronization", () => {
-  it.effect("publishes live state before persistence and preserves it when ready", () =>
-    Effect.gen(function* () {
-      const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
-      const client = {
-        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () => Stream.fromQueue(events),
-      } as unknown as WsRpcProtocolClient;
-      const supervisorState = yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE);
-      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-        Option.some(session(client)),
-      );
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: TARGET,
-        state: supervisorState,
-        session: activeSession,
-        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
-        saveShell: () => Effect.void,
-        loadThread: () => Effect.succeed(Option.none()),
-        saveThread: () => Effect.void,
-        removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeedNone,
-        saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeedNone,
-        saveVcsRefs: () => Effect.void,
-        removeVcsRefs: () => Effect.void,
-        clearVcsRefs: () => Effect.void,
-        clear: () => Effect.void,
-      });
-      const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () => Effect.succeedNone,
-      });
-      const shellState = yield* makeEnvironmentShellState().pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),
-      );
-
-      yield* SubscriptionRef.set(supervisorState, {
-        desired: true,
-        network: "online",
-        phase: "connecting",
-        stage: "synchronizing",
-        attempt: 1,
-        generation: 0,
-        lastFailure: null,
-        retryAt: null,
-      });
-      yield* Queue.offer(events, {
-        kind: "snapshot",
-        snapshot: LIVE_SHELL_SNAPSHOT,
-      });
-      const synchronizing = yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((state) => state.status === "synchronizing" && Option.isSome(state.snapshot)),
-        Stream.runHead,
-      );
-      expect(Option.getOrThrow(Option.getOrThrow(synchronizing).snapshot)).toEqual(
-        LIVE_SHELL_SNAPSHOT,
-      );
-
-      yield* Queue.offer(events, { kind: "synchronized" });
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((state) => state.status === "live"),
-        Stream.runHead,
-      );
-
-      yield* SubscriptionRef.set(supervisorState, {
-        desired: true,
-        network: "online",
-        phase: "connected",
-        stage: null,
-        attempt: 1,
-        generation: 1,
-        lastFailure: null,
-        retryAt: null,
-      });
-      for (let index = 0; index < 10; index += 1) {
-        yield* Effect.yieldNow;
-      }
-
-      const state = yield* SubscriptionRef.get(shellState);
-      expect(state.status).toBe("live");
-      expect(Option.getOrThrow(state.snapshot)).toEqual(LIVE_SHELL_SNAPSHOT);
-    }),
-  );
-
-  it.live.each([
-    { bufferSize: Infinity, expectedSequences: [51] },
-    // RpcClient defaults to a 16-event buffer, which splits larger server chunks.
-    { bufferSize: 16, expectedSequences: [17, 33, 49, 51] },
-  ])("batches live events with a $bufferSize event buffer", ({ bufferSize, expectedSequences }) =>
-    Effect.gen(function* () {
-      const events = yield* Queue.bounded<OrchestrationV2ShellStreamItem>(bufferSize);
-      const batchSnapshot = { ...LIVE_SHELL_SNAPSHOT, threads: [] };
-      const client = {
-        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () => Stream.fromQueue(events),
-      } as unknown as WsRpcProtocolClient;
-      const supervisorState = yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE);
-      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-        Option.some(session(client)),
-      );
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: TARGET,
-        state: supervisorState,
-        session: activeSession,
-        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
-        saveShell: () => Effect.void,
-        loadThread: () => Effect.succeed(Option.none()),
-        saveThread: () => Effect.void,
-        removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.none()),
-        saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeed(Option.none()),
-        saveVcsRefs: () => Effect.void,
-        removeVcsRefs: () => Effect.void,
-        clearVcsRefs: () => Effect.void,
-        clear: () => Effect.void,
-      });
-      const shellState = yield* makeEnvironmentShellState().pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-        Effect.provideService(
-          ShellSnapshotLoader.ShellSnapshotLoader,
-          ShellSnapshotLoader.ShellSnapshotLoader.of({ load: () => Effect.succeed(Option.none()) }),
-        ),
-      );
-      yield* SubscriptionRef.set(supervisorState, {
-        desired: true,
-        network: "online",
-        phase: "connected",
-        stage: null,
-        attempt: 1,
-        generation: 1,
-        lastFailure: null,
-        retryAt: null,
-      });
-      yield* Queue.offer(events, { kind: "snapshot", snapshot: batchSnapshot });
-      yield* Queue.offer(events, { kind: "synchronized" });
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((state) => state.status === "live"),
-        Stream.runHead,
-      );
-
-      const observed = yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.drop(1),
-        Stream.takeUntil(
-          (state) => Option.isSome(state.snapshot) && state.snapshot.value.threads.length === 50,
-        ),
-        Stream.runCollect,
-        Effect.forkScoped({ startImmediately: true }),
-      );
-      yield* Queue.offerAll(
-        events,
-        Array.from({ length: 50 }, (_, index) => ({
-          kind: "thread.updated" as const,
-          sequence: 2 + index,
-          location: "active" as const,
-          thread: { ...v2ShellSnapshot.threads[0]!, id: `thread-${index}` } as never,
-        })),
-      );
-      const states = yield* Fiber.join(observed);
-      const snapshots = states.map((state) => Option.getOrThrow(state.snapshot));
-      expect(snapshots.map((snapshot) => snapshot.snapshotSequence)).toEqual(expectedSequences);
-      expect(snapshots.at(-1)!.threads.map((thread) => thread.id)).toEqual(
-        Array.from({ length: 50 }, (_, index) => `thread-${index}`),
-      );
-    }).pipe(Effect.scoped),
-  );
-
-  it.effect("refreshes a warm shell cache from HTTP before resuming", () =>
-    Effect.gen(function* () {
-      const cachedSnapshot: OrchestrationV2ShellSnapshot = {
-        ...v2ShellSnapshot,
-        snapshotSequence: 5,
-      };
-      const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
-      const capturedAfterSequence = yield* SubscriptionRef.make<number | undefined>(undefined);
-      const capturedCompletionMarker = yield* Ref.make(false);
-      const loaderCalls = yield* SubscriptionRef.make(0);
-      const httpSnapshot: OrchestrationV2ShellSnapshot = {
-        ...v2ShellSnapshot,
-        snapshotSequence: 9,
-      };
-      const client = {
-        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input: {
-          readonly afterSequence?: number;
-          readonly requestCompletionMarker?: true;
-        }) =>
-          Stream.unwrap(
-            Effect.all([
-              Ref.set(capturedCompletionMarker, input.requestCompletionMarker === true),
-              SubscriptionRef.set(capturedAfterSequence, input.afterSequence),
-            ]).pipe(Effect.as(Stream.fromQueue(events))),
-          ),
-      } as unknown as WsRpcProtocolClient;
-      const supervisorState = yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE);
-      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-        Option.some(session(client)),
-      );
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: TARGET,
-        state: supervisorState,
-        session: activeSession,
-        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeedSome(cachedSnapshot),
-        saveShell: () => Effect.void,
-        loadThread: () => Effect.succeedNone,
-        saveThread: () => Effect.void,
-        removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeedNone,
-        saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeedNone,
-        saveVcsRefs: () => Effect.void,
-        removeVcsRefs: () => Effect.void,
-        clearVcsRefs: () => Effect.void,
-        clear: () => Effect.void,
-      });
-      const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () =>
-          SubscriptionRef.update(loaderCalls, (count) => count + 1).pipe(
-            Effect.as(Option.some(httpSnapshot)),
-          ),
-      });
-      const shellState = yield* makeEnvironmentShellState().pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),
-      );
-
-      yield* SubscriptionRef.changes(capturedAfterSequence).pipe(
-        Stream.filter((value) => value !== undefined),
-        Stream.runHead,
-      );
-
-      expect(yield* SubscriptionRef.get(capturedAfterSequence)).toBe(9);
-      expect(yield* Ref.get(capturedCompletionMarker)).toBe(true);
-      expect(yield* SubscriptionRef.get(loaderCalls)).toBe(1);
-      const synchronizing = yield* SubscriptionRef.get(shellState);
-      expect(synchronizing.status).toBe("synchronizing");
-      expect(Option.getOrThrow(synchronizing.snapshot)).toEqual(httpSnapshot);
-
-      yield* Queue.offer(events, { kind: "synchronized" });
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((value) => value.status === "live"),
-        Stream.runHead,
-      );
-    }),
-  );
-
-  it.effect("resubscribes from the in-memory shell cursor when the app becomes active", () =>
-    Effect.gen(function* () {
-      const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
-      const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
-      const loaderCalls = yield* Ref.make(0);
-      const capturedAfterSequences = yield* Ref.make<ReadonlyArray<number | undefined>>([]);
-      const client = {
-        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input: {
-          readonly afterSequence?: number;
-        }) =>
-          Stream.unwrap(
-            Ref.update(capturedAfterSequences, (captured) => [
-              ...captured,
-              input.afterSequence,
-            ]).pipe(Effect.as(Stream.fromQueue(events))),
-          ),
-      } as unknown as WsRpcProtocolClient;
-      const supervisorState = yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE);
-      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-        Option.some(session(client)),
-      );
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: TARGET,
-        state: supervisorState,
-        session: activeSession,
-        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeedSome(LIVE_SHELL_SNAPSHOT),
-        saveShell: () => Effect.void,
-        loadThread: () => Effect.succeedNone,
-        saveThread: () => Effect.void,
-        removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeedNone,
-        saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeedNone,
-        saveVcsRefs: () => Effect.void,
-        removeVcsRefs: () => Effect.void,
-        clearVcsRefs: () => Effect.void,
-        clear: () => Effect.void,
-      });
-      const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () =>
-          Ref.updateAndGet(loaderCalls, (count) => count + 1).pipe(
-            Effect.map((count) =>
-              Option.some({ ...LIVE_SHELL_SNAPSHOT, snapshotSequence: count * 10 }),
-            ),
-          ),
-      });
-      const shellState = yield* makeEnvironmentShellState().pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),
-        Effect.provideService(
-          ConnectionWakeups.ConnectionWakeups,
-          ConnectionWakeups.ConnectionWakeups.of({ changes: Stream.fromQueue(wakeups) }),
-        ),
-      );
-
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(capturedAfterSequences)).length >= 1) break;
-        yield* Effect.yieldNow;
-      }
-      expect(yield* Ref.get(capturedAfterSequences)).toEqual([10]);
-      yield* Queue.offer(events, { kind: "synchronized" });
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((value) => value.status === "live"),
-        Stream.runHead,
-      );
-
-      yield* Queue.offer(events, {
-        kind: "snapshot",
-        snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 40 },
-      });
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter(
-          (value) => Option.isSome(value.snapshot) && value.snapshot.value.snapshotSequence === 40,
-        ),
-        Stream.runHead,
-      );
-
-      yield* Queue.offer(wakeups, "application-active");
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(capturedAfterSequences)).length >= 2) break;
-        yield* Effect.yieldNow;
-      }
-      expect(yield* Ref.get(capturedAfterSequences)).toEqual([10, 40]);
-      yield* Queue.offer(events, { kind: "synchronized" });
-
-      yield* Queue.offer(wakeups, "application-active-probe");
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(capturedAfterSequences)).length >= 3) break;
-        yield* Effect.yieldNow;
-      }
-      expect(yield* Ref.get(capturedAfterSequences)).toEqual([10, 40, 40]);
-
-      yield* Queue.offer(wakeups, "application-active-reconnect");
-      for (let attempt = 0; attempt < 10; attempt += 1) {
-        yield* Effect.yieldNow;
-      }
-      expect((yield* Ref.get(capturedAfterSequences)).length).toBe(3);
-      expect(yield* Ref.get(loaderCalls)).toBe(1);
-
-      yield* SubscriptionRef.set(activeSession, Option.some(session(client)));
-      for (let attempt = 0; attempt < 100; attempt += 1) {
-        if ((yield* Ref.get(capturedAfterSequences)).length >= 4) break;
-        yield* Effect.yieldNow;
-      }
-      expect(yield* Ref.get(capturedAfterSequences)).toEqual([10, 40, 40, 20]);
-      expect(yield* Ref.get(loaderCalls)).toBe(2);
-    }),
-  );
-
-  it.effect("throttles shell writes and flushes the latest snapshot on disconnect", () =>
-    Effect.gen(function* () {
-      const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
-      const saved = yield* Ref.make<ReadonlyArray<OrchestrationV2ShellSnapshot>>([]);
-      const client = {
-        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () => Stream.fromQueue(events),
-      } as unknown as WsRpcProtocolClient;
-      const supervisorState = yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE);
-      const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
-        Option.some(session(client)),
-      );
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: TARGET,
-        state: supervisorState,
-        session: activeSession,
-        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
-        saveShell: (_environmentId, snapshot) =>
-          Ref.update(saved, (values) => [...values, snapshot]),
-        loadThread: () => Effect.succeed(Option.none()),
-        saveThread: () => Effect.void,
-        removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.none()),
-        saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeed(Option.none()),
-        saveVcsRefs: () => Effect.void,
-        removeVcsRefs: () => Effect.void,
-        clearVcsRefs: () => Effect.void,
-        clear: () => Effect.void,
-      });
-      const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () => Effect.succeed(Option.none()),
-      });
-
-      const shellState = yield* makeEnvironmentShellState().pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),
-      );
-
-      const sendSnapshot = Effect.fn(function* (sequence: number) {
-        yield* Queue.offer(events, {
-          kind: "snapshot",
-          snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: sequence },
-        });
-        yield* SubscriptionRef.changes(shellState).pipe(
-          Stream.filter(
-            (state) =>
-              Option.isSome(state.snapshot) && state.snapshot.value.snapshotSequence === sequence,
-          ),
-          Stream.runHead,
+  it.effect.each([true, false])(
+    "CR-R3: omission ahead of removal invalidates a stale family row (shell row present: %s)",
+    (present) =>
+      Effect.gen(function* () {
+        const h = yield* makePersistenceHarness(() => Effect.void, { shellThreadRefresh: true });
+        const waiting = {
+          ...v2ThreadShell,
+          pendingBackgroundTasks: [
+            {
+              taskId: "jones-dependency:answer",
+              kind: "monitor" as const,
+              awaited: true as const,
+              description: "Waiting for VPS review",
+            },
+          ],
+        };
+        const families = [{ snapshotSequence: 10, threads: [waiting] }];
+        yield* h.send(
+          {
+            kind: "snapshot",
+            snapshot: {
+              ...LIVE_SHELL_SNAPSHOT,
+              snapshotSequence: 10,
+              threads: present ? [waiting] : [],
+            },
+          },
+          () => true,
         );
-      });
-      yield* sendSnapshot(1);
-      yield* TestClock.adjust("500 millis");
-      for (let sequence = 2; sequence <= 10; sequence++) {
-        yield* sendSnapshot(sequence);
-        yield* TestClock.adjust("1 second");
-      }
-      expect((yield* Ref.get(saved)).map((snapshot) => snapshot.snapshotSequence)).toEqual([1]);
-      yield* TestClock.adjust("1 second");
-      expect((yield* Ref.get(saved)).map((snapshot) => snapshot.snapshotSequence)).toEqual([1, 10]);
-      yield* sendSnapshot(11);
-      yield* SubscriptionRef.set(supervisorState, {
-        ...AVAILABLE_CONNECTION_STATE,
-        desired: false,
-      });
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((state) => state.status === "cached"),
-        Stream.runHead,
+        yield* h.send(
+          { kind: "thread.omitted", sequence: 12, location: "active", threadId: waiting.id },
+          () => true,
+        );
+        const missing = yield* h.send(
+          { kind: "thread.removed", sequence: 11, location: "active", threadId: waiting.id },
+          () => true,
+        );
+        const state = yield* SubscriptionRef.get(h.state);
+        expect(state.removedAt.get(waiting.id)).toBe(12);
+        expect(missing.snapshotSequence).toBe(11);
+        expect(missing.threads).toEqual([]);
+        expect(
+          threadFamilyRowsMissingFromShell({
+            shellThreads: missing.threads,
+            families,
+            removedAt: state.removedAt,
+          }),
+        ).toEqual([]);
+        const cleared = { ...waiting, pendingBackgroundTasks: [] };
+        yield* h.send(
+          { kind: "thread.refreshed", sequence: 13, location: "active", thread: cleared },
+          () => true,
+        );
+        const current = yield* h.send(
+          { kind: "thread.omitted", sequence: 12, location: "active", threadId: waiting.id },
+          () => true,
+        );
+        expect(current.threads).toEqual([cleared]);
+        expect(current.snapshotSequence).toBe(11);
+      }),
+  );
+
+  it.effect(
+    "CR-R3: persists quiet equal-sequence omission and fences stale rows across same-session reconnect",
+    () =>
+      Effect.gen(function* () {
+        const saved = yield* Ref.make<ReadonlyArray<OrchestrationV2ShellSnapshot>>([]);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const h = yield* makePersistenceHarness(
+              (_id, snapshot) => Ref.update(saved, (values) => [...values, snapshot]),
+              { shellThreadRefresh: true },
+            );
+            yield* Queue.take(h.subscribeInputs);
+            yield* h.send(
+              { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 10 } },
+              () => true,
+            );
+            const omitted = {
+              kind: "thread.omitted" as const,
+              sequence: 12,
+              location: "active" as const,
+              threadId: v2ThreadShell.id,
+            };
+            const missing = yield* h.send(omitted, (snapshot) => snapshot.threads.length === 0);
+            expect(missing.snapshotSequence).toBe(10);
+            expect((yield* SubscriptionRef.get(h.state)).removedAt.get(v2ThreadShell.id)).toBe(12);
+            yield* Queue.offer(h.wakeups, "application-active");
+            expect(yield* Queue.take(h.subscribeInputs)).toMatchObject({
+              afterSequence: 10,
+              acceptThreadRefresh: true,
+            });
+            yield* h.send(
+              { kind: "thread.refreshed", sequence: 11, location: "active", thread: v2ThreadShell },
+              () => true,
+            );
+            const replay = yield* h.send(
+              { kind: "thread.updated", sequence: 11, location: "active", thread: v2ThreadShell },
+              () => true,
+            );
+            expect(replay.snapshotSequence).toBe(11);
+            expect(replay.threads).toEqual([]);
+            yield* h.send({ ...omitted, sequence: 11 }, () => true);
+            yield* h.send(
+              { kind: "thread.updated", sequence: 12, location: "active", thread: v2ThreadShell },
+              () => true,
+            );
+            const quiet = yield* h.send(omitted, () => true);
+            expect(quiet.snapshotSequence).toBe(12);
+            expect(quiet.threads).toEqual([]);
+            yield* h.send({ kind: "synchronized" }, () => true);
+            expect((yield* SubscriptionRef.get(h.state)).status).toBe("live");
+          }),
+        );
+        expect((yield* Ref.get(saved)).at(-1)?.threads).toEqual([]);
+        expect((yield* Ref.get(saved)).at(-1)?.snapshotSequence).toBe(12);
+      }),
+  );
+
+  it.effect.each([undefined, false, true])(
+    "negotiates shell refresh support only when advertised as true (%s)",
+    (shellThreadRefresh) =>
+      Effect.gen(function* () {
+        const h = yield* makePersistenceHarness(
+          () => Effect.void,
+          shellThreadRefresh === undefined ? {} : { shellThreadRefresh },
+        );
+        const input = yield* Queue.take(h.subscribeInputs);
+        if (shellThreadRefresh === true) expect(input).toMatchObject({ acceptThreadRefresh: true });
+        else expect(input).not.toHaveProperty("acceptThreadRefresh");
+      }),
+  );
+
+  it.effect(
+    "applies and persists quiet equal-sequence resume refreshes before synchronization",
+    () =>
+      Effect.gen(function* () {
+        const saved = yield* Ref.make<ReadonlyArray<OrchestrationV2ShellSnapshot>>([]);
+        yield* Effect.scoped(
+          Effect.gen(function* () {
+            const h = yield* makePersistenceHarness(
+              (_id, snapshot) => Ref.update(saved, (values) => [...values, snapshot]),
+              { shellThreadRefresh: true },
+            );
+            yield* Queue.take(h.subscribeInputs);
+            yield* h.send({ kind: "synchronized" }, () => true);
+            const generation = (yield* SubscriptionRef.get(h.state)).generation;
+            yield* Queue.offer(h.wakeups, "application-active");
+            expect(yield* Queue.take(h.subscribeInputs)).toMatchObject({
+              afterSequence: 1,
+              acceptThreadRefresh: true,
+            });
+            expect((yield* SubscriptionRef.get(h.state)).status).toBe("synchronizing");
+            const task = {
+              taskId: "jones-dependency:answer",
+              kind: "monitor",
+              awaited: true as const,
+              description: "Waiting for VPS review",
+            } as const;
+            const refreshed = yield* h.send(
+              {
+                kind: "thread.refreshed",
+                sequence: 1,
+                location: "active",
+                thread: { ...v2ThreadShell, pendingBackgroundTasks: [task] },
+              },
+              (snapshot) => snapshot.threads[0]?.pendingBackgroundTasks?.length === 1,
+            );
+            expect(refreshed.snapshotSequence).toBe(1);
+            expect((yield* SubscriptionRef.get(h.state)).generation).toBe(generation);
+            expect((yield* SubscriptionRef.get(h.state)).status).toBe("synchronizing");
+            yield* h.send({ kind: "synchronized" }, () => true);
+            expect((yield* SubscriptionRef.get(h.state)).status).toBe("live");
+          }),
+        );
+        expect(
+          (yield* Ref.get(saved)).at(-1)?.threads[0]?.pendingBackgroundTasks?.[0]?.description,
+        ).toBe("Waiting for VPS review");
+        expect((yield* Ref.get(saved)).at(-1)?.snapshotSequence).toBe(1);
+      }),
+  );
+
+  it.effect.each(["removed", "archived"] as const)(
+    "fences equal-sequence refreshes of a %s thread and resets removal facts with a snapshot",
+    (removal) =>
+      Effect.gen(function* () {
+        const h = yield* makePersistenceHarness(() => Effect.void, { shellThreadRefresh: true });
+        yield* h.send(
+          removal === "removed"
+            ? {
+                kind: "thread.removed",
+                sequence: 2,
+                location: "active",
+                threadId: v2ThreadShell.id,
+              }
+            : {
+                kind: "thread.updated",
+                sequence: 2,
+                location: "archive",
+                thread: v2ThreadShell,
+              },
+          (snapshot) => snapshot.threads.length === 0,
+        );
+        expect((yield* SubscriptionRef.get(h.state)).removedAt.get(v2ThreadShell.id)).toBe(2);
+        const ignored = yield* h.send(
+          {
+            kind: "thread.refreshed",
+            sequence: 2,
+            location: "active",
+            thread: v2ThreadShell,
+          },
+          () => true,
+        );
+        expect(ignored.threads).toEqual([]);
+        const generation = (yield* SubscriptionRef.get(h.state)).generation;
+        yield* h.send(
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 5 } },
+          (snapshot) => snapshot.snapshotSequence === 5,
+        );
+        expect((yield* SubscriptionRef.get(h.state)).generation).toBeGreaterThan(generation);
+        expect((yield* SubscriptionRef.get(h.state)).removedAt.size).toBe(0);
+        const stale = yield* h.send(
+          {
+            kind: "thread.refreshed",
+            sequence: 4,
+            location: "active",
+            thread: { ...v2ThreadShell, title: "Stale before snapshot" },
+          },
+          () => true,
+        );
+        expect(stale.threads[0]?.title).toBe(v2ThreadShell.title);
+        const current = yield* h.send(
+          {
+            kind: "thread.refreshed",
+            sequence: 5,
+            location: "active",
+            thread: { ...v2ThreadShell, title: "Current after snapshot" },
+          },
+          (snapshot) => snapshot.threads[0]?.title === "Current after snapshot",
+        );
+        expect(current.snapshotSequence).toBe(5);
+      }),
+  );
+
+  it.effect.each(["updated", "removed", "archived"] as const)(
+    "preserves refresh 12 across the same thread's %s replay 11 and stale refresh 11",
+    (kind) =>
+      Effect.gen(function* () {
+        const h = yield* makePersistenceHarness(() => Effect.void, { shellThreadRefresh: true });
+        yield* h.send(
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 10 } },
+          () => true,
+        );
+        const waiting = {
+          ...v2ThreadShell,
+          pendingBackgroundTasks: [
+            {
+              taskId: "jones-dependency:answer",
+              kind: "monitor" as const,
+              awaited: true as const,
+              description: "Waiting for VPS review",
+            },
+          ],
+        };
+        yield* h.send(
+          { kind: "thread.refreshed", sequence: 12, location: "active", thread: waiting },
+          () => true,
+        );
+        const stale = yield* h.send(
+          { kind: "thread.refreshed", sequence: 11, location: "active", thread: v2ThreadShell },
+          () => true,
+        );
+        expect(stale.snapshotSequence).toBe(10);
+        expect(stale.threads).toEqual([waiting]);
+        const replay = yield* h.send(
+          kind === "removed"
+            ? {
+                kind: "thread.removed",
+                sequence: 11,
+                location: "active",
+                threadId: waiting.id,
+              }
+            : {
+                kind: "thread.updated",
+                sequence: 11,
+                location: kind === "archived" ? "archive" : "active",
+                thread: v2ThreadShell,
+              },
+          (snapshot) => snapshot.snapshotSequence === 11,
+        );
+        expect(replay.threads).toEqual([waiting]);
+        expect((yield* SubscriptionRef.get(h.state)).removedAt.has(waiting.id)).toBe(false);
+        const removed = yield* h.send(
+          { kind: "thread.removed", sequence: 12, location: "active", threadId: waiting.id },
+          () => true,
+        );
+        expect(removed.threads).toEqual([]);
+        expect((yield* SubscriptionRef.get(h.state)).removedAt.get(waiting.id)).toBe(12);
+        const suppressed = yield* h.send(
+          { kind: "thread.refreshed", sequence: 12, location: "active", thread: waiting },
+          () => true,
+        );
+        expect(suppressed.threads).toEqual([]);
+      }),
+  );
+
+  it.effect.each(["snapshot", "new producer"] as const)(
+    "resets refresh and removal fences with an authoritative %s",
+    (reset) =>
+      Effect.gen(function* () {
+        const h = yield* makePersistenceHarness(() => Effect.void, { shellThreadRefresh: true });
+        yield* Queue.take(h.subscribeInputs);
+        yield* h.send(
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 10 } },
+          () => true,
+        );
+        yield* h.send(
+          {
+            kind: "thread.refreshed",
+            sequence: 12,
+            location: "active",
+            thread: { ...v2ThreadShell, title: "Newer materialization" },
+          },
+          () => true,
+        );
+        const otherId = ThreadId.make("removed-in-old-generation");
+        yield* h.send(
+          { kind: "thread.removed", sequence: 11, location: "active", threadId: otherId },
+          () => true,
+        );
+        expect((yield* SubscriptionRef.get(h.state)).removedAt.get(otherId)).toBe(11);
+        const generation = (yield* SubscriptionRef.get(h.state)).generation;
+        if (reset === "new producer") {
+          const currentSession = Option.getOrThrow(
+            yield* SubscriptionRef.get(h.supervisor.session),
+          );
+          yield* SubscriptionRef.set(h.supervisor.session, Option.some({ ...currentSession }));
+          expect(yield* Queue.take(h.subscribeInputs)).not.toHaveProperty("afterSequence");
+        }
+        const authoritative = yield* h.send(
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 5 } },
+          () => true,
+        );
+        expect(authoritative.threads[0]?.title).toBe(v2ThreadShell.title);
+        expect((yield* SubscriptionRef.get(h.state)).generation).toBeGreaterThan(generation);
+        expect((yield* SubscriptionRef.get(h.state)).removedAt.size).toBe(0);
+        const refreshed = yield* h.send(
+          {
+            kind: "thread.refreshed",
+            sequence: 6,
+            location: "active",
+            thread: { ...v2ThreadShell, title: "New generation refresh" },
+          },
+          () => true,
+        );
+        expect(refreshed.snapshotSequence).toBe(5);
+        expect(refreshed.threads[0]?.title).toBe("New generation refresh");
+        const restored = yield* h.send(
+          {
+            kind: "thread.refreshed",
+            sequence: 6,
+            location: "active",
+            thread: { ...v2ThreadShell, id: otherId },
+          },
+          () => true,
+        );
+        expect(restored.threads.some((thread) => thread.id === otherId)).toBe(true);
+      }),
+  );
+
+  it.effect("retains ahead-of-replay fences across enrichment and same-session resume", () =>
+    Effect.gen(function* () {
+      const h = yield* makePersistenceHarness(() => Effect.void, { shellThreadRefresh: true });
+      yield* Queue.take(h.subscribeInputs);
+      yield* h.send(
+        { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 10 } },
+        () => true,
       );
-      yield* TestClock.adjust("0 millis");
-      expect((yield* Ref.get(saved)).map((snapshot) => snapshot.snapshotSequence)).toEqual([
-        1, 10, 11,
+      const waiting = { ...v2ThreadShell, title: "Current waiting state" };
+      yield* h.send(
+        { kind: "thread.refreshed", sequence: 12, location: "active", thread: waiting },
+        () => true,
+      );
+      yield* h.send(
+        { kind: "snapshot", snapshot: LIVE_SHELL_SNAPSHOT, resolvedRepositoryIdentityRoots: [] },
+        () => true,
+      );
+      yield* Queue.offer(h.wakeups, "application-active");
+      expect(yield* Queue.take(h.subscribeInputs)).toMatchObject({ afterSequence: 10 });
+      const replay = yield* h.send(
+        { kind: "thread.updated", sequence: 11, location: "active", thread: v2ThreadShell },
+        () => true,
+      );
+      expect(replay.snapshotSequence).toBe(11);
+      expect(replay.threads).toEqual([waiting]);
+      const caughtUp = yield* h.send(
+        { kind: "thread.updated", sequence: 12, location: "active", thread: v2ThreadShell },
+        () => true,
+      );
+      expect(caughtUp.snapshotSequence).toBe(12);
+      expect(caughtUp.threads).toEqual([waiting]);
+      const newer = yield* h.send(
+        { kind: "thread.updated", sequence: 13, location: "active", thread: v2ThreadShell },
+        () => true,
+      );
+      expect(newer.threads).toEqual([v2ThreadShell]);
+    }),
+  );
+
+  it.effect("skips unchanged shell writes, persists resets and flushes changed rows", () =>
+    Effect.gen(function* () {
+      const saved = yield* Ref.make<ReadonlyArray<OrchestrationV2ShellSnapshot>>([]);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makePersistenceHarness((_id, snapshot) =>
+            Ref.update(saved, (values) => [...values, snapshot]),
+          );
+          yield* TestClock.adjust("500 millis");
+          yield* h.send(
+            { kind: "thread.updated", sequence: 10, location: "active", thread: v2ThreadShell },
+            (snapshot) => snapshot.snapshotSequence === 10,
+          );
+          yield* TestClock.adjust("10 seconds");
+          expect((yield* Ref.get(saved)).map((snapshot) => snapshot.snapshotSequence)).toEqual([1]);
+          const live = Option.getOrThrow((yield* SubscriptionRef.get(h.state)).snapshot);
+          expect(live.snapshotSequence).toBe(10);
+          const enriched = yield* h.send(
+            {
+              kind: "snapshot",
+              snapshot: { ...live, projects: live.projects.map((project) => ({ ...project })) },
+              resolvedRepositoryIdentityRoots: live.projects.map(
+                (project) => project.workspaceRoot,
+              ),
+            },
+            () => true,
+          );
+          expect(enriched.projects).toEqual(live.projects);
+          expect(enriched.snapshotSequence).toBe(10);
+          yield* TestClock.adjust("10 seconds");
+          expect((yield* Ref.get(saved)).map((snapshot) => snapshot.snapshotSequence)).toEqual([1]);
+          yield* h.send(
+            { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 4 } },
+            (snapshot) => snapshot.snapshotSequence === 4,
+          );
+          yield* TestClock.adjust("10 seconds");
+          yield* h.send(
+            {
+              kind: "snapshot",
+              snapshot: {
+                ...LIVE_SHELL_SNAPSHOT,
+                snapshotSequence: 4,
+                projects: [{ ...v2Project, title: "Changed at same sequence" }],
+              },
+            },
+            (snapshot) => snapshot.projects[0]?.title === "Changed at same sequence",
+          );
+        }),
+      );
+      expect(
+        (yield* Ref.get(saved)).map((snapshot) => [
+          snapshot.snapshotSequence,
+          snapshot.projects[0]?.title,
+        ]),
+      ).toEqual([
+        [1, v2Project.title],
+        [4, v2Project.title],
+        [4, "Changed at same sequence"],
       ]);
     }),
+  );
+
+  it.effect("retries a failed shell save after a cursor-only update", () =>
+    Effect.gen(function* () {
+      const attempts = yield* Ref.make<ReadonlyArray<number>>([]);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makePersistenceHarness((_id, snapshot) =>
+            Effect.gen(function* () {
+              const values = yield* Ref.updateAndGet(attempts, (values) => [
+                ...values,
+                snapshot.snapshotSequence,
+              ]);
+              if (values.length === 1)
+                return yield* new Persistence.ConnectionPersistenceError({
+                  operation: "save-shell",
+                  message: "test failure",
+                });
+            }),
+          );
+          yield* TestClock.adjust("500 millis");
+          yield* h.send(
+            { kind: "thread.updated", sequence: 2, location: "active", thread: v2ThreadShell },
+            (snapshot) => snapshot.snapshotSequence === 2,
+          );
+          yield* TestClock.adjust("10 seconds");
+        }),
+      );
+      expect(yield* Ref.get(attempts)).toEqual([1, 2]);
+    }),
+  );
+
+  it.effect.each(["replacement", "same-session resubscription"] as const)(
+    "fences an applying snapshot and buffered freshness marker across %s",
+    (change) =>
+      Effect.gen(function* () {
+        const applying = yield* Deferred.make<void>();
+        const markerProduced = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const successorStarted = yield* Deferred.make<void>();
+        const subscriptions = yield* Queue.unbounded<number | undefined>();
+        const firstEvents = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+        const nextEvents = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+        const wakeups = yield* Queue.unbounded<ConnectionWakeups.ConnectionWakeup>();
+        let attempts = 0;
+        let loads = 0;
+        const currentSnapshot = { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 2 };
+        const currentSession: RpcSession.RpcSession = {
+          ...session({} as WsRpcProtocolClient),
+          initialConfig: Effect.gen(function* () {
+            attempts += 1;
+            if (attempts === 2) yield* Deferred.succeed(successorStarted, undefined);
+            return { shellResumeCompletionMarker: true } as never;
+          }),
+          client: {
+            [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input: { afterSequence?: number }) =>
+              Stream.fromEffect(Queue.offer(subscriptions, input.afterSequence)).pipe(
+                Stream.drain,
+                Stream.concat(
+                  Stream.fromQueue(attempts === 1 ? firstEvents : nextEvents).pipe(
+                    Stream.tap((item) =>
+                      item.kind === "synchronized"
+                        ? Deferred.succeed(markerProduced, undefined)
+                        : Effect.void,
+                    ),
+                  ),
+                ),
+              ),
+          } as unknown as WsRpcProtocolClient,
+        };
+        const activeSession = yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(
+          Option.some(currentSession),
+        );
+        const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+          target: TARGET,
+          state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+          session: activeSession,
+          prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+          connect: Effect.void,
+          disconnect: Effect.void,
+          retryNow: Effect.void,
+        });
+        const cache = Persistence.EnvironmentCacheStore.of({
+          loadShell: () => Effect.succeedNone,
+          saveShell: () => Effect.void,
+          loadThread: () => Effect.succeedNone,
+          saveThread: () => Effect.void,
+          removeThread: () => Effect.void,
+          loadServerConfig: () => Effect.succeedNone,
+          saveServerConfig: () => Effect.void,
+          loadVcsRefs: () => Effect.succeedNone,
+          saveVcsRefs: () => Effect.void,
+          removeVcsRefs: () => Effect.void,
+          clearVcsRefs: () => Effect.void,
+          clear: () => Effect.void,
+        });
+        const shellState = yield* makeEnvironmentShellState().pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+          Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+          Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, {
+            load: () =>
+              Effect.sync(() => (++loads === 1 ? Option.none() : Option.some(currentSnapshot))),
+          }),
+          Effect.provideService(ConnectionWakeups.ConnectionWakeups, {
+            changes: Stream.fromQueue(wakeups),
+          }),
+        );
+        expect(yield* Queue.take(subscriptions)).toBeUndefined();
+        const semaphore = shellState.semaphore;
+        const withPermit = semaphore.withPermit;
+        semaphore.withPermit = (effect) => {
+          semaphore.withPermit = withPermit;
+          return withPermit(
+            Deferred.succeed(applying, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(effect),
+            ),
+          );
+        };
+        yield* Queue.offerAll(firstEvents, [
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 99 } },
+          {
+            kind: "thread.refreshed",
+            sequence: 99,
+            location: "active",
+            thread: { ...v2ThreadShell, title: "Stale producer refresh" },
+          },
+          { kind: "synchronized" },
+        ]);
+        yield* Deferred.await(applying);
+        yield* Deferred.await(markerProduced);
+        if (change === "replacement") {
+          yield* SubscriptionRef.set(activeSession, Option.some({ ...currentSession }));
+        } else {
+          yield* Queue.offer(wakeups, "application-active");
+        }
+        yield* Deferred.await(successorStarted);
+        yield* Deferred.succeed(release, undefined);
+        expect(yield* Queue.take(subscriptions)).toBe(2);
+        const current = yield* SubscriptionRef.get(shellState);
+        expect(Option.getOrThrow(current.snapshot).snapshotSequence).toBe(2);
+        expect(Option.getOrThrow(current.snapshot).threads[0]?.title).toBe(v2ThreadShell.title);
+        expect(current.status).toBe("synchronizing");
+        yield* Queue.offerAll(nextEvents, [
+          { kind: "snapshot", snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 1 } },
+          { kind: "synchronized" },
+        ]);
+        const live = yield* SubscriptionRef.changes(shellState).pipe(
+          Stream.filter((value) => value.status === "live"),
+          Stream.runHead,
+        );
+        expect(Option.getOrThrow(Option.getOrThrow(live).snapshot).snapshotSequence).toBe(1);
+      }),
   );
 
   it.effect("flushes the latest live snapshot without blocking connection state updates", () =>
@@ -552,25 +786,25 @@ describe("environment shell synchronization", () => {
         retryNow: Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
+        loadShell: () => Effect.succeedNone,
         saveShell: (_environmentId, snapshot) =>
           Deferred.succeed(saveStarted, undefined).pipe(
             Effect.andThen(Deferred.await(releaseSave)),
             Effect.andThen(Ref.update(saved, (values) => [...values, snapshot])),
           ),
-        loadThread: () => Effect.succeed(Option.none()),
+        loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.none()),
+        loadServerConfig: () => Effect.succeedNone,
         saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeed(Option.none()),
+        loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
         removeVcsRefs: () => Effect.void,
         clearVcsRefs: () => Effect.void,
         clear: () => Effect.void,
       });
       const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () => Effect.succeed(Option.none()),
+        load: () => Effect.succeedNone,
       });
 
       const shellState = yield* makeEnvironmentShellState().pipe(
@@ -691,7 +925,7 @@ describe("environment shell synchronization", () => {
         retryNow: Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
+        loadShell: () => Effect.succeedNone,
         saveShell: (_environmentId, snapshot) =>
           Effect.gen(function* () {
             if (snapshot.projects[0]?.repositoryIdentity == null) {
@@ -700,19 +934,19 @@ describe("environment shell synchronization", () => {
             }
             yield* Ref.update(saved, (values) => [...values, snapshot]);
           }),
-        loadThread: () => Effect.succeed(Option.none()),
+        loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.none()),
+        loadServerConfig: () => Effect.succeedNone,
         saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeed(Option.none()),
+        loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
         removeVcsRefs: () => Effect.void,
         clearVcsRefs: () => Effect.void,
         clear: () => Effect.void,
       });
       const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () => Effect.succeed(Option.none()),
+        load: () => Effect.succeedNone,
       });
 
       const shellState = yield* makeEnvironmentShellState().pipe(
@@ -811,25 +1045,25 @@ describe("environment shell synchronization", () => {
         retryNow: Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.none()),
+        loadShell: () => Effect.succeedNone,
         saveShell: (_environmentId, snapshot) =>
           Deferred.succeed(saveStarted, undefined).pipe(
             Effect.andThen(Deferred.await(releaseSave)),
             Effect.andThen(Ref.update(saved, (values) => [...values, snapshot])),
           ),
-        loadThread: () => Effect.succeed(Option.none()),
+        loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.none()),
+        loadServerConfig: () => Effect.succeedNone,
         saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeed(Option.none()),
+        loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
         removeVcsRefs: () => Effect.void,
         clearVcsRefs: () => Effect.void,
         clear: () => Effect.void,
       });
       const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () => Effect.succeed(Option.none()),
+        load: () => Effect.succeedNone,
       });
 
       const scope = yield* Scope.make();
@@ -908,21 +1142,21 @@ describe("environment shell synchronization", () => {
         retryNow: Effect.void,
       } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
       const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeed(Option.some(cachedSnapshot)),
+        loadShell: () => Effect.succeedSome(cachedSnapshot),
         saveShell: () => Effect.void,
-        loadThread: () => Effect.succeed(Option.none()),
+        loadThread: () => Effect.succeedNone,
         saveThread: () => Effect.void,
         removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeed(Option.none()),
+        loadServerConfig: () => Effect.succeedNone,
         saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeed(Option.none()),
+        loadVcsRefs: () => Effect.succeedNone,
         saveVcsRefs: () => Effect.void,
         removeVcsRefs: () => Effect.void,
         clearVcsRefs: () => Effect.void,
         clear: () => Effect.void,
       });
       const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () => Effect.succeed(Option.some(httpSnapshot)),
+        load: () => Effect.succeedSome(httpSnapshot),
       });
       const shellState = yield* makeEnvironmentShellState().pipe(
         Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
@@ -940,6 +1174,102 @@ describe("environment shell synchronization", () => {
       const state = yield* SubscriptionRef.get(shellState);
       expect(Option.getOrThrow(state.snapshot).snapshotSequence).toBe(4);
       expect(Option.getOrThrow(state.snapshot).projects[0]?.title).toBe("Server reset");
+    }),
+  );
+
+  it.effect("opts in to shell omissions and counts authoritative snapshots and removals", () =>
+    Effect.gen(function* () {
+      const events = yield* Queue.unbounded<OrchestrationV2ShellStreamItem>();
+      const subscribeInput = yield* Deferred.make<unknown>();
+      const loadOptions = yield* Ref.make<ReadonlyArray<unknown>>([]);
+      const client = {
+        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: (input: unknown) =>
+          Stream.unwrap(
+            Deferred.succeed(subscribeInput, input).pipe(Effect.as(Stream.fromQueue(events))),
+          ),
+      } as unknown as WsRpcProtocolClient;
+      const familySession: RpcSession.RpcSession = {
+        ...session(client),
+        initialConfig: Effect.succeed({
+          shellResumeCompletionMarker: true,
+          shellThreadFamilies: true,
+          shellOlderSettled: true,
+        } as never),
+      };
+      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+        target: TARGET,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make(Option.some(familySession)),
+        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
+      const cache = Persistence.EnvironmentCacheStore.of({
+        loadShell: () => Effect.succeedNone,
+        saveShell: () => Effect.void,
+        loadThread: () => Effect.succeedNone,
+        saveThread: () => Effect.void,
+        removeThread: () => Effect.void,
+        loadServerConfig: () => Effect.succeedNone,
+        saveServerConfig: () => Effect.void,
+        loadVcsRefs: () => Effect.succeedNone,
+        saveVcsRefs: () => Effect.void,
+        removeVcsRefs: () => Effect.void,
+        clearVcsRefs: () => Effect.void,
+        clear: () => Effect.void,
+      });
+      const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
+        load: (_prepared, options) =>
+          Ref.update(loadOptions, (all) => [...all, options]).pipe(
+            Effect.as(Option.some(LIVE_SHELL_SNAPSHOT)),
+          ),
+      });
+      const shellState = yield* makeEnvironmentShellState().pipe(
+        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
+        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),
+      );
+      const stateWhere = (predicate: (state: EnvironmentShellState) => boolean) =>
+        SubscriptionRef.changes(shellState).pipe(Stream.filter(predicate), Stream.runHead);
+
+      // Both transports must omit, or omitted children would come back through the socket.
+      expect(yield* Deferred.await(subscribeInput)).toMatchObject({
+        afterSequence: 1,
+        omitIdleSubagents: true,
+        omitOlderSettled: true,
+      });
+      expect(yield* Ref.get(loadOptions)).toEqual([
+        { omitIdleSubagents: true, omitOlderSettled: true },
+      ]);
+      const loaded = Option.getOrThrow(yield* stateWhere((state) => state.generation > 0));
+      expect(loaded.removedAt.size).toBe(0);
+
+      const gone = ThreadId.make("thread-gone");
+      yield* Queue.offer(events, {
+        kind: "snapshot",
+        snapshot: { ...LIVE_SHELL_SNAPSHOT, threads: [] },
+        resolvedRepositoryIdentityRoots: [],
+      });
+      yield* Queue.offer(events, {
+        kind: "thread.removed",
+        sequence: 2,
+        location: "active",
+        threadId: gone,
+      });
+      const removed = Option.getOrThrow(yield* stateWhere((state) => state.removedAt.size > 0));
+      // An enrichment refresh is not authoritative.
+      expect(removed.generation).toBe(loaded.generation);
+      expect(removed.removedAt.get(gone)).toBe(2);
+
+      yield* Queue.offer(events, {
+        kind: "snapshot",
+        snapshot: { ...LIVE_SHELL_SNAPSHOT, snapshotSequence: 5 },
+      });
+      const reset = Option.getOrThrow(
+        yield* stateWhere((state) => state.generation > loaded.generation),
+      );
+      expect(reset.removedAt.size).toBe(0);
     }),
   );
 
@@ -1035,153 +1365,6 @@ describe("environment shell synchronization", () => {
       );
       expect(filled[0]).toBe(serverRow);
       expect(filled[1]?.pullRequests).toEqual([link(2)]);
-    }),
-  );
-
-  it.effect("shows HTTP rows before their pull request links and saves them once filled", () =>
-    Effect.gen(function* () {
-      const link: ThreadPullRequestLink = {
-        host: "github.com",
-        repository: "pingdotgg/t3code",
-        number: 7,
-        url: "https://github.com/pingdotgg/t3code/pull/7",
-        source: "agent",
-        linkedAt: "2026-06-20T00:00:00.000Z",
-        snapshot: null,
-        stack: null,
-      };
-      const httpSnapshot: OrchestrationV2ShellSnapshot = {
-        ...v2ShellSnapshot,
-        snapshotSequence: 3,
-      };
-      const linksReady = yield* Deferred.make<void>();
-      const saved = yield* Queue.unbounded<OrchestrationV2ShellSnapshot>();
-      const client = {
-        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () => Stream.never,
-      } as unknown as WsRpcProtocolClient;
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: TARGET,
-        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
-        session: yield* SubscriptionRef.make(Option.some(session(client))),
-        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeedNone,
-        saveShell: (_environmentId, snapshot) => Queue.offer(saved, snapshot),
-        loadThread: () => Effect.succeedNone,
-        saveThread: () => Effect.void,
-        removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeedNone,
-        saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeedNone,
-        saveVcsRefs: () => Effect.void,
-        removeVcsRefs: () => Effect.void,
-        clearVcsRefs: () => Effect.void,
-        clear: () => Effect.void,
-      });
-      const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () =>
-          Effect.succeedSome({
-            ...httpSnapshot,
-            loadPullRequests: Deferred.await(linksReady).pipe(
-              Effect.as(new Map([[v2ThreadShell.id, [link]]])),
-            ),
-          }),
-      });
-      const shellState = yield* makeEnvironmentShellState().pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),
-      );
-
-      const rows = yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((state) => Option.isSome(state.snapshot)),
-        Stream.runHead,
-        Effect.map((state) => Option.getOrThrow(Option.getOrThrow(state).snapshot)),
-      );
-      expect(rows.threads[0]?.pullRequests).toBeUndefined();
-      expect(rows).not.toHaveProperty("loadPullRequests");
-
-      yield* Deferred.succeed(linksReady, undefined);
-      const filled = yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.map((state) => Option.getOrThrow(state.snapshot).threads[0]),
-        Stream.filter((thread) => thread?.pullRequests !== undefined),
-        Stream.runHead,
-        Effect.map(Option.getOrThrow),
-      );
-      expect(filled?.pullRequests).toEqual([link]);
-
-      yield* TestClock.adjust("30 seconds");
-      const saves = yield* Queue.takeAll(saved);
-      expect(saves.at(-1)?.threads[0]?.pullRequests).toEqual([link]);
-    }),
-  );
-
-  it.effect("does not save rows whose deferred links are still pending", () =>
-    Effect.gen(function* () {
-      const link: ThreadPullRequestLink = {
-        host: "github.com",
-        repository: "pingdotgg/t3code",
-        number: 8,
-        url: "https://github.com/pingdotgg/t3code/pull/8",
-        source: "agent",
-        linkedAt: "2026-06-20T00:00:00.000Z",
-        snapshot: null,
-        stack: null,
-      };
-      const saved = yield* Ref.make<ReadonlyArray<OrchestrationV2ShellSnapshot>>([]);
-      const client = {
-        [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () => Stream.never,
-      } as unknown as WsRpcProtocolClient;
-      const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: TARGET,
-        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
-        session: yield* SubscriptionRef.make(Option.some(session(client))),
-        prepared: yield* SubscriptionRef.make(Option.some(PREPARED)),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      } satisfies EnvironmentSupervisor.EnvironmentSupervisor["Service"]);
-      const cache = Persistence.EnvironmentCacheStore.of({
-        loadShell: () => Effect.succeedNone,
-        saveShell: (_environmentId, snapshot) => Ref.update(saved, (all) => [...all, snapshot]),
-        loadThread: () => Effect.succeedNone,
-        saveThread: () => Effect.void,
-        removeThread: () => Effect.void,
-        loadServerConfig: () => Effect.succeedNone,
-        saveServerConfig: () => Effect.void,
-        loadVcsRefs: () => Effect.succeedNone,
-        saveVcsRefs: () => Effect.void,
-        removeVcsRefs: () => Effect.void,
-        clearVcsRefs: () => Effect.void,
-        clear: () => Effect.void,
-      });
-      const snapshotLoader = ShellSnapshotLoader.ShellSnapshotLoader.of({
-        load: () =>
-          Effect.succeedSome({
-            ...v2ShellSnapshot,
-            snapshotSequence: 3,
-            loadPullRequests: Effect.never.pipe(Effect.as(new Map([[v2ThreadShell.id, [link]]]))),
-          }),
-      });
-      const scope = yield* Scope.make();
-      const shellState = yield* makeEnvironmentShellState().pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-        Effect.provideService(Persistence.EnvironmentCacheStore, cache),
-        Effect.provideService(ShellSnapshotLoader.ShellSnapshotLoader, snapshotLoader),
-        Scope.provide(scope),
-      );
-      yield* SubscriptionRef.changes(shellState).pipe(
-        Stream.filter((state) => Option.isSome(state.snapshot)),
-        Stream.runHead,
-      );
-
-      yield* TestClock.adjust("30 seconds");
-      yield* Scope.close(scope, Exit.void);
-      expect(yield* Ref.get(saved)).toEqual([]);
     }),
   );
 

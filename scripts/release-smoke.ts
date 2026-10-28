@@ -17,6 +17,7 @@ const workspaceFiles = [
   "apps/desktop/package.json",
   "apps/web/package.json",
   "apps/mobile/package.json",
+  "apps/mobile/modules/t3-highlights/package.json",
   "apps/mobile/modules/t3-source-text/package.json",
   "apps/mobile/modules/t3-review-diff/package.json",
   "apps/mobile/modules/t3-terminal/package.json",
@@ -40,6 +41,7 @@ const workspaceFiles = [
   "packages/source-control-azure-devops/package.json",
   "packages/source-control-bitbucket/package.json",
   "packages/source-control-core/package.json",
+  "packages/source-control-definitions/package.json",
   "packages/source-control-forgejo/package.json",
   "packages/source-control-gitcafe/package.json",
   "packages/source-control-github/package.json",
@@ -236,15 +238,19 @@ try {
     },
   );
 
-  NodeFS.rmSync(NodePath.resolve(tempRoot, "pnpm-lock.yaml"), { force: true });
-
-  NodeChildProcess.execFileSync("vp", ["install", "--lockfile-only", "--ignore-scripts"], {
-    cwd: tempRoot,
-    stdio: "inherit",
-  });
+  // Seed the release lockfile refresh with the reviewed graph, including patched versions.
+  // Resolving from an empty lockfile instead tests registry drift and can orphan versioned patches.
+  NodeChildProcess.execFileSync(
+    "vp",
+    ["install", "--lockfile-only", "--ignore-scripts", "--no-frozen-lockfile"],
+    {
+      cwd: tempRoot,
+      stdio: "inherit",
+    },
+  );
 
   const lockfile = NodeFS.readFileSync(NodePath.resolve(tempRoot, "pnpm-lock.yaml"), "utf8");
-  assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to be regenerated.");
+  assertContains(lockfile, "lockfileVersion:", "Expected pnpm-lock.yaml to be refreshed.");
 
   for (const relativePath of [
     "apps/server/package.json",

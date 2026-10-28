@@ -1,8 +1,9 @@
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, OrchestrationV2ThreadShell, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 
 import type { EnvironmentShellState } from "../../state/shell.ts";
+import { settlementThreadEvidence, type SettlementThreadFamilyEvidence } from "./threadEvidence.ts";
 import {
   SEQUENCE_RESET_MS,
   type EnvironmentSettlementBaseline,
@@ -20,6 +21,12 @@ export type ObserveResult =
       goneThreadIds: ReadonlySet<ThreadId>;
     };
 
+export function isSettlementChild(
+  thread: Pick<OrchestrationV2ThreadShell, "lineage" | "delegatedFrom">,
+): boolean {
+  return thread.lineage.relationshipToParent === "subagent" || thread.delegatedFrom !== undefined;
+}
+
 export function observeEnvironment(
   prev: EnvironmentSettlementBaseline | null,
   input: {
@@ -27,6 +34,7 @@ export function observeEnvironment(
     state: EnvironmentShellState;
     nowMs: number;
     staleSince: number | null;
+    families?: ReadonlyArray<SettlementThreadFamilyEvidence>;
   },
 ): ObserveResult {
   if (input.state.status !== "live" || Option.isNone(input.state.snapshot)) return { kind: "skip" };
@@ -37,12 +45,15 @@ export function observeEnvironment(
     if (input.nowMs - staleSince < SEQUENCE_RESET_MS) return { kind: "skip", staleSince };
   }
 
-  const threads: Record<string, number | null> = {};
+  // Omitted shell rows retain their prior epoch until a removal or family read proves absence.
+  const threads: Record<string, number | null> = lowerSequence ? {} : { ...prev?.threads };
   const threadTitles = new Map<ThreadId, string>();
-  const goneThreadIds = new Set<ThreadId>();
+  const evidence = settlementThreadEvidence(input.state, input.families);
+  const goneThreadIds = evidence.gone;
+  for (const id of goneThreadIds) delete threads[id];
   const arrivals: SettlementArrival[] = [];
-  let watermarkMs: number | null = null;
-  for (const thread of [...snapshot.threads, ...snapshot.archivedThreads]) {
+  let watermarkMs: number | null = lowerSequence ? null : (prev?.watermarkMs ?? null);
+  for (const thread of evidence.threads) {
     const updatedAtMs = DateTime.toEpochMillis(thread.updatedAt);
     watermarkMs = watermarkMs === null ? updatedAtMs : Math.max(watermarkMs, updatedAtMs);
     const settledAtMs =
@@ -59,7 +70,8 @@ export function observeEnvironment(
       continue;
     }
     threadTitles.set(thread.id, thread.title);
-    if (prev === null || lowerSequence || settledAtMs === null) continue;
+    if (prev === null || lowerSequence || settledAtMs === null || isSettlementChild(thread))
+      continue;
     const known = Object.hasOwn(prev.threads, thread.id);
     if (
       known
@@ -72,11 +84,6 @@ export function observeEnvironment(
         title: thread.title,
         settledAtMs,
       });
-    }
-  }
-  if (prev !== null) {
-    for (const id of Object.keys(prev.threads)) {
-      if (!Object.hasOwn(threads, id)) goneThreadIds.add(id as ThreadId);
     }
   }
   const baseline: EnvironmentSettlementBaseline = {

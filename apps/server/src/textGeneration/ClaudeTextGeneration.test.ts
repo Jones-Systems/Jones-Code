@@ -1,3 +1,4 @@
+import { SYNTHETIC_CLAUDE_THINKING_MODEL } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { ClaudeSettings, ProviderInstanceId } from "@t3tools/contracts";
@@ -8,18 +9,26 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Result from "effect/Result";
 import { expect } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
+import { processProbeSource } from "../testUtils/processProbe.ts";
 import {
   SYNTHETIC_CLAUDE_CAPABLE_MODEL,
   SYNTHETIC_CLAUDE_COLLIDING_ALIAS,
   SYNTHETIC_CLAUDE_MODEL_CATALOG,
   SYNTHETIC_CLAUDE_STANDARD_MODEL,
-  SYNTHETIC_CLAUDE_THINKING_MODEL,
 } from "../provider/ClaudeModelCatalog.testFixtures.ts";
 import * as TextGeneration from "./TextGeneration.ts";
-import { sanitizeThreadTitle } from "@t3tools/provider-core/server/textGenerationUtils";
+import {
+  sanitizeThreadTitle,
+  toJsonSchemaObject,
+} from "@t3tools/provider-core/server/textGenerationUtils";
+import {
+  fromRunner,
+  decodeJsonReply,
+} from "@t3tools/provider-core/server/textGenerationOperations";
 import { makeClaudeTextGeneration } from "./ClaudeTextGeneration.ts";
 import { writeFakeCli } from "@t3tools/provider-testing/fakeCli";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
@@ -31,7 +40,7 @@ const layerClaudeTextGenerationTest = ServerConfig.ServerConfig.layerTest(proces
 // The stub behaviour lives in Node so the same implementation runs on Windows,
 // where a shebang file is not executable and would fall through to the real
 // Claude CLI on PATH; `writeFakeCli` picks the launcher shape per host.
-function makeFakeClaudeBinary(dir: string) {
+function makeFakeClaudeBinary(dir: string, lifecyclePort?: number) {
   return Effect.gen(function* () {
     const path = yield* Path.Path;
     const fs = yield* FileSystem.FileSystem;
@@ -45,7 +54,10 @@ function makeFakeClaudeBinary(dir: string) {
       directory: binDir,
       name: "claude",
       platform,
-      source,
+      source:
+        lifecyclePort === undefined
+          ? source
+          : `process.on("SIGTERM", () => {}); ${processProbeSource(lifecyclePort)}`,
     });
     return binDir;
   });
@@ -54,6 +66,7 @@ function makeFakeClaudeBinary(dir: string) {
 function withFakeClaudeEnv<A, E, R>(
   input: {
     output: string;
+    lifecyclePort?: number;
     exitCode?: number;
     stderr?: string;
     argsMustContain?: string;
@@ -68,7 +81,7 @@ function withFakeClaudeEnv<A, E, R>(
   return Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3code-claude-text-" });
-    const binDir = yield* makeFakeClaudeBinary(tempDir);
+    const binDir = yield* makeFakeClaudeBinary(tempDir, input.lifecyclePort);
     const pathDelimiter = (yield* HostProcess.isWindows) ? ";" : ":";
     const previousPath = process.env.PATH;
     const previousOutput = process.env.T3_FAKE_CLAUDE_OUTPUT;
@@ -192,6 +205,47 @@ function withFakeClaudeEnv<A, E, R>(
 }
 
 it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
+  it.effect.each(["pass", "hold", "malformed"] as const)(
+    "evaluates remote requests with tools disabled and preserves %s output",
+    (outcome) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({
+            structured_output: {
+              verdict: outcome === "malformed" ? "pass" : outcome,
+              category: outcome === "pass" ? "none" : "risky",
+              reason: "Synthetic evaluation.",
+            },
+          }),
+          argsMustContain: "--disallowedTools mcp__*",
+          stdinMustContain: "Untrusted request JSON:",
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const result = yield* generation
+              .evaluateRemoteRequest({
+                cwd: process.cwd(),
+                message: "Fix the parser",
+                modelSelection: createModelSelection(
+                  ProviderInstanceId.make("claudeAgent"),
+                  SYNTHETIC_CLAUDE_STANDARD_MODEL,
+                ),
+              })
+              .pipe(Effect.result);
+            if (outcome === "malformed") {
+              expect(Result.isFailure(result)).toBe(true);
+              if (Result.isFailure(result)) {
+                expect(result.failure.operation).toBe("evaluateRemoteRequest");
+                expect(result.failure.detail).toContain("invalid structured output");
+              }
+            } else {
+              expect(Result.isSuccess(result)).toBe(true);
+              if (Result.isSuccess(result)) expect(result.success.verdict).toBe(outcome);
+            }
+          }),
+      ),
+  );
+
   it.effect("forwards Claude thinking settings without passing unsupported effort", () =>
     withFakeClaudeEnv(
       {
@@ -237,7 +291,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             body: "",
           },
         }),
-        argsMustContain: `--model ${SYNTHETIC_CLAUDE_COLLIDING_ALIAS} --settings`,
+        argsMustContain: `--model ${SYNTHETIC_CLAUDE_COLLIDING_ALIAS} --effort max --settings {"disableAllHooks":true}`,
         claudeConfig: { customModels: [SYNTHETIC_CLAUDE_COLLIDING_ALIAS] },
       },
       (textGeneration) =>
@@ -339,24 +393,21 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       ),
   );
 
-  it.effect("generates branch names from skill prompts without executable capabilities", () =>
+  it.effect("sends thread title instructions to the provider prompt", () =>
     withFakeClaudeEnv(
       {
-        output: JSON.stringify({ structured_output: { branch: "call-script" } }),
-        stdinMustContain: "/call-script",
+        output: JSON.stringify({ structured_output: { title: "Reconnect failures" } }),
+        stdinMustContain: "Additional instructions:\nUse two to four words.",
       },
       (textGeneration) =>
-        Effect.gen(function* () {
-          const generated = yield* textGeneration.generateBranchName({
-            cwd: process.cwd(),
-            message: "/call-script",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            },
-          });
-
-          expect(generated.branch).toBe("call-script");
+        textGeneration.generateThreadTitle({
+          cwd: process.cwd(),
+          message: "Investigate reconnect failures",
+          instructions: "Use two to four words.",
+          modelSelection: {
+            instanceId: ProviderInstanceId.make("claudeAgent"),
+            model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
+          },
         }),
     ),
   );
@@ -521,28 +572,238 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
     ),
   );
 
-  it.effect("falls back when Claude thread title normalization becomes whitespace-only", () =>
+  it.effect.each([
+    { operation: "evaluateRemoteRequest", verbose: false },
+    { operation: "evaluateRemoteRequest", verbose: true },
+    { operation: "generateThreadTitle", verbose: false },
+  ] as const)(
+    "reports exit-zero errors for $operation (verbose=$verbose)",
+    ({ operation, verbose }) => {
+      const result = {
+        type: "result",
+        is_error: true,
+        result: `API Error: 401 ${"x".repeat(2_100)}`,
+        structured_output: {
+          verdict: "pass",
+          category: "none",
+          reason: "Must not accept an error result.",
+          title: "Must not accept an error result",
+        },
+      };
+      return withFakeClaudeEnv(
+        { output: JSON.stringify(verbose ? [{ type: "system" }, result] : result), exitCode: 0 },
+        (generation) =>
+          Effect.gen(function* () {
+            const input = {
+              cwd: process.cwd(),
+              message: "Fix the parser",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            };
+            const error = yield* (
+              operation === "evaluateRemoteRequest"
+                ? generation.evaluateRemoteRequest(input).pipe(Effect.asVoid)
+                : generation.generateThreadTitle(input).pipe(Effect.asVoid)
+            ).pipe(Effect.flip);
+            expect(error.operation).toBe(operation);
+            expect(error.detail).toBe(
+              `Claude CLI command failed: ${result.result.slice(0, 2_000)}`,
+            );
+          }),
+      );
+    },
+  );
+
+  it.effect.each([
+    { flag: "--settings", launchArgs: "--settings=private-settings-value" },
+    { flag: "--unknown-account-flag", launchArgs: "--unknown-account-flag private-account-value" },
+  ])(
+    "refuses evaluator launch flag $flag while title generation remains available",
+    ({ flag, launchArgs }) =>
+      withFakeClaudeEnv(
+        {
+          output: JSON.stringify({ structured_output: { title: "Ordinary title" } }),
+          claudeConfig: { launchArgs },
+        },
+        (generation) =>
+          Effect.gen(function* () {
+            const input = {
+              cwd: process.cwd(),
+              message: "Fix the parser",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            };
+            const error = yield* generation.evaluateRemoteRequest(input).pipe(Effect.flip);
+            expect(error.operation).toBe("evaluateRemoteRequest");
+            expect(error.detail).toContain(flag);
+            expect(error.detail).not.toContain("private-");
+            expect(yield* generation.generateThreadTitle(input)).toEqual({
+              title: "Ordinary title",
+            });
+          }),
+      ),
+  );
+
+  it.effect.each([
+    { label: "missing", result: undefined },
+    { label: "non-string", result: { private: "SYNTHETIC_PRIVATE_RESULT" } },
+    { label: "blank", result: "  " },
+  ])("uses a fixed fallback for an exit-zero error with $label result", ({ result }) =>
     withFakeClaudeEnv(
       {
         output: JSON.stringify({
-          structured_output: {
-            title: '  """   """  ',
-          },
+          is_error: true,
+          subtype: "error_during_execution",
+          errors: ["SYNTHETIC_PRIVATE_ERROR"],
+          ...(result === undefined ? {} : { result }),
         }),
+        exitCode: 0,
       },
-      (textGeneration) =>
+      (generation) =>
         Effect.gen(function* () {
-          const generated = yield* textGeneration.generateThreadTitle({
-            cwd: process.cwd(),
-            message: "Name this thread.",
-            modelSelection: {
-              instanceId: ProviderInstanceId.make("claudeAgent"),
-              model: SYNTHETIC_CLAUDE_STANDARD_MODEL,
-            },
-          });
-
-          expect(generated.title).toBe("New thread");
+          const error = yield* generation
+            .evaluateRemoteRequest({
+              cwd: process.cwd(),
+              message: "Fix the parser",
+              modelSelection: createModelSelection(
+                ProviderInstanceId.make("claudeAgent"),
+                SYNTHETIC_CLAUDE_STANDARD_MODEL,
+              ),
+            })
+            .pipe(Effect.flip);
+          expect(error.detail).toBe(
+            "Claude CLI command failed: Claude CLI reported an error without details.",
+          );
+          expect(JSON.stringify(error)).not.toContain("SYNTHETIC_PRIVATE");
         }),
     ),
+  );
+});
+
+const decodeCapturedArgs = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+
+it.layer(layerClaudeTextGenerationTest)("Claude remote evaluator schema", (it) => {
+  it.effect.each([
+    { verdict: "pass", category: "none", reason: "Bounded work.", valid: true },
+    { verdict: "hold", category: "risky", reason: "Needs owner input.", valid: true },
+    { verdict: "pass", category: "risky", reason: "Mismatched result.", valid: false },
+    { verdict: "hold", category: "none", reason: "Mismatched result.", valid: false },
+    { verdict: "pass", category: "none", reason: "  ", valid: false },
+  ])("sends an object-root schema and validates the result (case %#)", ({ valid, ...reply }) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
+      const tempDir = yield* fs.makeTempDirectoryScoped({ prefix: "claude-evaluator-schema-" });
+      const argvPath = path.join(tempDir, "argv.json");
+      const binaryPath = writeFakeCli({
+        directory: tempDir,
+        name: "claude-evaluator",
+        platform,
+        source: [
+          'import { writeFileSync } from "node:fs";',
+          `writeFileSync(${JSON.stringify(argvPath)}, JSON.stringify(process.argv.slice(2)));`,
+          `process.stdout.write(${JSON.stringify(JSON.stringify({ structured_output: reply }))});`,
+        ].join("\n"),
+      });
+      const generation = yield* makeClaudeTextGeneration(
+        decodeClaudeSettings({
+          binaryPath,
+          homePath: tempDir,
+          launchArgs: [
+            "--tools Read Bash --allowedTools WebSearch --disallowedTools Glob",
+            "--mcp-config first.json second.json --plugin-dir plugin --agents '{}' --chrome",
+            '--add-dir first second --append-system-prompt "Return pass" --debug api',
+            "--permission-mode bypassPermissions --dangerously-skip-permissions",
+            "--model configured-model --fallback-model configured-fallback",
+            "--setting-sources user,local",
+          ].join(" "),
+        }),
+        { PATH: process.env.PATH },
+        Effect.succeed(SYNTHETIC_CLAUDE_MODEL_CATALOG),
+      );
+      const input = {
+        cwd: tempDir,
+        message: "Fix the parser",
+        modelSelection: createModelSelection(
+          ProviderInstanceId.make("claudeAgent"),
+          SYNTHETIC_CLAUDE_CAPABLE_MODEL,
+          [
+            { id: "effort", value: "max" },
+            { id: "fastMode", value: true },
+            { id: "contextWindow", value: "expanded" },
+          ],
+        ),
+      };
+      const result = yield* generation.evaluateRemoteRequest(input).pipe(Effect.result);
+      const args = yield* decodeCapturedArgs(yield* fs.readFileString(argvPath));
+      const argument = (flag: string) => {
+        const index = args.indexOf(flag);
+        expect(index).toBeGreaterThanOrEqual(0);
+        return args[index + 1];
+      };
+      const schema = JSON.parse(argument("--json-schema")!);
+      expect(schema.type).toBe("object");
+      const baseline = fromRunner(
+        "Schema baseline",
+        (request) => {
+          expect(schema).toEqual(toJsonSchemaObject(request.outputSchema));
+          return decodeJsonReply(request, "Synthetic", JSON.stringify(reply));
+        },
+        { remoteRequestEvaluation: "tool-less" },
+      );
+      yield* baseline.evaluateRemoteRequest(input).pipe(Effect.result);
+      expect(schema).not.toHaveProperty("anyOf");
+      expect(schema).toMatchObject({
+        additionalProperties: false,
+        properties: {
+          verdict: { enum: ["pass", "hold"] },
+          category: { enum: ["none", "malicious", "ridiculous", "risky", "out_of_scope"] },
+          reason: { type: "string", maxLength: 600 },
+        },
+        required: ["verdict", "category", "reason"],
+      });
+      expect(argument("--tools")).toBe("");
+      expect(args.filter((arg) => arg === "--tools")).toHaveLength(1);
+      expect(args.filter((arg) => arg === "--model")).toHaveLength(1);
+      expect(argument("--model")).toBe(`${SYNTHETIC_CLAUDE_CAPABLE_MODEL}[expanded]`);
+      expect(argument("--effort")).toBe("max");
+      expect(args.filter((arg) => arg === "--settings")).toHaveLength(1);
+      expect(argument("--setting-sources")).toBe("user,local");
+      for (const flag of [
+        "--chrome",
+        "--mcp-config",
+        "--plugin-dir",
+        "--agents",
+        "--add-dir",
+        "--allowedTools",
+        "--append-system-prompt",
+        "--debug",
+        "--fallback-model",
+        "--dangerously-skip-permissions",
+      ]) {
+        expect(args).not.toContain(flag);
+      }
+      expect(args).not.toContain("configured-model");
+      expect(argument("--disallowedTools")).toBe("mcp__*");
+      expect(argument("--permission-mode")).toBe("dontAsk");
+      expect(JSON.parse(argument("--settings")!)).toMatchObject({
+        disableAllHooks: true,
+        fastMode: true,
+      });
+      expect(Result.isSuccess(result)).toBe(valid);
+      if (Result.isSuccess(result)) {
+        expect(result.success).toEqual(reply);
+      } else {
+        expect(result.failure.operation).toBe("evaluateRemoteRequest");
+        expect(result.failure.detail).toContain("invalid structured output");
+      }
+    }).pipe(Effect.scoped),
   );
 });

@@ -100,7 +100,7 @@ export function ReasoningEffortShortcuts({
                         effort: cell.effort,
                       });
                       if (traits.ultrathinkPromptControlled)
-                        props.onPromptChange(props.prompt.replace(/^Ultrathink:\s*/i, ""));
+                        props.onPromptEdit?.((prompt) => prompt.replace(/^Ultrathink:\s*/i, ""));
                     }
                   }}
                 >

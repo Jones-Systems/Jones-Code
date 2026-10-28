@@ -171,8 +171,8 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
                         ? null
                         : "native_background_coverage_incomplete",
                   })),
-                  Effect.catch(() =>
-                    Effect.succeed(absentEntry("native_projection_unavailable", threadScope)),
+                  Effect.orElseSucceed(() =>
+                    absentEntry("native_projection_unavailable", threadScope),
                   ),
                   Effect.timeoutOrElse({
                     duration: 5_000,
@@ -222,9 +222,7 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
               reason: complete ? null : "registry_counts_incomplete",
             };
           }).pipe(
-            Effect.catch(() =>
-              Effect.succeed(absentEntry("registry_counts_unavailable", registryScope)),
-            ),
+            Effect.orElseSucceed(() => absentEntry("registry_counts_unavailable", registryScope)),
             Effect.timeoutOrElse({
               duration: 10_000,
               orElse: () =>
@@ -247,7 +245,7 @@ export const DecisionSnapshotToolkitAccess = McpToolAccess.toLayer(
           );
           const output = yield* collector.collect(purpose, nativePacket, deadlineMonotonic).pipe(
             Effect.flatMap((text) =>
-              Schema.decodeUnknownEffect(Schema.fromJsonString(DecisionSnapshot))(text, {
+              Schema.decodeEffect(Schema.fromJsonString(DecisionSnapshot))(text, {
                 onExcessProperty: "error",
               }),
             ),

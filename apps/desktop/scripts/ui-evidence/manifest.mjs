@@ -1,6 +1,5 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-
 export const NOT_COVERED = [
   "macOS",
   "packaged/fused builds",
@@ -74,12 +73,19 @@ export function createManifest({ runId, provenance, scenario, inner = {}, cleanu
     ...provenance,
     runtime: inner.runtime ?? null,
     window: inner.window ?? null,
+    windowManager: inner.windowManager ?? null,
     themeFixture: inner.themeFixture ?? null,
     fixture: inner.fixture ?? {},
-    scenario: { ...scenario, steps: inner.steps ?? [] },
+    scenario: {
+      ...scenario,
+      steps: inner.steps ?? [],
+    },
     assertions: inner.assertions ?? [],
     captures: inner.captures ?? [],
-    isolation: { ...inner.isolation, topology: inner.topology ?? null },
+    isolation: {
+      ...inner.isolation,
+      topology: inner.topology ?? null,
+    },
     resources: inner.resources ?? null,
     namespaceProcess: inner.namespaceProcess ?? null,
     coverage: {
@@ -90,7 +96,9 @@ export function createManifest({ runId, provenance, scenario, inner = {}, cleanu
         "Captures show ordered interactions on one candidate build; a comparison OID alone does not establish a code-change before/after result.",
     },
     status: status ?? inner.status ?? "failed",
-    cleanup: cleanup ?? { outcome: "unknown" },
+    cleanup: cleanup ?? {
+      outcome: "unknown",
+    },
     error: inner.error ?? null,
   };
   return validateManifest(result);

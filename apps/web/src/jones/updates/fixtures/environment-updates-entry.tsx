@@ -6,6 +6,7 @@ import { EnvironmentId, type EnvironmentMachineKind } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { AUTH_SCOPE_OPTIONS } from "@t3tools/shared/authScopeOptions";
 import "../../../index.css";
+import { ConfirmDialogHost } from "../../../components/ConfirmDialogHost";
 import { EnvironmentRow } from "../../../components/settings/EnvironmentRow";
 import { SettingsGroup } from "../../../components/settings/SettingsGroup";
 import { Button } from "../../../components/ui/button";
@@ -18,7 +19,10 @@ import {
   type FleetHostReadiness,
 } from "../../fleetUpdates/FleetEnrollmentStatus";
 import { JonesBuildStatus, type JonesBuildRequest } from "../JonesBuildStatus";
+import { BuildVersion } from "../updateDisplay";
+import { ExactSourcePreview } from "./exact-source-fixture";
 import type { JonesInstalledComparison } from "../installedSourceComparison";
+import { describeFollower } from "../../fleetUpdates/followerStatus";
 
 // Synthetic presentation-only states: no connection, bridge, host request, or installation.
 const repository = "Jones-Systems/Jones-Code";
@@ -28,6 +32,7 @@ const base = {
   source: "jones-actions",
   channel: "jones-main",
   currentVersion: "0.0.45-preview.20261013.38343490676.1",
+  currentBuildStartedAt: "2026-10-20T21:13:43Z",
   installedSource: { repository, sha: installedSha, tree: "e".repeat(40) },
   capability: { check: true, download: true, install: true },
 } as const;
@@ -35,6 +40,7 @@ const offered = {
   repository,
   sourceSha: offeredSha,
   artifactId: 4242,
+  buildStartedAt: "2026-10-20T21:13:47Z",
   version: "0.0.45-preview.20261016.38974945620.1",
 };
 const lastInstall = {
@@ -73,6 +79,8 @@ interface Scenario {
     readonly enrolled: boolean;
     readonly readiness: FleetHostReadiness;
     readonly campaign?: { laptopPhase: string; hostPhase: string; reason?: string };
+    /** The host's own progress when it follows this laptop by itself. */
+    readonly follower?: string;
     readonly notice?: string;
   };
 }
@@ -182,6 +190,93 @@ function scenarios(): readonly Scenario[] {
         enrolled: true,
         readiness: "qualified",
         campaign: { laptopPhase: "committed", hostPhase: "waiting", reason: "host offline" },
+      },
+    },
+    {
+      key: "follower-ready",
+      label: "Mac mini (follows this laptop)",
+      kind: "server",
+      subtitle: "SSH mjones@mac-mini · Connected",
+      routes: [{ label: "SSH", address: "mjones@mac-mini", inUse: true }],
+      build: {
+        state: state(id("follower-ready"), {
+          phase: "staged",
+          message: "Downloaded and verified. Install is a separate action.",
+          provenance: offered,
+          stagedHandle: "staged-follower",
+          policy: { role: "follower", leaderSource: offeredSha },
+        }),
+        freshness: "fresh",
+        comparison: "matches",
+        installedComparison: "older",
+      },
+      fleet: {
+        enrolled: true,
+        readiness: "qualified",
+        follower: describeFollower(
+          {
+            protocol: 1,
+            leaderSource: offeredSha,
+            state: "waiting-for-quiet",
+            reason:
+              "Waiting for running turns or delegated tasks (1), terminal commands (1) to finish.",
+            notBefore: "2026-10-20T22:45:00.000Z",
+          },
+          () => "10:45 PM",
+        ),
+      },
+    },
+    {
+      key: "follower-held",
+      label: "VPS (follows this laptop)",
+      kind: "cloud",
+      subtitle: "via T3 Connect · Connected",
+      routes: [{ label: "T3 Connect", address: "relay · vps", inUse: true }],
+      build: {
+        state: state(id("follower-held"), {
+          phase: "staged",
+          message: "Downloaded and verified. Install is a separate action.",
+          provenance: { ...offered, sourceSha: "5f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c" },
+          stagedHandle: "staged-other",
+          policy: { role: "follower", leaderSource: offeredSha },
+        }),
+        freshness: "fresh",
+        comparison: "different",
+        installedComparison: "older",
+      },
+      fleet: {
+        enrolled: true,
+        readiness: "qualified",
+        follower: describeFollower({
+          protocol: 1,
+          leaderSource: offeredSha,
+          state: "preparing",
+        }),
+      },
+    },
+    {
+      key: "follower-waiting",
+      label: "Lab box (follows this laptop)",
+      kind: "linux",
+      subtitle: "Remote link · Connected",
+      routes: [{ label: "Remote link", address: "http://lab-box.example:3773", inUse: true }],
+      build: {
+        state: state(id("follower-waiting"), {
+          phase: "no-new",
+          message: "Waiting for the laptop to report its installed build.",
+          policy: { role: "follower", leaderSource: null },
+        }),
+        freshness: "fresh",
+        installedComparison: "unavailable",
+      },
+      fleet: {
+        enrolled: true,
+        readiness: "qualified",
+        follower: describeFollower({
+          protocol: 1,
+          leaderSource: null,
+          state: "waiting-for-leader",
+        }),
       },
     },
     {
@@ -401,6 +496,7 @@ function ScenarioRow({
             enrolled={enrolled}
             readiness={scenario.fleet.readiness}
             campaign={scenario.fleet.campaign}
+            follower={scenario.fleet.follower}
             notice={scenario.fleet.notice}
             continueThreads={continueThreads}
             busy={false}
@@ -454,6 +550,7 @@ function FixtureScreen() {
     <ToastProvider>
       <AnchoredToastProvider>
         <TooltipProvider>
+          <ConfirmDialogHost />
           <main className="mx-auto max-w-4xl space-y-6 p-6 text-foreground">
             <header className="space-y-1">
               <h1 className="text-xl font-semibold">Jones environment updates fixture</h1>
@@ -468,6 +565,15 @@ function FixtureScreen() {
                 commits are not consistent across rows.
               </p>
             </header>
+            <p className="text-sm text-muted-foreground">
+              Running build{" "}
+              <BuildVersion
+                label="fixture app version"
+                version={base.currentVersion}
+                startedAt={base.currentBuildStartedAt}
+                sourceSha={installedSha}
+              />
+            </p>
             <section aria-label="This machine">
               <h2 className="mb-2 text-sm text-muted-foreground">This machine</h2>
               <SettingsGroup>
@@ -494,6 +600,7 @@ function FixtureScreen() {
                 ))}
               </SettingsGroup>
             </section>
+            <ExactSourcePreview runId="environment-match-laptop" />
             <section aria-label="Fixture receipts" className="border-t pt-4">
               <h2 className="text-sm font-medium">Requested actions</h2>
               <ol data-testid="fixture-receipts" className="mt-2 space-y-1 font-mono text-xs">

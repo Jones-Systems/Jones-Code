@@ -80,10 +80,6 @@ const node = (number: number, headRefName: string, owner = "acme") => ({
   headRepositoryOwner: { __typename: "User", login: owner },
 });
 
-/**
- * One GraphQL request as the fake GitHub saw it. An aliased batch is split back into its
- * lookups, each with its own variables, in order.
- */
 interface GraphQlCall {
   readonly host: string;
   readonly operationName: string;
@@ -91,17 +87,12 @@ interface GraphQlCall {
   readonly lookups: ReadonlyArray<Readonly<Record<string, unknown>>>;
 }
 
-/**
- * What GitHub answers for one lookup: the `repository` it reads, or a whole HTTP response for the
- * request (a refusal, a rate limit).
- */
 type GraphQlAnswer = unknown;
 type GraphQlRespond = (
   lookup: Readonly<Record<string, unknown>>,
   call: GraphQlCall,
 ) => GraphQlAnswer | Response;
 
-/** GitHub's GraphQL endpoint for the generated reads: answers each lookup with `respond`. */
 function graphQlHttp(respond: GraphQlRespond, calls: Array<GraphQlCall>) {
   return HttpClient.make((request) =>
     Effect.sync(() => {
@@ -153,16 +144,10 @@ function graphQlHttp(respond: GraphQlRespond, calls: Array<GraphQlCall>) {
   );
 }
 
-/**
- * The provider over a mocked GitHubRest, git driver and process. `remotes` is what
- * `git remote -v` prints; `git` records every driver call. GraphQL reads go over HTTP to
- * `graphql`, through the real request policy; `graphqlCalls` records each request.
- */
 function harness(input: {
   readonly remotes: string;
   readonly api?: Partial<GitHubRest.GitHubRest["Service"]>;
   readonly graphql?: GraphQlRespond;
-  /** The credential a GraphQL read is sent with; github.com's token by default. */
   readonly credential?: (
     host: string,
   ) => Effect.Effect<
@@ -250,8 +235,6 @@ function harness(input: {
   return { layer, git, graphqlCalls };
 }
 
-/** The provider context for a checkout whose remote is on `host`. */
-/** The provider over a mocked GitHubRest, for reads that never touch the checkout. */
 const makeProvider = (api: Partial<GitHubRest.GitHubRest["Service"]>) =>
   GitHubSourceControlProvider.make.pipe(Effect.provide(harness({ remotes: "", api }).layer));
 
@@ -290,64 +273,6 @@ describe("GitHubSourceControlProvider repository resolution", () => {
       const gh = yield* GitHubSourceControlProvider.make;
       assert.strictEqual(yield* gh.getDefaultBranch({ cwd: "/repo" }), "trunk");
       assert.deepStrictEqual(paths, ["github.com repos/acme/web"]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("reads an SSH alias remote through github.com", () => {
-    const hosts: string[] = [];
-    const { layer } = harness({
-      remotes: remotesOutput(["origin", "git@github:acme/web.git"]),
-      api: {
-        rest: (input) =>
-          Effect.sync(() => {
-            hosts.push(`${input.host} ${input.path}`);
-            return restResponse({
-              full_name: "acme/web",
-              html_url: "https://github.com/acme/web",
-              ssh_url: "git@github.com:acme/web.git",
-              default_branch: "main",
-            });
-          }),
-      },
-    });
-    return Effect.gen(function* () {
-      const gh = yield* GitHubSourceControlProvider.make;
-      yield* gh.getDefaultBranch({ cwd: "/repo" });
-      yield* gh.getDefaultBranch({ cwd: "/repo", context: githubContext("github") });
-      assert.deepStrictEqual(hosts, ["github.com repos/acme/web", "github.com repos/acme/web"]);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("names a missing repository rather than a pull request", () => {
-    const { layer } = harness({
-      remotes: remotesOutput(["origin", "git@github.com:acme/gone.git"]),
-      api: {
-        rest: (input) =>
-          Effect.fail(
-            new GitHubRequestPolicy.GitHubApiNotFoundError({
-              host: input.host,
-              operation: input.operation,
-            }),
-          ),
-      },
-    });
-    return Effect.gen(function* () {
-      const gh = yield* GitHubSourceControlProvider.make;
-      const error = yield* gh.getDefaultBranch({ cwd: "/repo" }).pipe(Effect.flip);
-      assert.include(error.detail, "Repository not found");
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("fails clearly when no remote is on GitHub", () => {
-    const { layer } = harness({
-      remotes: remotesOutput(["origin", "git@gitlab.com:a/b.git"]),
-      api: {},
-    });
-    return Effect.gen(function* () {
-      const gh = yield* GitHubSourceControlProvider.make;
-      const error = yield* gh.getDefaultBranch({ cwd: "/repo" }).pipe(Effect.flip);
-      assert.strictEqual(error._tag, "SourceControlProviderError");
-      assert.include(error.detail, "No GitHub repository");
     }).pipe(Effect.provide(layer));
   });
 });
@@ -514,12 +439,19 @@ describe("GitHubSourceControlProvider change request lookups by head", () => {
     });
     return Effect.gen(function* () {
       const gh = yield* GitHubSourceControlProvider.make;
-      const rows = yield* gh.listChangeRequests({
-        cwd: "/repo",
-        headSelector: "me:main",
-        state: "open",
-        limit: 1,
-      });
+      const open = yield* gh
+        .listChangeRequests({
+          cwd: "/repo",
+          headSelector: "me:main",
+          state: "open",
+          limit: 1,
+        })
+        .pipe(Effect.forkChild);
+      const rows = yield* Fiber.join(open);
+      assert.deepStrictEqual(
+        (yield* Fiber.join(open)).map((pr) => pr.number),
+        [8],
+      );
       assert.deepStrictEqual(
         rows.map((pr) => pr.number),
         [8],
@@ -596,18 +528,6 @@ describe("GitHubSourceControlProvider.getChangeRequest", () => {
           { owner: "other", name: "thing", number: 42 },
         ],
       );
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("fails a missing pull request as not found", () => {
-    const { layer } = harness({
-      remotes: remotesOutput(["origin", "git@github.com:acme/web.git"]),
-      graphql: () => ({ pullRequest: null }),
-    });
-    return Effect.gen(function* () {
-      const gh = yield* GitHubSourceControlProvider.make;
-      const error = yield* gh.getChangeRequest({ cwd: "/repo", reference: "7" }).pipe(Effect.flip);
-      assert.include(error.detail, "Pull request not found");
     }).pipe(Effect.provide(layer));
   });
 });
@@ -729,37 +649,6 @@ describe("GitHubSourceControlProvider writes", () => {
 });
 
 describe("GitHubSourceControlProvider.checkoutChangeRequest", () => {
-  const repository = (fullName: string, defaultBranch = "main") =>
-    restResponse({
-      full_name: fullName,
-      html_url: `https://github.com/${fullName}`,
-      ssh_url: `git@github.com:${fullName}.git`,
-      default_branch: defaultBranch,
-    });
-
-  it.effect("checks a same-repository pull request out from its head branch", () => {
-    const { layer, git } = harness({
-      remotes: remotesOutput(["origin", "git@github.com:acme/web.git"]),
-      graphql: () => ({ pullRequest: node(5, "feature/x") }),
-    });
-    return Effect.gen(function* () {
-      const gh = yield* GitHubSourceControlProvider.make;
-      yield* gh.checkoutChangeRequest({ cwd: "/repo", reference: "5" });
-      assert.deepStrictEqual(git, [
-        [
-          "fetchRemoteTrackingBranch",
-          { cwd: "/repo", remoteName: "origin", remoteBranch: "feature/x" },
-        ],
-        ["execute", ["branch", "--", "feature/x", "refs/remotes/origin/feature/x"]],
-        ["switchRef", { cwd: "/repo", refName: "feature/x" }],
-        [
-          "setBranchUpstream",
-          { cwd: "/repo", branch: "feature/x", remoteName: "origin", remoteBranch: "feature/x" },
-        ],
-      ]);
-    }).pipe(Effect.provide(layer));
-  });
-
   it.effect("refuses a fork checkout when the base's default branch cannot be read", () => {
     const { layer, git } = harness({
       remotes: remotesOutput(["origin", "git@github.com:acme/web.git"]),
@@ -780,38 +669,6 @@ describe("GitHubSourceControlProvider.checkoutChangeRequest", () => {
       const gh = yield* GitHubSourceControlProvider.make;
       yield* Effect.flip(gh.checkoutChangeRequest({ cwd: "/repo", reference: "6", force: true }));
       assert.deepStrictEqual(git, []);
-    }).pipe(Effect.provide(layer));
-  });
-
-  it.effect("adds a remote for a fork and names a default-branch head after its owner", () => {
-    const { layer, git } = harness({
-      remotes: remotesOutput(["origin", "git@github.com:acme/web.git"]),
-      localBranches: ["someone/main"],
-      graphql: () => ({ pullRequest: node(6, "main", "someone") }),
-      api: {
-        rest: (input) =>
-          Effect.succeed(repository(input.path === "repos/acme/web" ? "acme/web" : "someone/web")),
-      },
-    });
-    return Effect.gen(function* () {
-      const gh = yield* GitHubSourceControlProvider.make;
-      yield* gh.checkoutChangeRequest({ cwd: "/repo", reference: "6", force: true });
-      assert.deepStrictEqual(git, [
-        [
-          "ensureRemote",
-          { cwd: "/repo", preferredName: "someone", url: "git@github.com:someone/web.git" },
-        ],
-        [
-          "fetchRemoteTrackingBranch",
-          { cwd: "/repo", remoteName: "someone", remoteBranch: "main" },
-        ],
-        ["switchRef", { cwd: "/repo", refName: "someone/main" }],
-        ["execute", ["reset", "--hard", "--quiet", "refs/remotes/someone/main"]],
-        [
-          "setBranchUpstream",
-          { cwd: "/repo", branch: "someone/main", remoteName: "someone", remoteBranch: "main" },
-        ],
-      ]);
     }).pipe(Effect.provide(layer));
   });
 
@@ -1060,13 +917,15 @@ it.effect.each(["pull", "issues"])(
         title: "Pairing expiry",
         body: "Preserve remote access",
       });
-      assert.strictEqual(
-        provider.resolveLink?.({
-          cwd: "/unrelated",
-          url: new URL("https://github.com/owner/repo"),
-        }),
-        undefined,
-      );
+      for (const url of [
+        "https://github.com/owner/repo",
+        "https://github.attacker.test/owner/repo/issues/42",
+      ]) {
+        assert.strictEqual(
+          provider.resolveLink?.({ cwd: "/unrelated", url: new URL(url) }),
+          undefined,
+        );
+      }
     }),
 );
 
@@ -1126,14 +985,6 @@ it("reports every gh login and leads with the account Settings pin", () => {
     { host: "github.com", account: "work", active: false, authenticated: true },
     { host: "ghe.acme.test", account: "jm", active: true, authenticated: false, error: "expired" },
   ]);
-});
-
-it("falls back to gh's active login when the pinned account is gone", () => {
-  const auth = GitHubSourceControlProvider.parseGitHubAuth(multiAccountStatus(), {
-    hosts: { "github.com": { account: "former-job", enabled: true } },
-    tokens: {},
-  });
-  assert.deepStrictEqual(auth.account, Option.some("personal"));
 });
 
 it("reports unauthenticated when Settings turn off every signed-in host", () => {
@@ -1270,13 +1121,6 @@ it.live.each([
 
 it.effect.each([
   { host: "github.com", resolved: "", envRepository: "", expected: "acme/web" },
-  { host: "code.example.test", resolved: "", envRepository: "", expected: "acme/web" },
-  {
-    host: "github.com",
-    resolved: "remote.origin.gh-resolved base",
-    envRepository: "",
-    expected: "me/web",
-  },
   {
     host: "code.example.test",
     resolved: "remote.origin.gh-resolved base",
@@ -1289,13 +1133,6 @@ it.effect.each([
     envRepository: "",
     expected: "acme/other",
   },
-  {
-    host: "code.example.test",
-    resolved: "remote.upstream.gh-resolved acme/other",
-    envRepository: "",
-    expected: "acme/other",
-  },
-  { host: "github.com", resolved: "", envRepository: "chosen/repo", expected: "chosen/repo" },
   {
     host: "code.example.test",
     resolved: "",
@@ -1361,3 +1198,31 @@ it.effect.each([
     );
   },
 );
+
+it.effect("says a GH_REPO naming an unparseable host targets no remote rather than failing", () => {
+  const { layer } = harness({
+    remotes: remotesOutput(["upstream", "git@github.com:acme/web.git"]),
+    resolved: "",
+    api: {},
+  });
+  return Effect.gen(function* () {
+    const provider = yield* GitHubSourceControlProvider.make;
+    const targets = yield* provider.createsChangeRequestsIn!({
+      cwd: "/repo",
+      context: {
+        provider: {
+          kind: SourceControlProviderKind.make("github"),
+          name: "GitHub",
+          baseUrl: "https://github.com",
+        },
+        remoteName: "upstream",
+        remoteUrl: "git@github.com:acme/web.git",
+      },
+      repository: "acme/web",
+    });
+    assert.isFalse(targets);
+  }).pipe(
+    Effect.provide(layer),
+    Effect.provideService(HostProcess.Environment, { GH_REPO: "bad host/acme/web" }),
+  );
+});

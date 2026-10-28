@@ -4,6 +4,8 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeOS from "node:os";
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
+import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
 
 const SourceHash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/));
 export const JonesBuildSource = Schema.Struct({
@@ -18,15 +20,26 @@ const decodeBuildSource = Schema.decodeUnknownSync(JonesBuildSource);
 export const JonesDesktopBuildMetadata = Schema.Union([
   Schema.Struct({
     jonesSource: JonesBuildSource,
+    jonesBuildStartedAt: Schema.optionalKey(Schema.Unknown),
     startupGateProtocol: Schema.Literal(1),
   }),
   Schema.Struct({
     jonesSource: Schema.optionalKey(JonesBuildSource),
+    jonesBuildStartedAt: Schema.optionalKey(Schema.Unknown),
     startupGateProtocol: Schema.optionalKey(Schema.Never),
   }),
 ]);
-export const decodeJonesDesktopBuildMetadata =
-  Schema.decodeUnknownEffect(JonesDesktopBuildMetadata);
+const decodeDesktopBuildMetadata = Schema.decodeUnknownEffect(JonesDesktopBuildMetadata);
+export const decodeJonesDesktopBuildMetadata = (metadata: unknown) =>
+  decodeDesktopBuildMetadata(metadata).pipe(
+    Effect.map(({ jonesBuildStartedAt: _displayTime, ...qualified }) => {
+      const jonesBuildStartedAt = readJonesBuildStartedAt(metadata);
+      return {
+        ...qualified,
+        ...(jonesBuildStartedAt === undefined ? {} : { jonesBuildStartedAt }),
+      };
+    }),
+  );
 
 export function verifyJonesPackagedStartupGate(
   metadata: unknown,

@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - Source-qualified synthetic desktop fixture, never launches a native app.
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Source-qualified synthetic desktop fixture, never launches a native app.
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
@@ -6,17 +6,27 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import * as Schema from "effect/Schema";
+import { JonesInstallIntent } from "./jonesActivation.ts";
 import type { DesktopUpdateState } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesActionsCandidate,
   JonesStagedArtifact,
 } from "@t3tools/shared/jones/jonesActions";
 import {
   JonesDesktopUpdateController,
+  captureJonesNativeProcesses,
+  jonesNativeProcessRoles,
   type JonesDesktopUpdateOptions,
 } from "./JonesDesktopUpdates.ts";
 import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts";
 import { hashMacApp, hashMacFile, preflightJonesCandidateStartupGate } from "./jonesMacStaging.ts";
+import { prepareJonesStage, type JonesPreparedStage } from "./stagingJobs.ts";
+import { createJonesStagingWorker, type JonesStagingChild } from "./stagingWorkerClient.ts";
+import { JonesStagingExitUnproved } from "./stagingWorkerProtocol.ts";
+import { createInstallPlanCoordinator } from "../installPlan/coordinator.ts";
+import type { InstallPlanStore, PlanSnapshot } from "../installPlan/store.ts";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:child_process")>();
@@ -52,6 +62,7 @@ const candidate: JonesActionsCandidate = {
   architecture: "arm64",
 };
 const handle = "e".repeat(64);
+const candidateBuildStartedAt = "2026-10-20T21:13:43Z";
 
 /** The actual helper durably writes the claim before it reports preparation-claimed. */
 function claimedPreparation(home: string, transactionId: unknown): string {
@@ -90,6 +101,7 @@ async function fixture(
   bootstrap = true,
   terminal?: "committed" | "rolled-back",
   attemptLayout = false,
+  buildMetadata: Record<string, unknown> = {},
 ) {
   const parent = NodePath.join(NodeOS.homedir(), ".cache", "jones-updater-test-fixtures");
   await NodeFSP.mkdir(parent, { recursive: true, mode: 0o700 });
@@ -111,6 +123,7 @@ async function fixture(
     NodePath.join(app, "package.json"),
     JSON.stringify({
       version,
+      ...buildMetadata,
       jonesSource: {
         repository: candidate.repository,
         sha: candidate.installedSource,
@@ -205,8 +218,26 @@ async function fixture(
     processProofs: async () => [],
     listener: async () => "http://127.0.0.1:3777",
     timestamp: async () => "2026-10-02T00:00:00Z",
+    readInstalledBundleIdentity: async () => {
+      let bundleIdentifier = "com.t3tools.t3code";
+      try {
+        const xml = await NodeFSP.readFile(NodePath.join(app, "Contents", "Info.plist"), "utf8");
+        bundleIdentifier =
+          xml.match(/<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/)?.[1] ?? "";
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+      }
+      return { bundleIdentifier, version, executablePath: executable };
+    },
     client: {
-      check: async () => ({ state: "available", candidate: selections[Math.min(checks++, 1)]! }),
+      check: async () => {
+        const index = Math.min(checks++, 1);
+        return {
+          state: "available",
+          candidate: selections[index]!,
+          ...(index === 0 ? { buildStartedAt: candidateBuildStartedAt } : {}),
+        };
+      },
       stage: async (selection) => {
         stages++;
         const artifact: JonesStagedArtifact = {
@@ -298,7 +329,135 @@ async function fixture(
   };
 }
 
+function planControllerFixture(
+  f: Awaited<ReturnType<typeof fixture>>,
+  overrides: Partial<JonesDesktopUpdateOptions>,
+  options: {
+    readonly persisted?: PlanSnapshot;
+    readonly workerAbsent?: () => boolean;
+    readonly beforeWorkerRecord?: (snapshot: PlanSnapshot) => Promise<void>;
+  } = {},
+) {
+  let snapshot: PlanSnapshot = structuredClone(
+    options.persisted ?? {
+      document: { schema: 1, current: null, last: null },
+      dispositions: { schema: 1, targets: [] },
+    },
+  );
+  let queue: Promise<unknown> = Promise.resolve();
+  const store: InstallPlanStore = {
+    transact: (change) => {
+      const pending = queue.then(async () => {
+        const next = await change(snapshot);
+        snapshot = { ...snapshot, document: next.document, dispositions: next.dispositions };
+        return next.result;
+      });
+      queue = pending.catch(() => undefined);
+      return pending;
+    },
+  };
+  const admissionRecorded = Promise.withResolvers<void>(),
+    workerRecorded = Promise.withResolvers<void>();
+  let coordinator: ReturnType<typeof createInstallPlanCoordinator>;
+  const controller = new JonesDesktopUpdateController({
+    ...f.options,
+    client: { ...f.options.client!, check: async () => ({ state: "available", candidate }) },
+    ...overrides,
+    plan: {
+      bindLaptopInstall: (binding) => coordinator.bindLaptopInstall(binding),
+      recordLaptopOutcome: (outcome) => coordinator.recordLaptopOutcome(outcome),
+      preparationHeld: () => coordinator.preparationHeld(),
+      recordLaptopAdmission: async (operationId) => {
+        await coordinator.recordLaptopAdmission(operationId);
+        admissionRecorded.resolve();
+      },
+      recordLaptopWorker: async (worker) => {
+        await options.beforeWorkerRecord?.(structuredClone(snapshot));
+        await coordinator.recordLaptopWorker(worker);
+        workerRecorded.resolve();
+      },
+    },
+  });
+  coordinator = createInstallPlanCoordinator({
+    store,
+    controller,
+    localEnvironmentId: () => EnvironmentId.make(f.active.environmentId),
+    track: (work) => work(),
+    broadcast: () => {},
+    now: () => Date.parse("2026-10-02T00:00:00Z"),
+    uuid: () => NodeCrypto.randomUUID(),
+    workerAbsent: options.workerAbsent ?? (() => false),
+  });
+  const start = () =>
+    coordinator.request({
+      type: "start",
+      origin: "update-button",
+      target: {
+        repository: candidate.repository,
+        sourceSha: candidate.source,
+        sourceTree: candidate.tree,
+        version: candidate.version,
+      },
+      select: [],
+      laptop: { action: "download" },
+    });
+  return {
+    controller,
+    coordinator,
+    start,
+    admissionRecorded: admissionRecorded.promise,
+    workerRecorded: workerRecorded.promise,
+    persisted: () => JSON.parse(JSON.stringify(snapshot)) as PlanSnapshot,
+  };
+}
+
 describe("Jones desktop updates", () => {
+  it.each([
+    { metadata: { jonesBuildStartedAt: "2026-10-20T20:13:43Z" }, expected: "2026-10-20T20:13:43Z" },
+    { metadata: {}, expected: undefined },
+    { metadata: { jonesBuildStartedAt: "invalid" }, expected: undefined },
+    {
+      metadata: { version: "another-build", jonesBuildStartedAt: "2026-10-20T20:13:43Z" },
+      expected: undefined,
+    },
+  ])(
+    "pairs installed build time with the running version: $metadata",
+    async ({ metadata, expected }) => {
+      const f = await fixture(true, undefined, false, metadata);
+      try {
+        await f.controller.configure();
+        expect(f.controller.state.jones?.currentVersion).toBe(
+          f.options.initialState.currentVersion,
+        );
+        expect(f.controller.state.jones?.currentBuildStartedAt).toBe(expected);
+        expect(f.controller.state.jones?.capability.check).toBe(true);
+        const manifest = NodePath.join(f.app, "package.json");
+        const content = JSON.parse(await NodeFSP.readFile(manifest, "utf8"));
+        delete content.jonesBuildStartedAt;
+        await NodeFSP.writeFile(manifest, JSON.stringify(content));
+        await f.controller.configure();
+        expect(f.controller.state.jones?.currentBuildStartedAt).toBeUndefined();
+      } finally {
+        await f.cleanup();
+      }
+    },
+  );
+  it("clears an offered time when a replacement candidate has no recorded time", async () => {
+    const f = await fixture();
+    try {
+      await f.controller.configure();
+      await f.controller.check();
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
+      await f.controller.check();
+      expect(f.controller.state.jones?.provenance?.artifactId).toBe(99);
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBeUndefined();
+      await f.controller.download();
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBeUndefined();
+      expect(candidate).not.toHaveProperty("buildStartedAt");
+    } finally {
+      await f.cleanup();
+    }
+  });
   it("re-adopts a mismatched stable bundle and leaves Check, Download and Install usable", async () => {
     const f = await fixture(false);
     const nativeCommand = vi.mocked(NodeChildProcess.execFile);
@@ -399,6 +558,7 @@ describe("Jones desktop updates", () => {
       await controller.check();
       expect(await controller.download()).toEqual({ accepted: true, completed: true });
       expect(controller.state.jones?.capability).toEqual({
+        recoveryPolicy: 1,
         check: true,
         download: true,
         install: true,
@@ -416,7 +576,7 @@ describe("Jones desktop updates", () => {
             NodePath.join(controller.updaterRoot, "transactions", id, "continuation.json"),
             JSON.stringify({
               prepared: true,
-              preparationClaimProtocol: 2,
+              preparationClaimProtocol: 3,
               stagedHandle,
               transactionId: id,
             }),
@@ -550,7 +710,7 @@ describe("Jones desktop updates", () => {
             ),
             JSON.stringify({
               prepared: true,
-              preparationClaimProtocol: 2,
+              preparationClaimProtocol: 3,
               stagedHandle: selected,
               transactionId,
             }),
@@ -568,6 +728,7 @@ describe("Jones desktop updates", () => {
         else {
           expect(args?.[3]).toBe("--claim-preparation");
           expect(args?.[4]).toBe(handle);
+          expect(args).toContain("--withdrawable");
           order.push("claim");
           callback(null, claimedPreparation(f.home, args?.[6]), "");
         }
@@ -734,7 +895,7 @@ describe("Jones desktop updates", () => {
               ),
               JSON.stringify({
                 prepared: true,
-                preparationClaimProtocol: 2,
+                preparationClaimProtocol: 3,
                 stagedHandle,
                 transactionId,
               }),
@@ -1115,6 +1276,127 @@ describe("Jones desktop updates", () => {
     },
   );
 
+  it.each(["discarded", "refused", "uncertain"] as const)(
+    "replaces an unaccepted stage only after a %s native discard proves it",
+    async (status) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      try {
+        await f.controller.configure();
+        await f.controller.check();
+        await f.controller.download();
+        await f.controller.check();
+        const next = f.controller.latestAvailable!;
+        expect(next.artifactId).toBe(99);
+        expect(f.controller.state.jones?.stagedHandle).toBe(handle);
+        expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
+        expect(f.controller.preparationHold).toBeUndefined();
+        let discards = 0;
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function" || !Array.isArray(args))
+            throw new Error("Invalid command fixture.");
+          expect(args[3]).toBe("--discard-staged");
+          discards++;
+          void (async () => {
+            if (status === "discarded") await NodeFSP.unlink(String(args[6]));
+            callback(
+              null,
+              JSON.stringify({ protocol: 1, operation: "discard-staged", handle, status }),
+              "",
+            );
+          })().catch((cause: NodeChildProcess.ExecFileException) => callback(cause, "", ""));
+          return new NodeChildProcess.ChildProcess();
+        });
+
+        // Only the latest checked build may replace the stage; a copy of it is not that build.
+        expect(await f.controller.supersede(handle, { ...next })).toBe("refused");
+        expect(await f.controller.supersede("wrong-handle", next)).toBe("refused");
+        expect(discards).toBe(0);
+
+        const reclaimed: Array<{ handle: string; busy: string | null }> = [];
+        const stages = f.stages();
+        const outcome = await f.controller.supersede(handle, next, async (replaced) => {
+          reclaimed.push({ handle: replaced, busy: f.controller.busy });
+          // The fixture reuses one handle, so its next stage needs the replaced app removed.
+          await NodeFSP.rm(NodePath.join(f.home, "runtime", "jones-updates", "apps", replaced), {
+            recursive: true,
+          });
+        });
+        expect(discards).toBe(1);
+        expect(f.controller.busy).toBeNull();
+        if (status === "discarded") {
+          expect(outcome).toBe("replaced");
+          expect(reclaimed).toEqual([{ handle, busy: "reclaim" }]);
+          expect(f.stages()).toBe(stages + 1);
+          expect(f.controller.state.jones?.provenance?.artifactId).toBe(99);
+          // The replacement carries its own build time, which this check did not report.
+          expect(f.controller.state.jones?.provenance?.buildStartedAt).toBeUndefined();
+          expect(f.controller.stagedBuild?.version).toBe(next.version);
+        } else {
+          expect(outcome).toBe(status);
+          expect(reclaimed).toEqual([]);
+          expect(f.stages()).toBe(stages);
+          expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(
+            candidateBuildStartedAt,
+          );
+          expect(f.controller.stagedBuild?.version).toBe(candidate.version);
+          expect(f.controller.preparationHold?.kind).toBe(
+            status === "uncertain" ? "blocked" : undefined,
+          );
+        }
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
+
+  it("binds an out-of-process preparation to its on-disk receipts before selecting it", async () => {
+    const f = await fixture();
+    try {
+      const prepare =
+        (forge: boolean): NonNullable<JonesDesktopUpdateOptions["prepareStage"]> =>
+        async (selected, roots, onVerifying) => {
+          const prepared = await prepareJonesStage(selected, roots, "darwin", {
+            actions: f.options.client!,
+            stageApp: f.options.stageApp!,
+            onVerifying,
+          });
+          return forge
+            ? { ...prepared, app: { ...prepared.app, appDigest: "0".repeat(64) } }
+            : prepared;
+        };
+      const forged = new JonesDesktopUpdateController({
+        ...f.options,
+        prepareStage: prepare(true),
+      });
+      await forged.configure();
+      await forged.check();
+      expect(await forged.download()).toEqual({ accepted: true, completed: false });
+      expect(forged.state.jones?.stagedHandle).toBeUndefined();
+      await NodeFSP.rm(NodePath.join(f.home, "runtime", "jones-updates", "apps", handle), {
+        recursive: true,
+      });
+
+      const phases: Array<string | undefined> = [];
+      const honest = new JonesDesktopUpdateController({
+        ...f.options,
+        prepareStage: prepare(false),
+        onState: async (state) => {
+          phases.push(state.jones?.phase);
+        },
+      });
+      await honest.configure();
+      await honest.check();
+      expect(await honest.download()).toEqual({ accepted: true, completed: true });
+      expect(honest.state.jones?.stagedHandle).toBe(handle);
+      expect(phases).toContain("verifying");
+    } finally {
+      await f.cleanup();
+    }
+  });
+
   it("retains a markerless candidate without preparing or launching native activation", async () => {
     const f = await fixture();
     try {
@@ -1198,6 +1480,220 @@ describe("Jones desktop updates", () => {
         expect(await NodeFSP.readFile(file, "utf8")).toBe("retained-unknown-intent");
         expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
       } finally {
+        await f.cleanup();
+      }
+    },
+  );
+  it.each(["retired", "writer-busy", "uncertain", "wrong-binding"] as const)(
+    "retains current and failed generations while guarded old-success retirement reports %s",
+    async (outcome) => {
+      const f = await fixture(true, "committed");
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      const operations: string[] = [];
+      try {
+        const transactions = NodePath.join(f.home, "runtime", "jones-updates", "transactions");
+        const currentRaw = await NodeFSP.readFile(
+          NodePath.join(transactions, handle, "journal.json"),
+          "utf8",
+        );
+        const current = JSON.parse(currentRaw);
+        const oldId = "1".repeat(64),
+          failedId = "2".repeat(64);
+        const old = NodePath.join(transactions, oldId),
+          failed = NodePath.join(transactions, failedId);
+        await NodeFSP.mkdir(old);
+        await NodeFSP.mkdir(failed);
+        const oldRaw = JSON.stringify({
+          ...current,
+          intent: { ...current.intent, transactionId: oldId },
+        });
+        await NodeFSP.writeFile(NodePath.join(old, "journal.json"), oldRaw);
+        await NodeFSP.writeFile(NodePath.join(old, "retained-payload"), "old recovery");
+        await NodeFSP.writeFile(
+          NodePath.join(failed, "journal.json"),
+          JSON.stringify({
+            ...current,
+            phase: "rolled-back",
+            intent: { ...current.intent, transactionId: failedId },
+          }),
+        );
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function") throw new Error("Missing callback.");
+          const operation = String(args?.[3]).slice(2);
+          operations.push(operation);
+          expect(args?.[4]).toBe(oldId);
+          if (operation === "retire-transaction" && outcome === "retired")
+            NodeFS.unlinkSync(NodePath.join(old, "retained-payload"));
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation,
+              transactionId: oldId,
+              status:
+                operation === "inspect-retirement"
+                  ? "ready"
+                  : outcome === "retired"
+                    ? "retired"
+                    : outcome === "uncertain"
+                      ? "uncertain"
+                      : "refused",
+              reason: outcome === "writer-busy" ? outcome : undefined,
+              planSha256: "a".repeat(64),
+              activeBinding:
+                outcome === "wrong-binding" ? { ...f.active, generation: "other" } : f.active,
+              journalSha256: NodeCrypto.createHash("sha256").update(oldRaw).digest("hex"),
+              targets: [{ path: NodePath.join(old, "retained-payload"), bytes: 12 }],
+            }),
+            "",
+          );
+          return new NodeChildProcess.ChildProcess();
+        });
+        await f.controller.configure();
+        expect(operations).toEqual(
+          outcome === "wrong-binding"
+            ? ["inspect-retirement"]
+            : ["inspect-retirement", "retire-transaction"],
+        );
+        expect(
+          await NodeFSP.readFile(NodePath.join(transactions, handle, "journal.json"), "utf8"),
+        ).toBe(currentRaw);
+        expect(await NodeFSP.readFile(NodePath.join(old, "journal.json"), "utf8")).toBe(oldRaw);
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+        if (outcome === "retired") {
+          await expect(NodeFSP.lstat(NodePath.join(old, "retained-payload"))).rejects.toMatchObject(
+            { code: "ENOENT" },
+          );
+        } else {
+          expect(await NodeFSP.readFile(NodePath.join(old, "retained-payload"), "utf8")).toBe(
+            "old recovery",
+          );
+          expect(f.controller.state.message).toContain("Older recovery data remains retained");
+        }
+      } finally {
+        nativeCommand.mockReset();
+        await f.cleanup();
+      }
+    },
+  );
+  it.each(["withdrawn", "uncertain", "wrong-digest", "wrong-binding"] as const)(
+    "recovers a dispatched preparation only with exact withdrawal proof: %s",
+    async (outcome) => {
+      const f = await fixture();
+      const nativeCommand = vi.mocked(NodeChildProcess.execFile);
+      const operations: string[] = [];
+      try {
+        await f.controller.configure();
+        await f.controller.check();
+        await f.controller.download();
+        const updater = NodePath.join(f.home, "runtime", "jones-updates");
+        const staging = NodePath.join(updater, "staging");
+        const selectionPath = NodePath.join(staging, (await NodeFSP.readdir(staging))[0]!);
+        const selection = JSON.parse(await NodeFSP.readFile(selectionPath, "utf8"));
+        selection.app.startupGateProtocol = 1;
+        await NodeFSP.writeFile(selectionPath, JSON.stringify(selection));
+        const stageReceipt = JSON.parse(await NodeFSP.readFile(selection.app.receiptPath, "utf8"));
+        stageReceipt.app = selection.app;
+        await NodeFSP.writeFile(selection.app.receiptPath, JSON.stringify(stageReceipt));
+        const selectionSha256 = NodeCrypto.createHash("sha256")
+          .update(await NodeFSP.readFile(selectionPath))
+          .digest("hex");
+        const directory = NodePath.join(updater, "transactions", handle);
+        await NodeFSP.mkdir(directory, { recursive: true });
+        const claim = {
+          protocol: 1,
+          preparationClaimProtocol: 3,
+          transactionId: handle,
+          stagedHandle: handle,
+          selectionPath,
+          selectionSha256,
+          home: f.home,
+          databasePath: f.databasePath,
+          profile: f.profile,
+          environmentId: f.active.environmentId,
+        };
+        const claimRaw = JSON.stringify(claim) + "\n";
+        const claimSha256 = NodeCrypto.createHash("sha256").update(claimRaw).digest("hex");
+        await NodeFSP.writeFile(NodePath.join(directory, "prepare-intent.json"), claimRaw);
+        await NodeFSP.writeFile(NodePath.join(directory, "prepare-dispatched.json"), claimRaw);
+        nativeCommand.mockImplementation((_command, args, _options, callback) => {
+          if (typeof callback !== "function") throw new Error("Missing callback.");
+          const operation = String(args?.[3]).slice(2);
+          operations.push(operation);
+          expect(args?.[4]).toBe(handle);
+          if (operation === "withdraw-preparation") {
+            expect(args).toContain("--claim-sha256");
+            expect(args).toContain(claimSha256);
+            const proofPath = NodePath.join(directory, "preparation-withdrawal.json");
+            const proofRaw =
+              JSON.stringify({
+                protocol: 1,
+                withdrawalProtocol: 1,
+                transactionId: handle,
+                claimSha256,
+                claim,
+                expected:
+                  outcome === "wrong-binding" ? { ...f.active, generation: "other" } : f.active,
+                evidence: "withdrawal-protocol",
+              }) + "\n";
+            NodeFS.writeFileSync(proofPath, proofRaw);
+            callback(
+              null,
+              JSON.stringify({
+                protocol: 1,
+                operation,
+                transactionId: handle,
+                status: outcome === "uncertain" ? "uncertain" : "withdrawn",
+                claimSha256,
+                proofPath,
+                proofSha256:
+                  outcome === "wrong-digest"
+                    ? "0".repeat(64)
+                    : NodeCrypto.createHash("sha256").update(proofRaw).digest("hex"),
+                reason: outcome === "uncertain" ? "unknown-effect" : undefined,
+              }),
+              "",
+            );
+          } else {
+            if (operation === "retire-preparation")
+              NodeFS.renameSync(directory, NodePath.join(f.home, "retired"));
+            callback(
+              null,
+              JSON.stringify({
+                protocol: 1,
+                operation,
+                transactionId: handle,
+                status: operation === "inspect-preparation" ? "ready" : "retired",
+                evidence: "withdrawn",
+                planSha256: "a".repeat(64),
+              }),
+              "",
+            );
+          }
+          return new NodeChildProcess.ChildProcess();
+        });
+        const restarted = f.restart();
+        await restarted.configure();
+        expect(operations[0]).toBe("withdraw-preparation");
+        if (outcome === "withdrawn") {
+          expect(operations).toEqual([
+            "withdraw-preparation",
+            "inspect-preparation",
+            "retire-preparation",
+          ]);
+          expect(restarted.state.jones?.capability.install).toBe(true);
+          await expect(NodeFSP.lstat(directory)).rejects.toMatchObject({ code: "ENOENT" });
+        } else {
+          expect(operations).toEqual(["withdraw-preparation"]);
+          expect(restarted.state.jones?.phase).toBe("blocked");
+          expect(restarted.state.jones?.capability.install).toBe(false);
+          expect(
+            await NodeFSP.readFile(NodePath.join(directory, "prepare-intent.json"), "utf8"),
+          ).toBe(claimRaw);
+        }
+        expect(await NodeFSP.readFile(f.databasePath, "utf8")).toBe("live-state");
+      } finally {
+        nativeCommand.mockReset();
         await f.cleanup();
       }
     },
@@ -1366,7 +1862,16 @@ describe("Jones desktop updates", () => {
         if (failure === "transport") {
           expect(controller.state.jones?.phase).toBe("blocked");
           expect(controller.state.jones?.capability.reason).toBe("blocked");
-          expect(controller.state.message).toContain("Restart Jones Code");
+          expect(controller.state.message).toContain("writer-unknown");
+          expect(controller.state.message).toContain("Quit Jones Code");
+          expect(controller.state.message).toContain("--retire-preparation");
+          const commands = nativeCommand.mock.calls.length;
+          expect(await controller.install(handle)).toEqual({
+            accepted: false,
+            completed: false,
+            failed: false,
+          });
+          expect(nativeCommand.mock.calls).toHaveLength(commands);
           expect(
             JSON.parse(
               NodeFS.readFileSync(
@@ -1404,8 +1909,10 @@ describe("Jones desktop updates", () => {
         await f.controller.configure();
         await f.controller.check();
         await f.controller.download();
+        expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
         const restored = f.restart();
         await restored.configure();
+        expect(restored.state.jones?.provenance?.buildStartedAt).toBeUndefined();
         expect(restored.state.jones?.phase).toBe("staged");
         expect(restored.state.jones?.stagedHandle).toBe(handle);
         expect(restored.state.jones?.provenance?.artifactId).toBe(candidate.artifactId);
@@ -1448,6 +1955,7 @@ describe("Jones desktop updates", () => {
       await f.controller.check();
       expect(f.controller.state.jones?.provenance?.artifactId).toBe(candidate.artifactId);
       expect(f.controller.state.jones?.provenance?.sourceSha).toBe(candidate.source);
+      expect(f.controller.state.jones?.provenance?.buildStartedAt).toBe(candidateBuildStartedAt);
       expect(f.controller.state.jones?.installedSource).toEqual({
         repository: candidate.repository,
         sha: f.active.sourceSha,
@@ -1472,6 +1980,7 @@ describe("Jones desktop updates", () => {
     try {
       await f.controller.configure();
       expect(f.controller.state.jones?.capability).toEqual({
+        recoveryPolicy: 1,
         check: true,
         download: true,
         install: true,
@@ -1485,3 +1994,999 @@ describe("Jones desktop updates", () => {
     }
   });
 });
+
+it.each(["", "com.jonessystems.jonescode"])(
+  "does not discover preview updates for missing or unadmitted production identity %s",
+  async (bundleIdentifier) => {
+    const f = await fixture();
+    try {
+      const check = vi.fn(async () => ({ state: "no-new" as const }));
+      const controller = new JonesDesktopUpdateController({
+        ...f.options,
+        client: { check, stage: f.options.client!.stage },
+        readInstalledBundleIdentity: async () => ({
+          bundleIdentifier,
+          version: f.active.version,
+          executablePath: f.active.executablePath,
+        }),
+      });
+      await controller.configure();
+      expect(await controller.check()).toBe(true);
+      expect(controller.state.status).toBe("error");
+      expect(check).not.toHaveBeenCalled();
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+it.each(["started", "skipped"] as const)(
+  "reads pre-effect %s journals with current and frozen base decoders",
+  async (relaunch) => {
+    const f = await fixture(true, "rolled-back");
+    try {
+      const journalPath = NodePath.join(
+        f.home,
+        "runtime",
+        "jones-updates",
+        "transactions",
+        handle,
+        "journal.json",
+      );
+      const journal = JSON.parse(await NodeFSP.readFile(journalPath, "utf8"));
+      Object.assign(journal, {
+        preEffect: {
+          phase: "preparing",
+          step: "stop-processes",
+          reason: "preparation-failed",
+          diagnostics: { error: "RuntimeError" },
+          relaunch,
+        },
+        phaseBeforeBlock: "preparing",
+        legacySettlement: {
+          basis: "interrupted-preparation",
+          settledBy: "startup",
+          evidence: { phase: "preparing", manifestUnchanged: true },
+        },
+      });
+      // Frozen pre-C1 decoder from dc0f96bc: optional additions must remain ignorable.
+      const baseJournal = Schema.Struct({
+        intent: JonesInstallIntent,
+        phase: Schema.String,
+        message: Schema.optionalKey(Schema.String),
+        recovery: Schema.optionalKey(
+          Schema.Struct({
+            method: Schema.Literals(["clone", "copy", "sqlite-backup"]),
+            bytes: Schema.Number,
+            startedAt: Schema.Number,
+            completedAt: Schema.Number,
+          }),
+        ),
+      });
+      expect(Schema.decodeUnknownSync(baseJournal)(journal).phase).toBe("rolled-back");
+      await NodeFSP.writeFile(journalPath, JSON.stringify(journal));
+      await f.controller.configure();
+      expect(f.controller.state.jones?.phase).toBe("rolled-back");
+      expect(JSON.stringify(f.controller.state)).toContain(
+        "Update did not start; nothing changed. Transaction " + handle + ".",
+      );
+    } finally {
+      await f.cleanup();
+    }
+  },
+);
+
+it("captures every original kernel requester sequentially with bounded current-helper queries", async () => {
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const roles = [
+    { pid: 41, role: "main" as const },
+    { pid: 42, role: "backend" as const },
+  ];
+  const calls: number[] = [];
+  native.mockImplementation((command, args, options, callback) => {
+    expect(command).toBe("/usr/bin/python3");
+    expect(args?.slice(0, 2)).toEqual(["/current-helper.py", "--process-identity"]);
+    expect(options).toMatchObject({ encoding: "utf8", maxBuffer: 4096 });
+    expect(
+      options !== null && typeof options === "object" && Number(options.timeout),
+    ).toBeLessThanOrEqual(5000);
+    if (typeof callback !== "function") throw new Error("Missing callback");
+    const pid = Number(args?.[2]);
+    calls.push(pid);
+    callback(
+      null,
+      JSON.stringify({ pid, startSec: 123, startUsec: 456, executable: "/Jones" }),
+      "",
+    );
+    return new NodeChildProcess.ChildProcess();
+  });
+  try {
+    const captured = await captureJonesNativeProcesses("/current-helper.py", roles);
+    expect(calls).toEqual([41, 42]);
+    expect(captured.processes).toEqual(roles);
+    expect(captured.proofs).toEqual(
+      roles.map(({ pid }) => ({ pid, startSec: 123, startUsec: 456, executable: "/Jones" })),
+    );
+    const legacy = [{ pid: 9, identity: "exact legacy bytes" }];
+    expect(await captureJonesNativeProcesses("/current-helper.py", legacy)).toEqual({
+      processes: legacy,
+      proofs: legacy,
+    });
+    expect(calls).toEqual([41, 42]);
+  } finally {
+    native.mockReset();
+  }
+});
+
+it.each([
+  "extra",
+  "pid",
+  "boolean",
+  "usec",
+  "birth",
+  "path",
+  "mixed",
+  "error",
+  "stderr",
+  "deadline",
+])("refuses kernel capture without falling back to legacy inspection: %s", async (fault) => {
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const clock = vi.spyOn(performance, "now");
+  let now = 0;
+  clock.mockImplementation(() => now);
+  native.mockImplementation((_command, args, options, callback) => {
+    expect(args?.[1]).toBe("--process-identity");
+    expect(options).toMatchObject({ maxBuffer: 4096, timeout: 5000 });
+    if (typeof callback !== "function") throw new Error("Missing callback");
+    const proof: Record<string, unknown> = {
+      pid: 41,
+      startSec: 123,
+      startUsec: 456,
+      executable: "/Jones",
+    };
+    if (fault === "extra") proof.extra = 1;
+    if (fault === "pid") proof.pid = 42;
+    if (fault === "boolean") proof.startSec = true;
+    if (fault === "usec") proof.startUsec = 1000000;
+    if (fault === "birth") proof.startSec = -1;
+    if (fault === "path") proof.executable = "relative";
+    if (fault === "mixed") proof.identity = "legacy";
+    if (fault === "deadline") now = 30001;
+    callback(
+      fault === "error" ? new Error("inspection failed") : null,
+      JSON.stringify(proof),
+      fault === "stderr" ? "inspection warning" : "",
+    );
+    return new NodeChildProcess.ChildProcess();
+  });
+  try {
+    await expect(
+      captureJonesNativeProcesses("/current-helper.py", [{ pid: 41, role: "main" }]),
+    ).rejects.toThrow();
+    expect(native).toHaveBeenCalledTimes(1);
+  } finally {
+    native.mockReset();
+    clock.mockRestore();
+  }
+});
+
+it("persists original kernel requesters before preparation and retains the single role capture", async () => {
+  const f = await fixture();
+  const native = vi.mocked(NodeChildProcess.execFile);
+  const spawn = vi.mocked(NodeChildProcess.spawn);
+  const preflight = vi.mocked(preflightJonesCandidateStartupGate);
+  const roles = [
+    { pid: 41, role: "main" as const },
+    { pid: 42, role: "backend" as const },
+  ];
+  const processProofs = vi.fn(async () => roles);
+  const originals = roles.map(({ pid }) => ({
+    pid,
+    startSec: 123,
+    startUsec: 456,
+    executable: "/Jones",
+  }));
+  const order: string[] = [];
+  let transactionId = "";
+  const controller = new JonesDesktopUpdateController({
+    ...f.options,
+    processProofs,
+    prepareNative: async (stagedHandle, id) => {
+      order.push("prepare");
+      transactionId = id;
+      const tx = NodePath.join(controller.updaterRoot, "transactions", id);
+      expect(
+        JSON.parse(await NodeFSP.readFile(NodePath.join(tx, "prepare-request.json"), "utf8"))
+          .processes,
+      ).toEqual(originals);
+      roles[1]!.pid = 99;
+      await NodeFSP.writeFile(
+        NodePath.join(tx, "continuation.json"),
+        JSON.stringify({
+          prepared: true,
+          preparationClaimProtocol: 3,
+          stagedHandle,
+          transactionId: id,
+        }),
+      );
+    },
+  });
+  native.mockImplementation((_command, args, _options, callback) => {
+    if (typeof callback !== "function") throw new Error("Missing callback");
+    if (args?.[0] === "--version") callback(null, "Python 3", "");
+    else if (args?.[1] === "--process-identity") {
+      order.push("identity:" + args[2]);
+      callback(null, JSON.stringify(originals.find((p) => p.pid === Number(args[2]))), "");
+    } else if (args?.[3] === "--claim-preparation") {
+      order.push("claim");
+      callback(null, claimedPreparation(f.home, args[6]), "");
+    } else {
+      expect(args?.[3]).toBe("--claim-activation");
+      const tx = NodePath.join(controller.updaterRoot, "transactions", transactionId);
+      expect(
+        JSON.parse(NodeFS.readFileSync(NodePath.join(tx, "activation-request.json"), "utf8"))
+          .processes,
+      ).toEqual([
+        { pid: 41, role: "main" },
+        { pid: 42, role: "backend" },
+      ]);
+      expect(
+        JSON.parse(NodeFS.readFileSync(NodePath.join(tx, "prepare-request.json"), "utf8"))
+          .processes,
+      ).toEqual(originals);
+      callback(
+        null,
+        JSON.stringify({
+          protocol: 1,
+          operation: "claim-activation",
+          handle,
+          transactionId,
+          status: "claimed",
+          intentPath: NodePath.join(tx, "intent.json"),
+        }),
+        "",
+      );
+    }
+    return new NodeChildProcess.ChildProcess();
+  });
+  spawn.mockImplementation(() => {
+    const child = new NodeChildProcess.ChildProcess();
+    void Promise.resolve().then(() => child.emit("spawn"));
+    return child;
+  });
+  try {
+    await controller.configure();
+    await controller.check();
+    await controller.download();
+    preflight.mockResolvedValueOnce(undefined);
+    expect(await controller.install(handle)).toMatchObject({ accepted: true, failed: false });
+    expect(order).toEqual(["identity:41", "identity:42", "claim", "prepare"]);
+    expect(processProofs).toHaveBeenCalledTimes(1);
+  } finally {
+    native.mockReset();
+    spawn.mockReset();
+    preflight.mockReset();
+    await f.cleanup();
+  }
+});
+
+it("publishes one main role and unique backend roles without replacing the main", () => {
+  expect(jonesNativeProcessRoles(41, [42, 41, 42, 43])).toEqual([
+    { pid: 41, role: "main" },
+    { pid: 42, role: "backend" },
+    { pid: 43, role: "backend" },
+  ]);
+  expect(() => jonesNativeProcessRoles(0, [])).toThrow();
+  expect(() => jonesNativeProcessRoles(41, [1.5])).toThrow();
+  expect(() =>
+    jonesNativeProcessRoles(
+      41,
+      Array.from({ length: 256 }, (_, i) => i + 100),
+    ),
+  ).toThrow();
+});
+
+it("binds the plan before native preparation claim and refuses without a helper effect if persistence fails", async () => {
+  const f = await fixture();
+  const command = vi.mocked(NodeChildProcess.execFile);
+  const previousCommand = command.getMockImplementation();
+  const commandCount = command.mock.calls.length;
+  const spawnCount = vi.mocked(NodeChildProcess.spawn).mock.calls.length;
+  const bindLaptopInstall = vi.fn(async () => {
+    throw new Error("plan storage unavailable");
+  });
+  const controller = new JonesDesktopUpdateController({
+    ...f.options,
+    plan: { bindLaptopInstall, recordLaptopOutcome: vi.fn().mockResolvedValue(undefined) },
+  });
+  try {
+    await controller.configure();
+    await controller.check();
+    await controller.download();
+    vi.mocked(preflightJonesCandidateStartupGate).mockResolvedValueOnce(undefined);
+    command.mockImplementation((_command, args, _options, callback) => {
+      if (typeof callback !== "function" || args?.[0] !== "--version")
+        throw new Error("Unexpected helper effect before plan binding.");
+      callback(null, "Python 3", "");
+      return new NodeChildProcess.ChildProcess();
+    });
+    const result = await controller.install(handle, undefined, {
+      operationId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(result.accepted).toBe(false);
+    expect(bindLaptopInstall).toHaveBeenCalledWith(
+      expect.objectContaining({
+        operationId: "11111111-1111-4111-8111-111111111111",
+        stagedHandle: handle,
+        targetSource: candidate.source,
+        targetTree: candidate.tree,
+        fromGeneration: f.active.generation,
+      }),
+    );
+    expect(
+      command.mock.calls
+        .slice(commandCount)
+        .some((call) =>
+          (call[1] as readonly string[] | undefined)?.includes("--claim-preparation"),
+        ),
+    ).toBe(false);
+    expect(vi.mocked(NodeChildProcess.spawn).mock.calls.length).toBe(spawnCount);
+  } finally {
+    if (previousCommand !== undefined) command.mockImplementation(previousCommand);
+    else command.mockReset();
+    await f.cleanup();
+  }
+});
+
+it("exposes Laptop proof only for the validated resumed journal and exact active generation, and rereads it", async () => {
+  const f = await fixture(true, "committed");
+  try {
+    await f.controller.configure();
+    const proof = await f.controller.laptopEvidence();
+    expect(proof).toMatchObject({
+      committedTransactionId: handle,
+      activeGeneration: f.active.generation,
+      activeSource: f.active.sourceSha,
+      activeTree: f.active.sourceTree,
+      activationBlocked: false,
+    });
+    await NodeFSP.writeFile(
+      f.controller.manifestPath,
+      JSON.stringify({ ...f.active, generation: "changed" }),
+    );
+    expect(await f.controller.laptopEvidence()).toMatchObject({ activationBlocked: true });
+    expect((await f.controller.laptopEvidence()).committedTransactionId).toBeUndefined();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("does not let a newer rollback journal hide the committed transaction of the active generation", async () => {
+  const f = await fixture(true, "committed");
+  try {
+    const root = NodePath.join(f.home, "runtime", "jones-updates", "transactions");
+    const current = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(root, handle, "journal.json"), "utf8"),
+    );
+    const later = "9".repeat(64),
+      directory = NodePath.join(root, later);
+    await NodeFSP.mkdir(directory);
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "journal.json"),
+      JSON.stringify({
+        ...current,
+        phase: "rolled-back",
+        intent: { ...current.intent, transactionId: later, expected: f.active },
+      }),
+    );
+    const earlierTime = new Date("2026-10-01T00:00:00Z"),
+      laterTime = new Date("2026-10-02T00:00:00Z");
+    await NodeFSP.utimes(NodePath.join(root, handle, "journal.json"), earlierTime, earlierTime);
+    await NodeFSP.utimes(NodePath.join(directory, "journal.json"), laterTime, laterTime);
+    await f.controller.configure();
+    expect((await f.controller.laptopEvidence()).committedTransactionId).toBe(handle);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("never treats adoption or source equality as a committed Laptop transaction", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.configure();
+    expect((await f.controller.laptopEvidence()).activeSource).toBe(f.active.sourceSha);
+    expect((await f.controller.laptopEvidence()).committedTransactionId).toBeUndefined();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("publishes a stopped transfer without Download failed and retains an unproved worker hold", async () => {
+  const { JonesStagingStopped, JonesStagingExitUnproved } =
+    await import("./stagingWorkerProtocol.ts");
+  const f = await fixture();
+  try {
+    const stopped = new JonesDesktopUpdateController({
+      ...f.options,
+      prepareStage: async () => {
+        throw new JonesStagingStopped();
+      },
+    });
+    await stopped.configure();
+    await stopped.check();
+    expect(await stopped.download()).toMatchObject({ completed: false, stopped: true });
+    expect(stopped.state.jones?.phase).toBe("available");
+    expect(stopped.state.message).toBe("Download stopped. Nothing was installed.");
+    const held = new JonesDesktopUpdateController({
+      ...f.options,
+      prepareStage: async () => {
+        throw new JonesStagingExitUnproved({ pid: 4242, processGroup: 4242 });
+      },
+    });
+    await held.configure();
+    await held.check();
+    expect(await held.download()).toMatchObject({ held: { pid: 4242, processGroup: 4242 } });
+    expect(held.busy).toBe("download");
+    expect(held.state.jones?.phase).toBe("blocked");
+    expect(held.state.message).not.toContain("reopen");
+    expect(await held.download()).toEqual({ accepted: false, completed: false });
+    const copy = new JonesDesktopUpdateController({
+      ...f.options,
+      prepareStage: async () => {
+        throw new JonesStagingExitUnproved({ pid: 4242, processGroup: 4242 }, true);
+      },
+      preparationExited: () => true,
+    });
+    await copy.configure();
+    await copy.check();
+    expect(await copy.download()).toMatchObject({ heldCode: "copy-unconfirmed" });
+    expect((await copy.laptopEvidence()).activationBlocked).toBe(true);
+    expect(copy.busy).toBe("download");
+    expect(await copy.download()).toEqual({ accepted: false, completed: false });
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("keeps the controller and plan held when a stopped leader exits but its preparation group survives", async () => {
+  const f = await fixture();
+  let message: ((raw: unknown) => void) | undefined;
+  let exit: ((code: number | null, signal: string | null) => void) | undefined;
+  let groupAlive = true,
+    leaderExited = false;
+  const ready = Promise.withResolvers<void>();
+  const signal = vi.fn();
+  const child: JonesStagingChild = {
+    pid: 4242,
+    send: () => ready.resolve(),
+    onMessage: (listener) => {
+      message = listener;
+    },
+    onExit: (listener) => {
+      exit = listener;
+    },
+    groupAbsent: () => !groupAlive,
+    signal,
+  };
+  const worker = createJonesStagingWorker(() => child, { stopGraceMs: 15, reapMs: 5 });
+  const h = planControllerFixture(
+    f,
+    {
+      prepareStage: (selected, roots, onVerifying, hooks) =>
+        worker.run(
+          { kind: "prepare", token: hooks.token, candidate: selected, roots, platform: "darwin" },
+          onVerifying,
+          hooks,
+        ),
+      cancelPreparation: worker.cancel,
+      preparationExited: worker.reaped,
+      preparationWorker: worker.heldWorker,
+    },
+    { workerAbsent: () => leaderExited && !groupAlive },
+  );
+  try {
+    await h.controller.configure();
+    await h.controller.check();
+    vi.useFakeTimers();
+    const started = await h.start();
+    await ready.promise;
+    const planId = started.state.current!.planId;
+    const downloadId = started.state.current!.laptop.operations[0]!.operationId;
+    await h.coordinator.request({ type: "laptop", planId, action: "stop" });
+    await vi.advanceTimersByTimeAsync(10);
+    leaderExited = true;
+    exit?.(null, "SIGTERM");
+    expect(message).toBeDefined();
+    expect(worker.reaped(downloadId)).toBe(false);
+    expect((await h.coordinator.request({ type: "read" })).state.view.complete).toBe(false);
+    expect(h.controller.busy).toBe("download");
+    await vi.advanceTimersByTimeAsync(10);
+    const held = await h.coordinator.request({ type: "read" });
+    expect(signal.mock.calls).toEqual([["SIGTERM"], ["SIGKILL"]]);
+    expect(
+      held.state.current!.laptop.operations.every(
+        (operation) => operation.result?.status === "held",
+      ),
+    ).toBe(true);
+    expect(held.state.view.complete).toBe(false);
+    expect(await h.coordinator.preparationHeld()).toBe(true);
+    expect((await h.controller.laptopEvidence()).activationBlocked).toBe(true);
+    expect(
+      (await h.coordinator.request({ type: "laptop", planId, action: "download" })).refused?.code,
+    ).toBe("outstanding-operation");
+    expect(
+      (
+        await h.coordinator.request({
+          type: "dismiss",
+          planId,
+          expectedRevision: held.state.current!.revision,
+        })
+      ).refused?.code,
+    ).toBe("not-complete");
+    expect(await h.controller.download()).toMatchObject({ accepted: false, completed: false });
+    expect(worker.reaped(downloadId)).toBe(false);
+
+    groupAlive = false;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(worker.reaped(downloadId)).toBe(true);
+    const released = await h.coordinator.request({ type: "read" });
+    expect(h.controller.busy).toBeNull();
+    expect(await h.coordinator.preparationHeld()).toBe(false);
+    expect(
+      released.state.current!.laptop.operations.every(
+        (operation) => operation.result?.status === "stopped",
+      ),
+    ).toBe(true);
+    expect(released.state.view.complete).toBe(true);
+  } finally {
+    groupAlive = false;
+    exit?.(null, "SIGKILL");
+    worker.reaped(h.persisted().document.current?.laptop.operations[0]?.operationId ?? "");
+    await worker.close();
+    vi.useRealTimers();
+    await f.cleanup();
+  }
+});
+
+it.each(["before", "during", "after"] as const)(
+  "persists background copy admission when the plan adopts %s admission",
+  async (timing) => {
+    const f = await fixture();
+    const stage = Promise.withResolvers<JonesPreparedStage>();
+    void stage.promise.catch(() => undefined);
+    const ready = Promise.withResolvers<() => Promise<void>>();
+    const verifyingEntered = Promise.withResolvers<void>(),
+      publishGate = Promise.withResolvers<void>();
+    const workerWriteEntered = Promise.withResolvers<void>(),
+      workerWriteGate = Promise.withResolvers<void>();
+    const worker = { pid: 4242, processGroup: 4242 };
+    let adoptionBoundary: PlanSnapshot | undefined;
+    const h = planControllerFixture(
+      f,
+      {
+        prepareStage: async (_candidate, _roots, onVerifying, hooks) => {
+          await hooks.onStarted?.(worker);
+          ready.resolve(onVerifying);
+          return stage.promise;
+        },
+        onState: async (state) => {
+          if (timing === "during" && state.jones?.phase === "verifying") {
+            verifyingEntered.resolve();
+            await publishGate.promise;
+          }
+        },
+      },
+      {
+        beforeWorkerRecord: async (snapshot) => {
+          adoptionBoundary = snapshot;
+          if (timing === "before") {
+            workerWriteEntered.resolve();
+            await workerWriteGate.promise;
+          }
+        },
+      },
+    );
+    let background: ReturnType<JonesDesktopUpdateController["download"]> | undefined;
+    try {
+      await h.controller.configure();
+      await h.controller.check();
+      background = h.controller.download({
+        artifactId: candidate.artifactId,
+        sourceSha: candidate.source,
+      });
+      const admit = await ready.promise;
+      expect(h.persisted().document.current).toBeNull();
+      let admission: Promise<void>;
+      let started: Awaited<ReturnType<typeof h.start>>;
+      if (timing === "after") {
+        await admit();
+        started = await h.start();
+        await h.workerRecorded;
+      } else if (timing === "during") {
+        admission = admit();
+        await verifyingEntered.promise;
+        started = await h.start();
+        await h.workerRecorded;
+        publishGate.resolve();
+        await admission;
+      } else {
+        started = await h.start();
+        await workerWriteEntered.promise;
+        let admitted = false;
+        admission = admit().then(() => {
+          admitted = true;
+        });
+        await Promise.resolve();
+        expect(admitted).toBe(false);
+        workerWriteGate.resolve();
+        await admission;
+      }
+      expect(started.refused).toBeUndefined();
+      await h.admissionRecorded;
+      const persisted = h.persisted();
+      const operation = persisted.document.current!.laptop.operations[0]!;
+      expect(operation.worker).toEqual(worker);
+      expect(operation.result).toMatchObject({ status: "running", code: "copy-admitted" });
+      if (timing !== "before") {
+        expect(adoptionBoundary?.document.current?.laptop.operations[0]?.result?.code).toBe(
+          "copy-admitted",
+        );
+        expect(adoptionBoundary?.document.current?.laptop.operations[0]?.worker).toBeUndefined();
+      }
+      await vi.waitFor(async () =>
+        expect(
+          await h.controller.stopDownload({
+            operationId: operation.operationId,
+            sourceSha: candidate.source,
+          }),
+        ).toBe("not-stoppable-phase"),
+      );
+
+      // Reconstruct both owners from saved bytes, with no stage and positive process/group absence.
+      const prepareStage = vi.fn<NonNullable<JonesDesktopUpdateOptions["prepareStage"]>>();
+      const restarted = planControllerFixture(
+        f,
+        { prepareStage },
+        { persisted, workerAbsent: () => true },
+      );
+      await restarted.controller.configure();
+      await restarted.controller.check();
+      expect(restarted.controller.state.jones?.provenance?.sourceSha).toBe(candidate.source);
+      const read = await restarted.coordinator.request({ type: "read" });
+      const planId = read.state.current!.planId;
+      expect(read.state.current!.laptop.operations[0]!.result).toMatchObject({
+        status: "held",
+        code: "copy-unconfirmed",
+      });
+      expect(read.state.view.complete).toBe(false);
+      expect(await restarted.coordinator.preparationHeld()).toBe(true);
+      expect(await restarted.coordinator.backgroundSuppressed(candidate.source)).toBe(true);
+      expect(
+        (
+          await restarted.coordinator.request({
+            type: "dismiss",
+            planId,
+            expectedRevision: read.state.current!.revision,
+          })
+        ).refused?.code,
+      ).toBe("not-complete");
+      for (const action of ["download", "install"] as const)
+        expect(
+          (await restarted.coordinator.request({ type: "laptop", planId, action })).refused?.code,
+        ).toBe("outstanding-operation");
+      expect(await restarted.controller.download()).toMatchObject({
+        accepted: false,
+        completed: false,
+      });
+      expect((await restarted.controller.install(handle)).accepted).toBe(false);
+      expect(prepareStage).not.toHaveBeenCalled();
+    } finally {
+      publishGate.resolve();
+      workerWriteGate.resolve();
+      stage.reject(new JonesStagingExitUnproved(worker, true));
+      if (background !== undefined) await background;
+      await f.cleanup();
+    }
+  },
+);
+
+it("keeps admitted adoption held if worker binding fails after its admission marker was stored", async () => {
+  const f = await fixture();
+  const stage = Promise.withResolvers<JonesPreparedStage>(),
+    ready = Promise.withResolvers<() => Promise<void>>();
+  void stage.promise.catch(() => undefined);
+  const worker = { pid: 4242, processGroup: 4242 };
+  const h = planControllerFixture(
+    f,
+    {
+      prepareStage: async (_candidate, _roots, onVerifying, hooks) => {
+        await hooks.onStarted?.(worker);
+        ready.resolve(onVerifying);
+        return stage.promise;
+      },
+    },
+    {
+      beforeWorkerRecord: async () => {
+        throw new Error("binding unavailable");
+      },
+    },
+  );
+  let background: ReturnType<JonesDesktopUpdateController["download"]> | undefined;
+  try {
+    await h.controller.configure();
+    await h.controller.check();
+    background = h.controller.download({
+      artifactId: candidate.artifactId,
+      sourceSha: candidate.source,
+    });
+    await (
+      await ready.promise
+    )();
+    await h.start();
+    await h.admissionRecorded;
+    await vi.waitFor(() =>
+      expect(h.persisted().document.current?.laptop.operations[0]?.result).toMatchObject({
+        status: "held",
+        code: "copy-unconfirmed",
+      }),
+    );
+    expect(h.controller.busy).toBe("download");
+    const restarted = planControllerFixture(
+      f,
+      {},
+      { persisted: h.persisted(), workerAbsent: () => true },
+    );
+    await restarted.controller.configure();
+    const read = await restarted.coordinator.request({ type: "read" });
+    expect(read.state.current?.laptop.operations[0]?.result).toMatchObject({
+      status: "held",
+      code: "copy-unconfirmed",
+    });
+    expect(read.state.view.complete).toBe(false);
+    expect(await restarted.coordinator.preparationHeld()).toBe(true);
+  } finally {
+    stage.reject(new JonesStagingExitUnproved(worker, true));
+    if (background !== undefined) await background;
+    await f.cleanup();
+  }
+});
+
+it("uses the current selected native helper for opaque recovery inspection and refuses a changed generation without activation", async () => {
+  const f = await fixture();
+  const command = vi.mocked(NodeChildProcess.execFile),
+    prior = command.getMockImplementation();
+  try {
+    await f.controller.configure();
+    await f.controller.check();
+    await f.controller.download();
+    const binding = {
+      environmentId: EnvironmentId.make(f.active.environmentId),
+      stagedHandle: handle,
+      currentVersion: f.controller.state.currentVersion,
+      expectedInstalledSource: f.active.sourceSha,
+    };
+    const inspected: string[][] = [];
+    command.mockImplementation((program, args, _options, callback) => {
+      if (typeof callback !== "function" || !Array.isArray(args))
+        throw new Error("Invalid native fixture.");
+      expect(program).toBe("/usr/bin/python3");
+      expect(args[3]).toBe("--inspect-recovery");
+      expect(args[4]).toBe(handle);
+      inspected.push(args.map(String));
+      callback(
+        null,
+        JSON.stringify({
+          protocol: 1,
+          firstInstall: false,
+          stateBytes: 900,
+          candidateBytes: 100,
+          volumes: [
+            {
+              role: "state",
+              availableBytes: 500,
+              copyRequiredBytes: 1400,
+              cloneRequiredBytes: 500,
+            },
+          ],
+          clone: { status: "proved" },
+        }),
+        "",
+      );
+      return new NodeChildProcess.ChildProcess();
+    });
+    const preflight = await f.controller.recoveryPreflight(binding);
+    expect(preflight.binding).toEqual(binding);
+    expect(preflight.policies.cloneRequired.admissible).toBe(true);
+    const recovery = { policy: "clone-required", preflightId: preflight.preflightId } as const;
+    await expect(f.controller.validateRecoveryReview(binding, recovery)).resolves.toBeUndefined();
+    expect(inspected).toHaveLength(1);
+    const selectionRaw = await NodeFSP.readFile(inspected[0]![6]!, "utf8");
+    expect(inspected[0]![8]).toBe(
+      NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex"),
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(f.home, "runtime", "jones-active-install.json"),
+      JSON.stringify({ ...f.active, generation: "changed" }),
+    );
+    const result = await f.controller.install(handle, undefined, {
+      operationId: "11111111-1111-4111-8111-111111111111",
+      recovery,
+    });
+    expect(result).toMatchObject({ accepted: false, refusal: "recovery-preflight-stale" });
+    expect(inspected).toHaveLength(1);
+    expect(f.controller.busy).toBeNull();
+  } finally {
+    if (prior !== undefined) command.mockImplementation(prior);
+    else command.mockReset();
+    await f.cleanup();
+  }
+});
+
+it.each(["clone-required", "clone-or-copy"] as const)(
+  "propagates reviewed %s exactly into the native intent",
+  async (policy) => {
+    const f = await fixture();
+    const command = vi.mocked(NodeChildProcess.execFile),
+      prior = command.getMockImplementation();
+    const bindLaptopInstall = vi.fn(async () => {});
+    let transactionId = "";
+    let activationRequests = 0;
+    const controller = new JonesDesktopUpdateController({
+      ...f.options,
+      processProofs: async () => [{ pid: 4242, identity: "synthetic-exact-writer" }],
+      plan: { bindLaptopInstall, recordLaptopOutcome: vi.fn(async () => {}) },
+      prepareNative: async (_handle, tx) => {
+        transactionId = tx;
+        await NodeFSP.writeFile(
+          NodePath.join(f.home, "runtime/jones-updates/transactions", tx, "continuation.json"),
+          JSON.stringify({
+            prepared: true,
+            preparationClaimProtocol: 3,
+            transactionId: tx,
+            stagedHandle: handle,
+          }),
+        );
+      },
+    });
+    try {
+      await controller.configure();
+      await controller.check();
+      await controller.download();
+      command.mockImplementation((_program, args, _options, callback) => {
+        if (typeof callback !== "function" || !Array.isArray(args))
+          throw new Error("Invalid native fixture.");
+        if (args[3] === "--inspect-recovery") {
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              firstInstall: false,
+              stateBytes: 500,
+              candidateBytes: 100,
+              volumes: [
+                {
+                  role: "state",
+                  availableBytes: 2000,
+                  copyRequiredBytes: 1000,
+                  cloneRequiredBytes: 500,
+                },
+              ],
+              clone: { status: "proved" },
+            }),
+            "",
+          );
+        } else if (args[0] === "--version") callback(null, "Python 3", "");
+        else if (args[3] === "--claim-preparation") {
+          transactionId = String(args[6]);
+          callback(null, claimedPreparation(f.home, transactionId), "");
+        } else if (args[3] === "--claim-activation") {
+          activationRequests++;
+          // Hold before activation; source intent is the observable admission boundary.
+          callback(
+            null,
+            JSON.stringify({
+              protocol: 1,
+              operation: "claim-activation",
+              handle,
+              transactionId,
+              status: "refused",
+              reason: "synthetic-hold",
+            }),
+            "",
+          );
+        } else throw new Error("Unexpected native action.");
+        return new NodeChildProcess.ChildProcess();
+      });
+      const input = {
+        environmentId: EnvironmentId.make(f.active.environmentId),
+        stagedHandle: handle,
+        currentVersion: controller.state.currentVersion,
+        expectedInstalledSource: f.active.sourceSha,
+      };
+      const proof = await controller.recoveryPreflight(input);
+      vi.mocked(preflightJonesCandidateStartupGate).mockResolvedValueOnce(undefined);
+      const operationId = "11111111-1111-4111-8111-111111111111";
+      const result = await controller.install(handle, undefined, {
+        operationId,
+        recovery: { policy, preflightId: proof.preflightId },
+      });
+      expect(result.accepted).toBe(false);
+      expect(activationRequests).toBe(1);
+      const intent = JSON.parse(
+        await NodeFSP.readFile(
+          NodePath.join(
+            f.home,
+            "runtime/jones-updates/transactions",
+            transactionId,
+            "activation-request.json",
+          ),
+          "utf8",
+        ),
+      );
+      expect(intent.stateRecovery).toBe(policy === "clone-required" ? "clone-required" : undefined);
+      expect(Object.hasOwn(intent, "stateRecovery")).toBe(policy === "clone-required");
+      expect(bindLaptopInstall).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId, transactionId, stagedHandle: handle }),
+      );
+    } finally {
+      if (prior !== undefined) command.mockImplementation(prior);
+      else command.mockReset();
+      await f.cleanup();
+    }
+  },
+);
+
+it.each([
+  {
+    method: "clone",
+    strictClone: undefined,
+    copyFallback: undefined,
+    policy: undefined,
+    observed: undefined,
+  },
+  {
+    method: "copy",
+    strictClone: false,
+    copyFallback: false,
+    policy: undefined,
+    observed: undefined,
+  },
+  { method: "copy", strictClone: false, copyFallback: true, policy: undefined, observed: "copy" },
+  {
+    method: "clone",
+    strictClone: true,
+    copyFallback: false,
+    policy: "clone-required",
+    observed: "clone",
+  },
+] as const)(
+  "separates requested recovery from proved method %#",
+  async ({ method, strictClone, copyFallback, policy, observed }) => {
+    const f = await fixture(true, "committed");
+    try {
+      const path = NodePath.join(
+        f.home,
+        "runtime/jones-updates/transactions",
+        handle,
+        "journal.json",
+      );
+      const journal = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+      journal.recovery = {
+        method,
+        strictClone,
+        copyFallback,
+        bytes: 100,
+        startedAt: 1_790_000_000,
+        completedAt: 1_790_000_001,
+      };
+      if (policy !== undefined) journal.intent.stateRecovery = policy;
+      await NodeFSP.writeFile(path, JSON.stringify(journal));
+      await f.controller.configure();
+      expect(f.controller.state.jones?.recovery?.method).toBe(observed);
+      if (observed !== undefined)
+        expect(f.controller.state.jones?.recovery?.requested).toBe(policy ?? "clone-or-copy");
+    } finally {
+      await f.cleanup();
+    }
+  },
+);

@@ -1,3 +1,5 @@
+import { useWorkstreamOperations } from "../jones/workstreams/useWorkstreamOperations";
+import type { RetainedOperation } from "@t3tools/client-runtime/jones/workstreams/operations";
 import type {
   T3PlacementResult,
   T3WorkstreamListResult,
@@ -334,6 +336,15 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  readonly operationEntries?: readonly RetainedOperation[];
+  readonly operationsError?: string | null;
+  readonly supportsOperations?: (environmentId: string) => boolean;
+  readonly createWorkstream?: (
+    name: string,
+    options: NativeThreadAssignmentOptions,
+  ) => Promise<string>;
+
+  readonly primaryAssignmentAvailability?: AssignmentAvailability;
   readonly assignmentAvailability?: (thread: {
     readonly environmentId: string;
     readonly id: string;
@@ -346,7 +357,7 @@ export interface WorkstreamListView {
   readonly assignNativeThread?: (
     thread: { readonly environmentId: string; readonly id: string },
     destination: string | null,
-    options: NativeThreadAssignmentOptions,
+    options: NativeThreadAssignmentOptions & { readonly retry?: boolean },
   ) => Promise<void>;
   readonly registrationContext?: WorkstreamsRegistrationContextAcceptedResponse | null;
   readonly loadActionSnapshot?: (options?: {
@@ -687,6 +698,7 @@ export function useWorkstreams(
   const commandRequests = useRef(new Set<BindingOperationRequest>());
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed snapshots and authority to asynchronous workstream operations before accepting results.
   useLayoutEffect(() => {
     nativeThreadsSnapshot.current = stableNativeThreads;
     preferredThreadRef.current = preferredThread;
@@ -702,6 +714,7 @@ export function useWorkstreams(
     // The last good snapshot stays visible until the reload replaces it as a whole.
     setRevision((value) => value + 1);
   });
+  const operations = useWorkstreamOperations({ data, primaryEnvironmentId, refresh });
   useWorkstreamsReconnectRefresh(refresh);
   const refreshAccess = useStableCallback(() => {
     setRemoteRefusals(new Map());
@@ -734,6 +747,7 @@ export function useWorkstreams(
     setStale(true);
   });
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort operations whose accepted registry authority no longer matches the committed binding.
   useEffect(() => {
     for (const operation of commandRequests.current) {
       if (
@@ -744,6 +758,7 @@ export function useWorkstreams(
     }
   }, [currentBindingKey]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Abort and clear all owned command requests when the workstream controller unmounts.
   useEffect(() => {
     const requests = commandRequests.current;
     return () => {
@@ -766,6 +781,7 @@ export function useWorkstreams(
       ),
   );
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the current registry and assignment index, aborting superseded reads on dependency changes.
   useEffect(() => {
     listRequest.current?.abort();
     proofRequest.current?.abort();
@@ -939,6 +955,7 @@ export function useWorkstreams(
   ]);
 
   // Native identity changes only refresh proofs for the committed snapshot; they never clear it.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Refresh live placement proof when native identities change without clearing the committed registry snapshot.
   useEffect(() => {
     if (!placementsEnabled || data === null || assignmentIndex === null) return;
     if (listRequest.current !== null) return;
@@ -1002,6 +1019,7 @@ export function useWorkstreams(
   ]);
 
   // Expiry downgrades verified proof to recorded; it never removes a stored assignment.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the next proof-expiry timer so expired verification is downgraded without dropping stored assignments.
   useEffect(() => {
     const nowMs = Date.parse(verificationNow);
     let next = Number.POSITIVE_INFINITY;
@@ -1147,7 +1165,7 @@ export function useWorkstreams(
   const assignThread = async (
     thread: { readonly environmentId: string; readonly id: string },
     destination: string | null,
-    options: NativeThreadAssignmentOptions,
+    options: NativeThreadAssignmentOptions & { readonly retry?: boolean },
   ) => {
     const started = dataRef.current;
     // Stale stored assignments are display evidence only and never plan a change.
@@ -1158,6 +1176,33 @@ export function useWorkstreams(
     const threadKey = nativeWorkstreamThreadKey(thread.environmentId, thread.id);
     const stored = assignmentIndexRef.current?.entries.get(threadKey);
     if (stored?.state === "conflict") throw new WorkstreamActionError("ambiguous");
+    if (operations.supports(thread.environmentId)) {
+      const previous = operations.entries.find(
+        (entry) =>
+          entry.request?.kind === "set_primary" &&
+          entry.request.thread.environment_id === thread.environmentId &&
+          entry.request.thread.thread_id === thread.id,
+      );
+      const observed =
+        options.retry && previous?.result?.state === "conflict" ? previous.result.observed : null;
+      const primary = stored?.primary;
+      await operations.assign(
+        thread,
+        destination,
+        observed?.kind === "primary"
+          ? { kind: "primary", workstream_id: observed.workstream_id }
+          : observed?.kind === "unassigned"
+            ? { kind: "unassigned" }
+            : primary
+              ? { kind: "primary", workstream_id: primary.workstreamId }
+              : assignmentIndexRef.current?.complete
+                ? { kind: "unassigned" }
+                : { kind: "any" },
+        options,
+      );
+      return;
+    }
+
     const check = () => {
       options.signal?.throwIfAborted();
       if (
@@ -1520,6 +1565,7 @@ export function useWorkstreams(
     readonly environmentId: string;
     readonly id: string;
   }): AssignmentAvailability => {
+    if (operations.supports(thread.environmentId)) return { state: "ready", reason: null };
     if (assignsThroughOwnEnvironment(thread.environmentId)) {
       const refusal = remoteRefusals.get(thread.environmentId);
       return refusal && currentBindingKey === refusal.binding
@@ -1534,6 +1580,13 @@ export function useWorkstreams(
   };
 
   return {
+    operationEntries: operations.entries,
+    operationsError: operations.error,
+    supportsOperations: operations.supports,
+    ...(primaryEnvironmentId && operations.supports(primaryEnvironmentId)
+      ? { createWorkstream: operations.create }
+      : {}),
+    primaryAssignmentAvailability: registrationContextAvailability,
     assignmentAvailability,
     assignsThroughOwnEnvironment,
     assignNativeThread: assignThread,

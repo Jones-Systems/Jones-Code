@@ -22,8 +22,7 @@ export const pendingThreadOrderAtom = Atom.make<PendingThreadOrder | null>(null)
 
 export function usePendingThreadOrder(nowMinute: string, snoozeWakeTick: number) {
   const pending = useAtomValue(pendingThreadOrderAtom);
-  // A timed wake can change section membership without a shell event. Use the
-  // lists' existing clocks to retire that hold and re-enable their move menus.
+  // Clock-driven wakes can change membership without shell events; retire order holds and re-enable moves then.
   useEffect(() => {
     getPendingThreadOrder();
   }, [nowMinute, snoozeWakeTick]);
@@ -51,7 +50,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
     if (current === null) return;
     const configs = appAtomRegistry.get(environmentServerConfigsAtom);
     const ordered = getThreadListV2OrderedSection({
-      threads: appAtomRegistry.get(environmentThreadShells.threadShellsAtom),
+      threads: appAtomRegistry.get(environmentThreadShells.navigationThreadShellsAtom),
       section: current.section,
       now: new Date().toISOString(),
       queuedThreadKeys: appAtomRegistry.get(queuedThreadKeysAtom),
@@ -73,7 +72,7 @@ export function beginPendingThreadOrder(pending: PendingThreadOrder) {
   refreshPendingOrder = refresh;
   appAtomRegistry.set(pendingThreadOrderAtom, pending);
   unsubscribers.push(
-    appAtomRegistry.subscribe(environmentThreadShells.threadShellsAtom, refresh),
+    appAtomRegistry.subscribe(environmentThreadShells.navigationThreadShellsAtom, refresh),
     appAtomRegistry.subscribe(environmentServerConfigsAtom, refresh),
     appAtomRegistry.subscribe(queuedThreadKeysAtom, refresh),
   );

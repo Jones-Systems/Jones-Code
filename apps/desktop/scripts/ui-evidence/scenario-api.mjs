@@ -2,7 +2,6 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import { sha256 } from "./provenance.mjs";
-
 export function validateCaptureName(name) {
   if (typeof name !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,79}$/.test(name))
     throw new Error("Capture name must be a short plain filename stem");
@@ -28,7 +27,13 @@ export async function loadScenario(file) {
     throw new Error("Scenario changed during loading");
   if (typeof module.default !== "function")
     throw new Error("Scenario must export a default async function");
-  return { run: module.default, identity: { path: file, sha256: sha256(bytes) } };
+  return {
+    run: module.default,
+    identity: {
+      path: file,
+      sha256: sha256(bytes),
+    },
+  };
 }
 export function pngDimensions(bytes) {
   if (
@@ -40,7 +45,10 @@ export function pngDimensions(bytes) {
   const width = bytes.readUInt32BE(16),
     height = bytes.readUInt32BE(20);
   if (!width || !height) throw new Error("Screenshot has invalid dimensions");
-  return { width, height };
+  return {
+    width,
+    height,
+  };
 }
 // This function is serialized into the isolated renderer; keep it self-contained.
 export async function requestLocalBackend(
@@ -48,7 +56,7 @@ export async function requestLocalBackend(
   { desktopBridge, fetch, WebSocket, setTimeout, clearTimeout } = globalThis,
 ) {
   if (
-    method !== "snapshot" &&
+    !["snapshot", "fixtureThread", "registerSyntheticProvider"].includes(method) &&
     (method !== "dispatch" ||
       !["project.create", "thread.create", "thread.metadata.update"].includes(payload?.type))
   )
@@ -93,26 +101,79 @@ export async function requestLocalBackend(
       payload.type === "thread.create" &&
       (payload.createdBy !== "user" ||
         payload.creationSource !== "web" ||
-        payload.branch !== null ||
-        payload.worktreePath !== null)
+        !(
+          (payload.branch === null && payload.worktreePath === null) ||
+          (/^native-self-config-[a-zA-Z0-9-]{1,80}$/.test(payload.threadId) &&
+            payload.branch === "native-self-config-execution" &&
+            payload.worktreePath === "/scratch/workspace/native-self-config-execution" &&
+            ["native-fixture-a", "native-fixture-b"].includes(payload.modelSelection?.instanceId))
+        ))
     )
-      throw new Error("Fixture thread must use the private project without a worktree");
+      throw new Error(
+        "Fixture thread must use the private project or exact synthetic linked worktree",
+      );
+  }
+  if (
+    method === "fixtureThread" &&
+    (Object.keys(payload ?? {}).join() !== "threadId" ||
+      !/^native-self-config-[a-zA-Z0-9-]{1,80}$/.test(payload.threadId))
+  )
+    throw new Error("Readback is limited to native self-configuration fixture threads");
+  if (method === "registerSyntheticProvider") {
+    if (
+      Object.keys(payload ?? {}).join() !== "instanceId" ||
+      !["native-fixture-a", "native-fixture-b"].includes(payload.instanceId)
+    )
+      throw new Error("Only the fixed synthetic provider fixtures may be registered");
+    const letter = payload.instanceId.endsWith("-a") ? "A" : "B";
+    payload = {
+      patch: {},
+      providerInstanceMutation: {
+        operation: "create",
+        instanceId: payload.instanceId,
+        instance: {
+          driver: "codex",
+          displayName: "Synthetic " + letter,
+          enabled: true,
+          config: {
+            binaryPath: "/scratch/home/native-self-config/codex-" + letter,
+            homePath: "/scratch/home/native-self-config/account",
+          },
+        },
+      },
+    };
   }
   const token = await desktopBridge.getLocalEnvironmentBearerToken();
-  const headers = { authorization: `Bearer ${token}` };
-  if (method === "snapshot") {
-    const response = await fetch(new URL("/api/orchestration/shell", endpoint.httpBaseUrl), {
-      headers: { ...headers, "x-t3-orchestration-protocol": "2" },
-      credentials: "omit",
-      signal: AbortSignal.timeout(15000),
-    });
+  const headers = {
+    authorization: `Bearer ${token}`,
+  };
+  if (method === "snapshot" || method === "fixtureThread") {
+    const response = await fetch(
+      new URL(
+        method === "snapshot"
+          ? "/api/orchestration/shell"
+          : "/api/orchestration/threads/" + encodeURIComponent(payload.threadId),
+        endpoint.httpBaseUrl,
+      ),
+      {
+        headers: {
+          ...headers,
+          "x-t3-orchestration-protocol": "2",
+        },
+        credentials: "omit",
+        signal: AbortSignal.timeout(15000),
+      },
+    );
     if (!response.ok) throw new Error(`Snapshot HTTP status ${response.status}`);
     return response.json();
   }
-  if (payload.type === "project.create") {
+  if (method === "dispatch" && payload.type === "project.create") {
     const response = await fetch(new URL("/api/projects/mutate", endpoint.httpBaseUrl), {
       method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
+      headers: {
+        ...headers,
+        "content-type": "application/json",
+      },
       credentials: "omit",
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15000),
@@ -131,6 +192,9 @@ export async function requestLocalBackend(
   if (typeof ticket !== "string" || !ticket)
     throw new Error("WebSocket authorization missing ticket");
   const url = new URL(endpoint.wsBaseUrl);
+  if (url.pathname === "" || url.pathname === "/") {
+    url.pathname = "/ws";
+  }
   url.searchParams.set("wsTicket", ticket);
   url.searchParams.set("orchestrationProtocol", "2");
   return new Promise((resolve, reject) => {
@@ -152,7 +216,10 @@ export async function requestLocalBackend(
           JSON.stringify({
             _tag: "Request",
             id: "0",
-            tag: "orchestration.dispatchCommand",
+            tag:
+              method === "registerSyntheticProvider"
+                ? "server.updateSettings"
+                : "orchestration.dispatchCommand",
             payload,
             headers: [],
           }),
@@ -166,7 +233,11 @@ export async function requestLocalBackend(
       try {
         const message = JSON.parse(data);
         if (message._tag === "Ping") {
-          socket.send(JSON.stringify({ _tag: "Pong" }));
+          socket.send(
+            JSON.stringify({
+              _tag: "Pong",
+            }),
+          );
           return;
         }
         if (message._tag !== "Exit" || String(message.requestId) !== "0") return;
@@ -180,7 +251,6 @@ export async function requestLocalBackend(
     socket.addEventListener("close", () => finish(new Error("Fixture RPC closed before result")));
   });
 }
-
 export function createScenarioContext({
   electronApp,
   page,
@@ -190,12 +260,24 @@ export function createScenarioContext({
   theme,
   configuration = {},
   restoreConnectivity,
+  restartApplication,
 }) {
-  const state = { steps: [], captures: [], assertions: [], fixture: {}, logs: [], topology: null };
+  const state = {
+    steps: [],
+    captures: [],
+    assertions: [],
+    fixture: {},
+    logs: [],
+    topology: null,
+  };
   async function topology() {
     const result = await page.evaluate(() => {
       const values = window.desktopBridge.getLocalEnvironmentBootstraps();
-      return values.map(({ id, httpBaseUrl, wsBaseUrl }) => ({ id, httpBaseUrl, wsBaseUrl }));
+      return values.map(({ id, httpBaseUrl, wsBaseUrl }) => ({
+        id,
+        httpBaseUrl,
+        wsBaseUrl,
+      }));
     });
     if (result.length !== 1 || result[0].id !== "primary")
       throw new Error("Expected exactly one isolated primary backend");
@@ -206,12 +288,19 @@ export function createScenarioContext({
   }
   async function request(method, payload) {
     const endpoint = await topology();
-    return page.evaluate(requestLocalBackend, { endpoint, method, payload });
+    return page.evaluate(requestLocalBackend, {
+      endpoint,
+      method,
+      payload,
+    });
   }
-
   const ctx = {
-    electronApp,
-    page,
+    get electronApp() {
+      return electronApp;
+    },
+    get page() {
+      return page;
+    },
     workspace,
     artifacts,
     size,
@@ -222,7 +311,11 @@ export function createScenarioContext({
     async step(name, fn) {
       if (typeof name !== "string" || !name.trim() || state.steps.length >= 1000)
         throw new Error("Invalid scenario step");
-      const entry = { name, status: "running", startedAt: new Date().toISOString() };
+      const entry = {
+        name,
+        status: "running",
+        startedAt: new Date().toISOString(),
+      };
       state.steps.push(entry);
       const start = performance.now();
       try {
@@ -237,31 +330,40 @@ export function createScenarioContext({
       }
     },
     assert(condition, name) {
-      state.assertions.push({ name, status: condition ? "passed" : "failed" });
+      state.assertions.push({
+        name,
+        status: condition ? "passed" : "failed",
+      });
       if (!condition) throw new Error(`Scenario assertion failed: ${name}`);
     },
     async capture(name) {
       validateCaptureName(name);
       if (state.captures.some((capture) => capture.name === name))
         throw new Error("Duplicate capture name");
-      const window = await electronApp.evaluate(({ BrowserWindow, nativeTheme }) => {
-        const win = BrowserWindow.getAllWindows()[0];
+      const mainWindow = await electronApp.browserWindow(page);
+      const window = await electronApp.evaluate(({ nativeTheme }, win) => {
         return {
           bounds: win.getBounds(),
           theme: nativeTheme.shouldUseDarkColors ? "dark" : "light",
           themeSource: nativeTheme.themeSource,
         };
-      });
+      }, mainWindow);
       const viewport = await page.evaluate(() => ({
         width: innerWidth,
         height: innerHeight,
         scale: devicePixelRatio,
         renderedTheme: document.documentElement.classList.contains("dark") ? "dark" : "light",
       }));
-      const bytes = await page.screenshot({ type: "png", animations: "disabled" });
+      const bytes = await page.screenshot({
+        type: "png",
+        animations: "disabled",
+      });
       const dimensions = pngDimensions(bytes);
       const file = `${name}.png`;
-      await NodeFSP.writeFile(NodePath.join(artifacts, file), bytes, { flag: "wx", mode: 0o600 });
+      await NodeFSP.writeFile(NodePath.join(artifacts, file), bytes, {
+        flag: "wx",
+        mode: 0o600,
+      });
       const capture = {
         name,
         file,
@@ -276,13 +378,38 @@ export function createScenarioContext({
       return capture;
     },
     async completeOnboarding() {
-      const heading = page.getByRole("heading", { name: "Connect your computers", exact: true });
+      const heading = page.getByRole("heading", {
+        name: "Connect your computers",
+        exact: true,
+      });
       if (!(await heading.isVisible())) return false;
-      await page.getByRole("button", { name: "Continue", exact: true }).click();
-      await page.getByRole("heading", { name: "Connect your agents", exact: true }).waitFor();
-      await page.getByRole("button", { name: "Continue", exact: true }).click();
-      await page.getByRole("button", { name: "Do not import projects", exact: true }).click();
-      await heading.waitFor({ state: "hidden" });
+      await page
+        .getByRole("button", {
+          name: "Continue",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("heading", {
+          name: "Connect your agents",
+          exact: true,
+        })
+        .waitFor();
+      await page
+        .getByRole("button", {
+          name: "Continue",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("button", {
+          name: "Do not import projects",
+          exact: true,
+        })
+        .click();
+      await heading.waitFor({
+        state: "hidden",
+      });
       await page.waitForFunction(
         () => location.pathname !== "/welcome" && !location.hash.includes("/welcome"),
       );
@@ -297,8 +424,31 @@ export function createScenarioContext({
       return request("dispatch", command);
     },
     readSnapshot: () => request("snapshot"),
+    async restart() {
+      if (!restartApplication) throw new Error("Application restart is unavailable");
+      const replacement = await restartApplication();
+      electronApp = replacement.electronApp;
+      page = replacement.page;
+      restoreConnectivity = replacement.restoreConnectivity;
+      state.topology = null;
+      (state.restarts ??= []).push(replacement.evidence);
+      await ctx.topology();
+      await ctx.setWindowSize(size.width, size.height);
+      await ctx.setTheme(ctx.theme);
+      return replacement.evidence;
+    },
+    readFixtureThread: (threadId) =>
+      request("fixtureThread", {
+        threadId,
+      }),
+    registerSyntheticProvider: (instanceId) =>
+      request("registerSyntheticProvider", {
+        instanceId,
+      }),
     async reload() {
-      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.reload({
+        waitUntil: "domcontentloaded",
+      });
       await page.waitForFunction(() => Boolean(window.desktopBridge));
       if (restoreConnectivity) await restoreConnectivity();
     },
@@ -306,14 +456,27 @@ export function createScenarioContext({
       if (!["dark", "light", "system"].includes(value)) throw new Error("Invalid theme");
       const actual = await electronApp.evaluate(({ nativeTheme }, desired) => {
         nativeTheme.themeSource = desired;
-        return { themeSource: nativeTheme.themeSource, dark: nativeTheme.shouldUseDarkColors };
+        return {
+          themeSource: nativeTheme.themeSource,
+          dark: nativeTheme.shouldUseDarkColors,
+        };
       }, value);
       if (
         actual.themeSource !== value ||
         (value !== "system" && actual.dark !== (value === "dark"))
       )
         throw new Error("Native theme readback mismatch");
-      await page.emulateMedia({ colorScheme: actual.dark ? "dark" : "light" });
+      await page.emulateMedia({
+        colorScheme: actual.dark ? "dark" : "light",
+      });
+      // Use the app's actual preference handler in this private synthetic profile.
+      // Server default-theme adoption can select light independently of native media.
+      await page.evaluate((appearance) => {
+        localStorage.setItem("t3code:theme", "system");
+        localStorage.setItem("t3code:theme-appearance-mode", appearance);
+        localStorage.removeItem("t3code:theme-halves:v1");
+        window.dispatchEvent(new StorageEvent("storage", { key: "t3code:theme" }));
+      }, value);
       await page.waitForFunction(
         (dark) => matchMedia("(prefers-color-scheme: dark)").matches === dark,
         actual.dark,
@@ -324,11 +487,16 @@ export function createScenarioContext({
       );
       const finalNative = await electronApp.evaluate(({ nativeTheme }, desired) => {
         nativeTheme.themeSource = desired;
-        return { themeSource: nativeTheme.themeSource, dark: nativeTheme.shouldUseDarkColors };
+        return {
+          themeSource: nativeTheme.themeSource,
+          dark: nativeTheme.shouldUseDarkColors,
+        };
       }, value);
       if (finalNative.themeSource !== value || finalNative.dark !== actual.dark)
         throw new Error("Final native theme fixture readback mismatch");
       state.themeFixture = {
+        preferenceFixture:
+          "private profile system palette and explicit appearance via app storage handler",
         native: finalNative,
         cssMedia: actual.dark ? "dark" : "light",
         kind: "Native theme and CSS media fixture; no user preference persistence claim",
@@ -345,13 +513,17 @@ export function createScenarioContext({
         ![width, height].every((value) => Number.isInteger(value) && value >= 320 && value <= 8192)
       )
         throw new Error("Invalid window dimensions");
+      const mainWindow = await electronApp.browserWindow(page);
       return electronApp.evaluate(
-        ({ BrowserWindow }, dimensions) => {
-          const win = BrowserWindow.getAllWindows()[0];
-          win.setSize(...dimensions);
+        (_, { win, width, height }) => {
+          win.setSize(width, height);
           return win.getBounds();
         },
-        [width, height],
+        {
+          win: mainWindow,
+          width,
+          height,
+        },
       );
     },
     log(message) {

@@ -26,6 +26,7 @@ import {
 const CONTINUE_PROMPT = "Continue where you left off.";
 
 const MAX_CONTINUATION_CHAIN = 3;
+const CONTINUATION_LOOP_WINDOW_MS = 5 * 60 * 1_000;
 
 export { restartContinuationRun } from "./RestartContinuationPolicy.ts";
 
@@ -77,11 +78,15 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
     if (projection.thread.providerInstanceId !== source.providerInstanceId) return;
     // A turn that keeps crashing the server would otherwise restart it forever.
     let chainLength = 0;
+    const loopWindowStart =
+      DateTime.toEpochMillis(source.completedAt ?? source.requestedAt) -
+      CONTINUATION_LOOP_WINDOW_MS;
     for (
       let run: OrchestrationV2Run | undefined = source;
       run?.restartContinuationOfRunId !== undefined && chainLength < MAX_CONTINUATION_CHAIN;
       run = projection.runs.find((candidate) => candidate.id === run?.restartContinuationOfRunId)
     ) {
+      if (DateTime.toEpochMillis(run.requestedAt) < loopWindowStart) break;
       chainLength += 1;
     }
     if (chainLength >= MAX_CONTINUATION_CHAIN) {
@@ -151,11 +156,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         restartContinuationOfRunId: input.sourceRunId,
       })
       .pipe(
-        // The project turned this instance off since the restart. No turn
-        // resumes, and the success path below still runs so a delegated
-        // child waiting on this run is recovered immediately instead of
-        // after EffectWorker exhausts its retries on a refusal that will
-        // not change.
+        // Disabled instances cannot resume; still run success cleanup so delegated children recover without futile retries.
         Effect.catchTags({
           ThreadManagementProviderInstanceDisabledError: (error) =>
             Effect.logInfo("orchestration-v2.restart-continuation.instance-disabled", {
@@ -167,8 +168,7 @@ export const continueRestartedRun = Effect.fn("RestartContinuation.continueResta
         }),
       );
   },
-  // A delegated child this declined to continue still owes its parent a
-  // result. Once a continuation run exists this is a no-op; that run settles it.
+  // Declined child continuations still owe parent results; existing continuation runs settle them instead.
   (effect, input) =>
     effect.pipe(
       Effect.andThen(

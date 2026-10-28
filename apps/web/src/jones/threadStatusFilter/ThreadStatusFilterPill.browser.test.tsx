@@ -1,6 +1,6 @@
-import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { act, render as renderTest, type Screen } from "../../../test/render";
+
+import { describe, expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 import { ProviderInstanceId, ThreadId } from "@t3tools/contracts";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -41,7 +41,7 @@ const done = makeThreadFixture({
     completedAt: "2026-10-17T12:00:00.000Z",
   },
 });
-let root: Root;
+let root: Screen;
 let container: HTMLDivElement;
 function Fixture({
   layout,
@@ -75,25 +75,44 @@ function Fixture({
 const button = () => container.querySelector("button")!;
 const titles = () => [...container.querySelectorAll("li")].map((row) => row.textContent);
 const clickAt = async (timeStamp: number) =>
-  act(async () => {
+  await act(async () => {
     const event = new MouseEvent("click", { bubbles: true, detail: 1 });
     Object.defineProperty(event, "timeStamp", { value: timeStamp });
     button().dispatchEvent(event);
   });
-beforeEach(() => {
-  vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  container.remove();
-  vi.unstubAllGlobals();
-});
+async function setupTest(): Promise<AsyncDisposable> {
+  let initialized = false;
+  let ownedContainer: HTMLDivElement | undefined;
+  async function cleanup() {
+    const screen = initialized ? root : undefined;
+    try {
+      await act(async () => screen?.unmount());
+    } finally {
+      try {
+        await screen?.[Symbol.asyncDispose]();
+      } finally {
+        ownedContainer?.remove();
+        vi.unstubAllGlobals();
+      }
+    }
+  }
+  try {
+    ownedContainer = container = document.createElement("div");
+    document.body.append(container);
+    root = await renderTest(null, { container: container, router: false });
+    initialized = true;
+
+    return { [Symbol.asyncDispose]: cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 describe.each(["current", "legacy"] as const)("%s status shortcut", (layout) => {
   it("applies the first click immediately, accepts 250 ms, consumes a third click and reverses", async () => {
-    await act(async () => root.render(<Fixture layout={layout} />));
+    await using _fixture = await setupTest();
+    await act(async () => await root.rerender(<Fixture layout={layout} />));
     const target = button();
     const bounds = target.getBoundingClientRect();
     await clickAt(1000);
@@ -111,35 +130,68 @@ describe.each(["current", "legacy"] as const)("%s status shortcut", (layout) => 
     expect(getComputedStyle(workingNumber).textDecorationLine).toContain("line-through");
     await clickAt(1300);
     expect(titles()).toEqual(["Input", "Done", "Idle"]);
-    await act(async () =>
-      root.render(
-        <Fixture
-          layout={layout}
-          rows={[working, input, done, { ...idle, runtime: working.runtime }]}
-        />,
-      ),
+    await act(
+      async () =>
+        await root.rerender(
+          <Fixture
+            layout={layout}
+            rows={[working, input, done, { ...idle, runtime: working.runtime }]}
+          />,
+        ),
     );
     expect(titles()).toEqual(["Input", "Done"]);
     await clickAt(1551);
     expect(titles()).toEqual(["Working", "Input", "Done", "Idle"]);
   });
+  it("counts Waiting on the first click, hides it on double click, and restores roster order", async () => {
+    await using _fixture = await setupTest();
+    const waiting = makeThreadFixture({
+      ...done,
+      id: ThreadId.make("waiting"),
+      title: "Waiting",
+      runtime: { ...working.runtime!, status: "idle" },
+      pendingBackgroundTasks: [{ taskId: "monitor", kind: "monitor" }],
+    });
+    const approval = makeThreadFixture({
+      ...waiting,
+      id: ThreadId.make("approval"),
+      title: "Approval",
+      hasPendingApprovals: true,
+    });
+    const waitingInput = {
+      ...waiting,
+      ...input,
+      runtime: waiting.runtime,
+      pendingBackgroundTasks: waiting.pendingBackgroundTasks,
+    };
+    const rows = [done, waiting, approval, idle, working, waitingInput];
+    await act(async () => await root.rerender(<Fixture layout={layout} rows={rows} />));
+    await clickAt(1000);
+    expect(titles()).toEqual(["Waiting", "Working"]);
+    expect(button().getAttribute("aria-label")).toContain(
+      "2 working, 2 needs input, 1 done. Showing working.",
+    );
+    await clickAt(1200);
+    expect(titles()).toEqual(["Done", "Approval", "Idle", "Input"]);
+    await clickAt(1501);
+    expect(titles()).toEqual(rows.map((row) => row.title));
+    expect(button().getAttribute("aria-label")).toContain("Showing all threads.");
+  });
   it("cycles at 251 ms even if the operating system would group the clicks", async () => {
-    await act(async () => root.render(<Fixture layout={layout} />));
+    await using _fixture = await setupTest();
+    await act(async () => await root.rerender(<Fixture layout={layout} />));
     await clickAt(1000);
     await clickAt(1251);
     expect(titles()).toEqual(["Input"]);
   });
   it("keeps Enter and Space on the ordinary cycle and breaks the pointer sequence", async () => {
-    await act(async () => root.render(<Fixture layout={layout} />));
+    await using _fixture = await setupTest();
+    await act(async () => await root.rerender(<Fixture layout={layout} />));
     await clickAt(1000);
-    await act(async () => {
-      button().focus();
-      await userEvent.keyboard("{Enter}");
-    });
+    button().focus();
+    await userEvent.keyboard("{Enter}");
     expect(titles()).toEqual(["Input"]);
-    await act(async () => {
-      await userEvent.keyboard(" ");
-    });
+    await userEvent.keyboard(" ");
     expect(titles()).toEqual(["Done"]);
     await clickAt(1100);
     expect(titles()).toEqual(["Working", "Input", "Done", "Idle"]);

@@ -23,6 +23,7 @@ import {
   readAcknowledgedMilestone,
   runScenario,
   scenarioSecrets,
+  sanitizeFailurePageState,
 } from "./install-preview-agent.mjs";
 import {
   hashTree,
@@ -35,6 +36,7 @@ import {
   withOwnedScratch,
   fixtureProxy,
   scenarioSteps,
+  rendererSteps,
   indexedDbBrowserProof,
   waitInactive,
   waitProviderReady,
@@ -246,19 +248,129 @@ NodeTest.test(
   },
 );
 
-NodeTest.test("a deliberately wrong renderer assertion cannot pass", () => {
-  const snapshot = { visibleText: "Jones main · Setup required" };
-  assertVisible(snapshot, "Setup required");
-  assertVisible(snapshot, "Committed", true);
-  NodeAssert.throws(() => assertVisible(snapshot, "Committed"), /Missing visible text/);
-  NodeAssert.throws(
-    () => assertVisible(snapshot, "Setup required", true),
-    /Unexpected visible text/,
-  );
-  NodeAssert.throws(
-    () => assertVisible({ screenshotPath: "/owned/image.png" }, "Setup required"),
+NodeTest.test("a deliberately wrong renderer assertion cannot pass", async () => {
+  const call = async (name, { tabId, expression }) => {
+    NodeAssert.equal(name, "preview_evaluate");
+    NodeAssert.equal(tabId, "owned-tab");
+    return {
+      value: new Function("document", `return ${expression}`)({
+        body: { innerText: "Jones main · Setup required" },
+      }),
+    };
+  };
+  await assertVisible(call, "owned-tab", { contains: ["Setup required"], excludes: ["Committed"] });
+  await NodeAssert.rejects(
+    assertVisible(call, "owned-tab", { contains: ["Committed"] }),
     /Missing visible text/,
   );
+  await NodeAssert.rejects(
+    assertVisible(call, "owned-tab", { excludes: ["Setup required"] }),
+    /Unexpected visible text/,
+  );
+});
+
+NodeTest.test(
+  "text assertions reject incomplete, invalid, and unavailable evaluations",
+  async () => {
+    for (const value of [
+      undefined,
+      "Setup required",
+      [],
+      [true],
+      [true, undefined],
+      [true, false, false],
+    ])
+      await NodeAssert.rejects(
+        assertVisible(async () => ({ value }), "owned-tab", {
+          contains: ["Setup required"],
+          excludes: ["Committed"],
+        }),
+      );
+    const failure = new Error("Preview unavailable");
+    await NodeAssert.rejects(
+      assertVisible(
+        async () => {
+          throw failure;
+        },
+        "owned-tab",
+        { contains: ["Setup required"] },
+      ),
+      (error) => error === failure,
+    );
+  },
+);
+
+NodeTest.test("capture assertions inspect text beyond the snapshot budget", async (t) => {
+  const prefix = "Connections settings\n".repeat(80);
+  const phrase = 'Source matches this app. "quoted"\nsecond line';
+  for (const fixture of [
+    { name: "required text after the cutoff", text: phrase },
+    { name: "missing required text", text: "Other source", error: /Missing visible text/ },
+    {
+      name: "forbidden text after the cutoff",
+      text: `${phrase}\nForbidden status`,
+      contains: [],
+      error: /Unexpected visible text/,
+    },
+  ]) {
+    await t.test(fixture.name, async () => {
+      const innerText = `${prefix}${fixture.text}\nSYNTHETIC_UNRELATED_PAGE_TEXT`;
+      const snapshot = {
+        visibleText: prefix.slice(0, 736),
+        omitted: ["visibleText after 736 characters (use preview_evaluate for more)"],
+        screenshotPath: "/owned/capture.png",
+      };
+      const values = [];
+      const client = {
+        callTool: async ({ name, arguments: args }) => {
+          if (name === "preview_evaluate") {
+            NodeAssert.equal(args.tabId, "owned-tab");
+            const value = new Function("document", `return ${args.expression}`)({
+              body: { innerText },
+            });
+            values.push(value);
+            return { structuredContent: { value } };
+          }
+          return {
+            structuredContent:
+              name === "preview_open"
+                ? { tabId: "owned-tab" }
+                : name === "preview_snapshot"
+                  ? snapshot
+                  : {},
+          };
+        },
+      };
+      const report = { calls: [], captures: [], negativeControls: {} };
+      const run = runScenario(
+        client,
+        {
+          origin: "http://127.0.0.1",
+          pairingUrl: "http://127.0.0.1/pair",
+          initialText: "Connections",
+          steps: [
+            {
+              action: "capture",
+              name: "bounded-snapshot",
+              contains: fixture.contains ?? [phrase],
+              excludes: ["Forbidden status"],
+            },
+          ],
+        },
+        report,
+      );
+      if (fixture.error) await NodeAssert.rejects(run, fixture.error);
+      else {
+        await run;
+        NodeAssert.equal(report.negativeControls.wrongUiAssertion, "rejected");
+      }
+      NodeAssert.equal(report.nativeTabClosed, true);
+      NodeAssert.deepEqual(report.captures, [{ name: "bounded-snapshot", snapshot }]);
+      NodeAssert.ok(values.length > 0);
+      NodeAssert.ok(values.every((value) => value.every((match) => typeof match === "boolean")));
+      NodeAssert.ok(!JSON.stringify(report).includes("SYNTHETIC_UNRELATED_PAGE_TEXT"));
+    });
+  }
 });
 
 function shellSubscriptionFixture(expectedTag = "orchestration.subscribeShell") {
@@ -628,11 +740,28 @@ NodeTest.test(
 
 // A deterministic IDB event model checks the emitted expression's guards and cleanup;
 // only the hosted native Preview scenario establishes actual browser compatibility.
-function indexedDbExpressionFixture() {
+function indexedDbExpressionFixture({ disabledEnvironmentIds = ["synthetic-remote"] } = {}) {
   const runtimeName = "t3code:connection-runtime";
   const hintName = "t3code:connection-compatibility-hints";
   const catalog = JSON.stringify({
-    disabledEnvironmentIds: ["synthetic-remote"],
+    schemaVersion: 1,
+    targets: [
+      {
+        _tag: "BearerConnectionTarget",
+        environmentId: "synthetic-remote",
+        connectionId: "synthetic-connection",
+        label: "Synthetic incompatible Jones host",
+      },
+    ],
+    profiles: [
+      {
+        _tag: "BearerConnectionProfile",
+        environmentId: "synthetic-remote",
+        connectionId: "synthetic-connection",
+        httpBaseUrl: "http://127.0.0.1:4100",
+      },
+    ],
+    disabledEnvironmentIds,
     credentials: ["DO-NOT-PUBLISH"],
   });
   const data = new Map([
@@ -676,15 +805,27 @@ function indexedDbExpressionFixture() {
       transaction(store) {
         if (handle.closed) throw Object.assign(new Error("closed"), { name: "InvalidStateError" });
         if (!entry.stores.has(store)) throw new Error("missing store");
+        let aborted = false;
         const tx = {
+          abort: () => {
+            aborted = true;
+            queueMicrotask(() => tx.onabort?.());
+          },
           objectStore: () => ({
             get: () => request(),
             getAll: () => request(),
+            put: (value, key) => {
+              NodeAssert.equal(key, "document");
+              entry.stores.set(store, value);
+            },
           }),
         };
         const request = () => {
           const result = { result: entry.stores.get(store) };
-          queueMicrotask(() => tx.oncomplete?.());
+          queueMicrotask(() => {
+            result.onsuccess?.();
+            if (!aborted) tx.oncomplete?.();
+          });
           return result;
         };
         return tx;
@@ -767,10 +908,12 @@ function indexedDbExpressionFixture() {
     "indexedDB",
     "crypto",
     "phase",
-    `return (${indexedDbBrowserProof.toString()})(phase)`,
+    "syntheticOrigin",
+    `return (${indexedDbBrowserProof.toString()})(phase, syntheticOrigin)`,
   );
   return {
-    run: (phase) => run(window, indexedDB, { randomUUID: () => "owned-negative" }, phase),
+    run: (phase, syntheticOrigin = "http://127.0.0.1:4100") =>
+      run(window, indexedDB, { randomUUID: () => "owned-negative" }, phase, syntheticOrigin),
     data,
     handles,
     events,
@@ -814,8 +957,102 @@ NodeTest.test(
     );
     NodeAssert.ok(close > verify);
     NodeAssert.deepEqual(steps[close + 1], { action: "navigate", path: "/settings/connections" });
-    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 2);
+    const seed = at("Save Off for the exact isolated synthetic target");
+    const seededHold = at("Hold the saved Off version-4 catalog connection");
+    NodeAssert.ok(hold < seed && seed < seededHold && seededHold < checkpoint);
+    NodeAssert.deepEqual(steps[seed + 2], { action: "navigate", path: "/settings/connections" });
+    NodeAssert.equal(steps.filter((step) => step.action === "navigate").length, 3);
     NodeAssert.ok(steps.some((step) => step.name === "saved-connection-reload"));
+  },
+);
+
+NodeTest.test(
+  "saved Off seeding changes only the isolated target preference before checkpoint",
+  async () => {
+    const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+    const store = fixture.data.get(fixture.runtimeName).stores;
+    const before = JSON.parse(store.get("catalog"));
+    await fixture.run("hold");
+    NodeAssert.deepEqual(await fixture.run("seed-off"), { savedOffFixtureSeeded: true });
+    NodeAssert.deepEqual(JSON.parse(store.get("catalog")), {
+      ...before,
+      disabledEnvironmentIds: ["synthetic-remote"],
+    });
+    await fixture.run("close");
+    await fixture.run("hold");
+    await fixture.run("checkpoint");
+    NodeAssert.ok(Object.values(await fixture.run("verify")).every((value) => value === true));
+    await fixture.run("close");
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+  },
+);
+
+NodeTest.test("saved Off seeding accepts the normalized root URL emitted by pairing", async () => {
+  const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+  const store = fixture.data.get(fixture.runtimeName).stores;
+  const catalog = JSON.parse(store.get("catalog"));
+  catalog.profiles[0].httpBaseUrl = "http://127.0.0.1:4100/";
+  store.set("catalog", JSON.stringify(catalog));
+  await fixture.run("hold");
+  NodeAssert.deepEqual(await fixture.run("seed-off"), { savedOffFixtureSeeded: true });
+  NodeAssert.deepEqual(JSON.parse(store.get("catalog")), {
+    ...catalog,
+    disabledEnvironmentIds: ["synthetic-remote"],
+  });
+  await fixture.run("close");
+});
+
+NodeTest.test(
+  "saved Off seeding refuses nonmatching or ambiguous synthetic catalogs without writes",
+  async () => {
+    for (const mutate of [
+      (catalog) => {
+        catalog.targets[0].label = "Unrelated host";
+      },
+      (catalog) => {
+        catalog.targets.push({ ...catalog.targets[0] });
+      },
+      (catalog) => {
+        catalog.profiles[0].httpBaseUrl = "https://unrelated.invalid";
+      },
+      (catalog) => {
+        catalog.profiles[0].environmentId = "other";
+      },
+      (catalog) => {
+        catalog.disabledEnvironmentIds = ["other"];
+      },
+      ...[
+        "http://127.0.0.1:4100/path",
+        "http://127.0.0.1:4100/?query=1",
+        "http://127.0.0.1:4100/#fragment",
+        "http://user:password@127.0.0.1:4100/",
+      ].map((httpBaseUrl) => (catalog) => {
+        catalog.profiles[0].httpBaseUrl = httpBaseUrl;
+      }),
+    ]) {
+      const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+      const store = fixture.data.get(fixture.runtimeName).stores;
+      const catalog = JSON.parse(store.get("catalog"));
+      mutate(catalog);
+      const before = JSON.stringify(catalog);
+      store.set("catalog", before);
+      await fixture.run("hold");
+      await NodeAssert.rejects(
+        fixture.run("seed-off"),
+        /exactly one newly paired synthetic target/,
+      );
+      NodeAssert.equal(store.get("catalog"), before);
+      NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
+    }
+    const fixture = indexedDbExpressionFixture({ disabledEnvironmentIds: [] });
+    const before = fixture.data.get(fixture.runtimeName).stores.get("catalog");
+    await fixture.run("hold");
+    await NodeAssert.rejects(
+      fixture.run("seed-off", "https://unrelated.invalid"),
+      /exact synthetic origin/,
+    );
+    NodeAssert.equal(fixture.data.get(fixture.runtimeName).stores.get("catalog"), before);
+    NodeAssert.ok([...fixture.handles].every((handle) => handle.closed));
   },
 );
 
@@ -979,6 +1216,94 @@ NodeTest.test(
 );
 
 NodeTest.test(
+  "pending install assertion selects one disabled Install control despite copy buttons",
+  () => {
+    const assertions = rendererSteps("http://fixture.invalid", "a".repeat(40), "synthetic").filter(
+      (step) => step.label === "Both production controls refuse duplicate pending installation",
+    );
+    NodeAssert.equal(assertions.length, 2);
+    const copy = { textContent: "1020·1713", disabled: false };
+    const install = (disabled) => ({ textContent: " Install ", disabled });
+    const sidebar = (disabled) => ({ getAttribute: () => disabled });
+    for (const step of assertions) {
+      const read = (settingsButtons, sidebarButtons) =>
+        new Function("document", "window", `return ${step.expression}`)(
+          {
+            querySelectorAll: (selector) => {
+              if (selector === '[data-testid="settings-updates"] button') return settingsButtons;
+              NodeAssert.equal(
+                selector,
+                '[data-testid="sidebar-updates"] ul button[aria-label]:not([aria-label="Nightly update release notes"])',
+              );
+              return sidebarButtons;
+            },
+          },
+          { __jonesInstallPreview: { snapshot: () => ({}) } },
+        );
+      NodeAssert.equal(read([copy, install(true)], [sidebar("true")]), true);
+      for (const [settingsButtons, sidebarButtons] of [
+        [[copy, install(false)], [sidebar("true")]],
+        [[copy], [sidebar("true")]],
+        [[copy, install(true), install(true)], [sidebar("true")]],
+        [[copy, install(true)], [sidebar("false")]],
+        [[copy, install(true)], []],
+        [
+          [copy, install(true)],
+          [sidebar("true"), sidebar("true")],
+        ],
+      ])
+        NodeAssert.equal(read(settingsButtons, sidebarButtons), false);
+    }
+  },
+);
+
+NodeTest.test(
+  "notice assertions require short labels with exact full source and version details",
+  () => {
+    const steps = rendererSteps("http://fixture.invalid", "d".repeat(40), "synthetic");
+    const labels = [
+      "Initial preview pair renders the expected full source and abbreviation",
+      "Changed full source retains the same displayed abbreviation",
+      "Stable guidance retains full version details and update-or-reload instructions",
+    ];
+    for (const label of labels) {
+      const step = steps.find((item) => item.label === label);
+      NodeAssert.ok(step);
+      const sha = "a".repeat(39) + (label.startsWith("Changed") ? "c" : "b");
+      const version = label.startsWith("Stable") ? "0.1.0" : "0.0.45-preview.20261011.1.1";
+      const badge = (source = sha, fullVersion = version, text = sha.slice(0, 7)) => ({
+        textContent: text,
+        getAttribute: () => `Build time not recorded\n${fullVersion}\nsource ${source}`,
+      });
+      const read = (badges) =>
+        new Function("document", "window", `return ${step.expression}`)(
+          {
+            querySelector: (selector) => ({
+              textContent: selector.includes("notice-server")
+                ? `Synthetic server ${version}; source ${sha}`
+                : "Client ddddddd; Server aaaaaaa. Update this app or reload an updated web client.",
+            }),
+            querySelectorAll: (selector) => {
+              NodeAssert.equal(selector, '[data-testid="notice-banners"] [aria-label]');
+              return badges;
+            },
+          },
+          { __jonesInstallPreview: { snapshot: () => ({}) } },
+        );
+      NodeAssert.equal(read([badge()]), true);
+      for (const invalid of [
+        [],
+        [badge(), badge()],
+        [badge(sha.slice(0, -1) + "e")],
+        [badge(sha, version + "-other")],
+        [badge(sha, version, "wrong")],
+      ])
+        NodeAssert.equal(read(invalid), false);
+    }
+  },
+);
+
+NodeTest.test(
   "a failed controlled page action is captured before native tab closure without retry",
   async () => {
     const failure = new Error(
@@ -1015,8 +1340,9 @@ NodeTest.test(
       ),
       (error) => error === failure,
     );
-    NodeAssert.deepEqual(calls.slice(-3), [
+    NodeAssert.deepEqual(calls.slice(-4), [
       "preview_wait_for",
+      "preview_evaluate",
       "preview_snapshot",
       "t3_preview_close",
     ]);
@@ -1129,6 +1455,23 @@ NodeTest.test(
         const client = {
           callTool: async ({ name, arguments: args }) => {
             if (name === "preview_wait_for" && ++waits === 2) throw failure;
+            if (name === "preview_evaluate")
+              return {
+                structuredContent: {
+                  value: {
+                    readyState: "complete",
+                    rootChildren: 1,
+                    rootHtmlLength: 100,
+                    bodyTextLength: 1,
+                    dialogs: 0,
+                    onConnectionsRoute: true,
+                    ui: { loading: true },
+                    text: code,
+                    url: pairingUrl,
+                    screenshot: imageBytes,
+                  },
+                },
+              };
             if (name === "preview_snapshot") {
               snapshotCalls.push(args);
               return {
@@ -1190,6 +1533,8 @@ NodeTest.test(
         NodeAssert.equal(readback.failureReconciliation.ui.addFailed, true);
         NodeAssert.equal(readback.failureReconciliation.ui.fetchFailed, true);
         NodeAssert.equal(readback.failureReconciliation.ui.sourceMatches, false);
+        NodeAssert.equal(readback.failurePageState.onConnectionsRoute, true);
+        NodeAssert.equal(readback.failurePageState.ui.loading, true);
         NodeAssert.ok(
           Object.values(readback.failureReconciliation.ui).every(
             (value) => typeof value === "boolean",
@@ -1200,6 +1545,35 @@ NodeTest.test(
     });
   },
 );
+
+NodeTest.test("failure page state retains only bounded counts, enum and fixed UI booleans", () => {
+  const secret = "NEVER-PUBLISH-PAIRING-CODE";
+  for (const value of [
+    null,
+    secret,
+    {
+      readyState: secret,
+      rootChildren: -1,
+      rootHtmlLength: Infinity,
+      bodyTextLength: secret,
+      dialogs: 10_000_001,
+      onConnectionsRoute: secret,
+      ui: { loading: secret, rootError: true, secret },
+      url: secret,
+      text: secret,
+    },
+  ]) {
+    const result = sanitizeFailurePageState(value);
+    NodeAssert.equal(result.readyState, "unknown");
+    NodeAssert.equal(result.rootChildren, null);
+    NodeAssert.equal(result.rootHtmlLength, null);
+    NodeAssert.equal(result.bodyTextLength, null);
+    NodeAssert.equal(result.dialogs, null);
+    NodeAssert.equal(result.onConnectionsRoute, false);
+    NodeAssert.equal(result.ui.loading, false);
+    NodeAssert.equal(JSON.stringify(result).includes(secret), false);
+  }
+});
 
 NodeTest.test(
   "disabled-browser qualification requires the native preview capability refusal",
@@ -2094,5 +2468,97 @@ NodeTest.test(
       });
       NodeAssert.ok(child.exitCode !== null || child.signalCode !== null);
     });
+  },
+);
+
+NodeTest.test("renderer qualification explicitly covers legacy and plan-capable bridges", () => {
+  const steps = rendererSteps("http://fixture.invalid", "a".repeat(40), "synthetic");
+  const pages = steps
+    .filter((step) => step.action === "navigate")
+    .map((step) => new URL(step.path));
+  const plan = pages.filter((page) => page.searchParams.get("run").endsWith("-install-plan"));
+  NodeAssert.equal(plan.length, 1);
+  NodeAssert.equal(plan[0].searchParams.get("installPlans"), null);
+  NodeAssert.ok(
+    pages
+      .filter((page) => page !== plan[0])
+      .every((page) => page.searchParams.get("installPlans") === "legacy"),
+  );
+  const labels = steps
+    .filter((step) => step.action === "assert-evaluate")
+    .map((step) => step.label);
+  for (const label of [
+    "Plan download records one Laptop operation and no host dispatch",
+    "Plan review cancellation never dispatches installation or opens the gate",
+    "Accepted plan installation still holds followers until native commit verification",
+    "Only the selected host starts after the receipt-bound Laptop gate",
+    "Plan Stop binds the exact running host operation and cannot complete on request alone",
+    "Only the exact settled Stop receipt enables header Done",
+    "Plan Done retains history and hides the completed panel",
+    "Reopening completed plan is read only",
+  ])
+    NodeAssert.ok(labels.includes(label), label);
+});
+
+NodeTest.test(
+  "plan Stop qualification rejects wrong operation, wrong stop and premature completion",
+  () => {
+    const step = rendererSteps("http://fixture.invalid", "a".repeat(40), "synthetic").find(
+      (step) =>
+        step.label ===
+        "Plan Stop binds the exact running host operation and cannot complete on request alone",
+    );
+    const sample = () => ({
+      installPlan: {
+        current: {
+          devices: [
+            {
+              operations: [
+                {
+                  operationId: "operation",
+                  receipt: { phase: "stop-requested", stop: { stopId: "stop" } },
+                },
+              ],
+            },
+          ],
+        },
+        view: { complete: false },
+      },
+      calls: [
+        {
+          action: "fixture-host-operationStop",
+          input: { environmentId: "host", input: { operationId: "operation", stopId: "stop" } },
+        },
+      ],
+    });
+    const read = (s) =>
+      new Function("window", `return ${step.expression}`)({
+        __jonesInstallPreview: { snapshot: () => s },
+      });
+    NodeAssert.equal(read(sample()), true);
+    for (const change of [
+      (s) => {
+        s.calls[0].input.input.operationId = "other";
+      },
+      (s) => {
+        s.calls[0].input.input.stopId = "other";
+      },
+      (s) => {
+        s.installPlan.view.complete = true;
+      },
+      (s) => {
+        s.installPlan.current.devices[0].operations[0].receipt.phase = "stopped";
+      },
+      (s) => {
+        s.calls = [];
+      },
+      (s) => {
+        delete s.installPlan.current.devices[0].operations[0].receipt.stop;
+      },
+    ]) {
+      const s = sample();
+      change(s);
+      NodeAssert.equal(read(s), false);
+    }
   },
 );

@@ -60,12 +60,8 @@ export interface SkippedMachine {
   readonly reason: string;
 }
 
-/**
- * Two kinds are in neither list: servers already on the target, and servers this app hosts,
- * which would relaunch the app mid-run and update with the app's own install anyway. A
- * desktop-managed server follows its own app's update feed, so the channel rule does not apply
- * to it.
- */
+/** Skip current and app-hosted servers; the latter update with the app and would relaunch mid-run.
+ * Desktop-managed servers use their own feed. */
 export function collectServerUpdateTargets(
   machines: ReadonlyArray<UpdateEverythingMachine>,
   targetVersion: string,
@@ -133,10 +129,8 @@ export interface UpdateEverythingSteps<Providers, Servers> {
   readonly updateServers: () => Promise<Servers>;
 }
 
-/**
- * Providers finish before any server restarts, so no install is cut off. The caller installs this app afterwards when `localReady`, because
- * the relaunch ends the run; a failed download skips only that install.
- */
+/** Finish provider installs before server restarts. Install this app last when localReady; failed
+ * downloads skip only that install. */
 export async function runUpdateEverything<Providers, Servers>(
   steps: UpdateEverythingSteps<Providers, Servers>,
 ): Promise<{
@@ -206,7 +200,7 @@ export function closeFinishedUpdateRun(run: UpdateEverythingRun): UpdateEverythi
     : run;
 }
 
-export const UPDATE_SLOW_AFTER_MS = 3 * 60 * 1000;
+const UPDATE_SLOW_AFTER_MS = 3 * 60 * 1000;
 
 export function formatUpdateElapsed(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
@@ -292,6 +286,7 @@ export const RUN_STATUS_LABELS: Record<UpdateRunMachineStatus, string> = {
 };
 
 export interface UpdateEverythingResult {
+  readonly jones?: ReadonlyArray<{ readonly label: string; readonly message: string }>;
   readonly localVersion: string | null;
   readonly updatedServers: number;
   readonly updatedProviders: number;
@@ -330,7 +325,7 @@ export function getUpdateEverythingToastView(
   result: UpdateEverythingResult,
   appVersion: string,
 ): {
-  readonly type: "success" | "error";
+  readonly type: "success" | "error" | "info";
   readonly title: string;
   readonly description?: string;
 } | null {
@@ -339,6 +334,7 @@ export function getUpdateEverythingToastView(
     countLabel(result.updatedServers, "server"),
     countLabel(result.updatedProviders, "provider"),
   ].filter((part) => part !== null);
+  const handoffs = (result.jones ?? []).map((entry) => `${entry.label}: ${entry.message}`);
   const restarting =
     result.restarting.length === 0
       ? []
@@ -346,21 +342,30 @@ export function getUpdateEverythingToastView(
           `${joinList(result.restarting)} ${result.restarting.length === 1 ? "is" : "are"} still restarting.`,
         ];
   if (result.failures.length === 0) {
-    if (parts.length === 0) return null;
+    if (parts.length === 0)
+      return handoffs.length === 0
+        ? null
+        : { type: "info", title: "Install status handoff", description: handoffs.join("\n") };
     return {
       type: "success",
       title: `Updated ${joinList(parts)}`,
-      ...(restarting.length === 0 ? {} : { description: restarting.join("\n") }),
+      ...([...handoffs, ...restarting].length === 0
+        ? {}
+        : { description: [...handoffs, ...restarting].join("\n") }),
     };
   }
   return {
     type: "error",
     title: parts.length === 0 ? "Update failed" : `Updated ${joinList(parts)}`,
-    description: [...result.failures, ...restarting].join("\n"),
+    description: [...handoffs, ...result.failures, ...restarting].join("\n"),
   };
 }
 
 export interface UpdateEverythingPlan {
+  readonly jonesMachines?: ReadonlyArray<{
+    readonly environmentId: EnvironmentId;
+    readonly label: string;
+  }>;
   readonly localVersion: string | null;
   readonly servers: ReadonlyArray<
     Pick<ServerUpdateTarget, "environmentId" | "serverLabel" | "selfUpdate" | "targetVersion">
@@ -393,6 +398,7 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
     [
       plan.localVersion ? "this app" : null,
       countLabel(plan.servers.length, "server"),
+      countLabel(plan.jonesMachines?.length ?? 0, "Jones machine"),
       countLabel(providerCount, "provider"),
     ].filter((part) => part !== null),
   )}`;
@@ -410,6 +416,11 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
       server.selfUpdate === "desktop-managed"
         ? "desktop app update"
         : `server to ${server.targetVersion}`,
+    );
+  }
+  for (const machine of plan.jonesMachines ?? []) {
+    itemsFor(machine.environmentId, machine.label).push(
+      "Install status after Laptop verification; every install needs review",
     );
   }
   for (const machine of plan.providerMachines) {

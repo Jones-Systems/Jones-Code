@@ -65,7 +65,7 @@ const make = Effect.gen(function* () {
     function* (baseDir) {
       const filePath = yield* configPath(baseDir);
       const text = yield* fs.readFileString(filePath).pipe(
-        Effect.map(Option.some),
+        Effect.asSome,
         Effect.catchIf(
           (cause) => cause.reason._tag === "NotFound",
           () => Effect.succeed(Option.none<string>()),

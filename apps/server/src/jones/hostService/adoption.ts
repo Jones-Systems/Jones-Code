@@ -36,6 +36,12 @@ import {
   readLauncherCapabilityReceipt,
 } from "../cloud/launcherCapability.ts";
 
+import {
+  bootstrapLauncherPointer,
+  launcherPointerBootstrapPlan,
+  readLauncherPointer,
+} from "../cloud/launcherPointer.ts";
+
 const repository = "Jones-Systems/Jones-Code";
 const hash = /^[a-f0-9]{64}$/;
 const source = /^[a-f0-9]{40}$/;
@@ -57,6 +63,7 @@ export interface AdoptInput extends LegacyBootstrap.LegacyBootstrapBinding {
   readonly retainedExecutable?: string;
   readonly supersedeExecstart?: boolean;
   readonly dryRun?: boolean;
+  readonly launcherPointer?: boolean;
 }
 export interface AdoptionCommand {
   readonly command: string;
@@ -96,7 +103,7 @@ interface ArtifactMetadata {
   readonly platform: "linux" | "darwin";
   readonly architecture: "x64" | "arm64";
   readonly workflow: QualifiedRuntimeArtifact["workflow"];
-  readonly event: "push" | "workflow_dispatch";
+  readonly event: "push" | "schedule" | "workflow_dispatch";
   readonly ref: "refs/heads/main";
   readonly runId: string;
   readonly runAttempt: string;
@@ -116,6 +123,7 @@ export interface AdoptionPlan {
   readonly launcherVersion: string;
   readonly servicePath: string;
   readonly serviceContents: string;
+  readonly launcherPointer?: ReturnType<typeof launcherPointerBootstrapPlan>;
   readonly effects: ReadonlyArray<string>;
   readonly commands: ReadonlyArray<AdoptionCommand>;
   readonly serviceUnit?: "jones-code.service" | "t3code.service";
@@ -227,7 +235,12 @@ function decodeMetadata(
     !hash.test(String(m.sha256))
   )
     return refuse("ARTIFACT.json does not bind the exact source and host.");
-  const cliMac = workflow === ".github/workflows/artifact-cli-mac.yml";
+  const acceptedEvents =
+    workflow === ".github/workflows/artifact-cli-mac.yml"
+      ? ["workflow_dispatch"]
+      : workflow === ".github/workflows/artifact-desktop-mac.yml"
+        ? ["push", "schedule"]
+        : ["push"];
   if (
     m.workflow !== workflow ||
     (host.platform === "darwin" &&
@@ -235,7 +248,8 @@ function decodeMetadata(
         ".github/workflows/artifact-cli-mac.yml",
         ".github/workflows/artifact-desktop-mac.yml",
       ].includes(String(workflow))) ||
-    m.event !== (cliMac ? "workflow_dispatch" : "push")
+    typeof m.event !== "string" ||
+    !acceptedEvents.includes(m.event)
   )
     return refuse("Workflow or event is not an accepted main build.");
   const filename =
@@ -696,9 +710,13 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
       plistMode: plistStat.mode & 0o777,
     };
   }
+  let pointerPlan =
+    input.launcherPointer === true
+      ? launcherPointerBootstrapPlan(baseDir, launcher.metadata.version, unitText)
+      : undefined;
   const renderedPlan = {
     baseDir,
-    program: [launcherPath, "__service-launcher"],
+    program: [pointerPlan?.program ?? launcherPath, "__service-launcher"],
     logPath: NodePath.join(baseDir, "userdata/logs/boot-service.log"),
     unitPath,
   };
@@ -917,6 +935,30 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     );
     serviceContents = unitText.replace(program, program.exec(rendered)![0]);
   }
+  const launcherPointerPreviousService = JSON.stringify({
+    path: servicePath,
+    existed: snapshots.has(servicePath),
+    contents: snapshots.get(servicePath) ?? null,
+    unitPath,
+    unitContents: unitText,
+  });
+  if (pointerPlan !== undefined) {
+    pointerPlan = launcherPointerBootstrapPlan(
+      baseDir,
+      launcher.metadata.version,
+      launcherPointerPreviousService,
+    );
+    const existingPointer = await readLauncherPointer(baseDir);
+    if (
+      existingPointer !== undefined &&
+      (existingPointer.currentVersion !== pointerPlan.currentVersion ||
+        existingPointer.pendingVersion !== undefined ||
+        existingPointer.previousServiceSha256 !== pointerPlan.previousServiceSha256)
+    )
+      return refuse(
+        "Launcher pointer already exists; reconcile its prior bootstrap before re-adoption.",
+      );
+  }
   const commands =
     host.platform === "linux"
       ? [
@@ -938,6 +980,7 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
     launcherVersion: launcher.metadata.version,
     servicePath,
     serviceContents,
+    ...(pointerPlan === undefined ? {} : { launcherPointer: pointerPlan }),
     commands,
     serviceUnit,
     attestation: legacy || continuation || unattestedPrivateSetup ? "launcher-only" : "child",
@@ -996,6 +1039,11 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
             `Archive exact handoff and task drop-in bytes exclusively under ${archiveDirectory}, sync and read back their SHA-256 digests, then compare-and-replace only service-state.json with protocol 4 and activeVersion ${state.activeVersion}.`,
           ]
         : []),
+      ...(pointerPlan === undefined
+        ? []
+        : [
+            `Bootstrap immutable launcher pointer ${pointerPlan.program}; retain the exact prior service definition and read back both hashes.`,
+          ]),
       `Write ${servicePath}:\n${serviceContents}`,
       ...commands.slice(1).map((c) => `Run ${c.command} ${c.args.join(" ")}.`),
       unattestedPrivateSetup
@@ -1007,6 +1055,7 @@ async function inspectAdoption(input: AdoptInput, host: AdoptionHost) {
   };
   return {
     plan,
+    launcherPointerPreviousService,
     stateText,
     active,
     launcher,
@@ -1342,6 +1391,20 @@ export async function adoptHost(
           `${JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: plan.activeVersion })}\n`,
         );
       }
+      if (plan.launcherPointer !== undefined) {
+        const pointer = await bootstrapLauncherPointer(
+          plan.baseDir,
+          plan.launcherVersion,
+          inspected.launcherPointerPreviousService,
+        );
+        if (
+          pointer.shimSha256 !== plan.launcherPointer.shimSha256 ||
+          pointer.previousServiceSha256 !== plan.launcherPointer.previousServiceSha256
+        )
+          return refuse(
+            "Launcher pointer bootstrap readback differs; effect requires reconciliation.",
+          );
+      }
       await durableReplace(plan.servicePath, plan.serviceContents);
       for (const command of plan.commands.slice(1)) await host.run(command);
       await readQualifiedRuntimeReceipt(plan.baseDir, plan.activeVersion, {
@@ -1455,6 +1518,20 @@ export async function adoptHost(
           plan.environmentId
       )
         return refuse("Native database or environment identity changed during activation.");
+      const expectedProgram =
+        plan.launcherPointer?.program ??
+        NodePath.join(plan.baseDir, "runtime/versions", plan.launcherVersion, "t3");
+      if (plan.launcherPointer !== undefined) {
+        const pointer = await readLauncherPointer(plan.baseDir);
+        if (
+          pointer?.currentVersion !== plan.launcherVersion ||
+          pointer.shimSha256 !== plan.launcherPointer.shimSha256 ||
+          pointer.previousServiceSha256 !== plan.launcherPointer.previousServiceSha256
+        )
+          return refuse(
+            "Launcher pointer changed during activation; effect requires reconciliation.",
+          );
+      }
       if (host.platform === "linux") {
         await host.run({
           command: "systemctl",
@@ -1464,11 +1541,7 @@ export async function adoptHost(
           command: "systemctl",
           args: ["--user", "show", serviceUnit, "--property=ExecStart", "--value"],
         });
-        if (
-          !executable.includes(
-            NodePath.join(plan.baseDir, "runtime/versions", plan.launcherVersion, "t3"),
-          )
-        )
+        if (!executable.includes(expectedProgram))
           return refuse("Effective launcher readback differs.");
       } else {
         const executable = await host.run({
@@ -1476,13 +1549,10 @@ export async function adoptHost(
           args: ["print", `gui/${host.uid}/${plan.legacyLaunchd?.label ?? identity.launchdLabel}`],
         });
         if (
-          !executable.includes(
-            NodePath.join(plan.baseDir, "runtime/versions", plan.launcherVersion, "t3"),
-          ) ||
+          !executable.includes(expectedProgram) ||
           (plan.legacyLaunchd !== undefined &&
             (launchdValue(executable, "path") !== plan.servicePath ||
-              launchdValue(executable, "program") !==
-                NodePath.join(plan.baseDir, "runtime/versions", plan.launcherVersion, "t3") ||
+              launchdValue(executable, "program") !== expectedProgram ||
               !/^[1-9]\d*$/.test(launchdValue(executable, "pid")) ||
               Number(launchdValue(executable, "pid")) === observed.processId))
         )

@@ -122,6 +122,47 @@ Confirm the old executable, port, version and environment. Keep the adoption
 receipt and enrolled runtimes for reconciliation. Any earlier state-file repair
 has its own compare-and-swap recovery; restoring the plist does not undo it.
 
+## Uninstall downloaded runtimes
+
+`t3 uninstall` removes the background service, the `t3` launcher, and the
+downloaded versions after showing you the list and asking once. Your projects,
+threads, and settings under `~/.t3/userdata` are kept, along with `service.env`
+under T3 home. Pass `--yes` from a script.
+
+## Local network access
+
+The service listens on your local network and Tailscale addresses, so the
+desktop and mobile apps on the same network connect directly instead of through
+T3 Connect. The hosted web app at app.t3.codes stays on T3 Connect, because
+browsers block plain HTTP from an HTTPS page. The service does not answer on
+public addresses, and every device still needs to pair or sign in. To keep the service reachable from this machine only, set
+`T3CODE_HOST=127.0.0.1` in `service.env` (below). Any `T3CODE_HOST` value
+replaces this default.
+
+## Configure the service environment
+
+Put custom environment variables in `service.env` under the service's T3 home
+directory, normally `~/.t3/service.env`. This file survives service installation
+and updates. For example:
+
+```dotenv
+T3CODE_PORT=3773
+T3CODE_HOST=127.0.0.1
+```
+
+Use `KEY=VALUE` entries, quoting values that contain spaces or `#`. Values are
+literal: shell commands and variable expansion are not evaluated. Entries
+override the inherited service environment, except for `PATH`, `T3CODE_HOME`,
+`T3_BOOT_SERVICE_UNIT`, and `T3_SERVICE_LAUNCHER_CONTEXT` (including case variants).
+
+Run `t3 service restart` after changing the file. Changes apply when the service
+starts again; switching the server version alone keeps the current values.
+For a service installed before env-file support, run `t3 service install` once
+with an up-to-date CLI.
+A missing file is ignored; other read failures stop service startup.
+If the file contains credentials, restrict access to that file with `chmod 600`
+(for the default T3 home, `chmod 600 ~/.t3/service.env`).
+
 ## Follow laptop updates automatically
 
 In the Jones desktop app, open **Settings → Connections** and choose **Enroll
@@ -131,17 +172,47 @@ installation and the supported background launcher; **Setup required** means
 that initial host setup is still needed. Enrollment does not replace an existing
 system service or take over an upstream T3 Code installation.
 
-Download the offered laptop update, then choose Install. Enrolled hosts follow
-that exact source only after the laptop successfully switches to it. Servers
-may download ahead of time, but a laptop rollback does not authorize their
-installation. Offline hosts wait until they can be reached; another unavailable
-host does not stop the rest of the rollout. Keep the desktop app running to
-coordinate remaining hosts.
+For builds outside an Install status plan, enrolled hosts follow the laptop's
+verified committed source and never move past it. A current host learns the
+laptop's installed build while the desktop app is open, downloads it in the
+background, and installs it by
+itself once no client has had input for 30 minutes and nothing a restart would
+interrupt is running: turns and delegated tasks, queued messages about to start,
+terminal commands, provider background tasks, and approvals waiting in a live
+provider session. Questions that can still be answered by message after a
+restart, held queues and future scheduled tasks do not hold an update. Automatic
+installs are at least 15 minutes apart, and an install stops before it starts if
+someone begins using the host. Because the host remembers the laptop's build,
+it can finish while the laptop sleeps. Older hosts wait for the desktop app to
+coordinate their rollout, and an offline host updates after it reconnects.
+
+**Install status** controls a plan's target separately. A new plan includes only
+Laptop; use Edit or the bulk update handoff to include supported hosts. Selection
+does not enroll or unenroll them. Selected hosts wait for Laptop to commit and
+pass native health verification before downloading or staging, and each Install
+requires review. Plan targets are withheld from ordinary following and legacy
+campaigns, including after Done or an app restart, so enrollment cannot silently
+install an excluded target. A participating host's manual-review directive also
+survives restart; ordinary following resumes for a later different published
+leader source. Builds outside a plan retain ordinary automatic following.
+
+Outside a plan's explicit review target, an enrolled host's Check, Download and
+Install offer only the laptop's installed build, from any client. Install stays off for any other downloaded
+build, including an older one, and a host waits until the laptop has reported
+its build. A laptop app too old to report its build cannot release a host:
+update the laptop app, or disable automatic updates for that host to choose its
+builds there. A host already running a newer build than the laptop's waits
+instead of going back. A webhook delivery the host accepts while it hands off to
+an update runs after the restart, or once the host confirms the update did not
+start.
 
 The connection row shows each host's progress and any action needed. If the
 connection drops during installation, Jones checks what the host accepted before
-sending another installation request. An uncertain outcome stays on hold;
-repeatedly clicking Install does not resolve missing evidence.
+sending another installation request. An uncertain outcome stays on hold until the
+host's service confirms whether it accepted the update; if it did not, the host
+resumes held work and allows Install again by itself. A host whose service has not
+been refreshed since this check was added holds until its service restarts.
+Repeatedly clicking Install does not resolve missing evidence.
 
 Choose **Continue eligible active threads after this host updates** when enrolling
 if you want that behavior. Explicit user stops and queue holds remain in force;
@@ -187,11 +258,36 @@ check the saved connection there too.
 | `restart-pending`                       | A newer runtime is installed; restart when active work can be interrupted.                                   |
 | `conflicting` or `unknown` route        | Inspect the host and Serve configuration; do not force overwrite or use raw Serve removal.                   |
 
-On macOS, check **System Settings → General → Login Items** if startup fails.
-Access to Desktop, Documents, or Downloads may need Full Disk Access for the
-`t3` executable listed in the Jones LaunchAgent's `ProgramArguments`.
-For T3 Connect failures, see
-[connection troubleshooting](./remote-access.md#t3-connect-troubleshooting).
+```sh
+sudo loginctl enable-linger "$(id -un)"
+```
+
+Over SSH, allow sudo to prompt:
+
+```sh
+ssh -t your-server 'sudo loginctl enable-linger "$(id -un)"'
+```
+
+Then retry service setup as your normal user. Run only the `loginctl` command
+with sudo; running T3 Code as root creates a separate installation and Connect
+identity. Without administrator access, run `t3 serve` in a terminal and keep
+that session open.
+
+| Status problem                          | Next step                                                                                                                      |
+| --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `linger-unavailable`                    | Run `loginctl show-user "$(id -un)" --property=Linger` and check that systemd-logind is available.                             |
+| `user-manager-unavailable`              | Run `systemctl --user status` in a login session for the service user; check your distribution's systemd user-session support. |
+| `service-disabled` or `service-stopped` | Read the log and `systemctl --user status t3code.service`, then use the repair command printed by T3 Code.                     |
+| `restart-pending`                       | A newer version is installed but the service still runs the previous one. Run `t3 service restart`.                            |
+
+On macOS, check **System Settings → General → Login Items** if the service no
+longer starts at login. If agent work cannot access Desktop, Documents, or
+Downloads, it may need Full Disk Access for the `t3` executable listed in
+`ProgramArguments` in
+`~/Library/LaunchAgents/com.t3tools.t3code.service.plist`.
+
+For failures after signing in to T3 Connect, see
+[connection troubleshooting](./t3-connect-troubleshooting.md).
 
 ## Reclaim database space
 

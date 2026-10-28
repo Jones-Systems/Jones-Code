@@ -1,9 +1,14 @@
-import { EnvironmentId, type ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type OrchestrationV2ShellSnapshot,
+  type ThreadId,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 
 import type { EnvironmentShellState } from "../../state/shell.ts";
-import { observeEnvironment } from "./detect.ts";
+import { isSettlementChild, observeEnvironment } from "./detect.ts";
+import { settlementThreadEvidence, type SettlementThreadFamilyEvidence } from "./threadEvidence.ts";
 import { addArrivals, dismiss, mergeInbox, refreshThreads, visibleEntries } from "./inbox.ts";
 import {
   SettlementOriginDetails,
@@ -58,6 +63,11 @@ export function createSettlementNotificationController(deps: {
   >();
   const pendingClassifications = new Map<EnvironmentId, number>();
   const confirmed = new Map<EnvironmentId, EnvironmentShellState>();
+  const families = new Map<EnvironmentId, ReadonlyArray<SettlementThreadFamilyEvidence>>();
+  const children = new Map<
+    EnvironmentId,
+    { snapshot: OrchestrationV2ShellSnapshot; ids: ReadonlySet<ThreadId> }
+  >();
   const staleSince = new Map<EnvironmentId, number>();
   const catalog = new Set<EnvironmentId>();
   let inbox = emptyInbox();
@@ -80,7 +90,9 @@ export function createSettlementNotificationController(deps: {
   }
 
   function publish() {
-    const visible = visibleEntries(inbox);
+    const visible = visibleEntries(inbox).filter(
+      (entry) => !children.get(entry.environmentId)?.ids.has(entry.threadId),
+    );
     const persistence = !hydrated ? "loading" : errors.size > 0 ? "degraded" : "ok";
     const sameVisible =
       visible.length === snapshot.visible.length &&
@@ -122,6 +134,18 @@ export function createSettlementNotificationController(deps: {
     return true;
   }
 
+  function noteChildren(environmentId: EnvironmentId, state: EnvironmentShellState): boolean {
+    if (Option.isNone(state.snapshot)) return false;
+    const next = state.snapshot.value;
+    const previous = children.get(environmentId);
+    const ids = new Set<ThreadId>();
+    for (const thread of settlementThreadEvidence(state, families.get(environmentId)).threads) {
+      if (isSettlementChild(thread)) ids.add(thread.id);
+    }
+    children.set(environmentId, { snapshot: next, ids });
+    return ids.size !== (previous?.ids.size ?? 0) || [...ids].some((id) => !previous?.ids.has(id));
+  }
+
   function refreshFromState(
     value: SettlementInboxState,
     environmentId: EnvironmentId,
@@ -129,15 +153,15 @@ export function createSettlementNotificationController(deps: {
   ) {
     if (Option.isNone(state.snapshot)) return value;
     const titles = new Map<ThreadId, string>();
-    const gone = new Set<ThreadId>();
-    for (const thread of [
-      ...state.snapshot.value.threads,
-      ...state.snapshot.value.archivedThreads,
-    ]) {
+    const evidence = settlementThreadEvidence(state, families.get(environmentId));
+    const gone = evidence.gone;
+    const excluded = new Set<ThreadId>();
+    for (const thread of evidence.threads) {
+      if (isSettlementChild(thread)) excluded.add(thread.id);
       if (thread.deletedAt !== null) gone.add(thread.id);
       else titles.set(thread.id, thread.title);
     }
-    return refreshThreads(value, environmentId, titles, gone);
+    return refreshThreads(value, environmentId, titles, gone, excluded);
   }
 
   function refreshConfirmed(value: SettlementInboxState) {
@@ -309,6 +333,7 @@ export function createSettlementNotificationController(deps: {
         state,
         nowMs: now(),
         staleSince: staleSince.get(environmentId) ?? null,
+        families: families.get(environmentId) ?? [],
       });
       if (result.kind === "skip") {
         if (result.staleSince === undefined) staleSince.delete(environmentId);
@@ -403,7 +428,7 @@ export function createSettlementNotificationController(deps: {
         do {
           for (const environmentId of [...catalog, ...observations.keys()])
             void loadBaseline(environmentId);
-          await Promise.all([...baselineLoads.values()]);
+          await Promise.all(baselineLoads.values());
         } while ([...observations.keys()].some((id) => !baselines.has(id)));
         hydrated = true;
         for (const environmentId of observations.keys()) processObservation(environmentId);
@@ -422,9 +447,16 @@ export function createSettlementNotificationController(deps: {
     observe(
       environmentId: EnvironmentId,
       state: EnvironmentShellState,
-      options?: { resolveOrigins?: SettlementOriginResolver },
+      options?: {
+        resolveOrigins?: SettlementOriginResolver;
+        families?: ReadonlyArray<SettlementThreadFamilyEvidence>;
+      },
     ): void {
+      families.set(environmentId, options?.families ?? []);
       observations.set(environmentId, { state, ...options });
+      // Lineage and delegation are fixed at creation, so cached metadata may hide a child.
+      // Only confirmed live state may acknowledge its notice.
+      if (noteChildren(environmentId, state)) publish();
       if (!hydrated) {
         void hydrate();
         return;
@@ -451,14 +483,14 @@ export function createSettlementNotificationController(deps: {
     },
     async flush(): Promise<void> {
       await hydrate();
-      while (baselineLoads.size > 0) await Promise.all([...baselineLoads.values()]);
+      while (baselineLoads.size > 0) await Promise.all(baselineLoads.values());
       if (timer !== null) clearTimeout(timer);
       timer = null;
       let observedRevision = changeRevision;
       let pending = requestWrite();
       for (;;) {
         await pending;
-        while (baselineLoads.size > 0) await Promise.all([...baselineLoads.values()]);
+        while (baselineLoads.size > 0) await Promise.all(baselineLoads.values());
         if (pending !== writeTail) {
           pending = writeTail;
         } else if (observedRevision !== changeRevision) {

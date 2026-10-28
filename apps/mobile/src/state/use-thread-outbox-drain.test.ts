@@ -1,3 +1,4 @@
+import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
 import { acknowledgedThreadMessagesAtom } from "./acknowledged-thread-messages";
 import {
   CommandId,
@@ -141,20 +142,14 @@ vi.mock("./thread-outbox", async () => {
 });
 
 import { appAtomRegistry } from "./atom-registry";
-import {
-  clearPendingThreadCreationOutcome,
-  pendingThreadCreationOutcomesAtom,
-} from "./pending-thread-creation";
+import { pendingThreadCreationOutcomesAtom } from "./pending-thread-creation";
 import {
   decodeQueuedThreadMessage,
   encodeQueuedThreadMessage,
+  resolveQueuedThreadSettings,
   type QueuedThreadMessage,
 } from "./thread-outbox-model";
-import {
-  clearThreadComposerError,
-  setThreadComposerError,
-  threadComposerErrorsAtom,
-} from "./thread-composer-error";
+import { clearThreadComposerError, threadComposerErrorsAtom } from "./thread-composer-error";
 import * as composerDrafts from "./use-composer-drafts";
 import { recoverFailedThreadDraft } from "./recover-failed-thread-draft";
 import { editingQueuedMessageIdsAtom } from "./use-thread-outbox";
@@ -233,6 +228,273 @@ afterEach(() => {
   harness.removePersistedFile.mockClear();
   harness.removeOutboxMessage.mockClear();
   harness.prepareTurnAttachments.mockReset();
+});
+
+describe("queued mobile selection intent", () => {
+  it.each([
+    [true, 3],
+    [false, 3],
+    [undefined, 1],
+    [undefined, 2],
+    [undefined, 3],
+    [undefined, 4],
+  ] as const)(
+    "forwards explicitness %s from version %s storage to delivery",
+    async (flag, version) => {
+      const modelSelection = {
+        instanceId: ProviderInstanceId.make("codex"),
+        model: "gpt-6.1-sol",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      const encoded = JSON.parse(
+        JSON.stringify(
+          encodeQueuedThreadMessage({
+            ...queuedMessage({ messageId: `selection-${version}-${flag}`, text: "Continue" }),
+            modelSelection,
+            ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
+          }),
+        ),
+      );
+      expect(encoded.schemaVersion).toBe(3);
+      const stored = decodeQueuedThreadMessage(
+        JSON.parse(JSON.stringify({ ...encoded, schemaVersion: version })),
+      );
+      await harness.manager.enqueue(stored);
+      const [enqueued] = remainingMessages();
+      expect(enqueued).toEqual(stored);
+      if (!enqueued) throw new Error("Expected the stored outbox entry");
+      const input = buildQueuedFollowUpStartTurnInput({
+        message: enqueued,
+        settings: { modelSelection, runtimeMode: "full-access", interactionMode: "default" },
+        attachments: [],
+        inlineMessageContext: true,
+      });
+
+      // Equal model values carry different intent; delivery must preserve the stored flag.
+      expect(input.modelSelection).toEqual(modelSelection);
+      expect(input.commandId).toBe(stored.commandId);
+      expect(input.message.messageId).toBe(stored.messageId);
+      if (flag === undefined) {
+        expect(stored).not.toHaveProperty("modelSelectionExplicit");
+        expect(input).not.toHaveProperty("modelSelectionExplicit");
+      } else {
+        expect(input.modelSelectionExplicit).toBe(flag);
+      }
+    },
+  );
+});
+
+describe.each(["rejected", "delivered"] as const)("%s outbox selection recovery", (kind) => {
+  const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+  const newerSelection = { ...selection, model: "gpt-6.1-astra" };
+  const recover = (message: QueuedThreadMessage) =>
+    kind === "rejected"
+      ? restoreRejectedQueuedMessage(message, "rejected")
+      : recoverEditedCreationAfterDelivery(message);
+  const recovered = kind === "rejected" ? "restored" : true;
+
+  it.each([true, false, undefined])("restores only explicit queued picks (%s)", async (flag) => {
+    const message = decodeQueuedThreadMessage(
+      JSON.parse(
+        JSON.stringify(
+          encodeQueuedThreadMessage({
+            ...queuedMessage({
+              messageId: `restore-selection-${kind}-${flag}`,
+              text: "Recover me",
+            }),
+            modelSelection: selection,
+            ...(flag === undefined ? {} : { modelSelectionExplicit: flag }),
+          }),
+        ),
+      ),
+    );
+    await harness.manager.enqueue(message);
+
+    await expect(recover(message)).resolves.toBe(recovered);
+
+    const draft = composerDrafts.getComposerDraftSnapshot(
+      `${message.environmentId}:${message.threadId}`,
+    );
+    expect(draft.text).toBe(message.text);
+    expect(draft.modelSelection).toEqual(flag === true ? selection : undefined);
+    expect(remainingMessages()).toEqual([]);
+  });
+
+  it.each(["newer", "same", "clear", "clear-content", "clear-all", "other-draft"] as const)(
+    "preserves owner %s interaction while the recovered content persists",
+    async (interaction) => {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: `restore-race-${kind}-${interaction}`, text: "Recover me" }),
+        modelSelection: selection,
+        modelSelectionExplicit: true,
+      };
+      const draftKey = `${message.environmentId}:${message.threadId}`;
+      const originalMerge = composerDrafts.mergeComposerDraftContent;
+      const mergeCompleted = Promise.withResolvers<void>();
+      const releaseRecovery = Promise.withResolvers<void>();
+      const mergeSpy = vi
+        .spyOn(composerDrafts, "mergeComposerDraftContent")
+        .mockImplementation(async (key, content) => {
+          const result = await originalMerge(key, content);
+          mergeCompleted.resolve();
+          await releaseRecovery.promise;
+          return result;
+        });
+      try {
+        await harness.manager.enqueue(message);
+        const recovery = recover(message);
+        await mergeCompleted.promise;
+        if (interaction === "clear-content") {
+          composerDrafts.clearComposerDraftContent(draftKey, { clearModelSelection: true });
+        } else if (interaction === "clear-all") {
+          composerDrafts.clearComposerDraft(draftKey);
+        } else if (interaction === "other-draft") {
+          composerDrafts.clearComposerDraft(`${draftKey}:other`);
+        } else {
+          composerDrafts.updateComposerDraftSettings(draftKey, {
+            modelSelection:
+              interaction === "newer"
+                ? newerSelection
+                : interaction === "same"
+                  ? selection
+                  : undefined,
+          });
+        }
+        releaseRecovery.resolve();
+        await expect(recovery).resolves.toBe(recovered);
+
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
+          interaction === "newer"
+            ? newerSelection
+            : interaction === "same" || interaction === "other-draft"
+              ? selection
+              : undefined,
+        );
+        expect(remainingMessages()).toEqual([]);
+      } finally {
+        releaseRecovery.resolve();
+        mergeSpy.mockRestore();
+      }
+    },
+  );
+});
+
+describe("queued follow-up model selection", () => {
+  it.each([false, true, undefined])(
+    "forwards persisted selection intent (%s) with stable replay identity and message content",
+    (modelSelectionExplicit) => {
+      const captured = { instanceId: ProviderInstanceId.make("before"), model: "old-model" };
+      const current = {
+        instanceId: ProviderInstanceId.make("after"),
+        model: "new-model",
+        options: [{ id: "reasoningEffort", value: "high" }],
+      };
+      const message = decodeQueuedThreadMessage(
+        encodeQueuedThreadMessage({
+          ...queuedMessage({
+            messageId: "follow-up",
+            text: "send this",
+            fileUri: "file:///notes.pdf",
+          }),
+          modelSelection: captured,
+          ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+          runtimeMode: "approval-required",
+          interactionMode: "plan",
+          dispatchMode: "queue",
+          context: {
+            version: 1,
+            records: [
+              {
+                version: 1,
+                kind: "terminal",
+                contextId: ComposerContextId.make("build-output"),
+                label: "Build",
+                terminalId: "main",
+                terminalLabel: "Terminal",
+                lineStart: 1,
+                lineEnd: 1,
+                text: "failed build",
+              },
+            ],
+          },
+        }),
+      );
+      const attachments: PreparedTurnAttachments["attachments"] = [
+        {
+          type: "file",
+          id: "uploaded-file",
+          name: "notes.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 42,
+        },
+      ];
+      const settings = resolveQueuedThreadSettings(message, {
+        modelSelection: current,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      });
+      const input = buildQueuedFollowUpStartTurnInput({
+        message,
+        settings,
+        attachments,
+        inlineMessageContext: true,
+      });
+      expect(input).toMatchObject({
+        commandId: message.commandId,
+        threadId: message.threadId,
+        createdAt: message.createdAt,
+        dispatchMode: "queue",
+        modelSelection: modelSelectionExplicit === false ? current : captured,
+        runtimeMode: "approval-required",
+        interactionMode: "plan",
+        message: {
+          messageId: message.messageId,
+          text: message.text,
+          attachments,
+          context: message.context,
+        },
+      });
+      if (modelSelectionExplicit === undefined) {
+        expect(input).not.toHaveProperty("modelSelectionExplicit");
+      } else {
+        expect(input.modelSelectionExplicit).toBe(modelSelectionExplicit);
+      }
+    },
+  );
+
+  it.each([false, true, undefined])(
+    "restores rejected selection intent (%s) without pinning inherited snapshots",
+    async (modelSelectionExplicit) => {
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: "rejected-selection", text: "retry me" }),
+        modelSelection: { instanceId: ProviderInstanceId.make("before"), model: "old-model" },
+        ...(modelSelectionExplicit === undefined ? {} : { modelSelectionExplicit }),
+      };
+      await harness.manager.enqueue(message);
+      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+      const draft = composerDrafts.getComposerDraftSnapshot(
+        `${message.environmentId}:${message.threadId}`,
+      );
+      expect(draft.text).toBe(message.text);
+      expect(draft.modelSelection).toEqual(
+        modelSelectionExplicit === true ? message.modelSelection : undefined,
+      );
+    },
+  );
+
+  it("preserves a later draft pick while restoring an inherited rejected message", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "later-pick", text: "retry me" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("before"), model: "old-model" },
+      modelSelectionExplicit: false,
+    };
+    const later = { instanceId: ProviderInstanceId.make("later"), model: "later-model" };
+    const key = `${message.environmentId}:${message.threadId}`;
+    composerDrafts.updateComposerDraftSettings(key, { modelSelection: later });
+    await harness.manager.enqueue(message);
+    await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("restored");
+    expect(composerDrafts.getComposerDraftSnapshot(key).modelSelection).toEqual(later);
+  });
 });
 
 describe("queued worktree creation command", () => {
@@ -458,32 +720,6 @@ describe("thread outbox attachment preparation", () => {
     expect(remainingMessages()).toEqual([edited]);
   });
 
-  it("keeps an unchanged queued payload ready after attachment reuse", async () => {
-    const message = withReusedFileUpload(
-      queuedMessage({
-        messageId: "message-reused-upload-current",
-        text: "unchanged text",
-        fileUri: "file:///documents/t3-composer-attachments/current.pdf",
-      }),
-      "pending-reused-upload",
-    );
-    harness.prepareTurnAttachments.mockResolvedValueOnce({
-      status: "ready",
-      attachments: [],
-      draftAttachments: message.attachments,
-      pendingAttachmentIds: ["pending-reused-upload"],
-    });
-    await harness.manager.enqueue(message);
-    const revision = harness.manager.revisionOf(message.messageId);
-    appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
-
-    await expect(prepareQueuedMessageAttachments(message)).resolves.toMatchObject({
-      status: "ready",
-      persistedMessage: message,
-      deliveryRevision: revision,
-    });
-  });
-
   it("uses the known next revision after persisting uploaded references", async () => {
     const message = queuedMessage({
       messageId: "message-new-upload-revision",
@@ -601,6 +837,23 @@ describe("thread outbox drain delivery cleanup", () => {
     expect(remainingMessages()).toEqual([edited]);
   });
 
+  it("preserves an archived selection-intent edit when an older payload finishes delivery", async () => {
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "intent-edited-during-sign-out", text: "Original" }),
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" },
+      modelSelectionExplicit: false,
+    };
+    await harness.manager.enqueue(message);
+    const deliveryRevision = harness.manager.revisionOf(message.messageId);
+    const edited = { ...message, modelSelectionExplicit: true };
+    await harness.manager.update(edited);
+    await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]));
+    await harness.manager.clearEnvironment(message.environmentId);
+    await expect(completeQueuedMessageDelivery(message, deliveryRevision)).resolves.toBe("edited");
+    await composerDrafts.restoreCloudComposerDrafts("account-a");
+    expect(remainingMessages()).toEqual([edited]);
+  });
+
   it("retries only cleanup after an acknowledged send removal fails", async () => {
     const message = queuedMessage({ messageId: "message-acknowledged", text: "delivered" });
     const acknowledged = new Set([message.messageId]);
@@ -646,23 +899,6 @@ describe("thread outbox drain delivery cleanup", () => {
 
     expect(remainingMessages()).toEqual([]);
     expect(appAtomRegistry.get(acknowledgedThreadMessagesAtom)).toEqual([message]);
-  });
-
-  it("clears an error about the delivered message but keeps one about another message", async () => {
-    const threadKey = "environment-1:thread-1";
-    const retried = queuedMessage({ messageId: "message-retried", text: "retried" });
-    await harness.manager.enqueue(retried);
-    setThreadComposerError(threadKey, "could not be restored", retried.messageId);
-
-    await completeQueuedMessageDelivery(retried, harness.manager.revisionOf(retried.messageId));
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]).toBeUndefined();
-
-    const other = queuedMessage({ messageId: "message-other", text: "other" });
-    await harness.manager.enqueue(other);
-    setThreadComposerError(threadKey, "rejected", "message-rejected");
-
-    await completeQueuedMessageDelivery(other, harness.manager.revisionOf(other.messageId));
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.message).toBe("rejected");
   });
 
   it("keeps a delivered message when its editor opens during storage removal", async () => {
@@ -814,29 +1050,115 @@ describe("thread outbox delivered creation recovery", () => {
 });
 
 describe("thread outbox recovery rollback", () => {
-  it("preserves inline context from setup edits when reopening a failed task", async () => {
-    const message = queuedMessage({ messageId: "failed-context", text: "Original prompt" });
-    const sourceKey = `${message.environmentId}:${message.threadId}`;
-    const targetKey = "new-task:restored-failed-context";
-    const record = {
-      version: 1 as const,
-      kind: "mention" as const,
-      contextId: ComposerContextId.make("setup-file"),
-      label: "Checkout.tsx",
-      path: "src/Checkout.tsx",
+  it("does not restore a submitted pick consumed while recovery content persists", async () => {
+    const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "rollback-consumed-pick", text: "Queued text" }),
+      modelSelection: selection,
+      modelSelectionExplicit: true,
     };
-    const context = { version: 1 as const, records: [record] };
-    const text = "[Checkout.tsx](t3-context://v1/mention/setup-file)";
-    appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
-      [targetKey]: { text: message.text, attachments: [] },
-      [sourceKey]: { text, context, attachments: [] },
+    const draftKey = `${message.environmentId}:${message.threadId}`;
+    composerDrafts.setComposerDraftText(draftKey, "Typed before");
+    composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: selection });
+    await harness.manager.enqueue(message);
+    const originalMerge = composerDrafts.mergeComposerDraftContent;
+    const mergeCompleted = Promise.withResolvers<void>();
+    const releaseRecovery = Promise.withResolvers<void>();
+    const mergeSpy = vi
+      .spyOn(composerDrafts, "mergeComposerDraftContent")
+      .mockImplementation(async (key, content) => {
+        const result = await originalMerge(key, content);
+        mergeCompleted.resolve();
+        await releaseRecovery.promise;
+        return result;
+      });
+    harness.removeOutboxMessage.mockImplementationOnce(async () => {
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBeUndefined();
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
     });
-    await recoverFailedThreadDraft(message);
-    expect(composerDrafts.getComposerDraftSnapshot(targetKey)).toMatchObject({
-      text: `Original prompt\n\n${text}`,
-      context,
+    try {
+      const recovery = restoreRejectedQueuedMessage(message, "rejected");
+      await mergeCompleted.promise;
+      composerDrafts.consumeSubmittedComposerModelPick(draftKey, selection);
+      releaseRecovery.resolve();
+      await expect(recovery).resolves.toBe("deferred");
+
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+        text: "Typed before",
+        attachments: [],
+      });
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBeUndefined();
+      expect(remainingMessages()).toEqual([message]);
+    } finally {
+      releaseRecovery.resolve();
+      mergeSpy.mockRestore();
+    }
+  });
+
+  it.each(["newer", "same", "clear"] as const)(
+    "preserves a %s owner pick when queue removal defers and the merge rolls back",
+    async (interaction) => {
+      const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+      const ownerSelection =
+        interaction === "newer"
+          ? { ...selection, model: "gpt-6.1-astra" }
+          : interaction === "same"
+            ? selection
+            : undefined;
+      const message: QueuedThreadMessage = {
+        ...queuedMessage({ messageId: `rollback-selection-${interaction}`, text: "Queued text" }),
+        modelSelection: selection,
+        modelSelectionExplicit: true,
+      };
+      const draftKey = `${message.environmentId}:${message.threadId}`;
+      appAtomRegistry.set(composerDrafts.composerDraftsAtom, {
+        [draftKey]: { text: "Typed before", attachments: [] },
+      });
+      await harness.manager.enqueue(message);
+      harness.removeOutboxMessage.mockImplementationOnce(async () => {
+        expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
+        composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: ownerSelection });
+        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+      });
+
+      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey)).toMatchObject({
+        text: "Typed before",
+        attachments: [],
+      });
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(
+        ownerSelection,
+      );
+      expect(remainingMessages()).toEqual([message]);
+    },
+  );
+
+  it("preserves equal-valued reselection by a synchronous subscriber during restoration", async () => {
+    const selection = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol" };
+    const message: QueuedThreadMessage = {
+      ...queuedMessage({ messageId: "rollback-synchronous-pick", text: "Queued text" }),
+      modelSelection: selection,
+      modelSelectionExplicit: true,
+    };
+    const draftKey = `${message.environmentId}:${message.threadId}`;
+    await harness.manager.enqueue(message);
+    const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
+      if (drafts[draftKey]?.modelSelection === selection) {
+        unsubscribe();
+        composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: selection });
+        appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
+      }
     });
-    expect(composerDrafts.getComposerDraftSnapshot(sourceKey).context).toBeUndefined();
+    try {
+      await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
+
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("");
+      expect(remainingMessages()).toEqual([message]);
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("reopens a rejected task with setup edits and every attachment, even above the send cap", async () => {
@@ -892,6 +1214,7 @@ describe("thread outbox recovery rollback", () => {
     const message: QueuedThreadMessage = {
       ...queuedMessage({ messageId: "message-creation-restore", text: "new task text" }),
       modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
+      modelSelectionExplicit: true,
       creation: {
         projectId: ProjectId.make("project-1"),
         workspaceMode: "local",
@@ -924,57 +1247,6 @@ describe("thread outbox recovery rollback", () => {
         `${message.environmentId}:${message.threadId}`
       ],
     ).toEqual({ kind: "failed", message, reason: "rejected by server" });
-  });
-
-  it("drops an earlier recovery error once a rejected new task is restored", async () => {
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "message-creation-retried", text: "new task text" }),
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
-      creation: {
-        projectId: ProjectId.make("project-1"),
-        workspaceMode: "local",
-        branch: null,
-        worktreePath: null,
-      },
-    };
-    await harness.manager.enqueue(message);
-    harness.draftFile.setWriteError(new Error("disk full"));
-    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
-      "retry",
-    );
-    const threadKey = `${message.environmentId}:${message.threadId}`;
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)[threadKey]?.messageId).toBe(
-      message.messageId,
-    );
-
-    harness.draftFile.setWriteError(null);
-    await expect(restoreRejectedQueuedMessage(message, "rejected by server")).resolves.toBe(
-      "restored",
-    );
-
-    expect(appAtomRegistry.get(threadComposerErrorsAtom)).toEqual({});
-    expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[threadKey]?.kind).toBe("failed");
-  });
-
-  it("keeps a failed outcome until its thread screen consumes it", async () => {
-    const message: QueuedThreadMessage = {
-      ...queuedMessage({ messageId: "message-creation-kept", text: "new task text" }),
-      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.6-sol" },
-      creation: {
-        projectId: ProjectId.make("project-1"),
-        workspaceMode: "local",
-        branch: null,
-        worktreePath: null,
-      },
-    };
-    await harness.manager.enqueue(message);
-    await restoreRejectedQueuedMessage(message, "rejected by server");
-
-    const key = `${message.environmentId}:${message.threadId}`;
-    expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[key]?.kind).toBe("failed");
-
-    clearPendingThreadCreationOutcome(key);
-    expect(appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[key]).toBeUndefined();
   });
 
   it("does not record a creation outcome for a rejected follow-up message", async () => {

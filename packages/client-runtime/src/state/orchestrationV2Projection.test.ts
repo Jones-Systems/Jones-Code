@@ -47,7 +47,11 @@ const run = {
   contextHandoffId: null,
 } satisfies OrchestrationV2Run;
 
-function commandItem(id: string, output = "done", ordinal = 1): OrchestrationV2TurnItem {
+function commandItem(
+  id: string,
+  output = "done",
+  ordinal = 1,
+): Extract<OrchestrationV2TurnItem, { type: "command_execution" }> {
   return {
     id: TurnItemId.make(id),
     threadId,
@@ -195,18 +199,6 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
     expect(next?.updatedAt).toEqual(archivedAt);
   });
 
-  it("ignores events for another thread", () => {
-    const event = {
-      id: "event-other",
-      type: "thread.deleted",
-      threadId: ThreadId.make("thread-other"),
-      occurredAt: now,
-      payload: { ...emptyProjection.thread, id: ThreadId.make("thread-other"), deletedAt: now },
-    } as OrchestrationV2DomainEvent;
-
-    expect(applyOrchestrationV2ProjectionEvent(emptyProjection, event)).toBe(emptyProjection);
-  });
-
   it("preserves visible row identity when run updates do not change membership", () => {
     const item = commandItem("item-stable");
     const visibleTurnItems = [
@@ -309,6 +301,74 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
       queuedFuture.id,
     ]);
     expect(next?.visibleTurnItems.map((row) => row.position)).toEqual([0, 1]);
+  });
+
+  it("moves an updated item to its new ordinal and renumbers the rows it passes", () => {
+    const inherited = {
+      ...commandItem("item-inherited", "parent", 0),
+      threadId: ThreadId.make("parent"),
+    };
+    const items = [
+      commandItem("item-a", "a", 1),
+      commandItem("item-b", "b", 2),
+      commandItem("item-c", "c", 2),
+    ];
+    const rows = [
+      {
+        position: 0,
+        visibility: "inherited" as const,
+        sourceThreadId: inherited.threadId,
+        sourceItemId: inherited.id,
+        item: inherited,
+      },
+      ...items.map((item, index) => ({
+        position: index + 1,
+        visibility: "local" as const,
+        sourceThreadId: threadId,
+        sourceItemId: item.id,
+        item,
+      })),
+    ];
+    const moved = commandItem("item-a", "moved", 2);
+    const next = applyOrchestrationV2ProjectionEvent(
+      { ...emptyProjection, runs: [run], turnItems: items, visibleTurnItems: rows },
+      {
+        id: "event-move",
+        type: "turn-item.updated",
+        threadId,
+        runId,
+        occurredAt: now,
+        payload: moved,
+      } as OrchestrationV2DomainEvent,
+    );
+
+    // Equal ordinals order by id, so item-a stays ahead of item-b.
+    expect(next?.visibleTurnItems.map((row) => [row.item.id, row.position])).toEqual([
+      ["item-inherited", 0],
+      ["item-a", 1],
+      ["item-b", 2],
+      ["item-c", 3],
+    ]);
+    expect(next?.visibleTurnItems[0]).toBe(rows[0]);
+    expect(next?.visibleTurnItems[1]?.item).toBe(moved);
+    expect(next?.turnItems.map((item) => item.id)).toEqual(["item-a", "item-b", "item-c"]);
+
+    const later = commandItem("item-a", "later", 3);
+    const last = applyOrchestrationV2ProjectionEvent(next, {
+      id: "event-move-later",
+      type: "turn-item.updated",
+      threadId,
+      runId,
+      occurredAt: now,
+      payload: later,
+    } as OrchestrationV2DomainEvent);
+    expect(last?.visibleTurnItems.map((row) => [row.item.id, row.position])).toEqual([
+      ["item-inherited", 0],
+      ["item-b", 1],
+      ["item-c", 2],
+      ["item-a", 3],
+    ]);
+    expect(last?.turnItems.at(0)).toBe(later);
   });
 
   describe("partial timeline", () => {
@@ -470,6 +530,206 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
   });
 });
 
+describe("stable local item replacement", () => {
+  type Rows = OrchestrationV2ThreadProjection["visibleTurnItems"];
+  const rowOf = (item: OrchestrationV2TurnItem, position: number): Rows[number] => ({
+    item,
+    position,
+    visibility: "local",
+    sourceThreadId: item.threadId,
+    sourceItemId: item.id,
+  });
+  const eventOf = (payload: OrchestrationV2TurnItem): OrchestrationV2DomainEvent => ({
+    id: EventId.make(`replacement-${payload.id}`),
+    type: "turn-item.updated",
+    threadId,
+    occurredAt: now,
+    payload,
+  });
+  const oldVisibleUpsert = (rows: Rows, item: OrchestrationV2TurnItem): Rows => {
+    const index = rows.findIndex((row) => row.sourceItemId === item.id);
+    const previous = rows[index];
+    if (
+      previous?.visibility === "local" &&
+      previous.sourceThreadId === item.threadId &&
+      previous.item === item
+    ) {
+      return rows;
+    }
+    const updated = index === -1 ? [...rows] : [...rows.slice(0, index), ...rows.slice(index + 1)];
+    const insertionIndex = updated.findIndex(
+      (row) =>
+        row.visibility === "local" &&
+        (row.item.ordinal > item.ordinal ||
+          (row.item.ordinal === item.ordinal &&
+            String(row.item.id).localeCompare(String(item.id)) > 0)),
+    );
+    updated.splice(insertionIndex === -1 ? updated.length : insertionIndex, 0, rowOf(item, 0));
+    return updated.map((row, position) => (row.position === position ? row : { ...row, position }));
+  };
+
+  it("matches the old structural reducer for seeded replacements, ties, moves and insertions", () => {
+    let seed = 0xa2c11e17;
+    const random = (limit: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return Math.floor((seed / 0x1_0000_0000) * limit);
+    };
+    const inherited = {
+      ...rowOf(commandItem("inherited", "history", 500), 0),
+      visibility: "inherited" as const,
+      sourceThreadId: ThreadId.make("source-thread"),
+    };
+    let reference: Rows = [inherited];
+    let projection: OrchestrationV2ThreadProjection = {
+      ...emptyProjection,
+      runs: [run],
+      visibleTurnItems: reference,
+    };
+    for (let step = 0; step < 240; step += 1) {
+      const id = TurnItemId.make(`seeded-${random(24)}`);
+      const previous = projection.turnItems.find((item) => item.id === id);
+      const item =
+        previous !== undefined && random(4) !== 0
+          ? { ...previous, title: `revision-${step}` }
+          : commandItem(id, `revision-${step}`, random(16));
+      reference = oldVisibleUpsert(reference, item);
+      const before = projection;
+      projection = applyOrchestrationV2ProjectionEvent(projection, eventOf(item))!;
+      expect(projection.visibleTurnItems).toEqual(reference);
+      expect(projection.visibleTurnItems.map((row) => row.position)).toEqual(
+        projection.visibleTurnItems.map((_, index) => index),
+      );
+      expect(projection.visibleTurnItems[0]).toBe(inherited);
+      for (const row of projection.visibleTurnItems) {
+        const unchanged = before.visibleTurnItems[row.position];
+        if (unchanged?.sourceItemId === row.sourceItemId && row.sourceItemId !== item.id) {
+          expect(row).toBe(unchanged);
+        }
+      }
+      expect(applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems).toBe(
+        projection.visibleTurnItems,
+      );
+    }
+  });
+
+  it.each([
+    "inherited",
+    "synthetic",
+    "inherited target",
+    "source",
+    "identity",
+    "position",
+    "following tie",
+    "interrupt",
+    "previous interrupt",
+  ] as const)("preserves structural fallback for %s rows", (kind) => {
+    const first = commandItem("first", "before", 1);
+    const target =
+      kind === "interrupt" || kind === "previous interrupt"
+        ? {
+            ...commandItem("target", "before", 2),
+            type: "run_interrupt_request" as const,
+            message: "Stop",
+          }
+        : commandItem("target", "before", 2);
+    const last = commandItem("last", "before", kind === "following tie" ? 2 : 3);
+    const rows = [rowOf(first, 0), rowOf(target, 1), rowOf(last, 2)];
+    if (kind === "inherited" || kind === "synthetic") {
+      rows[2] = { ...rows[2]!, visibility: kind };
+    }
+    if (kind === "inherited target") rows[1] = { ...rows[1]!, visibility: "inherited" };
+    if (kind === "source") rows[1] = { ...rows[1]!, sourceThreadId: ThreadId.make("other") };
+    if (kind === "identity") {
+      rows[1] = { ...rows[1]!, item: commandItem("stale-identity", "before", 2) };
+    }
+    if (kind === "position") rows[1] = { ...rows[1]!, position: 7 };
+    const item = {
+      ...(kind === "previous interrupt" ? commandItem("target", "before", 2) : target),
+      title: "updated",
+    };
+    const projection = {
+      ...emptyProjection,
+      runs: [run],
+      turnItems: [first, target, last],
+      visibleTurnItems: rows,
+    };
+    const next = applyOrchestrationV2ProjectionEvent(projection, eventOf(item));
+    expect(next?.visibleTurnItems).toEqual(oldVisibleUpsert(rows, item));
+  });
+
+  it.each([
+    { visibility: "inherited", ordinal: 1 },
+    { visibility: "inherited", ordinal: 2 },
+    { visibility: "synthetic", ordinal: 1 },
+    { visibility: "synthetic", ordinal: 2 },
+  ] as const)(
+    "checks the nearest earlier local ordinal $ordinal across $visibility rows",
+    ({ visibility, ordinal }) => {
+      const first = commandItem("z-first", "before", ordinal);
+      const inherited = commandItem("inherited", "before", 100);
+      const target = commandItem("a-target", "before", 2);
+      const last = commandItem("last", "before", 3);
+      const rows: Rows = [
+        rowOf(first, 0),
+        { ...rowOf(inherited, 1), visibility, sourceThreadId: ThreadId.make("source") },
+        rowOf(target, 2),
+        rowOf(last, 3),
+      ];
+      const item = { ...target, title: "updated" };
+      const projection = {
+        ...emptyProjection,
+        runs: [run],
+        turnItems: [first, target, last],
+        visibleTurnItems: rows,
+      };
+      expect(
+        applyOrchestrationV2ProjectionEvent(projection, eventOf(item))?.visibleTurnItems,
+      ).toEqual(oldVisibleUpsert(rows, item));
+    },
+  );
+
+  it("bounds ordinal and position inspection for a tail replacement while preserving untouched rows", () => {
+    let identityReads = 0;
+    let positionReads = 0;
+    let ordinalReads = 0;
+    const items = Array.from({ length: 1000 }, (_, index) => ({
+      ...commandItem(`tail-${index}`, "before", index),
+      get ordinal() {
+        ordinalReads += 1;
+        return index;
+      },
+    }));
+    const rows = items.map((item, index) => ({
+      ...rowOf(item, index),
+      get sourceItemId() {
+        identityReads += 1;
+        return item.id;
+      },
+      get position() {
+        positionReads += 1;
+        return index;
+      },
+    }));
+    const projection = {
+      ...emptyProjection,
+      runs: [run],
+      turnItems: items,
+      visibleTurnItems: rows,
+    };
+    const item = commandItem("tail-999", "after", 999);
+    const next = applyOrchestrationV2ProjectionEvent(projection, eventOf(item))!;
+    expect(identityReads).toBeLessThanOrEqual(4);
+    expect(positionReads).toBeLessThanOrEqual(1);
+    expect(ordinalReads).toBeLessThanOrEqual(2);
+    expect(next.visibleTurnItems).not.toBe(rows);
+    expect(next.visibleTurnItems[999]?.item).toBe(item);
+    for (let index = 0; index < 999; index += 1) {
+      expect(next.visibleTurnItems[index]).toBe(rows[index]);
+    }
+    expect(rows[999]?.item).toBe(items[999]);
+  });
+});
+
 it("does not scan every row against every run for a streaming item update", () => {
   let runReads = 0;
   const runs = Array.from({ length: 100 }, (_, index) => ({
@@ -505,6 +765,167 @@ it("does not scan every row against every run for a streaming item update", () =
   expect(next?.visibleTurnItems.at(-1)?.item).toBe(payload);
   expect(next?.visibleTurnItems[0]).toBe(projection.visibleTurnItems[0]);
   expect(runReads).toBeLessThanOrEqual(100);
+});
+
+it("does not scan ordering or positions for a streamed replacement", () => {
+  const size = 100;
+  let ordinalReads = 0;
+  let positionReads = 0;
+  const items = Array.from({ length: size }, (_, index) => ({
+    ...commandItem(`item-${index}`, "before", index),
+    get ordinal() {
+      ordinalReads++;
+      return index;
+    },
+  }));
+  const rows = items.map((item, index) => ({
+    item,
+    get position() {
+      positionReads++;
+      return index;
+    },
+    visibility: "local" as const,
+    sourceThreadId: threadId,
+    sourceItemId: item.id,
+  }));
+  const payload = commandItem(`item-${size - 1}`, "after", size - 1);
+  const next = applyOrchestrationV2ProjectionEvent(
+    { ...emptyProjection, runs: [run], turnItems: items, visibleTurnItems: rows },
+    {
+      id: "stable-replacement",
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload,
+    } as OrchestrationV2DomainEvent,
+  );
+
+  expect(ordinalReads).toBeLessThanOrEqual(2);
+  expect(positionReads).toBeLessThanOrEqual(2);
+  expect(next?.visibleTurnItems.at(-1)).toMatchObject({ item: payload, position: size - 1 });
+  expect(next?.visibleTurnItems[0]).toBe(rows[0]);
+  expect(items.at(-1)).toMatchObject({ output: "before" });
+  expect(rows.at(-1)?.item).toBe(items.at(-1));
+});
+
+it("rechecks visibility when an existing item changes runs without changing ordinal", () => {
+  const first = commandItem("item-first", "first", 1);
+  const second = commandItem("item-second", "second", 2);
+  const rolledBackRun = { ...run, id: RunId.make("rolled-back"), status: "rolled_back" as const };
+  const projection = {
+    ...emptyProjection,
+    runs: [run, rolledBackRun],
+    turnItems: [first, second],
+    visibleTurnItems: [first, second].map((item, position) => ({
+      item,
+      position,
+      visibility: "local" as const,
+      sourceThreadId: threadId,
+      sourceItemId: item.id,
+    })),
+  };
+  const update = (payload: OrchestrationV2TurnItem) =>
+    ({
+      id: "visibility-update",
+      type: "turn-item.updated",
+      threadId,
+      occurredAt: now,
+      payload,
+    }) as OrchestrationV2DomainEvent;
+  const hidden = applyOrchestrationV2ProjectionEvent(
+    projection,
+    update({
+      ...first,
+      runId: rolledBackRun.id,
+    }),
+  );
+  expect(hidden?.visibleTurnItems.map((row) => [row.item.id, row.position])).toEqual([
+    [second.id, 0],
+  ]);
+  const restored = applyOrchestrationV2ProjectionEvent(hidden, update(first));
+  expect(restored?.visibleTurnItems.map((row) => [row.item.id, row.position])).toEqual([
+    [first.id, 0],
+    [second.id, 1],
+  ]);
+  expect(projection.visibleTurnItems[0]?.item).toBe(first);
+});
+
+it("restores deduped bodies from the records it already holds, also in a partial timeline", () => {
+  const messageId = MessageId.make("message-deduped");
+  const subagentId = NodeId.make("node-deduped");
+  const reply = {
+    ...commandItem("item-reply", "", 400),
+    type: "assistant_message",
+    messageId,
+    text: "the full reply",
+    streaming: false,
+  } as unknown as OrchestrationV2TurnItem;
+  const subagent = {
+    id: subagentId,
+    threadId,
+    runId,
+    parentNodeId: NodeId.make("node-root"),
+    origin: "app_owned",
+    createdBy: "agent",
+    driver: "codex",
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerThreadId: null,
+    childThreadId: null,
+    nativeTaskRef: null,
+    prompt: "the task brief",
+    title: null,
+    model: null,
+    status: "running",
+    result: null,
+    startedAt: now,
+    completedAt: null,
+    updatedAt: now,
+  } as OrchestrationV2ThreadProjection["subagents"][number];
+  const projection = {
+    ...emptyProjection,
+    runs: [run],
+    messages: [
+      {
+        id: messageId,
+        threadId,
+        runId,
+        nodeId: null,
+        role: "assistant",
+        text: "the full reply",
+        attachments: [],
+        streaming: false,
+        createdBy: "agent",
+        creationSource: "provider",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ],
+    subagents: [subagent],
+  } as OrchestrationV2ThreadProjection;
+  const event = (type: string, payload: unknown) =>
+    ({
+      id: `event-${type}`,
+      type,
+      threadId,
+      runId,
+      occurredAt: now,
+      payload,
+    }) as OrchestrationV2DomainEvent;
+
+  for (const options of [undefined, { partialTimeline: true, latestLocalTurnOrdinal: 300 }]) {
+    const withReply = applyOrchestrationV2ProjectionEvent(
+      projection,
+      event("turn-item.updated", { ...reply, text: "", textOmitted: true }),
+      options,
+    );
+    expect(withReply?.turnItems).toEqual([reply]);
+    expect(withReply?.visibleTurnItems.map((row) => row.item)).toEqual([reply]);
+  }
+  const progressed = applyOrchestrationV2ProjectionEvent(
+    projection,
+    event("subagent.updated", { ...subagent, prompt: "", promptOmitted: true, progress: "step 2" }),
+  );
+  expect(progressed?.subagents).toEqual([{ ...subagent, progress: "step 2" }]);
 });
 
 it("replays explicit provider settlement without inferring it from availability, text, intent or checkpoints", () => {

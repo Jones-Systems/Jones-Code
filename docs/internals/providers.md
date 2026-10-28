@@ -49,6 +49,30 @@ client connections and provider-instance rebuilds. Releases are immutable, with 
 selecting the version for new processes. Running processes hold leases on their version. Updates
 and removal must respect those leases instead of replacing executables under a running agent.
 
+## Codex account failover
+
+An attributed native usage-limit or availability failure can continue on another enabled,
+compatible Codex instance. Compatibility must prove shared native history; a matching driver
+alone is insufficient. Saved thread defaults and the failed run's captured model/options have
+separate ownership: the switch preserves the former, while the continuation preserves the
+latter. Neither changes Claude behavior.
+
+The durable evidence and switch step bridge crashes between the failure, saved-selection
+change and continuation. The continuation's transaction revalidates selection revision and
+live admission before committing queue overrides. Only queued sends with recorded proof of
+inherited intent follow the switch; explicit selections and older unmarked runs remain fixed.
+A refused continuation leaves the saved target visible and applies the existing failure hold.
+
+Account runtimes keep separate provider-thread records while sharing the native conversation,
+so explicitly returning to an earlier account preserves its runtime-generation ownership.
+Detaching a Codex session interrupts native children, so failover waits for its owned native
+descendants to settle, including descendants of completed parents. Final turn-item updates
+wake deferred ancestors. The same pending decision holds delegated-child result delivery until continuation or
+exhaustion, preventing a transient failure from finalizing its parent. Startup reconciles these
+decisions after native runtime recovery and before delegated-result recovery and effect workers;
+evidence older than 24 hours cannot start an automatic continuation. Rejected command receipts
+are terminal and never become retry permission.
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.
@@ -89,7 +113,8 @@ symlinks there. Volta is proven by its `volta-shim` link plus the package's imag
 nothing is proven, the provider's own updater (`claude update`, `codex update`, `opencode upgrade`,
 `pi update --self`, `grok update`) runs instead, because each one detects its installer itself;
 the runner's version check catches an updater that exits 0 without updating. Mise installs stay
-manual-only because their version is pinned in mise's config. npm updates pin `--prefix` because the
+manual-only because their version is pinned in mise's config. A Grok cask whose Homebrew prefix
+cannot be verified also stays manual-only: `grok update` would install a second copy. npm updates pin `--prefix` because the
 `npm` on `PATH` can belong to a different Node than the one that owns the provider. Homebrew
 compares against `brew info` since casks trail npm by hours; native installs share npm's version
 train, so the registry stays authoritative for them.
@@ -123,6 +148,16 @@ and adds that turn to it. One run can therefore own several native turns. `/goal
 start no Codex turn settle on a provider turn without a native ref, which native rollback must
 not count. Claude's SDK mode emits no goal events; its adapter reads goal state from the
 synthetic command output and Stop hook feedback in the transcript.
+
+Jones [goal continuity](../../apps/server/src/jones/goals/continuity/GoalContinuity.ts)
+stores semantic progress separately from native goal lifecycle. Its durable owner names the exact
+environment and provider conversation; a live execution witness authorizes agent writes, while
+authenticated owner administration can work without starting a provider. Recovery delivery history
+fences continuation even after the current record is detached or retired. A prepared capsule grants
+no send authority: dispatch requires a durably committed, single-use permit for the captured producer.
+Compaction recovery reads fresh persisted state and injects it as untrusted context. Injection and
+bound pause/interrupt remain asynchronous; they do not establish a strict barrier before every
+post-compaction token or tool. Native successors need the same continuity check as ordinary starts.
 
 Capabilities must describe what the provider can actually do. Antigravity can capture workspace
 checkpoints but cannot roll back its conversation. The [checkpoint boundary](./overview.md#turn-completion-and-checkpoints)
