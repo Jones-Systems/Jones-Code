@@ -139,7 +139,7 @@ export function ComposerQuickControls(
                       aria-label={`${name} reasoning`}
                       aria-pressed={selected === value}
                       disabled={disabled || !visible}
-                      className="w-6 px-0 font-normal text-foreground/55 aria-pressed:bg-black/50 aria-pressed:text-foreground/90 aria-pressed:hover:bg-black/40"
+                      className="w-6 px-0 font-normal text-foreground/55 aria-pressed:bg-black/15 aria-pressed:text-foreground/90 aria-pressed:hover:bg-black/20"
                       onClick={() => {
                         if (visible && !disabled && descriptor)
                           traits.handleSelectChange(descriptor, value);

@@ -63,6 +63,20 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Header telemetry and quick effort selection
+
+The header's fixed panel controls expose their actual element to ChatHeader.
+The Jones host-status clearance hook measures overlap and reserves an 8px gap,
+including when the monitor/maximize controls appear or the chat column resizes.
+Host pills keep their existing progressive compression. Quick M/H/E controls
+use a 15% black selection overlay, increasing to 20% on hover.
+
+The focused browser regression checks growing controls, narrowing the header,
+moving controls outside its column, and restoring the original layout. Local
+verification used an isolated component harness with reused dependencies;
+full app navigation and packaged native clients remain unverified. No sidebar
+behavior, telemetry collection, or provider configuration changed.
+
 ### Expected thread responses
 
 An explicit expected-result request keeps its sender **Waiting** after the
