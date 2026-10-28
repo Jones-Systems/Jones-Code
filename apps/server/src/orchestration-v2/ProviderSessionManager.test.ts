@@ -6229,8 +6229,9 @@ it.effect.each([
     yield* Effect.gen(function* () {
       const fixture = yield* openTransferFixture(`committed-transfer-${mode}`);
       const store = yield* ProjectionStore.ProjectionStoreV2;
-      source = (yield* store.getThreadRecords(fixture.threadId, ["providerThreads"]))
-        .providerThreads.find((thread) => thread.id === fixture.providerThread.id);
+      source = (yield* store.getThreadRecords(fixture.threadId, [
+        "providerThreads",
+      ])).providerThreads.find((thread) => thread.id === fixture.providerThread.id);
       assert.isDefined(source);
       const replacementProviderSessionId = ProviderSessionId.make("committed-transfer:replacement");
       const replacement = {
@@ -6334,7 +6335,10 @@ it.effect("completed pooled transfer survives a replacement open failure before 
         assert.isFalse(allowProducerRetirement);
         retirementCount += 1;
         return {
-          binding: runtimeBinding(providerThread, providerThread.runtimeIdentity!.runtimeGeneration!)!,
+          binding: runtimeBinding(
+            providerThread,
+            providerThread.runtimeIdentity!.runtimeGeneration!,
+          )!,
           evidence: "thread_closed" as const,
         };
       });
@@ -6445,7 +6449,9 @@ it.effect.each([
       Effect.gen(function* () {
         retirementCount += 1;
         if (retirementCount > 1)
-          return yield* unimplemented("A reattached writer needs new physical retirement evidence.");
+          return yield* unimplemented(
+            "A reattached writer needs new physical retirement evidence.",
+          );
         return {
           binding: runtimeBinding(
             providerThread,
@@ -6544,7 +6550,9 @@ it.effect.each([
             ? { replacementProviderSessionId }
             : mode === "changed-replacement-selector"
               ? {
-                  replacementProviderSessionId: ProviderSessionId.make("pooled-proof:other-replacement"),
+                  replacementProviderSessionId: ProviderSessionId.make(
+                    "pooled-proof:other-replacement",
+                  ),
                 }
               : {}),
         }),

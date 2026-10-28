@@ -3126,7 +3126,8 @@ export const layerWithOptions = (
         const bindings = providerThreads
           .flatMap((thread) => {
             const generation = thread.runtimeIdentity?.runtimeGeneration;
-            const binding = generation === undefined ? undefined : runtimeBinding(thread, generation);
+            const binding =
+              generation === undefined ? undefined : runtimeBinding(thread, generation);
             return binding === undefined ? [] : [binding];
           })
           .sort((left, right) => left.providerThreadId.localeCompare(right.providerThreadId));
