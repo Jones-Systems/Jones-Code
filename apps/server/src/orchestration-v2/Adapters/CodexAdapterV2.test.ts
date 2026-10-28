@@ -2158,9 +2158,18 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         if (result._tag === "Failure") {
           let error = Cause.squash(result.cause);
-          while (error instanceof Error && error.cause !== undefined) error = error.cause;
+          while (
+            error instanceof Error &&
+            !Schema.is(CodexError.CodexAppServerRequestError)(error) &&
+            error.cause !== undefined
+          )
+            error = error.cause;
           assert.instanceOf(error, CodexError.CodexAppServerRequestError);
-          assert.equal((error as CodexError.CodexAppServerRequestError).errorMessage, refusal);
+          const requestError = error as CodexError.CodexAppServerRequestError;
+          assert.equal(requestError.code, -32600);
+          assert.equal(requestError.method, "thread/resume");
+          assert.equal(requestError.requestId, "4");
+          assert.equal(requestError.errorMessage, refusal);
         }
         assert.equal(harness.providerThread.nativeThreadRef?.nativeId, nativeThreadId);
       }).pipe(
