@@ -63,7 +63,7 @@ async function expand(container: HTMLElement) {
   await userEvent.click(notch);
 }
 describe("real monitor renderer interactions", () => {
-  it("restores the exact settled Waiting target after peer recreation without replaying a stale row", async () => {
+  it("reconciles an unknown rowless Restore after connection recovery without replaying a stale row", async () => {
     const { store: oldPeer, rows, container } = setup();
     const row = rows[2]!;
     const receipt = {
@@ -79,6 +79,7 @@ describe("real monitor renderer interactions", () => {
     const intents: ThreadMonitorPeerIntent[] = [];
     const store = new MonitorPeerStore(async (intent) => {
       intents.push(intent);
+      if (intent.type === "restore") throw new Error("Synthetic lost delivery");
     });
     store.receive({ type: "reset", publisherGeneration: "generation" });
     const replayView = (revision: number, connected: boolean) => {
@@ -118,10 +119,48 @@ describe("real monitor renderer interactions", () => {
         settleCommandId: receipt.commandId,
       }),
     ]);
+    const originalRestore = intents.find(
+      (intent): intent is Extract<ThreadMonitorAction, { type: "restore" }> =>
+        intent.type === "restore",
+    )!;
+    await expect.poll(() => store.results.get(originalRestore.actionId)?.status).toBe("unknown");
+    await act(() => replayView(3, false));
+    const reconcile = screen.getByRole("button", { name: "Reconcile", exact: true });
+    await expect.element(reconcile).toBeVisible();
+    await expect.element(reconcile).toHaveAttribute("aria-disabled", "true");
+    await reconcile.click({ force: true });
+    expect(intents.filter((intent) => intent.type === "reconcile")).toHaveLength(0);
+    await expect.element(restore).toHaveAttribute("aria-disabled", "true");
+    await restore.click({ force: true });
+    expect(intents.filter((intent) => intent.type === "restore")).toHaveLength(1);
+    await act(() => replayView(4, true));
+    await expect.element(reconcile).toHaveAttribute("aria-disabled", "false");
+    expect(store.retainedRows.size).toBe(0);
+    await reconcile.click();
+    const reconciliations = intents.filter((intent) => intent.type === "reconcile");
+    expect(reconciliations).toEqual([
+      expect.objectContaining({
+        ...refOf(row),
+        type: "reconcile",
+        originalActionId: originalRestore.actionId,
+        originalCommandId: originalRestore.commandId,
+      }),
+    ]);
+    expect(store.selection).toBeNull();
+    expect(intents.filter((intent) => intent.type === "restore")).toHaveLength(1);
     await act(() => {
       store.receive({ ...testEnvironment, type: "invalidateEnvironment", requestId: "retired" });
       store.receive(receipt);
+      store.receive({
+        ...refOf(originalRestore),
+        type: "actionResult",
+        actionId: originalRestore.actionId,
+        commandId: originalRestore.commandId,
+        status: "unknown",
+        reason: "Late unknown result from retired lifetime",
+      });
     });
+    await expect.element(reconcile).not.toBeInTheDocument();
     await expect.element(restore).not.toBeInTheDocument();
     expect(store.results.size).toBe(0);
   });
