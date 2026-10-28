@@ -396,6 +396,8 @@ it("choosing a live option replaces custom text but waits for explicit Send", as
   using _timers = fakeTimers();
   await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Discard this answer");
+  expect(container.textContent).not.toContain("Your answer");
+  expect(container.textContent).toContain("Typing replaces your choice");
   const option = [...container.querySelectorAll("button")].find((b) =>
     b.textContent?.includes("Incremental"),
   )!;
