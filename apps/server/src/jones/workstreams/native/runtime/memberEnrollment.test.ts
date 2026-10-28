@@ -41,6 +41,8 @@ import * as Source from "./sourceEnrollment.ts";
 import * as Members from "./memberEnrollment.ts";
 import * as Setup from "./memberSetup.ts";
 import * as Qualification from "./memberPeerPinQualification.ts";
+import { selectMember } from "./memberStartup.ts";
+import * as Startup from "./startup.ts";
 
 const decodeUnknownSyncHomeWireWorkstreamsHomeBindBodyV2 = Schema.decodeUnknownSync(
   HomeWire.WorkstreamsHomeBindBodyV2,
@@ -555,4 +557,56 @@ it.effect("exact bytes conflict and the v1 source setup remains local-home-only"
       expect((yield* f.counts).singleton).toEqual([{ binding_version: 1 }]);
     }).pipe(Effect.provide(f.mounted));
   }).pipe(Effect.provide(baseServices())),
+);
+
+it.effect(
+  "qualifies genuine bound enrollment and selected startup with SQLite query-only enabled",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const directory = yield* scratch("nw-member-readonly-");
+        const database = NodePath.join(directory, "selected.sqlite");
+        yield* Effect.gen(function* () {
+          const f = yield* fixture;
+          yield* Effect.gen(function* () {
+            const proof = yield* (yield* Setup.MemberSetup).apply(f.intent);
+            const members = yield* Members.MemberEnrollments;
+            const input = {
+              text: JSON.stringify({
+                mode: "native-member",
+                registry: { ...home, canonical_origin: issuance.registry_origin },
+                bootstrap: {
+                  home: directory,
+                  database,
+                  key_provider: "server-secret-store",
+                  source_session_id: issuance.session.session_id,
+                },
+              }),
+              legacyActivationPresent: false,
+              home: directory,
+              database,
+              environmentId: "member:test",
+            };
+            const callsBefore = f.calls.length;
+            const before = yield* f.sql`SELECT total_changes() AS changes`;
+            yield* f.sql`PRAGMA query_only=ON`;
+            expect(yield* members.getValidatedBySessionId(issuance.session.session_id)).toEqual(
+              Option.some(proof),
+            );
+            expect(yield* selectMember(input)).toMatchObject({
+              mode: "native-member",
+              home: null,
+              sourceSessionId: issuance.session.session_id,
+              problem: null,
+            });
+            expect(yield* f.sql`SELECT total_changes() AS changes`).toEqual(before);
+            expect(yield* f.sql`PRAGMA query_only`).toEqual([{ query_only: 1 }]);
+            expect(f.calls).toHaveLength(callsBefore);
+            expect(yield* f.sql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
+            // The qualified helper still cannot mount the held member runtime.
+            expect((yield* Startup.select(input)).problem?.code).toBe("member_not_supported");
+          }).pipe(Effect.provide(f.mounted));
+        }).pipe(Effect.provide(baseServices(database)));
+      }),
+    ),
 );

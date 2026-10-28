@@ -248,14 +248,20 @@ const make = Effect.gen(function* () {
       peer.value.expiresAt.epochMilliseconds <= now
     )
       return yield* refuse("pin_mismatch");
-    yield* bindings
-      .assertDestination({
-        ...b.expected_home,
-        home_generation: b.expected_home.server_generation,
-        principal_id: r.home_result.receipt.principal_id,
-        binding_version: r.local_binding.singleton_binding_version,
-      })
-      .pipe(Effect.mapError(() => refuse("pin_mismatch")));
+    // Historical association validation must also work on a query-only startup connection.
+    // Mutation callers retain their own transactional destination checks.
+    const binding = yield* bindings.read().pipe(Effect.mapError(() => refuse("pin_mismatch")));
+    if (
+      !binding ||
+      binding.state !== "active" ||
+      binding.registry_instance_id !== b.expected_home.registry_instance_id ||
+      binding.owner_id !== b.expected_home.owner_id ||
+      binding.home_environment_id !== b.expected_home.home_environment_id ||
+      binding.home_generation !== b.expected_home.server_generation ||
+      binding.principal_id !== r.home_result.receipt.principal_id ||
+      binding.binding_version !== r.local_binding.singleton_binding_version
+    )
+      return yield* refuse("pin_mismatch");
     yield* activeSession(r);
   });
   const readProof = Effect.fn("MemberEnrollments.readProof")(
