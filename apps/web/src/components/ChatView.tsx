@@ -606,6 +606,9 @@ export default function ChatView(props: ChatViewProps) {
   const [restingComposerControlsHost, setRestingComposerControlsHost] =
     useState<HTMLDivElement | null>(null);
   const [restingComposerControlsVisible, setRestingComposerControlsVisible] = useState(false);
+  const [titlebarControlsElement, setTitlebarControlsElement] = useState<HTMLDivElement | null>(
+    null,
+  );
   const [shortcutControlsHost, setShortcutControlsHost] = useState<HTMLDivElement | null>(null);
   const [shortcutWorkspaceElement, setShortcutWorkspaceElement] = useState<HTMLDivElement | null>(
     null,
@@ -3061,6 +3064,7 @@ export default function ChatView(props: ChatViewProps) {
   const threadPanelHeaderControl = <ThreadPanelHeaderControl {...panelToggleControlProps} />;
   const panelLayoutControls = (
     <WorkspaceTitlebarControls
+      ref={setTitlebarControlsElement}
       showMaximizeControl={!shouldUsePlanSidebarSheet}
       rightPanelOpen={rightPanelOpen}
       animationsActive={panelAnimationsActive}
@@ -3128,6 +3132,7 @@ export default function ChatView(props: ChatViewProps) {
             parentThreadLink={parentThreadLink}
             onOpenThread={onOpenRelatedThreadStable}
             rightPanelOpen={inlineRightPanelOwnsTitleBar}
+            titlebarControlsElement={titlebarControlsElement}
             onNewThreadInProject={handleNewThreadInActiveProjectStable}
             {...(activeDraftLogicalProjectKey
               ? { onOpenProjectSettings: handleOpenDraftProjectSettingsStable }
