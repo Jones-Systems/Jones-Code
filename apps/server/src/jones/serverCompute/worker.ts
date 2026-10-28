@@ -2,6 +2,7 @@
 import type * as EffectTypes from "effect/Effect";
 import type * as ScopeTypes from "effect/Scope";
 import { Worker } from "node:worker_threads";
+import { isAbsolute, normalize, dirname, basename } from "node:path";
 import { getHeapStatistics } from "node:v8";
 import { availableParallelism } from "node:os";
 import { setImmediate as nodeTurn } from "node:timers/promises";
@@ -11,6 +12,8 @@ import { currentBuildIdentity } from "./workerCommand.ts";
 import { computeFailure } from "./failure.ts";
 import {
   decodeBootstrap,
+  record,
+  keys,
   decodeRequest,
   encodeFrame,
   frames,
@@ -186,15 +189,39 @@ export class WorkerAllocations {
   }
 }
 
+/** Qualification supplies one path-shaped fff option, never executable code or process controls. */
+export function decodeNativeBlockQualification(argument: string): {
+  readonly targetWorkspace: string;
+  readonly logFileHint: string;
+} {
+  const prefix = "--qualification-native-block=";
+  if (!argument.startsWith(prefix) || Buffer.byteLength(argument) > 4096)
+    throw computeFailure("protocol");
+  const value: unknown = JSON.parse(argument.slice(prefix.length));
+  const path = (input: unknown): input is string =>
+    typeof input === "string" && input.length <= 1800 &&
+    isAbsolute(input) && normalize(input) === input && !/[\x00-\x1f\x7f]/.test(input);
+  if (!record(value) || !keys(value, ["targetWorkspace", "logFileHint"]) ||
+      !path(value.targetWorkspace) || !path(value.logFileHint) ||
+      basename(value.targetWorkspace) !== "blocked-workspace" ||
+      basename(value.logFileHint) !== "native-block.log" ||
+      basename(dirname(value.logFileHint)) !== "barrier" ||
+      dirname(dirname(value.logFileHint)) !== dirname(value.targetWorkspace))
+    throw computeFailure("protocol");
+  return Object.freeze({ targetWorkspace: value.targetWorkspace, logFileHint: value.logFileHint });
+}
+
 /** Closed hidden command. Root dispatches here before loading the normal server graph. */
 export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>): Promise<void> {
   if (
-    args.length !== 1 ||
-    Buffer.byteLength(args[0]!) > 4096 ||
+    (args.length !== 1 && args.length !== 2) ||
+    args.some((argument) => Buffer.byteLength(argument) > 4096) ||
     (process.platform !== "linux" && process.platform !== "darwin")
   )
     throw computeFailure("protocol");
-  const boot = decodeBootstrap(JSON.parse(args[0]!));
+  const qualification = args.length === 2 ? decodeNativeBlockQualification(args[0]!) : undefined;
+  const boot = decodeBootstrap(JSON.parse(args.at(-1)!));
+  let qualificationUsed = false;
   if (boot.build !== (await currentBuildIdentity())) throw computeFailure("protocol");
   const heapLimit = getHeapStatistics().heap_size_limit;
   const heapSelected =
@@ -287,10 +314,16 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
         if (request.operation === "open") {
           const key = request.input as WorkspaceKey;
           allocations.reserve(request.token, key);
+          let createOptions: { readonly logFilePath: string } | undefined;
+          if (qualification?.targetWorkspace === key.cwd) {
+            if (qualificationUsed) throw computeFailure("protocol");
+            qualificationUsed = true;
+            createOptions = { logFilePath: qualification.logFileHint };
+          }
           const scope = await Effect.runPromise(Scope.make());
           try {
             const runtime = await execute(
-              make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope)),
+              make(key.cwd, key.variant, createOptions).pipe(Effect.provideService(Scope.Scope, scope)),
               job.controller.signal,
             );
             resident = { token: request.token, key, scope, runtime };

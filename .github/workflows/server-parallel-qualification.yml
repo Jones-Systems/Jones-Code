@@ -63,8 +63,6 @@ jobs:
         shell: bash
     env:
       # One serial qualification lane per OS shares setup and all build outputs.
-      TMPDIR: ${{ runner.temp }}/jones-server-parallel-${{ github.run_id }}-${{ github.run_attempt }}
-      JONES_SP_REPORTS: ${{ runner.temp }}/jones-server-parallel-reports-${{ github.run_id }}-${{ github.run_attempt }}
       T3CODE_DEV_SEED: "0"
       VP_NODE_VERSION: "26.12.1"
     steps:
@@ -88,6 +86,10 @@ jobs:
       - name: Admit job storage and create owned scratch
         run: |
           set -euo pipefail
+          TMPDIR="$RUNNER_TEMP/jones-server-parallel-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          JONES_SP_REPORTS="$RUNNER_TEMP/jones-server-parallel-reports-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          export TMPDIR JONES_SP_REPORTS
+          printf '%s\n' "TMPDIR=$TMPDIR" "JONES_SP_REPORTS=$JONES_SP_REPORTS" >> "$GITHUB_ENV"
           mkdir -m 700 -p "$TMPDIR" "$JONES_SP_REPORTS"
           printf '%s\n' "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" > "$TMPDIR/OWNER"
           node scripts/jones/serverParallelism/storage.mjs "$GITHUB_WORKSPACE" > "$JONES_SP_REPORTS/storage-install.json"
@@ -118,11 +120,13 @@ jobs:
         run: >-
           vp test run --maxWorkers=1
           apps/server/src/jones/serverParallelism/resourceSamples.test.ts
+          apps/server/src/jones/serverParallelism/nativeThreadBudget.test.ts
           apps/server/src/jones/serverParallelism/controlProgress.integration.test.ts
           apps/server/src/jones/serverParallelism/shellCapture.integration.test.ts
           apps/server/src/jones/serverParallelism/composition.test.ts
           apps/server/src/jones/workspace/nativeSearchRuntime.test.ts
           apps/server/src/jones/workspace/contentSearchPages.test.ts
+          apps/server/src/jones/serverCompute/worker.test.ts
           apps/server/src/jones/serverCompute/workerCommand.test.ts
           apps/server/src/jones/serverCompute/guardian.test.ts
           apps/server/src/jones/serverCompute/processSlot.test.ts
@@ -183,7 +187,7 @@ jobs:
         if: always()
         env:
           EXPECTED_OWNER: ${{ github.run_id }}.${{ github.run_attempt }}
-          JOB_CANCELLED: ${{ cancelled() }}
+          JOB_CANCELLED: ${{ job.status == 'cancelled' }}
         run: |
           python3 - <<'PY'
           import json, os, pathlib, shutil

@@ -210,3 +210,25 @@ for (const invalid of ["bootstrap", "missing-fd3", "wrong-build"] as const)
     },
     30_000,
   );
+
+
+const blockReceiptPath = process.env.JONES_SP_NATIVE_BLOCK_RECEIPT;
+const nativeReceipt = manifestPath && blockReceiptPath ? it : it.skip;
+nativeReceipt("guardian native barrier receipts retain the OS witness and same-journal replacement", async () => {
+  const receipt = JSON.parse(await readFile(blockReceiptPath!, "utf8"));
+  const manifest = JSON.parse(await readFile(manifestPath!, "utf8"));
+  // The separate CI barrier command produces this receipt; a successful test subprocess is insufficient.
+  expect(receipt.proof.phase).toBe("fff-create/log-init/fifo-open");
+  expect(receipt.proof.subject.build).toBe(manifest.build);
+  expect(receipt.proof.profile).toBe(parentLossCount === 3 ? "vps" : "laptop");
+  expect(receipt.proof.form).toBe(manifest.runtimeForm);
+  expect(receipt.proof.blockerHeldThroughKill).toBe(true);
+  expect(receipt.proof.parentCapturedSigkill).toBe(true);
+  expect(receipt.proof.childrenAbsent).toBe(true);
+  expect(receipt.proof.sameJournalRecovered).toBe(true);
+  expect(receipt.proof.replacementUseful).toBe(true);
+  expect(receipt.proof.negativeControl).toEqual({ witnessed: true, exactFifoReleased: true,
+    normalResult: true, cleanRetirement: true });
+  expect(receipt.proof.noWitnessRejected).toBe(true);
+  expect(receipt.predicate).toBe(true);
+});

@@ -2609,6 +2609,7 @@
         "apps/server/src/jones/serverParallelism/nativeThreadBudget.test.ts",
         "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
         "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
+        "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
         "apps/server/src/cli/project.test.ts",
         "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
         "apps/server/src/serverRuntimeStartup.test.ts"

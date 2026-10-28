@@ -232,11 +232,13 @@ function withDirectoryAncestors(entries: ReadonlyArray<ProjectEntry>): ProjectEn
 const createFinder = Effect.fn("WorkspaceSearchIndex.createFinder")(function* (
   cwd: string,
   variant: WorkspaceSearchIndexVariant,
+  qualification?: { readonly logFilePath: string },
 ) {
   const result = yield* Effect.try({
     try: () =>
       FileFinder.create({
         basePath: cwd,
+        ...(qualification ? { logFilePath: qualification.logFilePath } : {}),
         disableMmapCache: true,
         // Content indexing costs CPU/memory; path-only consumers use the lightweight index.
         disableContentIndexing: variant !== "content",
@@ -290,8 +292,9 @@ const waitForIndexReady = Effect.fn("WorkspaceSearchIndex.waitForIndexReady")(fu
 export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   cwd: string,
   variant: WorkspaceSearchIndexVariant = "paths",
+  qualification?: { readonly logFilePath: string },
 ) {
-  const finder = yield* Effect.acquireRelease(createFinder(cwd, variant), (finder) =>
+  const finder = yield* Effect.acquireRelease(createFinder(cwd, variant, qualification), (finder) =>
     Effect.try({
       try: () => finder.destroy(),
       catch: (cause) => new WorkspaceSearchIndexDestroyFailed({ cwd, cause }),
