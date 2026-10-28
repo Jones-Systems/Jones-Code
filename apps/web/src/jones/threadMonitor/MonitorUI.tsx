@@ -897,6 +897,15 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
             {latestResults.map((result) => {
               const original = snapshot.actions.get(result.actionId);
               const row = snapshot.retainedRows.get(monitorThreadKey(result));
+              const reconcileRef = row ?? (original?.type === "restore" ? result : null);
+              const canReconcile = () => {
+                const environment = store.getSnapshot().environments.get(result.environmentId);
+                return (
+                  store.live(result) &&
+                  environment?.transport === "connected" &&
+                  environment.freshness === "live"
+                );
+              };
               const restoreReason =
                 unavailable(result) ??
                 (row && !row.actions.restore.available
@@ -911,13 +920,15 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
                         : "Command accepted. Work may still be pending."
                       : result.reason}
                   </span>
-                  {result.status === "unknown" && row ? (
+                  {result.status === "unknown" && reconcileRef ? (
                     <button
                       type="button"
+                      aria-disabled={!canReconcile()}
                       onClick={() => {
-                        store.select(row);
+                        if (!canReconcile()) return;
+                        if (row) store.select(row);
                         store.action({
-                          ...idFor(row),
+                          ...idFor(reconcileRef),
                           type: "reconcile",
                           originalActionId: result.actionId,
                           originalCommandId: result.commandId,

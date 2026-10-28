@@ -168,15 +168,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const supportsSnooze = serverConfig?.environment.capabilities.threadSnooze === true;
   const supportsPinning = serverConfig?.environment.capabilities.threadPinning === true;
   const activeThreadPinned = supportsPinning && activeThreadShell?.pinnedAt != null;
-  // The compiler caches render results on their inputs, so a clock read in render
-  // stays frozen until the shell changes. The clock is state: reset with the shell,
-  // and moved by the wake timer.
+  // The compiler caches render results on their inputs. Reset from the subscribed
+  // minute snapshot when the shell changes; the wake timer supplies the precise time.
   const [snoozeClockState, setSnoozeClockState] = useState(() => ({
     shell: activeThreadShell,
     now: new Date().toISOString(),
   }));
   if (snoozeClockState.shell !== activeThreadShell) {
-    setSnoozeClockState({ shell: activeThreadShell, now: new Date().toISOString() });
+    setSnoozeClockState({ shell: activeThreadShell, now: `${nowMinute}:00.000Z` });
   }
   const snoozeClock = snoozeClockState.now;
   const activeThreadSnoozed =

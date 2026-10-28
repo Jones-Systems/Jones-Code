@@ -655,6 +655,39 @@ export type ContinuityDeliveryResult = typeof ContinuityDeliveryResult.Type;
 export const ContinuityDeliveryIntent = ContinuityDeliveryPreparation;
 export type ContinuityDeliveryIntent = typeof ContinuityDeliveryIntent.Type;
 
+// A page inspects four indexed candidates and can be empty after filtering.
+// Cursors expire on snapshot/fence change or service reconstruction.
+const discoveryCursor = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(1024));
+export const ContinuityDeliveryDiscoveryRequest = exactStruct({
+  action: Schema.Literal("discover_deliveries"),
+  expected: ExpectedContinuity,
+  cursor: Schema.optionalKey(discoveryCursor),
+});
+export type ContinuityDeliveryDiscoveryRequest = typeof ContinuityDeliveryDiscoveryRequest.Type;
+export const ContinuityDeliverySummary = Schema.Struct({
+  deliveryId: key,
+  originalOwner: ContinuityOwner,
+  goalId: key,
+  revision: ContinuityCounter,
+  generation: ContinuityCounter,
+  point: ContinuityRecoveryPoint,
+  witness: ContinuityWitness,
+  deliveryRevision: ContinuityCounter,
+  fenceRevision: ContinuityCounter,
+  phase: DeliveryPhase,
+  gate: Schema.Literals(["settled", "delivery_pending", "delivery_unknown", "recovery_required"]),
+  preparation: Schema.NullOr(ContinuityDeliveryPreparation),
+});
+export type ContinuityDeliverySummary = typeof ContinuityDeliverySummary.Type;
+export const ContinuityDeliveryDiscoveryResult = Schema.Struct({
+  outcome: Schema.Literal("deliveries"),
+  expected: ExpectedContinuity,
+  fenceRevision: ContinuityCounter,
+  deliveries: Schema.Array(ContinuityDeliverySummary).check(Schema.isMaxLength(4)),
+  nextCursor: Schema.NullOr(discoveryCursor),
+});
+export type ContinuityDeliveryDiscoveryResult = typeof ContinuityDeliveryDiscoveryResult.Type;
+
 const mutation = {
   clientRequestId: key,
   expected: ContinuityTarget,
@@ -674,6 +707,7 @@ export const ContinuityRequest = Schema.Union([
   }),
   exactStruct({ action: Schema.Literal("read") }),
   ReconcileDeliveryRequest,
+  ContinuityDeliveryDiscoveryRequest,
   exactStruct({ action: Schema.Literal("checkpoint"), ...mutation, patch: ContinuityPatch }),
   exactStruct({
     action: Schema.Literal("close"),
@@ -704,7 +738,7 @@ export const ContinuityRequest = Schema.Union([
 export type ContinuityRequest = typeof ContinuityRequest.Type;
 export type ContinuityMutationRequest = Exclude<
   ContinuityRequest,
-  { action: "read" | "receipt" | "delivery_receipt" | "selection" }
+  { action: "read" | "receipt" | "delivery_receipt" | "selection" | "discover_deliveries" }
 >;
 
 export const ContinuityMutationOutcome = Schema.Union([
@@ -731,6 +765,7 @@ export type ContinuityReceipt = typeof ContinuityReceipt.Type;
 export const ContinuityResult = Schema.Union([
   ContinuityMutationOutcome,
   ContinuitySelectionResult,
+  ContinuityDeliveryDiscoveryResult,
   Schema.Struct({ outcome: Schema.Literal("absent") }),
   Schema.Struct({
     outcome: Schema.Literal("snapshot"),
