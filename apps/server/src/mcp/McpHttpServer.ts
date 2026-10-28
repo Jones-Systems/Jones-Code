@@ -1,6 +1,8 @@
 import * as NativePeerMcpAuthentication from "../jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as NativeReadMcp from "../jones/mcp/workstreams/nativeReads.ts";
 import * as NativeBindMcp from "../jones/mcp/workstreams/nativeBinds.ts";
+import * as NativeSetupMcp from "../jones/mcp/workstreams/nativeSetups.ts";
+import * as NativePeerSetup from "../jones/workstreams/native/runtime/peerSetup.ts";
 import * as NativeHomeBind from "../jones/workstreams/native/runtime/homeBind.ts";
 import * as NativeReadProtocol from "../jones/workstreams/native/forwarding/homeReadProtocol.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
@@ -1215,7 +1217,18 @@ export const layerNativeHomeBindToolkit = Layer.unwrap(
   ),
 );
 
+export const layerNativePeerSetupToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativePeerSetup.PeerSetup), (setup) =>
+    Option.isNone(setup)
+      ? Layer.empty
+      : toolkitRegistration(NativeSetupMcp.toolkit, NativeSetupMcp.handlers).pipe(
+          Layer.provide(Layer.succeed(NativePeerSetup.PeerSetup, setup.value)),
+        ),
+  ),
+);
+
 export const layer = Layer.mergeAll(
+  layerNativePeerSetupToolkit,
   layerNativeHomeBindToolkit,
   layerNativeHomeReadToolkit,
   layerWorkstreamToolkit,

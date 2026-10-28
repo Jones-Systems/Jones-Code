@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamsPeerSetup": {
+      "types": "./src/jones/workstreamsPeerSetup.ts",
+      "import": "./src/jones/workstreamsPeerSetup.ts"
+    },
     "./jones/workstreamsForwarding": {
       "types": "./src/jones/workstreamsForwarding.ts",
       "import": "./src/jones/workstreamsForwarding.ts"

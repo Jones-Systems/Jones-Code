@@ -1,4 +1,8 @@
 import { registryCommand } from "../jones/workstreams/native/runtime/cli.ts";
+import {
+  command as peerSetupCommand,
+  liveEndpointLayer as peerSetupLiveEndpointLayer,
+} from "../jones/workstreams/native/runtime/peerSetupCli.ts";
 import { workstreamOperationCommands } from "../jones/workstreams/operations/cli.ts";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
@@ -47,6 +51,7 @@ export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
   Command.withSubcommands([
     registryCommand,
+    peerSetupCommand.pipe(Command.provide(peerSetupLiveEndpointLayer)),
     authorityCommand,
     workstreamProviderCommand,
     ...workstreamOperationCommands,

@@ -1,4 +1,6 @@
 import * as WorkstreamPeerPins from "./jones/workstreams/native/runtime/peerSessionPins.ts";
+import * as WorkstreamPeerSetup from "./jones/workstreams/native/runtime/peerSetup.ts";
+import * as WorkstreamHomeBind from "./jones/workstreams/native/runtime/homeBind.ts";
 import * as WorkstreamPeerMcpAuthentication from "./jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
@@ -775,6 +777,16 @@ const layerWorkstreamPeerAuthentication = WorkstreamPeerMcpAuthentication.layer.
   Layer.provideMerge(WorkstreamPeerPins.nativeLayer),
 );
 
+// Setup readiness is independent of ordinary home/member selection. This captures existing
+// selected SQL/auth/key resources, and qualification occurs only for an explicit setup call.
+const layerWorkstreamPeerSetup = Layer.effect(
+  WorkstreamHomeBind.HomeBind,
+  Effect.map(WorkstreamPeerSetup.PeerSetup, (setup) => setup.homeBind),
+).pipe(
+  Layer.provideMerge(WorkstreamPeerSetup.runtimeLayer),
+  Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
+);
+
 const layerMakeRoutes = Layer.mergeAll(
   Layer.mergeAll(
     HttpApiBuilder.layer(EnvironmentHttpApi).pipe(
@@ -836,6 +848,7 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(DesktopBrowserChannel.layer),
     Layer.provide(PreviewBrowser.layer),
     Layer.provide(workstreamSelectedServicesLayer),
+    Layer.provide(layerWorkstreamPeerSetup),
     Layer.provide(layerWorkstreamPeerAuthentication),
   )
   .pipe(

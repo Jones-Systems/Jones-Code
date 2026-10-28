@@ -6,6 +6,8 @@ import {
   type WorkstreamsNativeOwnerResponse,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as PeerSetup from "../native/runtime/peerSetup.ts";
+import { createPeerSetupOwnerHandler } from "../native/runtime/peerSetupCli.ts";
 import * as SourceEnrollments from "../native/runtime/sourceEnrollment.ts";
 import * as NativeStartup from "../native/runtime/startup.ts";
 import { NativeProviderEnrollmentError } from "../nativeProvider/enrollment.ts";
@@ -201,7 +203,12 @@ export const nativeWorkstreamsHttpApiLayer = HttpApiBuilder.group(
   "workstreamsNative",
   Effect.fnUntraced(function* (handlers) {
     const runtime = yield* NativeWorkstreamsRuntime;
+    const setup = yield* Effect.serviceOption(PeerSetup.PeerSetup);
     return handlers
+      .handleRaw(
+        "peerSetupOwnerOperations",
+        createPeerSetupOwnerHandler(Option.getOrUndefined(setup)),
+      )
       .handleRaw(
         "ownerOperations",
         Effect.fnUntraced(function* () {

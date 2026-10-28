@@ -1,8 +1,36 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "workstreams-member-binding-foundation",
-  "jonesOwnedPaths": [],
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/mcp/workstreams/nativeSetups.ts",
+    "apps/server/src/jones/mcp/workstreams/nativeSetups.test.ts"
+  ],
   "hookPaths": [],
   "tombstones": [],
-  "allowedImports": []
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/nativeSetups.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/peerSetup.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/peerSetup.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/homeBind.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/workstreamsPeerSetup.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/workstreamsPeerSetup.ts"
+    }
+  ]
 }

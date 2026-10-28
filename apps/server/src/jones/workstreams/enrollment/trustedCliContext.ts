@@ -10,6 +10,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { JonesNativeWriterAdmission } from "@t3tools/shared/jones/nativeWriterFence";
 import {
   currentQualifiedRuntimeBinding,
+  decodeQualifiedRuntimeReceipt,
   readQualifiedRuntimeReceipt,
   QUALIFIED_RUNTIME_RECEIPT,
 } from "../../cloud/qualifiedRuntime.ts";
@@ -115,12 +116,18 @@ const absence = (path: string) => {
     throw error;
   }
 };
-type DatabaseReadPhase = "outside_transaction" | "owned_transaction";
+type DatabaseReadPhase =
+  | "outside_transaction"
+  | "owned_transaction"
+  | "refresh_selected"
+  | "selected_connection";
 const databaseIdentity = (
   dbPath: string,
   access: NativeEnrollmentSqliteAccess,
   phase: DatabaseReadPhase,
 ) => {
+  if (phase === "refresh_selected" || phase === "selected_connection")
+    return databasePathIdentity(dbPath);
   // Refuse an unowned rollback journal before opening anything: even a failed
   // qualification must preserve locks held by another client in this process.
   if (!absence(`${dbPath}-journal`) && !(access === "apply" && phase === "owned_transaction"))
@@ -220,8 +227,38 @@ const capture = async (
   )
     fail("authority_unavailable");
   const build = decodeBuild((packageJson as { readonly jonesSource?: unknown }).jonesSource);
-  const installed = await currentQualifiedRuntimeBinding(baseDir, launcher.activeVersion);
-  const receipt = await readQualifiedRuntimeReceipt(baseDir, launcher.activeVersion);
+  // A selected runtime never opens main outside its selected SQLite connection. Full
+  // payload qualification finishes before the operation; writer checks use fixed metadata.
+  const boundedReceipt =
+    phase === "selected_connection"
+      ? decodeQualifiedRuntimeReceipt(
+          JSON.parse(
+            ownedFile(
+              NodePath.join(
+                baseDir,
+                "runtime",
+                "versions",
+                launcher.activeVersion,
+                QUALIFIED_RUNTIME_RECEIPT,
+              ),
+              8192,
+            ),
+          ),
+        )
+      : undefined;
+  if (phase === "selected_connection" && !boundedReceipt) fail("runtime_unqualified");
+  const installed =
+    phase === "selected_connection"
+      ? {
+          activeVersion: launcher.activeVersion,
+          activeSourceSha: boundedReceipt!.sourceSha,
+          environmentId,
+          baseDir,
+          dbPath: NodePath.join(baseDir, "userdata", "statev2.sqlite"),
+        }
+      : await currentQualifiedRuntimeBinding(baseDir, launcher.activeVersion);
+  const receipt =
+    boundedReceipt ?? (await readQualifiedRuntimeReceipt(baseDir, launcher.activeVersion));
   if (
     installed.activeVersion !== packageJson.version ||
     installed.activeSourceSha !== build.sha ||
@@ -262,6 +299,7 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
     access: NativeEnrollmentSqliteAccess,
     captureContext: typeof capture,
     beforeRead: Effect.Effect<void, NativeEnrollmentCliContextError> = Effect.void,
+    selectedRuntime = false,
   ) {
     const read = (phase: DatabaseReadPhase) =>
       beforeRead.pipe(
@@ -280,7 +318,7 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
           }),
         ),
       );
-    const initial = yield* read("outside_transaction");
+    const initial = yield* read(selectedRuntime ? "refresh_selected" : "outside_transaction");
     const verify = (phase: DatabaseReadPhase) =>
       read(phase).pipe(
         Effect.flatMap((current) =>
@@ -289,7 +327,7 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
             : Effect.fail(new NativeEnrollmentCliContextError({ code: "context_changed" })),
         ),
       );
-    const verifyUnchanged = verify("outside_transaction");
+    const verifyUnchanged = verify(selectedRuntime ? "selected_connection" : "outside_transaction");
     const authorityFor = (qualified: Effect.Effect<void, NativeEnrollmentCliContextError>) => ({
       readCurrent: qualified.pipe(
         Effect.as({
@@ -350,10 +388,40 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
             if (Option.isSome(selected) && selected.value !== client)
               return yield* new NativeEnrollmentCliContextError({ code: "database_unavailable" });
             const transaction = yield* Effect.serviceOption(client.transactionService);
-            if (Option.isNone(transaction)) return yield* verifyUnchanged;
+            if (Option.isNone(transaction)) {
+              if (!selectedRuntime) return yield* verifyUnchanged;
+              return yield* Effect.gen(function* () {
+                const current = yield* client.reserve;
+                if (current !== connection)
+                  return yield* new NativeEnrollmentCliContextError({
+                    code: "database_unavailable",
+                  });
+                yield* verifyUnchanged;
+                const databases = yield* current.execute("PRAGMA database_list", [], undefined);
+                const modes = yield* current.execute("PRAGMA main.journal_mode", [], undefined);
+                const versions = yield* current.execute(
+                  "PRAGMA main.schema_version",
+                  [],
+                  undefined,
+                );
+                if (
+                  !Array.isArray(databases) ||
+                  databases.filter(
+                    (d) => d.name === "main" && d.seq === 0 && d.file === initial.dbPath,
+                  ).length !== 1 ||
+                  !isJournalMode(modes) ||
+                  modes.length !== 1 ||
+                  !isSchemaVersion(versions) ||
+                  versions.length !== 1
+                )
+                  return yield* new NativeEnrollmentCliContextError({
+                    code: "database_unavailable",
+                  });
+              }).pipe(Effect.scoped);
+            }
             if (transaction.value[0] !== connection)
               return yield* new NativeEnrollmentCliContextError({ code: "database_unavailable" });
-            yield* verify("owned_transaction");
+            yield* verify(selectedRuntime ? "selected_connection" : "owned_transaction");
             const modes = yield* connection.execute("PRAGMA main.journal_mode", [], undefined);
             const versions = yield* connection.execute("PRAGMA main.schema_version", [], undefined);
             if (
@@ -398,6 +466,7 @@ export const makeTrustedNativeEnrollmentDesktopContext = (
   owner: JonesNativeWriterAdmission & {
     readonly refresh: Effect.Effect<void, NativeStoreAuthorityPersistenceError>;
   },
+  selectedRuntime = false,
 ) => {
   const captureDesktop: typeof capture = async (currentLocation, currentAccess) => {
     owner.assertCurrent();
@@ -444,8 +513,41 @@ export const makeTrustedNativeEnrollmentDesktopContext = (
     location,
     access,
     captureDesktop,
-    owner.refresh.pipe(
-      Effect.mapError(() => new NativeEnrollmentCliContextError({ code: "context_changed" })),
-    ),
+    selectedRuntime
+      ? Effect.void
+      : owner.refresh.pipe(
+          Effect.mapError(() => new NativeEnrollmentCliContextError({ code: "context_changed" })),
+        ),
+    selectedRuntime,
   );
 };
+
+/** Selected-runtime qualification. All waiting refresh/payload work precedes its local checker. */
+export const makeTrustedNativeEnrollmentRuntimeContext = Effect.fn(
+  "makeTrustedNativeEnrollmentRuntimeContext",
+)(function* (
+  location: NativeEnrollmentCliLocation,
+  client: SqlClient.SqlClient,
+  owner?: JonesNativeWriterAdmission & {
+    readonly refresh: Effect.Effect<void, NativeStoreAuthorityPersistenceError>;
+  },
+) {
+  if (Option.isSome(yield* Effect.serviceOption(client.transactionService)))
+    return yield* new NativeEnrollmentCliContextError({ code: "database_unavailable" });
+  if (owner)
+    yield* owner.refresh.pipe(
+      Effect.mapError(() => new NativeEnrollmentCliContextError({ code: "context_changed" })),
+    );
+  const trusted = yield* owner
+    ? makeTrustedNativeEnrollmentDesktopContext(location, "apply", owner, true)
+    : makeTrustedNativeEnrollmentContext(location, "apply", capture, Effect.void, true);
+  const authority = yield* trusted.bindAuthorityToSqlClient(client);
+  return {
+    ...trusted,
+    authority,
+    verifyUnchanged: authority.readCurrent.pipe(
+      Effect.asVoid,
+      Effect.mapError(() => new NativeEnrollmentCliContextError({ code: "context_changed" })),
+    ),
+  };
+});

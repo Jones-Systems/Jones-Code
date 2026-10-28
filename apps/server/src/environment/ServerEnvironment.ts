@@ -1,5 +1,6 @@
 import { LINKED_THREADS_CAPABILITY } from "@t3tools/contracts/jones/linkedThreadsCapability";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstreamOperations";
+import { WORKSTREAMS_PEER_SETUP_CONTRACT } from "@t3tools/contracts/jones/workstreamsPeerSetup";
 import { QUEUED_STEER_BATCH_LIMITS } from "@t3tools/contracts";
 import { THREAD_ATTENTION_CAPABILITY } from "@t3tools/contracts/jones/threadAttention";
 import {
@@ -237,6 +238,8 @@ export const make = Effect.gen(function* () {
       linkedThreads: LINKED_THREADS_CAPABILITY,
       workQueueMetadata: true,
       workstreamOperations: { contract: WORKSTREAM_OPERATIONS_CONTRACT },
+      // Protocol support only; every setup operation separately requires genuine owner/auth evidence.
+      workstreamsPeerSetup: { contract: WORKSTREAMS_PEER_SETUP_CONTRACT },
       settlementOrigins: SETTLEMENT_ORIGINS_CAPABILITY,
       // Startup refuses to serve until Jones migrations, including the restore table, have run.
       settlementRestore: SETTLEMENT_RESTORE_CAPABILITY,
