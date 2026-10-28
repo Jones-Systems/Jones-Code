@@ -4,6 +4,11 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "project-favicon-search-demand",
+      "tests": ["apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx"],
+      "scope": "Mount the existing favicon picker only while open and editable. The accepted-shared boolean gate in apps/web/src/components/settings/ProjectSettingsPanel.tsx needs no extraction: a separate module would duplicate upstream UI machinery. The Jones-owned browser test imports the actual panel and apps/web/test/render.tsx registry/router harness; the actual dialog, components/files/projectFilesQueryState.ts, state/queries.ts and state/query.ts remain real through the lazy synthetic search atom. Both filesystem-read and project-edit grants are present. Covers closed cold/stale demand, server/cwd targeting, typing/image selection, close/reopen and edit-permission loss/recovery; server/query/dialog behavior is unchanged."
+    },
+    {
       "id": "native-goal-continuity",
       "tests": [
         "apps/server/scripts/jones/currentFixtures.test.ts",

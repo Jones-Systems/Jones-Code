@@ -2,6 +2,21 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-project-favicon-search-demand",
+      "tests": [
+        "apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx",
+        "apps/web/src/components/settings/ProjectSettingsPanel.browser.test.tsx",
+        "apps/web/src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx"
+      ],
+      "commands": [
+        "cd apps/web && vp test run --project browser src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx src/components/settings/ProjectSettingsPanel.browser.test.tsx src/jones/workstreams/ProjectSettingsPanel.permissions.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/web typecheck",
+        "vp lint apps/web/src/components/settings/ProjectSettingsPanel.tsx apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx",
+        "vp fmt --check apps/web/src/components/settings/ProjectSettingsPanel.tsx apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx scripts/jones/boundary/fragments/project-favicon-search-demand.json scripts/jones/boundary/inventory.json scripts/jones/boundary/features.json scripts/jones/boundary/checks.json",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-native-goal-continuity",
       "tests": [
         "apps/server/scripts/jones/currentFixtures.test.ts",
