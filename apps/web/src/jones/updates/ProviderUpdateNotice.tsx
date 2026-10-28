@@ -5,7 +5,7 @@ import { PROVIDER_DISPLAY_NAMES, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { ChevronDownIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { Button, buttonVariants } from "~/components/ui/button";
+import { Button } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -51,7 +51,7 @@ export function ProviderUpdateEnvironmentRows() {
                 aria-label={`Provider updates on ${group.label}`}
                 aria-expanded={expanded}
                 aria-controls={environmentDetailsId}
-                className="flex min-w-0 items-center gap-1 rounded-sm text-left font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                className="flex min-w-0 items-center gap-1 rounded-sm text-left font-medium outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 onClick={() => {
                   setCollapsedEnvironments((previous) => {
                     const next = new Set(previous);
@@ -176,7 +176,7 @@ function ProviderUpdateToastBody() {
         type="button"
         aria-expanded={expanded}
         aria-controls={detailsId}
-        className="flex min-w-0 w-full items-start gap-2 rounded-sm pr-5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-w-0 w-full items-start gap-2 rounded-sm pr-5 text-left outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
         onClick={() => setExpanded((previous) => !previous)}
       >
         <TriangleAlertIcon aria-hidden className="h-lh w-4 shrink-0 text-warning" />
@@ -197,10 +197,7 @@ function ProviderUpdateToastBody() {
           data-slot="toast-description"
         />
         <div className="mt-2 flex justify-end">
-          <Toast.Action
-            className={buttonVariants({ size: "xs", variant: "default" })}
-            data-slot="toast-action"
-          >
+          <Toast.Action render={<Button size="xs" variant="default" />} data-slot="toast-action">
             Settings
           </Toast.Action>
         </div>
