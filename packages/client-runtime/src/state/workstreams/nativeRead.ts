@@ -83,7 +83,7 @@ export function validateNativeReadScope(scope: NativeReadScope): NativeReadScope
   assertNativeWorkstreamBinding(capability, binding);
   return clone({ capability, binding });
 }
-export function nativeReadScopeKey(scope: NativeReadScope): string {
+function nativeReadScopeKey(scope: NativeReadScope): string {
   const { capability, binding } = validateNativeReadScope(scope);
   return JSON.stringify([capability.registry, binding]);
 }
