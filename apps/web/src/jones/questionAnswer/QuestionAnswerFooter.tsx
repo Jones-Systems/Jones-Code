@@ -157,14 +157,7 @@ export function QuestionAnswerFooter({
                 onChange={(event) => onChangeCustomAnswer(questionId, event.target.value)}
                 onKeyDown={(event) => {
                   event.stopPropagation();
-                  if (
-                    !isQuestionAnswerSubmitKey(
-                      event.nativeEvent,
-                      state.literal,
-                      prompt.responseCapability === "message",
-                    )
-                  )
-                    return;
+                  if (!isQuestionAnswerSubmitKey(event.nativeEvent)) return;
                   event.preventDefault();
                   if (!state.primaryDisabled) onAdvance();
                 }}
