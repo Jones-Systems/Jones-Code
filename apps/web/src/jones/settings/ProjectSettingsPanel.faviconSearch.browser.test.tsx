@@ -1,4 +1,4 @@
-import { RegistryContext } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import {
   BearerConnectionTarget,
   PrimaryConnectionTarget,
@@ -84,7 +84,7 @@ vi.mock(import("~/state/presentation"), async (original) => ({
 }));
 vi.mock(import("~/state/entities"), async (original) => ({
   ...(await original()),
-  useProjects: () => state.projects,
+  useProjects: () => useAtomValue(fixtureProjectsAtom),
   useThreadShells: () => [],
 }));
 vi.mock(import("~/state/projects"), async (original) => {
@@ -204,6 +204,7 @@ const environments: ReturnType<
   },
 }));
 const emptyFavicon = Atom.make<string | null>(null);
+const fixtureProjectsAtom = Atom.make<ReadonlyArray<Project>>([]);
 const searchAtoms = new Map<string, ReturnType<typeof projectEnvironment.searchEntries>>();
 const searchSources = new Map<string, ReturnType<typeof projectEnvironment.searchEntries>>();
 
@@ -271,6 +272,7 @@ function setup() {
           }
         : project,
     );
+    appAtomRegistry.set(fixtureProjectsAtom, state.projects);
     const updated = state.projects.find(
       (project) => project.environmentId === environmentId && project.id === input.projectId,
     );
@@ -304,6 +306,7 @@ function setup() {
     updatedAt: "2026-01-01T00:00:00.000Z",
     scripts: [],
   }));
+  appAtomRegistry.set(fixtureProjectsAtom, state.projects);
   for (const id of [primaryId, remoteId]) {
     expect(readEnvironmentScope(id, AuthFilesystemReadScope)).toBe(true);
     expect(readEnvironmentScope(id, AuthOrchestrationOperateScope)).toBe(true);
@@ -408,12 +411,14 @@ describe("project favicon search demand", () => {
     await screen.select(remoteId);
     await advance();
     expect(receipts()).toEqual([]);
-    state.projects = state.projects.map((project) =>
-      project.environmentId === remoteId
-        ? { ...project, workspaceRoot: "/work/new-remote-checkout" }
-        : project,
-    );
-    await screen.select(remoteId);
+    await act(() => {
+      state.projects = state.projects.map((project) =>
+        project.environmentId === remoteId
+          ? { ...project, workspaceRoot: "/work/new-remote-checkout" }
+          : project,
+      );
+      appAtomRegistry.set(fixtureProjectsAtom, state.projects);
+    });
     await advance();
     expect(receipts()).toEqual([]);
     await expectOpenSearch(target(remoteId, "/work/new-remote-checkout"));
