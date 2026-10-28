@@ -2355,7 +2355,8 @@
     "apps/server/src/jones/cloud/launcherHandoffProcesses.test.ts": "jones-owned",
     "apps/server/src/jones/updates/launcherHandoff.ts": "jones-owned",
     "apps/server/src/jones/updates/launcherHandoff.test.ts": "jones-owned",
-    "docs/internals/launcher-handoff.md": "jones-owned"
+    "docs/internals/launcher-handoff.md": "jones-owned",
+    "apps/server/src/storageCleanup.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
