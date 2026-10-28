@@ -2346,7 +2346,12 @@
     "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx": "jones-owned",
     "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts": "jones-owned",
     "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts": "jones-owned",
-    "infra/task-cache/src/runHook.test.ts": "jones-tests-in-upstream"
+    "infra/task-cache/src/runHook.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/cloud/launcherHandoffProcesses.ts": "jones-owned",
+    "apps/server/src/jones/cloud/launcherHandoffProcesses.test.ts": "jones-owned",
+    "apps/server/src/jones/updates/launcherHandoff.ts": "jones-owned",
+    "apps/server/src/jones/updates/launcherHandoff.test.ts": "jones-owned",
+    "docs/internals/launcher-handoff.md": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3132,6 +3137,18 @@
     {
       "from": "apps/server/src/ws.ts",
       "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/updates/launcherHandoff.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/launcherPointer.ts"
+    },
+    {
+      "from": "apps/server/src/serviceLauncher.ts",
+      "to": "apps/server/src/jones/cloud/launcherHandoffProcesses.ts"
     }
   ]
 }

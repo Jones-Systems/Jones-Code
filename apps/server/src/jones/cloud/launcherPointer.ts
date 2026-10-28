@@ -243,3 +243,266 @@ export async function bootstrapLauncherPointer(
   if (result === undefined) throw new Error("Launcher pointer bootstrap readback is missing.");
   return result;
 }
+
+export interface LauncherHandoffReceipt {
+  readonly schema: 1;
+  readonly requestId: string;
+  readonly fromVersion: string;
+  readonly targetVersion: string;
+  readonly fromSha256: string;
+  readonly targetSha256: string;
+  readonly status: "requested" | "committed" | "rejected";
+}
+
+const HANDOFF_ID = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+const HANDOFF_FILE = /^([a-f0-9-]{36})\.(requested|committed|rejected)\.json$/;
+
+async function executableDigest(directory: string, version: string, uid: number): Promise<string> {
+  await validateRuntime(directory, version, uid);
+  const file = NodePath.join(NodePath.resolve(directory, targetOf(version)), "t3");
+  const descriptor = await NodeFSP.open(
+    file,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+  );
+  try {
+    const before = await descriptor.stat({ bigint: true });
+    if (
+      !before.isFile() ||
+      before.uid !== BigInt(uid) ||
+      (before.mode & 0o022n) !== 0n ||
+      (before.mode & 0o111n) === 0n ||
+      before.size > 512n * 1024n * 1024n
+    )
+      throw new Error("Launcher executable has unknown ownership or size.");
+    const hash = NodeCrypto.createHash("sha256");
+    const buffer = Buffer.alloc(64 * 1024);
+    let offset = 0;
+    const size = Number(before.size);
+    while (offset < size) {
+      const { bytesRead } = await descriptor.read(
+        buffer,
+        0,
+        Math.min(buffer.length, size - offset),
+        offset,
+      );
+      if (bytesRead === 0) throw new Error("Launcher executable changed while hashing.");
+      hash.update(buffer.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    const after = await descriptor.stat({ bigint: true });
+    if (
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs
+    )
+      throw new Error("Launcher executable changed while hashing.");
+    return hash.digest("hex");
+  } finally {
+    await descriptor.close();
+  }
+}
+
+export async function readLauncherHandoff(
+  baseDir: string,
+): Promise<LauncherHandoffReceipt | undefined> {
+  const directory = NodePath.join(directoryOf(baseDir), "handoff");
+  const uid = NodeOS.userInfo().uid;
+  await privateDirectory(directory, uid);
+  const latest = NodePath.join(directory, "latest");
+  const stat = await NodeFSP.lstat(latest).catch((cause: NodeJS.ErrnoException) => {
+    if (cause.code === "ENOENT") return undefined;
+    throw cause;
+  });
+  if (stat === undefined) return undefined;
+  if (!stat.isSymbolicLink() || stat.uid !== uid)
+    throw new Error("Launcher handoff selector has unknown ownership.");
+  const name = await NodeFSP.readlink(latest);
+  const match = HANDOFF_FILE.exec(name);
+  if (match === null || !HANDOFF_ID.test(match[1] ?? ""))
+    throw new Error("Launcher handoff selector escapes its receipt directory.");
+  const value: unknown = JSON.parse(
+    await readPrivate(NodePath.join(directory, name), uid, 0o600, 2048),
+  );
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    throw new Error("Launcher handoff receipt is malformed.");
+  const receipt = decodeLauncherHandoffReceipt(value);
+  if (receipt === undefined || receipt.requestId !== match[1] || receipt.status !== match[2])
+    throw new Error("Launcher handoff receipt is malformed.");
+  return receipt;
+}
+
+export const isLauncherPointerVersion = (value: unknown): value is string =>
+  typeof value === "string" && VERSION.test(value);
+
+export function decodeLauncherHandoffReceipt(value: unknown): LauncherHandoffReceipt | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return undefined;
+  const receipt = value as LauncherHandoffReceipt;
+  return receipt.schema === 1 &&
+    typeof receipt.requestId === "string" &&
+    HANDOFF_ID.test(receipt.requestId) &&
+    (receipt.status === "requested" ||
+      receipt.status === "committed" ||
+      receipt.status === "rejected") &&
+    isLauncherPointerVersion(receipt.fromVersion) &&
+    isLauncherPointerVersion(receipt.targetVersion) &&
+    receipt.fromVersion !== receipt.targetVersion &&
+    typeof receipt.fromSha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(receipt.fromSha256) &&
+    typeof receipt.targetSha256 === "string" &&
+    /^[a-f0-9]{64}$/.test(receipt.targetSha256)
+    ? receipt
+    : undefined;
+}
+
+async function retainHandoff(baseDir: string, receipt: LauncherHandoffReceipt): Promise<void> {
+  const directory = NodePath.join(directoryOf(baseDir), "handoff");
+  await privateDirectory(directory, NodeOS.userInfo().uid);
+  const name = receipt.requestId + "." + receipt.status + ".json";
+  const file = NodePath.join(directory, name);
+  const contents = JSON.stringify(receipt) + "\n";
+  try {
+    await createFile(file, contents, 0o600);
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+    if ((await readPrivate(file, NodeOS.userInfo().uid, 0o600, 2048)) !== contents)
+      throw new Error("Launcher handoff receipt collides with retained history.", { cause });
+    const descriptor = await NodeFSP.open(
+      file,
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+    );
+    try {
+      await descriptor.sync();
+    } finally {
+      await descriptor.close();
+    }
+  }
+  await syncDirectory(directory);
+  const temporary = NodePath.join(directory, ".latest-" + NodeCrypto.randomUUID());
+  await NodeFSP.symlink(name, temporary);
+  await NodeFSP.rename(temporary, NodePath.join(directory, "latest"));
+  await syncDirectory(directory);
+}
+
+async function resetAttempts(directory: string): Promise<void> {
+  const temporary = NodePath.join(directory, ".attempts-" + NodeCrypto.randomUUID());
+  await createFile(temporary, "0\n", 0o600);
+  await NodeFSP.rename(temporary, NodePath.join(directory, "attempts"));
+  await syncDirectory(directory);
+}
+
+/** Caller owns the existing launcher lock and has fenced work and verified manager membership. */
+export async function requestLauncherHandoff(
+  baseDir: string,
+  input: {
+    readonly requestId: string;
+    readonly fromVersion: string;
+    readonly targetVersion: string;
+  },
+  beforePending?: () => Promise<boolean>,
+): Promise<LauncherHandoffReceipt | { readonly status: "deferred" } | undefined> {
+  if (!HANDOFF_ID.test(input.requestId))
+    throw new Error("Launcher handoff requires a fixed operation UUID.");
+  const pointer = await readLauncherPointer(baseDir);
+  if (pointer === undefined) return undefined;
+  if (pointer.currentVersion !== input.fromVersion || input.fromVersion === input.targetVersion)
+    throw new Error("Launcher handoff is not bound to the retained current launcher.");
+  const directory = directoryOf(baseDir);
+  const uid = NodeOS.userInfo().uid;
+  const fromSha256 = await executableDigest(directory, input.fromVersion, uid);
+  const targetSha256 = await executableDigest(directory, input.targetVersion, uid);
+  if (fromSha256 === targetSha256) return undefined;
+  const receipt: LauncherHandoffReceipt = {
+    schema: 1,
+    ...input,
+    fromSha256,
+    targetSha256,
+    status: "requested",
+  };
+  const previous = await readLauncherHandoff(baseDir);
+  if (previous?.status === "requested") {
+    if (JSON.stringify(previous) !== JSON.stringify(receipt))
+      throw new Error("Another launcher handoff is unsettled.");
+    if (pointer.pendingVersion === undefined && pointer.attempts === 3)
+      throw new Error("Launcher handoff exhausted its retained attempt budget.");
+  } else {
+    if (pointer.pendingVersion !== undefined)
+      throw new Error("Launcher pending pointer has no matching request.");
+    if (
+      previous?.requestId === input.requestId ||
+      (previous?.status === "rejected" && previous.targetVersion === input.targetVersion)
+    )
+      throw new Error("Launcher handoff was already settled.");
+  }
+  if (pointer.pendingVersion !== undefined && pointer.pendingVersion !== input.targetVersion)
+    throw new Error("Launcher pending pointer differs from its request.");
+  if (beforePending !== undefined && !(await beforePending())) return { status: "deferred" };
+  if (previous?.status !== "requested") {
+    await resetAttempts(directory);
+    await retainHandoff(baseDir, receipt);
+  }
+  if (pointer.pendingVersion === undefined) {
+    // The request is durable before publishing the next manager start.
+    await NodeFSP.symlink(targetOf(input.targetVersion), NodePath.join(directory, "pending"));
+  }
+  await syncDirectory(directory);
+  return receipt;
+}
+
+/** Only the captured healthy child may reach this seam, after capability publication. */
+export async function settleLauncherHandoff(
+  baseDir: string,
+  launcherVersion: string,
+  healthyChildVersion: string,
+): Promise<LauncherHandoffReceipt | undefined> {
+  const pointer = await readLauncherPointer(baseDir);
+  if (pointer === undefined) return undefined;
+  const receipt = await readLauncherHandoff(baseDir);
+  if (receipt === undefined || receipt.status !== "requested") return receipt;
+  const directory = directoryOf(baseDir);
+  const uid = NodeOS.userInfo().uid;
+  if (
+    healthyChildVersion !== receipt.targetVersion ||
+    (await executableDigest(directory, receipt.fromVersion, uid)) !== receipt.fromSha256 ||
+    (await executableDigest(directory, receipt.targetVersion, uid)) !== receipt.targetSha256
+  )
+    throw new Error("Launcher handoff health or immutable executable binding differs.");
+  if (
+    launcherVersion === receipt.targetVersion &&
+    (pointer.currentVersion === receipt.fromVersion ||
+      pointer.currentVersion === receipt.targetVersion) &&
+    (pointer.pendingVersion === receipt.targetVersion ||
+      (pointer.pendingVersion === undefined && pointer.currentVersion === receipt.targetVersion))
+  ) {
+    if (pointer.pendingVersion !== undefined) {
+      if (pointer.attempts < 1)
+        throw new Error("Pending launcher was not started through the stable shim.");
+      await NodeFSP.rename(
+        NodePath.join(directory, "pending"),
+        NodePath.join(directory, "current"),
+      );
+      await syncDirectory(directory);
+    }
+    await resetAttempts(directory);
+    const committed = { ...receipt, status: "committed" as const };
+    await retainHandoff(baseDir, committed);
+    return committed;
+  }
+  if (
+    launcherVersion === receipt.fromVersion &&
+    pointer.currentVersion === receipt.fromVersion &&
+    pointer.pendingVersion === undefined &&
+    pointer.attempts === 3
+  ) {
+    const rejected = { ...receipt, status: "rejected" as const };
+    await retainHandoff(baseDir, rejected);
+    return rejected;
+  }
+  if (
+    launcherVersion === receipt.fromVersion &&
+    pointer.currentVersion === receipt.fromVersion &&
+    pointer.pendingVersion === undefined &&
+    pointer.attempts < 3
+  )
+    return receipt;
+  throw new Error("Launcher handoff is not a healthy pending start or bounded fallback.");
+}

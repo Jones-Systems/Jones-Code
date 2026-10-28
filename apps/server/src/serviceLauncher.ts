@@ -14,8 +14,16 @@ import * as NodePath from "node:path";
 import packageJson from "../package.json" with { type: "json" };
 import {
   publishLauncherCapabilityReceipt,
+  readLauncherCapabilityReceipt,
   retractLauncherCapabilityReceipt,
 } from "./jones/cloud/launcherCapability.ts";
+import {
+  readLauncherPointer,
+  readLauncherHandoff,
+  requestLauncherHandoff,
+  settleLauncherHandoff,
+} from "./jones/cloud/launcherPointer.ts";
+import { launcherHandoffProcessesQuiet } from "./jones/cloud/launcherHandoffProcesses.ts";
 import {
   launcherDriftNotice,
   QualifiedCommitFailure,
@@ -833,6 +841,9 @@ interface LauncherRecoveryIO {
 
 export class Launcher {
   readonly #baseDir: string;
+  readonly #launcherVersion: string;
+  readonly #handoffProcessesQuiet: typeof launcherHandoffProcessesQuiet;
+  readonly #healthyChildren = new WeakSet<ManagedChild>();
   readonly #statePath: string;
   readonly #startupGateProtocol: 1 | undefined;
   readonly #preparedTimeoutMs: number;
@@ -845,11 +856,18 @@ export class Launcher {
   #state: ServiceState;
   #child: ManagedChild | null = null;
   #timer: NodeJS.Timeout | undefined;
+  #handoffHealthTimer: NodeJS.Timeout | undefined;
+  readonly #handoffReadyDeadline = new WeakMap<ManagedChild, number>();
   readonly #digestTimings = new Map<string, QualifiedDigestTiming[]>();
   #transitions: Promise<void> = Promise.resolve();
   #stopRequested = false;
   #stopping = false;
   #done = false;
+  #exitCode = 0;
+
+  get exitCode(): number {
+    return this.#exitCode;
+  }
   // Bound to one update: a commit attempt never blocks a later update's rollback.
   #qualifiedCommitAttempt: QualifiedCommitAttempt | undefined;
   readonly #completion = Promise.withResolvers<void>();
@@ -867,6 +885,8 @@ export class Launcher {
     state: ServiceState,
     options: {
       readonly backupSpaceProbe?: Partial<BackupSpaceProbe>;
+      readonly launcherVersion?: string;
+      readonly handoffProcessesQuiet?: typeof launcherHandoffProcessesQuiet;
       readonly startupGateProtocol?: 1;
       readonly preparedTimeoutMs?: number;
       readonly backupAdapter?: QualifiedBackupAdapter;
@@ -881,6 +901,8 @@ export class Launcher {
     } = {},
   ) {
     this.#baseDir = baseDir;
+    this.#launcherVersion = options.launcherVersion ?? packageJson.version;
+    this.#handoffProcessesQuiet = options.handoffProcessesQuiet ?? launcherHandoffProcessesQuiet;
     this.#backupSpaceProbe = options.backupSpaceProbe;
     this.#environment = { ...(options.environment ?? process.env) };
     this.#statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
@@ -1062,6 +1084,8 @@ export class Launcher {
   #clearTimer(): void {
     clearTimeout(this.#timer);
     this.#timer = undefined;
+    clearTimeout(this.#handoffHealthTimer);
+    this.#handoffHealthTimer = undefined;
   }
 
   async #recover(): Promise<void> {
@@ -1297,7 +1321,7 @@ export class Launcher {
         recoveryPayload: payloadExisted ? "removed" : "absent",
         restorePending: false,
         cause: cause === undefined ? null : cause.message || cause.code,
-        writerLauncherVersion: packageJson.version,
+        writerLauncherVersion: this.#launcherVersion,
         recordedAt: new Date().toISOString(),
       },
     };
@@ -1331,10 +1355,13 @@ export class Launcher {
         );
     }
     const paths = runtimePaths(this.#baseDir, version);
+    const pointer =
+      this.#startupGateProtocol === 1 ? await readLauncherPointer(this.#baseDir) : undefined;
     const context: ServiceLauncherContext = {
+      ...(pointer === undefined ? {} : { launcherHandoffProtocol: 1 as const }),
       protocol: SERVICE_LAUNCHER_PROTOCOL,
       childVersion: version,
-      launcherVersion: packageJson.version,
+      launcherVersion: this.#launcherVersion,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
       qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
       stateRecoveryPolicyProtocol: 1,
@@ -1401,25 +1428,23 @@ export class Launcher {
       this.#enqueue(() => this.#handleExit(managed, code, signal)),
     );
 
-    if (this.#startupGateProtocol === 1) {
-      if (child.pid === undefined) throw new Error("Spawned child has no native process identity.");
-      await publishLauncherCapabilityReceipt({
-        schema: 1,
-        baseDir: this.#baseDir,
-        launcherVersion: packageJson.version,
-        launcherPid: process.pid,
-        launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
-        qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
-        startupGateProtocol: 1,
-        updateSettlementProtocol: 1,
-        childPid: child.pid,
-        childVersion: version,
-      });
-    }
+    await this.#publishCapability(managed);
 
     if (role === "active") {
-      const notice = launcherDriftNotice(packageJson.version, version);
-      if (notice !== undefined) process.stderr.write(notice);
+      if (pointer?.pendingVersion === this.#launcherVersion) {
+        this.#handoffReadyDeadline.set(managed, this.#now() + this.#preparedTimeoutMs);
+        this.#handoffHealthTimer = setTimeout(
+          () =>
+            this.#enqueue(async () => {
+              if (this.#child === managed && !this.#healthyChildren.has(managed) && !this.#stopping)
+                throw new Error(
+                  "Pending launcher child did not become healthy before the startup deadline.",
+                );
+            }),
+          this.#preparedTimeoutMs,
+        );
+      }
+      await this.#emitDriftNotice(version);
     }
 
     if (role === "trial") {
@@ -1436,6 +1461,44 @@ export class Launcher {
     receivedAt: number,
   ): Promise<void> {
     if (this.#child !== child || this.#stopping) return;
+    if (message.type === "runtime-ready") {
+      if (
+        message.childVersion !== child.version ||
+        child.role !== "active" ||
+        this.#startupGateProtocol !== 1 ||
+        this.#stopRequested ||
+        (await readLauncherPointer(this.#baseDir)) === undefined
+      )
+        throw new Error("Launcher health message differs from the selected child.");
+      const deadline = this.#handoffReadyDeadline.get(child);
+      if (deadline !== undefined && receivedAt > deadline)
+        throw new Error("Pending launcher child readiness arrived after its startup deadline.");
+      this.#assertQualifiedChildLive(child);
+      const capability = await readLauncherCapabilityReceipt(this.#baseDir, {
+        launcherVersion: this.#launcherVersion,
+        launcherPid: process.pid,
+        childVersion: child.version,
+        childPid: child.process.pid!,
+      });
+      if (capability?.launcherHandoffProtocol !== 1)
+        throw new Error("Launcher health has no bound published capability.");
+      await settleLauncherHandoff(this.#baseDir, this.#launcherVersion, child.version);
+      this.#assertQualifiedChildLive(child);
+      this.#healthyChildren.add(child);
+      clearTimeout(this.#handoffHealthTimer);
+      this.#handoffHealthTimer = undefined;
+      await this.#publishCapability(child);
+      await this.#emitDriftNotice(child.version);
+      await sendMessage(child.process, {
+        type: "runtime-ready-accepted",
+        queryId: message.queryId,
+      });
+      return;
+    }
+    if (message.type === "request-launcher-handoff") {
+      await this.#handleLauncherHandoff(child, message.queryId);
+      return;
+    }
     if (message.type === "reconcile-failed-update" || message.type === "record-retired-operation") {
       await this.#handleSettlementRequest(child, message);
       return;
@@ -1485,6 +1548,152 @@ export class Launcher {
       return;
     }
     await this.#handlePrepared(child, message, receivedAt);
+  }
+
+  async #emitDriftNotice(childVersion: string): Promise<void> {
+    const pointer =
+      this.#startupGateProtocol === 1 ? await readLauncherPointer(this.#baseDir) : undefined;
+    const last = pointer === undefined ? undefined : await readLauncherHandoff(this.#baseDir);
+    const status =
+      pointer === undefined
+        ? undefined
+        : last?.targetVersion === childVersion &&
+            (last.status === "requested" || last.status === "rejected")
+          ? last.status
+          : "waiting";
+    const notice = launcherDriftNotice(this.#launcherVersion, childVersion, status);
+    if (notice !== undefined) process.stderr.write(notice);
+  }
+
+  async #publishCapability(child: ManagedChild): Promise<void> {
+    if (this.#startupGateProtocol !== 1) return;
+    if (child.process.pid === undefined)
+      throw new Error("Spawned child has no native process identity.");
+    const pointer = await readLauncherPointer(this.#baseDir);
+    const lastHandoff =
+      pointer === undefined ? undefined : await readLauncherHandoff(this.#baseDir);
+    await publishLauncherCapabilityReceipt({
+      schema: 1,
+      baseDir: this.#baseDir,
+      launcherVersion: this.#launcherVersion,
+      launcherPid: process.pid,
+      launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+      qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      startupGateProtocol: 1,
+      updateSettlementProtocol: 1,
+      childPid: child.process.pid,
+      childVersion: child.version,
+      ...(pointer === undefined
+        ? {}
+        : {
+            launcherHandoffProtocol: 1 as const,
+            launcherPointer: {
+              currentVersion: pointer.currentVersion,
+              attempts: pointer.attempts,
+              ...(pointer.pendingVersion === undefined
+                ? {}
+                : { pendingVersion: pointer.pendingVersion }),
+            },
+          }),
+      ...(lastHandoff === undefined ? {} : { lastHandoff }),
+    });
+  }
+
+  async #handleLauncherHandoff(child: ManagedChild, queryId: number): Promise<void> {
+    const reply = (outcome: "accepted" | "deferred" | "unavailable") =>
+      sendMessage(child.process, { type: "launcher-handoff-outcome", queryId, outcome });
+    const update = this.#state.update;
+    const pointer = await readLauncherPointer(this.#baseDir);
+    if (
+      pointer === undefined ||
+      this.#launcherVersion === child.version ||
+      update?.status !== "committed" ||
+      update.qualified === undefined ||
+      update.startupReceipt === undefined ||
+      update.targetVersion !== child.version
+    ) {
+      await reply("unavailable");
+      return;
+    }
+    const previous = await readLauncherHandoff(this.#baseDir);
+    if (previous?.status === "rejected" && previous.targetVersion === child.version) {
+      await reply("unavailable");
+      return;
+    }
+    if (
+      this.#stopRequested ||
+      child.role !== "active" ||
+      !this.#healthyChildren.has(child) ||
+      pointer.currentVersion !== this.#launcherVersion ||
+      child.process.pid === undefined ||
+      !(await this.#handoffProcessesQuiet(process.pid, child.process.pid, pointer.program))
+    ) {
+      await reply("deferred");
+      return;
+    }
+    this.#assertQualifiedChildLive(child);
+    try {
+      const retained = await readQualifiedRuntimeReceipt(
+        this.#baseDir,
+        pointer.currentVersion,
+        undefined,
+        this.#digestOptions(update.id, "full", "launcher-activation"),
+      );
+      const selected = await readQualifiedRuntimeReceipt(
+        this.#baseDir,
+        child.version,
+        undefined,
+        this.#digestOptions(update.id, "full", "launcher-activation"),
+      );
+      if (
+        retained.sourceSha !== update.qualified.binding.activeSourceSha ||
+        JSON.stringify(selected) !== JSON.stringify(update.qualified.receipt)
+      )
+        throw new Error("Launcher handoff qualified runtime identity differs.");
+    } catch {
+      process.stderr.write(
+        "[service-launcher] Automatic launcher handoff refused changed or unverifiable runtime bytes.\n",
+      );
+      await reply("unavailable");
+      return;
+    }
+    // run() already holds the launcher lock for its whole lifetime. Never acquire it here.
+    const requested = await requestLauncherHandoff(
+      this.#baseDir,
+      {
+        requestId: update.id,
+        fromVersion: this.#launcherVersion,
+        targetVersion: child.version,
+      },
+      async () => {
+        this.#assertQualifiedChildLive(child);
+        return (
+          !this.#stopRequested &&
+          child.process.pid !== undefined &&
+          (await this.#handoffProcessesQuiet(process.pid, child.process.pid, pointer.program))
+        );
+      },
+    );
+    if (requested?.status === "deferred") {
+      await reply("deferred");
+      return;
+    }
+    if (requested === undefined) {
+      await reply("unavailable");
+      return;
+    }
+    this.#assertQualifiedChildLive(child);
+    await this.#publishCapability(child);
+    await reply("accepted");
+    this.#stopping = true;
+    this.#clearTimer();
+    await terminateChild(child.process, "SIGTERM");
+    await this.#retractCapability(child.process);
+    this.#child = null;
+    this.#done = true;
+    // A bounded nonzero manager restart uses the immutable shim and its three-attempt budget.
+    this.#exitCode = 75;
+    this.#completion.resolve();
   }
 
   async #handleSettlementRequest(
@@ -1562,7 +1771,7 @@ export class Launcher {
           evidence: {
             retiredLocation: evidence.retiredLocation,
             recordedAt: new Date().toISOString(),
-            writerLauncherVersion: packageJson.version,
+            writerLauncherVersion: this.#launcherVersion,
           },
         });
         return { result: settled.result };
@@ -1973,8 +2182,7 @@ export class Launcher {
         this.#assertQualifiedChildLive(child);
       }
       child.role = "active";
-      const notice = launcherDriftNotice(packageJson.version, child.version);
-      if (notice !== undefined) process.stderr.write(notice);
+      await this.#emitDriftNotice(child.version);
       if (pending.qualified !== undefined)
         this.#qualifiedCommitAttempt = { updateId: pending.id, step: "committed-message" };
       await sendMessage(child.process, {
@@ -2129,8 +2337,10 @@ export async function main(): Promise<void> {
   const environment = await readServiceEnvironment(baseDir);
   const statePath = NodePath.join(baseDir, "runtime", SERVICE_STATE_FILE);
   const state = await readServiceState(statePath);
-  await new Launcher(baseDir, state, {
+  const launcher = new Launcher(baseDir, state, {
     environment,
     startupGateProtocol: readJonesStartupGateProtocol(),
-  }).run();
+  });
+  await launcher.run();
+  if (launcher.exitCode !== 0) process.exitCode = launcher.exitCode;
 }
