@@ -26,7 +26,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 const layerTest = Layer.empty.pipe(
   Layer.provideMerge(WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer))),
   Layer.provideMerge(WorkspacePaths.layer),
-  Layer.provide(nativeWorkspaceTestLayer),
+  Layer.provideMerge(nativeWorkspaceTestLayer),
   Layer.provideMerge(VcsProcess.layer),
   Layer.provide(
     ServerConfig.ServerConfig.layerTest(process.cwd(), {

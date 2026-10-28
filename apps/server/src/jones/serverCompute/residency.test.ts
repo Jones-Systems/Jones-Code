@@ -191,8 +191,8 @@ function fixture(count: 2 | 3 = 2) {
     return gate;
   };
   const counts = () => {
-    const event = events.findLast((event) => event.operation === "pool");
-    if (!event || event.operation !== "pool") throw new Error("Missing lifecycle observation");
+    const event = events.findLast((event) => "counts" in event);
+    if (!event || !("counts" in event)) throw new Error("Missing lifecycle observation");
     return event.counts;
   };
   const pending = (handle: LogicalFinderHandle, signal?: AbortSignal) => {

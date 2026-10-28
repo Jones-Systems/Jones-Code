@@ -5,6 +5,7 @@ import type { Bootstrap, Request, ScanStatus } from "./protocol.ts";
 import type { ComputeChild, SlotResult } from "./processSlot.ts";
 import { computeFailure } from "./failure.ts";
 import type { ComputeObservation } from "../serverParallelism/observations.ts";
+import type { LogicalFinderHandle } from "../serverParallelism/computeContract.ts";
 
 const pools: ComputeSupervisor[] = [];
 afterEach(async () => {
@@ -71,7 +72,7 @@ function fixture(count: 2 | 3 = 2, observe?: (event: ComputeObservation) => void
             },
           };
         },
-      } satisfies ComputeChild;
+      } satisfies (typeof children)[number];
       children.push(child);
       return child;
     },
@@ -178,7 +179,7 @@ it.each([2, 3] as const)(
 
 it("rotates idle cohorts without invalidating a cached logical facade", async () => {
   const f = fixture(),
-    handles = [];
+    handles: LogicalFinderHandle[] = [];
   for (let id = 0; id < 9; id++) handles.push(await f.acquire(id));
   expect([...f.physical.values()].every((entries) => entries.size <= 4)).toBe(true);
   const old = f.children.flatMap((c) => c.requests).find((r) => r.operation === "open")!;
@@ -197,7 +198,7 @@ it("rotates idle cohorts without invalidating a cached logical facade", async ()
 
 it("protects a running key and its queued jobs from eviction, and bounds per-key admission", async () => {
   const f = fixture(),
-    handles = [];
+    handles: LogicalFinderHandle[] = [];
   for (let id = 0; id < 8; id++) handles.push(await f.acquire(id));
   const token = f.children[0]!.requests.find((r) => r.operation === "open")!.token;
   let unblock!: () => void;

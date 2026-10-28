@@ -12,21 +12,6 @@
     "apps/server/src/jones/workspace/nativeSearchRuntime.test.ts",
     "apps/server/src/jones/workspace/searchWorkerProxy.ts",
     "apps/server/src/jones/workspace/searchWorkerProxy.test.ts",
-    "scripts/jones/serverParallelism/artifact-command.mjs",
-    "scripts/jones/serverParallelism/baseline.mjs",
-    "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
-    "scripts/jones/serverParallelism/buildIdentity.ts",
-    "scripts/jones/serverParallelism/ci-run.mjs",
-    "scripts/jones/serverParallelism/commandIdentity.mjs",
-    "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
-    "scripts/jones/serverParallelism/packaging-smoke.mjs",
-    "scripts/jones/serverParallelism/parent-loss-fixture.mjs",
-    "scripts/jones/serverParallelism/qualificationResult.mjs",
-    "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
-    "scripts/jones/serverParallelism/qualify.mjs",
-    "scripts/jones/serverParallelism/snapshot.mjs",
-    "scripts/jones/serverParallelism/source-command.mjs",
-    "scripts/jones/serverParallelism/storage.mjs",
     ".github/workflows/server-parallel-qualification.yml"
   ],
   "hookPaths": [],
@@ -147,6 +132,26 @@
     {
       "from": "apps/server/src/persistence/Sqlite.ts",
       "to": "packages/shared/src/jones/sqliteReaderContracts.ts"
+    },
+    {
+      "from": "apps/server/src/cli/project.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
     }
   ]
 }

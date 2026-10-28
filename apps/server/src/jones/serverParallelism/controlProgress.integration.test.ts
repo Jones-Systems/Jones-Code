@@ -135,7 +135,7 @@ for (const size of [2, 3] as const)
                             effect.request.type === "runtime-request.respond",
                         );
                         yield* Deferred.succeed(milestone, {
-                          type: "control-read-completed",
+                          type: "control-read-completed" as const,
                           effectType: effect.request.type as ControlReceipt["effectType"],
                           priority: yield* ReadPriority,
                           value: rows[0]!.value,

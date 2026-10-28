@@ -13,6 +13,9 @@ export const nativeWorkspaceTestLayer = Layer.effect(
   ServerCompute,
   Effect.gen(function* () {
     type Runtime = Effect.Success<ReturnType<typeof NativeSearchRuntime.make>>;
+    type NativeError = Effect.Error<
+      ReturnType<Runtime["list"] | Runtime["search"] | Runtime["searchContents"] | Runtime["refresh"]>
+    >;
     const indexes = new Map<string, Runtime>();
     let id = 0;
     return ServerCompute.of({
@@ -48,7 +51,7 @@ export const nativeWorkspaceTestLayer = Layer.effect(
           const handlers: {
             [P in keyof WorkspaceJobs]: (
               input: WorkspaceJobs[P]["input"],
-            ) => Effect.Effect<WorkspaceJobs[P]["output"], unknown>;
+            ) => Effect.Effect<WorkspaceJobs[P]["output"], NativeError>;
           } = {
             list: () => index.list(),
             search: (value) => index.search(value.query, value.limit, value.kind, value.imageOnly),

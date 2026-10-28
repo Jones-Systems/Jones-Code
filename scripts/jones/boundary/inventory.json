@@ -2424,7 +2424,8 @@
     "scripts/jones/serverParallelism/packaging-smoke.mjs": "jones-owned",
     "scripts/jones/serverParallelism/qualificationResult.mjs": "jones-owned",
     "scripts/jones/serverParallelism/qualificationResult.node-test.mjs": "jones-owned",
-    "scripts/jones/serverParallelism/storage.mjs": "jones-owned"
+    "scripts/jones/serverParallelism/storage.mjs": "jones-owned",
+    "apps/server/src/cli/project.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -31,7 +31,7 @@ export class ServerCompute extends Context.Service<
       input: WorkspaceJobs[K]["input"],
     ) => Effect.Effect<WorkspaceJobs[K]["output"], ComputeFailure>;
   }
->()("t3/jones/ServerCompute") {}
+>()("t3/jones/serverCompute/ServerCompute") {}
 
 /** Deliberate optional callback seam; root supplies instrumentation through the single shared layer. */
 export const ComputeObserver = Context.Reference<((event: ComputeObservation) => void) | undefined>(

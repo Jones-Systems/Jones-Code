@@ -1,9 +1,8 @@
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
 import * as ServerCompute from "../serverCompute/ServerCompute.ts";
-import { ComputeFailure } from "../serverCompute/failure.ts";
+import { ComputeFailure, isComputeFailure } from "../serverCompute/failure.ts";
 import { ComputeSupervisor } from "../serverCompute/supervisor.ts";
 import { decodeRequest, type Request } from "../serverCompute/protocol.ts";
 import type { ProjectSearchContentsInput } from "@t3tools/contracts";
@@ -68,7 +67,7 @@ it.effect(
           (pool) => Effect.promise(() => pool.shutdown()),
         );
         const failure = (cause: unknown) =>
-          cause instanceof ComputeFailure
+          isComputeFailure(cause)
             ? cause
             : new ComputeFailure({ reason: "unavailable", cause });
         const compute = ServerCompute.ServerCompute.of({
@@ -137,7 +136,7 @@ it.effect(
           run: () => Effect.fail(cause),
         });
         const proxy = yield* makeSearchWorkerProxy(handle.key).pipe(
-          Effect.provide(Layer.succeed(ServerCompute.ServerCompute, compute)),
+          Effect.provideService(ServerCompute.ServerCompute, compute),
         );
         const search = yield* proxy.search("needle", 4, "file").pipe(Effect.result);
         expect(Result.isFailure(search)).toBe(true);

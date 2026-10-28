@@ -50,8 +50,9 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
             projects: [],
           });
           const schemaProjectionMs = performance.now() - projectedAt;
-          const encodedAt = performance.now(),
-            bytes = JSON.stringify(projected);
+          const encodedAt = performance.now();
+          // @effect-diagnostics-next-line preferSchemaOverJson:off -- Measure the actual synchronous wire stringify separately from schema projection.
+          const bytes = JSON.stringify(projected);
           const encodeMs = performance.now() - encodedAt;
           const compressedAt = performance.now(),
             compressed = gzipSync(bytes);

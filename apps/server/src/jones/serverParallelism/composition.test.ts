@@ -38,8 +38,8 @@ it.effect("standalone path, legacy and memory layers construct without ServerCon
 it.effect("one shared layer identity is acquired once across independent consumers", () =>
   Effect.scoped(
     Effect.gen(function* () {
-      class First extends Context.Service<First, object>()("jones/test/first-consumer") {}
-      class Second extends Context.Service<Second, object>()("jones/test/second-consumer") {}
+      class First extends Context.Service<First, object>()("t3/jones/serverParallelism/composition.test/First") {}
+      class Second extends Context.Service<Second, object>()("t3/jones/serverParallelism/composition.test/Second") {}
       let acquisitions = 0;
       const compute = Layer.effect(
         ServerCompute,
