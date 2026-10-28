@@ -121,12 +121,13 @@ export function QuestionAnswerFooter({
         }}
         className="ms-5 space-y-2 pb-2"
       >
-        {state.showField ? (
+        {state.showField &&
+        (state.fieldLabel || (!state.notes && progress.activeQuestion?.options.length)) ? (
           <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
             <span>
               {state.fieldLabel}
               {!state.notes && progress.activeQuestion?.options.length
-                ? " · Typing replaces your choice"
+                ? "Typing replaces your choice"
                 : ""}
             </span>
             {state.notes && state.hasChoice ? (
