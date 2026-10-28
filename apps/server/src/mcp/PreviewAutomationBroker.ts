@@ -587,14 +587,17 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     "PreviewAutomationBroker.respond",
   )(function* (response) {
     const now = yield* Clock.currentTimeMillis;
-    const pending = yield* SynchronizedRef.modify(state, (current) => {
-      const entry =
-        current.pending.get(response.requestId) ?? current.tombstones.get(response.requestId);
+    const reply = yield* SynchronizedRef.modify(state, (current) => {
+      const live = current.pending.get(response.requestId);
+      const tombstone = current.tombstones.get(response.requestId);
+      const retained =
+        live ?? (tombstone !== undefined && tombstone.expiresAt > now ? tombstone : undefined);
+      // Quarantine outlives tombstone retention; only the original host may settle it.
+      const entry = retained ?? current.quarantine.get(response.requestId);
       if (
         !entry ||
         entry.context.clientId !== response.clientId ||
-        entry.context.connectionId !== response.connectionId ||
-        ("expiresAt" in entry && typeof entry.expiresAt === "number" && entry.expiresAt <= now)
+        entry.context.connectionId !== response.connectionId
       )
         return [undefined, current] as const;
       const next = new Map(current.pending);
@@ -606,12 +609,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const validReply = response.ok || response.error !== undefined;
       if (validReply && response.error?.outcome !== "unknown")
         tombstones.delete(response.requestId);
-      else {
+      else if (retained !== undefined) {
         tombstones.set(response.requestId, {
-          ...entry,
+          ...retained,
           expiresAt:
-            "expiresAt" in entry && typeof entry.expiresAt === "number"
-              ? entry.expiresAt
+            "expiresAt" in retained && typeof retained.expiresAt === "number"
+              ? retained.expiresAt
               : now + 60_000,
         });
         while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
@@ -653,7 +656,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         });
       }
       return [
-        entry,
+        [entry, live === undefined] as const,
         {
           ...current,
           pending: next,
@@ -664,8 +667,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         },
       ] as const;
     });
-    if (!pending) return;
-    if ("expiresAt" in pending) {
+    if (!reply) return;
+    const [pending, late] = reply;
+    if (late) {
       yield* Effect.logInfo("Late preview automation reply", {
         requestId: response.requestId,
         connectionId: response.connectionId,
