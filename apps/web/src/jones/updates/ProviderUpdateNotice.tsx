@@ -1,9 +1,11 @@
+import { Toast } from "@base-ui/react/toast";
 import { useNavigate } from "@tanstack/react-router";
 import { providerUpdateNotificationKey } from "@t3tools/client-runtime/jones/provider-updates";
-import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
+import { PROVIDER_DISPLAY_NAMES, type EnvironmentId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
-import { useEffect, useRef, useState } from "react";
-import { Button } from "~/components/ui/button";
+import { ChevronDownIcon, ChevronRightIcon, TriangleAlertIcon } from "lucide-react";
+import { useEffect, useId, useRef, useState } from "react";
+import { Button, buttonVariants } from "~/components/ui/button";
 import { Spinner } from "~/components/ui/spinner";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -17,6 +19,10 @@ const providerUpdateDismissalsSchema = Schema.Struct({ keys: Schema.Array(Schema
 export function ProviderUpdateEnvironmentRows() {
   const updates = useJonesProviderUpdates();
   const navigate = useNavigate();
+  const detailsId = useId();
+  const [collapsedEnvironments, setCollapsedEnvironments] = useState<ReadonlySet<EnvironmentId>>(
+    () => new Set(),
+  );
   return (
     <div className="flex flex-col gap-3">
       {updates.groups.map((group) => {
@@ -31,6 +37,8 @@ export function ProviderUpdateEnvironmentRows() {
               : null;
         const retry = attempt && attempt.phase !== "running" && attempt.phase !== "succeeded";
         const targets = attempt?.machine.candidates ?? group.allCandidates;
+        const expanded = !collapsedEnvironments.has(group.environmentId);
+        const environmentDetailsId = `${detailsId}-${group.environmentId}`;
         return (
           <section
             key={group.environmentId}
@@ -38,7 +46,28 @@ export function ProviderUpdateEnvironmentRows() {
             className="space-y-1"
           >
             <div className="flex items-center justify-between gap-3">
-              <span className="font-medium">{group.label}</span>
+              <button
+                type="button"
+                aria-label={`Provider updates on ${group.label}`}
+                aria-expanded={expanded}
+                aria-controls={environmentDetailsId}
+                className="flex min-w-0 items-center gap-1 rounded-sm text-left font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => {
+                  setCollapsedEnvironments((previous) => {
+                    const next = new Set(previous);
+                    if (next.has(group.environmentId)) next.delete(group.environmentId);
+                    else next.add(group.environmentId);
+                    return next;
+                  });
+                }}
+              >
+                {expanded ? (
+                  <ChevronDownIcon aria-hidden className="size-3.5 shrink-0" />
+                ) : (
+                  <ChevronRightIcon aria-hidden className="size-3.5 shrink-0" />
+                )}
+                <span className="min-w-0 wrap-break-word">{group.label}</span>
+              </button>
               <Tooltip>
                 <TooltipTrigger
                   render={
@@ -63,64 +92,119 @@ export function ProviderUpdateEnvironmentRows() {
                 </TooltipPopup>
               </Tooltip>
             </div>
-            {attempt ? (
-              <p
-                role="status"
-                className={
-                  attempt.phase === "failed"
-                    ? "text-destructive"
-                    : attempt.phase === "unchanged" || attempt.phase === "interrupted"
-                      ? "text-warning"
-                      : "text-muted-foreground"
-                }
-              >
+            {!expanded ? (
+              <p role="status" className="text-xs text-muted-foreground">
                 {pending
                   ? `${attempt.runs.length}/${targets.length} provider updates finished`
-                  : attempt.message}
+                  : attempt?.phase === "succeeded"
+                    ? "Providers updated"
+                    : attempt
+                      ? "Update needs attention"
+                      : `${targets.length} provider ${targets.length === 1 ? "update" : "updates"} available`}
               </p>
             ) : null}
-            {reason ? <p className="text-xs text-muted-foreground">{reason}</p> : null}
-            <ul className="space-y-1 text-xs">
-              {targets.map((target) => {
-                const run = attempt?.runs.find((entry) => entry.instanceId === target.instanceId);
-                const outcome = run ? getProviderUpdateRunOutcome(run) : null;
-                return (
-                  <li key={target.instanceId}>
-                    {PROVIDER_DISPLAY_NAMES[target.driver] ?? target.driver} · {target.instanceId}
-                    {outcome
-                      ? ` · ${outcome.status === "unchanged" ? "update could not be verified" : outcome.status}`
-                      : pending
-                        ? " · updating"
-                        : ""}
-                  </li>
-                );
-              })}
-            </ul>
-            {group.allCandidates.some(
-              (candidate) =>
-                !candidate.versionAdvisory.canUpdate ||
-                candidate.versionAdvisory.updateCommand === null,
-            ) ? (
-              <p className="text-xs text-muted-foreground">
-                Update manually with the app or tool that installed this provider. Review provider
-                settings for details.
-              </p>
-            ) : null}
-            <Button
-              size="xs"
-              variant="ghost-muted"
-              onClick={() => {
-                void navigate({
-                  to: "/settings/providers",
-                  search: { machine: group.environmentId },
-                });
-              }}
-            >
-              Settings
-            </Button>
+            <div id={environmentDetailsId} hidden={!expanded} className="space-y-1">
+              {attempt ? (
+                <p
+                  role="status"
+                  className={
+                    attempt.phase === "failed"
+                      ? "text-destructive"
+                      : attempt.phase === "unchanged" || attempt.phase === "interrupted"
+                        ? "text-warning"
+                        : "text-muted-foreground"
+                  }
+                >
+                  {pending
+                    ? `${attempt.runs.length}/${targets.length} provider updates finished`
+                    : attempt.message}
+                </p>
+              ) : null}
+              {reason ? <p className="text-xs text-muted-foreground">{reason}</p> : null}
+              <ul className="space-y-1 text-xs">
+                {targets.map((target) => {
+                  const run = attempt?.runs.find((entry) => entry.instanceId === target.instanceId);
+                  const outcome = run ? getProviderUpdateRunOutcome(run) : null;
+                  return (
+                    <li key={target.instanceId}>
+                      {PROVIDER_DISPLAY_NAMES[target.driver] ?? target.driver} · {target.instanceId}
+                      {outcome
+                        ? ` · ${outcome.status === "unchanged" ? "update could not be verified" : outcome.status}`
+                        : pending
+                          ? " · updating"
+                          : ""}
+                    </li>
+                  );
+                })}
+              </ul>
+              {group.allCandidates.some(
+                (candidate) =>
+                  !candidate.versionAdvisory.canUpdate ||
+                  candidate.versionAdvisory.updateCommand === null,
+              ) ? (
+                <p className="text-xs text-muted-foreground">
+                  Update manually with the app or tool that installed this provider. Review provider
+                  settings for details.
+                </p>
+              ) : null}
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                onClick={() => {
+                  void navigate({
+                    to: "/settings/providers",
+                    search: { machine: group.environmentId },
+                  });
+                }}
+              >
+                Settings
+              </Button>
+            </div>
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function ProviderUpdateToastBody() {
+  const [expanded, setExpanded] = useState(true);
+  const detailsId = useId();
+  return (
+    <div className="min-w-0 w-full">
+      <button
+        type="button"
+        aria-expanded={expanded}
+        aria-controls={detailsId}
+        className="flex min-w-0 w-full items-start gap-2 rounded-sm pr-5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => setExpanded((previous) => !previous)}
+      >
+        <TriangleAlertIcon aria-hidden className="h-lh w-4 shrink-0 text-warning" />
+        <Toast.Title
+          render={<span />}
+          className="min-w-0 flex-1 wrap-break-word font-medium"
+          data-slot="toast-title"
+        />
+        {expanded ? (
+          <ChevronDownIcon aria-hidden className="h-lh w-3.5 shrink-0" />
+        ) : (
+          <ChevronRightIcon aria-hidden className="h-lh w-3.5 shrink-0" />
+        )}
+      </button>
+      <div id={detailsId} hidden={!expanded}>
+        <Toast.Description
+          className="min-w-0 pt-0.5 pr-5 select-text wrap-break-word text-muted-foreground"
+          data-slot="toast-description"
+        />
+        <div className="mt-2 flex justify-end">
+          <Toast.Action
+            className={buttonVariants({ size: "xs", variant: "default" })}
+            data-slot="toast-action"
+          >
+            Settings
+          </Toast.Action>
+        </div>
+      </div>
     </div>
   );
 }
@@ -169,31 +253,32 @@ export function ProviderUpdateNotice() {
     )
       return;
     if (active.current && groups.some((group) => group.attempt?.phase === "running")) return;
-    if (active.current) toastManager.close(active.current.id);
     const key = noticeKey;
-    const id = toastManager.add(
-      stackedThreadToast({
-        type: "warning",
-        title: "Provider updates available",
-        timeout: 0,
-        description: <ProviderUpdateEnvironmentRows />,
-        actionProps: {
-          children: "Settings",
-          onClick: () => {
-            void navigate({ to: "/settings/providers" });
-          },
+    const options = stackedThreadToast({
+      type: "warning",
+      title: "Provider updates available",
+      timeout: 0,
+      description: <ProviderUpdateEnvironmentRows />,
+      actionProps: {
+        children: "Settings",
+        onClick: () => {
+          void navigate({ to: "/settings/providers" });
         },
-        data: {
-          hideCopyButton: true,
-          onClose: () => {
-            setDismissed((previous) => ({
-              keys: [...previous.keys.filter((entry) => entry !== key), key],
-            }));
-            if (active.current?.id === id) active.current = null;
-          },
+      },
+      data: {
+        bodyContent: <ProviderUpdateToastBody />,
+        hideCopyButton: true,
+        onClose: () => {
+          setDismissed((previous) => ({
+            keys: [...previous.keys.filter((entry) => entry !== key), key],
+          }));
+          if (active.current?.id === id) active.current = null;
         },
-      }),
-    );
+      },
+    });
+    const existing = active.current;
+    const id = existing?.id ?? toastManager.add(options);
+    if (existing) toastManager.update(id, options);
     active.current = { key, id };
   }, [
     noticeKey,
