@@ -1391,99 +1391,98 @@ export const layerWithOptions = (
             drainSubscribers:
               input.reason === "runtime_error" && input.subscriberFailure !== undefined,
           }),
-          ([entry, releasedAt]) =>
-            Option.match(entry, {
-              onNone: () =>
-                Effect.suspend(() => {
-                  const pending =
-                    retirements.find(input.providerSessionId, undefined, "session") ??
-                    retirements.find(input.providerSessionId, undefined, "opening");
-                  return pending === undefined
-                    ? Effect.void
-                    : Deferred.await(pending.completion).pipe(
-                        Effect.timeoutOption(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS),
-                        Effect.asVoid,
-                      );
-                }),
-              onSome: (entry) =>
-                Effect.gen(function* () {
-                  const releasedBackgroundTasks = yield* readReleasedBackgroundTasks({
-                    entry,
-                    reason: input.reason,
-                    ...(input.detachedThreadId === undefined
-                      ? {}
-                      : { detachedThreadId: input.detachedThreadId }),
-                  });
-                  if (input.cancelIdleFiber !== false) {
-                    yield* cancelIdleFiber(entry.idleFiber);
-                  }
-                  if (input.reason === "runtime_error" && input.subscriberFailure !== undefined) {
-                    const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
-                    yield* Effect.forEach(
-                      subscribers.values(),
-                      ({ queue }) =>
-                        Queue.offer(queue, { type: "failure", cause: input.subscriberFailure! }),
-                      { discard: true },
-                    );
-                    // Queue delivery is not ingestion. Wait for subscribers to exit processing
-                    // before closing this runtime scope; layer shutdown can interrupt the wait.
-                    yield* Effect.forEach(
-                      subscribers.values(),
-                      ({ settled }) => Deferred.await(settled),
-                      { concurrency: "unbounded", discard: true },
-                    );
-                  } else if (input.gracefulSubscribers === true) {
-                    yield* endSubscribers(entry);
-                  } else if (input.reason === "server_shutdown") {
-                    yield* interruptSubscribers(entry);
-                  } else {
-                    yield* failSubscribers(
-                      entry,
-                      input.detail ?? `Provider session released: ${input.reason}.`,
-                    );
-                  }
-                  const closeExit = yield* closeScopeWithin(entry.scope, {
-                    providerSessionId: input.providerSessionId,
-                    reason: input.reason,
-                  });
-                  const records = {
-                    entry,
-                    reason: input.reason,
-                    ...(input.detail === undefined ? {} : { detail: input.detail }),
-                    releasedBackgroundTasks,
-                    releasedAt,
-                  };
-                  const recorded = yield* Effect.exit(
-                    input.sessionOpenHeld === true
-                      ? writeReleaseRecords({ ...records, replaced: false })
-                      : sessionOpen.withLock(
-                          input.providerSessionId,
-                          Effect.gen(function* () {
-                            const replaced = (yield* Ref.get(sessions)).has(
-                              sessionKey(input.providerSessionId),
-                            );
-                            yield* writeReleaseRecords({ ...records, replaced });
-                          }),
-                        ),
+          ([entryOption, releasedAt]) =>
+            Effect.gen(function* () {
+              if (Option.isNone(entryOption)) {
+                const pending =
+                  retirements.find(input.providerSessionId, undefined, "session") ??
+                  retirements.find(input.providerSessionId, undefined, "opening");
+                if (pending !== undefined)
+                  yield* Deferred.await(pending.completion).pipe(
+                    Effect.timeoutOption(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS),
+                    Effect.asVoid,
                   );
-                  if (Exit.isFailure(recorded)) {
-                    yield* retryReleaseRecords(records);
-                    return yield* recorded;
-                  }
-                  if (Option.isSome(closeExit) && Exit.isFailure(closeExit.value)) {
-                    return yield* Effect.failCause(closeExit.value.cause);
-                  }
-                }).pipe(
-                  Effect.ensuring(Effect.sync(() => drainingRuntimes.delete(entry.runtime))),
-                  withMetrics({
-                    counter: providerSessionsTotal,
-                    attributes: {
-                      provider: entry.runtime.driver,
-                      operation: "release",
-                      reason: input.reason,
-                    },
-                  }),
-                ),
+                return;
+              }
+              const entry = entryOption.value;
+              yield* Effect.gen(function* () {
+                const releasedBackgroundTasks = yield* readReleasedBackgroundTasks({
+                  entry,
+                  reason: input.reason,
+                  ...(input.detachedThreadId === undefined
+                    ? {}
+                    : { detachedThreadId: input.detachedThreadId }),
+                });
+                if (input.cancelIdleFiber !== false) {
+                  yield* cancelIdleFiber(entry.idleFiber);
+                }
+                if (input.reason === "runtime_error" && input.subscriberFailure !== undefined) {
+                  const subscribers = yield* Ref.getAndSet(entry.eventSubscribers, new Map());
+                  yield* Effect.forEach(
+                    subscribers.values(),
+                    ({ queue }) =>
+                      Queue.offer(queue, { type: "failure", cause: input.subscriberFailure! }),
+                    { discard: true },
+                  );
+                  // Queue delivery is not ingestion. Wait for subscribers to exit processing
+                  // before closing this runtime scope; layer shutdown can interrupt the wait.
+                  yield* Effect.forEach(
+                    subscribers.values(),
+                    ({ settled }) => Deferred.await(settled),
+                    { concurrency: "unbounded", discard: true },
+                  );
+                } else if (input.gracefulSubscribers === true) {
+                  yield* endSubscribers(entry);
+                } else if (input.reason === "server_shutdown") {
+                  yield* interruptSubscribers(entry);
+                } else {
+                  yield* failSubscribers(
+                    entry,
+                    input.detail ?? `Provider session released: ${input.reason}.`,
+                  );
+                }
+                const closeExit = yield* closeScopeWithin(entry.scope, {
+                  providerSessionId: input.providerSessionId,
+                  reason: input.reason,
+                });
+                const records = {
+                  entry,
+                  reason: input.reason,
+                  ...(input.detail === undefined ? {} : { detail: input.detail }),
+                  releasedBackgroundTasks,
+                  releasedAt,
+                };
+                const recorded = yield* Effect.exit(
+                  input.sessionOpenHeld === true
+                    ? writeReleaseRecords({ ...records, replaced: false })
+                    : sessionOpen.withLock(
+                        input.providerSessionId,
+                        Effect.gen(function* () {
+                          const replaced = (yield* Ref.get(sessions)).has(
+                            sessionKey(input.providerSessionId),
+                          );
+                          yield* writeReleaseRecords({ ...records, replaced });
+                        }),
+                      ),
+                );
+                if (Exit.isFailure(recorded)) {
+                  yield* retryReleaseRecords(records);
+                  return yield* recorded;
+                }
+                if (Option.isSome(closeExit) && Exit.isFailure(closeExit.value)) {
+                  return yield* Effect.failCause(closeExit.value.cause);
+                }
+              }).pipe(
+                Effect.ensuring(Effect.sync(() => drainingRuntimes.delete(entry.runtime))),
+                withMetrics({
+                  counter: providerSessionsTotal,
+                  attributes: {
+                    provider: entry.runtime.driver,
+                    operation: "release",
+                    reason: input.reason,
+                  },
+                }),
+              );
             }),
           ([entry]) =>
             Option.match(entry, {
@@ -1759,7 +1758,9 @@ export const layerWithOptions = (
           input.providerSessionId,
           Ref.modify(
             sessions,
-            (current): readonly [
+            (
+              current,
+            ): readonly [
               ProviderSessionOpenError | ProviderAdapterV2SessionRuntime | undefined,
               Map<string, LiveSessionEntry>,
             ] => {
