@@ -164,6 +164,16 @@ describe("native Workstream client authority", () => {
     cache.purge();
     expect(cache.read(capability, data.binding)).toBeNull();
   });
+  it("erases protected legacy data after a mismatched scope is observed", () => {
+    const cache = new NativeWorkstreamReadCache();
+    cache.write(capability, data, read);
+    expect(cache.read(capability, { ...data.binding, principalId: "other" })).toBeNull();
+    expect(cache.read(capability, data.binding)).toBeNull();
+    cache.writeProtected("scope-a", "projection", { protected: true });
+    expect(cache.readProtected("scope-b", "projection")).toBeNull();
+    expect(cache.readProtected("scope-a", "projection")).toBeNull();
+  });
+
   it("does not persist operation requests between native memory stores", async () => {
     const storage = memoryWorkstreamOperationStorage();
     await storage.save("protected request");

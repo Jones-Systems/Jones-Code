@@ -139,6 +139,23 @@ const copyRead = (read: WorkstreamsNativeReadEnvelope): WorkstreamsNativeReadEnv
 
 /** Protected projection bytes stay in memory and are partitioned by authorization. */
 export class NativeWorkstreamReadCache {
+  #protectedScope: string | null = null;
+  #protected = new Map<string, unknown>();
+  writeProtected(scope: string, key: string, value: unknown): void {
+    if (this.#protectedScope !== scope) this.purge();
+    this.#protectedScope = scope;
+    if (this.#protected.size >= 16 && !this.#protected.has(key))
+      this.#protected.delete(this.#protected.keys().next().value!);
+    this.#protected.set(key, JSON.parse(JSON.stringify(value)));
+  }
+  readProtected(scope: string, key: string): unknown {
+    if (this.#protectedScope !== scope) {
+      this.purge();
+      return null;
+    }
+    const value = this.#protected.get(key);
+    return value === undefined ? null : JSON.parse(JSON.stringify(value));
+  }
   #entry: { data: T3WorkstreamListResult; read: WorkstreamsNativeReadEnvelope } | null = null;
   write(
     capability: WorkstreamsNativeCapability,
@@ -146,6 +163,13 @@ export class NativeWorkstreamReadCache {
     envelope: unknown,
   ): void {
     const read = validateNativeWorkstreamRead(envelope, capability, data);
+    if (
+      data.nextCursor !== null ||
+      data.stale ||
+      data.source !== "live" ||
+      read.coverage.registry !== "complete"
+    )
+      throw new Error("Only complete coherent live native snapshots may enter the cache.");
     this.#entry = { data: copyList(data), read: copyRead(read) };
   }
   read(
@@ -163,11 +187,18 @@ export class NativeWorkstreamReadCache {
           entry.read.registry.server_generation,
         ]) ||
       entry.read.provenance.home_environment_id !== capability.registry?.home_environment_id ||
+      entry.read.registry.canonical_origin !== capability.registry?.canonical_origin ||
+      entry.data.binding.registryId !== binding.registryId ||
+      entry.data.binding.ownerId !== binding.ownerId ||
+      entry.data.binding.serverGeneration !== binding.serverGeneration ||
+      JSON.stringify(entry.data.binding.permissions) !== JSON.stringify(binding.permissions) ||
       entry.data.binding.principalId !== binding.principalId ||
       entry.data.binding.authorizationRevision !== binding.authorizationRevision ||
       entry.data.binding.registryVersion !== binding.registryVersion
-    )
+    ) {
+      this.purge();
       return null;
+    }
     assertNativeWorkstreamBinding(capability, binding);
     const data = copyList(entry.data);
     const read = copyRead(entry.read);
@@ -182,6 +213,8 @@ export class NativeWorkstreamReadCache {
   }
   purge(): void {
     this.#entry = null;
+    this.#protectedScope = null;
+    this.#protected.clear();
   }
 }
 

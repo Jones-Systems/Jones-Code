@@ -4,6 +4,10 @@
   "jonesOwnedPaths": [
     "packages/client-runtime/src/state/workstreams/native.ts",
     "packages/client-runtime/src/state/workstreams/native.test.ts",
+    "packages/client-runtime/src/state/workstreams/nativeRead.ts",
+    "packages/client-runtime/src/state/workstreams/nativeRead.test.ts",
+    "packages/client-runtime/src/state/workstreams/nativeExport.ts",
+    "packages/client-runtime/src/state/workstreams/nativeExport.test.ts",
     "apps/mobile/src/features/workstreams/summary.test.ts",
     "apps/mobile/src/features/workstreams/summary.ts",
     "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
