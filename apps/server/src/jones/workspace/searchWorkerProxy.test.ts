@@ -67,9 +67,7 @@ it.effect(
           (pool) => Effect.promise(() => pool.shutdown()),
         );
         const failure = (cause: unknown) =>
-          isComputeFailure(cause)
-            ? cause
-            : new ComputeFailure({ reason: "unavailable", cause });
+          isComputeFailure(cause) ? cause : new ComputeFailure({ reason: "unavailable", cause });
         const compute = ServerCompute.ServerCompute.of({
           acquireLogical: (key) =>
             Effect.acquireRelease(

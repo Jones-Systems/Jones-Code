@@ -14,7 +14,9 @@ export const nativeWorkspaceTestLayer = Layer.effect(
   Effect.gen(function* () {
     type Runtime = Effect.Success<ReturnType<typeof NativeSearchRuntime.make>>;
     type NativeError = Effect.Error<
-      ReturnType<Runtime["list"] | Runtime["search"] | Runtime["searchContents"] | Runtime["refresh"]>
+      ReturnType<
+        Runtime["list"] | Runtime["search"] | Runtime["searchContents"] | Runtime["refresh"]
+      >
     >;
     const indexes = new Map<string, Runtime>();
     let id = 0;

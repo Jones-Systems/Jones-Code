@@ -114,7 +114,7 @@ export async function combinedReaderWriterWindow(
         ],
         { concurrency: "unbounded", discard: true },
       );
-    }).pipe(Effect.provide(database), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(database.pipe(Layer.provide(NodeServices.layer)))),
   );
   const computeEvents = computeObservations?.() ?? null;
   return {
