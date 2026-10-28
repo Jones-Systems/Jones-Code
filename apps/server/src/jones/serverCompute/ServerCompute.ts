@@ -42,7 +42,7 @@ const make = Effect.gen(function* () {
           .catch((cause) => { throw computeFailure("retirement-unknown", cause); });
         return new ComputeSupervisor({ count: config.serverParallelism.computeWorkerCount, build: command.build, journal,
           ...(observe === undefined ? {} : { observe }),
-          start: (boot, register, onExit) => ProcessSlot.start(commands[boot.slotId]!, boot, register, onExit) });
+          start: (boot, register, onExit) => ProcessSlot.start(commands[boot.slotId]!, boot, register, onExit, observe) });
       }, catch: failure,
     }),
     (pool) => Effect.tryPromise({ try: () => pool.shutdown(), catch: failure }).pipe(Effect.orDie),

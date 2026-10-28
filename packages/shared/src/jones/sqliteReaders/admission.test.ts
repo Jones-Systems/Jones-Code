@@ -181,7 +181,7 @@ it.effect.each(["undefined", "defect", "interruption"] as const)("releases a %s 
         if (++attempts !== 1) return slot().acquire;
         if (failure === "defect") return Effect.die("startup failed");
         if (failure === "interruption") return Effect.interrupt;
-        return Effect.succeed(undefined);
+        return Effect.void;
       }),
       settled: Effect.sync(() => { drains++; return true; }),
     };

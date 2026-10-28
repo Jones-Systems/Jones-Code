@@ -28,7 +28,7 @@ export class WorkspaceSearchIndex extends Context.Service<
   }
 >()("t3/workspace/WorkspaceSearchIndex") {}
 
-export const make = Effect.fn("WorkspaceSearchIndex.make")((cwd: string, variant: WorkspaceSearchIndexVariant = "paths") =>
+const make = Effect.fn("WorkspaceSearchIndex.make")((cwd: string, variant: WorkspaceSearchIndexVariant = "paths") =>
   makeSearchWorkerProxy({ cwd, variant }).pipe(Effect.map(WorkspaceSearchIndex.of)));
 
 export const WORKSPACE_SEARCH_INDEX_VARIANTS = ["paths", "content"] as const;

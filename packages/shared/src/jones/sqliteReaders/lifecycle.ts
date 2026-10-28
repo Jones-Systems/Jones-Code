@@ -1,4 +1,4 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Native worker deadlines must still run while a caller is masked or awaiting synchronous SQLite.
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- This native Promise boundary bounds termination with a cleanup-owned real-time deadline.
 import * as NodeTimers from "node:timers";
 
 import type { Worker } from "node:worker_threads";
@@ -12,6 +12,7 @@ export const retireReaderWorker = async (
   try {
     return await Promise.race([
       worker.terminate().then(() => true, () => false),
+      // @effect-diagnostics-next-line globalTimers:off -- Worker termination must time out independently of any caller fiber or Effect test clock; finally clears this timer.
       new Promise<false>((resolve) => { timer = NodeTimers.setTimeout(() => resolve(false), timeoutMs); }),
     ]);
   } catch {

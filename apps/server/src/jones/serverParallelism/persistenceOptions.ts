@@ -1,4 +1,7 @@
-import type { SqliteReaderObservation, SqliteReaderPoolOptions } from "@t3tools/shared/jones/sqliteReaderContracts";
+import type {
+  SqliteReaderObservation,
+  SqliteReaderPoolOptions,
+} from "@t3tools/shared/jones/sqliteReaderContracts";
 import { observeSafely } from "./observations.ts";
 
 /** Optional at the persistence boundary: standalone CLI/auth callers need no server config. */

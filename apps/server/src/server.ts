@@ -504,10 +504,15 @@ const layerDevice = DeviceService.layer.pipe(
 // One layer identity for every HTTP/RPC/MCP/scheduled workspace consumer. Placement
 // comes from the same outer ProcessPlacementRuntime context as provider processes.
 const layerServerCompute = ServerCompute.layer.pipe(
-  Layer.provide(Layer.effect(ServerCompute.ComputeObserver, Effect.gen(function* () {
-    const config = yield* ServerConfig.ServerConfig;
-    return (yield* makePoolObservers(config.serverParallelism.profile)).compute;
-  }))),
+  Layer.provide(
+    Layer.effect(
+      ServerCompute.ComputeObserver,
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        return (yield* makePoolObservers(config.serverParallelism.profile)).compute;
+      }),
+    ),
+  ),
 );
 const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(
   Layer.provide(WorkspacePaths.layer),

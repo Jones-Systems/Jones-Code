@@ -64,4 +64,3 @@ export class WorkspaceSearchIndexDestroyFailed extends Schema.TaggedError<Worksp
     return `Failed to destroy the workspace search index for '${this.cwd}'.`;
   }
 }
-

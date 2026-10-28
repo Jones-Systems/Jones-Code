@@ -184,7 +184,8 @@ it.effect("sets the pinned native cache and watcher controls without a grep file
   const runtime = yield* WorkspaceSearchIndex.make("/synthetic", "content");
   yield* runtime.searchContents({ query: "rare", limit: 3, caseSensitive: true, wholeWord: false, useRegex: false });
   expect(create).toHaveBeenCalledWith(expect.objectContaining({ disableWatch: false, disableMmapCache: true,
-    disableContentIndexing: false, cacheBudgetMaxFiles: 1024, cacheBudgetMaxBytes: 32 * 1024 * 1024, cacheBudgetMaxFileSize: 1024 * 1024 }));
+    disableContentIndexing: false, cacheBudgetMaxFiles: 1024, cacheBudgetMaxBytes: 32 * 1024 * 1024 }));
+  expect(create.mock.calls[0]?.[0]).not.toHaveProperty("cacheBudgetMaxFileSize");
   const options = grep.mock.calls[0]?.[1] as GrepOptions | undefined;
   expect(options).toMatchObject({ timeBudgetMs: 10, enforceTimeBudget: true });
   expect(options).not.toHaveProperty("maxFileSize");
@@ -231,8 +232,9 @@ it.effect("preserves actual pinned-native Unicode whole-word matches and refresh
   yield* runtime.refresh();
   const refreshed = yield* runtime.searchContents({ query: "rare-fresh-match", limit: 2, caseSensitive: true, wholeWord: false, useRegex: false });
   expect(refreshed.matches.map((m) => m.path)).toEqual(["fresh.txt"]);
-  yield* Effect.promise(() => fs.writeFile(path.join(directory, "uncached.txt"), "x".repeat(1024 * 1024 + 100) + "\ncache-ineligible-match\n"));
+  // The cache budget must not narrow the native default searchable file-size range.
+  yield* Effect.promise(() => fs.writeFile(path.join(directory, "large.txt"), "x".repeat(1024 * 1024 + 100) + "\nlarge-file-match\n"));
   yield* runtime.refresh();
-  const uncached = yield* runtime.searchContents({ query: "cache-ineligible-match", limit: 2, caseSensitive: true, wholeWord: false, useRegex: false });
-  expect(uncached.matches.map((m) => m.path)).toEqual(["uncached.txt"]);
+  const large = yield* runtime.searchContents({ query: "large-file-match", limit: 2, caseSensitive: true, wholeWord: false, useRegex: false });
+  expect(large.matches.map((m) => m.path)).toEqual(["large.txt"]);
 })));

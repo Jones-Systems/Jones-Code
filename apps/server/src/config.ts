@@ -132,10 +132,11 @@ export class ServerConfig extends Context.Service<
 export const make = (
   config: Omit<ServerConfig["Service"], "serverParallelism"> &
     Partial<Pick<ServerConfig["Service"], "serverParallelism">>,
-) => ServerConfig.of({
-  ...config,
-  serverParallelism: config.serverParallelism ?? resolveServerParallelismProfile(undefined),
-});
+) =>
+  ServerConfig.of({
+    ...config,
+    serverParallelism: config.serverParallelism ?? resolveServerParallelismProfile(undefined),
+  });
 
 export const otlpResource = (
   config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,

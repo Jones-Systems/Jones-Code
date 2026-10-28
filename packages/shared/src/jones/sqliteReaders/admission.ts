@@ -1,4 +1,4 @@
-// @effect-diagnostics-next-line nodeBuiltinImport:off -- Native worker deadlines must still run while a caller is masked or awaiting synchronous SQLite.
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- The callback boundary owns real-time admission and retirement deadlines independently of caller interruption and the Effect test clock.
 import * as NodeTimers from "node:timers";
 
 import * as Clock from "effect/Clock";
@@ -238,6 +238,7 @@ export const makeReaderPool = Effect.fnUntraced(function* (
         };
         waiting = waiter;
         queues[priority].push(waiter);
+        // @effect-diagnostics-next-line globalTimersInEffect:off -- This queue-owned real-time deadline outlives caller masking and is cleared on election, cancellation or shutdown.
         waiter.timer = NodeTimers.setTimeout(() => expire(waiter), timeout);
         dispatch();
         return Effect.sync(cancelWait);
@@ -281,7 +282,7 @@ export const makeReaderPool = Effect.fnUntraced(function* (
       return yield* Effect.gen(function* () {
         const slotId = yield* restore(wait);
         const slot = slots[slotId]!;
-        if (!active) return yield* Effect.fail(admissionError("generation-retired"));
+        if (!active) return yield* admissionError("generation-retired");
         const startup = now();
         // Fork while masked and publish before joining so scope closure can cancel and drain it.
         starting = yield* Effect.forkChild(restore(slot.acquire));
@@ -291,8 +292,9 @@ export const makeReaderPool = Effect.fnUntraced(function* (
           durationMs: now() - startup, outcome: connection === undefined ? "unavailable" : "ok",
           queueDepth: depth(),
         });
-        if (connection === undefined) return yield* Effect.fail(admissionError("reader-unavailable"));
-        if (!active) return yield* Effect.fail(admissionError("generation-retired"));
+        if (connection === undefined) return yield* admissionError("reader-unavailable");
+        if (!active) return yield* admissionError("generation-retired");
+        // @effect-diagnostics-next-line globalTimersInEffect:off -- A real-time watchdog must initiate native worker retirement even when its owner fiber is uninterruptible; release clears it.
         watchdog = NodeTimers.setTimeout(() => {
           timedOut = true;
           active = false;

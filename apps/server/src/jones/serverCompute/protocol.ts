@@ -30,9 +30,24 @@ interface Envelope extends Bootstrap {
   readonly operation: Operation;
   readonly token: FinderToken;
 }
-export interface Request extends Envelope { readonly input: unknown; }
+export interface Request extends Envelope {
+  readonly input: unknown;
+  readonly clock?: { readonly parentSentMs: number };
+}
+/** Four timestamps exchange epochs without assuming symmetric latency or a shared time origin. */
+export interface ReplyTiming {
+  readonly parentSentMs: number;
+  readonly receivedMs: number;
+  readonly executionStartedMs: number;
+  readonly executionCompletedMs: number;
+  readonly executionOutcome: "ok" | "failed" | "cancelled";
+  readonly replyStartedMs: number;
+  /** Immediately before terminal encoding; delivery includes that bounded envelope's encoding. */
+  readonly handoffMs: number;
+}
 export interface Reply extends Envelope {
   readonly sequence: number;
+  readonly timing?: ReplyTiming;
   readonly body:
     | { readonly type: "chunk"; readonly items: readonly unknown[] }
     | { readonly type: "done"; readonly status?: ScanStatus; readonly truncated?: boolean;
@@ -51,6 +66,29 @@ export function keys(value: Record<string, unknown>, required: readonly string[]
     Object.keys(value).every((key) => required.includes(key) || optional.includes(key));
 }
 export const counter = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
+const monotonicMs = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
+function isReplyTiming(value: unknown): value is ReplyTiming {
+  if (!record(value) || !keys(value, ["parentSentMs", "receivedMs", "executionStartedMs", "executionCompletedMs",
+    "executionOutcome", "replyStartedMs", "handoffMs"]) ||
+    !["ok", "failed", "cancelled"].includes(String(value.executionOutcome))) return false;
+  const times = [value.receivedMs, value.executionStartedMs, value.executionCompletedMs, value.replyStartedMs, value.handoffMs];
+  return monotonicMs(value.parentSentMs) && times.every(monotonicMs) &&
+    times.every((time, i) => i === 0 || (time as number) >= (times[i - 1] as number)) &&
+    (value.handoffMs as number) - (value.receivedMs as number) <= LIMITS.jobMs + 1000;
+}
+export function estimateReplyDelivery(timing: ReplyTiming, parentReceivedMs: number) {
+  if (!monotonicMs(parentReceivedMs) || parentReceivedMs < timing.parentSentMs) return undefined;
+  const roundTrip = parentReceivedMs - timing.parentSentMs;
+  if (roundTrip > LIMITS.jobMs + 1000) return undefined;
+  // A declared 1000-ppm relative-rate allowance plus 1 ms resolution allowance per exchange.
+  // Out-of-envelope clocks yield unavailable telemetry, never a scheduling/protocol dependency.
+  const drift = 1 + Math.max(roundTrip, timing.handoffMs - timing.receivedMs) * .001;
+  const offsetLowerMs = timing.parentSentMs - timing.receivedMs - drift;
+  const offsetUpperMs = parentReceivedMs - timing.handoffMs + drift;
+  if (offsetUpperMs < offsetLowerMs) return undefined;
+  const lowerMs = 0, upperMs = Math.max(0, parentReceivedMs - timing.handoffMs - offsetLowerMs);
+  return { lowerMs, upperMs, durationMs: upperMs / 2, uncertaintyMs: upperMs / 2, offsetLowerMs, offsetUpperMs };
+}
 export const identifier = (value: unknown): value is string => typeof value === "string" && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 export const buildId = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 export function decodeBootstrap(value: unknown): Bootstrap {
@@ -96,7 +134,9 @@ export function validInput(operation: Operation, input: unknown): boolean {
 }
 export function decodeRequest(value: unknown, boot: Bootstrap): Request {
   envelope(value, boot);
-  if (!keys(value, [...envelopeKeys, "input"]) || !validInput(value.operation, value.input)) throw computeFailure("protocol");
+  if (!keys(value, [...envelopeKeys, "input"], ["clock"]) || !validInput(value.operation, value.input) ||
+      (value.clock !== undefined && (!record(value.clock) || !keys(value.clock, ["parentSentMs"]) ||
+        !monotonicMs(value.clock.parentSentMs)))) throw computeFailure("protocol");
   return value as unknown as Request;
 }
 export function isStatus(value: unknown): value is ScanStatus {
@@ -116,8 +156,9 @@ function validItem(operation: Operation, item: unknown): boolean {
 }
 export function decodeReply(value: unknown, boot: Bootstrap): Reply {
   envelope(value, boot);
-  if (!keys(value, [...envelopeKeys, "sequence", "body"]) || !Number.isSafeInteger(value.sequence) ||
+  if (!keys(value, [...envelopeKeys, "sequence", "body"], ["timing"]) || !Number.isSafeInteger(value.sequence) ||
       (value.sequence as number) < 0 || !record(value.body)) throw computeFailure("protocol");
+  if (value.timing !== undefined && (value.body.type === "chunk" || !isReplyTiming(value.timing))) throw computeFailure("protocol");
   const b = value.body;
   if (b.type === "chunk") {
     if (!keys(b, ["type", "items"]) || !Array.isArray(b.items) || b.items.length === 0 || b.items.length > LIMITS.batchEntries ||

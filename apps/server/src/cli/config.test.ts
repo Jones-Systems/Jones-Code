@@ -91,12 +91,16 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "jones-parallelism-config-" });
       for (const profile of [undefined, "laptop", "vps"] as const) {
         const config = yield* resolveServerConfig(minimalDesktopFlags(baseDir), Option.none()).pipe(
-          Effect.provide(Layer.mergeAll(
-            NetService.layer,
-            ConfigProvider.layer(ConfigProvider.fromEnv({
-              env: profile === undefined ? {} : { JONES_SERVER_PARALLELISM_PROFILE: profile },
-            })),
-          )),
+          Effect.provide(
+            Layer.mergeAll(
+              NetService.layer,
+              ConfigProvider.layer(
+                ConfigProvider.fromEnv({
+                  env: profile === undefined ? {} : { JONES_SERVER_PARALLELISM_PROFILE: profile },
+                }),
+              ),
+            ),
+          ),
         );
         expect(config.serverParallelism.profile).toBe(profile ?? "laptop");
         expect(config.serverParallelism.readerCount).toBe(profile === "vps" ? 3 : 2);
@@ -112,12 +116,16 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       const parent = yield* fs.makeTempDirectoryScoped({ prefix: "jones-parallelism-invalid-" });
       const baseDir = path.join(parent, "must-not-exist");
       const error = yield* resolveServerConfig(minimalDesktopFlags(baseDir), Option.none()).pipe(
-        Effect.provide(Layer.mergeAll(
-          NetService.layer,
-          ConfigProvider.layer(ConfigProvider.fromEnv({
-            env: { JONES_SERVER_PARALLELISM_PROFILE: "invalid-profile" },
-          })),
-        )),
+        Effect.provide(
+          Layer.mergeAll(
+            NetService.layer,
+            ConfigProvider.layer(
+              ConfigProvider.fromEnv({
+                env: { JONES_SERVER_PARALLELISM_PROFILE: "invalid-profile" },
+              }),
+            ),
+          ),
+        ),
         Effect.flip,
       );
       expect(String(error)).toContain("JONES_SERVER_PARALLELISM_PROFILE");
@@ -170,6 +178,22 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect((yield* Effect.result(ensureServerDirectories(symlinkedPaths)))._tag).toBe("Failure");
     }),
   );
+
+  const defaultRuntimeConfig = {
+    serverParallelism: {
+      profile: "laptop",
+      selectionSource: "default",
+      readerCount: 2,
+      computeWorkerCount: 2,
+    },
+    desktopTelemetryFd: undefined,
+    desktopTelemetryControlFd: undefined,
+    desktopBrowserFd: undefined,
+    desktopBrowserControlFd: undefined,
+    desktopNativeOwnerInputFd: undefined,
+    desktopNativeOwnerOutputFd: undefined,
+    resourceMonitorPath: undefined,
+  } as const;
 
   const defaultObservabilityConfig = {
     traceMinLevel: "Info",
@@ -438,6 +462,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Warn",
         ...defaultObservabilityConfig,
+        ...defaultRuntimeConfig,
         mode: "desktop",
         port: 4001,
         cwd: process.cwd(),
@@ -510,6 +535,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Debug",
         ...defaultObservabilityConfig,
+        ...defaultRuntimeConfig,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -584,6 +610,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Info",
         ...defaultObservabilityConfig,
+        ...defaultRuntimeConfig,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -711,6 +738,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Debug",
         ...defaultObservabilityConfig,
+        ...defaultRuntimeConfig,
         mode: "web",
         port: 8788,
         cwd: process.cwd(),
@@ -945,6 +973,7 @@ it.layer(NodeServices.layer)("cli config resolution", (it) => {
       expect(resolved).toEqual({
         logLevel: "Info",
         ...defaultObservabilityConfig,
+        ...defaultRuntimeConfig,
         mode: "web",
         port: 3773,
         cwd: process.cwd(),

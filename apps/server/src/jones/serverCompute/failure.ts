@@ -3,14 +3,26 @@ import type { ComputeFailureReason } from "../serverParallelism/computeContract.
 
 export class ComputeFailure extends Schema.TaggedError<ComputeFailure>()("ComputeFailure", {
   reason: Schema.Literals([
-    "queue-full", "queue-timeout", "capacity-held", "unavailable", "deadline", "cancelled",
-    "worker-exit", "protocol", "oversize", "finder-create", "finder-search", "finder-refresh",
+    "queue-full",
+    "queue-timeout",
+    "capacity-held",
+    "unavailable",
+    "deadline",
+    "cancelled",
+    "worker-exit",
+    "protocol",
+    "oversize",
+    "finder-create",
+    "finder-search",
+    "finder-refresh",
     "retirement-unknown",
   ]),
   scanTimedOut: Schema.optional(Schema.Boolean),
   cause: Schema.optional(Schema.Defect()),
 }) {
-  override get message(): string { return "Workspace computation failed."; }
+  override get message(): string {
+    return "Workspace computation failed.";
+  }
 }
 
 export const isComputeFailure = Schema.is(ComputeFailure);

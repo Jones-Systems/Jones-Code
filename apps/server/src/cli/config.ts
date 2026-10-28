@@ -274,13 +274,14 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const env = yield* EnvServerConfig;
   const serverParallelism = yield* Effect.try({
     try: () => resolveServerParallelismProfile(env.serverParallelismProfile),
-    catch: () => new Config.ConfigError(
-      new Schema.SchemaError(
-        new SchemaIssue.InvalidValue({
-          message: "JONES_SERVER_PARALLELISM_PROFILE must be laptop or vps.",
-        }),
+    catch: () =>
+      new Config.ConfigError(
+        new Schema.SchemaError(
+          new SchemaIssue.InvalidValue({
+            message: "JONES_SERVER_PARALLELISM_PROFILE must be laptop or vps.",
+          }),
+        ),
       ),
-    ),
   });
   const normalizedFlags = {
     mode: flags.mode ?? Option.none(),

@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off cryptoRandomUUID:off preferSchemaOverJson:off -- Imperative bounded supervisor owns Node callbacks and immutable input snapshots; Effect owns its scope.
 import { randomUUID } from "node:crypto";
 import type { LogicalFinderHandle, FinderToken, WorkspaceKey, WorkspaceJobs } from "../serverParallelism/computeContract.ts";
-import { observeSafely, type ComputeObservation } from "../serverParallelism/observations.ts";
+import { observeRequestTiming, observeSafely, type ComputeObservation, type ComputeRequestTiming } from "../serverParallelism/observations.ts";
 import { computeFailure, isComputeFailure } from "./failure.ts";
 import { isKey, LIMITS, sameToken, validInput, type Bootstrap, type Operation, type Request, type ScanStatus } from "./protocol.ts";
 import type { ComputeChild, SlotResult } from "./processSlot.ts";
@@ -107,6 +107,7 @@ export class ComputeSupervisor {
     return this.enqueue(handle, "open", null, signal) as Promise<void>;
   }
   private enqueue(handle: LogicalFinderHandle, operation: OperationName, input: unknown, signal?: AbortSignal): Promise<unknown> {
+    const admitted = performance.now();
     try {
       this.admission();
       const registration = this.handles.get(handle.handleId);
@@ -141,13 +142,23 @@ export class ComputeSupervisor {
         };
         // Protection is taken synchronously, before any cohort admission cut.
         key.pending++; this.queue.push(job); signal?.addEventListener("abort", cancel, { once: true });
+        this.observe({ phase: "admission", operation, slotId: job.binding?.slotId ?? -1,
+          generation: job.binding?.slotGeneration ?? 0, durationMs: enqueued - admitted,
+          queueDepth: this.queue.length, outcome: "ok" });
         this.pump();
       });
-    } catch (cause) { return Promise.reject(cause); }
+    } catch (cause) {
+      this.observe({ phase: "admission", operation, slotId: -1, generation: 0,
+        durationMs: performance.now() - admitted, queueDepth: this.queue.length, outcome: outcome(cause) });
+      return Promise.reject(cause);
+    }
   }
   private settle(job: Job, result?: unknown, failure?: unknown): void {
     if (job.settled) return; job.settled = true; clearTimeout(job.timer); job.disposeSignal();
     const token = job.binding;
+    if (!job.dispatched) this.observe({ phase: "queue", operation: job.operation, slotId: token?.slotId ?? -1,
+      generation: token?.slotGeneration ?? 0, durationMs: performance.now() - job.enqueued,
+      queueDepth: this.queue.length, outcome: outcome(failure) });
     this.observe({ phase: "job", operation: job.operation, slotId: token?.slotId ?? -1,
       generation: token?.slotGeneration ?? 0, durationMs: performance.now() - job.enqueued,
       queueDepth: this.queue.length, outcome: outcome(failure) });
@@ -342,19 +353,26 @@ export class ComputeSupervisor {
     this.requestId = tick(this.requestId);
     const request: Request = { ...child.bootstrap, requestId: this.requestId, operation, token: physical.token, input };
     const started = performance.now();
+    let timing: ComputeRequestTiming | undefined, failure: unknown;
+    let continuationStarted: number | undefined;
     if (operation === "open" || operation === "refresh") slot.foreground = operation;
     this.counts();
     try {
-      const result = await child.request(request, signal);
+      const result = await child.request(request, signal, (event) => { timing = event; });
+      continuationStarted = performance.now();
       if (key.physical !== physical || slot.child !== child || !sameToken(physical.token, request.token) ||
           (slot.state !== "ready" && slot.state !== "draining")) throw computeFailure("worker-exit");
       // Search readiness is incomplete diagnostics. It cannot release charges or certify a native tail ended.
       if (result.final.status) { physical.status = result.final.status; physical.lastObserved = performance.now(); }
-      this.observe({ phase: "execute", operation: operation === "status" ? "list" : operation,
-        slotId: slot.id, generation: slot.generation, durationMs: performance.now() - started, queueDepth: this.queue.length, outcome: "ok",
-        estimated: true, uncertaintyMs: performance.now() - started });
       return result;
+    } catch (cause) { failure = cause; throw cause;
     } finally {
+      const base = { operation, slotId: slot.id, generation: slot.generation,
+        queueDepth: this.queue.length, outcome: failure === undefined && signal?.aborted ? "cancelled" as const : outcome(failure) };
+      this.observe({ ...base, phase: "request_round_trip", durationMs: performance.now() - started });
+      observeRequestTiming(this.observe, base, timing && { ...timing,
+        ...(timing.parentContinuationMs === undefined ? {} : { parentContinuationMs: timing.parentContinuationMs +
+          (continuationStarted === undefined ? 0 : performance.now() - continuationStarted) }) });
       if (slot.child === child) slot.foreground = undefined;
       this.counts();
     }
@@ -477,7 +495,7 @@ export class ComputeSupervisor {
   }
   private counts(): void {
     const entries = [...this.keys.values()].flatMap((key) => key.physical ? [key.physical] : []);
-    this.observe({ phase: "lifecycle", operation: "pool", slotId: -1, generation: 0, durationMs: 0,
+    this.observe({ phase: "lifecycle", operation: "pool", slotId: -1, generation: 0, durationMs: null,
       queueDepth: this.queue.length, outcome: "ok", counts: { logicalHandles: this.handles.size,
         physicalEntries: entries.length,
         activeForegroundOpenRefresh: this.slots.filter((slot) => slot.foreground !== undefined).length,

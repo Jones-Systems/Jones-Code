@@ -64,7 +64,8 @@ const automaticInventory = Context.Reference<boolean>("jones/StorageCleanup/auto
 });
 const inventoryRead = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.flatMap(automaticInventory, (automatic) =>
-    effect.pipe(automatic ? backgroundRead : interactiveRead));
+    effect.pipe(automatic ? backgroundRead : interactiveRead),
+  );
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -357,7 +358,9 @@ const make = Effect.gen(function* () {
 
   // Large snapshots take seconds; use the reader worker instead of blocking the event loop.
   const readThreads = Effect.fn("StorageCleanup.readThreads")(function* () {
-    const snapshot = yield* projections.getShellSnapshot().pipe(NodeSqliteClient.readOnly, inventoryRead);
+    const snapshot = yield* projections
+      .getShellSnapshot()
+      .pipe(NodeSqliteClient.readOnly, inventoryRead);
     const projects = yield* projectStore.listShells().pipe(inventoryRead);
     return { projects, threads: [...snapshot.threads, ...snapshot.archivedThreads] };
   });
@@ -1312,9 +1315,11 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker(
     (completion: Deferred.Deferred<StorageCleanupReport, ServerSettingsError> | undefined) =>
       (completion === undefined ? Ref.set(automaticSweepQueued, false) : Effect.void).pipe(
-        Effect.andThen(sweep(completion === undefined ? "automatic" : "manual").pipe(
-          Effect.provideService(automaticInventory, completion === undefined),
-        )),
+        Effect.andThen(
+          sweep(completion === undefined ? "automatic" : "manual").pipe(
+            Effect.provideService(automaticInventory, completion === undefined),
+          ),
+        ),
         Effect.exit,
         Effect.flatMap((exit) =>
           completion === undefined

@@ -26,7 +26,13 @@ import { collectContentSearchPages } from "./contentSearchPages.ts";
 
 import type { WorkspaceSearchIndex } from "../../workspace/WorkspaceSearchIndex.ts";
 import type { WorkspaceIndexVariant as WorkspaceSearchIndexVariant } from "../serverParallelism/computeContract.ts";
-import { WorkspaceSearchIndexCreateFailed, WorkspaceSearchIndexScanTimedOut, WorkspaceSearchIndexSearchFailed, WorkspaceSearchIndexRefreshFailed, WorkspaceSearchIndexDestroyFailed } from "../serverCompute/workspaceErrors.ts";
+import {
+  WorkspaceSearchIndexCreateFailed,
+  WorkspaceSearchIndexScanTimedOut,
+  WorkspaceSearchIndexSearchFailed,
+  WorkspaceSearchIndexRefreshFailed,
+  WorkspaceSearchIndexDestroyFailed,
+} from "../serverCompute/workspaceErrors.ts";
 // fff-node stays external to the CLI bundle because it dlopens a native
 // library. A static `import` of an external package is a hard error inside a
 // Node single-executable (only built-ins resolve there), so load it through
@@ -38,9 +44,17 @@ let packageDirectory = dirname(requireForFff.resolve("@ff-labs/fff-node"));
 let pinned = false;
 for (let depth = 0; depth < 4; depth++) {
   try {
-    const metadata = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")) as { name?: string; version?: string };
-    if (metadata.name === "@ff-labs/fff-node") { pinned = metadata.version === "0.11.0"; break; }
-  } catch { /* The resolved JS entry may be nested below the package root. */ }
+    const metadata = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")) as {
+      name?: string;
+      version?: string;
+    };
+    if (metadata.name === "@ff-labs/fff-node") {
+      pinned = metadata.version === "0.11.0";
+      break;
+    }
+  } catch {
+    /* The resolved JS entry may be nested below the package root. */
+  }
   packageDirectory = dirname(packageDirectory);
 }
 if (!pinned) throw new Error("Unsupported workspace native package.");
@@ -229,7 +243,8 @@ const createFinder = Effect.fn("WorkspaceSearchIndex.createFinder")(function* (
         disableWatch: false,
         cacheBudgetMaxFiles: 1024,
         cacheBudgetMaxBytes: 32 * 1024 * 1024,
-        cacheBudgetMaxFileSize: 1024 * 1024,
+        // fff also applies its cache item limit to uncached grep reads. Keep its
+        // default searchable file size; the byte/count limits still bound retained cache.
         aiMode: false,
         enableFsRootScanning: true,
         enableHomeDirScanning: true,
@@ -445,12 +460,20 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     });
   });
 
-  return { list, refresh, search, searchContents, status: () => {
-    const progress = finder.getScanProgress();
-    if (!progress.ok) throw new Error("Native scan state unavailable.");
-    // Search readiness only: post-scan work and watcher-triggered native work may still exist.
-    // Physical ownership is reclaimed exclusively by captured child exit, never by this sample.
-    return { scanning: progress.value.isScanning, warmupComplete: progress.value.isWarmupComplete };
-  } };
+  return {
+    list,
+    refresh,
+    search,
+    searchContents,
+    status: () => {
+      const progress = finder.getScanProgress();
+      if (!progress.ok) throw new Error("Native scan state unavailable.");
+      // Search readiness only: post-scan work and watcher-triggered native work may still exist.
+      // Physical ownership is reclaimed exclusively by captured child exit, never by this sample.
+      return {
+        scanning: progress.value.isScanning,
+        warmupComplete: progress.value.isWarmupComplete,
+      };
+    },
+  };
 });
-

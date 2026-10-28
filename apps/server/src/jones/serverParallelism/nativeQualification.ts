@@ -12,7 +12,7 @@ import type { WorkerCommand } from "../serverCompute/workerCommand.ts";
 import type { LogicalFinderHandle } from "./computeContract.ts";
 import type { ComputeObservation } from "./observations.ts";
 import { sampleProcesses, type ProcessResources } from "./resourceSamples.ts";
-import { combinedReaderWriterWindow, percentiles } from "./combinedQualification.ts";
+import { combinedReaderWriterWindow, percentiles, summarizeComputeObservations } from "./combinedQualification.ts";
 
 export interface NativeQualificationOptions {
   readonly count: 2 | 3;
@@ -36,6 +36,9 @@ export async function runNativeQualification(options: NativeQualificationOptions
     throw new Error("Qualification workload outside bounded representative envelope");
   await mkdir(directory, { recursive: false, mode: 0o700 });
   const observations: ComputeObservation[] = [];
+  const observe = (event: ComputeObservation) => {
+    if (observations.length < 100_000) observations.push(event); else observationLimitReached = true;
+  };
   const captured = new Map<number, ComputeChild>();
   const active = new Map<number, number>();
   const keySlots = new Map<string, number>();
@@ -48,15 +51,13 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const requestMs: number[] = [];
   const journal = await GenerationJournal.acquire(join(directory, "journal"), count);
   const supervisor = new ComputeSupervisor({ count, build: command.build, journal,
-    observe: (event) => {
-      if (observations.length < 100_000) observations.push(event); else observationLimitReached = true;
-    },
+    observe,
     start: async (boot, register, onExit) => {
-      const child = await ProcessSlot.start(command, boot, register, onExit);
+      const child = await ProcessSlot.start(command, boot, register, onExit, observe);
       if (boot.slotGeneration > 1) rotations++;
       captured.set(child.pid, child);
       return { pid: child.pid, bootstrap: child.bootstrap,
-        request: async (request, signal) => {
+        request: async (request, signal, observeTiming) => {
           if (request.operation === "open") {
             coldReopens++;
             if (isKey(request.input)) keySlots.set(keyIdentity(request.input.cwd, request.input.variant), request.token.slotId);
@@ -64,7 +65,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           const data = !["open", "close", "status"].includes(request.operation);
           if (data) active.set(child.pid, (active.get(child.pid) ?? 0) + 1);
           const start = performance.now();
-          try { return await child.request(request, signal); }
+          try { return await child.request(request, signal, observeTiming); }
           finally {
             if (data) {
               active.set(child.pid, (active.get(child.pid) ?? 1) - 1);
@@ -139,6 +140,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
     for (let window = 0; window < windows; window++) {
       phase = `steady-${window}`;
       const loop = monitorEventLoopDelay({ resolution: 10 }); loop.enable();
+      const observationStart = observations.length;
       try {
         const result = await combinedReaderWriterWindow(join(directory, `combined-${window}.sqlite`), count, acquisitions,
           async () => {
@@ -146,7 +148,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
             await Promise.all(Array.from({ length: count }, async (_, lane) => {
               for (let round = 0; round < acquisitions; round++) await request(cohorts[lane]![round % 4]!);
             }));
-          });
+          }, () => observations.slice(observationStart));
         windowsResult.push({ ...result, loop: { p99: loop.percentile(99) / 1e6, max: loop.max / 1e6 } });
       } finally { loop.disable(); }
     }
@@ -203,8 +205,11 @@ export async function runNativeQualification(options: NativeQualificationOptions
         resourcesComplete: !samplerFailure && !observationLimitReached,
         // Resource ceilings and throughput regression need exact-host interpretation against baseline.
         aggregateResourceBudget: "requires-baseline-and-host-budget", childRssWithinBudget, churnThroughput: "requires-baseline" },
-      observations, missingCapabilities: ["compute worker-local execution and clock-offset handshake",
-        "compute reply-transfer/parent-continuation split", "full native-tail phase/pending queues",
+      observations, computePhases: summarizeComputeObservations(observations),
+      guardianRss: observations.filter((event) => event.phase === "resources"),
+      guardianRssAvailability: observations.some((event) => event.phase === "resources") ? "observed" : "unavailable",
+      timingMeaning: "execute is child-local; reply is chunk preparation/delivery before terminal encoding; reply_delivery is an interval estimate including terminal encoding, with per-exchange clock uncertainty; null is unavailable",
+      missingCapabilities: ["full native-tail phase/pending queues",
         ...(process.platform === "darwin" ? ["per-process native thread and kernel watcher counts"] : [])] };
   } finally {
     clearTimeout(deadline); stopped = true; controller.abort(); await sampler; monitor.disable();

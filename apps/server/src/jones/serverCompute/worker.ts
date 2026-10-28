@@ -10,7 +10,7 @@ import { guardianSource } from "./guardian.ts";
 import { currentBuildIdentity } from "./workerCommand.ts";
 import { computeFailure } from "./failure.ts";
 import { decodeBootstrap, decodeRequest, encodeFrame, frames, LIMITS, replyByteTotal, sameToken, writeEncodedFrame,
-  type Reply, type Request, type ScanStatus } from "./protocol.ts";
+  type Reply, type ReplyTiming, type Request, type ScanStatus } from "./protocol.ts";
 import type { WorkspaceJobs, WorkspaceKey } from "../serverParallelism/computeContract.ts";
 
 type Output = WorkspaceJobs["list" | "search" | "searchContents"]["output"];
@@ -23,14 +23,34 @@ export class WorkerReplies {
   private wake: (() => void) | undefined;
   private readonly request: Request;
   private readonly output: Writable;
-  constructor(request: Request, output: Writable) { this.request = request; this.output = output; }
+  private readonly now: () => number;
+  private readonly receivedMs: number;
+  private execution: Pick<ReplyTiming, "executionStartedMs" | "executionCompletedMs" | "executionOutcome"> | undefined;
+  private replyStartedMs: number | undefined;
+  constructor(request: Request, output: Writable, now = () => performance.now()) {
+    this.request = request; this.output = output; this.now = now; this.receivedMs = now();
+  }
+  /** Await native/Effect cleanup before ending this interval; telemetry never settles the data lease. */
+  async execute<A>(work: () => Promise<A>, signal: AbortSignal): Promise<A> {
+    const executionStartedMs = this.now();
+    let executionOutcome: ReplyTiming["executionOutcome"] = "ok";
+    try { return await work(); }
+    catch (cause) { executionOutcome = signal.aborted ? "cancelled" : "failed"; throw cause; }
+    finally {
+      this.execution = { executionStartedMs, executionCompletedMs: this.now(), executionOutcome };
+    }
+  }
   acknowledge(): void {
     if (this.credits >= LIMITS.credits) throw computeFailure("protocol");
     this.credits++; this.wake?.(); this.wake = undefined;
   }
   async send(body: Reply["body"]): Promise<void> {
-    const { input: _input, ...envelope } = this.request;
-    const frame: Reply = { ...envelope, sequence: this.sequence, body };
+    const { input: _input, clock, ...envelope } = this.request;
+    const timing = body.type !== "chunk" && clock && this.execution ? {
+      parentSentMs: clock.parentSentMs, receivedMs: this.receivedMs, ...this.execution,
+      replyStartedMs: this.replyStartedMs ?? this.now(), handoffMs: this.now(),
+    } : undefined;
+    const frame: Reply = { ...envelope, sequence: this.sequence, body, ...(timing ? { timing } : {}) };
     const encoded = encodeFrame(frame, LIMITS.batchBytes);
     const next = replyByteTotal(this.total, encoded.length, body.type !== "chunk");
     // Encoding and every byte limit precede sequence/credit consumption. Rejected frames are never owed an ack.
@@ -39,6 +59,7 @@ export class WorkerReplies {
     await writeEncodedFrame(this.output, encoded);
   }
   async result(output: Output | undefined, status: ScanStatus | undefined, signal: AbortSignal): Promise<void> {
+    this.replyStartedMs ??= this.now();
     if (output !== undefined) {
       const items = "matches" in output ? output.matches : output.entries;
       let batch: unknown[] = [], bytes = 2048;
@@ -58,6 +79,7 @@ export class WorkerReplies {
     }) });
   }
   async failure(cause: unknown, signal: AbortSignal): Promise<void> {
+    this.replyStartedMs ??= this.now();
     const tag = typeof cause === "object" && cause !== null && "_tag" in cause ? cause._tag : undefined;
     // Protocol/ownership uncertainty is fatal: the parent must prove process exit before reuse.
     if (tag === "ComputeFailure" && (cause as { reason?: string }).reason === "protocol") throw cause;
@@ -141,41 +163,44 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
       job.controller.abort(); pendingCancellation = undefined;
     }
     try {
-      job.controller.signal.throwIfAborted();
-      let resident = residents.get(request.token.keyId);
-      if (request.operation === "open") {
-        const key = request.input as WorkspaceKey;
-        allocations.reserve(request.token, key);
-        const scope = await Effect.runPromise(Scope.make());
-        try {
-          const runtime = await execute(make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope)), job.controller.signal);
-          resident = { token: request.token, key, scope, runtime };
-          residents.set(request.token.keyId, resident);
-        } catch (cause) {
-          // Best-effort cleanup is not native exit proof. The parent retires this failed generation.
-          await Effect.runPromise(Scope.close(scope, Exit.void));
-          throw cause;
+      const { output, status } = await job.replies.execute(async () => {
+        job.controller.signal.throwIfAborted();
+        let resident = residents.get(request.token.keyId);
+        if (request.operation === "open") {
+          const key = request.input as WorkspaceKey;
+          allocations.reserve(request.token, key);
+          const scope = await Effect.runPromise(Scope.make());
+          try {
+            const runtime = await execute(make(key.cwd, key.variant).pipe(Effect.provideService(Scope.Scope, scope)), job.controller.signal);
+            resident = { token: request.token, key, scope, runtime };
+            residents.set(request.token.keyId, resident);
+          } catch (cause) {
+            // Best-effort cleanup is not native exit proof. The parent retires this failed generation.
+            await Effect.runPromise(Scope.close(scope, Exit.void));
+            throw cause;
+          }
+        } else if (!resident || !sameToken(resident.token, request.token)) throw computeFailure("protocol");
+        if (!resident) throw computeFailure("protocol");
+        let output: Output | undefined;
+        switch (request.operation) {
+          case "list": output = await execute(resident.runtime.list(), job.controller.signal); break;
+          case "search": {
+            const input = request.input as WorkspaceJobs["search"]["input"];
+            output = await execute(resident.runtime.search(input.query, input.limit, input.kind, input.imageOnly), job.controller.signal); break;
+          }
+          case "searchContents": output = await execute(resident.runtime.searchContents(request.input as WorkspaceJobs["searchContents"]["input"]), job.controller.signal); break;
+          case "refresh": await execute(resident.runtime.refresh(), job.controller.signal); break;
+          case "close":
+            // Close is diagnostic teardown only; the allocation tombstone survives until process exit.
+            await Effect.runPromise(Scope.close(resident.scope, Exit.void)); residents.delete(request.token.keyId); break;
+          case "open": case "status": break;
         }
-      } else if (!resident || !sameToken(resident.token, request.token)) throw computeFailure("protocol");
-      if (!resident) throw computeFailure("protocol");
-      let output: Output | undefined;
-      switch (request.operation) {
-        case "list": output = await execute(resident.runtime.list(), job.controller.signal); break;
-        case "search": {
-          const input = request.input as WorkspaceJobs["search"]["input"];
-          output = await execute(resident.runtime.search(input.query, input.limit, input.kind, input.imageOnly), job.controller.signal); break;
+        let status: ScanStatus | undefined;
+        if (request.operation !== "close") {
+          try { status = resident.runtime.status(); } catch { throw computeFailure("protocol"); }
         }
-        case "searchContents": output = await execute(resident.runtime.searchContents(request.input as WorkspaceJobs["searchContents"]["input"]), job.controller.signal); break;
-        case "refresh": await execute(resident.runtime.refresh(), job.controller.signal); break;
-        case "close":
-          // Close is diagnostic teardown only; the allocation tombstone survives until process exit.
-          await Effect.runPromise(Scope.close(resident.scope, Exit.void)); residents.delete(request.token.keyId); break;
-        case "open": case "status": break;
-      }
-      let status: ScanStatus | undefined;
-      if (request.operation !== "close") {
-        try { status = resident.runtime.status(); } catch { throw computeFailure("protocol"); }
-      }
+        return { output, status };
+      }, job.controller.signal);
       await job.replies.result(output, status, job.controller.signal);
     } catch (cause) {
       await job.replies.failure(cause, job.controller.signal);

@@ -50,7 +50,10 @@ const layerSetup = Layer.effectDiscard(
   }),
 );
 
-export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (dbPath: string, readerPool?: SqliteReaderPoolOptions) {
+export const layerFromPath = Effect.fn("makeSqlitePersistenceLive")(function* (
+  dbPath: string,
+  readerPool?: SqliteReaderPoolOptions,
+) {
   yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -85,6 +88,9 @@ export const layerConfig = Layer.unwrap(
     const observers = yield* makePoolObservers(serverParallelism.profile);
     yield* Effect.sync(() => holdJonesServerNativeWriterFence(dbPath));
     yield* initializeV2Database(dbPath);
-    return layerFromPath(dbPath, readerPoolOptions(serverParallelism.readerCount, observers.reader));
+    return layerFromPath(
+      dbPath,
+      readerPoolOptions(serverParallelism.readerCount, observers.reader),
+    );
   }),
 );

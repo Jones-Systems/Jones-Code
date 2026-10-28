@@ -1,5 +1,8 @@
 import { fileURLToPath } from "node:url";
-import { computeBuildPlaceholder, serverComputeBuildIdentity } from "../../scripts/jones/serverParallelism/buildIdentity.ts";
+import {
+  computeBuildPlaceholder,
+  serverComputeBuildIdentity,
+} from "../../scripts/jones/serverParallelism/buildIdentity.ts";
 import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
 import "vite-plus/test/config";
 import { defineConfig, mergeConfig } from "vite-plus";
@@ -82,9 +85,15 @@ export default mergeConfig(
       },
     },
     pack: {
-      plugins: [serverComputeBuildIdentity(fileURLToPath(new URL("../../", import.meta.url)), {
-        packExecutable, packExecutableTarget, telemetryChannel, cliBuildChannel, repoEnv,
-      })],
+      plugins: [
+        serverComputeBuildIdentity(fileURLToPath(new URL("../../", import.meta.url)), {
+          packExecutable,
+          packExecutableTarget,
+          telemetryChannel,
+          cliBuildChannel,
+          repoEnv,
+        }),
+      ],
       // SEA embeds one entry; expose the history worker as a hidden subcommand.
       entry: packExecutable ? ["src/bin.ts"] : ["src/bin.ts", "src/claude-history-worker.ts"],
       outDir: packExecutable ? "dist-exe" : "dist",

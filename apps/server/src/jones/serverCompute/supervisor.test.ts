@@ -4,19 +4,21 @@ import { ComputeSupervisor, type JournalPort } from "./supervisor.ts";
 import type { Bootstrap, Request, ScanStatus } from "./protocol.ts";
 import type { ComputeChild, SlotResult } from "./processSlot.ts";
 import { computeFailure } from "./failure.ts";
+import type { ComputeObservation } from "../serverParallelism/observations.ts";
 
 const pools: ComputeSupervisor[] = [];
 afterEach(async () => { vi.useRealTimers(); for (const pool of pools.splice(0)) await pool.shutdown().catch(() => {}); });
 const ready: ScanStatus = { scanning: false, warmupComplete: true };
-function fixture(count: 2 | 3 = 2) {
+function fixture(count: 2 | 3 = 2, observe?: (event: ComputeObservation) => void) {
   const children: Array<ComputeChild & { requests: Request[]; crash: () => void }> = [];
   const physical = new Map<number, Map<string, Request["token"]>>();
   const retired: number[] = [];
   const gates = new Map<string, Promise<void>>();
+  const requestEntries = new Map<string, () => void>();
   let scan: ScanStatus = ready;
   const journal: JournalPort = { claim: { authorityId: "authority" }, reserve: async () => {}, registered: async () => {},
     retired: async (id) => { retired.push(id); }, release: async () => {} };
-  const pool = new ComputeSupervisor({ count, build: "a".repeat(64), journal,
+  const pool = new ComputeSupervisor({ count, build: "a".repeat(64), journal, ...(observe ? { observe } : {}),
     start: async (bootstrap: Bootstrap, register, onExit) => {
       await register(100 + children.length);
       const entries = new Map<string, Request["token"]>(); physical.set(bootstrap.slotId, entries);
@@ -28,7 +30,10 @@ function fixture(count: 2 | 3 = 2) {
             expect(entries.size).toBeLessThan(4); expect(entries.has(request.token.keyId)).toBe(false);
             entries.set(request.token.keyId, request.token);
           } else expect(entries.get(request.token.keyId)).toEqual(request.token);
-          if (request.operation === "list") await gates.get(request.token.keyId);
+          if (request.operation === "list") {
+            requestEntries.get(request.token.keyId)?.();
+            await gates.get(request.token.keyId);
+          }
           if (request.operation === "close") entries.delete(request.token.keyId);
           return { items: request.operation === "list" ? [{ path: `slot-${bootstrap.slotId}`, kind: "file" }] : [],
             final: { type: "done", ...(request.operation === "close" ? {} : { status: scan }),
@@ -38,8 +43,46 @@ function fixture(count: 2 | 3 = 2) {
     } });
   pools.push(pool);
   const acquire = async (id: number) => { const h = pool.register({ cwd: `/synthetic/${id}`, variant: "paths" }); await pool.ensure(h); return h; };
-  return { pool, children, acquire, gates, physical, retired, setScan: (value: ScanStatus) => { scan = value; } };
+  return { pool, children, acquire, gates, requestEntries, physical, retired, setScan: (value: ScanStatus) => { scan = value; } };
 }
+
+it("keeps cancelled native leases charged until settlement even when every timing callback throws", async () => {
+  const events: ComputeObservation[] = [];
+  let observed!: () => void;
+  const executionObserved = new Promise<void>((resolve) => { observed = resolve; });
+  const f = fixture(2, (event) => {
+    events.push(event);
+    if (event.phase === "execute" && event.operation === "list") observed();
+    throw new Error("sink unavailable");
+  });
+  const handle = await f.acquire(1), token = f.children[0]!.requests[0]!.token;
+  let release!: () => void;
+  f.gates.set(token.keyId, new Promise<void>((resolve) => { release = resolve; }));
+  let entered!: () => void;
+  const requestEntered = new Promise<void>((resolve) => { entered = resolve; });
+  f.requestEntries.set(token.keyId, entered);
+  const controller = new AbortController();
+  const running = f.pool.run(handle, "list", undefined, controller.signal);
+  await requestEntered;
+  f.requestEntries.delete(token.keyId);
+  controller.abort();
+  await expect(running).rejects.toMatchObject({ reason: "cancelled" });
+  // A fake external child may omit optional telemetry. Its real supervisor lease still protects the slot/key.
+  const queuedController = new AbortController();
+  const queued = f.pool.run(handle, "list", undefined, queuedController.signal);
+  expect(f.children[0]!.requests.filter((request) => request.operation === "list")).toHaveLength(1);
+  expect(events.filter((event) => event.phase === "execute" && event.operation === "list")).toEqual([]);
+  const counts = events.filter((event) => "counts" in event).at(-1)!;
+  expect("counts" in counts && counts.counts.chargedAllocations).toBe(1);
+  queuedController.abort(); await expect(queued).rejects.toMatchObject({ reason: "cancelled" });
+  release();
+  await executionObserved;
+  expect(events).toContainEqual(expect.objectContaining({ phase: "execute", operation: "list", durationMs: null }));
+  expect(events).toContainEqual(expect.objectContaining({ phase: "queue", operation: "list", outcome: "cancelled" }));
+  await f.pool.run(handle, "refresh", undefined);
+  await f.pool.shutdown();
+  expect(f.retired).toEqual([0]);
+});
 
 it.each([2, 3] as const)("dispatches operations to all %s distinct slots and skips busy keys", async (count) => {
   const f = fixture(count), handles = await Promise.all(Array.from({ length: count }, (_, id) => f.acquire(id)));
@@ -89,11 +132,18 @@ it("fails already bound queued work on crash without replay, while fresh cached 
   const child = f.children[0]!, token = child.requests[0]!.token;
   let unblock!: () => void;
   f.gates.set(token.keyId, new Promise<void>((resolve) => { unblock = resolve; }));
+  let entered!: () => void;
+  const requestEntered = new Promise<void>((resolve) => { entered = resolve; });
+  f.requestEntries.set(token.keyId, entered);
   const running = f.pool.run(handle, "list", undefined);
+  const runningRejected = expect(running).rejects.toMatchObject({ reason: "worker-exit" });
   const queued = f.pool.run(handle, "list", undefined);
   const rejected = expect(queued).rejects.toMatchObject({ reason: "worker-exit" });
+  await requestEntered;
+  f.requestEntries.delete(token.keyId);
+  expect(child.requests.filter((r) => r.operation === "list")).toHaveLength(1);
   child.crash(); unblock();
-  await rejected; await expect(running).rejects.toMatchObject({ reason: "worker-exit" });
+  await rejected; await runningRejected;
   // A fresh call may choose another proved slot immediately; no interrupted request is resent.
   f.gates.delete(token.keyId);
   await f.pool.run(handle, "list", undefined);

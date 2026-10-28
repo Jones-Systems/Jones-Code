@@ -59,10 +59,14 @@ it("survives no missing guardian FD route: native work cannot outlive failed gua
 /** Only the OS pipe, process and clock are synthetic; execute the actual embedded guardian state machine. */
 function clockedGuardian() {
   const kills: Array<{ pid: number; signal: string }> = [], messages: Array<Record<string, unknown>> = [];
+  const outbound: Array<Record<string, unknown>> = [];
   class Pipe extends EventEmitter {
     write(line: string, done: (error?: Error) => void) { messages.push(JSON.parse(line)); done(); return true; }
   }
-  const pipe = new Pipe(), parentPort = new EventEmitter();
+  class ParentPort extends EventEmitter {
+    postMessage(value: Record<string, unknown>): void { outbound.push(value); }
+  }
+  const pipe = new Pipe(), parentPort = new ParentPort();
   const timeouts = new Map<number, { at: number; run: () => void }>(), intervals: Array<() => void> = [];
   let now = 0, rss = 0, id = 0;
   runInNewContext(guardianSource, {
@@ -79,7 +83,7 @@ function clockedGuardian() {
     setInterval: (run: () => void) => { intervals.push(run); },
   });
   const command = (value: Record<string, unknown>) => pipe.emit("data", Buffer.from(`${JSON.stringify({ ...boot, ...value })}\n`));
-  return { kills, messages, pipe, command, setRss: (value: number) => { rss = value; },
+  return { kills, messages, outbound, pipe, command, setRss: (value: number) => { rss = value; },
     advance: (ms: number) => {
       now += ms;
       for (const [token, timeout] of timeouts) if (now >= timeout.at) { timeouts.delete(token); timeout.run(); }
@@ -90,6 +94,7 @@ function clockedGuardian() {
 it("has no inferred background-tail deadline while foreground deadlines remain independent", () => {
   const f = clockedGuardian();
   f.command({ type: "go" }); f.command({ type: "loaded" });
+  expect(f.outbound).toEqual([{ type: "go" }]);
   f.advance(60_001);
   expect(f.kills).toEqual([]);
   f.command({ type: "arm", requestId: 1, deadline: 60_101 });
@@ -114,4 +119,20 @@ it("retains startup, FD3 EOF and consecutive RSS containment independently of na
   rss.advance(1000);
   expect(rss.messages).toContainEqual({ ...boot, type: "overBudget" });
   expect(rss.kills).toEqual([{ pid: 1234, signal: "SIGKILL" }]);
+});
+
+it("reports exact RSS bytes on FD3 independently of foreground work and preserves the consecutive-sample policy", () => {
+  const f = clockedGuardian(); f.command({ type: "go" }); f.command({ type: "loaded" });
+  f.command({ type: "arm", requestId: 1, deadline: 30_000 });
+  f.command({ type: "credit", requestId: 1 }); f.command({ type: "cancel", requestId: 1 });
+  expect(f.outbound).toEqual([{ type: "go" }, { type: "credit", requestId: 1 }, { type: "cancel", requestId: 1 }]);
+  f.setRss(123_456_789); f.advance(1000);
+  expect(f.messages.at(-1)).toEqual({ ...boot, type: "resources", rss: 123_456_789 });
+  f.setRss(513 * 1024 * 1024); f.advance(1000);
+  f.setRss(512 * 1024 * 1024); f.advance(1000);
+  f.setRss(513 * 1024 * 1024); f.advance(1000);
+  expect(f.kills).toEqual([]);
+  // Resource observation neither clears nor extends the independently armed foreground deadline.
+  f.advance(26_001);
+  expect(f.kills).toContainEqual({ pid: 1234, signal: "SIGKILL" });
 });

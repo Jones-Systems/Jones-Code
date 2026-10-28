@@ -3,14 +3,15 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Duplex, Readable, Writable } from "node:stream";
 import { computeFailure, ComputeFailure } from "./failure.ts";
 import { bootstrapArgument, type WorkerCommand } from "./workerCommand.ts";
-import { controls, decodeReply, frames, keys, LIMITS, replyByteTotal, sameBootstrap, sameToken, writeControl, writeFrame,
-  type Bootstrap, type Request, type Reply } from "./protocol.ts";
+import { observeSafely, type ComputeObservation, type ComputeRequestTiming } from "../serverParallelism/observations.ts";
+import { controls, decodeReply, estimateReplyDelivery, frames, keys, LIMITS, replyByteTotal, sameBootstrap, sameToken, writeControl, writeFrame,
+  type Bootstrap, type Request, type Reply, type ReplyTiming } from "./protocol.ts";
 
 export interface SlotResult { readonly items: readonly unknown[]; readonly final: Extract<Reply["body"], { type: "done" }>; }
 export interface ComputeChild {
   readonly pid: number;
   readonly bootstrap: Bootstrap;
-  request(request: Request, signal?: AbortSignal): Promise<SlotResult>;
+  request(request: Request, signal?: AbortSignal, observeTiming?: (timing: ComputeRequestTiming) => void): Promise<SlotResult>;
   retire(): Promise<void>;
 }
 function bounded<T>(promise: Promise<T>, ms: number, reason: "deadline" | "retirement-unknown" | "unavailable"): Promise<T> {
@@ -23,6 +24,9 @@ interface Pending {
   readonly request: Request; sequence: number; bytes: number; items: unknown[];
   readonly resolve: (value: SlotResult) => void; readonly reject: (cause: unknown) => void;
   terminal: boolean;
+  sentMs?: number;
+  receivedMs?: number;
+  timing?: ReplyTiming;
 }
 
 /** This object retains the captured ChildProcess for every signal. Journal PIDs are never kill targets. */
@@ -44,8 +48,11 @@ export class ProcessSlot implements ComputeChild {
   private readonly child: ChildProcess;
   readonly bootstrap: Bootstrap;
   private readonly onExit: (cause: unknown) => void;
-  private constructor(child: ChildProcess, bootstrap: Bootstrap, onExit: (cause: unknown) => void) {
+  private readonly observe: (event: ComputeObservation) => void;
+  private constructor(child: ChildProcess, bootstrap: Bootstrap, onExit: (cause: unknown) => void,
+    observe?: (event: ComputeObservation) => void) {
     this.child = child; this.bootstrap = bootstrap; this.onExit = onExit;
+    this.observe = observeSafely(observe);
     if (!child.pid || !child.stdin || !child.stdout || !child.stderr || !child.stdio[3]) throw computeFailure("unavailable");
     this.pid = child.pid; this.input = child.stdin; this.output = child.stdout; this.control = child.stdio[3] as Duplex;
     this.exited = new Promise<void>((resolve) => {
@@ -63,7 +70,8 @@ export class ProcessSlot implements ComputeChild {
     void this.readData().catch((cause) => this.fail(cause));
   }
   static async start(command: WorkerCommand, bootstrap: Bootstrap,
-    register: (pid: number) => Promise<void>, onExit: (cause: unknown) => void): Promise<ProcessSlot> {
+    register: (pid: number) => Promise<void>, onExit: (cause: unknown) => void,
+    observe?: (event: ComputeObservation) => void): Promise<ProcessSlot> {
     const child = spawn(command.file, [...command.args, bootstrapArgument(bootstrap)], {
       stdio: ["pipe", "pipe", "pipe", "pipe"], env: command.env, windowsHide: true,
     });
@@ -73,7 +81,7 @@ export class ProcessSlot implements ComputeChild {
       throw computeFailure("retirement-unknown");
     }
     let slot: ProcessSlot;
-    try { slot = new ProcessSlot(child, bootstrap, onExit); }
+    try { slot = new ProcessSlot(child, bootstrap, onExit, observe); }
     catch (cause) {
       // Even an unsupported stdio route retains and reaps the exact spawned handle.
       const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
@@ -156,7 +164,8 @@ export class ProcessSlot implements ComputeChild {
         this.acknowledge(`${msg.type}:${msg.requestId}`);
       } else if (msg.type === "resources") {
         if (!keys(msg, [...base, "type", "rss"]) || !Number.isSafeInteger(msg.rss) || (msg.rss as number) < 0) throw computeFailure("protocol");
-        // Root observation contract has no resource-sample variant. Do not invent a duplicate telemetry type.
+        this.observe({ phase: "resources", operation: "pool", slotId: this.bootstrap.slotId,
+          generation: this.bootstrap.slotGeneration, outcome: "ok", rssBytes: msg.rss as number });
       } else if (msg.type === "overBudget") {
         if (!keys(msg, [...base, "type"])) throw computeFailure("protocol");
         throw computeFailure("unavailable", { category: "rss-watermark" });
@@ -173,7 +182,12 @@ export class ProcessSlot implements ComputeChild {
           reply.sequence !== pending.sequence++) throw computeFailure("protocol");
       const body = reply.body;
       pending.bytes = replyByteTotal(pending.bytes, frameBytes, body.type !== "chunk");
+      if (reply.timing && reply.timing.parentSentMs !== pending.sentMs) throw computeFailure("protocol");
       if (body.type === "chunk") pending.items.push(...body.items);
+      else {
+        pending.receivedMs = performance.now();
+        if (reply.timing) pending.timing = reply.timing;
+      }
       // Acknowledged only after strict schema/token validation and bounded assembly.
       await this.send("credit", { requestId: reply.requestId });
       if (body.type !== "chunk") {
@@ -184,7 +198,7 @@ export class ProcessSlot implements ComputeChild {
     }
     throw computeFailure("worker-exit");
   }
-  async request(request: Request, signal?: AbortSignal): Promise<SlotResult> {
+  async request(request: Request, signal?: AbortSignal, observeTiming?: (timing: ComputeRequestTiming) => void): Promise<SlotResult> {
     if (this.pending || this.fault !== undefined || signal?.aborted) throw computeFailure(signal?.aborted ? "cancelled" : "unavailable");
     let resolve!: (value: SlotResult) => void, reject!: (cause: unknown) => void;
     const reply = new Promise<SlotResult>((ok, fail) => { resolve = ok; reject = fail; });
@@ -198,7 +212,9 @@ export class ProcessSlot implements ComputeChild {
     try {
       await this.command("arm", { requestId: request.requestId, deadline: Date.now() + (request.operation === "close" ? LIMITS.destroyMs : LIMITS.jobMs) }, `armed:${request.requestId}`);
       signal?.addEventListener("abort", cancel, { once: true });
-      await writeFrame(this.input, request, LIMITS.requestBytes);
+      const sentMs = performance.now();
+      this.pending.sentMs = sentMs;
+      await writeFrame(this.input, { ...request, clock: { parentSentMs: sentMs } }, LIMITS.requestBytes);
       if (signal?.aborted) cancel();
       let failure: unknown, result: SlotResult | undefined;
       try { result = await bounded(reply, LIMITS.jobMs + 1000, "deadline"); } catch (cause) { failure = cause; }
@@ -211,7 +227,16 @@ export class ProcessSlot implements ComputeChild {
     } catch (cause) {
       if (!this.pending?.terminal) this.fail(cause);
       throw cause;
-    } finally { signal?.removeEventListener("abort", cancel); this.pending = undefined; }
+    } finally {
+      const pending = this.pending;
+      signal?.removeEventListener("abort", cancel); this.pending = undefined;
+      // Runs after terminal handling/disarm or failure, never in place of actual request settlement.
+      observeSafely(observeTiming)({
+        ...(pending?.timing ? { worker: pending.timing,
+          delivery: estimateReplyDelivery(pending.timing, pending.receivedMs!) } : {}),
+        ...(pending?.receivedMs === undefined ? {} : { parentContinuationMs: performance.now() - pending.receivedMs }),
+      });
+    }
   }
   async retire(): Promise<void> {
     // Do not infer exit from signal-send success or child.killed. Wait for this captured child's event.
