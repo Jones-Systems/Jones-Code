@@ -2606,6 +2606,7 @@
         "apps/server/src/jones/serverParallelism/metrics.test.ts",
         "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
         "apps/server/src/jones/serverParallelism/resourceSamples.test.ts",
+        "apps/server/src/jones/serverParallelism/nativeThreadBudget.test.ts",
         "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
         "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
         "apps/server/src/cli/project.test.ts",

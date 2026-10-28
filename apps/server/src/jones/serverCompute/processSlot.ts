@@ -30,15 +30,34 @@ export interface SlotResult {
   readonly items: readonly unknown[];
   readonly final: Extract<Reply["body"], { type: "done" }>;
 }
+export interface ComputeRuntimeMetadata {
+  readonly heapLimitBytes: number;
+  readonly availableParallelism: number;
+  readonly parallelismSource: "node:os.availableParallelism";
+}
 export interface ComputeChild {
   readonly pid: number;
   readonly bootstrap: Bootstrap;
+  readonly runtimeMetadata?: ComputeRuntimeMetadata | undefined;
   request(
     request: Request,
     signal?: AbortSignal,
     observeTiming?: (timing: ComputeRequestTiming) => void,
   ): Promise<SlotResult>;
   retire(): Promise<void>;
+}
+/** Harness operation wrappers retain the captured identity and live audit getter. */
+export function withComputeChildOperations(
+  child: ComputeChild,
+  operations: Pick<ComputeChild, "request" | "retire">,
+): ComputeChild {
+  return {
+    pid: child.pid,
+    bootstrap: child.bootstrap,
+    get runtimeMetadata() { return child.runtimeMetadata; },
+    request: operations.request,
+    retire: operations.retire,
+  };
 }
 function bounded<T>(
   promise: Promise<T>,
@@ -75,6 +94,11 @@ interface Pending {
 /** This object retains the captured ChildProcess for every signal. Journal PIDs are never kill targets. */
 export class ProcessSlot implements ComputeChild {
   readonly pid: number;
+  private metadata: ComputeRuntimeMetadata | undefined;
+  // Audit readback only: retained after exit, never used to infer liveness or completion.
+  get runtimeMetadata(): ComputeRuntimeMetadata | undefined {
+    return this.metadata;
+  }
   private readonly input: Writable;
   private readonly output: Readable;
   private readonly control: Duplex;
@@ -102,7 +126,7 @@ export class ProcessSlot implements ComputeChild {
     observe?: (event: ComputeObservation) => void,
   ) {
     this.child = child;
-    this.bootstrap = bootstrap;
+    this.bootstrap = Object.freeze({ ...bootstrap });
     this.onExit = onExit;
     this.observe = observeSafely(observe);
     if (!child.pid || !child.stdin || !child.stdout || !child.stderr || !child.stdio[3])
@@ -136,6 +160,7 @@ export class ProcessSlot implements ComputeChild {
     register: (pid: number) => Promise<void>,
     onExit: (cause: unknown) => void,
     observe?: (event: ComputeObservation) => void,
+    capture?: (child: ComputeChild) => void,
   ): Promise<ProcessSlot> {
     const child = spawn(command.file, [...command.args, bootstrapArgument(bootstrap)], {
       stdio: ["pipe", "pipe", "pipe", "pipe"],
@@ -163,6 +188,7 @@ export class ProcessSlot implements ComputeChild {
       throw new ComputeFailure({ reason: "unavailable", cause: { cause, retiredPid: child.pid } });
     }
     try {
+      capture?.(slot); // Qualification can bind starting PIDs before readiness; no admission authority.
       await slot.wait("ready");
       await register(slot.pid); // durable before GO; startup guardian timer covers a lost registration.
       await slot.command("go");
@@ -265,6 +291,8 @@ export class ProcessSlot implements ComputeChild {
         this.acknowledge(msg.type);
       } else if (msg.type === "nativeReady") {
         if (
+          this.metadata !== undefined ||
+          !this.readiness.has("ready") ||
           !keys(msg, [...base, "type", "heapLimit", "availableParallelism"]) ||
           !Number.isSafeInteger(msg.heapLimit) ||
           (msg.heapLimit as number) < 256 * 1024 * 1024 ||
@@ -273,6 +301,11 @@ export class ProcessSlot implements ComputeChild {
           (msg.availableParallelism as number) < 1
         )
           throw computeFailure("protocol");
+        this.metadata = Object.freeze({
+          heapLimitBytes: msg.heapLimit as number,
+          availableParallelism: msg.availableParallelism as number,
+          parallelismSource: "node:os.availableParallelism",
+        });
         this.acknowledge("nativeReady");
       } else if (msg.type === "armed" || msg.type === "disarmed") {
         if (

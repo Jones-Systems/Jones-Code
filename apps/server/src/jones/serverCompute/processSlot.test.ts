@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off -- Synthetic Node process, pipe and clock fixtures exercise the actual ownership boundary.
 import { expect, it } from "vite-plus/test";
 import { guardianSource } from "./guardian.ts";
-import { ProcessSlot } from "./processSlot.ts";
+import { ProcessSlot, withComputeChildOperations, type ComputeChild } from "./processSlot.ts";
 import type {
   ComputeObservation,
   ComputeRequestTiming,
@@ -419,4 +419,115 @@ guardian.on('error', () => process.kill(process.pid, 'SIGKILL'));
   }
   expect(() => process.kill(child.pid, 0)).toThrow();
   expect(faults).toHaveLength(1);
+});
+
+// A closed raw FD3 peer isolates the parent's validation, including frames rejected by the real guardian.
+function readinessSource(patch: Record<string, unknown> = {}, duplicate = false) {
+  const { omit, ...fields } = patch;
+  return `const { Socket } = require('node:net');
+const boot = JSON.parse(process.argv[1]);
+const pipe = new Socket({ fd: 3, readable: true, writable: true });
+const send = value => pipe.write(JSON.stringify({ ...boot, ...value }) + '\\n');
+const ready = { type: 'nativeReady', heapLimit: 300 * 1024 * 1024, availableParallelism: 5, ...${JSON.stringify(fields)} };
+${typeof omit === "string" ? `delete ready[${JSON.stringify(omit)}];` : ""}
+pipe.on('error', () => process.exit(1));
+let buffer = '';
+pipe.on('data', bytes => {
+  buffer += bytes.toString();
+  let end;
+  while ((end = buffer.indexOf('\\n')) >= 0) {
+    const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+    const msg = JSON.parse(line);
+    if (msg.type === 'go') { send({ type: 'go' }); send(ready); ${duplicate ? "send({ ...ready, availableParallelism: 99 });" : ""} }
+    else if (msg.type === 'loaded') send({ type: 'loaded' });
+    else if (msg.type === 'terminate') process.exit(0);
+  }
+});
+send({ type: 'ready', pid: process.pid });`;
+}
+
+it("binds frozen metadata to captured bootstrap, preserves it through wrappers and exit, and separates generations", async () => {
+  const records: ComputeChild[] = [];
+  for (const generation of [1, 2]) {
+    const boot = { ...bootstrap, slotGeneration: generation, nonce: `metadata-${generation}` };
+    const child = await ProcessSlot.start({ file: process.execPath,
+      args: ["--max-old-space-size=256", "-e", readinessSource()], env: {}, build: boot.build },
+      boot, async () => {}, () => {}, undefined, (starting) => {
+        expect(starting.runtimeMetadata).toBeUndefined();
+        records.push(withComputeChildOperations(starting, {
+          request: (...args) => starting.request(...args),
+          retire: () => starting.retire(),
+        }));
+      });
+    let requests = 0, retirements = 0;
+    const wrapper = withComputeChildOperations(child, {
+      request: async () => { requests++; return { items: [], final: { type: "done" } }; },
+      retire: async () => { retirements++; await child.retire(); },
+    });
+    const metadata = child.runtimeMetadata;
+    try {
+      expect(metadata).toEqual({ heapLimitBytes: 300 * 1024 * 1024, availableParallelism: 5,
+        parallelismSource: "node:os.availableParallelism" });
+      expect(Object.isFrozen(metadata)).toBe(true);
+      expect(records.at(-1)?.runtimeMetadata).toBe(metadata);
+      expect(Reflect.set(metadata!, "availableParallelism", 999)).toBe(false);
+      expect(wrapper.runtimeMetadata).toBe(metadata);
+      expect(wrapper.bootstrap).toBe(child.bootstrap);
+      expect(wrapper.pid).toBe(child.pid);
+      boot.nonce = "mutated-caller";
+      expect(child.bootstrap.nonce).toBe(`metadata-${generation}`);
+      expect(Object.isFrozen(child.bootstrap)).toBe(true);
+      await wrapper.request({ ...child.bootstrap, requestId: 1, operation: "list", input: null,
+        token: { authorityId: boot.authorityId, slotId: 0, slotGeneration: generation, keyId: "key", incarnation: 1 } });
+      expect(requests).toBe(1);
+    } finally {
+      await wrapper.retire();
+    }
+    expect(retirements).toBe(1);
+    expect(child.runtimeMetadata).toBe(metadata);
+    expect(wrapper.runtimeMetadata).toBe(metadata);
+    expect(() => process.kill(child.pid, 0)).toThrow(); // Metadata remains available after proven exit.
+  }
+  expect(records[0]?.runtimeMetadata).not.toBe(records[1]?.runtimeMetadata);
+  expect(records.map((record) => record.bootstrap.slotGeneration)).toEqual([1, 2]);
+});
+
+it.each([
+  { availableParallelism: 0 }, { availableParallelism: -1 }, { availableParallelism: 1.5 },
+  { availableParallelism: "5" }, { availableParallelism: null },
+  { availableParallelism: Number.MAX_SAFE_INTEGER + 1 },
+  { heapLimit: 256 * 1024 * 1024 - 1 }, { heapLimit: 400 * 1024 * 1024 + 1 },
+  { heapLimit: "314572800" }, { heapLimit: null }, { extra: 1 },
+  { omit: "availableParallelism" }, { omit: "heapLimit" },
+  { nonce: "wrong-nonce" }, { slotGeneration: 2 }, { build: "b".repeat(64) },
+])("rejects malformed or misbound nativeReady before retaining metadata: %j", async (patch) => {
+  const capture: { child?: ComputeChild } = {};
+  await expect(ProcessSlot.start({ file: process.execPath,
+    args: ["--max-old-space-size=256", "-e", readinessSource(patch)], env: {}, build: bootstrap.build },
+    bootstrap, async () => {}, () => {}, undefined, (child) => { capture.child = child; }))
+    .rejects.toMatchObject({ reason: "unavailable" });
+  expect(capture.child).toBeDefined();
+  expect(capture.child?.runtimeMetadata).toBeUndefined();
+  expect(() => process.kill(capture.child!.pid, 0)).toThrow();
+});
+
+it("rejects duplicate nativeReady without replacing the first immutable record", async () => {
+  const capture: { child?: ComputeChild } = {};
+  let notify!: () => void;
+  const failed = new Promise<void>((resolve) => { notify = resolve; });
+  let child: ProcessSlot | undefined;
+  try {
+    try {
+      child = await ProcessSlot.start({ file: process.execPath,
+        args: ["--max-old-space-size=256", "-e", readinessSource({}, true)], env: {}, build: bootstrap.build },
+        bootstrap, async () => {}, notify, undefined, (starting) => { capture.child = starting; });
+    } catch (cause) {
+      expect(cause).toMatchObject({ reason: "unavailable" });
+    }
+    await failed;
+    expect(capture.child?.runtimeMetadata?.availableParallelism).toBe(5);
+    expect(Object.isFrozen(capture.child?.runtimeMetadata)).toBe(true);
+  } finally {
+    await (child ?? capture.child)?.retire();
+  }
 });

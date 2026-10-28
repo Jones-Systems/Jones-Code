@@ -6,8 +6,10 @@ import { setTimeout as pause } from "node:timers/promises";
 import { ComputeSupervisor } from "../serverCompute/supervisor.ts";
 import { GenerationJournal } from "../serverCompute/journal.ts";
 import { isKey } from "../serverCompute/protocol.ts";
-import { ProcessSlot } from "../serverCompute/processSlot.ts";
+import { ProcessSlot, withComputeChildOperations } from "../serverCompute/processSlot.ts";
 import type { ComputeChild } from "../serverCompute/processSlot.ts";
+import { isComputeFailure } from "../serverCompute/failure.ts";
+import { evaluateNativeThreadBudget, type ThreadBudgetGeneration } from "./nativeThreadBudget.ts";
 import type { WorkerCommand } from "../serverCompute/workerCommand.ts";
 import type { LogicalFinderHandle } from "./computeContract.ts";
 import type { ComputeObservation } from "./observations.ts";
@@ -15,6 +17,9 @@ import {
   sampleProcesses,
   processResourceSample,
   resourcePredicates,
+  sampleMacPerformanceCores,
+  sampleNativePools,
+  type NativePoolObservation,
   type ProcessResourceSample,
 } from "./resourceSamples.ts";
 import {
@@ -70,6 +75,14 @@ export async function runNativeQualification(options: NativeQualificationOptions
     else observationLimitReached = true;
   };
   const captured = new Map<number, ComputeChild>();
+  type Generation = { -readonly [K in keyof ThreadBudgetGeneration]: ThreadBudgetGeneration[K] } & {
+    nativePools: NativePoolObservation[];
+    hasGrep: boolean;
+    poolPhases: string[];
+    faulted: boolean;
+  };
+  const generations: Generation[] = [];
+  const macPerformanceCores = await sampleMacPerformanceCores();
   const active = new Map<number, number>();
   const keySlots = new Map<string, number>();
   const keyIdentity = (cwd: string, variant: string) => JSON.stringify([cwd, variant]);
@@ -79,6 +92,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
     phase: string;
     sample: ProcessResourceSample;
     active: number[];
+    generations: { pid: number; bootstrap: ComputeChild["bootstrap"] }[];
   }[] = [];
   const executions: { pid: number; phase: string; start: number; end: number }[] = [];
   let stopped = false,
@@ -95,15 +109,54 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const supervisor = new ComputeSupervisor({
     count,
     build: command.build,
-    journal,
+    journal: {
+      claim: journal.claim,
+      reserve: journal.reserve.bind(journal),
+      registered: journal.registered.bind(journal),
+      release: journal.release.bind(journal),
+      retired: async (slot, generation, nonce, pid) => {
+        await journal.retired(slot, generation, nonce, pid);
+        const record = generations.find((item) => item.pid === pid &&
+          item.bootstrap.slotId === slot && item.bootstrap.slotGeneration === generation &&
+          item.bootstrap.nonce === nonce);
+        if (record) record.journalRetiredAt = performance.now();
+        // Keep charging/auditing the old generation until durable retirement, after captured exit.
+        captured.delete(pid);
+      },
+    },
     observe,
     start: async (boot, register, onExit) => {
-      const child = await ProcessSlot.start(command, boot, register, onExit, observe);
+      const record: Generation = { bootstrap: Object.freeze({ ...boot }), startedAt: performance.now(),
+        nativePools: [], hasGrep: false, poolPhases: [], faulted: false };
+      generations.push(record);
+      let child: ProcessSlot;
+      try {
+        child = await ProcessSlot.start(command, boot, async (pid) => {
+          record.pid = pid;
+          await register(pid);
+        }, (cause) => {
+          record.faulted = true; // A fault invalidates observation; it is not captured exit proof.
+          onExit(cause);
+        }, observe, (startingChild) => {
+          record.pid = startingChild.pid;
+          captured.set(startingChild.pid, startingChild);
+        });
+      } catch (cause) {
+        const failedChild = record.pid === undefined ? undefined : captured.get(record.pid);
+        if (failedChild?.bootstrap.nonce === record.bootstrap.nonce)
+          record.runtimeMetadata = failedChild.runtimeMetadata;
+        if (isComputeFailure(cause) && cause.reason === "unavailable" &&
+          typeof cause.cause === "object" && cause.cause !== null && "retiredPid" in cause.cause &&
+          typeof cause.cause.retiredPid === "number") {
+          record.pid = cause.cause.retiredPid;
+          record.exitCapturedAt = performance.now();
+        }
+        throw cause;
+      }
+      record.runtimeMetadata = child.runtimeMetadata;
       if (boot.slotGeneration > 1) rotations++;
       captured.set(child.pid, child);
-      return {
-        pid: child.pid,
-        bootstrap: child.bootstrap,
+      return withComputeChildOperations(child, {
         request: async (request, signal, observeTiming) => {
           if (request.operation === "open") {
             coldReopens++;
@@ -117,7 +170,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           if (data) active.set(child.pid, (active.get(child.pid) ?? 0) + 1);
           const start = performance.now();
           try {
-            return await child.request(request, signal, (timing) => {
+            const result = await child.request(request, signal, (timing) => {
               observeTiming?.(timing);
               if (
                 data &&
@@ -135,6 +188,8 @@ export async function runNativeQualification(options: NativeQualificationOptions
                 else observationLimitReached = true;
               }
             });
+            if (request.operation === "searchContents") record.hasGrep = true;
+            return result;
           } finally {
             if (data) {
               active.set(child.pid, (active.get(child.pid) ?? 1) - 1);
@@ -144,10 +199,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
         },
         retire: async () => {
           await child.retire();
-          captured.delete(child.pid);
+          record.exitCapturedAt = performance.now();
           active.delete(child.pid);
         },
-      };
+      });
     },
   });
   const keys: LogicalFinderHandle[] = [];
@@ -162,7 +217,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
     let previous: (typeof resources)[number] | undefined;
     while (!stopped) {
       const before = new Set([...active].filter(([, jobs]) => jobs > 0).map(([pid]) => pid));
-      const requested = [process.pid, ...captured.keys()],
+      const subjects = generations.filter((record) => record.pid !== undefined &&
+        record.exitCapturedAt === undefined);
+      const bindings = subjects.map((record) => ({ pid: record.pid!, bootstrap: record.bootstrap }));
+      const requested = [process.pid, ...bindings.map((record) => record.pid)],
         at = performance.now(),
         sampledPhase = phase;
       let sample: ProcessResourceSample;
@@ -185,6 +243,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           phase: sampledPhase,
           sample,
           active: stillActive,
+          generations: bindings,
         });
       else observationLimitReached = true;
       // A live receipt is only a parent-loss trigger. Final productive acceptance
@@ -201,6 +260,16 @@ export async function runNativeQualification(options: NativeQualificationOptions
       )
         options.onProductiveOverlap?.(stillActive);
       previous = resources.at(-1);
+      // Lazy native pools are observed only after actual grep. Metadata itself is no pool basis.
+      for (const record of subjects.filter((item) => item.hasGrep && !item.poolPhases.includes(sampledPhase))) {
+        record.poolPhases.push(sampledPhase);
+        const evidence = await sampleNativePools(record.pid!);
+        if (!record.faulted && record.exitCapturedAt === undefined &&
+          captured.get(record.pid!)?.bootstrap.nonce === record.bootstrap.nonce &&
+          captured.get(record.pid!)?.bootstrap.slotGeneration === record.bootstrap.slotGeneration) {
+          record.nativePools.push(evidence);
+        } else record.nativePools.push({ ...evidence, status: "unavailable", error: "generation-changed-during-observation" });
+      }
       // Measurement cadence only. Progress assertions use jobs/CPU and captured exit, never this delay.
       await pause(10, undefined, { signal: controller.signal }).catch(() => {});
       if (controller.signal.aborted) return;
@@ -464,8 +533,14 @@ export async function runNativeQualification(options: NativeQualificationOptions
           row.sample.processes.every((item) => item.inotifyWatches !== undefined),
         ),
       nativeTailInternalQueues: "unknown",
-      childAvailableParallelism: "unknown",
+      childAvailableParallelism: generations.every((record) => record.runtimeMetadata !== undefined)
+        ? "observed" : "unknown",
     };
+    const threadBudget = evaluateNativeThreadBudget({
+      configuredN: count, platform: process.platform, parentPid: process.pid,
+      macPerformanceCores, generations, samples: resources, lifecycleBounds,
+      observationComplete: !samplerFailure && !observationLimitReached,
+    });
     const churnThroughput =
       options.baselineChurn?.length === 2
         ? churnWindows.every((window) => {
@@ -493,6 +568,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
       productiveOverlapSamples,
       executions,
       resourceCoverage,
+      threadBudget,
       serializedNegativeControl,
       steadyRotations,
       rotations,
@@ -500,7 +576,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
       parentCpu,
       mainThreadCpu,
       resourceMeaning:
-        "parentCpu includes reader/checkpoint threads; mainThreadCpu is the serving harness thread; child CPU/RSS are separate samples",
+        "parentCpu includes reader/checkpoint threads; mainThreadCpu is the serving harness thread; child CPU/RSS are separate samples; native pool observations use bounded OS reads (macOS sample can transiently suspend threads)",
       childRssWithinBudget,
       predicates: {
         productiveOverlap: productiveOverlapSamples > 0,
@@ -524,7 +600,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           !observationLimitReached &&
           windowsResult.every((window) => !window.observationLimitReached),
         // Resource ceilings and throughput regression need exact-host interpretation against baseline.
-        aggregateResourceBudget: "unknown",
+        aggregateResourceBudget: threadBudget.predicate,
         childRssWithinBudget,
         churnThroughput,
       },
@@ -538,7 +614,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
         "execute is child-local; reply is chunk preparation/delivery before terminal encoding; reply_delivery is an interval estimate including terminal encoding, with per-exchange clock uncertainty; null is unavailable",
       missingCapabilities: [
         "full native-tail phase/pending queues",
-        "child availableParallelism readback through ProcessSlot",
+        ...(threadBudget.basis === "unknown" ? ["qualified per-generation native thread pool basis"] : []),
         ...(process.platform === "darwin" ? ["kernel watcher counts (OS-specific)"] : []),
       ],
     };

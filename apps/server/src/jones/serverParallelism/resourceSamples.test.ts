@@ -29,3 +29,28 @@ it("rejects a complete over-budget sample even when other samples are missing", 
     resourcePredicates([over, processResourceSample([1, 2, 3], [])], 1, 2).childRssWithinBudget,
   ).toBe(false);
 });
+
+it("parses only PID-attributed macOS sample thread headers, never stack names", async () => {
+  const { parseMacNativeThreads } = await import("./resourceSamples.ts");
+  const raw = `Sampling process 123 for 1 second
+Process: node [123]
+Call graph:
+    100 Thread_0x1: fff-bg-0
+    + 100 work (in native)
+    100 Thread_0x2: fff-search-0
+    100 Thread_0x3 DispatchQueue_1: com.apple.main-thread (serial)
+    + 100 fff-bg-99 (in native)
+`;
+  const result = parseMacNativeThreads(123, raw);
+  expect(result.status).toBe("complete");
+  expect(result.threads).toEqual([
+    { tid: "0x1", name: "fff-bg-0" },
+    { tid: "0x2", name: "fff-search-0" },
+    { tid: "0x3", name: "DispatchQueue_1: com.apple.main-thread (serial)" },
+  ]);
+  expect(result.raw).toBe(raw);
+  expect(parseMacNativeThreads(124, raw).status).toBe("unavailable");
+  expect(parseMacNativeThreads(123, raw.replace("Thread_0x2", "Thread_0x1")).status).toBe("unavailable");
+  expect(parseMacNativeThreads(123, "Process: node [123]\n + 1 fff-bg-0").status).toBe("unavailable");
+  expect(parseMacNativeThreads(123, raw.replace("Process:", "Unattributed:")).status).toBe("unavailable");
+});

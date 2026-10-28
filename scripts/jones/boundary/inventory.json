@@ -2374,6 +2374,8 @@
     "apps/server/src/jones/serverParallelism/metrics.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/nativeQualification.ts": "jones-owned",
+    "apps/server/src/jones/serverParallelism/nativeThreadBudget.ts": "jones-owned",
+    "apps/server/src/jones/serverParallelism/nativeThreadBudget.test.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/nativeWorkspace.testkit.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/observations.test.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/observations.ts": "jones-owned",
