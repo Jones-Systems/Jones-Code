@@ -52,6 +52,7 @@ import * as Links from "./LinkedThreads.ts";
 import * as Launch from "./launchTransport.ts";
 import * as Handoff from "./handoff.ts";
 import migration from "../persistence/Migrations/122_JonesThreadLinks.ts";
+import { RecordedAppThreadJson } from "../../orchestration-v2/RecordedTypes.ts";
 import {
   encodeLinkedMessageOrigin,
   withLinkedMessageOrigin,
@@ -212,8 +213,16 @@ it.effect(
               Effect.gen(function* () {
                 yield* migration;
                 const sql = yield* SqlClient.SqlClient;
-                yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
-                yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${origin}, NULL), (${target}, NULL)`;
+                yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT, payload_json TEXT NOT NULL)`;
+                const encodeThread = Schema.encodeEffect(
+                  Schema.fromJsonString(RecordedAppThreadJson),
+                );
+                for (const id of [origin, target]) {
+                  const payload = yield* encodeThread(
+                    idleThreadProjection(liveThreadShell(id)).thread,
+                  );
+                  yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${id}, NULL, ${payload})`;
+                }
               }),
             ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" }))),
           ),

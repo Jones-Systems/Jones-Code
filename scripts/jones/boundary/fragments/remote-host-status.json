@@ -12,6 +12,10 @@
     {
       "from": "apps/web/src/components/chat/ChatHeader.tsx",
       "to": "apps/web/src/jones/hostStatus/GlobalHostStatusIndicators.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatHeader.tsx",
+      "to": "apps/web/src/jones/hostStatus/useHeaderControlsClearance.ts"
     }
   ]
 }

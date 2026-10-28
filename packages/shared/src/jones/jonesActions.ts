@@ -79,7 +79,7 @@ export interface JonesArtifactReceipt {
   readonly source: string;
   readonly tree: string;
   readonly workflow: string;
-  readonly event: "push" | "schedule";
+  readonly event: "push" | "schedule" | "workflow_dispatch";
   readonly ref: "refs/heads/main";
   readonly runId: string;
   readonly runAttempt: string;
@@ -100,7 +100,7 @@ export interface JonesStagedArtifact {
   readonly payloadPath: string;
 }
 
-export type JonesActionsCheckResult =
+export type JonesActionsCheckResult = { readonly classification?: JonesCheckClassification } & (
   | {
       readonly state: "available";
       readonly candidate: JonesActionsCandidate;
@@ -112,13 +112,15 @@ export type JonesActionsCheckResult =
       readonly state: "blocked";
       readonly reason: JonesActionsBlockedReason;
       readonly retryAfterMs: number;
-    };
+    }
+);
 
 export type JonesSourceRelationKind = "ahead" | "behind" | "identical" | "diverged";
 
 interface JonesActionsCheckInput {
   readonly installedSource: string;
   readonly targetSource?: string;
+  readonly desktopBundleIdentifier?: string;
   readonly platform: JonesActionsPlatform;
   readonly architecture: JonesActionsArchitecture;
 }
@@ -236,6 +238,38 @@ type JonesActionsCheckObservation = CheckEvidence &
         };
       }
   );
+
+/** Additive display evidence; the established selector and legacy phase projection stay intact. */
+export interface JonesCheckClassification {
+  readonly kind: JonesActionsCheckObservation["kind"];
+  readonly checkedAt: string;
+  readonly discovery: {
+    readonly termination: CheckDiscovery["termination"];
+    readonly bounded: boolean;
+    readonly unresolvedLimits: readonly DiscoveryLimit[];
+  };
+  readonly pendingCount: number;
+  readonly failedQualificationCount: number;
+}
+
+export function classifyJonesActionsCheck(
+  observation: JonesActionsCheckObservation,
+): JonesCheckClassification {
+  return {
+    kind: observation.kind,
+    checkedAt: observation.checkedAt,
+    discovery: {
+      termination: observation.discovery.termination,
+      bounded: observation.discovery.frontierWithinBudgetSatisfied,
+      unresolvedLimits: [...observation.discovery.unresolvedLimits],
+    },
+    pendingCount: Object.values(observation.pending).reduce(
+      (sum, witness) => sum + witness.count,
+      0,
+    ),
+    failedQualificationCount: observation.failedQualification.count,
+  };
+}
 
 function hasPending(evidence: Pick<CheckEvidence, "pending">): boolean {
   return Object.values(evidence.pending).some((witness) => witness.count > 0);
@@ -367,12 +401,35 @@ function digest(value: unknown): string {
   if (!HASH.test(result)) throw new JonesActionsError("unqualified");
   return result;
 }
-function spec(platform: JonesActionsPlatform, architecture: JonesActionsArchitecture) {
+const PRODUCTION_DESKTOP_ID = "com.jonessystems.jonescode";
+const PRODUCTION_DESKTOP_WORKFLOW = ".github/workflows/jones-desktop-signing.yml";
+
+function spec(
+  platform: JonesActionsPlatform,
+  architecture: JonesActionsArchitecture,
+  desktopBundleIdentifier?: string,
+) {
+  if (
+    desktopBundleIdentifier !== undefined &&
+    (platform !== "darwin" ||
+      !["com.t3tools.t3code", PRODUCTION_DESKTOP_ID].includes(desktopBundleIdentifier))
+  )
+    throw new JonesActionsError("unqualified");
+  if (
+    platform === "darwin" &&
+    architecture === "arm64" &&
+    desktopBundleIdentifier === PRODUCTION_DESKTOP_ID
+  )
+    return {
+      workflow: PRODUCTION_DESKTOP_WORKFLOW,
+      name: "desktop-mac-production-arm64",
+      events: ["push", "workflow_dispatch"],
+    };
   if (platform === "darwin" && architecture === "arm64")
     return {
       workflow: ".github/workflows/artifact-desktop-mac.yml",
       name: "desktop-mac-arm64",
-      events: ["push", "schedule"],
+      events: ["push", "schedule", "workflow_dispatch"],
     };
   if (platform === "linux" && (architecture === "x64" || architecture === "arm64"))
     return {
@@ -588,7 +645,11 @@ export class JonesActionsClient {
   }
 
   async check(input: JonesActionsCheckInput): Promise<JonesActionsCheckResult> {
-    return projectJonesActionsCheck(await this.observeCheck(input));
+    const observation = await this.observeCheck(input);
+    return {
+      ...projectJonesActionsCheck(observation),
+      classification: classifyJonesActionsCheck(observation),
+    };
   }
 
   async observeCheck(input: JonesActionsCheckInput): Promise<JonesActionsCheckObservation> {
@@ -663,7 +724,7 @@ export class JonesActionsClient {
       const targetSource =
         input.targetSource === undefined ? undefined : source(input.targetSource);
       if (targetSource !== undefined) scope.requestedSource = targetSource;
-      const approved = spec(input.platform, input.architecture);
+      const approved = spec(input.platform, input.architecture, input.desktopBundleIdentifier);
       const main = record(await read("main", `${API_ROOT}/commits/main`));
       const mainSource = source(main.sha);
       scope.mainSource = mainSource;
@@ -935,7 +996,7 @@ export class JonesActionsClient {
     const commit = record(await this.transport.api(`${API_ROOT}/git/commits/${candidate.source}`));
     const main = record(await this.transport.api(`${API_ROOT}/commits/main`));
     if (
-      !canonicalArtifactRun(run, spec(candidate.platform, candidate.architecture)) ||
+      !canonicalArtifactRun(run, candidateSpec(candidate)) ||
       run.status !== "completed" ||
       run.conclusion !== "success" ||
       run.head_sha !== candidate.source ||
@@ -1110,8 +1171,16 @@ export function jonesCandidateHandle(candidate: JonesActionsCandidate): string {
     .digest("hex");
 }
 
+function candidateSpec(candidate: JonesActionsCandidate) {
+  return spec(
+    candidate.platform,
+    candidate.architecture,
+    candidate.workflow === PRODUCTION_DESKTOP_WORKFLOW ? PRODUCTION_DESKTOP_ID : undefined,
+  );
+}
+
 function validateJonesActionsCandidate(candidate: JonesActionsCandidate): void {
-  const approved = spec(candidate.platform, candidate.architecture);
+  const approved = candidateSpec(candidate);
   if (
     candidate.schema !== 1 ||
     candidate.repository !== JONES_ACTIONS_REPOSITORY ||
@@ -1155,7 +1224,7 @@ function parseJonesArtifactReceipt(
     item.source !== candidate.source ||
     item.tree !== candidate.tree ||
     item.workflow !== candidate.workflow ||
-    !artifactEvent(spec(candidate.platform, candidate.architecture), item.event) ||
+    !artifactEvent(candidateSpec(candidate), item.event) ||
     item.ref !== "refs/heads/main" ||
     item.runId !== String(candidate.runId) ||
     item.runAttempt !== String(candidate.runAttempt) ||
@@ -1163,6 +1232,14 @@ function parseJonesArtifactReceipt(
     item.platform !== candidate.platform ||
     item.architecture !== candidate.architecture ||
     item.artifact !== expectedArtifact
+  )
+    throw new JonesActionsError("unqualified");
+  if (
+    candidate.workflow === PRODUCTION_DESKTOP_WORKFLOW &&
+    (item.signed !== true ||
+      item.notarized !== true ||
+      item.bundleIdentifier !== PRODUCTION_DESKTOP_ID ||
+      item.teamId !== "2CUPSQS986")
   )
     throw new JonesActionsError("unqualified");
   digest(item.sha256);

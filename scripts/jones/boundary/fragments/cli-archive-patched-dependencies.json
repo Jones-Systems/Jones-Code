@@ -1,0 +1,17 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "cli-archive-patched-dependencies",
+  "jonesOwnedPaths": ["packages/shared/src/jones/packaging/pnpmProjectLockfile.ts"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "scripts/build-cli-archive.ts",
+      "to": "scripts/jones/packaging/cliArchiveDependencies.ts"
+    },
+    {
+      "from": "scripts/build-desktop-artifact.ts",
+      "to": "scripts/jones/packaging/cliArchiveDependencies.ts"
+    }
+  ]
+}

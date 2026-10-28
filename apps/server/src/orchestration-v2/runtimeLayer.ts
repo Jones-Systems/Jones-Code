@@ -59,6 +59,7 @@ import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
+import * as GoalContinuityRuntime from "../jones/goals/continuity/RuntimeIntegration.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -225,7 +226,12 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   ),
 );
 
+// Reuse this exact layer reference for MCP and provider starts. Its captured
+// producer associations and single-use delivery permits belong to one service.
+const layerGoalContinuity = GoalContinuityRuntime.layer;
+
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(layerGoalContinuity),
   Layer.provide(TaskContinuationStore.layer),
   Layer.provide(layerProviderSwitchServiceProvided),
   Layer.provide(ControlAdmission.layer),
@@ -447,6 +453,7 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  layerGoalContinuity,
   layerPlannedUpdateContinuityProvided,
   layerStores,
   layerEventSinkProvided,

@@ -287,26 +287,80 @@ async function requireCapacity(
     );
 }
 
-/** Probe only owned metadata files; a live database is never copied before writer shutdown. */
-export async function preflightQualifiedBackup(
+export interface QualifiedBackupInspection {
+  readonly sameVolume: boolean;
+  readonly firstInstall: boolean;
+  readonly bytes: number;
+  readonly availableBytes: number;
+  readonly copyRequiredBytes: number;
+  readonly cloneRequiredBytes: number;
+  readonly clone: {
+    readonly status: "proved" | "unsupported" | "unknown";
+    readonly reason?: string;
+  };
+}
+
+/** Measures state only; the clone syscall touches a private probe, never the live database. */
+export async function inspectQualifiedBackup(
   baseDir: string,
   dbPath: string,
   adapter: QualifiedBackupAdapter = nativeAdapter,
-): Promise<{ readonly method: "clone" | "copy"; readonly bytes: number }> {
-  let bytes = 0;
-  for (const suffix of SUFFIXES)
-    bytes += (await fileSize(`${dbPath}${suffix}`, suffix !== "")) ?? 0;
-  for (const name of QUALIFIED_STARTUP_STATE_FILES)
-    bytes += (await fileSize(NodePath.join(baseDir, "userdata", name), true)) ?? 0;
-  const parent = NodePath.join(baseDir, "runtime", "db-backup");
-  await requireDirectory(NodePath.dirname(parent));
-  await NodeFSP.mkdir(parent, { recursive: true, mode: 0o700 });
-  await requireDirectory(parent);
-  const sourceDevice = (await NodeFSP.stat(dbPath)).dev;
-  if (sourceDevice !== (await NodeFSP.stat(parent)).dev)
-    throw new Error(
-      "recovery-capacity: Recovery and database must share a filesystem for rollback rename.",
-    );
+): Promise<QualifiedBackupInspection> {
+  const databaseBytes = await fileSize(dbPath, true);
+  let bytes = databaseBytes ?? 0;
+  const sources: string[] = databaseBytes === undefined ? [] : [dbPath];
+  for (const file of [
+    ...SUFFIXES.slice(1).map((suffix) => `${dbPath}${suffix}`),
+    ...QUALIFIED_STARTUP_STATE_FILES.map((name) => NodePath.join(baseDir, "userdata", name)),
+  ]) {
+    const size = await fileSize(file, true);
+    if (size !== undefined) {
+      bytes += size;
+      sources.push(file);
+    }
+  }
+  if (databaseBytes === undefined && sources.length > 0)
+    throw new Error("recovery-state-invalid: State exists without its database.");
+  const recoveryRoot = NodePath.join(baseDir, "runtime", "db-backup");
+  await requireDirectory(NodePath.dirname(recoveryRoot));
+  let parent = recoveryRoot;
+  try {
+    await requireDirectory(parent);
+  } catch (cause) {
+    if (!isMissing(cause)) throw cause;
+    parent = NodePath.dirname(recoveryRoot);
+  }
+  const availableBytes = await adapter.availableBytes(parent);
+  if (!Number.isSafeInteger(availableBytes) || availableBytes < 0 || !Number.isSafeInteger(bytes))
+    throw new Error("recovery-capacity: Recovery capacity could not be measured.");
+  const copyRequiredBytes = 2 * bytes + Math.ceil(0.05 * bytes) + METADATA_RESERVE_BYTES;
+  if (!Number.isSafeInteger(copyRequiredBytes))
+    throw new Error("recovery-capacity: Recovery copy capacity exceeds the measurable range.");
+  const measurement = {
+    firstInstall: databaseBytes === undefined,
+    bytes,
+    availableBytes,
+    sameVolume: true,
+    copyRequiredBytes,
+    cloneRequiredBytes: METADATA_RESERVE_BYTES,
+  };
+  const device = (await NodeFSP.stat(parent)).dev;
+  for (const file of sources)
+    if ((await NodeFSP.stat(file)).dev !== device)
+      return {
+        ...measurement,
+        sameVolume: false,
+        clone: {
+          status: "unsupported",
+          reason:
+            "recovery-clone-unavailable: State and recovery must share a filesystem for rollback rename.",
+        },
+      };
+  if (measurement.firstInstall)
+    return {
+      ...measurement,
+      clone: { status: "unknown", reason: "No existing state requires a recovery snapshot." },
+    };
   const probe = await NodeFSP.mkdtemp(NodePath.join(parent, ".clone-probe-"));
   try {
     const source = NodePath.join(probe, "source");
@@ -317,16 +371,55 @@ export async function preflightQualifiedBackup(
         NodePath.join(probe, "target"),
         NodeFS.constants.COPYFILE_EXCL | NodeFS.constants.COPYFILE_FICLONE_FORCE,
       );
-      await requireCapacity(parent, 0, adapter);
-      return { method: "clone", bytes };
+      return { ...measurement, clone: { status: "proved" } };
     } catch (cause) {
-      if (!cloneUnavailable(cause)) throw cause;
-      await requireCapacity(parent, 2 * bytes + Math.ceil(0.05 * bytes), adapter);
-      return { method: "copy", bytes };
+      return {
+        ...measurement,
+        clone: {
+          status: cloneUnavailable(cause) ? "unsupported" : "unknown",
+          reason: "recovery-clone-unavailable: A strict native recovery clone could not be proved.",
+        },
+      };
     }
   } finally {
     await NodeFSP.rm(probe, { recursive: true, force: true });
   }
+}
+
+export async function preflightQualifiedBackup(
+  baseDir: string,
+  dbPath: string,
+  adapter: QualifiedBackupAdapter = nativeAdapter,
+  options: { readonly cloneRequired?: boolean } = {},
+): Promise<{ readonly method: "clone" | "copy"; readonly bytes: number }> {
+  const parent = NodePath.join(baseDir, "runtime", "db-backup");
+  await requireDirectory(NodePath.dirname(parent));
+  await NodeFSP.mkdir(parent, { recursive: true, mode: 0o700 });
+  await requireDirectory(parent);
+  const measured = await inspectQualifiedBackup(baseDir, dbPath, adapter);
+  if (measured.firstInstall)
+    throw new Error("recovery-state-invalid: No existing database can be snapshotted.");
+  if (measured.clone.status === "proved") {
+    await requireCapacity(NodePath.join(baseDir, "runtime", "db-backup"), 0, adapter);
+    return { method: "clone", bytes: measured.bytes };
+  }
+  if (options.cloneRequired)
+    throw new Error(
+      "recovery-clone-unavailable: A strict recovery clone is required; no copy was attempted.",
+    );
+  if (measured.clone.status === "unknown")
+    throw new Error("recovery-clone-unavailable: Native recovery clone result is unknown.");
+  // A cross-volume state pair cannot be restored by the existing rename engine.
+  if (!measured.sameVolume)
+    throw new Error(
+      "recovery-capacity: Recovery and database must share a filesystem for rollback rename.",
+    );
+  await requireCapacity(
+    NodePath.join(baseDir, "runtime", "db-backup"),
+    2 * measured.bytes + Math.ceil(0.05 * measured.bytes),
+    adapter,
+  );
+  return { method: "copy", bytes: measured.bytes };
 }
 
 /** Caller owns a fresh destination and proves all writers stopped before copying state. */
@@ -334,6 +427,7 @@ export async function copyQualifiedBackupFile(
   source: string,
   target: string,
   adapter: QualifiedBackupAdapter = nativeAdapter,
+  options: { readonly cloneRequired?: boolean } = {},
 ): Promise<{ readonly method: "clone" | "copy"; readonly bytes: number }> {
   const bytes = (await fileSize(source))!;
   try {
@@ -344,6 +438,11 @@ export async function copyQualifiedBackupFile(
     );
     return { method: "clone", bytes };
   } catch (cause) {
+    if (options.cloneRequired)
+      throw new Error(
+        "recovery-clone-unavailable: A strict recovery clone failed; no copy was attempted.",
+        { cause },
+      );
     if (!cloneUnavailable(cause)) throw cause;
     await requireCapacity(NodePath.dirname(target), bytes, adapter);
     await adapter.copyFile(source, target, NodeFS.constants.COPYFILE_EXCL);

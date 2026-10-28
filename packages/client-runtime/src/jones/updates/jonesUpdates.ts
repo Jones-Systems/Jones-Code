@@ -8,6 +8,16 @@ import type {
   JonesUpdateInstallInput,
   JonesUpdateReconcileInput,
 } from "@t3tools/contracts/jones/jonesUpdates";
+import type {
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesRecoveryPreflightInput,
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflight,
+} from "@t3tools/contracts/jones/jonesOperations";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -20,7 +30,11 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
-import { executeAuthenticatedEnvironmentHttpRequest } from "../../state/environmentHttpAuth.ts";
+import {
+  executeAuthenticatedEnvironmentHttpRequest,
+  type EnvironmentHttpAuthHeaders,
+} from "../../state/environmentHttpAuth.ts";
+import type { makeEnvironmentHttpApiGroupClient } from "../../rpc/http.ts";
 import {
   createEnvironmentCommand,
   isAtomCommandInterrupted,
@@ -41,8 +55,72 @@ export type JonesAction =
   | { action: "reconcile"; input: JonesUpdateReconcileInput }
   | { action: "install"; input: JonesUpdateInstallInput };
 
-const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
-  input: JonesAction | { action: "state"; after?: number },
+export type JonesOperationCommand =
+  | { action: "operationStart"; input: JonesOperationStartInput }
+  | { action: "operationFence"; input: JonesOperationFenceInput }
+  | { action: "operationRead"; input: JonesOperationReadInput }
+  | { action: "recoveryPreflight"; input: JonesRecoveryPreflightInput };
+export type JonesStopCommand = { action: "operationStop"; input: JonesOperationStopInput };
+
+type JonesRequest =
+  | JonesAction
+  | JonesOperationCommand
+  | JonesStopCommand
+  | { action: "state"; after?: number };
+type JonesRequestResult<I extends JonesRequest> = I extends { action: "operationRead" }
+  ? JonesOperationReadResult
+  : I extends { action: "recoveryPreflight" }
+    ? JonesRecoveryPreflight
+    : I extends { action: "operationStart" | "operationStop" | "operationFence" }
+      ? JonesOperationReceipt
+      : JonesUpdateState | null;
+
+type JonesDispatchContext = {
+  readonly client: Effect.Success<
+    ReturnType<typeof makeEnvironmentHttpApiGroupClient<"jonesUpdates">>
+  >;
+  readonly headers: EnvironmentHttpAuthHeaders;
+};
+
+const dispatchRequest = Effect.fn("clientRuntime.jonesUpdates.dispatch")(function* (
+  input: JonesRequest,
+  { client, headers }: JonesDispatchContext,
+) {
+  switch (input.action) {
+    case "state":
+      return yield* client.state({
+        headers,
+        query: input.after === undefined ? {} : { after: input.after },
+      });
+    case "check":
+      return yield* client.check({ headers });
+    case "download":
+      return yield* client.download({ headers, payload: input.input });
+    case "downloadExact":
+      return yield* client.downloadExact({ headers, payload: input.input });
+    case "install":
+      return yield* client.install({ headers, payload: input.input });
+    case "reconcile":
+      return yield* client.reconcile({ headers, payload: input.input });
+    case "operationStart":
+      return yield* client.operationStart({ headers, payload: input.input });
+    case "operationStop":
+      return yield* client.operationStop({ headers, payload: input.input });
+    case "operationFence":
+      return yield* client.operationFence({ headers, payload: input.input });
+    case "operationRead":
+      return yield* client.operationRead({ headers, payload: input.input });
+    case "recoveryPreflight":
+      return yield* client.recoveryPreflight({ headers, payload: input.input });
+  }
+});
+
+const requestImpl = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
+  input:
+    | JonesAction
+    | JonesOperationCommand
+    | JonesStopCommand
+    | { action: "state"; after?: number },
 ) {
   const supervisor = yield* EnvironmentSupervisor;
   const prepared = yield* SubscriptionRef.get(supervisor.prepared);
@@ -59,28 +137,26 @@ const request = Effect.fn("clientRuntime.jonesUpdates.request")(function* (
       input.action === "state"
         ? urls.state({ query: input.after === undefined ? {} : { after: input.after } })
         : urls[input.action](),
-    timeoutMs: input.action === "state" ? 35_000 : 20 * 60_000,
-    request: ({ client, headers }) => {
-      switch (input.action) {
-        case "state":
-          return client.state({
-            headers,
-            query: input.after === undefined ? {} : { after: input.after },
-          });
-        case "check":
-          return client.check({ headers });
-        case "download":
-          return client.download({ headers, payload: input.input });
-        case "downloadExact":
-          return client.downloadExact({ headers, payload: input.input });
-        case "install":
-          return client.install({ headers, payload: input.input });
-        case "reconcile":
-          return client.reconcile({ headers, payload: input.input });
-      }
-    },
+    timeoutMs:
+      input.action === "state"
+        ? 35_000
+        : [
+              "operationStart",
+              "operationStop",
+              "operationFence",
+              "operationRead",
+              "recoveryPreflight",
+            ].includes(input.action)
+          ? 60_000
+          : 20 * 60_000,
+    request: (context) => dispatchRequest(input, context),
   });
 });
+
+function request<I extends JonesRequest>(input: I) {
+  // The authenticated client dispatch above binds each action to its contract response.
+  return requestImpl(input).pipe(Effect.map((value) => value as JonesRequestResult<I>));
+}
 
 export interface JonesUpdateObservation {
   readonly state: JonesUpdateState | null;
@@ -244,7 +320,17 @@ export function createJonesUpdateAtoms<R, E>(
     concurrency: { mode: "serial", key: ({ environmentId }) => environmentId },
     execute: (input: JonesAction) => request(input),
   });
-  return { value, observation, action };
+  const operation = createEnvironmentCommand(runtime, {
+    label: "environment:jones-update-operation",
+    concurrency: { mode: "serial", key: ({ environmentId }) => `${environmentId}:operations` },
+    execute: (input: JonesOperationCommand) => request(input),
+  });
+  const stop = createEnvironmentCommand(runtime, {
+    label: "environment:jones-update-stop",
+    concurrency: { mode: "serial", key: ({ environmentId }) => `${environmentId}:stop` },
+    execute: (input: JonesStopCommand) => request(input),
+  });
+  return { value, observation, action, operation, stop };
 }
 
 const SETTLEMENT_REFUSALS = {
@@ -359,6 +445,7 @@ export function jonesFollowerHold(
 ): string | undefined {
   const policy = state.policy;
   if (policy === undefined) return undefined;
+  if (source !== undefined && policy.reviewTarget?.source === source) return undefined;
   if (policy.leaderSource === null)
     return "This host follows its laptop and waits for the laptop to report its installed build.";
   if (source === undefined || source === policy.leaderSource) return undefined;

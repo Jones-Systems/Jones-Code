@@ -250,14 +250,6 @@ export function QuestionAnswerFooter({
             </Button>
           </div>
         </div>
-        {state.sends !== null ? (
-          <p
-            role="status"
-            className="max-h-24 overflow-y-auto whitespace-pre-wrap wrap-anywhere text-xs text-muted-foreground"
-          >
-            Sends: {state.sends || "Your attachment"}
-          </p>
-        ) : null}
         {state.blockedReason ? (
           <p id={reasonId} className="text-xs text-muted-foreground">
             {state.blockedReason}

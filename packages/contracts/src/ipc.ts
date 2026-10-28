@@ -1,5 +1,10 @@
 import type { DesktopThreadMonitorMainBridge } from "./jones/desktopThreadMonitor.ts";
 import type { FleetDesktopRequest, FleetDesktopState } from "./jones/fleetUpdates/campaign.ts";
+import type {
+  JonesInstallPlanRequest,
+  JonesInstallPlanResult,
+  JonesInstallPlanState,
+} from "./jones/installPlan.ts";
 import * as Schema from "effect/Schema";
 import type { DesktopCompanionBridge } from "./jones/previewCompanion.ts";
 import type { PreviewCaptureFailureEncoded } from "./previewCapture.ts";
@@ -1198,6 +1203,9 @@ export interface DesktopBridge {
   setJonesBackgroundPreparation?: (enabled: boolean) => Promise<DesktopUpdateState>;
   installUpdate: (stagedHandle?: string, campaignId?: string) => Promise<DesktopUpdateActionResult>;
   fleetUpdates?: (request: FleetDesktopRequest) => Promise<FleetDesktopState>;
+  /** Older desktop builds lack install-plan support. */
+  installPlan?: (request: JonesInstallPlanRequest) => Promise<JonesInstallPlanResult>;
+  onInstallPlan?: (listener: (state: JonesInstallPlanState) => void) => () => void;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   cliCommand?: {
     getState: () => Promise<DesktopCliCommandState>;

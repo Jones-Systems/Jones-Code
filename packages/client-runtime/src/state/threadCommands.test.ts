@@ -149,6 +149,65 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
   return { registry, commands, snapshotAtom, visibleAtom, requests, reconciled, historyController };
 });
 
+describe("prepared turn commands", () => {
+  it.effect(
+    "prepares without sending and shares the thread scheduler with lifecycle commands",
+    () =>
+      Effect.gen(function* () {
+        const h = yield* makeHarness();
+        const preparation = yield* Effect.promise(() =>
+          h.commands.prepareTurn.run(h.registry, {
+            environmentId: ENVIRONMENT_ID,
+            input: {
+              threadId: THREAD_ID,
+              commandId: CommandId.make("prepared-send"),
+              message: {
+                messageId: MessageId.make("prepared-message"),
+                role: "user",
+                text: "Continue",
+                attachments: [],
+              },
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              dispatchMode: "start",
+            },
+          }),
+        );
+        if (preparation._tag !== "Success") throw new Error("Expected successful preparation");
+        expect(yield* Queue.poll(h.requests)).toEqual(Option.none());
+        const prepared = preparation.value;
+        const send = h.commands.dispatchPreparedTurn.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: prepared,
+        });
+        const first = yield* Queue.take(h.requests);
+        const stop = h.commands.interruptTurn.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: {
+            threadId: THREAD_ID,
+            commandId: CommandId.make("stop-after-prepared"),
+            runId: RunId.make("run"),
+          },
+        });
+        expect(yield* Queue.poll(h.requests)).toEqual(Option.none());
+        yield* Deferred.fail(first.reply, new Error("Response lost"));
+        expect((yield* Effect.promise(() => send))._tag).toBe("Failure");
+        const stopRequest = yield* Queue.take(h.requests);
+        expect(stopRequest.command.type).toBe("run.interrupt");
+        yield* Deferred.succeed(stopRequest.reply, { sequence: 2 });
+        expect((yield* Effect.promise(() => stop))._tag).toBe("Success");
+        const retry = h.commands.dispatchPreparedTurn.run(h.registry, {
+          environmentId: ENVIRONMENT_ID,
+          input: prepared,
+        });
+        const second = yield* Queue.take(h.requests);
+        expect(JSON.stringify(second.command)).toBe(JSON.stringify(first.command));
+        yield* Deferred.succeed(second.reply, { sequence: 3 });
+        expect((yield* Effect.promise(() => retry))._tag).toBe("Success");
+      }),
+  );
+});
+
 describe("interrupt turn", () => {
   // A stale cached item has nothing left to interrupt, so the server can reject Stop.
   it.effect("reconciles pending work when the server rejects the interrupt", () =>

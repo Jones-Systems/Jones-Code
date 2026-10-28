@@ -9,6 +9,8 @@ import {
   threadHandoffHandler,
 } from "../../../jones/linkedThreads/tools.ts";
 import { threadGoalHandler } from "../../../jones/goals/tool.ts";
+import { goalContinuityHandler } from "../../../jones/goals/continuity/tool.ts";
+import { documentSectionsHandler } from "../../../jones/documentSections/tool.ts";
 import { taskContinueHandler } from "../../../jones/taskContinuation/tool.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import { OrchestratorToolkit } from "./tools.ts";
@@ -22,6 +24,8 @@ import * as OrchestratorMcpService from "../../OrchestratorMcpService.ts";
 import * as ThreadMetadataMcpService from "../../ThreadMetadataMcpService.ts";
 
 const handlers = {
+  t3_thread_continuity: goalContinuityHandler,
+  t3_document_sections: documentSectionsHandler,
   t3_thread_request_fulfill: threadRequestFulfillHandler,
   t3_thread_dependency_release: threadDependencyReleaseHandler,
   t3_thread_request_observe: threadRequestObserveHandler,

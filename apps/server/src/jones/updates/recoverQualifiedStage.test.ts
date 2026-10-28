@@ -70,7 +70,7 @@ function zip(entries: ReadonlyArray<{ name: string; bytes: Buffer }>): Buffer {
   return Buffer.concat([...local, directory, end]);
 }
 
-async function fixture(event: "push" | "schedule" = "push") {
+async function fixture(event: "push" | "schedule" | "workflow_dispatch" = "push") {
   const allocated = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-recover-stage-"));
   roots.push(allocated);
   const base = await NodeFSP.realpath(allocated);
@@ -125,7 +125,7 @@ async function fixture(event: "push" | "schedule" = "push") {
     architecture: "arm64",
   };
   const stage = NodePath.join(base, "transport", jonesCandidateHandle(candidate));
-  await NodeFSP.mkdir(stage, { recursive: true });
+  await NodeFSP.mkdir(stage, { recursive: true, mode: 0o700 });
   await NodeFSP.writeFile(NodePath.join(stage, "github-artifact.zip"), archive);
   await NodeFSP.writeFile(NodePath.join(stage, artifactName), dmg);
   await NodeFSP.writeFile(
@@ -139,6 +139,7 @@ async function fixture(event: "push" | "schedule" = "push") {
       receipt: manifest,
       payloadPath: NodePath.join(stage, artifactName),
     }),
+    { mode: 0o600 },
   );
   let targetReceipt!: QualifiedRuntimeReceipt;
   for (const [version, sourceSha] of [
@@ -146,7 +147,7 @@ async function fixture(event: "push" | "schedule" = "push") {
     [targetVersion, source],
   ]) {
     const directory = NodePath.join(base, "runtime", "versions", version!);
-    await NodeFSP.mkdir(directory, { recursive: true });
+    await NodeFSP.mkdir(directory, { recursive: true, mode: 0o700 });
     await NodeFSP.writeFile(NodePath.join(directory, "t3"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
     const receipt: QualifiedRuntimeReceipt = {
       protocol: 1,
@@ -173,7 +174,7 @@ async function fixture(event: "push" | "schedule" = "push") {
     );
     if (version === targetVersion) targetReceipt = receipt;
   }
-  await NodeFSP.mkdir(NodePath.join(base, "userdata"));
+  await NodeFSP.mkdir(NodePath.join(base, "userdata"), { mode: 0o700 });
   await NodeFSP.writeFile(NodePath.join(base, "userdata", "environment-id"), "fixture-env");
   await NodeFSP.writeFile(
     NodePath.join(base, "userdata", "statev2.sqlite"),
@@ -182,6 +183,7 @@ async function fixture(event: "push" | "schedule" = "push") {
   await NodeFSP.writeFile(
     NodePath.join(base, "runtime", "service-state.json"),
     JSON.stringify({ protocol: 4, activeVersion: currentVersion }),
+    { mode: 0o600 },
   );
   const adoption = JSON.stringify({
     schema: 1,
@@ -338,7 +340,7 @@ it.each([
     f.responses.set("actions/artifacts/103", { status: 200, body: { id: 999, workflow_run: {} } });
   if (fault === "revoked") {
     const directory = NodePath.join(f.base, "runtime", "jones-update-revocations");
-    await NodeFSP.mkdir(directory);
+    await NodeFSP.mkdir(directory, { mode: 0o700 });
     await NodeFSP.writeFile(
       NodePath.join(directory, `${input.operationId}.json`),
       JSON.stringify({
@@ -421,7 +423,7 @@ it("refuses a foreign selection, an unknown partial publication and a changed ap
   const g = await fixture(),
     other = await inspectQualifiedStageRecovery(g.input, g.api);
   const directory = NodePath.join(g.base, "runtime", "staged-updates");
-  await NodeFSP.mkdir(directory);
+  await NodeFSP.mkdir(directory, { mode: 0o700 });
   await NodeFSP.writeFile(NodePath.join(directory, `${g.input.operationId}.json`), "{", {
     mode: 0o600,
   });
@@ -490,20 +492,23 @@ it.each(["unenrolled", "stage-evidence", "dmg", "manifest", "ci", "http"])(
   },
 );
 
-it("qualifies scheduled macOS admission while retaining push-only CI and exact artifact events", async () => {
-  const f = await fixture("schedule");
-  await expect(inspectQualifiedStageRecovery(f.input, f.api)).resolves.toMatchObject({
-    trustBasis: "preserved-original-admission",
-  });
-  f.responses.set("actions/runs/101/attempts/1", {
-    status: 200,
-    body: { ...f.run, event: "workflow_dispatch" },
-  });
-  await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
-  f.responses.set("actions/runs/101/attempts/1", { status: 200, body: f.run });
-  f.responses.set("actions/runs/102", {
-    status: 200,
-    body: { ...f.run, id: 102, path: ".github/workflows/ci.yml", event: "schedule" },
-  });
-  await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
-});
+it.each(["schedule", "workflow_dispatch"] as const)(
+  "qualifies %s macOS admission while retaining push-only CI and exact artifact events",
+  async (event) => {
+    const f = await fixture(event);
+    await expect(inspectQualifiedStageRecovery(f.input, f.api)).resolves.toMatchObject({
+      trustBasis: "preserved-original-admission",
+    });
+    f.responses.set("actions/runs/101/attempts/1", {
+      status: 200,
+      body: { ...f.run, event: "push" },
+    });
+    await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
+    f.responses.set("actions/runs/101/attempts/1", { status: 200, body: f.run });
+    f.responses.set("actions/runs/102", {
+      status: 200,
+      body: { ...f.run, id: 102, path: ".github/workflows/ci.yml", event: "schedule" },
+    });
+    await expect(inspectQualifiedStageRecovery(f.input, f.api)).rejects.toThrow();
+  },
+);

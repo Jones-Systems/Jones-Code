@@ -1,3 +1,4 @@
+import { usePendingSidebarThread } from "../../jones/pendingSends/sidebar";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
@@ -469,17 +470,19 @@ export function SortableThreadRow(
   };
   // The sidebar arranges rows from quiet shells, which hold still while a
   // thread streams; reading the live shell here re-renders only this row.
-  const thread =
+  const thread = usePendingSidebarThread(
     useThreadShell(scopeThreadRef(rowProps.thread.environmentId, rowProps.thread.id)) ??
-    rowProps.thread;
+      rowProps.thread,
+  );
   // Keyed by variant so a card/slim switch remounts the row.
   return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} sortable={bag} />;
 }
 // Workstream rows belong to the Workstream drag surface, not the native sidebar sorter.
 // Keep their streaming subscription in this leaf as for sortable native rows.
 export function NonSortableThreadRow(props: Omit<SidebarThreadRowProps, "sortable">) {
-  const thread =
-    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  const thread = usePendingSidebarThread(
+    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread,
+  );
   return <SidebarThreadRow key={props.variant} {...props} thread={thread} />;
 }
 
@@ -1549,8 +1552,9 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
   onSelect: () => void;
   onFileDropThreads: (threadRef: ScopedThreadRef, files: File[]) => void;
 }) {
-  const thread =
-    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread;
+  const thread = usePendingSidebarThread(
+    useThreadShell(scopeThreadRef(props.thread.environmentId, props.thread.id)) ?? props.thread,
+  );
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
     statusLabel: null,

@@ -35,6 +35,7 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
+  PrimaryConnectionTarget,
   RelayConnectionTarget,
   type PreparedConnection,
 } from "../../connection/model.ts";
@@ -1027,3 +1028,157 @@ it("presents same-minute outcomes with exact-version stamps without changing ide
     }).outcomeMessage,
   ).toBe(`Blocked: ${fromVersion}0 → ${targetVersion}0`);
 });
+
+it.effect(
+  "Stop bypasses a long operation request while later operation reads remain serialized",
+  () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("operation-lanes");
+      const target = new PrimaryConnectionTarget({
+        environmentId,
+        label: "Synthetic primary",
+        httpBaseUrl: "http://updates.example.test",
+        wsBaseUrl: "ws://updates.example.test/ws",
+      });
+      const prepared: PreparedConnection = {
+        environmentId,
+        label: target.label,
+        target,
+        httpBaseUrl: "http://updates.example.test",
+        socketUrl: "ws://updates.example.test/ws",
+        httpAuthorization: null,
+      };
+      const supervisor = EnvironmentSupervisor.of({
+        target,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none()),
+        prepared: yield* SubscriptionRef.make(Option.some(prepared)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const run: EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor, supervisor);
+      const environmentRegistry = EnvironmentRegistry.of({
+        run,
+      } as unknown as EnvironmentRegistry["Service"]);
+      const entered = yield* Deferred.make<void>();
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const calls: string[] = [];
+      const payloads: unknown[] = [];
+      const operationId = "11111111-1111-4111-8111-111111111111";
+      const stopId = "22222222-2222-4222-8222-222222222222";
+      const input = {
+        operationId,
+        environmentId,
+        expectedInstalledSource: "a".repeat(40),
+        action: { kind: "download-exact" as const, targetSource: "b".repeat(40) },
+      };
+      const stopInput = { environmentId, operationId, stopId };
+      const readInput = { environmentId, operationIds: [operationId] };
+      const receipt = {
+        ...input,
+        protocol: 1,
+        phase: "accepted",
+        acceptedAt: "2026-10-27T05:00:00Z",
+        updatedAt: "2026-10-27T05:00:00Z",
+      };
+      const stopReceipt = {
+        ...receipt,
+        phase: "stop-requested",
+        stop: { stopId, requestedAt: receipt.updatedAt },
+      };
+      const fetchFn: typeof fetch = async (request, init) => {
+        const path = new URL(String(request)).pathname;
+        calls.push(path);
+        expect(init?.credentials).toBe("include");
+        if (path.includes("/operations/")) payloads.push(JSON.parse(String(init?.body)));
+        if (path.endsWith("/operations/start")) {
+          Deferred.doneUnsafe(entered, Effect.void);
+          await released;
+          return Response.json(receipt);
+        }
+        if (path.endsWith("/operations/stop")) return Response.json(stopReceipt);
+        if (path.endsWith("/operations/read"))
+          return Response.json({ receipts: [{ operationId, receipt }] });
+        return Response.json(staged);
+      };
+      const runtime = Atom.runtime(
+        Layer.mergeAll(
+          Layer.succeed(EnvironmentRegistry, environmentRegistry),
+          layerRemoteHttpClient(fetchFn),
+        ),
+      );
+      const registry = AtomRegistry.make();
+      const pending: Array<Promise<unknown>> = [];
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          release();
+          try {
+            await Promise.allSettled(pending);
+          } finally {
+            registry.dispose();
+          }
+        }),
+      );
+      const updates = createJonesUpdateAtoms(runtime);
+      const started = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationStart", input },
+      });
+      pending.push(started);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Effect.promise(() => started).pipe(
+          Effect.flatMap((result) =>
+            Effect.die(
+              new Error("operationStart settled before entering the held fetch", { cause: result }),
+            ),
+          ),
+        ),
+      );
+      const read = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationRead", input: readInput },
+      });
+      pending.push(read);
+      const stopped = updates.stop.run(registry, {
+        environmentId,
+        input: { action: "operationStop", input: stopInput },
+      });
+      pending.push(stopped);
+      expect(yield* Effect.promise(() => stopped)).toMatchObject({
+        _tag: "Success",
+        value: stopReceipt,
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+      ]);
+      const checked = updates.action.run(registry, { environmentId, input: { action: "check" } });
+      pending.push(checked);
+      expect(yield* Effect.promise(() => checked)).toMatchObject({
+        _tag: "Success",
+        value: staged,
+      });
+      release();
+      expect(yield* Effect.promise(() => started)).toMatchObject({
+        _tag: "Success",
+        value: receipt,
+      });
+      expect(yield* Effect.promise(() => read)).toMatchObject({
+        _tag: "Success",
+        value: { receipts: [{ operationId, receipt }] },
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+        "/api/jones-updates/check",
+        "/api/jones-updates/operations/read",
+      ]);
+      expect(payloads).toEqual([input, stopInput, readInput]);
+    }).pipe(Effect.scoped),
+);

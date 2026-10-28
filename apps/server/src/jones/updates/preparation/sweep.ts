@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
-// Runs inside the preparation worker while it holds the per-home preparation lock, so no other
-// preparation can own what it removes. A killed worker leaves its leftovers for this sweep.
+// Runs inside the preparation worker. Locks serialize owners; durable lifecycle evidence must
+// additionally prove process-group and native-effect release before scratch can be removed.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import {
@@ -8,6 +8,7 @@ import {
   withQualifiedRuntimeLock,
 } from "../../cloud/qualifiedRuntime.ts";
 import { ownedScratchRemover } from "../../cloud/ownedScratch.ts";
+import { preparationLifecycle, preparationLifecycleJobIds } from "./lifecycle.ts";
 import {
   isPreparationJobId,
   preparationJobLock,
@@ -115,6 +116,9 @@ export async function sweepPreparationLeftovers(input: {
   let removed = 0;
   let retained = 0;
   let failed = 0;
+  const removedJobIds: string[] = [];
+  const retainedJobIds: string[] = [];
+  let unresolved = false;
   const removeEach = async (paths: ReadonlyArray<string>) => {
     for (const path of paths) {
       try {
@@ -134,16 +138,42 @@ export async function sweepPreparationLeftovers(input: {
       continue;
     }
     try {
-      await withQualifiedRuntimeLock(baseDir, preparationJobLock(name), () =>
-        remove(NodePath.join(jobs, name)),
-      );
-      removed += 1;
+      await withQualifiedRuntimeLock(baseDir, preparationJobLock(name), async () => {
+        const release = await preparationLifecycle(baseDir, name).release();
+        if (release !== "released" && release !== "not-started") {
+          unresolved = true;
+          retained += 1;
+          if (retainedJobIds.length < 64) retainedJobIds.push(name);
+          return;
+        }
+        await remove(NodePath.join(jobs, name));
+        removed += 1;
+        if (removedJobIds.length < 64) removedJobIds.push(name);
+      });
     } catch (cause) {
-      if (cause instanceof QualifiedRuntimeBlockedError && cause.reason === "busy") retained += 1;
+      if (cause instanceof QualifiedRuntimeBlockedError && cause.reason === "busy") {
+        unresolved = true;
+        retained += 1;
+        if (retainedJobIds.length < 64) retainedJobIds.push(name);
+      }
       // Its owner removed it first.
       else if ((cause as NodeJS.ErrnoException).code !== "ENOENT") failed += 1;
     }
   }
+
+  for (const id of await preparationLifecycleJobIds(baseDir)) {
+    if (id === input.keepJob) continue;
+    try {
+      const release = await withQualifiedRuntimeLock(baseDir, preparationJobLock(id), () =>
+        preparationLifecycle(baseDir, id).release(),
+      );
+      if (release !== "released" && release !== "not-started") unresolved = true;
+    } catch {
+      unresolved = true;
+    }
+  }
+  // A descendant can outlive both locks and still write shared download/runtime scratch.
+  if (unresolved) return { removed, retained, failed, removedJobIds, retainedJobIds };
 
   const cacheRoot = await NodeFSP.realpath(input.cacheRoot).catch(() => undefined);
   if (cacheRoot !== undefined) {
@@ -175,5 +205,5 @@ export async function sweepPreparationLeftovers(input: {
 
   for (const name of await names(NodePath.join(baseDir, "runtime")))
     if (name.startsWith(".jones-dmg-mount-") || name.startsWith(".jones-extract-")) retained += 1;
-  return { removed, retained, failed };
+  return { removed, retained, failed, removedJobIds, retainedJobIds };
 }
