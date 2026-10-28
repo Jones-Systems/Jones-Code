@@ -396,6 +396,8 @@ it("choosing a live option replaces custom text but waits for explicit Send", as
   using _timers = fakeTimers();
   await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Discard this answer");
+  expect(container.textContent).not.toContain("Your answer");
+  expect(container.textContent).toContain("Typing replaces your choice");
   const option = [...container.querySelectorAll("button")].find((b) =>
     b.textContent?.includes("Incremental"),
   )!;
@@ -1091,7 +1093,9 @@ it("keeps choice plus multiline note until Clear choice and never sends on messa
   expect(output("answer")).toBe("null");
   await typeAnswer("First line\nSecond line");
   expect(container.textContent).toContain("Note (optional): sent with your choice");
-  expect(container.textContent).toContain("Sends: Incremental\nNote: First line\nSecond line");
+  expect(answerField().value).toBe("First line\nSecond line");
+  expect(container.textContent).not.toContain("Sends:");
+  expect(container.querySelector('[role="status"]')).toBeNull();
   expect((await key({})).defaultPrevented).toBe(false);
   expect((await key({ ctrlKey: true })).defaultPrevented).toBe(false);
   expect(output("answer")).toBe("null");
