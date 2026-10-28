@@ -220,17 +220,19 @@ describe("captured child exit proof", () => {
       }),
   );
 
-  it.effect("bounds an unavailable exit observation to three seconds", () =>
+  it.effect("keeps the physical exit observation alive beyond a caller deadline", () =>
     Effect.gen(function* () {
+      const exited = yield* Deferred.make<void>();
       const readback = yield* verifyCodexProcessExit({
-        exitCode: Effect.never,
+        exitCode: Deferred.await(exited).pipe(Effect.as(ChildProcessSpawner.ExitCode(0))),
         isRunning: Effect.succeed(false),
-      }).pipe(Effect.flip, Effect.forkScoped);
-      yield* TestClock.adjust("2999 millis");
+      }).pipe(Effect.forkScoped);
+      const caller = yield* Fiber.join(readback).pipe(Effect.timeout("3 seconds"), Effect.exit, Effect.forkScoped);
+      yield* TestClock.adjust("3 seconds");
+      assert.equal((yield* Fiber.join(caller))._tag, "Failure");
       assert.isUndefined(readback.pollUnsafe());
-      yield* TestClock.adjust("1 millis");
-      assert.isDefined(readback.pollUnsafe());
-      assert.equal((yield* Fiber.join(readback))._tag, "CodexAppServerTransportError");
+      yield* Deferred.succeed(exited, undefined);
+      yield* Fiber.join(readback);
     }).pipe(Effect.scoped),
   );
 });

@@ -106,6 +106,7 @@ function layerExecutorFor(input: {
   readonly rollback?: CheckpointRollbackService.CheckpointRollbackServiceV2Shape["execute"];
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
+  readonly detach?: ProviderSessionManager.ProviderSessionManagerV2Shape["detach"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
   const layerDependencies = Layer.mergeAll(
@@ -133,7 +134,7 @@ function layerExecutorFor(input: {
         close: () => Effect.void,
         closeInstance: () => Effect.void,
         release: () => record("release"),
-        detach: () => record("detach"),
+        detach: input.detach ?? (() => record("detach")),
       }),
     ),
     Layer.succeed(
@@ -1088,4 +1089,30 @@ it.effect.each(["single", "batch", "notification"] as const)(
       }
       assert.deepEqual(yield* Ref.get(events), []);
     }),
+);
+
+it.effect("restart replacement requests confirmed writer retirement before start", () =>
+  Effect.gen(function* () {
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const detaches: Array<Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["detach"]>[0]> = [];
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      const effect = restartEffect(yield* DateTime.now, { type: "detach" });
+      yield* executor.execute(effect);
+      assert.equal(detaches.length, 1);
+      assert.isTrue(detaches[0]!.requireWriterRetirement);
+      assert.deepEqual(yield* Ref.get(events), ["interrupt", "detach", "start"]);
+    }).pipe(
+      Effect.provide(
+        layerExecutorFor({
+          events,
+          detach: (input) =>
+            Effect.gen(function* () {
+              detaches.push(input);
+              yield* Ref.update(events, (current) => [...current, "detach"]);
+            }),
+        }),
+      ),
+    );
+  }),
 );

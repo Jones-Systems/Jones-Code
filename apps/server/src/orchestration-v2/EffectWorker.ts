@@ -502,6 +502,7 @@ export const layerExecutor: Layer.Layer<
                     : providerSessions.detach({
                         providerSessionId: request.providerSessionId,
                         threadId: effect.threadId,
+                        requireWriterRetirement: true,
                         detail:
                           request.sessionTransition.type === "replace"
                             ? "Selection change requires a provider session restart."

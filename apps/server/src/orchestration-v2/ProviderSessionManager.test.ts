@@ -29,7 +29,7 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderTurnId,
-  type ProviderSessionId,
+  ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -349,6 +349,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
     readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
+    readonly retireThreadForTransfer?: ProviderAdapterV2SessionRuntime["retireThreadForTransfer"];
     readonly hangSessionScopeClose?: boolean;
     readonly sessionCloseDelayMs?: number;
     readonly startTurn?: Effect.Effect<void>;
@@ -457,6 +458,9 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           ...(options.captureRuntimeStop === undefined
             ? {}
             : { captureRuntimeStop: options.captureRuntimeStop }),
+          ...(options.retireThreadForTransfer === undefined
+            ? {}
+            : { retireThreadForTransfer: options.retireThreadForTransfer }),
           ensureThread: () => unimplemented("ensureThread unused in test"),
           resumeThread: (threadInput) =>
             Ref.update(state, (current) => ({
@@ -519,6 +523,7 @@ function layerTest(input: {
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
   readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
+  readonly retireThreadForTransfer?: ProviderAdapterV2SessionRuntime["retireThreadForTransfer"];
   readonly hangSessionScopeClose?: boolean;
   readonly sessionCloseDelayMs?: number;
   readonly startTurn?: Effect.Effect<void>;
@@ -563,6 +568,9 @@ function layerTest(input: {
       ...(input.captureRuntimeStop === undefined
         ? {}
         : { captureRuntimeStop: input.captureRuntimeStop }),
+      ...(input.retireThreadForTransfer === undefined
+        ? {}
+        : { retireThreadForTransfer: input.retireThreadForTransfer }),
       ...(input.sessionCloseDelayMs === undefined
         ? {}
         : { sessionCloseDelayMs: input.sessionCloseDelayMs }),
@@ -2600,6 +2608,58 @@ it.effect(
         ),
       );
     }),
+);
+
+it.effect("ProviderSessionManagerV2 refuses replacement until the retiring scope closes", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const closeReached = yield* Deferred.make<void>();
+    const allowClose = yield* Deferred.make<void>();
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("provider-session-retirement-barrier");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+      yield* manager.open(input);
+      const releasing = yield* manager
+        .release({ providerSessionId, reason: "manual_shutdown" })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(closeReached);
+
+      const replacement = yield* Effect.exit(manager.open(input));
+      const opensBeforeRelease = (yield* Ref.get(state)).openCount;
+      yield* Deferred.succeed(allowClose, undefined);
+      yield* Fiber.join(releasing);
+
+      assert.isTrue(Exit.isFailure(replacement));
+      assert.equal(opensBeforeRelease, 1);
+      yield* manager.open(input);
+      assert.equal((yield* Ref.get(state)).openCount, 2);
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(allowClose, undefined)),
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          beforeOpen: () =>
+            Effect.addFinalizer(() =>
+              Deferred.succeed(closeReached, undefined).pipe(
+                Effect.andThen(Deferred.await(allowClose)),
+              ),
+            ),
+        }),
+      ),
+    );
+  }),
 );
 
 it.effect("ProviderSessionManagerV2 persists release when session scope close hangs", () =>
@@ -6062,4 +6122,315 @@ it.effect.each([
         );
       }),
     ),
+);
+
+const openTransferFixture = (name: string) =>
+  Effect.gen(function* () {
+    const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const idAllocator = yield* IdAllocator.IdAllocatorV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make(name);
+    const providerSessionId = idAllocator.derive.providerSession({
+      providerInstanceId: modelSelection.instanceId,
+    });
+    const providerThread = {
+      ...makeProviderThread({ idAllocator, threadId, providerSessionId, now }),
+      runtimeIdentity: {
+        runtimeGeneration: `${name}-generation`,
+        requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+        observed: unobservedRuntimeIdentity(),
+      },
+    };
+    yield* sink.write({
+      events: [
+        yield* makeThreadCreatedEvent({ idAllocator, threadId, now }),
+        {
+          id: yield* idAllocator.allocate.event({ threadId }),
+          type: "provider-thread.updated",
+          threadId,
+          occurredAt: now,
+          payload: providerThread,
+        },
+      ],
+    });
+    const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+    const runtime = yield* manager.open(input);
+    return { manager, sink, idAllocator, now, threadId, providerSessionId, providerThread, input, runtime };
+  });
+
+it.effect(
+  "transfer timeout and cancellation retain one writer operation across changed session IDs",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const completed = yield* Deferred.make<void>();
+      let retirementCount = 0;
+      const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
+        providerThread,
+        allowProducerRetirement,
+      }) =>
+        Effect.gen(function* () {
+          retirementCount += 1;
+          assert.isTrue(allowProducerRetirement);
+          yield* Deferred.succeed(reached, undefined);
+          yield* Deferred.await(release);
+          yield* Deferred.succeed(completed, undefined);
+          return {
+            binding: runtimeBinding(providerThread, providerThread.runtimeIdentity!.runtimeGeneration!)!,
+            evidence: "thread_closed" as const,
+          };
+        });
+      yield* Effect.gen(function* () {
+        const fixture = yield* openTransferFixture("transfer-caller-retirement");
+        const input = {
+          providerSessionId: fixture.providerSessionId,
+          threadId: fixture.threadId,
+          requireWriterRetirement: true,
+        };
+        const pending = yield* fixture.manager.detach(input).pipe(Effect.forkChild);
+        yield* Deferred.await(reached);
+        yield* TestClock.adjust("11 seconds");
+        assert.isTrue(Exit.isFailure(yield* Fiber.await(pending)));
+        const second = yield* fixture.manager.detach(input).pipe(Effect.forkChild);
+        yield* Fiber.interrupt(second);
+        for (const providerSessionId of [
+          fixture.providerSessionId,
+          ProviderSessionId.make("replacement-session"),
+        ]) {
+          assert.isTrue(
+            Exit.isFailure(
+              yield* Effect.exit(fixture.manager.open({ ...fixture.input, providerSessionId })),
+            ),
+          );
+        }
+        const sibling = ThreadId.make("exclusive-transfer-new-sibling");
+        yield* fixture.sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator: fixture.idAllocator,
+              threadId: sibling,
+              now: fixture.now,
+            }),
+          ],
+        });
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(fixture.manager.open({ ...fixture.input, threadId: sibling })),
+          ),
+        );
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        assert.equal(retirementCount, 1);
+        yield* Deferred.succeed(release, undefined);
+        yield* Deferred.await(completed);
+        yield* fixture.manager.detach(input);
+        yield* fixture.manager.open(fixture.input);
+        assert.equal(retirementCount, 1);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(release, undefined)),
+        Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
+      );
+    }),
+);
+
+it.effect("a shared transfer preserves its sibling and never grants producer retirement", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
+      providerThread,
+      allowProducerRetirement,
+    }) =>
+      Effect.gen(function* () {
+        assert.isFalse(allowProducerRetirement);
+        yield* Deferred.succeed(reached, undefined);
+        yield* Deferred.await(release);
+        return {
+          binding: runtimeBinding(providerThread, providerThread.runtimeIdentity!.runtimeGeneration!)!,
+          evidence: "thread_closed" as const,
+        };
+      });
+    yield* Effect.gen(function* () {
+      const fixture = yield* openTransferFixture("shared-transfer");
+      const sibling = ThreadId.make("shared-transfer-sibling");
+      yield* fixture.sink.write({
+        events: [
+          yield* makeThreadCreatedEvent({
+            idAllocator: fixture.idAllocator,
+            threadId: sibling,
+            now: fixture.now,
+          }),
+        ],
+      });
+      yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
+      const detach = yield* fixture.manager
+        .detach({
+          providerSessionId: fixture.providerSessionId,
+          threadId: fixture.threadId,
+          requireWriterRetirement: true,
+        })
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(reached);
+      const sameRuntime = yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
+      assert.strictEqual(sameRuntime, fixture.runtime);
+      assert.equal((yield* Ref.get(state)).closeCount, 0);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.open(fixture.input))));
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(detach);
+      yield* fixture.manager.open(fixture.input);
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(release, undefined)),
+      Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
+    );
+  }),
+);
+
+it.effect.each(["unsupported", "wrong-generation"] as const)(
+  "a %s transfer cannot authorize replacement",
+  (mode) =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
+        providerThread,
+      }) =>
+        Effect.succeed({
+          binding: {
+            ...runtimeBinding(providerThread, providerThread.runtimeIdentity!.runtimeGeneration!)!,
+            runtimeGeneration: "foreign-generation",
+          },
+          evidence: "thread_closed",
+        });
+      yield* Effect.gen(function* () {
+        const fixture = yield* openTransferFixture(`transfer-${mode}`);
+        const detached = yield* Effect.exit(
+          fixture.manager.detach({
+            providerSessionId: fixture.providerSessionId,
+            threadId: fixture.threadId,
+            requireWriterRetirement: true,
+          }),
+        );
+        assert.isTrue(Exit.isFailure(detached));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.open(fixture.input))));
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        yield* fixture.manager.close(fixture.providerSessionId);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            ...(mode === "unsupported" ? {} : { retireThreadForTransfer: proof }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "cancelled and duplicate closes cannot release a changed-session admission fence before late teardown",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      yield* Effect.gen(function* () {
+        const fixture = yield* openTransferFixture("close-generation-fence");
+        const closing = yield* fixture.manager
+          .close(fixture.providerSessionId)
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(reached);
+        yield* Fiber.interrupt(closing);
+        const duplicate = yield* fixture.manager
+          .close(fixture.providerSessionId)
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust("4 seconds");
+        yield* Fiber.join(duplicate);
+        const replacement = {
+          ...fixture.input,
+          providerSessionId: ProviderSessionId.make("close-replacement-session"),
+        };
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.open(replacement))));
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        yield* Deferred.succeed(release, undefined);
+        yield* fixture.manager.close(fixture.providerSessionId);
+        yield* fixture.manager.open(replacement);
+        assert.equal((yield* Ref.get(state)).openCount, 2);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(release, undefined)),
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            beforeOpen: () =>
+              Effect.addFinalizer(() =>
+                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
+              ),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect("failed partial initialization retains its thread fence beyond scope-close timeout", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const reached = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let spawned = 0;
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const threadId = ThreadId.make("partial-open-retirement");
+      const now = yield* DateTime.now;
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* sink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+      const opening = yield* manager.open(input).pipe(Effect.forkChild);
+      yield* Deferred.await(reached);
+      yield* TestClock.adjust("4 seconds");
+      assert.isTrue(Exit.isFailure(yield* Fiber.await(opening)));
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            manager.open({
+              ...input,
+              providerSessionId: ProviderSessionId.make("partial-open-replacement"),
+            }),
+          ),
+        ),
+      );
+      assert.equal(spawned, 1);
+      yield* Deferred.succeed(release, undefined);
+      yield* manager.close(providerSessionId);
+      const afterTeardown = yield* Effect.exit(manager.open(input));
+      assert.isTrue(Exit.isFailure(afterTeardown));
+      assert.equal(spawned, 2);
+    }).pipe(
+      Effect.ensuring(Deferred.succeed(release, undefined)),
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          spawnBeforeOpen: true,
+          beforeOpen: () =>
+            Effect.gen(function* () {
+              spawned += 1;
+              yield* Effect.addFinalizer(() =>
+                Deferred.succeed(reached, undefined).pipe(Effect.andThen(Deferred.await(release))),
+              );
+              return yield* Effect.die("Synthetic initialization failure after spawn.");
+            }),
+        }),
+      ),
+    );
+  }),
 );

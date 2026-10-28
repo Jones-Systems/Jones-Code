@@ -767,12 +767,70 @@ export const layer: Layer.Layer<
       const inheritedBackgroundTurnItems = yield* projectionStore
         .getRuntimeRecoveryProjection(projection.thread.id)
         .pipe(Effect.map(selectInheritedBackgroundItems));
-      providerThread = yield* prepareExecutionSession(run, providerThread, projection).pipe(
-        Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
-        Effect.provideService(EventSink.EventSinkV2, eventSink),
-        Effect.provideService(ProviderSwitchService.ProviderSwitchServiceV2, selectionTransitions),
-        Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
+      const startProviderThreadId = providerThread.id;
+      const settleStartFailure = Effect.fn("ProviderTurnStartService.settleStartFailure")(
+        function* (failed: {
+          readonly signal: string;
+          readonly title: string;
+          readonly error: Error;
+        }) {
+          const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
+          yield* settleRunBeforeStart({
+            signal: failed.signal,
+            status: "failed",
+            now: yield* DateTime.now,
+            providerInstanceId: run.providerInstanceId,
+            itemProviderThreadId: startProviderThreadId,
+            item: {
+              type: "error",
+              title: failed.title,
+              failure: makeProviderFailure({
+                cause: failed.error,
+                message:
+                  knownProviderFailureMessage(failed.error) ??
+                  (nestedCause instanceof Error
+                    ? nestedCause.message
+                    : typeof nestedCause === "string"
+                      ? nestedCause
+                      : failed.error.message),
+                class: "provider_error",
+              }),
+            },
+          });
+        },
       );
+      const revalidateReplacement = Effect.gen(function* () {
+        const current = yield* projectionStore.getRuntimeRecoveryProjection(run.threadId);
+        const latest = current.runs.find((candidate) => candidate.id === run.id);
+        if (
+          latest?.activeAttemptId !== attempt.id ||
+          latest.status !== "starting" ||
+          latest.providerInstanceId !== run.providerInstanceId ||
+          !modelSelectionsEqual(latest.modelSelection, run.modelSelection)
+        )
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "The run attempt or provider selection changed during retirement.",
+          });
+      });
+      const preparation = yield* Effect.result(
+        prepareExecutionSession(run, providerThread, projection, revalidateReplacement).pipe(
+          Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
+          Effect.provideService(EventSink.EventSinkV2, eventSink),
+          Effect.provideService(ProviderSwitchService.ProviderSwitchServiceV2, selectionTransitions),
+          Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
+        ),
+      );
+      if (preparation._tag === "Failure") {
+        if (input.willRetry === true) return yield* preparation.failure;
+        yield* settleStartFailure({
+          signal: "provider-writer-retirement-failure",
+          title: "Previous provider writer could not retire",
+          error: preparation.failure,
+        });
+        return;
+      }
+      providerThread = preparation.success;
       const providerSessionId = providerThread.providerSessionId;
       if (providerSessionId === null)
         return yield* new ProviderTurnStartError({ runId, cause: "Missing provider session." });
@@ -793,37 +851,6 @@ export const layer: Layer.Layer<
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
-      );
-      const settleStartFailure = Effect.fn("ProviderTurnStartService.settleStartFailure")(
-        function* (failed: {
-          readonly signal: string;
-          readonly title: string;
-          readonly error: Error;
-        }) {
-          const nestedCause = "cause" in failed.error ? failed.error.cause : undefined;
-          yield* settleRunBeforeStart({
-            signal: failed.signal,
-            status: "failed",
-            now: yield* DateTime.now,
-            providerInstanceId: run.providerInstanceId,
-            itemProviderThreadId: providerThread.id,
-            item: {
-              type: "error",
-              title: failed.title,
-              failure: makeProviderFailure({
-                cause: failed.error,
-                message:
-                  knownProviderFailureMessage(failed.error) ??
-                  (nestedCause instanceof Error
-                    ? nestedCause.message
-                    : typeof nestedCause === "string"
-                      ? nestedCause
-                      : failed.error.message),
-                class: "provider_error",
-              }),
-            },
-          });
-        },
       );
       const failedRuns = new Map(
         projection.runs
@@ -898,6 +925,16 @@ export const layer: Layer.Layer<
         (yield* plannedContinuity.value
           .allowWorkStart(projection.thread.id, message.id)
           .pipe(Effect.orElseSucceed(() => false)));
+      const replacementCurrent = yield* Effect.result(revalidateReplacement);
+      if (replacementCurrent._tag === "Failure") {
+        if (input.willRetry === true) return yield* replacementCurrent.failure;
+        yield* settleStartFailure({
+          signal: "provider-selection-changed-before-open",
+          title: "Provider selection changed before opening",
+          error: replacementCurrent.failure,
+        });
+        return;
+      }
       const sessionResult = yield* Effect.result(
         keepWarm && !plannedWorkResume
           ? providerSessions.get(providerSessionId).pipe(

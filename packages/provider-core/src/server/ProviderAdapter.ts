@@ -796,6 +796,18 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly unloadThread?: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Confirms writer release for the captured binding; an unsubscribe acknowledgement is insufficient. */
+  readonly retireThreadForTransfer?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    /** The manager must fence new attachments while granting exclusive producer retirement. */
+    readonly allowProducerRetirement: boolean;
+  }) => Effect.Effect<
+    {
+      readonly binding: ProviderRuntimeBinding;
+      readonly evidence: "thread_closed" | "producer_exited";
+    },
+    ProviderAdapterV2Error
+  >;
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

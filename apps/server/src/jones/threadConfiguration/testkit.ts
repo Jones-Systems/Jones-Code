@@ -191,6 +191,29 @@ export function makeRestartAdapter(
         });
       });
 
+      const runtimeGeneration =
+        sessionInput.runtimeLifecycle === undefined
+          ? `synthetic:${sessionInput.providerSessionId}`
+          : yield* sessionInput.runtimeLifecycle.reserve(sessionInput.threadId);
+      if (sessionInput.runtimeLifecycle !== undefined)
+        yield* sessionInput.runtimeLifecycle.admit({
+          runtimeGeneration,
+          threadId: sessionInput.threadId,
+        });
+      const bindThread = Effect.fn("ThreadConfigurationTest.bindThread")(function* (
+        providerThread: OrchestrationV2ProviderThread,
+      ) {
+        const requested = ProviderAdapter.requestedRuntimeIdentity(sessionInput.modelSelection, driver);
+        const observed = ProviderAdapter.unobservedRuntimeIdentity();
+        return sessionInput.runtimeLifecycle === undefined
+          ? { ...providerThread, runtimeIdentity: { runtimeGeneration, requested, observed } }
+          : yield* sessionInput.runtimeLifecycle.bind({
+              providerThread,
+              runtimeGeneration,
+              requested,
+              observed,
+            });
+      });
       return {
         instanceId: providerInstanceId,
         driver,
@@ -202,7 +225,7 @@ export function makeRestartAdapter(
           const id =
             threadInput.existingProviderThread?.id ??
             ProviderThreadId.make(`provider-thread:${threadInput.threadId}`);
-          return {
+          return yield* bindThread({
             id,
             driver,
             providerInstanceId,
@@ -222,8 +245,28 @@ export function makeRestartAdapter(
             forkedFrom: null,
             createdAt,
             updatedAt: createdAt,
-          } satisfies OrchestrationV2ProviderThread;
+          } satisfies OrchestrationV2ProviderThread);
         }),
+        retireThreadForTransfer: ({ providerThread, allowProducerRetirement }) =>
+          Effect.gen(function* () {
+            const binding = ProviderAdapter.runtimeBinding(providerThread, runtimeGeneration);
+            if (
+              binding === undefined ||
+              providerThread.runtimeIdentity?.runtimeGeneration !== runtimeGeneration
+            )
+              return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                driver,
+                detail: "Synthetic writer binding changed.",
+              });
+            return {
+              binding,
+              evidence:
+                allowProducerRetirement &&
+                !sessionCapabilities.sessions.supportsMultipleProviderThreadsPerSession
+                  ? "producer_exited" as const
+                  : "thread_closed" as const,
+            };
+          }),
         resumeThread: ({ providerThread, modelSelection }) =>
           Ref.update(state, (current) => ({
             ...current,
@@ -231,7 +274,15 @@ export function makeRestartAdapter(
               ...(current.resumed ?? []),
               { sessionId: sessionInput.providerSessionId, selection: modelSelection },
             ],
-          })).pipe(Effect.as(providerThread)),
+          })).pipe(
+            Effect.andThen(
+              bindThread({
+                ...providerThread,
+                providerInstanceId,
+                providerSessionId: sessionInput.providerSessionId,
+              }),
+            ),
+          ),
         startTurn: Effect.fn("ThreadConfigurationTest.startTurn")(function* (input) {
           yield* Ref.update(state, (current) => ({
             ...current,

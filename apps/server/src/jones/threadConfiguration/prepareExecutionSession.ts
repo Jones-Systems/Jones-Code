@@ -20,6 +20,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     OrchestrationV2ThreadProjection,
     "thread" | "runs" | "providerThreads" | "providerSessions"
   >,
+  revalidateReplacement: Effect.Effect<void, unknown> = Effect.void,
 ) {
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sessions = yield* Sessions.ProviderSessionManagerV2;
@@ -35,6 +36,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       providerSessionId,
       threadId: run.threadId,
       detail: "Selection changed at normal run admission.",
+      requireWriterRetirement: true,
     });
     const occurredAt = yield* DateTime.now;
     events.push({
@@ -54,6 +56,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       },
     });
   }
+  yield* revalidateReplacement;
   // A new session key prevents a pooled sibling's resident runtime from being reused.
   const replacement =
     plan.transition.type === "restart_and_resume" ||
