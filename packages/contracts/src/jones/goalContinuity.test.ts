@@ -31,8 +31,44 @@ const owner = {
   nativeThreadId: "native",
 };
 const target = { goalId: "goal", revision: "1", generation: "9007199254740993", owner };
+const isContinuityRequest = Schema.is(ContinuityRequest);
+const isContinuityResult = Schema.is(ContinuityResult);
 
 describe("goal continuity wire vocabulary", () => {
+  it("adds bounded delivery discovery without producer authority or request-key mutation", () => {
+    const request = {
+      action: "discover_deliveries",
+      expected: { ...target, snapshotDigest: "a".repeat(64) },
+    };
+    expect(isContinuityRequest(request)).toBe(true);
+    expect(isContinuityRequest({ ...request, cursor: "opaque.cursor" })).toBe(true);
+    for (const extra of [
+      { cursor: "" },
+      { cursor: "x".repeat(1025) },
+      { deliveryId: "guess" },
+      { clientRequestId: "mutation" },
+      { producerOrigin: "authority" },
+    ])
+      expect(isContinuityRequest({ ...request, ...extra })).toBe(false);
+    expect(
+      isContinuityResult({
+        outcome: "deliveries",
+        expected: request.expected,
+        fenceRevision: "0",
+        deliveries: [],
+        nextCursor: null,
+      }),
+    ).toBe(true);
+    expect(
+      isContinuityResult({
+        outcome: "deliveries",
+        expected: request.expected,
+        fenceRevision: "0",
+        deliveries: [],
+        nextCursor: "x".repeat(1025),
+      }),
+    ).toBe(false);
+  });
   it("accepts canonical signed-64 decimal strings without number coercion", () => {
     const decode = Schema.decodeUnknownSync(ContinuityCounter);
     expect(decode("9007199254740993")).toBe("9007199254740993");
