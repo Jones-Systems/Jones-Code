@@ -1,4 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Canonical binding hashes and opaque IDs are synchronous server-local primitives.
+import { admissionOperation } from "../threadResultDependencies/RemoteRequestProtocol.ts";
+import { makeDependencyStore } from "../threadResultDependencies/DependencyStore.ts";
+import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
+import * as DependencyChanges from "../threadResultDependencies/DependencyChanges.ts";
+import * as Option from "effect/Option";
 import * as NodeCrypto from "node:crypto";
 import {
   RemoteAdmissionEnvelope,
@@ -185,6 +190,14 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
   timeoutMs: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
+  const changes = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+  const publishDependencyChanges = Option.isNone(changes)
+    ? Effect.void
+    : dependencies.sequence.pipe(
+        Effect.orDie,
+        Effect.flatMap((sequence) => changes.value.publish({ threadIds: [], sequence })),
+      );
   const database = <A>(effect: Effect.Effect<A, AdmissionError | SqlError>) =>
     effect.pipe(
       Effect.catchTags({
@@ -249,6 +262,14 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
                     return yield* new RemoteAdmissionKeyConflict({});
                   return { record, fresh: false };
                 }
+                const resultOperation = admissionOperation(decoded.envelope);
+                const resultTables =
+                  resultOperation !== undefined && (yield* dependencies.available);
+                if (
+                  resultTables &&
+                  (yield* dependencies.fenced(resultOperation!.origin, resultOperation!.operation))
+                )
+                  return yield* new RemoteAdmissionStateConflict({ status: "fenced" });
                 const id = NodeCrypto.randomUUID();
                 const now = yield* nowIso;
                 const status = decoded.envelope.receiverPolicy.enabled ? "evaluating" : "passed";
@@ -256,6 +277,8 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
         (id,client_id,idempotency_key,request_digest,binding_digest,envelope_json,status,created_at,updated_at)
         VALUES (${id},${decoded.envelope.identity.clientId},${decoded.idempotencyKey},${snapshot.requestDigest},
           ${snapshot.bindingDigest},${snapshot.envelopeJson},${status},${now},${now})`;
+                if (resultTables)
+                  yield* sql`UPDATE jones_remote_admissions SET origin_environment_id = ${resultOperation!.origin}, operation_id = ${resultOperation!.operation} WHERE id = ${id}`;
                 return { record: yield* required(id), fresh: true };
               }),
             ),
@@ -412,12 +435,13 @@ const make = Effect.fn("RemoteAdmission.make")(function* <E>(
     );
 
   return RemoteAdmission.of({
-    request,
+    request: (input) => request(input).pipe(Effect.tap(() => publishDependencyChanges)),
     get,
-    resolve,
-    withdraw,
-    claimDispatch,
-    markDispatched,
+    resolve: (input) => resolve(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    withdraw: (input) => withdraw(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    claimDispatch: (input) => claimDispatch(input).pipe(Effect.tap(() => publishDependencyChanges)),
+    markDispatched: (input) =>
+      markDispatched(input).pipe(Effect.tap(() => publishDependencyChanges)),
     listPending: () =>
       database(
         Effect.gen(function* () {

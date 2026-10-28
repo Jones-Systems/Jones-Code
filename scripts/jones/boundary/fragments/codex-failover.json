@@ -25,6 +25,10 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/codexFailover/CodexFailoverStore.ts"
+    },
+    {
       "from": "apps/mobile/src/state/thread-outbox-model.ts",
       "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
     },

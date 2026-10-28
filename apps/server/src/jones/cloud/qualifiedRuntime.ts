@@ -24,6 +24,9 @@ export function bundleFileSystem(
 }
 
 export const QUALIFIED_UPDATES_PROTOCOL = 1 as const;
+// Historical enrollment receipts need a distinct stage format that old launchers refuse.
+export const RECOVERED_QUALIFIED_STAGE_PROTOCOL = 2 as const;
+export const QUALIFIED_RECOVERY_PROTOCOL = 1 as const;
 export const QUALIFIED_RUNTIME_RECEIPT = ".jones-runtime-receipt.json";
 const HASH = /^[a-f0-9]{64}$/;
 const SOURCE = /^[a-f0-9]{40}$/;
@@ -150,7 +153,7 @@ export interface QualifiedRuntimeBinding {
 }
 
 export interface StagedQualifiedRuntime {
-  readonly protocol: typeof QUALIFIED_UPDATES_PROTOCOL;
+  readonly protocol: typeof QUALIFIED_UPDATES_PROTOCOL | typeof RECOVERED_QUALIFIED_STAGE_PROTOCOL;
   readonly stagedHandle: string;
   readonly binding: QualifiedRuntimeBinding;
   readonly receipt: QualifiedRuntimeReceipt;
@@ -215,7 +218,8 @@ export function decodeStagedQualifiedRuntime(value: unknown): StagedQualifiedRun
   const b = record(r?.binding);
   const receipt = decodeQualifiedRuntimeReceipt(r?.receipt);
   if (
-    r?.protocol !== QUALIFIED_UPDATES_PROTOCOL ||
+    (r?.protocol !== QUALIFIED_UPDATES_PROTOCOL &&
+      r?.protocol !== RECOVERED_QUALIFIED_STAGE_PROTOCOL) ||
     typeof r.stagedHandle !== "string" ||
     !HANDLE.test(r.stagedHandle) ||
     receipt === undefined ||
@@ -236,8 +240,10 @@ export function decodeStagedQualifiedRuntime(value: unknown): StagedQualifiedRun
     !SOURCE.test(String(b.activeSourceSha))
   )
     return undefined;
+  const historical = receipt.installedSourceSha !== b.activeSourceSha;
+  if (historical !== (r.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL)) return undefined;
   return {
-    protocol: QUALIFIED_UPDATES_PROTOCOL,
+    protocol: r.protocol,
     stagedHandle: r.stagedHandle,
     binding: b as unknown as QualifiedRuntimeBinding,
     receipt,
@@ -702,6 +708,7 @@ export async function currentQualifiedRuntimeBinding(
 }
 
 export async function stageQualifiedRuntime(input: {
+  readonly stagedHandle?: string;
   readonly artifact: QualifiedRuntimeArtifact;
   /** Only the preparation worker transfers its exclusively owned extraction root. Other callers copy. */
   readonly consumePayload?: boolean;
@@ -711,6 +718,8 @@ export async function stageQualifiedRuntime(input: {
   readonly host?: { readonly platform: string; readonly architecture: string };
 }): Promise<StagedQualifiedRuntime> {
   return withQualifiedRuntimeLock(input.binding.baseDir, "qualified-runtime-lock", async () => {
+    if (input.stagedHandle !== undefined && !HANDLE.test(input.stagedHandle))
+      return blocked("invalid-artifact", "Invalid fixed staged update handle.");
     const current = await currentQualifiedRuntimeBinding(
       input.binding.baseDir,
       input.binding.activeVersion,
@@ -762,6 +771,7 @@ export async function stageQualifiedRuntime(input: {
         "invalid-artifact",
         "Candidate does not bind this qualified runtime and platform.",
       );
+    let stagedReceipt = receipt;
     const destination = runtimeDirectory(current.baseDir, receipt.version);
     const occupied = await NodeFSP.lstat(destination).then(
       () => true,
@@ -781,12 +791,18 @@ export async function stageQualifiedRuntime(input: {
           "The occupied runtime cache has no matching qualified receipt; it was preserved.",
         ),
       );
-      if (JSON.stringify(cached) !== JSON.stringify(receipt))
+      // Enrollment history is immutable; the incoming installed source was checked
+      // against the current binding above. Every artifact and payload field must match.
+      const keys = new Set([...Object.keys(receipt), ...Object.keys(cached)]) as Set<
+        keyof QualifiedRuntimeReceipt
+      >;
+      if ([...keys].some((key) => key !== "installedSourceSha" && cached[key] !== receipt[key]))
         return blocked(
           "occupied-cache",
           "The runtime version is occupied by a different candidate; it was preserved.",
         );
       await input.validate(NodePath.join(destination, "t3"));
+      stagedReceipt = cached;
     } else {
       await NodeFSP.mkdir(NodePath.dirname(destination), { recursive: true, mode: 0o700 });
       const ownedScratch = await NodeFSP.mkdtemp(
@@ -852,12 +868,50 @@ export async function stageQualifiedRuntime(input: {
       }
     }
     const staged: StagedQualifiedRuntime = {
-      protocol: QUALIFIED_UPDATES_PROTOCOL,
-      stagedHandle: NodeCrypto.randomUUID(),
+      protocol:
+        stagedReceipt.installedSourceSha === current.activeSourceSha
+          ? QUALIFIED_UPDATES_PROTOCOL
+          : RECOVERED_QUALIFIED_STAGE_PROTOCOL,
+      stagedHandle: input.stagedHandle ?? NodeCrypto.randomUUID(),
       binding: current,
-      receipt,
+      receipt: stagedReceipt,
     };
-    await durableCreate(stagedPath(current.baseDir, staged.stagedHandle), staged);
+    const path = stagedPath(current.baseDir, staged.stagedHandle);
+    if (input.stagedHandle !== undefined) {
+      const existing = await NodeFSP.lstat(path).catch((cause: NodeJS.ErrnoException) => {
+        if (cause.code === "ENOENT") return undefined;
+        throw cause;
+      });
+      if (existing !== undefined) {
+        const prior = await verifyStagedQualifiedRuntime(
+          current.baseDir,
+          current.activeVersion,
+          staged.stagedHandle,
+          input.host,
+          input.options,
+        );
+        if (JSON.stringify(prior) !== JSON.stringify(staged))
+          return blocked("occupied-cache", "The fixed staged handle belongs to another selection.");
+        // A prior publication may have succeeded before its fsync reply was lost.
+        const file = await NodeFSP.open(
+          path,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
+        try {
+          await file.sync();
+        } finally {
+          await file.close();
+        }
+        const parent = await NodeFSP.open(NodePath.dirname(path), "r");
+        try {
+          await parent.sync();
+        } finally {
+          await parent.close();
+        }
+        return prior;
+      }
+    }
+    await durableCreate(path, staged);
     return staged;
   });
 }

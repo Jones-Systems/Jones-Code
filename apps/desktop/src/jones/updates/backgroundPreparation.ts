@@ -116,6 +116,7 @@ export interface BackgroundPreparationController {
 
 export interface JonesBackgroundPreparationOptions {
   readonly controller: BackgroundPreparationController;
+  readonly suppressed?: (source: string) => Promise<boolean>;
   readonly store: BackgroundPreparationStore;
   /** Removes a replaced payload in the preparation process. */
   readonly reclaim: (handle: string) => Promise<JonesReclaimResult>;
@@ -252,15 +253,19 @@ export class JonesBackgroundPreparation {
     });
   }
 
-  /** A referenced handle is live again or activation evidence; either way it is not ours. */
+  /** Only a proved terminal cleanup releases the durable ledger entry. */
   async #reclaim(handle: string): Promise<void> {
     try {
-      await this.#options.reclaim(handle);
+      const result = await this.#options.reclaim(handle);
+      if (result.status !== "reclaimed" && result.status !== "absent") {
+        this.#reclaimRetryAt.set(handle, this.#now() + RECLAIM_RETRY_MS);
+        return;
+      }
+      await this.#forget(handle);
     } catch (cause) {
       this.#reclaimRetryAt.set(handle, this.#now() + RECLAIM_RETRY_MS);
       throw cause;
     }
-    await this.#forget(handle);
   }
 
   /** Only while nothing holds the controller: retained or claimed work may still need a payload. */
@@ -314,6 +319,15 @@ export class JonesBackgroundPreparation {
       if (decision.action === "none") return;
       const latest = this.#controller.latestAvailable;
       if (latest === undefined || latest.source !== decision.target.source) return;
+      if (await this.#options.suppressed?.(latest.source)) {
+        await this.#controller.setPreparationStatus({
+          enabled: this.#record.enabled,
+          phase: "watching",
+          reason:
+            "Background preparation is paused by the update plan. Use its explicit actions when ready.",
+        });
+        return;
+      }
       const backoff = () =>
         this.#retryAt.set(
           latest.source,

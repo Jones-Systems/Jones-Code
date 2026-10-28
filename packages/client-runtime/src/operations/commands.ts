@@ -41,6 +41,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 
 import { getInitialServerConfig, request } from "../rpc/client.ts";
+import { freezePreparedTurnRequest } from "./jonesPreparedTurn.ts";
 
 interface CommandMetadata {
   readonly commandId?: CommandId;
@@ -688,9 +689,10 @@ export const setThreadInteractionMode = Effect.fn("EnvironmentCommands.setThread
   },
 );
 
-export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(function* (
+export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTurn")(function* (
   input: StartThreadTurnInput,
 ) {
+  input = structuredClone(input);
   const commandId = yield* allocateCommandId(input);
   const attachments = yield* persistAttachments(
     input.threadId,
@@ -750,53 +752,59 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
                 ? {}
                 : { branch: bootstrap.branch }),
             };
-    return yield* request(ORCHESTRATION_V2_WS_METHODS.launchThread, {
-      commandId,
-      creationSource: input.creationSource ?? "web",
-      threadId: input.threadId,
-      ...(bootstrap === undefined ? { reuseExistingThread: true } : {}),
-      projectId: thread.projectId,
-      title: input.titleSeed ?? thread.title,
-      generateTitle: input.titleSeed !== undefined,
-      modelSelection: input.modelSelection ?? thread.modelSelection,
-      runtimeMode: input.runtimeMode,
-      interactionMode: input.interactionMode,
-      workspaceStrategy,
-      initialMessage: {
-        messageId: input.message.messageId,
-        text: input.message.text,
-        ...(context ? { context } : {}),
-        attachments,
+    return freezePreparedTurnRequest({
+      method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+      payload: {
+        commandId,
+        creationSource: input.creationSource ?? "web",
+        threadId: input.threadId,
+        ...(bootstrap === undefined ? { reuseExistingThread: true } : {}),
+        projectId: thread.projectId,
+        title: input.titleSeed ?? thread.title,
+        generateTitle: input.titleSeed !== undefined,
+        modelSelection: input.modelSelection ?? thread.modelSelection,
+        runtimeMode: input.runtimeMode,
+        interactionMode: input.interactionMode,
+        workspaceStrategy,
+        initialMessage: {
+          messageId: input.message.messageId,
+          text: input.message.text,
+          ...(context ? { context } : {}),
+          attachments,
+        },
       },
     });
   }
 
   const requestedMode = input.dispatchMode ?? "auto";
   if (requestedMode === "start") {
-    return yield* dispatch({
-      type: "message.dispatch",
-      commandId,
-      createdBy: "user",
-      creationSource: input.creationSource ?? "web",
-      threadId: input.threadId,
-      messageId: input.message.messageId,
-      ...(input.manualContinuationOfRunId === undefined
-        ? {}
-        : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
-      text: input.message.text,
-      ...(context ? { context } : {}),
-      ...(input.message.idleCompaction === undefined
-        ? {}
-        : { idleCompaction: input.message.idleCompaction }),
-      attachments,
-      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-      ...(input.modelSelectionExplicit === undefined
-        ? {}
-        : { modelSelectionExplicit: input.modelSelectionExplicit }),
-      ...(input.sourceProposedPlan === undefined
-        ? {}
-        : { sourcePlanRef: input.sourceProposedPlan }),
-      dispatchMode: { type: "start_immediately" },
+    return freezePreparedTurnRequest({
+      method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+      payload: {
+        type: "message.dispatch",
+        commandId,
+        createdBy: "user",
+        creationSource: input.creationSource ?? "web",
+        threadId: input.threadId,
+        messageId: input.message.messageId,
+        ...(input.manualContinuationOfRunId === undefined
+          ? {}
+          : { manualContinuationOfRunId: input.manualContinuationOfRunId }),
+        text: input.message.text,
+        ...(context ? { context } : {}),
+        ...(input.message.idleCompaction === undefined
+          ? {}
+          : { idleCompaction: input.message.idleCompaction }),
+        attachments,
+        ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+        ...(input.modelSelectionExplicit === undefined
+          ? {}
+          : { modelSelectionExplicit: input.modelSelectionExplicit }),
+        ...(input.sourceProposedPlan === undefined
+          ? {}
+          : { sourcePlanRef: input.sourceProposedPlan }),
+        dispatchMode: { type: "start_immediately" },
+      },
     });
   }
 
@@ -850,31 +858,53 @@ export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(
   const shouldSendTitleSeed =
     input.titleSeed !== undefined &&
     (serverResolvesCommandContext || projection?.messages.length === 0);
-  return yield* dispatch({
-    type: "message.dispatch",
-    commandId,
-    createdBy: "user",
-    creationSource: input.creationSource ?? "web",
-    threadId: input.threadId,
-    messageId: input.message.messageId,
-    text: input.message.text,
-    ...(context ? { context } : {}),
-    ...(input.message.idleCompaction === undefined
-      ? {}
-      : { idleCompaction: input.message.idleCompaction }),
-    attachments,
-    ...(shouldSendTitleSeed ? { titleSeed: input.titleSeed } : {}),
-    ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-    ...(input.modelSelectionExplicit === undefined
-      ? {}
-      : { modelSelectionExplicit: input.modelSelectionExplicit }),
-    ...(input.sourceProposedPlan === undefined ? {} : { sourcePlanRef: input.sourceProposedPlan }),
-    ...(serverResolvesCommandContext && requestedMode !== "queue"
-      ? { deliveryIntent: requestedMode }
-      : {}),
-    dispatchMode,
-    ...(queuedToolBoundaryEligible ? { queuedToolBoundaryEligible: true } : {}),
+  return freezePreparedTurnRequest({
+    method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+    payload: {
+      type: "message.dispatch",
+      commandId,
+      createdBy: "user",
+      creationSource: input.creationSource ?? "web",
+      threadId: input.threadId,
+      messageId: input.message.messageId,
+      text: input.message.text,
+      ...(context ? { context } : {}),
+      ...(input.message.idleCompaction === undefined
+        ? {}
+        : { idleCompaction: input.message.idleCompaction }),
+      attachments,
+      ...(shouldSendTitleSeed ? { titleSeed: input.titleSeed } : {}),
+      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+      ...(input.modelSelectionExplicit === undefined
+        ? {}
+        : { modelSelectionExplicit: input.modelSelectionExplicit }),
+      ...(input.sourceProposedPlan === undefined
+        ? {}
+        : { sourcePlanRef: input.sourceProposedPlan }),
+      ...(serverResolvesCommandContext && requestedMode !== "queue"
+        ? { deliveryIntent: requestedMode }
+        : {}),
+      dispatchMode,
+      ...(queuedToolBoundaryEligible ? { queuedToolBoundaryEligible: true } : {}),
+    },
   });
+});
+
+export type PreparedThreadTurn = Effect.Success<ReturnType<typeof prepareThreadTurn>>;
+
+export const dispatchPreparedThreadTurn = Effect.fn(
+  "EnvironmentCommands.dispatchPreparedThreadTurn",
+)(function* (prepared: PreparedThreadTurn) {
+  if (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
+    return yield* request(prepared.method, prepared.payload);
+  }
+  return yield* request(prepared.method, prepared.payload);
+});
+
+export const startThreadTurn = Effect.fn("EnvironmentCommands.startThreadTurn")(function* (
+  input: StartThreadTurnInput,
+) {
+  return yield* dispatchPreparedThreadTurn(yield* prepareThreadTurn(input));
 });
 
 export const interruptThreadTurn = Effect.fn("EnvironmentCommands.interruptThreadTurn")(function* (

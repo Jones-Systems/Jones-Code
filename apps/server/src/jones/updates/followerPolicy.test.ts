@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { ServerSelfUpdateError } from "@t3tools/contracts";
+import type { JonesUpdatePolicy } from "@t3tools/contracts/jones/jonesUpdates";
 import {
   AUTOMATIC_ACTIVATION_SPACING_MS,
   AutomaticActivationWithdrawn,
@@ -134,5 +135,64 @@ describe("activation withdrawal", () => {
     expect(findActivationWithdrawal(error)).toBe(withdrawn);
     expect(findActivationWithdrawal(new Error("other"))).toBeUndefined();
     expect(findActivationWithdrawal(undefined)).toBeUndefined();
+  });
+});
+
+describe("reviewed follower targets", () => {
+  const source = "b".repeat(40);
+  const tree = "c".repeat(40);
+  const reviewTarget = { source, tree, directiveId: "11111111-1111-4111-8111-111111111111" };
+  const waiting = { role: "follower" as const, leaderSource: null };
+
+  it("permits only the reviewed source and tree while preserving legacy follower restrictions", () => {
+    expect(followerTargetRefusal(waiting, source, tree)).toBeDefined();
+    const policy = { ...waiting, reviewTarget };
+    expect(followerTargetRefusal(policy, source)).toBeUndefined();
+    expect(followerTargetRefusal(policy, source, tree)).toBeUndefined();
+    expect(followerTargetRefusal(policy, source, "d".repeat(40))).toBeDefined();
+    expect(followerTargetRefusal(policy, "e".repeat(40), tree)).toBeDefined();
+    expect(followerTargetRefusal(policy, undefined)).toBeDefined();
+    expect(followerTargetRefusal(policy, undefined, tree)).toBeDefined();
+
+    const following = { ...policy, leaderSource: "e".repeat(40), leaderTree: "f".repeat(40) };
+    expect(followerTargetRefusal(following, following.leaderSource)).toBeUndefined();
+    expect(
+      followerTargetRefusal(following, following.leaderSource, following.leaderTree),
+    ).toBeUndefined();
+    expect(followerTargetRefusal(following, following.leaderSource, tree)).toContain("source tree");
+    expect(followerTargetRefusal(following, "a".repeat(40))).toBeDefined();
+  });
+
+  it("never treats an absent review target and an undefined requested target as a review", () => {
+    for (const policy of [
+      waiting,
+      { role: "follower" as const, leaderSource: leader, leaderTree: tree },
+    ]) {
+      for (const candidate of [policy, { ...policy, reviewTarget: undefined }]) {
+        const legacy = candidate as JonesUpdatePolicy;
+        expect(followerTargetRefusal(legacy, undefined)).toBeDefined();
+        expect(followerTargetRefusal(legacy, undefined, tree)).toBeDefined();
+        expect(followerTargetRefusal(legacy, "d".repeat(40))).toBeDefined();
+      }
+    }
+  });
+
+  it("requires a validated source, tree and directive identity before granting a review override", () => {
+    for (const unvalidated of [
+      { source, directiveId: reviewTarget.directiveId },
+      { ...reviewTarget, tree: undefined },
+      { ...reviewTarget, tree: "c".repeat(39) },
+      { source, tree },
+      { ...reviewTarget, directiveId: "not-a-directive" },
+      { ...reviewTarget, source: "b".repeat(39) },
+      { ...reviewTarget, source: "B".repeat(40) },
+      { ...reviewTarget, source: "" },
+      { tree, directiveId: reviewTarget.directiveId },
+    ]) {
+      const policy = { ...waiting, reviewTarget: unvalidated } as unknown as JonesUpdatePolicy;
+      const target = "source" in unvalidated ? unvalidated.source : undefined;
+      expect(followerTargetRefusal(policy, target)).toBeDefined();
+      expect(followerTargetRefusal(policy, target, tree)).toBeDefined();
+    }
   });
 });

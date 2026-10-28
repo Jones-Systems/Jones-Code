@@ -116,7 +116,7 @@ it("keeps one bubble per host while live samples update both metric colors and a
   expect(bubbles()[0]?.textContent).toBe("VPS · 23% · 4");
   expect(bubbles()[0]?.className).toContain("bg-yellow-500/8");
   expect(bubbles()[0]?.getAttribute("aria-label")).toContain("CPU 23%");
-  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("Available RAM 4 GiB");
+  expect(bubbles()[0]?.getAttribute("aria-label")).toContain("RAM 4 GiB available of 16 GiB");
   expect(bubbles()[0]?.querySelector("[data-host-cpu]")?.className).toContain("text-emerald-700");
   expect(bubbles()[0]?.querySelector("[data-host-ram]")?.className).toContain("text-yellow-800");
   expect(bubbles()[1]?.textContent).toBe("Test · — · —");
@@ -152,8 +152,8 @@ it("shows Mac swap activity without a low available-RAM alarm", async () => {
   const laptop = container.querySelectorAll('[role="img"]')[3];
   expect(laptop?.textContent).toBe("Laptop · 12% · 0.3 mb/s");
   expect(laptop?.className).toContain("bg-emerald");
-  expect(laptop?.getAttribute("aria-label")).toContain("Available RAM 0.0 GiB");
-  expect(laptop?.getAttribute("aria-label")).toContain("10-second average");
+  expect(laptop?.getAttribute("aria-label")).toContain("RAM 0 GiB available of 16 GiB");
+  expect(laptop?.getAttribute("aria-label")).toContain("Swap I/O 0.3 MiB/s");
 });
 
 it("colors CPU and RAM separately while either can raise the host background", async () => {

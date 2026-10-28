@@ -4,11 +4,11 @@ import {
   deriveLatestThreadRun,
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
 } from "@t3tools/shared/orchestrationV2ThreadError";
+import { deriveDependencyBannerTasks } from "../jones/threadResultDependencies/bannerTasks";
 import * as Option from "effect/Option";
 import type { SetStateAction } from "react";
 import { applyClaudePromptEffortPrefix, resolvePromptInjectedEffort } from "@t3tools/shared/model";
@@ -698,13 +698,6 @@ export function resolveTerminalWorktreePath(input: {
   return input.threadWorktreePath;
 }
 
-export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
-  if (!previewUrl || typeof URL === "undefined" || !previewUrl.startsWith("blob:")) {
-    return;
-  }
-  URL.revokeObjectURL(previewUrl);
-}
-
 export async function resolveFileAttachmentUrl(input: {
   attachment: ChatFileAttachment;
   environmentId: EnvironmentId;
@@ -764,18 +757,6 @@ export async function prepareRevertedMessageAttachments(input: {
   );
 }
 
-export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
-  if (message.role !== "user" || !message.attachments) {
-    return;
-  }
-  for (const attachment of message.attachments) {
-    if (!isImageAttachment(attachment)) {
-      continue;
-    }
-    revokeBlobPreviewUrl(attachment.previewUrl);
-  }
-}
-
 export function timelineHasEphemeralPreviewUrls(
   entries: ReadonlyArray<Pick<TimelineEntry, "kind"> & { message?: ChatMessage }>,
 ): boolean {
@@ -787,7 +768,7 @@ export function timelineHasEphemeralPreviewUrls(
   );
 }
 
-export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
+function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
   if (message.role !== "user" || !message.attachments) {
     return [];
   }
@@ -1586,7 +1567,7 @@ export function optimisticMessageAttachments(
           name: attachment.name,
           mimeType: attachment.mimeType,
           sizeBytes: attachment.sizeBytes,
-          previewUrl: attachment.previewUrl,
+          previewUrl: URL.createObjectURL(attachment.file),
           ...(attachment.source ? { source: attachment.source } : {}),
         }
       : {
@@ -1666,8 +1647,11 @@ export function presentThreadShellFromProjection(
   };
 }
 
-/** Background work the provider still runs after the latest run ended. */
-export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure | null) {
+/** Background duties after foreground work ends, including shell-only result waits. */
+export function deriveThreadPendingBackgroundTasks(
+  projection: ThreadStructure | null,
+  shell?: Parameters<typeof deriveDependencyBannerTasks>[0]["shell"],
+) {
   if (projection === null) return [];
   const sessionError =
     projection.providerSessions.findLast(
@@ -1677,7 +1661,9 @@ export function deriveThreadPendingBackgroundTasks(projection: ThreadStructure |
     usageLimitRunPresentedAsLatest(projection.runs, projection.turnItems, sessionError) ??
     latestUnheldRun(projection.runs);
   return [
-    ...derivePendingBackgroundWork({
+    ...deriveDependencyBannerTasks({
+      threadId: projection.thread.id,
+      shell,
       latestRun,
       providerThreads: projection.providerThreads,
       turnItems: projection.turnItems,

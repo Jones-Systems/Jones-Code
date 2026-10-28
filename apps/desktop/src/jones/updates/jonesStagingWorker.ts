@@ -9,6 +9,7 @@ import { runJonesStagingJob, type JonesStagingJob } from "./stagingJobs.ts";
 import {
   JONES_STAGING_WORKER_PROTOCOL,
   type JonesStagingWorkerMessage,
+  JonesStagingStopped,
 } from "./stagingWorkerProtocol.ts";
 
 const send = (message: JonesStagingWorkerMessage) =>
@@ -36,17 +37,35 @@ process.once("disconnect", () => {
 
 process.once("message", (raw: unknown) => {
   const job = raw as { readonly protocol?: unknown; readonly job?: JonesStagingJob };
+  const jobId = job.job?.token ?? "";
   void (async () => {
-    if (job.protocol !== JONES_STAGING_WORKER_PROTOCOL || job.job === undefined)
+    if (
+      job.protocol !== JONES_STAGING_WORKER_PROTOCOL ||
+      job.job === undefined ||
+      !/^[a-f0-9-]{36}$/.test(jobId)
+    )
       throw new Error("Unknown staging worker request.");
     const value = await runJonesStagingJob(job.job, {
-      onVerifying: () => send({ type: "phase", phase: "verifying" }),
+      admit: () =>
+        new Promise<void>((resolve, reject) => {
+          const listener = (raw: unknown) => {
+            if (typeof raw !== "object" || raw === null) return;
+            const reply = raw as { type?: string; jobId?: string; decision?: string };
+            if (reply.type !== "admit" || reply.jobId !== jobId) return;
+            process.removeListener("message", listener);
+            if (reply.decision === "continue") resolve();
+            else reject(new JonesStagingStopped());
+          };
+          process.on("message", listener);
+          void send({ type: "admit-request", jobId });
+        }),
     });
-    await send({ type: "result", value });
+    await send({ type: "result", jobId, value });
   })()
     .catch((cause: unknown) =>
       send({
         type: "error",
+        jobId,
         error: {
           name: cause instanceof Error ? cause.name : "Error",
           message: cause instanceof Error ? cause.message : "Staging failed.",

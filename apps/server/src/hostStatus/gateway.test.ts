@@ -68,10 +68,318 @@ const swapFetch = (payload: unknown = swap()) => {
       : fallback(input, init),
   );
 };
+const macCpu = () => ({
+  ...data("user", 10, "percentage"),
+  result: { labels: ["time", "user", "nice", "system"], data: [[now / 1000, 10, 0, 10]] },
+});
+const disk = (
+  mountPoint = "/",
+  values: readonly unknown[] = [1.25, 10.75, 0.5],
+  timestamp = now / 1000,
+) => ({
+  api: 3,
+  db: { last_entry: timestamp },
+  view: { units: "GiB" },
+  detailed: {
+    nodes: {
+      [guid]: {
+        contexts: {
+          "disk.space": {
+            instances: {
+              "disk_space._": {
+                labels: { mount_point: mountPoint },
+                dimensions: Object.fromEntries(
+                  ["avail", "used", "reserved_for_root"].map((name) => [
+                    name,
+                    { qr: 1, le: timestamp },
+                  ]),
+                ),
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+  result: {
+    labels: ["time", "avail", "used", "reserved for root"],
+    data: [[timestamp, ...values]],
+  },
+});
+const diskFetch = (payload: unknown = disk(), cpuPayload: unknown = cpu()) => {
+  const fallback = fixtureFetch(cpuPayload);
+  return vi.fn<typeof fetch>(async (input, init) =>
+    new URL(String(input)).searchParams.get("contexts") === "disk.space"
+      ? Response.json(payload)
+      : fallback(input, init),
+  );
+};
 
 afterEach(() => vi.useRealTimers());
 
 describe("Netdata host status", () => {
+  it("decodes legacy hosts without storage and validates optional storage bytes and mount points", () => {
+    const decode = Schema.decodeUnknownSync(HostStatus);
+    const legacy = {
+      id: "vps",
+      status: "available",
+      cpuUsagePercent: 16,
+      logicalCpuCount: 8,
+      occupiedMemoryBytes: 1024,
+      totalMemoryBytes: 2048,
+      sampledAt: "2027-01-15T08:00:00.000Z",
+    };
+    expect(decode(legacy)).toEqual(legacy);
+    const storage = { availableStorageBytes: 0, totalStorageBytes: 1024, storageMountPoint: "/" };
+    expect(decode({ ...legacy, ...storage })).toMatchObject(storage);
+    for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, null, "1"]) {
+      expect(() => decode({ ...legacy, availableStorageBytes: value })).toThrow();
+      expect(() => decode({ ...legacy, totalStorageBytes: value })).toThrow();
+    }
+    expect(() => decode({ ...legacy, totalStorageBytes: 0 })).toThrow();
+    for (const storageMountPoint of ["", "relative", null])
+      expect(() => decode({ ...legacy, storageMountPoint })).toThrow();
+  });
+
+  it("reports one exact root filesystem and includes reserved blocks in total capacity", async () => {
+    const fetcher = diskFetch(disk("/", [1.25, 10.75, 0.5], now / 1000 - 4));
+    const host = (await readHostStatus(config, fetcher, () => now)).hosts[0];
+    expect(host).toMatchObject({
+      status: "available",
+      cpuUsagePercent: 16,
+      availableStorageBytes: 1.25 * 1024 ** 3,
+      totalStorageBytes: 12.5 * 1024 ** 3,
+      storageMountPoint: "/",
+      sampledAt: "2027-01-15T07:59:56.000Z",
+    });
+    const queries = fetcher.mock.calls
+      .map(([input]) => new URL(String(input)))
+      .filter((url) => url.searchParams.get("contexts") === "disk.space");
+    expect(queries).toHaveLength(1);
+    expect(Object.fromEntries(queries[0]!.searchParams)).toEqual({
+      scope_nodes: guid,
+      nodes: guid,
+      scope_contexts: "disk.space",
+      contexts: "disk.space",
+      scope_labels: "mount_point:/",
+      labels: "mount_point:/",
+      dimensions: "*",
+      after: "-5",
+      points: "1",
+      format: "json",
+      options: "jsonwrap,details",
+      group_by: "dimension",
+    });
+  });
+
+  it("accepts zero available storage without claiming a zero-sized filesystem", async () => {
+    expect(
+      (await readHostStatus(config, diskFetch(disk("/", [0, 10, 2])), () => now)).hosts[0],
+    ).toMatchObject({ availableStorageBytes: 0, totalStorageBytes: 12 * 1024 ** 3 });
+  });
+
+  it("does not fabricate capacity when the Mac collector has no disk charts", async () => {
+    const fetcher = diskFetch({}, macCpu());
+    const host = (await readHostStatus({ mini: config.vps }, fetcher, () => now)).hosts[2];
+    expect(host).toMatchObject({ status: "available", cpuUsagePercent: 20 });
+    expect(host).not.toHaveProperty("availableStorageBytes");
+    expect(host).not.toHaveProperty("totalStorageBytes");
+    expect(host).not.toHaveProperty("storageMountPoint");
+    expect(
+      fetcher.mock.calls.filter(
+        ([input]) => new URL(String(input)).searchParams.get("contexts") === "disk.space",
+      ),
+    ).toHaveLength(2);
+  });
+
+  it("isolates storage transport failures from required CPU and RAM", async () => {
+    const fallback = fixtureFetch();
+    const fetcher: typeof fetch = async (input, init) => {
+      if (new URL(String(input)).searchParams.get("contexts") === "disk.space")
+        throw new Error("collector unavailable");
+      return fallback(input, init);
+    };
+    const host = (await readHostStatus(config, fetcher, () => now)).hosts[0];
+    expect(host).toMatchObject({
+      status: "available",
+      cpuUsagePercent: 16,
+      occupiedMemoryBytes: 8589934592 - 4096.5 * 1024 ** 2,
+    });
+    expect(host).not.toHaveProperty("availableStorageBytes");
+  });
+
+  it("prefers the Mac Data volume and safely falls back only to its exact root chart", async () => {
+    for (const hasData of [true, false]) {
+      const fallback = fixtureFetch(macCpu());
+      const fetcher = vi.fn<typeof fetch>(async (input, init) => {
+        const url = new URL(String(input));
+        if (url.searchParams.get("contexts") !== "disk.space") return fallback(input, init);
+        const mount =
+          url.searchParams.get("labels") === "mount_point:/System/Volumes/Data"
+            ? "/System/Volumes/Data"
+            : "/";
+        return Response.json(mount === "/System/Volumes/Data" && !hasData ? {} : disk(mount));
+      });
+      expect(
+        (await readHostStatus({ mini: config.vps }, fetcher, () => now)).hosts[2],
+      ).toMatchObject({
+        status: "available",
+        storageMountPoint: hasData ? "/System/Volumes/Data" : "/",
+        totalStorageBytes: 12.5 * 1024 ** 3,
+      });
+      expect(
+        fetcher.mock.calls
+          .map(([input]) => new URL(String(input)))
+          .filter((url) => url.searchParams.get("contexts") === "disk.space")
+          .map((url) => url.searchParams.get("labels")),
+      ).toEqual(
+        hasData
+          ? ["mount_point:/System/Volumes/Data"]
+          : ["mount_point:/System/Volumes/Data", "mount_point:/"],
+      );
+    }
+  });
+
+  it("uses explicit per-host mount configuration without falling back to another filesystem", async () => {
+    const configured = hostStatusConfigFromEnv({
+      T3CODE_NETDATA_URL: "https://netdata.example",
+      T3CODE_NETDATA_VPS_NODE: guid,
+      T3CODE_NETDATA_VPS_STORAGE_MOUNT_POINT: " /srv/data ",
+    });
+    expect(configured.vps).toMatchObject({ storageMountPoint: "/srv/data" });
+    const fetcher = diskFetch(disk("/srv/data"));
+    expect((await readHostStatus(configured, fetcher, () => now)).hosts[0]).toMatchObject({
+      storageMountPoint: "/srv/data",
+      totalStorageBytes: 12.5 * 1024 ** 3,
+    });
+    const mismatched = diskFetch(disk("/"));
+    const host = (await readHostStatus(configured, mismatched, () => now)).hosts[0];
+    expect(host).toMatchObject({ status: "available", cpuUsagePercent: 16 });
+    expect(host).not.toHaveProperty("availableStorageBytes");
+    expect(
+      mismatched.mock.calls.filter(
+        ([input]) => new URL(String(input)).searchParams.get("contexts") === "disk.space",
+      ),
+    ).toHaveLength(1);
+  });
+
+  it.each(["/*", "/|/srv", "/,other", "/!other", "relative"])(
+    "does not turn a mount selector into a pattern: %s",
+    async (storageMountPoint) => {
+      const fetcher = diskFetch();
+      const host = (
+        await readHostStatus({ vps: { ...config.vps, storageMountPoint } }, fetcher, () => now)
+      ).hosts[0];
+      expect(host).toMatchObject({ status: "available" });
+      expect(host).not.toHaveProperty("availableStorageBytes");
+      expect(
+        fetcher.mock.calls.some(
+          ([input]) => new URL(String(input)).searchParams.get("contexts") === "disk.space",
+        ),
+      ).toBe(false);
+    },
+  );
+
+  it.each([
+    ["missing", {}],
+    ["null", null],
+    ["wrong units", { ...disk(), view: { units: "GB" } }],
+    ["wrong mount", disk("/srv/other")],
+    ["null dimension", disk("/", [1, null, 0])],
+    ["negative dimension", disk("/", [1, -1, 0])],
+    ["missing reserved", disk("/", [1, 1])],
+    ["zero total", disk("/", [0, 0, 0])],
+    ["unsafe bytes", disk("/", [Number.MAX_SAFE_INTEGER, 1, 0])],
+    ["overflow", disk("/", [Number.MAX_VALUE, Number.MAX_VALUE, 0])],
+    ["stale bucket", disk("/", [1, 1, 0], now / 1000 - 31)],
+    ["stale database", { ...disk(), db: { last_entry: now / 1000 - 31 } }],
+    ["future", disk("/", [1, 1, 0], now / 1000 + 6)],
+  ])("omits %s storage without losing CPU or aging its timestamp", async (_label, payload) => {
+    const host = (await readHostStatus(config, diskFetch(payload), () => now)).hosts[0];
+    expect(host).toMatchObject({
+      status: "available",
+      cpuUsagePercent: 16,
+      sampledAt: "2027-01-15T08:00:00.000Z",
+    });
+    for (const field of ["availableStorageBytes", "totalStorageBytes", "storageMountPoint"])
+      expect(host).not.toHaveProperty(field);
+  });
+
+  it("rejects mixed nodes, multiple charts, unexpected dimensions, and stale individual storage sources", async () => {
+    const otherGuid = "ffffffff-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const node = disk().detailed.nodes[guid];
+    const mixed = {
+      ...disk(),
+      detailed: { nodes: { [guid]: node, [otherGuid]: node } },
+    };
+    const wrongNode = {
+      ...disk(),
+      detailed: { nodes: { [otherGuid]: node } },
+    };
+    const multiple = disk();
+    const instances = multiple.detailed.nodes[guid]!.contexts["disk.space"].instances;
+    const stale = disk();
+    stale.detailed.nodes[guid]!.contexts["disk.space"].instances[
+      "disk_space._"
+    ].dimensions.used!.le -= 31;
+    const unexpected = disk();
+    unexpected.detailed.nodes[guid]!.contexts["disk.space"].instances[
+      "disk_space._"
+    ].dimensions.extra = { qr: 1, le: now / 1000 };
+    const multiplePayload = {
+      ...multiple,
+      detailed: {
+        nodes: {
+          [guid]: {
+            contexts: {
+              "disk.space": {
+                instances: { ...instances, "disk_space._srv": instances["disk_space._"] },
+              },
+            },
+          },
+        },
+      },
+    };
+    for (const payload of [mixed, wrongNode, multiplePayload, stale, unexpected]) {
+      const host = (await readHostStatus(config, diskFetch(payload), () => now)).hosts[0];
+      expect(host).toMatchObject({ status: "available", cpuUsagePercent: 16 });
+      expect(host).not.toHaveProperty("availableStorageBytes");
+    }
+  });
+
+  it("starts storage alongside RAM and retains CPU when optional storage exhausts the existing deadline", async () => {
+    vi.useFakeTimers();
+    const fallback = fixtureFetch();
+    const started: string[] = [];
+    let releaseMemory: ((response: Response) => void) | undefined;
+    const fetcher = vi.fn<typeof fetch>((input, init) => {
+      const context = new URL(String(input)).searchParams.get("contexts");
+      if (context) started.push(context);
+      if (context === "system.ram")
+        return new Promise<Response>((resolve) => {
+          releaseMemory = resolve;
+        });
+      if (context === "disk.space")
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+      return fallback(input, init);
+    });
+    const result = readHostStatus(config, fetcher, () => now);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(started).toContain("disk.space");
+    expect(started).toContain("system.ram");
+    expect(releaseMemory).toBeDefined();
+    releaseMemory!(Response.json(data("free", 4096.5, "MiB")));
+    await vi.advanceTimersByTimeAsync(3000);
+    const host = (await result).hosts[0];
+    expect(host).toMatchObject({ status: "available", cpuUsagePercent: 16 });
+    expect(host).not.toHaveProperty("availableStorageBytes");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("preserves legacy hosts and validates optional finite nonnegative swap bytes per second", () => {
     const decode = Schema.decodeUnknownSync(HostStatus);
     const host = {
@@ -322,7 +630,7 @@ describe("Netdata host status", () => {
       sampledAt: "2027-01-15T07:59:58.000Z",
     });
     const calls = fetcher.mock.calls;
-    expect(calls).toHaveLength(4);
+    expect(calls).toHaveLength(5);
     for (const [input, init] of calls) {
       expect(init?.redirect).toBe("error");
       expect(init?.headers).toMatchObject({ authorization: "Bearer test-only-secret" });
@@ -470,29 +778,38 @@ describe("Netdata host status", () => {
       { id: "mini", status: "unavailable", reason: "not_configured" },
       { id: "home", status: "unavailable", reason: "not_configured" },
     ]);
-    expect(fetcher).toHaveBeenCalledTimes(8);
+    expect(fetcher).toHaveBeenCalledTimes(10);
     const queries = fetcher.mock.calls
       .map(([input]) => new URL(String(input)))
       .filter((url) => url.pathname.endsWith("data"));
     for (const selected of [guid, testGuid]) {
       const scoped = queries.filter((url) => url.searchParams.get("nodes") === selected);
-      expect(scoped).toHaveLength(3);
+      expect(scoped).toHaveLength(4);
       expect(scoped.map((url) => url.searchParams.get("contexts")).sort()).toEqual([
+        "disk.space",
         "mem.available",
         "system.cpu",
         "system.ram",
       ]);
       for (const url of scoped) {
         expect(url.origin).toBe("http://127.0.0.1:19999");
+        const storage = url.searchParams.get("contexts") === "disk.space";
         expect(Object.fromEntries(url.searchParams)).toEqual({
           scope_nodes: selected,
           nodes: selected,
           contexts: url.searchParams.get("contexts"),
+          ...(storage
+            ? {
+                scope_contexts: "disk.space",
+                scope_labels: "mount_point:/",
+                labels: "mount_point:/",
+              }
+            : {}),
           dimensions: url.searchParams.get("contexts") === "mem.available" ? "avail" : "*",
           after: "-5",
           points: "1",
           format: "json",
-          options: "jsonwrap",
+          options: storage ? "jsonwrap,details" : "jsonwrap",
           group_by: "dimension",
         });
       }
@@ -670,27 +987,27 @@ describe("Netdata host status", () => {
     const fetcher = fixtureFetch();
     const result = await readHostStatus(shared, fetcher, () => now);
     expect(result.hosts.every((host) => host.status === "available")).toBe(true);
-    expect(fetcher).toHaveBeenCalledTimes(18);
+    expect(fetcher).toHaveBeenCalledTimes(22);
     const credentials = fetcher.mock.calls.map(([input, init]) => ({
       origin: new URL(String(input)).origin,
       authorization: new Headers(init?.headers).get("authorization"),
     }));
     expect(credentials.filter(({ origin }) => origin === "https://override.example")).toEqual(
-      Array.from({ length: 4 }, () => ({
+      Array.from({ length: 5 }, () => ({
         origin: "https://override.example",
         authorization: null,
       })),
     );
     for (const authorization of ["Bearer shared-test-token", "Bearer mini-test-token"]) {
       expect(credentials.filter((call) => call.authorization === authorization)).toEqual(
-        Array.from({ length: authorization === "Bearer mini-test-token" ? 5 : 4 }, () => ({
+        Array.from({ length: authorization === "Bearer mini-test-token" ? 6 : 5 }, () => ({
           origin: "https://collector.example",
           authorization,
         })),
       );
     }
     expect(credentials.filter(({ origin }) => origin === "https://home.example")).toEqual(
-      Array.from({ length: 5 }, () => ({
+      Array.from({ length: 6 }, () => ({
         origin: "https://home.example",
         authorization: "Bearer home-test-token",
       })),

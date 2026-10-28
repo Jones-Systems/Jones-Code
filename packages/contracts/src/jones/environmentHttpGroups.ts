@@ -21,6 +21,16 @@ import {
   JonesUpdateRecordRetiredInput,
   JonesUpdateState,
 } from "./jonesUpdates.ts";
+import {
+  JonesOperationStartInput,
+  JonesOperationStopInput,
+  JonesOperationFenceInput,
+  JonesOperationReadInput,
+  JonesOperationReceipt,
+  JonesOperationReadResult,
+  JonesRecoveryPreflightInput,
+  JonesRecoveryPreflight,
+} from "./jonesOperations.ts";
 import { WorkQueueMetadataResult } from "./workQueueMetadata.ts";
 import { SettlementOriginsRequest, SettlementOriginsResult } from "./settlementOrigins.ts";
 import {
@@ -628,6 +638,46 @@ export const makeJonesHttpGroups = ({
         headers: OptionalBearerHeaders,
         payload: JonesUpdateInstallInput,
         success: JonesUpdateState,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationStart", "/api/jones-updates/operations/start", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationStartInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationStop", "/api/jones-updates/operations/stop", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationStopInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationFence", "/api/jones-updates/operations/fence", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationFenceInput,
+        success: JonesOperationReceipt,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("operationRead", "/api/jones-updates/operations/read", {
+        headers: OptionalBearerHeaders,
+        payload: JonesOperationReadInput,
+        success: JonesOperationReadResult,
+        error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
+      }).middleware(EnvironmentAuthenticatedAuth),
+    )
+    .add(
+      HttpApiEndpoint.post("recoveryPreflight", "/api/jones-updates/recovery-preflight", {
+        headers: OptionalBearerHeaders,
+        payload: JonesRecoveryPreflightInput,
+        success: JonesRecoveryPreflight,
         error: [EnvironmentScopeRequiredError, EnvironmentInternalError],
       }).middleware(EnvironmentAuthenticatedAuth),
     ) {}

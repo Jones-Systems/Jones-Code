@@ -48,3 +48,24 @@ it("opens each remote child's owning environment from its title and question or 
     [{ environmentId: "remote-approval-environment", threadId: "approval-child" }],
   ]);
 });
+
+it("keeps a child approval visible while its parent awaits an answer", async () => {
+  const child = makeThreadFixture({
+    id: ThreadId.make("approval-during-parent-question"),
+    title: "Blocked planner",
+    hasPendingApprovals: true,
+  });
+  const item = childInputBannerItem({
+    childThreadInputs: [child],
+    parentAwaitingUser: true,
+    onOpenThread: vi.fn(),
+  });
+  await using screen = await render(
+    <>
+      {item?.title}
+      {item?.actions}
+    </>,
+    { router: false },
+  );
+  await expect.element(screen.getByRole("button", { name: "Open approval" })).toBeVisible();
+});

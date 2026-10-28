@@ -214,6 +214,25 @@ it.effect(
       assert.lengthOf(yield* reopened.listInheritedQueuedRuns(threadId), 1);
       assert.lengthOf(yield* reopened.listInheritedQueuedRuns(ThreadId.make("other")), 0);
       assert.lengthOf(yield* reopened.listInheritedQueuedRuns(), 1);
+      yield* reopened.clearQueuedOverrides(ThreadId.make("other"), later);
+      assert.deepEqual(yield* reopened.getQueuedOverride(queued), step.continuationSelection);
+      const refusedOwner = yield* Effect.exit(
+        sql.withTransaction(
+          Effect.gen(function* () {
+            yield* reopened.clearQueuedOverrides(threadId, later);
+            return yield* Effect.fail("synthetic owner refusal");
+          }),
+        ),
+      );
+      assert.isTrue(Exit.isFailure(refusedOwner));
+      assert.deepEqual(yield* reopened.getQueuedOverride(queued), step.continuationSelection);
+      yield* reopened.clearQueuedOverrides(threadId, later);
+      const afterOwner = yield* Store.make;
+      assert.isNull(yield* afterOwner.getQueuedOverride(queued));
+      const inherited = yield* afterOwner.listInheritedQueuedRuns(threadId);
+      assert.lengthOf(inherited, 1);
+      assert.equal(inherited[0]?.inheritedAt, now);
+      assert.isNull(inherited[0]?.overrideSwitchCommandId);
       yield* reopened.deleteQueuedRuns([queued]);
       assert.isNull(yield* reopened.getQueuedOverride(queued));
     }).pipe(Effect.provide(memory)),
@@ -246,6 +265,7 @@ it.effect("missing optional tables fail closed and a later migration is observed
       }),
     );
     yield* store.deleteQueuedRuns([runId]);
+    yield* store.clearQueuedOverrides(threadId, later);
     yield* store.pruneDecidedEvidence(later);
     yield* migration;
     yield* seedRun();

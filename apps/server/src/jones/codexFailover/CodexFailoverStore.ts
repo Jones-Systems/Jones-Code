@@ -139,6 +139,7 @@ class CodexFailoverStore extends Context.Service<
     ) => Result<ReadonlyArray<CodexFailoverQueuedRun>>;
     readonly setQueuedOverride: (input: CodexFailoverQueuedOverride) => Result<boolean>;
     readonly getQueuedOverride: (id: RunId) => Result<ModelSelection | null>;
+    readonly clearQueuedOverrides: (threadId: ThreadId, updatedAt: string) => Result<void>;
     readonly deleteQueuedRuns: (ids: ReadonlyArray<RunId>) => Result<void>;
     readonly selectionRevision: (id: ThreadId) => Result<number>;
   }
@@ -402,6 +403,16 @@ export const make = Effect.gen(function* () {
   ) {
     return (yield* readQueued("WHERE run_id = ?", [id]))[0]?.overrideSelection ?? null;
   }, Effect.mapError(storageError));
+  const clearQueuedOverrides = Effect.fn("CodexFailoverStore.clearQueuedOverrides")(function* (
+    threadId: ThreadId,
+    updatedAt: string,
+  ) {
+    if (!(yield* present("jones_codex_failover_queued_runs"))) return;
+    yield* sql`UPDATE jones_codex_failover_queued_runs
+      SET override_selection_json = NULL, override_switch_command_id = NULL,
+        updated_at = ${updatedAt}
+      WHERE thread_id = ${threadId} AND override_selection_json IS NOT NULL`;
+  }, Effect.mapError(storageError));
   const deleteQueuedRuns = Effect.fn("CodexFailoverStore.deleteQueuedRuns")(function* (
     ids: ReadonlyArray<RunId>,
   ) {
@@ -442,6 +453,7 @@ export const make = Effect.gen(function* () {
     listInheritedQueuedRuns,
     setQueuedOverride,
     getQueuedOverride,
+    clearQueuedOverrides,
     deleteQueuedRuns,
     selectionRevision,
   });

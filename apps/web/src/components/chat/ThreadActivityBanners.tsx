@@ -18,15 +18,18 @@ import { Button, InlineButton } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import type { ComposerBannerStackItem } from "./ComposerBannerStack";
 
-/** Subagents waiting on the user, unless the parent is itself waiting on them. */
+/** Parent questions hide child questions while child approvals remain reachable. */
 export function childInputBannerItem(input: {
   readonly childThreadInputs: ReadonlyArray<EnvironmentThreadShell>;
   readonly parentAwaitingUser: boolean;
   readonly onOpenThread: (threadRef: ScopedThreadRef) => void;
 }): ComposerBannerStackItem | null {
-  const { childThreadInputs, onOpenThread } = input;
+  const { onOpenThread } = input;
+  const childThreadInputs = input.parentAwaitingUser
+    ? input.childThreadInputs.filter((child) => child.hasPendingApprovals)
+    : input.childThreadInputs;
   const first = childThreadInputs[0];
-  if (!first || input.parentAwaitingUser) return null;
+  if (!first) return null;
   return {
     id: `child-input:${first.id}`,
     variant: "info",

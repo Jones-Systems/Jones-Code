@@ -2,6 +2,7 @@ import { decodeMigrationPlan, type MigrationPlan } from "../jones/updates/migrat
 import type { ServerSelfUpdateOutcome } from "@t3tools/contracts";
 import {
   decodeStagedQualifiedRuntime,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
   type StagedQualifiedRuntime,
 } from "../jones/cloud/qualifiedRuntime.ts";
 import {
@@ -39,6 +40,7 @@ export interface PendingServiceUpdate {
   readonly phase: "accepted" | "trial-ready";
   readonly qualified?: StagedQualifiedRuntime;
   readonly startupReceipt?: QualifiedTrialReceipt;
+  readonly stateRecovery?: "clone-required" | "clone-or-copy";
 }
 
 interface LegacyPendingServiceUpdate extends Omit<PendingServiceUpdate, "phase"> {}
@@ -49,6 +51,7 @@ export type ServiceUpdateRecord =
       readonly migrationPlan?: MigrationPlan;
       readonly qualified?: StagedQualifiedRuntime;
       readonly startupReceipt?: QualifiedTrialReceipt;
+      readonly stateRecovery?: "clone-required" | "clone-or-copy";
     });
 
 export interface ServiceState {
@@ -63,6 +66,8 @@ export interface ServiceLauncherContext {
   /** The running launcher's own version; absence does not imply it matches the child. */
   readonly launcherVersion?: string;
   readonly qualifiedUpdatesProtocol?: 1;
+  readonly qualifiedRecoveryProtocol?: 1;
+  readonly stateRecoveryPolicyProtocol?: 1;
   readonly updateOperationsProtocol?: 1;
   readonly updateRetirementProtocol?: 1;
   /** The launcher answers `reconcile-update` from its durable operation outcomes. */
@@ -115,6 +120,8 @@ export type ServiceLauncherChildMessage =
     }
   | {
       readonly type: "request-update";
+      readonly stateRecovery?: "clone-required" | "clone-or-copy";
+      readonly qualifiedRecoveryProtocol?: 1;
       readonly targetVersion: string;
       readonly dbPath: string;
       readonly stagedHandle?: string;
@@ -176,6 +183,13 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
   if (!isRecord(value)) return undefined;
   const { id, fromVersion, targetVersion, status } = value;
+  if (
+    value.stateRecovery !== undefined &&
+    ((value.stateRecovery !== "clone-required" && value.stateRecovery !== "clone-or-copy") ||
+      value.qualified === undefined)
+  )
+    return undefined;
+  const stateRecovery = value.stateRecovery as "clone-required" | "clone-or-copy" | undefined;
   const migrationPlan =
     value.migrationPlan === undefined ? undefined : decodeMigrationPlan(value.migrationPlan);
   if (value.migrationPlan !== undefined && migrationPlan === undefined) return undefined;
@@ -199,7 +213,8 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
     (qualified === undefined ||
       qualified.binding.activeVersion !== fromVersion ||
       qualified.receipt.version !== targetVersion ||
-      qualified.receipt.installedSourceSha !== qualified.binding.activeSourceSha)
+      (qualified.protocol !== RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+        qualified.receipt.installedSourceSha !== qualified.binding.activeSourceSha))
   )
     return undefined;
   if (
@@ -224,6 +239,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
           dbPath: value.dbPath,
           status,
           phase: value.phase,
+          ...(stateRecovery === undefined ? {} : { stateRecovery }),
           ...(qualified === undefined ? {} : { qualified }),
           ...(startupReceipt === undefined ? {} : { startupReceipt }),
           ...(migrationPlan === undefined ? {} : { migrationPlan }),
@@ -239,6 +255,7 @@ function decodeServiceUpdate(value: unknown): ServiceUpdateRecord | undefined {
       fromVersion,
       targetVersion,
       status,
+      ...(stateRecovery === undefined ? {} : { stateRecovery }),
       ...(qualified === undefined ? {} : { qualified }),
       ...(startupReceipt === undefined ? {} : { startupReceipt }),
       ...(migrationPlan === undefined ? {} : { migrationPlan }),
@@ -349,6 +366,8 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
   }
   if (
     !isRecord(parsed) ||
+    ("qualifiedRecoveryProtocol" in parsed && parsed.qualifiedRecoveryProtocol !== 1) ||
+    ("stateRecoveryPolicyProtocol" in parsed && parsed.stateRecoveryPolicyProtocol !== 1) ||
     (parsed.protocol !== SERVICE_LAUNCHER_PROTOCOL &&
       parsed.protocol !== LEGACY_SERVICE_LAUNCHER_PROTOCOL) ||
     typeof parsed.childVersion !== "string" ||
@@ -363,6 +382,13 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
         ? decodeServiceUpdate(parsed.update)
         : decodeLegacyServiceUpdate(parsed.update);
   if (parsed.update !== undefined && update === undefined) return undefined;
+  if (update?.stateRecovery !== undefined && parsed.stateRecoveryPolicyProtocol !== 1)
+    return undefined;
+  if (
+    update?.qualified?.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+    parsed.qualifiedRecoveryProtocol !== 1
+  )
+    return undefined;
   if (
     parsed.protocol === SERVICE_LAUNCHER_PROTOCOL &&
     update?.status === "pending" &&
@@ -386,6 +412,10 @@ export function decodeServiceLauncherContext(value: string): ServiceLauncherCont
       ? { launcherVersion: parsed.launcherVersion }
       : {}),
     ...(parsed.qualifiedUpdatesProtocol === 1 ? { qualifiedUpdatesProtocol: 1 as const } : {}),
+    ...(parsed.qualifiedRecoveryProtocol === 1 ? { qualifiedRecoveryProtocol: 1 as const } : {}),
+    ...(parsed.stateRecoveryPolicyProtocol === 1
+      ? { stateRecoveryPolicyProtocol: 1 as const }
+      : {}),
     ...(parsed.updateOperationsProtocol === 1 ? { updateOperationsProtocol: 1 as const } : {}),
     ...(parsed.updateRetirementProtocol === 1 ? { updateRetirementProtocol: 1 as const } : {}),
     ...(parsed.updateOutcomeProtocol === 1 ? { updateOutcomeProtocol: 1 as const } : {}),
@@ -400,7 +430,12 @@ function decodeLegacyServiceUpdate(
 ): ServiceUpdateRecord | LegacyPendingServiceUpdate | undefined {
   if (!isRecord(value)) return undefined;
   // Legacy decoding must reject qualified context, never erase its identity and permit ID-only recovery.
-  if (value.qualified !== undefined || value.startupReceipt !== undefined) return undefined;
+  if (
+    value.qualified !== undefined ||
+    value.startupReceipt !== undefined ||
+    value.stateRecovery !== undefined
+  )
+    return undefined;
   if (value.status !== "pending") return decodeServiceUpdate(value);
   const { id, fromVersion, targetVersion, dbPath, status } = value;
   return typeof id === "string" &&
@@ -479,7 +514,19 @@ export function decodeServiceLauncherChildMessage(
     typeof value.targetVersion === "string" &&
     typeof value.dbPath === "string"
   ) {
+    if (
+      value.stateRecovery !== undefined &&
+      ((value.stateRecovery !== "clone-required" && value.stateRecovery !== "clone-or-copy") ||
+        typeof value.stagedHandle !== "string" ||
+        value.stagedHandle.trim() === "")
+    )
+      return undefined;
     if (value.stagedHandle !== undefined && typeof value.stagedHandle !== "string")
+      return undefined;
+    if (
+      "qualifiedRecoveryProtocol" in value &&
+      (value.qualifiedRecoveryProtocol !== 1 || value.stagedHandle === undefined)
+    )
       return undefined;
     if (
       value.operationId !== undefined &&
@@ -492,9 +539,13 @@ export function decodeServiceLauncherChildMessage(
       return undefined;
     return {
       type: value.type,
+      ...(value.stateRecovery === undefined
+        ? {}
+        : { stateRecovery: value.stateRecovery as "clone-required" | "clone-or-copy" }),
       targetVersion: value.targetVersion,
       dbPath: value.dbPath,
       ...(typeof value.stagedHandle === "string" ? { stagedHandle: value.stagedHandle } : {}),
+      ...(value.qualifiedRecoveryProtocol === 1 ? { qualifiedRecoveryProtocol: 1 as const } : {}),
       ...(typeof value.operationId === "string" ? { operationId: value.operationId } : {}),
     };
   }

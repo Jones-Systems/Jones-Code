@@ -115,6 +115,12 @@ returns to the remembered selection.
 
 Leaving reasoning level or service tier unset uses the provider's own configuration.
 
+Changing an existing thread's provider, model, or options supersedes earlier settings
+saved by its agent, including work still waiting to start. Your choice stays saved
+until a later change; the agent can still save a new selection for future turns.
+An already admitted turn keeps its selection until a supported transition or its
+next turn. **Steer all** explicitly targets the currently running agent.
+
 ## Quote an assistant response
 
 On web and desktop, select text within one assistant response and choose

@@ -1,4 +1,4 @@
-import { RuntimeRequestId, ThreadId } from "@t3tools/contracts";
+import { CommandId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import { monitorThreadKey } from "@t3tools/client-runtime/jones/thread-monitor";
 import type {
   ThreadMonitorPeerIntent,
@@ -63,6 +63,68 @@ async function expand(container: HTMLElement) {
   await userEvent.click(notch);
 }
 describe("real monitor renderer interactions", () => {
+  it("restores the exact settled Waiting target after peer recreation without replaying a stale row", async () => {
+    const { store: oldPeer, rows, container } = setup();
+    const row = rows[2]!;
+    const receipt = {
+      ...refOf(row),
+      type: "actionResult" as const,
+      actionId: "settled-waiting",
+      commandId: CommandId.make("original-settle"),
+      settleCommandId: CommandId.make("original-settle"),
+      status: "accepted" as const,
+      reason: null,
+    };
+    oldPeer.receive(receipt);
+    const intents: ThreadMonitorPeerIntent[] = [];
+    const store = new MonitorPeerStore(async (intent) => {
+      intents.push(intent);
+    });
+    store.receive({ type: "reset", publisherGeneration: "generation" });
+    const replayView = (revision: number, connected: boolean) => {
+      for (const frame of monitorSnapshot({
+        publisherGeneration: "generation",
+        revision,
+        environments: [
+          {
+            ...testEnvironment,
+            transport: connected ? "connected" : "disconnected",
+            freshness: connected ? "live" : "cached",
+          },
+        ],
+        rows: [],
+        counts: { needsYou: 0, working: 0, waiting: 0, done: 0 },
+      }))
+        store.receive(frame);
+    };
+    replayView(1, false);
+    for (const result of oldPeer.results.values()) store.receive(result);
+    expect(store.retainedRows.size).toBe(0);
+    await using screen = await render(<MonitorUI store={store} />, { container, router: false });
+    await expand(container);
+    const restore = screen.getByRole("button", { name: "Restore thread", exact: true });
+    await expect.element(restore).toBeVisible();
+    await expect.element(restore).toHaveAttribute("aria-disabled", "true");
+    await restore.click({ force: true });
+    expect(intents.filter((intent) => intent.type === "restore")).toHaveLength(0);
+    await act(() => replayView(2, true));
+    await expect.element(restore).toHaveAttribute("aria-disabled", "false");
+    expect(container.querySelectorAll("[data-monitor-thread-id]")).toHaveLength(0);
+    await restore.click();
+    expect(intents.filter((intent) => intent.type === "restore")).toEqual([
+      expect.objectContaining({
+        ...refOf(row),
+        type: "restore",
+        settleCommandId: receipt.commandId,
+      }),
+    ]);
+    await act(() => {
+      store.receive({ ...testEnvironment, type: "invalidateEnvironment", requestId: "retired" });
+      store.receive(receipt);
+    });
+    await expect.element(restore).not.toBeInTheDocument();
+    expect(store.results.size).toBe(0);
+  });
   it("keeps the actual aggregate label and number text inside each tile at 320px and 200% text", async () => {
     using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
     const { store, container } = setup();

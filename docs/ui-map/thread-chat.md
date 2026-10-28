@@ -63,6 +63,39 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Header telemetry and quick effort selection
+
+The header's fixed panel controls expose their actual element to ChatHeader.
+The Jones host-status clearance hook measures overlap and reserves an 8px gap,
+including when the monitor/maximize controls appear or the chat column resizes.
+Host pills keep their existing progressive compression. Quick M/H/E controls
+use a 15% black selection overlay, increasing to 20% on hover.
+
+The focused browser regression checks growing controls, narrowing the header,
+moving controls outside its column, and restoring the original layout. Local
+verification used an isolated component harness with reused dependencies;
+full app navigation and packaged native clients remain unverified. No sidebar
+behavior, telemetry collection, or provider configuration changed.
+
+### Expected thread responses
+
+An explicit expected-result request keeps its sender **Waiting** after the
+foreground turn ends. The pending-work banner identifies the expected response.
+An ordinary message or navigation link alone does not establish a wait. A
+correlated answer or explicit release clears that dependency; unrelated replies
+and the recipient finishing a turn do not. Multiple requests clear independently.
+Active foreground work, owner input and approval controls retain their existing
+status precedence.
+
+For isolated verification, send an expected-result request between two synthetic
+threads, finish the sender's turn, and check its sidebar status and chat banner.
+Reconnect without a new conversation event and verify that Waiting persists.
+Deliver an unrelated reply, then the correlated result, and check that only the
+result clears the wait and wakes the sender. Repeat with two requests, a release,
+and an ordinary no-response message. Inspect the existing mobile thread list and
+pending-work sheet as well as the shared desktop renderer. These journeys require
+feature-revision evidence before being reported as verified.
+
 ### Sidebar build label
 
 The environment-filter footer in current and legacy sidebars, and the Settings

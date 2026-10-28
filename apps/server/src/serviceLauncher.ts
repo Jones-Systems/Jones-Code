@@ -27,6 +27,8 @@ import {
   readQualifiedRuntimeReceipt,
   withQualifiedRuntimeLock,
   QUALIFIED_UPDATES_PROTOCOL,
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
   qualifiedStagingTiming,
   retainQualifiedAttemptTimings,
   type QualifiedDigestOptions,
@@ -43,6 +45,7 @@ import {
 import {
   QUALIFIED_STARTUP_STATE_FILES,
   copyQualifiedBackupFile,
+  readQualifiedBackupReceipt,
   preflightQualifiedBackup,
   removeQualifiedRecoveryPayload,
   retainQualifiedAdvancedState,
@@ -181,7 +184,13 @@ const preflightQualifiedCandidate = async (
       );
     },
   );
-  const reason = qualifiedServicePreflightFailure({ ...result, version: staged.receipt.version });
+  const reason = qualifiedServicePreflightFailure({
+    ...result,
+    version: staged.receipt.version,
+    ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+      ? { requiredQualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
+      : {}),
+  });
   if (reason !== undefined) throw new QualifiedCandidatePreflightError(reason);
   const preflight = decodeServicePreflightResult(JSON.parse(result.stdout.trim()) as unknown);
   return preflight?.status === "ready" ? preflight.migrationPlan : undefined;
@@ -414,6 +423,13 @@ async function backupDatabaseOnce(
       throw new Error("Cannot use an incomplete database backup.");
     }
     if (pending.qualified !== undefined) await validatePairedBackup(baseDir, pending, backupDir);
+    if (
+      pending.stateRecovery === "clone-required" &&
+      (await readQualifiedBackupReceipt(baseDir, pending.id))?.method !== "clone"
+    )
+      throw new Error(
+        "recovery-clone-unavailable: The retained snapshot does not prove a strict clone.",
+      );
     return;
   }
 
@@ -436,7 +452,9 @@ async function backupDatabaseOnce(
         if (suffix !== "" && !(await pathExists(source))) continue;
         const destination = databaseBackupFile(stagingDir, suffix);
         const copyStarted = performance.now();
-        const copied = await copyQualifiedBackupFile(source, destination, adapter);
+        const copied = await copyQualifiedBackupFile(source, destination, adapter, {
+          cloneRequired: pending.stateRecovery === "clone-required",
+        });
         copyMs += performance.now() - copyStarted;
         bytes += copied.bytes;
         if (copied.method === "copy") method = "copy";
@@ -444,7 +462,14 @@ async function backupDatabaseOnce(
         await syncFile(destination);
         syncMs += performance.now() - syncStarted;
       }
-      const settingsTiming = await backupPairedSettings(baseDir, stagingDir);
+      const settingsTiming = await backupPairedSettings(
+        baseDir,
+        stagingDir,
+        adapter,
+        pending.stateRecovery === "clone-required",
+      );
+      bytes += settingsTiming.bytes;
+      if (settingsTiming.method === "copy") method = "copy";
       copyMs += settingsTiming.copyMs;
       syncMs += settingsTiming.syncMs;
       const bindingPath = NodePath.join(stagingDir, "paired-binding.json");
@@ -486,8 +511,17 @@ async function backupDatabaseOnce(
 async function backupPairedSettings(
   baseDir: string,
   destination: string,
-): Promise<{ readonly copyMs: number; readonly syncMs: number }> {
+  adapter?: QualifiedBackupAdapter,
+  cloneRequired = false,
+): Promise<{
+  readonly copyMs: number;
+  readonly syncMs: number;
+  readonly bytes: number;
+  readonly method: "clone" | "copy";
+}> {
   const present: string[] = [];
+  let bytes = 0;
+  let method: "clone" | "copy" = "clone";
   let copyMs = 0;
   let syncMs = 0;
   for (const name of PAIRED_SETTINGS) {
@@ -498,7 +532,9 @@ async function backupPairedSettings(
       throw new Error("Startup settings must be regular files.");
     const target = NodePath.join(destination, name);
     const copyStarted = performance.now();
-    await NodeFSP.copyFile(source, target);
+    const copied = await copyQualifiedBackupFile(source, target, adapter, { cloneRequired });
+    bytes += copied.bytes;
+    if (copied.method === "copy") method = "copy";
     copyMs += performance.now() - copyStarted;
     const syncStarted = performance.now();
     await syncFile(target);
@@ -510,7 +546,7 @@ async function backupPairedSettings(
   const syncStarted = performance.now();
   await syncFile(manifest);
   syncMs += performance.now() - syncStarted;
-  return { copyMs, syncMs };
+  return { copyMs, syncMs, bytes, method };
 }
 
 async function restorePairedSettings(baseDir: string, backupDir: string): Promise<void> {
@@ -736,6 +772,9 @@ function terminalUpdate<S extends TerminalStatus>(input: {
     fromVersion: input.pending.fromVersion,
     targetVersion: input.pending.targetVersion,
     status: input.status,
+    ...(input.pending.stateRecovery === undefined
+      ? {}
+      : { stateRecovery: input.pending.stateRecovery }),
     ...(input.pending.qualified === undefined ? {} : { qualified: input.pending.qualified }),
     ...(input.pending.migrationPlan === undefined
       ? {}
@@ -1297,6 +1336,8 @@ export class Launcher {
       childVersion: version,
       launcherVersion: packageJson.version,
       qualifiedUpdatesProtocol: QUALIFIED_UPDATES_PROTOCOL,
+      qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL,
+      stateRecoveryPolicyProtocol: 1,
       updateOperationsProtocol: 1,
       updateRetirementProtocol: 1,
       updateOutcomeProtocol: 1,
@@ -1601,6 +1642,16 @@ export class Launcher {
           await reject("The update operation is ambiguous and requires reconciliation.");
           return;
         }
+        const retainedPolicy =
+          this.#state.update?.id === message.operationId
+            ? this.#state.update.stateRecovery
+            : undefined;
+        if ((retainedPolicy ?? "clone-or-copy") !== (message.stateRecovery ?? "clone-or-copy")) {
+          await reject(
+            "recovery-policy-conflict: The retained native operation cannot prove this requested policy.",
+          );
+          return;
+        }
         const reserved = await readOperationReservation(this.#baseDir, message.operationId).catch(
           () => undefined,
         );
@@ -1701,8 +1752,17 @@ export class Launcher {
           throw new Error("Install target differs from its staged handle.");
         if (child.process.pid === undefined)
           throw new Error("The requesting child has no native process identity.");
+        if (
+          qualified.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+          message.qualifiedRecoveryProtocol !== QUALIFIED_RECOVERY_PROTOCOL
+        )
+          throw new QualifiedCandidatePreflightError(
+            "qualified-recovery-unsupported: The current server cannot read historical enrollment receipts.",
+          );
         migrationPlan = await preflightQualifiedCandidate(this.#baseDir, qualified);
-        await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter);
+        await preflightQualifiedBackup(this.#baseDir, message.dbPath, this.#backupAdapter, {
+          cloneRequired: message.stateRecovery === "clone-required",
+        });
         if (this.#child !== child || this.#stopRequested || this.#stopping)
           throw new Error("The requesting child stopped during candidate preflight.");
       } catch (cause) {
@@ -1710,7 +1770,8 @@ export class Launcher {
           cause instanceof QualifiedCandidatePreflightError ||
             (cause instanceof Error &&
               (cause.message.startsWith("startup-gate-unavailable:") ||
-                cause.message.startsWith("recovery-capacity:")))
+                cause.message.startsWith("recovery-capacity:") ||
+                cause.message.startsWith("recovery-clone-unavailable:")))
             ? cause.message
             : "Qualified staged runtime, candidate startup gate, active source or native environment binding is invalid.",
         );
@@ -1719,14 +1780,13 @@ export class Launcher {
     }
     // A check that cannot run refuses the update too: the alternative is
     // stopping the server without knowing whether the backup fits.
-    const backupBlocker = await databaseBackupBlocker(
-      this.#baseDir,
-      message.dbPath,
-      this.#backupSpaceProbe,
-    ).catch(
-      (error: unknown) =>
-        `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
-    );
+    const backupBlocker =
+      qualified !== undefined && message.stateRecovery !== undefined
+        ? undefined
+        : await databaseBackupBlocker(this.#baseDir, message.dbPath, this.#backupSpaceProbe).catch(
+            (error: unknown) =>
+              `Could not check that the database backup fits before updating: ${error instanceof Error ? error.message : String(error)}. The server was not stopped.`,
+          );
     if (!child.process.connected) return;
     if (backupBlocker !== undefined) {
       await reject(backupBlocker);
@@ -1785,6 +1845,7 @@ export class Launcher {
       dbPath: message.dbPath,
       status: "pending",
       phase: "accepted",
+      ...(message.stateRecovery === undefined ? {} : { stateRecovery: message.stateRecovery }),
       ...(qualified === undefined ? {} : { qualified }),
       ...(migrationPlan === undefined ? {} : { migrationPlan }),
     };

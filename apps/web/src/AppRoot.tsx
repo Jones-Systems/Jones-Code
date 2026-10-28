@@ -1,3 +1,4 @@
+import { InstallPlanController } from "./jones/installStatus/InstallPlanController";
 import { RouterProvider } from "@tanstack/react-router";
 import { useEffect } from "react";
 
@@ -32,6 +33,7 @@ export function AppRoot({ router }: { readonly router: AppRouter }) {
       <MonitorController router={router} />
       <CompanionController />
       <FleetController />
+      <InstallPlanController />
       <ElectronBrowserHost />
       <BrowserProfileReporter />
       <QuitHoldOverlay />

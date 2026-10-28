@@ -23,6 +23,7 @@ import {
   readAcknowledgedMilestone,
   runScenario,
   scenarioSecrets,
+  sanitizeFailurePageState,
 } from "./install-preview-agent.mjs";
 import {
   hashTree,
@@ -1232,7 +1233,7 @@ NodeTest.test(
               if (selector === '[data-testid="settings-updates"] button') return settingsButtons;
               NodeAssert.equal(
                 selector,
-                '[data-testid="sidebar-updates"] button[aria-label]:not([aria-label="Nightly update release notes"])',
+                '[data-testid="sidebar-updates"] ul button[aria-label]:not([aria-label="Nightly update release notes"])',
               );
               return sidebarButtons;
             },
@@ -1339,8 +1340,9 @@ NodeTest.test(
       ),
       (error) => error === failure,
     );
-    NodeAssert.deepEqual(calls.slice(-3), [
+    NodeAssert.deepEqual(calls.slice(-4), [
       "preview_wait_for",
+      "preview_evaluate",
       "preview_snapshot",
       "t3_preview_close",
     ]);
@@ -1453,6 +1455,23 @@ NodeTest.test(
         const client = {
           callTool: async ({ name, arguments: args }) => {
             if (name === "preview_wait_for" && ++waits === 2) throw failure;
+            if (name === "preview_evaluate")
+              return {
+                structuredContent: {
+                  value: {
+                    readyState: "complete",
+                    rootChildren: 1,
+                    rootHtmlLength: 100,
+                    bodyTextLength: 1,
+                    dialogs: 0,
+                    onConnectionsRoute: true,
+                    ui: { loading: true },
+                    text: code,
+                    url: pairingUrl,
+                    screenshot: imageBytes,
+                  },
+                },
+              };
             if (name === "preview_snapshot") {
               snapshotCalls.push(args);
               return {
@@ -1514,6 +1533,8 @@ NodeTest.test(
         NodeAssert.equal(readback.failureReconciliation.ui.addFailed, true);
         NodeAssert.equal(readback.failureReconciliation.ui.fetchFailed, true);
         NodeAssert.equal(readback.failureReconciliation.ui.sourceMatches, false);
+        NodeAssert.equal(readback.failurePageState.onConnectionsRoute, true);
+        NodeAssert.equal(readback.failurePageState.ui.loading, true);
         NodeAssert.ok(
           Object.values(readback.failureReconciliation.ui).every(
             (value) => typeof value === "boolean",
@@ -1524,6 +1545,35 @@ NodeTest.test(
     });
   },
 );
+
+NodeTest.test("failure page state retains only bounded counts, enum and fixed UI booleans", () => {
+  const secret = "NEVER-PUBLISH-PAIRING-CODE";
+  for (const value of [
+    null,
+    secret,
+    {
+      readyState: secret,
+      rootChildren: -1,
+      rootHtmlLength: Infinity,
+      bodyTextLength: secret,
+      dialogs: 10_000_001,
+      onConnectionsRoute: secret,
+      ui: { loading: secret, rootError: true, secret },
+      url: secret,
+      text: secret,
+    },
+  ]) {
+    const result = sanitizeFailurePageState(value);
+    NodeAssert.equal(result.readyState, "unknown");
+    NodeAssert.equal(result.rootChildren, null);
+    NodeAssert.equal(result.rootHtmlLength, null);
+    NodeAssert.equal(result.bodyTextLength, null);
+    NodeAssert.equal(result.dialogs, null);
+    NodeAssert.equal(result.onConnectionsRoute, false);
+    NodeAssert.equal(result.ui.loading, false);
+    NodeAssert.equal(JSON.stringify(result).includes(secret), false);
+  }
+});
 
 NodeTest.test(
   "disabled-browser qualification requires the native preview capability refusal",
@@ -2418,5 +2468,97 @@ NodeTest.test(
       });
       NodeAssert.ok(child.exitCode !== null || child.signalCode !== null);
     });
+  },
+);
+
+NodeTest.test("renderer qualification explicitly covers legacy and plan-capable bridges", () => {
+  const steps = rendererSteps("http://fixture.invalid", "a".repeat(40), "synthetic");
+  const pages = steps
+    .filter((step) => step.action === "navigate")
+    .map((step) => new URL(step.path));
+  const plan = pages.filter((page) => page.searchParams.get("run").endsWith("-install-plan"));
+  NodeAssert.equal(plan.length, 1);
+  NodeAssert.equal(plan[0].searchParams.get("installPlans"), null);
+  NodeAssert.ok(
+    pages
+      .filter((page) => page !== plan[0])
+      .every((page) => page.searchParams.get("installPlans") === "legacy"),
+  );
+  const labels = steps
+    .filter((step) => step.action === "assert-evaluate")
+    .map((step) => step.label);
+  for (const label of [
+    "Plan download records one Laptop operation and no host dispatch",
+    "Plan review cancellation never dispatches installation or opens the gate",
+    "Accepted plan installation still holds followers until native commit verification",
+    "Only the selected host starts after the receipt-bound Laptop gate",
+    "Plan Stop binds the exact running host operation and cannot complete on request alone",
+    "Only the exact settled Stop receipt enables header Done",
+    "Plan Done retains history and hides the completed panel",
+    "Reopening completed plan is read only",
+  ])
+    NodeAssert.ok(labels.includes(label), label);
+});
+
+NodeTest.test(
+  "plan Stop qualification rejects wrong operation, wrong stop and premature completion",
+  () => {
+    const step = rendererSteps("http://fixture.invalid", "a".repeat(40), "synthetic").find(
+      (step) =>
+        step.label ===
+        "Plan Stop binds the exact running host operation and cannot complete on request alone",
+    );
+    const sample = () => ({
+      installPlan: {
+        current: {
+          devices: [
+            {
+              operations: [
+                {
+                  operationId: "operation",
+                  receipt: { phase: "stop-requested", stop: { stopId: "stop" } },
+                },
+              ],
+            },
+          ],
+        },
+        view: { complete: false },
+      },
+      calls: [
+        {
+          action: "fixture-host-operationStop",
+          input: { environmentId: "host", input: { operationId: "operation", stopId: "stop" } },
+        },
+      ],
+    });
+    const read = (s) =>
+      new Function("window", `return ${step.expression}`)({
+        __jonesInstallPreview: { snapshot: () => s },
+      });
+    NodeAssert.equal(read(sample()), true);
+    for (const change of [
+      (s) => {
+        s.calls[0].input.input.operationId = "other";
+      },
+      (s) => {
+        s.calls[0].input.input.stopId = "other";
+      },
+      (s) => {
+        s.installPlan.view.complete = true;
+      },
+      (s) => {
+        s.installPlan.current.devices[0].operations[0].receipt.phase = "stopped";
+      },
+      (s) => {
+        s.calls = [];
+      },
+      (s) => {
+        delete s.installPlan.current.devices[0].operations[0].receipt.stop;
+      },
+    ]) {
+      const s = sample();
+      change(s);
+      NodeAssert.equal(read(s), false);
+    }
   },
 );

@@ -35,7 +35,7 @@ export function projectMonitorDetail(input: {
   const ownRequest = approval !== undefined || question !== undefined;
   const childReason =
     input.childAttention && !ownRequest
-      ? "A child thread needs attention. Its exact response target is unavailable here; open Linked in Jones Code."
+      ? "A child thread needs attention. Open this thread to answer its approval or reach its question."
       : null;
   let next: ThreadMonitorDetail = {
     ...detail,
