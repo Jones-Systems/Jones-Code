@@ -12,8 +12,8 @@ export const retireReaderWorker = async (worker: Worker, timeoutMs = 10_000): Pr
         () => true,
         () => false,
       ),
-      // @effect-diagnostics-next-line globalTimers:off -- Worker termination must time out independently of any caller fiber or Effect test clock; finally clears this timer.
       new Promise<false>((resolve) => {
+        // @effect-diagnostics-next-line globalTimers:off -- Worker termination must time out independently of any caller fiber or Effect test clock; finally clears this timer.
         timer = NodeTimers.setTimeout(() => resolve(false), timeoutMs);
       }),
     ]);
