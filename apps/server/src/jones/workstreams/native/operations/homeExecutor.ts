@@ -56,6 +56,11 @@ const make = Effect.gen(function* () {
   const bindings = yield* BindingStore.BindingStore;
   const transport = yield* HomeTransport;
   const beforeDispatch = Effect.fn("HomeExecutor.beforeDispatch")(function* (operation: Operation) {
+    if ("member_forward" in operation)
+      return yield* new WorkstreamGatewayError({
+        reason: "unknown-effect",
+        detail: "Member forwarding intent requires its source-owned recovery executor.",
+      });
     const callers = yield* Effect.serviceOption(Callers.RecordedCallers);
     if (Option.isSome(callers) || operation.recorded_caller) {
       if (Option.isNone(callers) || !operation.recorded_caller)

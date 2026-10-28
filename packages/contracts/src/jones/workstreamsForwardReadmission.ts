@@ -1,3 +1,7 @@
+import {
+  WorkstreamsForwardIdentity,
+  WorkstreamsForwardCommandId,
+} from "./workstreamsForwarding.ts";
 import * as Schema from "effect/Schema";
 import {
   closedWorkstreamsNative as closed,
@@ -104,3 +108,84 @@ export const WorkstreamsPeerEffectRecoveryV1 = closed(
   }),
 );
 export type WorkstreamsPeerEffectRecoveryV1 = typeof WorkstreamsPeerEffectRecoveryV1.Type;
+
+// V2 names the source-owned accepted record. The home cannot supply caller JSON or
+// assert current home authorization through this lookup-only protocol.
+export const WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V2 = "workstreams-source-readmission/2.0.0";
+export const WorkstreamsSourceReadmissionRequestV2 = closed(
+  Schema.Struct({
+    contract: Schema.Literal(WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V2),
+    accepted_forward: WorkstreamsForwardIdentity,
+    command_id: WorkstreamsForwardCommandId,
+    command_request_sha256: WorkstreamsNativeDigest,
+  }),
+).check(Schema.makeFilter((r) => r.accepted_forward.command_ids.includes(r.command_id)));
+export type WorkstreamsSourceReadmissionRequestV2 =
+  typeof WorkstreamsSourceReadmissionRequestV2.Type;
+const v2Fields = {
+  contract: Schema.Literal(WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V2),
+  request: WorkstreamsSourceReadmissionRequestV2,
+};
+const ceilingNarrowed = (
+  original: WorkstreamsTransportCeiling,
+  current: WorkstreamsTransportCeiling,
+) =>
+  rank[current.runtime_mode] <= rank[original.runtime_mode] &&
+  (original.interaction_mode !== "plan" || current.interaction_mode === "plan") &&
+  (original.access !== "read-only" || current.access === "read-only") &&
+  (current.access === "read-only" ||
+    (original.access !== "read-only" && rank[current.access] <= rank[original.access])) &&
+  current.scopes.every((s) => original.scopes.includes(s)) &&
+  current.permissions.every((p) => original.permissions.includes(p));
+export const WorkstreamsSourceReadmissionResponseV2 = Schema.Union([
+  closed(
+    Schema.Struct({
+      ...v2Fields,
+      state: Schema.Literal("authorized"),
+      original_ceiling: WorkstreamsTransportCeiling,
+      current_ceiling: WorkstreamsTransportCeiling,
+      observed_at: WorkstreamsNativeTimestamp,
+    }),
+  ).check(Schema.makeFilter((r) => ceilingNarrowed(r.original_ceiling, r.current_ceiling))),
+  closed(
+    Schema.Struct({
+      ...v2Fields,
+      state: Schema.Literal("denied"),
+      reason: Schema.Literals([
+        "not_found",
+        "not_granted",
+        "caller_changed",
+        "source_changed",
+        "home_changed",
+        "request_conflict",
+        "historical_evidence_missing",
+      ]),
+    }),
+  ),
+  closed(
+    Schema.Struct({
+      ...v2Fields,
+      state: Schema.Literal("unavailable"),
+      reason: Schema.Literals([
+        "authority_unavailable",
+        "home_unreachable",
+        "key_unavailable",
+        "provider_unconfigured",
+        "unsupported_protocol",
+      ]),
+    }),
+  ),
+]);
+export type WorkstreamsSourceReadmissionResponseV2 =
+  typeof WorkstreamsSourceReadmissionResponseV2.Type;
+export const WorkstreamsPeerEffectRecoveryV2 = closed(
+  Schema.Struct({
+    schema: Schema.Literal("jones-workstreams-peer-effect-recovery/2"),
+    kind: Schema.Literal("source-recorded-forward"),
+    incoming_peer_pin_id: WorkstreamsNativeId,
+    incoming_peer_pin_revision: WorkstreamsNativeVersion,
+    source_readmission: WorkstreamsSourceReadmissionRequestV2,
+    original_ceiling: WorkstreamsTransportCeiling,
+  }),
+);
+export type WorkstreamsPeerEffectRecoveryV2 = typeof WorkstreamsPeerEffectRecoveryV2.Type;

@@ -94,3 +94,88 @@ it("rejects broadened recovery ceilings, dispatch arguments and false absence ou
 const decodeRequest = Schema.decodeUnknownSync(WorkstreamsSourceReadmissionRequest);
 const decodeResponse = Schema.decodeUnknownSync(WorkstreamsSourceReadmissionResponse);
 const decodeRecovery = Schema.decodeUnknownSync(WorkstreamsPeerEffectRecoveryV1);
+
+import {
+  WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V2 as contractV2,
+  WorkstreamsSourceReadmissionRequestV2,
+  WorkstreamsSourceReadmissionResponseV2,
+  WorkstreamsPeerEffectRecoveryV2,
+} from "./workstreamsForwardReadmission.ts";
+const acceptedForward = {
+  forward_id: "forward-original-0001",
+  source_operation_id: "operation-original-0001",
+  parent_operation_id: null,
+  command_ids: [request.command_id],
+  request_sha256: request.request_sha256,
+  recorded_caller_sha256: authorized.recorded_caller_sha256,
+  expected_home: home,
+  canonical_origin: "https://home.invalid",
+  source_authority: authorized.source_authority,
+  source_enrollment_id: "enrollment",
+  source_enrollment_session_id: "enrollment-session",
+  principal_id: "principal",
+  singleton_binding_version: 2,
+  source_binding_version: 2,
+  member_pin_id: "member-pin",
+  member_pin_bound_revision: 2,
+  outbound_link_generation: "opaque:generation/β",
+};
+const requestV2 = {
+  contract: contractV2,
+  accepted_forward: acceptedForward,
+  command_id: request.command_id,
+  command_request_sha256: request.request_sha256,
+};
+const decodeV2 = Schema.decodeUnknownSync(WorkstreamsSourceReadmissionResponseV2);
+const decodeRequestV2 = Schema.decodeUnknownSync(WorkstreamsSourceReadmissionRequestV2);
+const decodeRecoveryV2 = Schema.decodeUnknownSync(WorkstreamsPeerEffectRecoveryV2);
+it("readmission V2 retains source-selected forward identity and string generation without a current home grant", () => {
+  expect(decodeRequestV2(requestV2)).toEqual(requestV2);
+  const response = {
+    contract: contractV2,
+    request: requestV2,
+    state: "authorized",
+    original_ceiling: original,
+    current_ceiling: narrow,
+    observed_at: authorized.observed_at,
+  };
+  expect(decodeV2(response)).toEqual(response);
+  expect(response).not.toHaveProperty("home_authorization_revision");
+  const recovery = {
+    schema: "jones-workstreams-peer-effect-recovery/2",
+    kind: "source-recorded-forward",
+    incoming_peer_pin_id: "home-pin",
+    incoming_peer_pin_revision: 3,
+    source_readmission: requestV2,
+    original_ceiling: original,
+  };
+  expect(decodeRecoveryV2(recovery)).toEqual(recovery);
+  expect(decodeResponse(authorized)).toEqual(authorized);
+  expect(() => decodeResponse(response)).toThrow();
+  for (const invalid of [
+    { ...response, home_authorization_revision: 100 },
+    { ...response, current_ceiling: { ...original, runtime_mode: "full-access" } },
+    { ...response, original_ceiling: narrow, current_ceiling: original },
+    { ...response, state: "proven_absent" },
+  ])
+    expect(() => decodeV2(invalid)).toThrow();
+});
+it("readmission V2 cannot select original evidence using home-supplied caller JSON or replacement IDs", () => {
+  for (const invalid of [
+    { ...requestV2, caller: { kind: "agent" } },
+    { ...requestV2, command_id: "command-replacement-0001" },
+    { ...requestV2, dispatch: true },
+    { ...requestV2, contract },
+    { ...requestV2, accepted_forward: { ...acceptedForward, outbound_link_generation: 4 } },
+    { ...requestV2, accepted_forward: { ...acceptedForward, forward_id: "a".repeat(16) + "\n" } },
+  ])
+    expect(() => decodeRequestV2(invalid)).toThrow();
+  expect(
+    decodeV2({
+      contract: contractV2,
+      request: requestV2,
+      state: "unavailable",
+      reason: "unsupported_protocol",
+    }),
+  ).toMatchObject({ state: "unavailable" });
+});

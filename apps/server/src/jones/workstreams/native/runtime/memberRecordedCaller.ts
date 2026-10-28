@@ -1,5 +1,13 @@
+import { WorkstreamsTransportCeiling } from "@t3tools/contracts/jones/workstreamsPeerAuthority";
+import {
+  WorkstreamsNativeHomeTarget,
+  WorkstreamsNativeOrigin,
+  WorkstreamsNativeVersion,
+  WorkstreamsNativeDigest,
+} from "@t3tools/contracts/jones/workstreamsNative";
 import {
   AuthOrchestrationReadScope,
+  AuthOrchestrationOperateScope,
   AuthSessionId,
   EnvironmentAuthenticatedPrincipal,
   ThreadId,
@@ -15,7 +23,7 @@ import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Credentials from "../../../../mcp/McpSessionRegistry.ts";
 import * as Threads from "../../../../orchestration-v2/ThreadManagementService.ts";
 import * as Providers from "../../../../orchestration-v2/ProviderSessionManager.ts";
-import { readCaller } from "../../../../mcp/threadAccess.ts";
+import { readCaller, assertTargetWithinLimits } from "../../../../mcp/threadAccess.ts";
 import { callerLinkOrigin } from "../../../../mcp/linkOrigin.ts";
 import { canonicalJson } from "../../operations/encoding.ts";
 import * as Recorded from "./recordedCaller.ts";
@@ -36,6 +44,63 @@ export const MemberLocalCallerV1 = Schema.Struct({
   captured_at: Schema.Number,
 });
 export type MemberLocalCallerV1 = typeof MemberLocalCallerV1.Type;
+
+export const MemberWriteTarget = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("metadata") }),
+  Schema.Struct({
+    kind: Schema.Literal("thread"),
+    environment_id: Id,
+    thread_id: Id,
+  }),
+]);
+export type MemberWriteTarget = typeof MemberWriteTarget.Type;
+export const MemberLocalWriteCallerV2 = Schema.Struct({
+  ...MemberLocalCallerV1.fields,
+  schema: Schema.Literal("jones-workstreams-member-local-write-caller/2"),
+  target: MemberWriteTarget,
+});
+export type MemberLocalWriteCallerV2 = typeof MemberLocalWriteCallerV2.Type;
+const WriteAssociation = Schema.Struct({
+  enrollment_id: Id,
+  enrollment_session_id: Id,
+  intent_sha256: WorkstreamsNativeDigest,
+  home: WorkstreamsNativeHomeTarget,
+  canonical_origin: WorkstreamsNativeOrigin,
+  principal_id: Id,
+  singleton_binding_version: WorkstreamsNativeVersion,
+  pin_bound_revision: WorkstreamsNativeVersion,
+  source_binding_version: WorkstreamsNativeVersion,
+  source: Schema.Struct({
+    environment_id: Id,
+    authority_namespace: Id,
+    store_generation: WorkstreamsNativeVersion,
+  }),
+  link_generation: Id,
+});
+export const MemberRecordedWriteCallerV2 = Schema.Struct({
+  schema: Schema.Literal("jones-workstreams-member-recorded-write-caller/2"),
+  local: MemberLocalWriteCallerV2,
+  association: Schema.Struct({
+    ...WriteAssociation.fields,
+    member_pin_id: Id,
+    home_pin_id: Id,
+    home_pin_bound_revision: WorkstreamsNativeVersion,
+  }),
+  original_outbound_ceiling: WorkstreamsTransportCeiling,
+});
+export type MemberRecordedWriteCallerV2 = typeof MemberRecordedWriteCallerV2.Type;
+
+const decodeWrite = Schema.decodeUnknownEffect(MemberLocalWriteCallerV2, {
+  onExcessProperty: "error",
+});
+export interface AdmittedLocalWrite {
+  readonly record: MemberLocalWriteCallerV2;
+  readonly ceiling: MemberLocalCallerV1["ceiling"];
+  readonly checkTarget: (
+    limits?: NonNullable<MemberLocalCallerV1["ceiling"]["limits"]>,
+  ) => Effect.Effect<void, Recorded.RecordedCallerFence>;
+}
+
 const decode = Schema.decodeUnknownEffect(MemberLocalCallerV1, { onExcessProperty: "error" });
 const fence = () => new Recorded.RecordedCallerFence({ code: "not_granted" });
 const ranks = { "approval-required": 0, "auto-accept-edits": 1, auto: 2, "full-access": 3 };
@@ -73,6 +138,16 @@ const identity = (r: MemberLocalCallerV1) => ({
 export class MemberLocalCallers extends Context.Service<
   MemberLocalCallers,
   {
+    readonly captureWrite: (
+      environmentId: string,
+      target: MemberWriteTarget,
+    ) => Effect.Effect<MemberLocalWriteCallerV2, Recorded.RecordedCallerFence>;
+    readonly readmitWrite: (
+      record: unknown,
+    ) => Effect.Effect<AdmittedLocalWrite, Recorded.RecordedCallerFence>;
+    readonly readmitWriteRetained: (
+      record: unknown,
+    ) => Effect.Effect<AdmittedLocalWrite, Recorded.RecordedCallerFence>;
     readonly captureOwnPlacement: (
       environmentId: string,
     ) => Effect.Effect<MemberLocalCallerV1, Recorded.RecordedCallerFence>;
@@ -111,6 +186,7 @@ const make = Effect.gen(function* () {
     environmentId: string,
     original?: MemberLocalCallerV1,
     retained = false,
+    write = false,
   ) {
     const http = yield* Effect.serviceOption(EnvironmentAuthenticatedPrincipal);
     const invocation = yield* Effect.serviceOption(Mcp.McpInvocationContext);
@@ -173,15 +249,54 @@ const make = Effect.gen(function* () {
           expires_at: row.expiresAt.epochMilliseconds,
         },
         ceiling: {
-          permissions: scopes.includes(AuthOrchestrationReadScope)
-            ? ["workstreams:read" as const]
-            : [],
+          permissions: [
+            ...(scopes.includes(AuthOrchestrationReadScope) ? ["workstreams:read" as const] : []),
+            ...(write && scopes.includes(AuthOrchestrationOperateScope)
+              ? ["workstreams:write" as const]
+              : []),
+          ],
           scopes,
           capabilities: [],
           limits: {
             runtimeMode: "approval-required" as const,
             interactionMode: "default" as const,
           },
+        },
+      };
+    }
+    if (write && retained && original?.auth.kind === "mcp_client") {
+      const row = yield* currentSession(original.auth.session_id);
+      if (
+        row.subject !== "mcp-client" ||
+        row.method !== "bearer-access-token" ||
+        !row.scopes.includes(AuthOrchestrationOperateScope)
+      )
+        return yield* fence();
+      // Auth rows retain scopes, not the token's higher mode ceiling; recovery narrows conservatively.
+      const access = "approval-required" as const;
+      return {
+        ...base,
+        request_namespace: original.request_namespace,
+        invocation_issued_at: original.invocation_issued_at,
+        origin: original.origin,
+        auth: { ...original.auth, approved_access: access },
+        session: {
+          issued_at: row.issuedAt.epochMilliseconds,
+          expires_at: row.expiresAt.epochMilliseconds,
+        },
+        ceiling: {
+          permissions: [
+            ...(row.scopes.includes(AuthOrchestrationReadScope)
+              ? ["workstreams:read" as const]
+              : []),
+            "workstreams:write" as const,
+          ],
+          scopes: row.scopes,
+          capabilities: original.ceiling.capabilities,
+          limits: intersectMemberCeilings(original.ceiling, {
+            ...original.ceiling,
+            limits: { runtimeMode: access, interactionMode: "default" },
+          }).limits,
         },
       };
     }
@@ -231,9 +346,16 @@ const make = Effect.gen(function* () {
           expires_at: row.expiresAt.epochMilliseconds,
         },
         ceiling: {
-          permissions: row.scopes.includes(AuthOrchestrationReadScope)
-            ? ["workstreams:read" as const]
-            : [],
+          permissions: [
+            ...(row.scopes.includes(AuthOrchestrationReadScope)
+              ? ["workstreams:read" as const]
+              : []),
+            ...(write &&
+            client.access !== "read-only" &&
+            row.scopes.includes(AuthOrchestrationOperateScope)
+              ? ["workstreams:write" as const]
+              : []),
+          ],
           scopes: row.scopes,
           capabilities: [...scope.capabilities],
           limits,
@@ -326,7 +448,16 @@ const make = Effect.gen(function* () {
       link_origin:
         callerLinkOrigin(caller) === undefined ? null : canonicalJson(callerLinkOrigin(caller)),
       ceiling: {
-        permissions: ["workstreams:read" as const],
+        permissions: [
+          "workstreams:read" as const,
+          ...(write &&
+          (link === undefined ||
+            (link.access !== undefined &&
+              link.access !== "read-only" &&
+              linkRow?.scopes.includes(AuthOrchestrationOperateScope)))
+            ? ["workstreams:write" as const]
+            : []),
+        ],
         scopes: [],
         capabilities: [...scope.capabilities].filter((x) => credential.capabilities.has(x)),
         limits: intersectMemberCeilings(
@@ -394,7 +525,92 @@ const make = Effect.gen(function* () {
     });
     return { record, ceiling, checkTarget };
   });
+
+  const readmitWrite = Effect.fn("MemberLocalCallers.readmitWrite")(function* (
+    input: unknown,
+    retained = false,
+  ) {
+    const record = yield* decodeWrite(input).pipe(
+      Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "malformed" })),
+    );
+    const { target, ...fields } = record;
+    const original: MemberLocalCallerV1 = {
+      ...fields,
+      schema: "jones-workstreams-member-local-caller/1",
+    };
+    if (
+      record.auth.kind === "trusted_cli" ||
+      !record.ceiling.limits ||
+      !Number.isFinite(record.captured_at) ||
+      record.captured_at < 0 ||
+      record.captured_at > (yield* Clock.currentTimeMillis) ||
+      (target.kind === "thread" && target.environment_id !== record.environment_id)
+    )
+      return yield* fence();
+    // A linked write needs the later exact home-transaction proof; local evidence alone is insufficient.
+    if (record.link_origin !== null) return yield* fence();
+    const refresh = Effect.fn("MemberLocalCallers.refreshWrite")(function* () {
+      const latest = yield* snapshot(record.environment_id, original, retained, true);
+      if (canonicalJson(identity(original)) !== canonicalJson(identity(latest)))
+        return yield* fence();
+      const ceiling = intersectMemberCeilings(original.ceiling, latest.ceiling);
+      if (
+        !ceiling.permissions.includes("workstreams:write") ||
+        !ceiling.limits ||
+        ceiling.limits.interactionMode !== "default" ||
+        (record.auth.kind === "mcp_client" &&
+          (record.auth.approved_access === "read-only" ||
+            latest.auth.kind !== "mcp_client" ||
+            latest.auth.approved_access === "read-only")) ||
+        ((record.auth.kind === "agent" || record.auth.kind === "mcp_client") &&
+          !ceiling.capabilities.includes("orchestration"))
+      )
+        return yield* fence();
+      return ceiling;
+    });
+    const ceiling = yield* refresh();
+    const checkTarget = Effect.fn("MemberLocalCallers.checkWriteTarget")(function* (
+      limits?: NonNullable<MemberLocalCallerV1["ceiling"]["limits"]>,
+    ) {
+      const current = yield* refresh();
+      if (canonicalJson(current) !== canonicalJson(ceiling)) return yield* fence();
+      const effective =
+        limits === undefined
+          ? current.limits
+          : intersectMemberCeilings(current, { ...current, limits }).limits;
+      if (!effective || effective.interactionMode !== "default") return yield* fence();
+      if (target.kind === "metadata") return;
+      const threads = yield* Effect.serviceOption(Threads.ThreadManagementService);
+      if (Option.isNone(threads)) return yield* fence();
+      const shell = yield* threads.value
+        .getThreadShell(ThreadId.make(target.thread_id))
+        .pipe(Effect.mapError(fence));
+      if (
+        !shell ||
+        shell.archivedAt !== null ||
+        shell.deletedAt !== null ||
+        shell.linkOrigin !== undefined ||
+        !current.limits
+      )
+        return yield* fence();
+      yield* assertTargetWithinLimits(effective, shell).pipe(Effect.mapError(fence));
+    });
+    yield* checkTarget();
+    return { record, ceiling, checkTarget } satisfies AdmittedLocalWrite;
+  });
   return MemberLocalCallers.of({
+    captureWrite: Effect.fn("MemberLocalCallers.captureWrite")(function* (environmentId, target) {
+      const current = yield* snapshot(environmentId, undefined, false, true);
+      const record: MemberLocalWriteCallerV2 = {
+        ...current,
+        schema: "jones-workstreams-member-local-write-caller/2",
+        target,
+      };
+      yield* readmitWrite(record);
+      return record;
+    }),
+    readmitWrite,
+    readmitWriteRetained: (record) => readmitWrite(record, true),
     captureOwnPlacement: Effect.fn("MemberLocalCallers.captureOwnPlacement")(
       function* (environmentId) {
         const record = yield* snapshot(environmentId);

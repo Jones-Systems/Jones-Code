@@ -2357,6 +2357,17 @@
         "apps/server/src/jones/workstreams/native/registry/localTransport.test.ts"
       ],
       "scope": "Complete single-home encrypted read projection, v1 adapters, typed member/rollup ports, coherent decision counts and native voice placement composition. Registration, J3/J8 integration and platform acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-write-foundation",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsForwarding.test.ts",
+        "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/store/operationStore.test.ts"
+      ],
+      "scope": "Separately versioned negotiated native forwarding/readmission codecs, original member write caller capture/readmission, genuine source-owned M association and encrypted exact member intent. Historical home/read codecs remain unchanged. No mounted forwarding, current home grant, absence-based redispatch, external dispatch, linked-write home transaction proof or composed runtime qualification is claimed."
     }
   ]
 }

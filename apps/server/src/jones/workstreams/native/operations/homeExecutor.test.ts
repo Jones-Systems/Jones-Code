@@ -186,3 +186,51 @@ it.effect(
     }).pipe(Effect.provide(layer));
   },
 );
+
+it.effect("tagged member intent never enters the home executor transport", () => {
+  let calls = 0;
+  const operation: Operation & { member_forward: unknown } = {
+    operation_id: "operation:member-fence",
+    kind: "command",
+    thread_environment_id: null,
+    thread_id: null,
+    origin: { kind: "agent" },
+    destination: binding,
+    child_command_ids: ["command:member-fence"],
+    request_body: "{}",
+    request_sha256: hash,
+    accepted_at: now,
+    updated_at: now,
+    state: "reconciling",
+    next_poll_at: null,
+    result_body: null,
+    member_forward: {},
+  };
+  const layer = Home.layer.pipe(
+    Layer.provide(
+      Layer.succeed(Home.HomeTransport, {
+        lookup: () => {
+          calls++;
+          return Effect.succeed({ kind: "unknown" as const, reason: "import_incomplete" });
+        },
+        resubmit: () => {
+          calls++;
+          return Effect.die("unexpected member redispatch through home executor");
+        },
+      }),
+    ),
+    Layer.provideMerge(testLayer()),
+  );
+  return Effect.gen(function* () {
+    yield* seed;
+    yield* (yield* Bindings.BindingStore).bind(binding, null);
+    const home = yield* Home.HomeExecutor;
+    expect(
+      Exit.isFailure(yield* Effect.exit(home.readReceipt(operation, "command:member-fence"))),
+    ).toBe(true);
+    expect(
+      Exit.isFailure(yield* Effect.exit(home.dispatch(operation, "command:member-fence", "{}"))),
+    ).toBe(true);
+    expect(calls).toBe(0);
+  }).pipe(Effect.provide(layer));
+});

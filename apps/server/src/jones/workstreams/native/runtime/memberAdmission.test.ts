@@ -129,13 +129,18 @@ const syntheticSession = {
     permissions: ["workstreams:read", "workstreams:write"],
   },
 };
-const makeIntent = (session: unknown = syntheticSession) => {
+const makeIntent = (
+  session: unknown = syntheticSession,
+  outboundCeiling = syntheticSession.ceiling,
+) => {
   const assertion = (atHome: boolean) => ({
     schema: "jones-workstreams-peer-session-pin/1",
     pin_id: atHome ? "home-pin:test" : "member-pin:test",
     revision: 1,
     receiver_authority: atHome ? homeAuthority : sourceAuthority,
-    session: atHome ? { ...syntheticSession, session_id: "home-link:test" } : session,
+    session: atHome
+      ? { ...syntheticSession, ceiling: outboundCeiling, session_id: "home-link:test" }
+      : session,
     peer_environment_id: atHome ? "member:test" : "home:test",
     roles: [atHome ? "member_home" : "home_source"],
     expected_home: home,
@@ -251,215 +256,218 @@ const baseServices = (filename?: string) =>
     ),
     Layer.provideMerge(NodeServices.layer),
   );
-const fixture = Effect.gen(function* () {
-  yield* TestClock.setTime(Date.parse(Test.now));
-  yield* runMigrations({ toMigrationInclusive: 54 });
-  yield* Test.seed;
-  yield* migration126;
-  yield* migration128;
-  yield* migration129;
-  yield* (yield* SqlClient.SqlClient)`CREATE TABLE jones_workstreams_member_writer_probe(value TEXT)`;
-  const auth = yield* Auth.EnvironmentAuth,
-    native = yield* NativePins.NativePeerSessions,
-    sql = yield* SqlClient.SqlClient,
-    sessions = yield* AuthRows.AuthSessionRepository;
-  const issued = yield* auth.issueMcpClientSession({
-    label: "synthetic-link",
-    access: "full-access",
-    peerLink: true,
-    client: { deviceType: "bot" },
-  });
-  const invocation: Mcp.McpInvocationScope = {
-    environmentId: EnvironmentId.make("member:test"),
-    issuedAt: Date.parse(Test.now),
-    requestNamespace: "synthetic-member-request",
-    capabilities: new Set(["orchestration"]),
-    thread: undefined,
-    client: {
-      sessionId: issued.sessionId,
-      label: "not-authority",
+const makeFixture = (outboundCeiling = syntheticSession.ceiling) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(Test.now));
+    yield* runMigrations({ toMigrationInclusive: 54 });
+    yield* Test.seed;
+    yield* migration126;
+    yield* migration128;
+    yield* migration129;
+    yield* (yield* SqlClient.SqlClient)`CREATE TABLE jones_workstreams_member_writer_probe(value TEXT)`;
+    const auth = yield* Auth.EnvironmentAuth,
+      native = yield* NativePins.NativePeerSessions,
+      sql = yield* SqlClient.SqlClient,
+      sessions = yield* AuthRows.AuthSessionRepository;
+    const issued = yield* auth.issueMcpClientSession({
+      label: "synthetic-link",
       access: "full-access",
-      linked: true,
-    },
-  };
-  const request = {
-    cookies: {},
-    headers: { authorization: `Bearer ${issued.token}` },
-  } as unknown as Parameters<Auth.EnvironmentAuth["Service"]["authenticateMcpClient"]>[0];
-  yield* native.authenticate(request, invocation);
-  const session = (yield* native.current(invocation)).session;
-  const intent = makeIntent(session);
-  const state = {
-    generation: "opaque-link-generation:1",
-    resolvedGeneration: "opaque-link-generation:1",
-    owner: true,
-    sourceGeneration: 1,
-    sourceNamespace: "member-store",
-    currentBuild: { ...build },
-    committed: true,
-    loseBindReply: false,
-    wrongReadback: false,
-    wrongSetup: false,
-    unsupported: false,
-    afterReadback: Effect.void as Effect.Effect<void>,
-    afterBind: Effect.void as Effect.Effect<void>,
-    beforeReadback: Effect.void as Effect.Effect<void>,
-  };
-  const calls: Array<{
-    method: string;
-    tool?: string;
-    args?: unknown;
-    headers: Readonly<Record<string, string>>;
-  }> = [];
-  const linkLayer = Layer.mock(PeerLinks.PeerLinks)({
-    currentGeneration: () => Effect.sync(() => Option.some(state.generation)),
-    resolve: () =>
-      Effect.succeed({
-        url: issuance.registry_origin,
-        token: "synthetic-home-link-token",
-        generation: state.resolvedGeneration,
-        link: {},
-      } as PeerLinks.ResolvedPeerLink),
-    recordOutcome: () => Effect.void,
-  });
-  // Synthetic remote endpoint; the actual PeerMcpClient performs negotiation, generation
-  // fences, limits headers, decoding and no-retry behavior. This is not a mounted H producer.
-  const http = HttpClient.make((request) =>
-    Effect.gen(function* () {
-      if (request.body._tag !== "Uint8Array") return yield* Effect.die("expected JSON");
-      const body = JSON.parse(new TextDecoder().decode(request.body.body));
-      calls.push({
-        method: body.method,
-        tool: body.params?.name,
-        args: body.params?.arguments,
-        headers: request.headers,
-      });
-      let response: Response;
-      if (body.method === "initialize")
-        response = Response.json(
-          {
-            jsonrpc: "2.0",
-            id: body.id,
-            result: {
-              protocolVersion: "2025-06-18",
-              capabilities: {},
-              serverInfo: { name: "synthetic-H", version: "1" },
-            },
-          },
-          { headers: { "mcp-session-id": "synthetic-outbound-session" } },
-        );
-      else if (body.method === "notifications/initialized")
-        response = new Response(null, { status: 202 });
-      else {
-        let result: unknown;
-        if (body.params.name === "jones_workstreams_home_bind_setup")
-          result = state.wrongSetup
-            ? { ...intent.home_setup, canonical_origin: "https://wrong.invalid" }
-            : intent.home_setup;
-        else if (body.params.name === "jones_workstreams_home_bind") {
-          yield* state.afterBind;
-          if (state.loseBindReply)
-            return HttpClientResponse.fromWeb(request, new Response(null, { status: 503 }));
-          result = homeResult(intent);
-        } else if (body.params.name === "jones_workstreams_home_bind_readback") {
-          yield* state.beforeReadback;
-          result = state.committed
-            ? {
-                contract: HomeWire.WORKSTREAMS_HOME_BIND_CONTRACT,
-                request: body.params.arguments,
-                kind: "committed",
-                result: state.wrongReadback
-                  ? {
-                      ...homeResult(intent),
-                      receipt: { ...homeResult(intent).receipt, request_sha256: "f".repeat(64) },
-                    }
-                  : homeResult(intent),
-              }
-            : {
-                contract: HomeWire.WORKSTREAMS_HOME_BIND_CONTRACT,
-                request: body.params.arguments,
-                kind: "unknown",
-                reason: "in_flight",
-              };
-          yield* state.afterReadback;
-        } else return yield* Effect.die("unexpected dynamic tool");
-        response = state.unsupported
-          ? Response.json({
-              jsonrpc: "2.0",
-              id: body.id,
-              error: { code: -32601, message: "unsupported" },
-            })
-          : Response.json({
-              jsonrpc: "2.0",
-              id: body.id,
-              result: { content: [], structuredContent: result },
-            });
-      }
-      return HttpClientResponse.fromWeb(request, response);
-    }),
-  );
-  const issuer = Layer.succeed(Source.SourceIssuer, {
-    authority: {
-      readCurrent: Effect.sync(() => ({
-        environmentId: "member:test",
-        authorityNamespace: state.sourceNamespace,
-        storeGeneration: state.sourceGeneration,
-      })),
-    },
-    build: Effect.sync(() => Option.some(state.currentBuild)),
-  });
-  const owner = Layer.succeed(Source.SourceSetupOwner, {
-    verifyUnchanged: Effect.suspend(() =>
-      state.owner
-        ? Effect.void
-        : Effect.fail(new Source.SourceEnrollmentError({ code: "owner_unqualified" })),
-    ),
-  });
-  const port = Layer.succeed(PinSetup.PeerPinSetupQualification, {
-    qualify: (bytes, digest) =>
-      bytes === intent.member_setup_request_body && digest === intent.member_setup_request_sha256
-        ? Effect.succeed({
-            invocation,
-            owner_qualification_digest: "c".repeat(64),
-            checkCurrent: () => Effect.void,
-          })
-        : Effect.fail(new NativePins.PeerSessionError({ code: "owner_unqualified" })),
-    verifyBinding: () => Effect.die("M must use its private readback verifier"),
-  });
-  const dependencies = Layer.mergeAll(
-    linkLayer,
-    issuer,
-    owner,
-    port,
-    Layer.succeed(Authority.NativeStoreAuthority, {
-      readCurrent: Effect.sync(() => ({
-        environmentId: "member:test",
-        authorityNamespace: state.sourceNamespace,
-        storeGeneration: state.sourceGeneration,
-      })),
-    } as unknown as Authority.NativeStoreAuthority["Service"]),
-  );
-  const qualification = Qualification.layer.pipe(
-    Layer.provideMerge(
-      PeerClient.layer.pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http))),
-    ),
-  );
-  const stores = Layer.mergeAll(Records.layer, PinRecords.layer, Bindings.layer);
-  const mounted = Layer.mergeAll(
-    Setup.layer.pipe(Layer.provideMerge(qualification)),
-    Members.layer.pipe(Layer.provideMerge(stores)),
-  ).pipe(Layer.provideMerge(dependencies));
-  const counts = Effect.gen(function* () {
-    const provider = yield* sessions.getById({
-      sessionId: AuthSessionId.make(issuance.session.session_id),
+      peerLink: true,
+      client: { deviceType: "bot" },
     });
-    const ledger = yield* sql`SELECT state,revision FROM jones_workstreams_member_enrollments`;
-    const pin = yield* sql`SELECT state,revision FROM jones_workstreams_peer_session_pins`;
-    const singleton = yield* sql`SELECT binding_version FROM jones_workstreams_binding_state`;
-    return { provider: Option.isSome(provider), ledger, pin, singleton };
+    const invocation: Mcp.McpInvocationScope = {
+      environmentId: EnvironmentId.make("member:test"),
+      issuedAt: Date.parse(Test.now),
+      requestNamespace: "synthetic-member-request",
+      capabilities: new Set(["orchestration"]),
+      thread: undefined,
+      client: {
+        sessionId: issued.sessionId,
+        label: "not-authority",
+        access: "full-access",
+        linked: true,
+      },
+    };
+    const request = {
+      cookies: {},
+      headers: { authorization: `Bearer ${issued.token}` },
+    } as unknown as Parameters<Auth.EnvironmentAuth["Service"]["authenticateMcpClient"]>[0];
+    yield* native.authenticate(request, invocation);
+    const session = (yield* native.current(invocation)).session;
+    const intent = makeIntent(session, outboundCeiling);
+    const state = {
+      generation: "opaque-link-generation:1",
+      resolvedGeneration: "opaque-link-generation:1",
+      owner: true,
+      sourceGeneration: 1,
+      sourceNamespace: "member-store",
+      currentBuild: { ...build },
+      committed: true,
+      loseBindReply: false,
+      wrongReadback: false,
+      wrongSetup: false,
+      unsupported: false,
+      afterReadback: Effect.void as Effect.Effect<void>,
+      afterBind: Effect.void as Effect.Effect<void>,
+      beforeReadback: Effect.void as Effect.Effect<void>,
+    };
+    const calls: Array<{
+      method: string;
+      tool?: string;
+      args?: unknown;
+      headers: Readonly<Record<string, string>>;
+    }> = [];
+    const linkLayer = Layer.mock(PeerLinks.PeerLinks)({
+      currentGeneration: () => Effect.sync(() => Option.some(state.generation)),
+      resolve: () =>
+        Effect.succeed({
+          url: issuance.registry_origin,
+          token: "synthetic-home-link-token",
+          generation: state.resolvedGeneration,
+          link: {},
+        } as PeerLinks.ResolvedPeerLink),
+      recordOutcome: () => Effect.void,
+    });
+    // Synthetic remote endpoint; the actual PeerMcpClient performs negotiation, generation
+    // fences, limits headers, decoding and no-retry behavior. This is not a mounted H producer.
+    const http = HttpClient.make((request) =>
+      Effect.gen(function* () {
+        if (request.body._tag !== "Uint8Array") return yield* Effect.die("expected JSON");
+        const body = JSON.parse(new TextDecoder().decode(request.body.body));
+        calls.push({
+          method: body.method,
+          tool: body.params?.name,
+          args: body.params?.arguments,
+          headers: request.headers,
+        });
+        let response: Response;
+        if (body.method === "initialize")
+          response = Response.json(
+            {
+              jsonrpc: "2.0",
+              id: body.id,
+              result: {
+                protocolVersion: "2025-06-18",
+                capabilities: {},
+                serverInfo: { name: "synthetic-H", version: "1" },
+              },
+            },
+            { headers: { "mcp-session-id": "synthetic-outbound-session" } },
+          );
+        else if (body.method === "notifications/initialized")
+          response = new Response(null, { status: 202 });
+        else {
+          let result: unknown;
+          if (body.params.name === "jones_workstreams_home_bind_setup")
+            result = state.wrongSetup
+              ? { ...intent.home_setup, canonical_origin: "https://wrong.invalid" }
+              : intent.home_setup;
+          else if (body.params.name === "jones_workstreams_home_bind") {
+            yield* state.afterBind;
+            if (state.loseBindReply)
+              return HttpClientResponse.fromWeb(request, new Response(null, { status: 503 }));
+            result = homeResult(intent);
+          } else if (body.params.name === "jones_workstreams_home_bind_readback") {
+            yield* state.beforeReadback;
+            result = state.committed
+              ? {
+                  contract: HomeWire.WORKSTREAMS_HOME_BIND_CONTRACT,
+                  request: body.params.arguments,
+                  kind: "committed",
+                  result: state.wrongReadback
+                    ? {
+                        ...homeResult(intent),
+                        receipt: { ...homeResult(intent).receipt, request_sha256: "f".repeat(64) },
+                      }
+                    : homeResult(intent),
+                }
+              : {
+                  contract: HomeWire.WORKSTREAMS_HOME_BIND_CONTRACT,
+                  request: body.params.arguments,
+                  kind: "unknown",
+                  reason: "in_flight",
+                };
+            yield* state.afterReadback;
+          } else return yield* Effect.die("unexpected dynamic tool");
+          response = state.unsupported
+            ? Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                error: { code: -32601, message: "unsupported" },
+              })
+            : Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                result: { content: [], structuredContent: result },
+              });
+        }
+        return HttpClientResponse.fromWeb(request, response);
+      }),
+    );
+    const issuer = Layer.succeed(Source.SourceIssuer, {
+      authority: {
+        readCurrent: Effect.sync(() => ({
+          environmentId: "member:test",
+          authorityNamespace: state.sourceNamespace,
+          storeGeneration: state.sourceGeneration,
+        })),
+      },
+      build: Effect.sync(() => Option.some(state.currentBuild)),
+    });
+    const owner = Layer.succeed(Source.SourceSetupOwner, {
+      verifyUnchanged: Effect.suspend(() =>
+        state.owner
+          ? Effect.void
+          : Effect.fail(new Source.SourceEnrollmentError({ code: "owner_unqualified" })),
+      ),
+    });
+    const port = Layer.succeed(PinSetup.PeerPinSetupQualification, {
+      qualify: (bytes, digest) =>
+        bytes === intent.member_setup_request_body && digest === intent.member_setup_request_sha256
+          ? Effect.succeed({
+              invocation,
+              owner_qualification_digest: "c".repeat(64),
+              checkCurrent: () => Effect.void,
+            })
+          : Effect.fail(new NativePins.PeerSessionError({ code: "owner_unqualified" })),
+      verifyBinding: () => Effect.die("M must use its private readback verifier"),
+    });
+    const dependencies = Layer.mergeAll(
+      linkLayer,
+      issuer,
+      owner,
+      port,
+      Layer.succeed(Authority.NativeStoreAuthority, {
+        readCurrent: Effect.sync(() => ({
+          environmentId: "member:test",
+          authorityNamespace: state.sourceNamespace,
+          storeGeneration: state.sourceGeneration,
+        })),
+      } as unknown as Authority.NativeStoreAuthority["Service"]),
+    );
+    const qualification = Qualification.layer.pipe(
+      Layer.provideMerge(
+        PeerClient.layer.pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http))),
+      ),
+    );
+    const stores = Layer.mergeAll(Records.layer, PinRecords.layer, Bindings.layer);
+    const mounted = Layer.mergeAll(
+      Setup.layer.pipe(Layer.provideMerge(qualification)),
+      Members.layer.pipe(Layer.provideMerge(stores)),
+    ).pipe(Layer.provideMerge(dependencies));
+    const counts = Effect.gen(function* () {
+      const provider = yield* sessions.getById({
+        sessionId: AuthSessionId.make(issuance.session.session_id),
+      });
+      const ledger = yield* sql`SELECT state,revision FROM jones_workstreams_member_enrollments`;
+      const pin = yield* sql`SELECT state,revision FROM jones_workstreams_peer_session_pins`;
+      const singleton = yield* sql`SELECT binding_version FROM jones_workstreams_binding_state`;
+      return { provider: Option.isSome(provider), ledger, pin, singleton };
+    });
+    return { intent, state, calls, mounted, invocation, request, native, sessions, sql, counts };
   });
-  return { intent, state, calls, mounted, invocation, request, native, sessions, sql, counts };
-});
+
+const fixture = makeFixture();
 
 import * as Admission from "./memberAdmission.ts";
 import * as Local from "./memberRecordedCaller.ts";
@@ -577,4 +585,156 @@ it.effect.each([
         );
       }).pipe(Effect.provide(f.mounted));
     }).pipe(Effect.provide(baseServices())),
+);
+
+import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+it.effect.each([
+  "none",
+  "read-only-local",
+  "read-only-outbound",
+  "plan-outbound",
+  "caller-revoked",
+  "caller-expired",
+  "provider-session",
+  "peer-session",
+  "pin-expired",
+  "link",
+  "source",
+  "singleton",
+  "selected-member",
+  "association",
+] as const)("write admission V2 uses genuine M and fences %s changes", (change) =>
+  Effect.gen(function* () {
+    const outbound =
+      change === "read-only-outbound"
+        ? {
+            ...syntheticSession.ceiling,
+            access: "read-only",
+            runtime_mode: "approval-required",
+            permissions: ["workstreams:read"],
+            scopes: ["orchestration:read"],
+          }
+        : change === "plan-outbound"
+          ? { ...syntheticSession.ceiling, interaction_mode: "plan" }
+          : syntheticSession.ceiling;
+    const f = yield* makeFixture(outbound);
+    yield* Effect.gen(function* () {
+      yield* (yield* Setup.MemberSetup).apply(f.intent);
+      const principal = {
+        sessionId: AuthSessionId.make("write-local-owner"),
+        subject: "owner",
+        method: "bearer-access-token" as const,
+        scopes: new Set(
+          change === "read-only-local"
+            ? [AuthOrchestrationReadScope]
+            : [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+        ),
+      };
+      yield* f.sessions.create({
+        ...principal,
+        scopes: [...principal.scopes],
+        issuedAt: DateTime.makeUnsafe(Test.now),
+        expiresAt: DateTime.makeUnsafe("2026-01-01T00:10:00.000Z"),
+        client: {
+          label: null,
+          ipAddress: null,
+          userAgent: null,
+          deviceType: "bot",
+          os: null,
+          browser: null,
+        },
+      });
+      const selected = {
+        mode: "native-member" as const,
+        config: { mode: "native-member" as const, registry: null },
+        home: null,
+        sourceSessionId: issuance.session.session_id,
+        problem: null,
+      } satisfies Startup.Selection;
+      const layers = Admission.layer.pipe(
+        Layer.provide(Local.layer),
+        Layer.provide(Layer.succeed(Startup.Startup, selected)),
+      );
+      yield* Effect.gen(function* () {
+        const admission = yield* Admission.MemberAdmission;
+        if (["read-only-local", "read-only-outbound", "plan-outbound"].includes(change)) {
+          expect(
+            yield* admission.captureWrite({ kind: "metadata" }).pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure" });
+          return;
+        }
+        const record = yield* admission.captureWrite({ kind: "metadata" });
+        const admitted = yield* admission.readmitWrite(record);
+        expect(record.schema).toBe("jones-workstreams-member-recorded-write-caller/2");
+        expect(record.association).toMatchObject({
+          home_pin_id: "home-pin:test",
+          member_pin_id: "member-pin:test",
+          home_pin_bound_revision: 2,
+        });
+        expect(yield* admission.readmit(record).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+        if (change === "none") {
+          yield* (yield* admission.readmitWriteRetained(record)).checkCurrent();
+          const read = yield* admission.capture();
+          expect(yield* admission.readmitWrite(read).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+          });
+          expect((yield* f.sql`SELECT * FROM jones_workstreams_grants`).length).toBe(0);
+          expect((yield* f.sql`SELECT * FROM jones_workstreams_principals`).length).toBe(0);
+          return;
+        }
+        if (change === "association") {
+          for (const association of [
+            { ...record.association, principal_id: "other" },
+            { ...record.association, source_binding_version: 2 },
+            { ...record.association, singleton_binding_version: 2 },
+            { ...record.association, home_pin_id: "other" },
+            { ...record.association, member_pin_id: "other" },
+            {
+              ...record.association,
+              home: { ...record.association.home, home_environment_id: "other" },
+            },
+            { ...record.association, enrollment_id: "other" },
+          ])
+            expect(
+              yield* admission.readmitWrite({ ...record, association }).pipe(Effect.result),
+            ).toMatchObject({ _tag: "Failure" });
+          return;
+        }
+        if (change === "caller-revoked")
+          yield* f.sessions.revoke({
+            sessionId: principal.sessionId,
+            revokedAt: DateTime.makeUnsafe(Test.now),
+          });
+        if (change === "caller-expired")
+          yield* TestClock.setTime(Date.parse("2026-01-01T00:10:00.000Z"));
+        if (change === "pin-expired")
+          yield* TestClock.setTime(Date.parse("2026-01-01T00:20:00.000Z"));
+        if (change === "provider-session" || change === "peer-session")
+          yield* f.sessions.revoke({
+            sessionId: AuthSessionId.make(
+              change === "provider-session"
+                ? issuance.session.session_id
+                : f.invocation.client!.sessionId,
+            ),
+            revokedAt: DateTime.makeUnsafe(Test.now),
+          });
+        if (change === "link") f.state.generation = "relinked";
+        if (change === "source") f.state.sourceGeneration = 2;
+        if (change === "singleton")
+          yield* f.sql`UPDATE jones_workstreams_binding_state SET binding_version=2`;
+        if (change === "selected-member") selected.sourceSessionId = "replacement-session";
+        expect(yield* admitted.checkCurrent().pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+        expect(yield* admission.readmitWriteRetained(record).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+      }).pipe(
+        Effect.provide(layers),
+        Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+      );
+    }).pipe(Effect.provide(f.mounted));
+  }).pipe(Effect.provide(baseServices())),
 );

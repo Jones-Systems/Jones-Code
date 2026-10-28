@@ -1,3 +1,4 @@
+import * as SqlClient from "effect/sql/SqlClient";
 import { expect, it } from "@effect/vitest";
 import {
   AuthSessionId,
@@ -299,5 +300,288 @@ it.effect(
         Effect.provideService(Credentials.McpSessionRegistry, f.registry),
         Effect.provideService(Mcp.McpInvocationContext, f.scope),
       );
+    }).pipe(Effect.provide(persistence)),
+);
+
+import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
+it.effect.each([
+  "read-only",
+  "plan",
+  "plan-narrowed",
+  "new-run",
+  "revoked",
+  "detached",
+  "provider",
+  "foreign-target",
+  "target-limits",
+  "retained",
+] as const)("write V2 proves the original run and refuses %s escalation", (change) =>
+  Effect.gen(function* () {
+    const f = yield* agent;
+    const providers = Layer.mock(Providers.ProviderSessionManagerV2)({
+      isMcpCallerAttached: () => Effect.sync(() => f.state.attached),
+    });
+    yield* Effect.gen(function* () {
+      const callers = yield* Local.MemberLocalCallers;
+      const target = {
+        kind: "thread" as const,
+        environment_id: environmentId,
+        thread_id: f.state.shell.id,
+      };
+      if (change === "plan") f.state.shell = { ...f.state.shell, interactionMode: "plan" };
+      if (change === "read-only") {
+        const read = yield* callers.capture(environmentId);
+        expect(read.ceiling.permissions).not.toContain("workstreams:write");
+        expect(yield* callers.readmitWrite(read).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+        return;
+      }
+      if (change === "plan") {
+        expect(
+          yield* callers.captureWrite(environmentId, target).pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+        return;
+      }
+      const record = yield* callers.captureWrite(environmentId, target);
+      expect(record.schema).toBe("jones-workstreams-member-local-write-caller/2");
+      expect(yield* callers.readmit(record).pipe(Effect.result)).toMatchObject({ _tag: "Failure" });
+      if (change === "plan-narrowed") f.state.shell = { ...f.state.shell, interactionMode: "plan" };
+      if (change === "new-run")
+        f.state.shell = { ...f.state.shell, activeRunId: RunId.make("run:new") };
+      if (change === "provider")
+        f.state.shell = { ...f.state.shell, providerInstanceId: ProviderInstanceId.make("other") };
+      if (change === "revoked") yield* f.registry.revokeThread(f.state.shell.id);
+      if (change === "detached") f.state.attached = false;
+      if (change === "foreign-target") {
+        expect(
+          yield* callers
+            .readmitWrite({ ...record, target: { ...target, environment_id: "other" } })
+            .pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+        return;
+      }
+      if (change === "target-limits") {
+        const admitted = yield* callers.readmitWrite(record);
+        expect(
+          yield* admitted
+            .checkTarget({ runtimeMode: "approval-required", interactionMode: "plan" })
+            .pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+        return;
+      }
+      if (change === "retained") {
+        const admitted = yield* callers.readmitWriteRetained(record);
+        yield* admitted.checkTarget();
+        expect(admitted.record.auth).toEqual(record.auth);
+        return;
+      }
+      for (const readmit of [callers.readmitWrite, callers.readmitWriteRetained])
+        expect(yield* readmit(record).pipe(Effect.result)).toMatchObject({ _tag: "Failure" });
+    }).pipe(
+      Effect.provide(Layer.mergeAll(Local.layer, f.threads, providers)),
+      Effect.provideService(Credentials.McpSessionRegistry, f.registry),
+      Effect.provideService(Mcp.McpInvocationContext, f.scope),
+    );
+  }).pipe(Effect.provide(persistence)),
+);
+it.effect(
+  "write capture requires operate scope, refuses readonly MCP and fences expired retained bearer",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* setup;
+      const target = { kind: "metadata" as const };
+      const principal = {
+        ...f.principal,
+        scopes: new Set([AuthOrchestrationReadScope, AuthOrchestrationOperateScope]),
+      };
+      const id = AuthSessionId.make("write-owner");
+      yield* f.sessions.create({
+        ...principal,
+        sessionId: id,
+        scopes: [...principal.scopes],
+        issuedAt: DateTime.makeUnsafe(0),
+        expiresAt: DateTime.makeUnsafe(100000),
+        client: {
+          label: null,
+          ipAddress: null,
+          userAgent: null,
+          deviceType: "bot",
+          os: null,
+          browser: null,
+        },
+      });
+      const currentPrincipal = { ...principal, sessionId: id };
+      yield* Effect.gen(function* () {
+        const callers = yield* Local.MemberLocalCallers;
+        expect(
+          yield* callers
+            .captureWrite(environmentId, target)
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal),
+              Effect.result,
+            ),
+        ).toMatchObject({ _tag: "Failure" });
+        const record = yield* callers.captureWrite(environmentId, target);
+        yield* (yield* callers.readmitWriteRetained(record)).checkTarget();
+        yield* TestClock.setTime(100000);
+        expect(yield* callers.readmitWriteRetained(record).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+      }).pipe(
+        Effect.provide(Local.layer),
+        Effect.provideService(EnvironmentAuthenticatedPrincipal, currentPrincipal),
+      );
+      yield* TestClock.setTime(1000);
+      const client: Mcp.McpInvocationScope = {
+        environmentId,
+        capabilities: new Set(["orchestration"]),
+        issuedAt: 1000,
+        requestNamespace: "write-client",
+        thread: undefined,
+        client: { sessionId: f.principal.sessionId, label: "synthetic", access: "read-only" },
+      };
+      yield* Effect.gen(function* () {
+        const callers = yield* Local.MemberLocalCallers;
+        expect(
+          yield* callers.captureWrite(environmentId, target).pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+      }).pipe(Effect.provide(Local.layer), Effect.provideService(Mcp.McpInvocationContext, client));
+    }).pipe(Effect.provide(persistence)),
+);
+it.effect("linked own-thread write stays fenced until an exact home transaction proof exists", () =>
+  Effect.gen(function* () {
+    const f = yield* agent,
+      sessions = yield* Sessions.AuthSessionRepository;
+    const linkId = AuthSessionId.make("write-link");
+    yield* sessions.create({
+      sessionId: linkId,
+      subject: "mcp-client",
+      method: "bearer-access-token",
+      scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+      issuedAt: DateTime.makeUnsafe(0),
+      expiresAt: DateTime.makeUnsafe(100000),
+      client: {
+        label: null,
+        ipAddress: null,
+        userAgent: null,
+        deviceType: "bot",
+        os: null,
+        browser: null,
+      },
+    });
+    f.state.shell = {
+      ...f.state.shell,
+      linkOrigin: { sessionId: linkId, label: "source", access: "full-access" },
+    };
+    yield* Effect.gen(function* () {
+      const callers = yield* Local.MemberLocalCallers;
+      for (const target of [
+        { kind: "metadata" as const },
+        { kind: "thread" as const, environment_id: environmentId, thread_id: f.state.shell.id },
+        { kind: "thread" as const, environment_id: environmentId, thread_id: "other-thread" },
+      ])
+        expect(
+          yield* callers.captureWrite(environmentId, target).pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Local.layer,
+          f.threads,
+          Layer.mock(Providers.ProviderSessionManagerV2)({
+            isMcpCallerAttached: () => Effect.succeed(true),
+          }),
+        ),
+      ),
+      Effect.provideService(Credentials.McpSessionRegistry, f.registry),
+      Effect.provideService(Mcp.McpInvocationContext, f.scope),
+    );
+  }).pipe(Effect.provide(persistence)),
+);
+
+it.effect.each([
+  "read-only",
+  "plan",
+  "current-read-only",
+  "read-scope-narrowed",
+  "retained",
+] as const)(
+  "MCP write V2 proves current non-plan access and original operate scope: %s",
+  (change) =>
+    Effect.gen(function* () {
+      const f = yield* setup,
+        id = AuthSessionId.make("mcp-write-session");
+      yield* f.sessions.create({
+        sessionId: id,
+        subject: "mcp-client",
+        method: "bearer-access-token",
+        scopes:
+          change === "read-only"
+            ? [AuthOrchestrationReadScope]
+            : [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+        issuedAt: DateTime.makeUnsafe(0),
+        expiresAt: DateTime.makeUnsafe(100000),
+        client: {
+          label: null,
+          ipAddress: null,
+          userAgent: null,
+          deviceType: "bot",
+          os: null,
+          browser: null,
+        },
+      });
+      const scope: Mcp.McpInvocationScope = {
+        environmentId,
+        issuedAt: 1000,
+        requestNamespace: "mcp-write-original",
+        capabilities: new Set(["orchestration"]),
+        thread: undefined,
+        client: {
+          sessionId: id,
+          label: "synthetic",
+          access: change === "read-only" ? "read-only" : "full-access",
+          ...(change === "plan"
+            ? { narrowedTo: { runtimeMode: "full-access", interactionMode: "plan" } as const }
+            : {}),
+        },
+      };
+      yield* Effect.gen(function* () {
+        const callers = yield* Local.MemberLocalCallers;
+        if (change === "read-only" || change === "plan") {
+          expect(
+            yield* callers.captureWrite(environmentId, { kind: "metadata" }).pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure" });
+          return;
+        }
+        const record = yield* callers.captureWrite(environmentId, { kind: "metadata" });
+        if (change === "current-read-only") {
+          expect(
+            yield* callers.readmitWrite(record).pipe(
+              Effect.provideService(Mcp.McpInvocationContext, {
+                ...scope,
+                client: { ...scope.client!, access: "read-only" },
+              }),
+              Effect.result,
+            ),
+          ).toMatchObject({ _tag: "Failure" });
+          return;
+        }
+        if (change === "read-scope-narrowed") {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE auth_sessions SET scopes = '["orchestration:operate"]' WHERE session_id = ${id}`;
+        }
+        const current = yield* callers.readmitWriteRetained(record);
+        expect(current.record).toEqual(record);
+        if (change === "read-scope-narrowed")
+          expect(current.ceiling.permissions).not.toContain("workstreams:read");
+        expect(current.ceiling.limits?.runtimeMode).toBe("approval-required");
+        yield* current.checkTarget();
+        expect(
+          yield* current
+            .checkTarget({ runtimeMode: "approval-required", interactionMode: "plan" })
+            .pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+      }).pipe(Effect.provide(Local.layer), Effect.provideService(Mcp.McpInvocationContext, scope));
     }).pipe(Effect.provide(persistence)),
 );

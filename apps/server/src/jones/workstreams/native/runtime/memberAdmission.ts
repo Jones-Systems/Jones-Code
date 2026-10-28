@@ -68,6 +68,13 @@ export interface AdmittedMember {
 export class MemberAdmission extends Context.Service<
   MemberAdmission,
   {
+    readonly captureWrite: (
+      target: Local.MemberWriteTarget,
+    ) => Effect.Effect<MemberRecordedWriteCallerV2, RegistryError>;
+    readonly readmitWrite: (record: unknown) => Effect.Effect<AdmittedMemberWrite, RegistryError>;
+    readonly readmitWriteRetained: (
+      record: unknown,
+    ) => Effect.Effect<AdmittedMemberWrite, RegistryError>;
     readonly captureOwnPlacement: () => Effect.Effect<MemberRecordedCallerV1, RegistryError>;
     readonly readmitOwnPlacement: (record: unknown) => Effect.Effect<AdmittedMember, RegistryError>;
     readonly capture: () => Effect.Effect<MemberRecordedCallerV1, RegistryError>;
@@ -81,6 +88,28 @@ export class RetainedMemberCaller extends Context.Service<
   RetainedMemberCaller,
   MemberRecordedCallerV1
 >()("t3/jones/workstreams/native/runtime/memberAdmission/RetainedMemberCaller") {}
+export { MemberRecordedWriteCallerV2 } from "./memberRecordedCaller.ts";
+import { MemberRecordedWriteCallerV2 } from "./memberRecordedCaller.ts";
+const decodeWrite = Schema.decodeUnknownEffect(MemberRecordedWriteCallerV2, {
+  onExcessProperty: "error",
+});
+const writeAssociationOf = (
+  record: WorkstreamsMemberEnrollmentBoundV1,
+): MemberRecordedWriteCallerV2["association"] => {
+  const b = decodeWorkstreamsHomeBindBody(record.intent.bind_request_body);
+  return {
+    ...associationOf(record),
+    member_pin_id: b.member_setup.pin_id,
+    home_pin_id: b.home_setup.pin_id,
+    home_pin_bound_revision: record.home_result.home_pin_bound_revision,
+  };
+};
+export interface AdmittedMemberWrite {
+  readonly record: MemberRecordedWriteCallerV2;
+  readonly ceiling: Local.MemberLocalCallerV1["ceiling"];
+  readonly limits: PeerCallLimits;
+  readonly checkCurrent: () => Effect.Effect<PeerCallLimits, RegistryError>;
+}
 const refused = () => new RegistryError({ code: "forbidden" });
 const make = Effect.gen(function* () {
   const members = yield* Members.MemberEnrollments;
@@ -164,7 +193,89 @@ const make = Effect.gen(function* () {
     yield* readmit(record, false, ownPlacementOnly);
     return record;
   });
+
+  const readmitWrite = Effect.fn("MemberAdmission.readmitWrite")(function* (
+    input: unknown,
+    retained = false,
+  ) {
+    const record = yield* decodeWrite(input).pipe(
+      Effect.mapError((cause) => new RegistryError({ code: "invalid_request", cause })),
+    );
+    const associationCurrent = Effect.fn("MemberAdmission.writeAssociationCurrent")(function* () {
+      const bound = yield* selected();
+      const current = yield* members
+        .getValidatedByEnrollmentId(record.association.enrollment_id)
+        .pipe(Effect.mapError(refused));
+      if (
+        Option.isNone(current) ||
+        canonicalJson(writeAssociationOf(bound)) !== canonicalJson(record.association) ||
+        canonicalJson(writeAssociationOf(current.value)) !== canonicalJson(record.association) ||
+        record.local.environment_id !== record.association.source.environment_id ||
+        canonicalJson(record.original_outbound_ceiling) !==
+          canonicalJson(bound.intent.home_setup.pin.session.ceiling)
+      )
+        return yield* refused();
+      return bound;
+    });
+    const refresh = Effect.fn("MemberAdmission.refreshWrite")(function* () {
+      const bound = yield* associationCurrent();
+      const caller = yield* (
+        retained ? local.readmitWriteRetained(record.local) : local.readmitWrite(record.local)
+      ).pipe(Effect.mapError(refused));
+      const original = record.original_outbound_ceiling;
+      const outbound = bound.intent.home_setup.pin.session.ceiling;
+      if (
+        [original, outbound].some(
+          (c) =>
+            c.access === "read-only" ||
+            c.interaction_mode === "plan" ||
+            !c.permissions.includes("workstreams:write") ||
+            !c.scopes.includes("orchestration:operate"),
+        )
+      )
+        return yield* refused();
+      const ceiling = Local.intersectMemberCeilings(caller.ceiling, {
+        ...caller.ceiling,
+        permissions: outbound.permissions.filter((p) => original.permissions.includes(p)),
+        limits: { runtimeMode: outbound.runtime_mode, interactionMode: outbound.interaction_mode },
+      });
+      if (
+        !ceiling.limits ||
+        ceiling.limits.interactionMode !== "default" ||
+        !ceiling.permissions.includes("workstreams:write")
+      )
+        return yield* refused();
+      yield* caller.checkTarget(ceiling.limits).pipe(Effect.mapError(refused));
+      yield* associationCurrent();
+      return { ceiling, limits: ceiling.limits };
+    });
+    const admitted = yield* refresh();
+    const checkCurrent = Effect.fn("MemberAdmission.checkWriteCurrent")(function* () {
+      const current = yield* refresh();
+      if (canonicalJson(current.ceiling) !== canonicalJson(admitted.ceiling))
+        return yield* refused();
+      return current.limits;
+    });
+    return { record, ...admitted, checkCurrent } satisfies AdmittedMemberWrite;
+  });
   return MemberAdmission.of({
+    captureWrite: Effect.fn("MemberAdmission.captureWrite")(function* (target) {
+      const bound = yield* selected();
+      const association = writeAssociationOf(bound);
+      const caller = yield* local
+        .captureWrite(association.source.environment_id, target)
+        .pipe(Effect.mapError(refused));
+      const record: MemberRecordedWriteCallerV2 = {
+        schema: "jones-workstreams-member-recorded-write-caller/2",
+        local: caller,
+        association,
+        original_outbound_ceiling: bound.intent.home_setup.pin.session.ceiling,
+      };
+      yield* readmitWrite(record);
+      return record;
+    }),
+    readmitWrite,
+    readmitWriteRetained: (record) => readmitWrite(record, true),
     capture,
     readmit,
     captureOwnPlacement: () => capture(true),
