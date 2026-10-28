@@ -2597,7 +2597,10 @@
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
         "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
-        "apps/server/src/orchestration-v2/EffectWorker.test.ts"
+        "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+        "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
+        "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
       "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes."
     }

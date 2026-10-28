@@ -234,6 +234,8 @@ export interface ProviderSessionManagerV2Shape {
     readonly detail?: string;
     readonly revokeMcpCredential?: boolean;
     readonly requireWriterRetirement?: boolean;
+    readonly providerThreadId?: ProviderThreadId;
+    readonly replacementProviderSessionId?: ProviderSessionId;
   }) => Effect.Effect<void, ProviderSessionManagerV2Error>;
 }
 
@@ -3086,11 +3088,31 @@ export const layerWithOptions = (
             "providerThreads",
             "providerTurns",
           ]);
-          const providerThreads = projection.providerThreads.filter(
-            (thread) =>
-              thread.providerSessionId === input.providerSessionId &&
-              thread.nativeThreadRef?.nativeId != null,
-          );
+          const providerThreads = projection.providerThreads.flatMap((thread) => {
+            const targetsRecordedSession = thread.providerSessionId === input.providerSessionId;
+            const targetsCommittedReplacement =
+              input.providerThreadId !== undefined &&
+              thread.id === input.providerThreadId &&
+              input.replacementProviderSessionId !== undefined &&
+              thread.providerSessionId === input.replacementProviderSessionId;
+            if (
+              (input.providerThreadId !== undefined && thread.id !== input.providerThreadId) ||
+              (!targetsRecordedSession && !targetsCommittedReplacement) ||
+              thread.appThreadId !== input.threadId ||
+              thread.driver !== entry.runtime.driver ||
+              thread.providerInstanceId !== entry.runtime.instanceId ||
+              thread.nativeThreadRef?.driver !== entry.runtime.driver ||
+              thread.nativeThreadRef?.nativeId == null
+            )
+              return [];
+            // Restart commits the replacement first; only its recorded source may retire the old writer.
+            return [
+              targetsRecordedSession
+                ? thread
+                : { ...thread, providerSessionId: input.providerSessionId },
+            ];
+          });
+          const loadedKey = entry.loadedProviderThreadKeyByThread.get(input.threadId);
           const providerThreadsById = new Map(providerThreads.map((thread) => [thread.id, thread]));
           yield* Effect.forEach(
             projection.providerTurns.filter(
@@ -3111,7 +3133,12 @@ export const layerWithOptions = (
               if (pending !== undefined)
                 return [{ record: pending, idleFiber: null }, current] as const;
               const latest = current.get(sessionKey(input.providerSessionId));
-              if (latest?.runtime !== entry.runtime) return [undefined, current] as const;
+              if (
+                latest?.runtime !== entry.runtime ||
+                !latest.attachedThreadIds.has(input.threadId) ||
+                latest.loadedProviderThreadKeyByThread.get(input.threadId) !== loadedKey
+              )
+                return [undefined, current] as const;
               const attachedThreadIds = new Set(latest.attachedThreadIds);
               attachedThreadIds.delete(input.threadId);
               const bindings = providerThreads.flatMap((thread) => {
@@ -3302,10 +3329,13 @@ export const layerWithOptions = (
                   cwd: input.runtimePolicy.cwd,
                 });
               });
-              const beforeOpen = beforeSessionUse(
-                input.threadId,
-                input.providerSessionId,
-                checkOpen,
+              const beforeOpen = assertRetirementClear({
+                providerSessionId: input.providerSessionId,
+                threadId: input.threadId,
+                instanceId: input.modelSelection.instanceId,
+                source: originalEntry?.runtime,
+              }).pipe(
+                Effect.andThen(beforeSessionUse(input.threadId, input.providerSessionId, checkOpen)),
               );
               yield* beforeOpen.pipe(
                 Effect.mapError(

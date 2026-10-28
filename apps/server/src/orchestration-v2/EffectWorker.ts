@@ -503,6 +503,13 @@ export const layerExecutor: Layer.Layer<
                         providerSessionId: request.providerSessionId,
                         threadId: effect.threadId,
                         requireWriterRetirement: true,
+                        providerThreadId: request.providerThreadId,
+                        ...(request.sessionTransition.type === "replace"
+                          ? {
+                              replacementProviderSessionId:
+                                request.sessionTransition.replacementProviderSessionId,
+                            }
+                          : {}),
                         detail:
                           request.sessionTransition.type === "replace"
                             ? "Selection change requires a provider session restart."

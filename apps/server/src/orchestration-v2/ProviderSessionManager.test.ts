@@ -14,6 +14,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "@t3tools/shared/jones/shutdownBudget";
 import {
   EnvironmentId,
   EventId,
@@ -6169,6 +6170,122 @@ const openTransferFixture = (name: string) =>
     };
   });
 
+it.effect.each([
+  "exact",
+  "changed-replacement",
+  "wrong-source",
+  "changed-generation",
+  "changed-native",
+  "changed-instance",
+] as const)("committed replacement transfer validates its %s source binding", (mode) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    let source: OrchestrationV2ProviderThread | undefined;
+    let retirementCount = 0;
+    const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
+      providerThread,
+      allowProducerRetirement,
+    }) =>
+      Effect.sync(() => {
+        retirementCount += 1;
+        assert.isTrue(allowProducerRetirement);
+        assert.isDefined(source);
+        if (mode === "exact") assert.deepEqual(providerThread, source);
+        return {
+          binding: runtimeBinding(source!, source!.runtimeIdentity!.runtimeGeneration!)!,
+          evidence: "producer_exited" as const,
+        };
+      });
+    yield* Effect.gen(function* () {
+      const fixture = yield* openTransferFixture(`committed-transfer-${mode}`);
+      source = fixture.providerThread;
+      const replacementProviderSessionId = ProviderSessionId.make("committed-transfer:replacement");
+      const replacement = {
+        ...fixture.providerThread,
+        providerSessionId:
+          mode === "changed-replacement"
+            ? ProviderSessionId.make("committed-transfer:other-replacement")
+            : replacementProviderSessionId,
+        providerInstanceId:
+          mode === "changed-instance"
+            ? ProviderInstanceId.make("committed-transfer:other-instance")
+            : fixture.providerThread.providerInstanceId,
+        nativeThreadRef: {
+          ...fixture.providerThread.nativeThreadRef!,
+          nativeId:
+            mode === "changed-native"
+              ? "committed-transfer:other-native"
+              : fixture.providerThread.nativeThreadRef!.nativeId,
+        },
+        runtimeIdentity: {
+          ...fixture.providerThread.runtimeIdentity,
+          runtimeGeneration:
+            mode === "changed-generation"
+              ? "committed-transfer:other-generation"
+              : fixture.providerThread.runtimeIdentity.runtimeGeneration,
+        },
+      };
+      yield* fixture.sink.write({
+        events: [
+          {
+            id: yield* fixture.idAllocator.allocate.event({ threadId: fixture.threadId }),
+            type: "provider-thread.updated",
+            threadId: fixture.threadId,
+            occurredAt: fixture.now,
+            payload: replacement,
+          },
+        ],
+      });
+      const detached = yield* Effect.exit(
+        fixture.manager.detach({
+          providerSessionId: fixture.providerSessionId,
+          threadId: fixture.threadId,
+          requireWriterRetirement: true,
+          providerThreadId:
+            mode === "wrong-source"
+              ? fixture.idAllocator.derive.providerThread({
+                  driver: CODEX_DRIVER,
+                  nativeThreadId: "committed-transfer:other-source",
+                })
+              : fixture.providerThread.id,
+          replacementProviderSessionId,
+        }),
+      );
+      if (mode === "exact") {
+        assert.isTrue(Exit.isSuccess(detached));
+        assert.equal(retirementCount, 1);
+        assert.equal((yield* Ref.get(state)).closeCount, 1);
+        yield* fixture.manager.open({
+          ...fixture.input,
+          providerSessionId: replacementProviderSessionId,
+        });
+        assert.equal((yield* Ref.get(state)).openCount, 2);
+      } else {
+        assert.isTrue(Exit.isFailure(detached));
+        assert.equal(
+          retirementCount,
+          mode === "changed-generation" || mode === "changed-native" ? 1 : 0,
+        );
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              fixture.manager.open({
+                ...fixture.input,
+                providerSessionId: replacementProviderSessionId,
+              }),
+            ),
+          ),
+        );
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+        yield* fixture.manager.close(fixture.providerSessionId);
+      }
+    }).pipe(
+      Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof })),
+    );
+  }),
+);
+
 it.effect(
   "transfer timeout and cancellation retain one writer operation across changed session IDs",
   () =>
@@ -6362,7 +6479,7 @@ it.effect(
         const duplicate = yield* fixture.manager
           .close(fixture.providerSessionId)
           .pipe(Effect.forkChild);
-        yield* TestClock.adjust("4 seconds");
+        yield* TestClock.adjust(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS + 1_000);
         yield* Fiber.join(duplicate);
         const replacement = {
           ...fixture.input,
@@ -6412,7 +6529,7 @@ it.effect("failed partial initialization retains its thread fence beyond scope-c
       const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
       const opening = yield* manager.open(input).pipe(Effect.forkChild);
       yield* Deferred.await(reached);
-      yield* TestClock.adjust("4 seconds");
+      yield* TestClock.adjust(PROVIDER_SCOPE_CLOSE_TIMEOUT_MS + 1_000);
       assert.isTrue(Exit.isFailure(yield* Fiber.await(opening)));
       assert.isTrue(
         Exit.isFailure(

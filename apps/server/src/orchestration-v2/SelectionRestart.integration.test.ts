@@ -215,7 +215,9 @@ function makeRestartAdapter(
             Effect.gen(function* () {
               const createdAt = yield* DateTime.now;
               return yield* bindThread({
-                id: ProviderThreadId.make(`provider-thread:${threadInput.threadId}`),
+                id:
+                  threadInput.existingProviderThread?.id ??
+                  ProviderThreadId.make(`provider-thread:${threadInput.threadId}`),
                 driver,
                 providerInstanceId,
                 providerSessionId: sessionInput.providerSessionId,

@@ -1103,6 +1103,9 @@ it.effect("restart replacement requests confirmed writer retirement before start
       yield* executor.execute(effect);
       assert.equal(detaches.length, 1);
       assert.isTrue(detaches[0]!.requireWriterRetirement);
+      assert.equal(detaches[0]!.providerSessionId, oldSessionId);
+      assert.equal(detaches[0]!.providerThreadId, providerThreadId);
+      assert.isUndefined(detaches[0]!.replacementProviderSessionId);
       assert.deepEqual(yield* Ref.get(events), ["interrupt", "detach", "start"]);
     }).pipe(
       Effect.provide(
@@ -1117,4 +1120,43 @@ it.effect("restart replacement requests confirmed writer retirement before start
       ),
     );
   }),
+);
+
+it.effect(
+  "restart passes the exact committed replacement and recorded source to writer retirement",
+  () =>
+    Effect.gen(function* () {
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const replacementProviderSessionId = ProviderSessionId.make("restart:committed-replacement");
+      const detaches: Array<
+        Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["detach"]>[0]
+      > = [];
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute(
+          restartEffect(yield* DateTime.now, { type: "replace", replacementProviderSessionId }),
+        );
+        assert.equal(detaches.length, 1);
+        assert.equal(detaches[0]!.providerSessionId, oldSessionId);
+        assert.equal(detaches[0]!.providerThreadId, providerThreadId);
+        assert.equal(detaches[0]!.replacementProviderSessionId, replacementProviderSessionId);
+        assert.isTrue(detaches[0]!.requireWriterRetirement);
+        assert.deepEqual(yield* Ref.get(events), [
+          `interrupt:${replacementProviderSessionId}`,
+          "detach",
+          "start",
+        ]);
+      }).pipe(
+        Effect.provide(
+          layerExecutorFor({
+            events,
+            detach: (input) =>
+              Effect.gen(function* () {
+                detaches.push(input);
+                yield* Ref.update(events, (current) => [...current, "detach"]);
+              }),
+          }),
+        ),
+      );
+    }),
 );
