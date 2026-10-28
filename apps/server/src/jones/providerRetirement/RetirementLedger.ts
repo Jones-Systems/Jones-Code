@@ -1,8 +1,17 @@
-import { ProviderRuntimeBinding, type ProviderSessionId, type ThreadId } from "@t3tools/contracts";
+import { ProviderRuntimeBinding, ProviderSessionId, type ThreadId } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
+
+export class WriterRetirementError extends Schema.TaggedError<WriterRetirementError>()(
+  "WriterRetirementError",
+  { providerSessionId: ProviderSessionId, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "The previous native writer could not be retired.";
+  }
+}
 
 export interface Retirement {
   readonly source: object;
@@ -12,7 +21,7 @@ export interface Retirement {
   readonly kind: "session" | "opening" | "transfer";
   readonly sessionWide: boolean;
   readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
-  readonly completion: Deferred.Deferred<void, unknown>;
+  readonly completion: Deferred.Deferred<void, WriterRetirementError>;
 }
 
 const equivalentBinding = Schema.toEquivalence(ProviderRuntimeBinding);
@@ -40,7 +49,7 @@ export function makeRetirementLedger() {
         [...input.threadIds].every((threadId) => record.threadIds.has(threadId)),
     );
     if (existing !== undefined) return existing;
-    const record = { ...input, completion: Deferred.makeUnsafe<void, unknown>() };
+    const record = { ...input, completion: Deferred.makeUnsafe<void, WriterRetirementError>() };
     pending.add(record);
     return record;
   };
@@ -68,7 +77,7 @@ export function makeRetirementLedger() {
     blocks: (input: {
       readonly providerSessionId: ProviderSessionId;
       readonly threadId: ThreadId;
-      readonly source?: object;
+      readonly source?: object | undefined;
     }) =>
       [...pending].some(
         (record) =>

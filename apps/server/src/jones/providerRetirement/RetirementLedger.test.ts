@@ -10,7 +10,7 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
-import { makeRetirementLedger, receiptMatches } from "./RetirementLedger.ts";
+import { makeRetirementLedger, receiptMatches, WriterRetirementError } from "./RetirementLedger.ts";
 
 const threadId = ThreadId.make("retiring-app-thread");
 const sessionId = ProviderSessionId.make("retiring-session");
@@ -117,7 +117,13 @@ it.effect(
         sessionWide: false,
         bindings: [binding],
       });
-      yield* Deferred.fail(record.completion, "retirement unavailable");
+      yield* Deferred.fail(
+        record.completion,
+        new WriterRetirementError({
+          providerSessionId: sessionId,
+          cause: "retirement unavailable",
+        }),
+      );
       assert.isTrue(ledger.blocks({ providerSessionId: sessionId, threadId }));
       yield* ledger.completeScope(scope);
       assert.isUndefined(ledger.find(sessionId, threadId));

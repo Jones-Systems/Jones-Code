@@ -13,7 +13,10 @@ import * as Layer from "effect/Layer";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
-import { prepareExecutionSession } from "./prepareExecutionSession.ts";
+import {
+  ExecutionSessionRevalidationError,
+  prepareExecutionSession,
+} from "./prepareExecutionSession.ts";
 
 it.effect(
   "retirement persists the released identity before returning for restart and handoff; retries keep event IDs",
@@ -99,7 +102,12 @@ function makeFixture(
     projection.providerThreads[0]!,
     projection,
     fault === "selection"
-      ? Effect.fail("Selection changed while retirement was pending.")
+      ? Effect.fail(
+          new ExecutionSessionRevalidationError({
+            runId: projection.runs[0]!.id,
+            cause: "Selection changed while retirement was pending.",
+          }),
+        )
       : Effect.void,
   ).pipe(
     Effect.andThen(

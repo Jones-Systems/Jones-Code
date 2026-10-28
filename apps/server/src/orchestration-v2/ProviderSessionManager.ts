@@ -739,7 +739,7 @@ export const layerWithOptions = (
       const assertRetirementClear = (input: {
         readonly providerSessionId: ProviderSessionId;
         readonly threadId: ThreadId;
-        readonly source?: object;
+        readonly source?: object | undefined;
         readonly instanceId: ProviderInstanceId;
       }) =>
         Effect.suspend(() =>
@@ -1757,31 +1757,37 @@ export const layerWithOptions = (
       }) =>
         withActivityError(
           input.providerSessionId,
-          Ref.modify(sessions, (current) => {
-            const entry = current.get(sessionKey(input.providerSessionId));
-            if (retirements.blocks({ ...input, source: entry?.runtime })) {
-              return [
-                new ProviderSessionOpenError({
-                  providerSessionId: input.providerSessionId,
-                  instanceId: input.providerInstanceId,
-                  cause: "The previous native writer has not finished retiring.",
-                }),
-                current,
-              ] as const;
-            }
-            if (entry === undefined || entry.attachedThreadIds.has(input.threadId)) {
-              return [undefined, current] as const;
-            }
-            const updated = new Map(current);
-            updated.set(sessionKey(input.providerSessionId), {
-              ...entry,
-              attachedThreadIds: new Set([...entry.attachedThreadIds, input.threadId]),
-              servedThreadIds: new Set([...entry.servedThreadIds, input.threadId]),
-            });
-            return [entry.runtime, updated] as const;
-          }).pipe(
+          Ref.modify(
+            sessions,
+            (current): readonly [
+              ProviderSessionOpenError | ProviderAdapterV2SessionRuntime | undefined,
+              Map<string, LiveSessionEntry>,
+            ] => {
+              const entry = current.get(sessionKey(input.providerSessionId));
+              if (retirements.blocks({ ...input, source: entry?.runtime })) {
+                return [
+                  new ProviderSessionOpenError({
+                    providerSessionId: input.providerSessionId,
+                    instanceId: input.providerInstanceId,
+                    cause: "The previous native writer has not finished retiring.",
+                  }),
+                  current,
+                ] as const;
+              }
+              if (entry === undefined || entry.attachedThreadIds.has(input.threadId)) {
+                return [undefined, current] as const;
+              }
+              const updated = new Map(current);
+              updated.set(sessionKey(input.providerSessionId), {
+                ...entry,
+                attachedThreadIds: new Set([...entry.attachedThreadIds, input.threadId]),
+                servedThreadIds: new Set([...entry.servedThreadIds, input.threadId]),
+              });
+              return [entry.runtime, updated] as const;
+            },
+          ).pipe(
             Effect.flatMap((result) =>
-              result instanceof ProviderSessionOpenError
+              Schema.is(ProviderSessionOpenError)(result)
                 ? Effect.fail(result)
                 : Effect.succeed(result),
             ),
@@ -3191,7 +3197,15 @@ export const layerWithOptions = (
                 if (input.revokeMcpCredential === true) yield* clearMcpSession(input.threadId);
                 yield* scheduleIdleRelease(input.providerSessionId);
               }).pipe(
-                Effect.catchCause((cause) => Deferred.failCause(record.completion, cause)),
+                Effect.catchCause((cause) =>
+                  Deferred.fail(
+                    record.completion,
+                    new RetirementLedger.WriterRetirementError({
+                      providerSessionId: input.providerSessionId,
+                      cause,
+                    }),
+                  ),
+                ),
                 Effect.forkDetach({ startImmediately: true }),
               );
             }),

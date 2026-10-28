@@ -1,6 +1,7 @@
 import {
   EventId,
   ProviderSessionId,
+  RunId,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
@@ -8,9 +9,19 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
+
+export class ExecutionSessionRevalidationError extends Schema.TaggedError<ExecutionSessionRevalidationError>()(
+  "ExecutionSessionRevalidationError",
+  { runId: RunId, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return "The run attempt or provider selection changed during retirement.";
+  }
+}
 
 /** Runs only at normal start; retirement and its durable binding removal precede replacement. */
 export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession")(function* (
@@ -20,7 +31,7 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     OrchestrationV2ThreadProjection,
     "thread" | "runs" | "providerThreads" | "providerSessions"
   >,
-  revalidateReplacement: Effect.Effect<void, unknown> = Effect.void,
+  revalidateReplacement: Effect.Effect<void, ExecutionSessionRevalidationError> = Effect.void,
 ) {
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sessions = yield* Sessions.ProviderSessionManagerV2;

@@ -36,7 +36,7 @@ export const codexProducerOwnershipIsExclusive = Effect.fn("codexProducerOwnersh
     readonly request: (
       method: string,
       params: { readonly threadId?: string; readonly includeTurns?: boolean },
-    ) => Effect.Effect<unknown, unknown>;
+    ) => Effect.Effect<unknown, CodexErrors.CodexAppServerError>;
   }) {
     const loaded = yield* input
       .request("thread/loaded/list", {})
@@ -67,7 +67,7 @@ export const codexProducerOwnershipIsExclusive = Effect.fn("codexProducerOwnersh
     return terminals.data.length === 0 && terminals.nextCursor === null;
   },
   Effect.timeout("1 second"),
-  Effect.catch(() => Effect.succeed(false)),
+  Effect.orElseSucceed(() => false),
 );
 
 /** Scope closure and physical exit share one worker; caller deadlines never own it. */
@@ -158,7 +158,7 @@ export function makeCodexThreadRetirements<Producer extends object>() {
     begin: Effect.fn("CodexThreadRetirements.begin")(function* (input: {
       readonly producer: Producer;
       readonly binding: ProviderRuntimeBinding;
-      readonly dispatch: Effect.Effect<"thread" | "producer", unknown>;
+      readonly dispatch: Effect.Effect<"thread" | "producer", CodexErrors.CodexAppServerError>;
       readonly processExit: Effect.Effect<void, CodexErrors.CodexAppServerError> | undefined;
     }) {
       const existing = find(input.producer, input.binding.nativeThreadId);
@@ -176,9 +176,7 @@ export function makeCodexThreadRetirements<Producer extends object>() {
       producers.set(input.producer, threads);
       yield* Effect.gen(function* () {
         // Install the record before dispatch. A closure can precede the unsubscribe ACK.
-        const mode = yield* input.dispatch.pipe(
-          Effect.catch(() => Effect.succeed("thread" as const)),
-        );
+        const mode = yield* input.dispatch.pipe(Effect.orElseSucceed(() => "thread" as const));
         const evidence = yield* Effect.race(
           mode === "producer"
             ? Effect.never

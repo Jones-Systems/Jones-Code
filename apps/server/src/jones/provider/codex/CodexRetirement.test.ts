@@ -1,5 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderRuntimeBinding } from "@t3tools/contracts";
+import * as CodexErrors from "effect-codex-app-server/errors";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -12,7 +13,7 @@ import {
   makeCodexThreadRetirements,
 } from "./CodexRetirement.ts";
 
-const binding = Schema.decodeUnknownSync(ProviderRuntimeBinding)({
+const binding = Schema.decodeSync(ProviderRuntimeBinding)({
   threadId: "application-thread",
   providerThreadId: "provider-thread",
   providerSessionId: "session",
@@ -206,7 +207,10 @@ describe("native producer ownership", () => {
         const result = yield* codexProducerOwnershipIsExclusive({
           nativeThreadId: binding.nativeThreadId,
           request: (method) => {
-            if (kind === "unknown") return Effect.fail("unsupported");
+            if (kind === "unknown")
+              return Effect.fail(
+                CodexErrors.CodexAppServerRequestError.invalidRequest("unsupported"),
+              );
             if (method === "thread/loaded/list")
               return Effect.succeed({
                 data:

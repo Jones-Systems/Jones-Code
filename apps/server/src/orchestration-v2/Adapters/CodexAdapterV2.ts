@@ -10225,9 +10225,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 Effect.gen(function* () {
                   const generation = value.providerThread.runtimeIdentity?.runtimeGeneration;
                   const producer = generation === undefined ? undefined : producers.get(generation);
-                  const nativeId = value.providerThread.nativeThreadRef?.nativeId;
+                  const capturedNativeThreadId = value.providerThread.nativeThreadRef?.nativeId;
                   const bound =
-                    nativeId === undefined ? undefined : producer?.bindings.get(nativeId);
+                    typeof capturedNativeThreadId !== "string"
+                      ? undefined
+                      : producer?.bindings.get(capturedNativeThreadId);
                   const binding =
                     bound === undefined || producer === undefined
                       ? undefined

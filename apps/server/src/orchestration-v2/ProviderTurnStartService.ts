@@ -12,7 +12,10 @@ import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/worksp
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
-import { prepareExecutionSession } from "../jones/threadConfiguration/prepareExecutionSession.ts";
+import {
+  ExecutionSessionRevalidationError,
+  prepareExecutionSession,
+} from "../jones/threadConfiguration/prepareExecutionSession.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
 import { findSteerFailure } from "../jones/orchestration/LateSteer.ts";
@@ -812,7 +815,7 @@ export const layer: Layer.Layer<
             runId,
             cause: "The run attempt or provider selection changed during retirement.",
           });
-      });
+      }).pipe(Effect.mapError((cause) => new ExecutionSessionRevalidationError({ runId, cause })));
       const preparation = yield* Effect.result(
         prepareExecutionSession(run, providerThread, projection, revalidateReplacement).pipe(
           Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
