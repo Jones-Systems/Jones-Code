@@ -35,7 +35,9 @@ requested receipt and publishes pending.
 Only then does it acknowledge the fenced request, gracefully stop its child and return
 reserved exit code 75 to the service manager.
 
-Each shim start consumes one of three pending attempts. A pending launcher whose child\nnever announces readiness fails within the existing prepared-startup deadline, so a\nhung child cannot prevent fallback. The replacement launcher
+Each shim start consumes one of three pending attempts. A pending launcher whose child
+never announces readiness fails within the existing prepared-startup deadline, so a
+hung child cannot prevent fallback. The replacement launcher
 promotes pending to current only after its capability file is bound to the exact
 live child and that child announces actual readiness. It resets attempts and retains
 the committed receipt without replacing requested history. Durable prefixes replay
