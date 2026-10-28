@@ -14,7 +14,6 @@
     "apps/web/src/jones/updates/useProviderUpdates.tsx"
   ],
   "hookPaths": [
-    "apps/web/src/components/ui/toast.tsx",
     "apps/web/src/components/ProviderUpdateLaunchNotification.logic.ts",
     "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts",
     "apps/web/src/components/ProviderUpdateLaunchNotification.tsx",

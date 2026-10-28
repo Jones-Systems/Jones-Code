@@ -151,7 +151,8 @@ describe("current provider update notice rows", () => {
         <ProviderUpdateNotice />
       </ToastProvider>
     );
-    await using screen = await render(notice());
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(notice());
     const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
     const device = page.getByRole("button", { name: "Provider updates on WSL", exact: true });
     await expect.element(toggle).toBeVisible();
@@ -214,7 +215,8 @@ describe("current provider update notice rows", () => {
     state.updates.groups = state.updates.groups.slice(0, 1);
     state.updates.noticeKey = "collapse-primary";
     state.navigate.mockReset();
-    await using screen = await render(
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(
       <ToastProvider>
         <ProviderUpdateNotice />
       </ToastProvider>,
