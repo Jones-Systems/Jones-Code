@@ -966,14 +966,16 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       pending.delete(requestId);
       return { ...next, pending };
     });
+    // Only offered requests reach the host; every other result leaves the request unstarted.
+    type Dispatch = "offered" | "superseded" | "held" | "expired" | "closed";
     const awaitResponse = Effect.fn("PreviewAutomationBroker.awaitResponse")(function* () {
-      const offered = yield* SynchronizedRef.modifyEffect(state, (current) => {
+      const dispatch = yield* SynchronizedRef.modifyEffect(state, (current) => {
         // Serialize generation checks and offers with queue closure; routes can outlive eviction.
         if (
           current.clients.get(connection.clientId)?.queue !== connection.queue ||
           !current.pending.has(requestId)
         ) {
-          return Effect.succeed([false, current] as const);
+          return Effect.succeed(["superseded" as Dispatch, current] as const);
         }
         return Effect.gen(function* () {
           const runtimeEvidence =
@@ -997,7 +999,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
               ...assignment,
               affinityUntil: assignment.affinityUntil ?? now + 30_000,
             });
-            return [false, { ...current, assignments }] as const;
+            return ["held" as Dispatch, { ...current, assignments }] as const;
           }
           if (assignment && runtimeEvidence?.runtimeIdentity != null) {
             const { affinityUntil: _expiredHold, ...liveAssignment } = assignment;
@@ -1008,7 +1010,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           }
           const dispatchAt = yield* Clock.currentTimeMillis;
           const remainingTimeoutMs = Math.max(1, timeoutMs - (dispatchAt - now));
-          if (dispatchAt - now >= timeoutMs) return [false, current] as const;
+          if (dispatchAt - now >= timeoutMs) return ["expired" as Dispatch, current] as const;
           const offered = yield* Queue.offer(connection.queue, {
             type: "request",
             connectionId: connection.connectionId,
@@ -1040,17 +1042,39 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
                   dispatched: true,
                   replySequenceAtDispatch: current.replySequence,
                 });
-              return [offered, { ...current, pending, assignments }] as const;
+              return [
+                (offered ? "offered" : "closed") as Dispatch,
+                { ...current, pending, assignments },
+              ] as const;
             }),
           );
           return offered;
         });
       });
-      if (!offered) {
+      if (dispatch !== "offered") {
         const completion = yield* Deferred.poll(deferred);
         if (Option.isSome(completion)) {
           return (yield* completion.value) as A;
         }
+        if (dispatch === "held")
+          return yield* new PreviewAutomationNoAvailableHostError({
+            operation: requestContext.operation,
+            environmentId: requestContext.environmentId,
+            threadId: requestContext.threadId,
+            providerSessionId: requestContext.providerSessionId,
+            providerInstanceId: requestContext.providerInstanceId,
+            reconnecting: true,
+            clientId: requestContext.clientId,
+            connectionId: requestContext.connectionId,
+            requestId: requestContext.requestId,
+            ...(requestContext.tabId === undefined ? {} : { tabId: requestContext.tabId }),
+            timeoutMs: requestContext.timeoutMs,
+          });
+        if (dispatch === "expired")
+          return yield* new PreviewAutomationTimeoutError({
+            ...requestContext,
+            outcome: "not_started",
+          });
         return yield* new PreviewAutomationRequestQueueClosedError({
           ...requestContext,
           outcome: "not_started",

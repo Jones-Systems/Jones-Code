@@ -2021,8 +2021,12 @@ it.effect(
           .invoke({ scope, operation: "evaluate", input: {} })
           .pipe(Effect.flip, Effect.orDie);
         expect(detached).toMatchObject({
-          _tag: "PreviewAutomationRequestQueueClosedError",
-          outcome: "not_started",
+          _tag: "PreviewAutomationNoAvailableHostError",
+          operation: "evaluate",
+          reconnecting: true,
+          clientId: "client-1",
+          tabId,
+          timeoutMs: 15_000,
         });
         expect(dispatched).toBe(1);
         evidence = {
@@ -2032,7 +2036,11 @@ it.effect(
         const replaced = yield* broker
           .invoke({ scope, operation: "evaluate", input: {} })
           .pipe(Effect.flip, Effect.orDie);
-        expect(replaced).toMatchObject({ outcome: "not_started" });
+        expect(replaced).toMatchObject({
+          _tag: "PreviewAutomationNoAvailableHostError",
+          reconnecting: true,
+          tabId,
+        });
         expect(dispatched).toBe(1);
         evidence = { runtimeIdentity: identity, attachmentGeneration: 3 };
         yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
@@ -2049,6 +2057,66 @@ it.effect(
         expect(dispatched).toBe(3);
       }),
     ),
+);
+
+it.effect("reports a spent pre-dispatch budget without delivery or quarantine", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const resolving = yield* Deferred.make<void>();
+      const tabId = PreviewTabId.make("pre-dispatch-budget-tab");
+      const routed: RoutedRequest[] = [];
+      let slow = true;
+      yield* Stream.runForEach(
+        requestsFrom(
+          yield* broker.connect(makeHost(), {
+            resolveRuntimeEvidence: () =>
+              Effect.gen(function* () {
+                if (slow) {
+                  yield* Deferred.succeed(resolving, undefined);
+                  yield* Effect.sleep(200);
+                }
+                return { runtimeIdentity: testRuntimeIdentity, attachmentGeneration: 1 };
+              }),
+          }),
+        ),
+        (request) => {
+          routed.push(request);
+          return broker.respond({
+            clientId: "client-1",
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ok: true,
+            result: "dispatched",
+          });
+        },
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const expired = yield* broker
+        .invoke({ scope, operation: "click", tabId, input: {}, timeoutMs: 100 })
+        .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+      yield* Deferred.await(resolving);
+      yield* TestClock.adjust(200);
+      const error = yield* Fiber.join(expired);
+      expect(error).toMatchObject({
+        _tag: "PreviewAutomationTimeoutError",
+        operation: "click",
+        tabId,
+        timeoutMs: 100,
+        outcome: "not_started",
+      });
+      expect(error).not.toHaveProperty("unreconciled", true);
+      expect(routed).toHaveLength(0);
+
+      slow = false;
+      expect(yield* broker.invoke<string>({ scope, operation: "click", tabId, input: {} })).toBe(
+        "dispatched",
+      );
+      expect(routed).toHaveLength(1);
+      expect(routed[0]).toMatchObject({ operation: "click", tabId });
+    }),
+  ),
 );
 
 it.effect("evicts an unanswered host and lets later calls use a healthy runtime", () =>
