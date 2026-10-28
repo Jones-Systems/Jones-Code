@@ -40,7 +40,7 @@ export function serverComputeBuildIdentity(
       }
       for (const id of [...this.getModuleIds()].sort()) {
         const info = this.getModuleInfo(id);
-        if (info && !info.isExternal) add(relative(root, id), info.code ?? "");
+        if (info) add(relative(root, id), info.code ?? "");
       }
       for (const name of Object.keys(bundle).sort()) {
         const item = bundle[name]!;

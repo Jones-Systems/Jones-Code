@@ -17,10 +17,7 @@ if (
   );
 await access(file);
 const input = await readFile(runtimeForm === "sea" ? file : entry);
-const build =
-  runtimeForm === "sea"
-    ? executableIdentity(input)
-    : stampedIdentity(input);
+const build = runtimeForm === "sea" ? executableIdentity(input) : stampedIdentity(input);
 if (!build || build === "f07a6bb84e82d6c130f80e7f7f398ea97a36ca2a6b5209ff71e56f613f0507c1")
   throw new Error("Missing complete-input build stamp");
 await writeFile(

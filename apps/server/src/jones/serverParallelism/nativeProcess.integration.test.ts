@@ -28,7 +28,9 @@ for (const count of [2, 3] as const)
       try {
         const report = await runNativeQualification({
           count,
-          onShutdown: () => { retired = true; },
+          onShutdown: () => {
+            retired = true;
+          },
           directory: join(scratch, "fixture"),
           command: {
             ...manifest,
@@ -67,10 +69,14 @@ native(
         import.meta.url,
       ),
     );
-    const parent = spawn(process.execPath, [fixture, manifestPath!, scratch, String(parentLossCount)], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: minimalWorkerEnvironment(process.env, false, false),
-    });
+    const parent = spawn(
+      process.execPath,
+      [fixture, manifestPath!, scratch, String(parentLossCount)],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: minimalWorkerEnvironment(process.env, false, false),
+      },
+    );
     const exited = new Promise<void>((resolve, reject) => {
       parent.once("exit", () => resolve());
       parent.once("error", reject);
@@ -103,15 +109,31 @@ native(
       proved = children.every(proveAbsent);
       expect(proved).toBe(true);
       const manifest = JSON.parse(await readFile(manifestPath!, "utf8"));
-      const command = { ...manifest, env: minimalWorkerEnvironment(process.env,
-        manifest.runtimeForm === "sea", manifest.runtimeForm === "electron") };
+      const command = {
+        ...manifest,
+        env: minimalWorkerEnvironment(
+          process.env,
+          manifest.runtimeForm === "sea",
+          manifest.runtimeForm === "electron",
+        ),
+      };
       proved = false;
-      const journal = await GenerationJournal.acquire(join(scratch, "parent-loss", "journal"), parentLossCount);
-      const replacement = new ComputeSupervisor({ count: parentLossCount, build: command.build, journal,
-        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit) });
+      const journal = await GenerationJournal.acquire(
+        join(scratch, "parent-loss", "journal"),
+        parentLossCount,
+      );
+      const replacement = new ComputeSupervisor({
+        count: parentLossCount,
+        build: command.build,
+        journal,
+        start: (boot, register, onExit) => ProcessSlot.start(command, boot, register, onExit),
+      });
       proved = false;
       try {
-        const handle = replacement.register({ cwd: join(scratch, "parent-loss", "workspace-0"), variant: "paths" });
+        const handle = replacement.register({
+          cwd: join(scratch, "parent-loss", "workspace-0"),
+          variant: "paths",
+        });
         await replacement.ensure(handle);
         const result = await replacement.run(handle, "search", { query: "file", limit: 32 });
         expect(result.entries.length).toBeGreaterThan(0);
@@ -142,14 +164,18 @@ for (const invalid of ["bootstrap", "missing-fd3", "wrong-build"] as const)
           ? {}
           : {
               version: 1,
-              build: invalid === "wrong-build" ? (manifest.build === "0".repeat(64) ? "1" : "0").repeat(64) : manifest.build,
+              build:
+                invalid === "wrong-build"
+                  ? (manifest.build === "0".repeat(64) ? "1" : "0").repeat(64)
+                  : manifest.build,
               authorityId: "negative-smoke",
               nonce: "negative-smoke",
               slotId: 0,
               slotGeneration: 1,
             };
       const child = spawn(manifest.file, [...manifest.args, JSON.stringify(boot)], {
-        stdio: invalid === "wrong-build" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
+        stdio:
+          invalid === "wrong-build" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
         env: minimalWorkerEnvironment(
           process.env,
           manifest.runtimeForm === "sea",

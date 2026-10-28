@@ -35,7 +35,6 @@ test("one complete-input digest stamps every chunk and changes with sibling code
         {
           getModuleIds: () => ["entry", "sibling"],
           getModuleInfo: (id) => ({
-            isExternal: false,
             code: id === "sibling" ? sibling : "entry",
           }),
         },
