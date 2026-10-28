@@ -16,6 +16,8 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Option from "effect/Option";
+import * as ServerSecrets from "../../../../auth/ServerSecretStore.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { WorkstreamOperationReadResponse } from "@t3tools/contracts/jones/workstreamOperations";
@@ -135,7 +137,10 @@ const serviceLayer = (
 const withFile = <A, E, R>(run: (filename: string) => Effect.Effect<A, E, R>) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const parent = NodePath.resolve("node_modules/.cache/nw-recorded-recovery/files");
+      const parent = NodePath.resolve(
+        process.env.NW_WRITE_FOUNDATION_EVIDENCE_DIR ??
+          "node_modules/.cache/nw-recorded-recovery/files",
+      );
       yield* Effect.promise(() => NodeFSP.mkdir(parent, { recursive: true }));
       const dir = yield* Effect.promise(() =>
         NodeFSP.mkdtemp(NodePath.join(parent, "operations-")),
@@ -760,6 +765,7 @@ it.effect(
         const real = yield* Callers.RecordedCallers;
         yield* initialize.pipe(Effect.provide(persistence(filename)));
         let checks = 0;
+        let observeAccepted: Effect.Effect<void> = Effect.die("Observation not bound");
         const changed = Callers.RecordedCallers.of({
           ...real,
           readmitRecorded: (record) =>
@@ -768,8 +774,10 @@ it.effect(
                 ...caller,
                 check: (permission, threadId) =>
                   Effect.gen(function* () {
-                    if (++checks === 2)
+                    if (++checks === 2) {
+                      yield* observeAccepted;
                       return yield* new Source.ProviderError({ code: "not_granted" });
+                    }
                     yield* caller.check(permission, threadId);
                   }),
               })),
@@ -777,6 +785,15 @@ it.effect(
         });
         yield* Effect.gen(function* () {
           const entries = yield* DurableEntries.DurableEntries;
+          const sql = yield* SqlClient.SqlClient;
+          observeAccepted = sql<{
+            state: string;
+          }>`SELECT state FROM jones_workstreams_operations WHERE operation_id=${request.operation_id}`.pipe(
+            Effect.orDie,
+            Effect.map((rows) => {
+              expect(rows[0]?.state).toBe("accepted");
+            }),
+          );
           expect(
             Exit.isFailure(
               yield* Effect.exit(
@@ -1117,4 +1134,144 @@ it.effect(
         );
       }).pipe(Effect.provide(f.layer));
     }),
+);
+
+const decodeKeyCheckpoint = Schema.decodeUnknownSync(DurableEntries.Checkpoint);
+const checkpointFor = (
+  operation: OperationStore.Operation,
+  state: "in_progress" | "reconciling" = "reconciling",
+): DurableEntries.Checkpoint =>
+  decodeKeyCheckpoint({
+    version: 1,
+    regAbsent: false,
+    result: {
+      contract: "workstream-operations/1.0.0",
+      operation_id: operation.operation_id,
+      origin: operation.origin,
+      kind: operation.kind,
+      request_sha256: operation.request_sha256,
+      observed: null,
+      children: [],
+      accepted_at: operation.accepted_at,
+      updated_at: operation.updated_at,
+      result: null,
+      poll_after_ms: 1000,
+      detail: null,
+      state,
+      reason: state === "reconciling" ? "verification_pending" : null,
+    },
+  });
+
+it.effect.each(["accept", "save", "no-seal-save"] as const)(
+  "DurableEntries %s prepares actual secrets before outer writer and permits same-client commit",
+  (method) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>(),
+          release = yield* Deferred.make<void>();
+        let client: SqlClient.SqlClient | undefined;
+        let armed = false,
+          calls = 0;
+        const values = secrets();
+        const provider: ServerSecrets.ServerSecretStore["Service"] = {
+          get: (name) =>
+            Effect.gen(function* () {
+              if (armed) {
+                calls++;
+                yield* Deferred.succeed(entered, undefined);
+                if (!client) return yield* Effect.die("SQL client not captured");
+                expect(Option.isNone(yield* Effect.serviceOption(client.transactionService))).toBe(
+                  true,
+                );
+                yield* Deferred.await(release);
+              }
+              return Option.fromNullishOr(values.get(name));
+            }),
+          set: () => Effect.die("Unexpected secret write"),
+          create: () => Effect.die("Unexpected secret creation"),
+          getOrCreateRandom: () => Effect.die("Unexpected automatic key creation"),
+          remove: () => Effect.die("Unexpected secret removal"),
+        };
+        yield* Effect.gen(function* () {
+          yield* initialize;
+          const entries = yield* DurableEntries.DurableEntries,
+            sql = yield* SqlClient.SqlClient;
+          client = sql;
+          yield* sql`CREATE TABLE durable_key_probe (id INTEGER PRIMARY KEY)`;
+          const old =
+            method === "accept"
+              ? null
+              : yield* entries.accept(request, childIds(request), "1970-01-01T00:00:00.000Z");
+          armed = true;
+          const action = old
+            ? entries.save(
+                request.operation_id,
+                checkpointFor(
+                  old.operation,
+                  method === "no-seal-save" ? "in_progress" : "reconciling",
+                ),
+              )
+            : entries.accept(request, childIds(request), "1970-01-01T00:00:00.000Z");
+          const running = yield* action.pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          yield* sql.withTransaction(sql`INSERT INTO durable_key_probe VALUES (1)`);
+          expect(yield* sql`SELECT id FROM durable_key_probe`).toEqual([{ id: 1 }]);
+          yield* Deferred.succeed(release, undefined);
+          const result = yield* Fiber.join(running);
+          expect(calls).toBe(1);
+          if (method !== "accept")
+            expect(result).toMatchObject({
+              state: method === "no-seal-save" ? "accepted" : "reconciling",
+            });
+        }).pipe(
+          Effect.provide(
+            DurableEntries.layer.pipe(Layer.provideMerge(testLayer({ secrets: provider }))),
+          ),
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "DurableEntries unused active failure leaves no-seal save and replay available but preserves accepted lock on sealing failure",
+  () =>
+    Effect.gen(function* () {
+      yield* initialize;
+      const entries = yield* DurableEntries.DurableEntries,
+        sql = yield* SqlClient.SqlClient;
+      const original = yield* entries.accept(
+        request,
+        childIds(request),
+        "1970-01-01T00:00:00.000Z",
+      );
+      yield* sql`UPDATE jones_workstreams_keys SET state='decrypt_only' WHERE key_id='test-local'`;
+      yield* sql`INSERT INTO jones_workstreams_keys VALUES ('missing','registry-test','local','active','1970-01-01T00:00:00.000Z')`;
+      expect(
+        yield* entries.save(request.operation_id, checkpointFor(original.operation, "in_progress")),
+      ).toEqual(original.operation);
+      expect(yield* entries.accept(request, childIds(request), "1970-01-01T00:00:00.000Z")).toEqual(
+        original,
+      );
+      expect(
+        yield* entries
+          .save(request.operation_id, checkpointFor(original.operation))
+          .pipe(Effect.result),
+      ).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "DurableEntryError", code: "unavailable" },
+      });
+      expect((yield* entries.read(request.operation_id))?.operation).toEqual(original.operation);
+      expect(
+        yield* entries
+          .accept(
+            { ...request, operation_id: "another-locked-operation" },
+            childIds(request),
+            "1970-01-01T00:00:00.000Z",
+          )
+          .pipe(Effect.result),
+      ).toMatchObject({
+        _tag: "Failure",
+        failure: { code: "thread_operation_in_progress" },
+      });
+    }).pipe(Effect.provide(DurableEntries.layer.pipe(Layer.provideMerge(testLayer())))),
 );

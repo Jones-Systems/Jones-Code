@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { SqlError } from "effect/sql/SqlError";
 import * as NativeSql from "./sql.ts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -11,7 +12,7 @@ import * as OperationStore from "./operationStore.ts";
 import * as BindingStore from "./bindingStore.ts";
 import * as EffectStore from "./effectStore.ts";
 import * as ReceiptStore from "./receiptStore.ts";
-import { scope, seed, testLayer, now, binding, pending } from "./sql.testkit.ts";
+import { scope, seed, testLayer, now, binding, pending, secrets, keyBytes } from "./sql.testkit.ts";
 
 it.effect(
   "restart retains exact operation target, child IDs, request bytes and unresolved effect material past 24 hours",
@@ -451,16 +452,32 @@ it.effect(
       const store = yield* OperationStore.OperationStore,
         sql = yield* SqlClient.SqlClient;
       const input = memberInput();
+      let mutationObserved = false;
       expect(
-        yield* sql
-          .withTransaction(
-            Effect.gen(function* () {
-              yield* store.acceptMemberForward(input);
-              return yield* new NativeSql.StoreError({ reason: "conflict" });
-            }),
+        yield* store
+          .withPrepared(
+            [{ kind: "accept", id: input.operation_id, destination: input.destination }],
+            (prepared) =>
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  yield* prepared.acceptMemberForward(input);
+                  expect((yield* prepared.readMemberForward(input.operation_id))?.state).toBe(
+                    "accepted",
+                  );
+                  expect(
+                    yield* sql`SELECT operation_id FROM jones_workstreams_operations WHERE operation_id = ${input.operation_id}`,
+                  ).toHaveLength(1);
+                  mutationObserved = true;
+                  return yield* new NativeSql.StoreError({ reason: "conflict" });
+                }),
+              ),
           )
           .pipe(Effect.result),
-      ).toMatchObject({ _tag: "Failure" });
+      ).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "WorkstreamsStoreError", reason: "conflict" },
+      });
+      expect(mutationObserved).toBe(true);
       expect(yield* store.readMemberForward(input.operation_id)).toBeNull();
       yield* store.acceptMemberForward(input);
       expect(
@@ -645,3 +662,744 @@ it("initializes the real member admission/startup/integration/store import compo
     "jones-workstreams-member-recorded-write-caller/2",
   );
 });
+
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as ServerSecrets from "../../../../auth/ServerSecretStore.ts";
+
+const controlledSecrets = (
+  values: Map<string, Uint8Array>,
+  beforeGet: (name: string) => Effect.Effect<void> = () => Effect.void,
+): ServerSecrets.ServerSecretStore["Service"] => ({
+  get: (name) =>
+    Effect.suspend(() =>
+      beforeGet(name).pipe(Effect.map(() => Option.fromNullishOr(values.get(name)))),
+    ),
+  set: () => Effect.die("Unexpected secret write"),
+  create: () => Effect.die("Unexpected secret creation"),
+  getOrCreateRandom: () => Effect.die("Unexpected automatic key creation"),
+  remove: () => Effect.die("Unexpected secret removal"),
+});
+const homeInput = (id = "operation-key-test"): OperationStore.OperationInput => {
+  const { state: _state, ...destination } = binding;
+  return {
+    operation_id: id,
+    kind: "command",
+    thread_environment_id: null,
+    thread_id: null,
+    origin: { kind: "app" },
+    destination,
+    child_command_ids: ["exact-child"],
+    request_body: '{ "exact" : "bytes" }',
+    accepted_at: now,
+  };
+};
+
+it.effect.each([
+  "accept",
+  "read",
+  "open",
+  "advance",
+  "acceptMemberForward",
+  "readMemberForward",
+  "openMemberForwards",
+  "advanceMemberForward",
+] as const)(
+  "prepares actual key acquisition before writer for %s and permits an unrelated same-client commit",
+  (method) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>(),
+          release = yield* Deferred.make<void>();
+        let armed = false,
+          calls = 0;
+        let client: SqlClient.SqlClient | undefined;
+        const provider = controlledSecrets(secrets(), () =>
+          Effect.gen(function* () {
+            if (!armed) return;
+            calls++;
+            yield* Deferred.succeed(entered, undefined);
+            if (!client) return yield* Effect.die("SQL client not captured");
+            expect(Option.isNone(yield* Effect.serviceOption(client.transactionService))).toBe(
+              true,
+            );
+            yield* Deferred.await(release);
+          }),
+        );
+        yield* Effect.gen(function* () {
+          yield* seedMember;
+          const sql = yield* SqlClient.SqlClient;
+          client = sql;
+          yield* sql`CREATE TABLE operation_key_probe (id INTEGER PRIMARY KEY)`;
+          const store = yield* OperationStore.OperationStore;
+          const member = method.includes("Member"),
+            input = member ? memberInput() : homeInput();
+          if (method !== "accept" && method !== "acceptMemberForward") {
+            if (member)
+              yield* store.acceptMemberForward(input as OperationStore.MemberForwardInput);
+            else yield* store.accept(input);
+          }
+          armed = true;
+          const action =
+            method === "accept"
+              ? store.accept(input)
+              : method === "acceptMemberForward"
+                ? store.acceptMemberForward(input as OperationStore.MemberForwardInput)
+                : method === "read"
+                  ? store.read(input.operation_id)
+                  : method === "readMemberForward"
+                    ? store.readMemberForward(input.operation_id)
+                    : method === "open"
+                      ? store.open()
+                      : method === "openMemberForwards"
+                        ? store.openMemberForwards()
+                        : method === "advance"
+                          ? store.advance(
+                              input.operation_id,
+                              "accepted",
+                              "dispatching",
+                              now,
+                              null,
+                              "result",
+                            )
+                          : store.advanceMemberForward(
+                              input.operation_id,
+                              "accepted",
+                              "dispatching",
+                              now,
+                              null,
+                              "result",
+                            );
+          const running = yield* action.pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          yield* sql.withTransaction(sql`INSERT INTO operation_key_probe VALUES (1)`);
+          expect(yield* sql`SELECT id FROM operation_key_probe`).toEqual([{ id: 1 }]);
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(running);
+          expect(calls).toBe(1);
+        }).pipe(Effect.provide(testLayer({ secrets: provider })));
+      }),
+    ),
+);
+
+it.effect("refuses every unprepared ambient client transaction before any secret access", () =>
+  Effect.gen(function* () {
+    let calls = 0;
+    const provider = controlledSecrets(secrets(), () =>
+      Effect.sync(() => {
+        calls++;
+      }),
+    );
+    yield* Effect.gen(function* () {
+      yield* seedMember;
+      const store = yield* OperationStore.OperationStore,
+        sql = yield* SqlClient.SqlClient;
+      const input = homeInput(),
+        member = memberInput();
+      const actions: readonly Effect.Effect<
+        unknown,
+        NativeSql.CryptoError | NativeSql.StoreError | SqlError
+      >[] = [
+        store.read(input.operation_id),
+        store.readMemberForward(member.operation_id),
+        store.open(),
+        store.openMemberForwards(),
+        store.accept(input),
+        store.acceptMemberForward(member),
+        store.advance(input.operation_id, "accepted", "dispatching", now, null),
+        store.advanceMemberForward(member.operation_id, "accepted", "dispatching", now, null),
+        store.withPrepared([], () => Effect.die("Ambient callback must not run")),
+      ];
+      for (const action of actions) {
+        const before = calls;
+        expect(yield* sql.withTransaction(action).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "WorkstreamsStoreError", reason: "fenced" },
+        });
+        expect(calls).toBe(before);
+      }
+    }).pipe(Effect.provide(testLayer({ secrets: provider })));
+  }),
+);
+
+it.effect(
+  "prepared invocation caches expire and later invocations acquire the current raw secret",
+  () =>
+    Effect.gen(function* () {
+      const values = secrets();
+      let calls = 0;
+      const provider = controlledSecrets(values, () =>
+        Effect.sync(() => {
+          calls++;
+        }),
+      );
+      yield* Effect.gen(function* () {
+        yield* seedMember;
+        const store = yield* OperationStore.OperationStore,
+          sql = yield* SqlClient.SqlClient;
+        const input = homeInput();
+        yield* store.accept(input);
+        let escaped: OperationStore.PreparedOperations | undefined;
+        yield* store.withPrepared([{ kind: "read", id: input.operation_id }], (prepared) =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              escaped = prepared;
+              const before = calls;
+              values.delete("workstreams-content-key-test-local");
+              expect((yield* prepared.read(input.operation_id))?.request_body).toBe(
+                input.request_body,
+              );
+              expect(calls).toBe(before);
+            }),
+          ),
+        );
+        expect(yield* escaped!.read(input.operation_id).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "KeyUnavailable" },
+        });
+        expect(yield* store.read(input.operation_id).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "missing" },
+        });
+        values.set(
+          "workstreams-content-key-test-local",
+          Uint8Array.from(keyBytes, (n) => n ^ 0xff),
+        );
+        expect(yield* store.read(input.operation_id).pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "authentication_failed" },
+        });
+      }).pipe(Effect.provide(testLayer({ secrets: provider })));
+    }),
+);
+
+it.effect(
+  "unused active key failures do not break exact replay or an advance that does not seal",
+  () =>
+    Effect.gen(function* () {
+      const values = secrets();
+      yield* Effect.gen(function* () {
+        yield* seedMember;
+        const store = yield* OperationStore.OperationStore,
+          sql = yield* SqlClient.SqlClient;
+        const input = homeInput();
+        const accepted = yield* store.accept(input);
+        yield* sql`UPDATE jones_workstreams_keys SET state = 'decrypt_only' WHERE key_id = 'test-local'`;
+        yield* sql`INSERT INTO jones_workstreams_keys VALUES ('missing-active',${scope.registry_instance_id},'local','active',${now})`;
+        expect(yield* store.accept(input)).toEqual(accepted);
+        expect(
+          (yield* store.advance(input.operation_id, "accepted", "dispatching", now, null)).state,
+        ).toBe("dispatching");
+        expect(
+          yield* store
+            .advance(input.operation_id, "dispatching", "reconciling", now, null, "result")
+            .pipe(Effect.result),
+        ).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "KeyUnavailable", reason: "missing" },
+        });
+        expect((yield* store.read(input.operation_id))?.state).toBe("dispatching");
+        yield* sql`UPDATE jones_workstreams_keys SET state = 'decrypt_only' WHERE key_id = 'missing-active'`;
+        expect((yield* store.accept(input)).state).toBe("dispatching");
+        yield* sql`UPDATE jones_workstreams_keys SET state='retired' WHERE key_id = 'test-local'`;
+        expect((yield* store.read(input.operation_id))?.request_body).toBe(input.request_body);
+      }).pipe(Effect.provide(testLayer({ keys: values })));
+    }),
+);
+
+import * as Envelope from "../crypto/envelope.ts";
+import * as Keys from "../crypto/keyProvider.ts";
+import * as Layer from "effect/Layer";
+const sealWithKey = (id: string, recordId: string, value: string, bytes: Uint8Array) =>
+  Effect.flatMap(Envelope.WorkstreamsEnvelope, (envelope) =>
+    envelope.seal(
+      {
+        ...scope,
+        key_scope: "local",
+        purpose: "operation_result",
+        record_id: recordId,
+        revision: 1,
+      },
+      JSON.stringify(value),
+    ),
+  ).pipe(
+    Effect.provide(
+      Envelope.layer.pipe(
+        Layer.provide(
+          Layer.succeed(Keys.WorkstreamsKeyProvider, {
+            activeKeyId: () => Effect.succeed(id),
+            get: () => Effect.succeed(bytes),
+            indexKey: () => Effect.die("Index keys unused"),
+          }),
+        ),
+      ),
+    ),
+  );
+
+it.effect.each([false, true])(
+  "active rotation fails without refill even when replacement ID is already cached: %s",
+  (preparedId) =>
+    Effect.gen(function* () {
+      const values = secrets();
+      const rotated = Uint8Array.from(keyBytes, (n) => n ^ 0xff);
+      values.set("workstreams-content-key-rotated", rotated);
+      yield* Effect.gen(function* () {
+        yield* seedMember;
+        const store = yield* OperationStore.OperationStore,
+          sql = yield* SqlClient.SqlClient;
+        const input = homeInput();
+        yield* store.accept(input);
+        const historical = yield* sealWithKey("rotated", input.operation_id, "historical", rotated);
+        if (preparedId) {
+          yield* store.advance(input.operation_id, "accepted", "dispatching", now, null);
+          yield* sql`UPDATE jones_workstreams_operations SET state='reconciling',result_envelope=${historical} WHERE operation_id=${input.operation_id}`;
+        }
+        const expected = preparedId ? "reconciling" : "accepted";
+        expect(
+          yield* store
+            .withPrepared(
+              [{ kind: "advance", id: input.operation_id, resultBodySupplied: true }],
+              (prepared) =>
+                Effect.gen(function* () {
+                  yield* sql`UPDATE jones_workstreams_keys SET state = 'decrypt_only' WHERE key_id = 'test-local'`;
+                  yield* sql`INSERT INTO jones_workstreams_keys VALUES ('rotated',${scope.registry_instance_id},'local','active',${now})`;
+                  return yield* prepared.advance(
+                    input.operation_id,
+                    expected,
+                    preparedId ? "in_progress" : "dispatching",
+                    now,
+                    null,
+                    "result",
+                  );
+                }),
+            )
+            .pipe(Effect.result),
+        ).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "KeyUnavailable", reason: "active_key_missing" },
+        });
+        expect((yield* store.read(input.operation_id))?.state).toBe(expected);
+        expect(yield* store.open()).toHaveLength(1);
+      }).pipe(Effect.provide(testLayer({ keys: values })));
+    }),
+);
+
+it.effect.each(["same-key", "unprepared-key", "wrong-aad"] as const)(
+  "writer reselects current result ciphertext after %s replacement",
+  (change) =>
+    Effect.gen(function* () {
+      const values = secrets();
+      values.set(
+        "workstreams-content-key-rotated",
+        Uint8Array.from(keyBytes, (n) => n ^ 0xff),
+      );
+      yield* Effect.gen(function* () {
+        yield* seedMember;
+        const store = yield* OperationStore.OperationStore,
+          sql = yield* SqlClient.SqlClient,
+          db = yield* NativeSql.NativeSql;
+        const input = homeInput();
+        yield* store.accept(input);
+        yield* store.advance(
+          input.operation_id,
+          "accepted",
+          "dispatching",
+          now,
+          null,
+          "old-result",
+        );
+        const context = {
+          ...scope,
+          key_scope: "local" as const,
+          purpose: "operation_result",
+          record_id: input.operation_id,
+          revision: 1,
+        };
+        const sameKey = yield* db.sealJson(context, "current-result");
+        const wrongAad = yield* db.sealJson(
+          { ...context, record_id: "different-record" },
+          "current-result",
+        );
+        yield* sql`UPDATE jones_workstreams_keys SET state = 'decrypt_only' WHERE key_id = 'test-local'`;
+        yield* sql`INSERT INTO jones_workstreams_keys VALUES ('rotated',${scope.registry_instance_id},'local','active',${now})`;
+        const newKey = yield* db.sealJson(context, "current-result");
+        const replacement =
+          change === "same-key" ? sameKey : change === "wrong-aad" ? wrongAad : newKey;
+        const result = yield* store
+          .withPrepared(
+            [{ kind: "advance", id: input.operation_id, resultBodySupplied: false }],
+            (prepared) =>
+              Effect.gen(function* () {
+                yield* sql`UPDATE jones_workstreams_operations SET state='reconciling',result_envelope=${replacement} WHERE operation_id=${input.operation_id}`;
+                return yield* prepared.advance(
+                  input.operation_id,
+                  "reconciling",
+                  "in_progress",
+                  now,
+                  null,
+                );
+              }),
+          )
+          .pipe(Effect.result);
+        if (change === "same-key") {
+          expect(result).toMatchObject({
+            _tag: "Success",
+            success: { state: "in_progress", result_body: "current-result" },
+          });
+          const [row] = yield* sql<{
+            result_envelope: string;
+          }>`SELECT result_envelope FROM jones_workstreams_operations WHERE operation_id=${input.operation_id}`;
+          expect(row!.result_envelope).toBe(replacement);
+        } else {
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: {
+              reason: change === "wrong-aad" ? "authentication_failed" : "active_key_missing",
+            },
+          });
+          expect(
+            (yield* sql<{
+              state: string;
+            }>`SELECT state FROM jones_workstreams_operations WHERE operation_id=${input.operation_id}`)[0]
+              ?.state,
+          ).toBe("reconciling");
+        }
+      }).pipe(Effect.provide(testLayer({ keys: values })));
+    }),
+);
+
+it.effect(
+  "writer sees current CAS, destination and concurrent same-ID replay rather than advisory rows",
+  () =>
+    Effect.gen(function* () {
+      yield* seedMember;
+      const store = yield* OperationStore.OperationStore,
+        sql = yield* SqlClient.SqlClient;
+      const input = homeInput();
+      yield* store.withPrepared(
+        [{ kind: "accept", id: input.operation_id, destination: input.destination }],
+        (prepared) =>
+          Effect.gen(function* () {
+            const concurrent = yield* store.accept(input);
+            expect(yield* prepared.accept(input)).toEqual(concurrent);
+            expect(
+              yield* prepared.accept({ ...input, request_body: "changed" }).pipe(Effect.result),
+            ).toMatchObject({
+              _tag: "Failure",
+              failure: { reason: "idempotency_conflict" },
+            });
+          }),
+      );
+      yield* store.withPrepared(
+        [{ kind: "advance", id: input.operation_id, resultBodySupplied: false }],
+        (prepared) =>
+          Effect.gen(function* () {
+            yield* store.advance(input.operation_id, "accepted", "dispatching", now, null);
+            expect(
+              yield* prepared
+                .advance(input.operation_id, "accepted", "dispatching", now, null)
+                .pipe(Effect.result),
+            ).toMatchObject({
+              _tag: "Failure",
+              failure: { reason: "conflict" },
+            });
+          }),
+      );
+      const fresh = homeInput("binding-drift");
+      expect(
+        yield* store
+          .withPrepared(
+            [{ kind: "accept", id: fresh.operation_id, destination: fresh.destination }],
+            (prepared) =>
+              Effect.gen(function* () {
+                yield* sql`UPDATE jones_workstreams_binding_state SET state='fenced',binding_version=2 WHERE singleton=1`;
+                return yield* prepared.accept(fresh);
+              }),
+          )
+          .pipe(Effect.result),
+      ).toMatchObject({ _tag: "Failure", failure: { reason: "binding_mismatch" } });
+      expect(yield* store.read(fresh.operation_id)).toBeNull();
+    }).pipe(Effect.provide(testLayer())),
+);
+
+it.effect(
+  "all open HOME and MEMBER rows are decoded before filtering, including a new unprepared row",
+  () =>
+    Effect.gen(function* () {
+      const values = secrets();
+      values.set(
+        "workstreams-content-key-rotated",
+        Uint8Array.from(keyBytes, (n) => n ^ 0xff),
+      );
+      yield* Effect.gen(function* () {
+        yield* seedMember;
+        const store = yield* OperationStore.OperationStore,
+          sql = yield* SqlClient.SqlClient;
+        yield* store.accept(homeInput());
+        const input = memberInput();
+        expect(
+          yield* store
+            .withPrepared([{ kind: "open" }], (prepared) =>
+              Effect.gen(function* () {
+                yield* sql`UPDATE jones_workstreams_keys SET state='decrypt_only' WHERE key_id='test-local'`;
+                yield* sql`INSERT INTO jones_workstreams_keys VALUES ('rotated',${scope.registry_instance_id},'local','active',${now})`;
+                yield* store.acceptMemberForward(input);
+                return yield* prepared.open();
+              }),
+            )
+            .pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure", failure: { _tag: "KeyUnavailable" } });
+        values.delete("workstreams-content-key-rotated");
+        expect(yield* store.open().pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "missing" },
+        });
+        values.set(
+          "workstreams-content-key-rotated",
+          Uint8Array.from(keyBytes, (n) => n ^ 0xff),
+        );
+        values.delete("workstreams-content-key-test-local");
+        expect(yield* store.openMemberForwards().pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+          failure: { reason: "missing" },
+        });
+        expect(
+          yield* sql`SELECT operation_id FROM jones_workstreams_operations WHERE state='accepted'`,
+        ).toHaveLength(2);
+      }).pipe(Effect.provide(testLayer({ keys: values })));
+    }),
+);
+
+it.effect(
+  "an inner advance is visible before outer rollback and keeps original ciphertext and lock",
+  () =>
+    Effect.gen(function* () {
+      yield* seedMember;
+      const store = yield* OperationStore.OperationStore,
+        sql = yield* SqlClient.SqlClient;
+      const input = memberInput();
+      yield* store.acceptMemberForward(input);
+      expect(
+        yield* store
+          .withPrepared(
+            [{ kind: "advance", id: input.operation_id, resultBodySupplied: true }],
+            (prepared) =>
+              sql.withTransaction(
+                Effect.gen(function* () {
+                  const changed = yield* prepared.advanceMemberForward(
+                    input.operation_id,
+                    "accepted",
+                    "dispatching",
+                    now,
+                    null,
+                    "temporary-result",
+                  );
+                  expect(changed.state).toBe("dispatching");
+                  expect((yield* prepared.readMemberForward(input.operation_id))?.result_body).toBe(
+                    "temporary-result",
+                  );
+                  expect(
+                    (yield* sql<{
+                      state: string;
+                    }>`SELECT state FROM jones_workstreams_operations WHERE operation_id=${input.operation_id}`)[0]
+                      ?.state,
+                  ).toBe("dispatching");
+                  return yield* new NativeSql.StoreError({ reason: "conflict" });
+                }),
+              ),
+          )
+          .pipe(Effect.result),
+      ).toMatchObject({ _tag: "Failure", failure: { reason: "conflict" } });
+      expect((yield* store.readMemberForward(input.operation_id))?.state).toBe("accepted");
+      expect((yield* store.readMemberForward(input.operation_id))?.result_body).toBeNull();
+      expect(
+        yield* store
+          .acceptMemberForward(memberInput("overlapping-after-rollback"))
+          .pipe(Effect.result),
+      ).toMatchObject({ _tag: "Failure" });
+    }).pipe(Effect.provide(testLayer())),
+);
+
+it.effect(
+  "a row inserted after preparation with an unprepared request key is never mapped to absence or replay",
+  () =>
+    Effect.gen(function* () {
+      const values = secrets();
+      values.set(
+        "workstreams-content-key-rotated",
+        Uint8Array.from(keyBytes, (n) => n ^ 0xff),
+      );
+      yield* Effect.gen(function* () {
+        yield* seedMember;
+        const store = yield* OperationStore.OperationStore,
+          sql = yield* SqlClient.SqlClient;
+        const input = homeInput();
+        expect(
+          yield* store
+            .withPrepared(
+              [{ kind: "accept", id: input.operation_id, destination: input.destination }],
+              (prepared) =>
+                Effect.gen(function* () {
+                  yield* sql`UPDATE jones_workstreams_keys SET state='decrypt_only' WHERE key_id='test-local'`;
+                  yield* sql`INSERT INTO jones_workstreams_keys VALUES ('rotated',${scope.registry_instance_id},'local','active',${now})`;
+                  yield* store.accept(input);
+                  expect(
+                    yield* prepared.read(input.operation_id).pipe(Effect.result),
+                  ).toMatchObject({
+                    _tag: "Failure",
+                    failure: { _tag: "KeyUnavailable" },
+                  });
+                  return yield* prepared.accept(input);
+                }),
+            )
+            .pipe(Effect.result),
+        ).toMatchObject({ _tag: "Failure", failure: { _tag: "KeyUnavailable" } });
+        expect((yield* store.read(input.operation_id))?.state).toBe("accepted");
+      }).pipe(Effect.provide(testLayer({ keys: values })));
+    }),
+);
+
+it.effect(
+  "prepared active selection uses actual local SQL rather than arbitrary injected provider code",
+  () =>
+    Effect.gen(function* () {
+      yield* seedMember;
+      const keys = yield* Keys.WorkstreamsKeyProvider;
+      let arbitraryCalls = 0;
+      const injected = Layer.succeed(Keys.WorkstreamsKeyProvider, {
+        ...keys,
+        activeKeyId: () =>
+          Effect.sync(() => {
+            arbitraryCalls++;
+            return "not-the-active-id";
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const store = yield* OperationStore.OperationStore;
+        expect((yield* store.accept(homeInput())).state).toBe("accepted");
+        expect(arbitraryCalls).toBe(0);
+      }).pipe(Effect.provide(Layer.fresh(OperationStore.layer).pipe(Layer.provide(injected))));
+    }).pipe(Effect.provide(testLayer())),
+);
+
+it.effect(
+  "reopen retains historical HOME codecs, MEMBER evidence, separate retired request/result keys and accepted locks",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const parent = NodePath.resolve(
+          process.env.NW_WRITE_FOUNDATION_EVIDENCE_DIR ??
+            "node_modules/.cache/nw-write-foundation/store-files",
+        );
+        yield* Effect.promise(() => NodeFSP.mkdir(parent, { recursive: true }));
+        const directory = yield* Effect.promise(() =>
+          NodeFSP.mkdtemp(NodePath.join(parent, "operation-keys-reopen-")),
+        );
+        const filename = NodePath.join(directory, "native.sqlite");
+        const values = secrets(),
+          resultBytes = Uint8Array.from(keyBytes, (n) => n ^ 0xff);
+        values.set("workstreams-content-key-result-key", resultBytes);
+        const home = homeInput(),
+          member = memberInput();
+        let requestCiphertext = "",
+          resultCiphertext = "";
+        yield* Effect.gen(function* () {
+          yield* seedMember;
+          const store = yield* OperationStore.OperationStore,
+            sql = yield* SqlClient.SqlClient,
+            db = yield* NativeSql.NativeSql;
+          yield* store.accept(home);
+          yield* store.acceptMemberForward(member);
+          const [row] = yield* sql<
+            Record<string, string | number | null>
+          >`SELECT * FROM jones_workstreams_operations WHERE operation_id=${home.operation_id}`;
+          requestCiphertext = String(row!.request_envelope);
+          const historicalId = "historical-unversioned-home";
+          const historical = yield* db.sealJson(
+            {
+              ...scope,
+              key_scope: "local",
+              purpose: "operation_request",
+              record_id: historicalId,
+              revision: 1,
+            },
+            { request_body: home.request_body, principal_id: binding.principal_id },
+          );
+          yield* sql`INSERT INTO jones_workstreams_operations ${sql.insert({ ...row!, operation_id: historicalId, request_envelope: historical })}`;
+          yield* sql`UPDATE jones_workstreams_keys SET state='retired' WHERE key_id='test-local'`;
+          yield* sql`INSERT INTO jones_workstreams_keys VALUES ('result-key',${scope.registry_instance_id},'local','active',${now})`;
+          yield* store.advance(
+            home.operation_id,
+            "accepted",
+            "dispatching",
+            now,
+            null,
+            "exact historical result",
+          );
+          resultCiphertext = (yield* sql<{
+            result_envelope: string;
+          }>`SELECT result_envelope FROM jones_workstreams_operations WHERE operation_id=${home.operation_id}`)[0]!
+            .result_envelope;
+          yield* sql`UPDATE jones_workstreams_keys SET state='retired' WHERE key_id='result-key'`;
+        }).pipe(Effect.provide(testLayer({ filename, keys: values })));
+        yield* Effect.gen(function* () {
+          const store = yield* OperationStore.OperationStore,
+            sql = yield* SqlClient.SqlClient;
+          const current = yield* store.read(home.operation_id);
+          expect(current).toMatchObject({
+            ...home,
+            state: "dispatching",
+            result_body: "exact historical result",
+            request_sha256: digest(home.request_body),
+          });
+          expect((yield* store.read("historical-unversioned-home"))?.request_body).toBe(
+            home.request_body,
+          );
+          expect((yield* store.readMemberForward(member.operation_id))?.member_forward).toEqual(
+            member.member_forward,
+          );
+          expect((yield* store.open()).map((o) => o.operation_id).sort()).toEqual(
+            ["historical-unversioned-home", home.operation_id].sort(),
+          );
+          expect(yield* store.accept(home)).toEqual(current);
+          const [row] = yield* sql<{
+            request_envelope: string;
+            result_envelope: string;
+          }>`SELECT request_envelope,result_envelope FROM jones_workstreams_operations WHERE operation_id=${home.operation_id}`;
+          expect(row).toEqual({
+            request_envelope: requestCiphertext,
+            result_envelope: resultCiphertext,
+          });
+          values.delete("workstreams-content-key-result-key");
+          expect(yield* store.read(home.operation_id).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+            failure: { reason: "missing" },
+          });
+          expect(
+            yield* store
+              .advance(home.operation_id, "dispatching", "reconciling", now, null)
+              .pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure", failure: { reason: "missing" } });
+          values.set("workstreams-content-key-result-key", resultBytes);
+          values.delete("workstreams-content-key-test-local");
+          expect(
+            yield* store.readMemberForward(member.operation_id).pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure", failure: { reason: "missing" } });
+          expect(
+            (yield* sql<{
+              state: string;
+            }>`SELECT state FROM jones_workstreams_operations WHERE operation_id=${member.operation_id}`)[0]
+              ?.state,
+          ).toBe("accepted");
+          values.set("workstreams-content-key-test-local", keyBytes);
+          expect(
+            yield* store
+              .acceptMemberForward(memberInput("member-lock-after-missing"))
+              .pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure" });
+          expect((yield* store.readMemberForward(member.operation_id))?.state).toBe("accepted");
+        }).pipe(Effect.provide(testLayer({ filename, keys: values })));
+      }),
+    ),
+);

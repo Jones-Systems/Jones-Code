@@ -5,6 +5,10 @@ import { WorkstreamOperationOrigin } from "@t3tools/contracts/jones/workstreamOp
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Envelope from "../crypto/envelope.ts";
+import * as Keys from "../crypto/keyProvider.ts";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
@@ -154,35 +158,45 @@ const decodeOriginJson = Schema.decodeUnknownEffect(
 const decodeChildren = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
+export type OperationKeyNeed =
+  | { readonly kind: "read"; readonly id: string }
+  | { readonly kind: "open" }
+  | { readonly kind: "accept"; readonly id: string; readonly destination: NativeSql.OwnerScope }
+  | { readonly kind: "advance"; readonly id: string; readonly resultBodySupplied: boolean };
+// A structural interface avoids a circular mapped type in Context.Service's base expression.
+export interface PreparedOperations {
+  readonly readMemberForward: (id: string) => Effect.Effect<MemberForwardOperation | null, Failure>;
+  readonly acceptMemberForward: (
+    operation: MemberForwardInput,
+  ) => Effect.Effect<MemberForwardOperation, Failure>;
+  readonly openMemberForwards: () => Effect.Effect<readonly MemberForwardOperation[], Failure>;
+  readonly advanceMemberForward: (
+    id: string,
+    expectedState: OperationState,
+    nextState: OperationState,
+    updatedAt: string,
+    nextPollAt: string | null,
+    resultBody?: string,
+  ) => Effect.Effect<MemberForwardOperation, Failure>;
+  readonly read: (id: string) => Effect.Effect<Operation | null, Failure>;
+  readonly accept: (operation: OperationInput) => Effect.Effect<Operation, Failure>;
+  readonly advance: (
+    id: string,
+    expectedState: OperationState,
+    nextState: OperationState,
+    updatedAt: string,
+    nextPollAt: string | null,
+    resultBody?: string,
+  ) => Effect.Effect<Operation, Failure>;
+  readonly open: () => Effect.Effect<readonly Operation[], Failure>;
+}
 export class OperationStore extends Context.Service<
   OperationStore,
-  {
-    readonly readMemberForward: (
-      id: string,
-    ) => Effect.Effect<MemberForwardOperation | null, Failure>;
-    readonly acceptMemberForward: (
-      operation: MemberForwardInput,
-    ) => Effect.Effect<MemberForwardOperation, Failure>;
-    readonly openMemberForwards: () => Effect.Effect<readonly MemberForwardOperation[], Failure>;
-    readonly advanceMemberForward: (
-      id: string,
-      expectedState: OperationState,
-      nextState: OperationState,
-      updatedAt: string,
-      nextPollAt: string | null,
-      resultBody?: string,
-    ) => Effect.Effect<MemberForwardOperation, Failure>;
-    readonly read: (id: string) => Effect.Effect<Operation | null, Failure>;
-    readonly accept: (operation: OperationInput) => Effect.Effect<Operation, Failure>;
-    readonly advance: (
-      id: string,
-      expectedState: OperationState,
-      nextState: OperationState,
-      updatedAt: string,
-      nextPollAt: string | null,
-      resultBody?: string,
-    ) => Effect.Effect<Operation, Failure>;
-    readonly open: () => Effect.Effect<readonly Operation[], Failure>;
+  PreparedOperations & {
+    readonly withPrepared: <A, E, R>(
+      needs: readonly OperationKeyNeed[],
+      use: (operations: PreparedOperations) => Effect.Effect<A, E, R>,
+    ) => Effect.Effect<A, E | Failure, R>;
   }
 >()("t3/jones/workstreams/native/store/operationStore") {}
 interface Row {
@@ -205,7 +219,7 @@ interface Row {
   readonly request_envelope: string;
   readonly result_envelope: string | null;
 }
-const make = Effect.gen(function* () {
+const makePrepared = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const db = yield* NativeSql.NativeSql;
   const bindings = yield* BindingStore.BindingStore;
@@ -550,7 +564,7 @@ const make = Effect.gen(function* () {
           : Effect.fail(new NativeSql.StoreError({ reason: "not_found" })),
       ),
     );
-  return OperationStore.of({
+  return {
     read,
     accept,
     advance,
@@ -563,6 +577,155 @@ const make = Effect.gen(function* () {
     advanceMemberForward,
     openMemberForwards: () =>
       openAny().pipe(Effect.map((operations) => operations.filter(isMemberForward))),
+  } satisfies PreparedOperations;
+});
+const decodeKeyId = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.Struct({ key_id: Schema.String })),
+);
+const scopeId = (scope: NativeSql.OwnerScope) =>
+  JSON.stringify([scope.registry_instance_id, scope.owner_id, "local"]);
+const make = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const keys = yield* Keys.WorkstreamsKeyProvider;
+  const activeLocal = Effect.fn("OperationStore.activeLocal")(function* (
+    scope: NativeSql.OwnerScope,
+  ) {
+    const rows = yield* sql<{ key_id: string }>`SELECT key_id FROM jones_workstreams_keys
+      WHERE registry_instance_id = ${scope.registry_instance_id} AND scope = 'local' AND state = 'active'`.pipe(
+      Effect.mapError(() => new Keys.KeyUnavailable({ reason: "store_unavailable" })),
+    );
+    if (rows.length !== 1 || !rows[0]?.key_id)
+      return yield* new Keys.KeyUnavailable({ reason: "active_key_missing" });
+    return rows[0].key_id;
+  });
+  const withPrepared: OperationStore["Service"]["withPrepared"] = Effect.fn(
+    "OperationStore.withPrepared",
+  )(function* <A, E, R>(
+    needs: readonly OperationKeyNeed[],
+    use: (operations: PreparedOperations) => Effect.Effect<A, E, R>,
+  ) {
+    // This is the actual client's transaction context, including callers outside NativeSql.
+    if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+      return yield* new NativeSql.StoreError({ reason: "fenced" });
+
+    const rows: Row[] = [];
+    const scopes = new Map<string, NativeSql.OwnerScope>();
+    for (const need of needs) {
+      const selected =
+        need.kind === "open"
+          ? yield* sql<Row>`SELECT * FROM jones_workstreams_operations WHERE state IN ('accepted','dispatching','in_progress','reconciling') ORDER BY accepted_at,operation_id COLLATE BINARY`
+          : yield* sql<Row>`SELECT * FROM jones_workstreams_operations WHERE operation_id = ${need.id}`;
+      rows.push(...selected);
+      if (need.kind === "accept") scopes.set(scopeId(need.destination), need.destination);
+      if (need.kind === "advance" && need.resultBodySupplied) {
+        for (const row of selected) {
+          const scope = {
+            registry_instance_id: row.dest_registry_instance_id,
+            owner_id: row.dest_owner_id,
+          };
+          scopes.set(scopeId(scope), scope);
+        }
+      }
+    }
+    // Selection statements have released their connections before any secret acquisition.
+    const ids = new Set<string>();
+    for (const row of rows) {
+      for (const text of [row.request_envelope, row.result_envelope]) {
+        if (text === null) continue;
+        const envelope = yield* decodeKeyId(text).pipe(
+          Effect.mapError(() => new Envelope.EnvelopeError({ reason: "malformed" })),
+        );
+        ids.add(envelope.key_id);
+      }
+    }
+    const active = new Map<string, Result.Result<string, Keys.KeyUnavailable>>();
+    for (const [id, scope] of scopes) {
+      const result = yield* activeLocal(scope).pipe(Effect.result);
+      active.set(id, result);
+      if (Result.isSuccess(result)) ids.add(result.success);
+    }
+    const material = new Map<string, Result.Result<Uint8Array, Keys.KeyUnavailable>>();
+    for (const id of ids) {
+      material.set(
+        id,
+        yield* keys.get(id).pipe(
+          Effect.map((bytes) => Uint8Array.from(bytes)),
+          Effect.result,
+        ),
+      );
+    }
+    let live = true;
+    const unavailable = () => new Keys.KeyUnavailable({ reason: "active_key_missing" });
+    const cached = Layer.succeed(Keys.WorkstreamsKeyProvider, {
+      activeKeyId: Effect.fn("OperationStore.preparedActiveKeyId")(function* (
+        scope: Keys.KeyScope,
+      ) {
+        if (!live || scope.key_scope !== "local") return yield* unavailable();
+        const expected = active.get(scopeId(scope));
+        if (!expected) return yield* unavailable();
+        if (Result.isFailure(expected)) return yield* expected.failure;
+        const current = yield* activeLocal(scope);
+        if (current !== expected.success) return yield* unavailable();
+        return current;
+      }),
+      get: (id) =>
+        Effect.suspend(() => {
+          const result = live ? material.get(id) : undefined;
+          if (!result) return Effect.fail(unavailable());
+          return Result.isFailure(result)
+            ? Effect.fail(result.failure)
+            : Effect.succeed(Uint8Array.from(result.success));
+        }),
+      indexKey: () => Effect.fail(unavailable()),
+    });
+    const graph = Layer.fresh(BindingStore.layer).pipe(
+      Layer.provideMerge(
+        Layer.fresh(NativeSql.layer).pipe(
+          Layer.provideMerge(Layer.fresh(Envelope.layer).pipe(Layer.provide(cached))),
+        ),
+      ),
+      Layer.provideMerge(Layer.succeed(SqlClient.SqlClient, sql)),
+    );
+    // Reconstruct captured consumers once per invocation; the callback owns their lifetime.
+    return yield* makePrepared.pipe(
+      Effect.flatMap(use),
+      Effect.provide(graph),
+      Effect.ensuring(
+        Effect.sync(() => {
+          live = false;
+          material.clear();
+          active.clear();
+        }),
+      ),
+    );
+  });
+  return OperationStore.of({
+    withPrepared,
+    read: (id) => withPrepared([{ kind: "read", id }], (ops) => ops.read(id)),
+    readMemberForward: (id) =>
+      withPrepared([{ kind: "read", id }], (ops) => ops.readMemberForward(id)),
+    open: () => withPrepared([{ kind: "open" }], (ops) => ops.open()),
+    openMemberForwards: () => withPrepared([{ kind: "open" }], (ops) => ops.openMemberForwards()),
+    accept: (input) =>
+      withPrepared(
+        [{ kind: "accept", id: input.operation_id, destination: input.destination }],
+        (ops) => ops.accept(input),
+      ),
+    acceptMemberForward: (input) =>
+      withPrepared(
+        [{ kind: "accept", id: input.operation_id, destination: input.destination }],
+        (ops) => ops.acceptMemberForward(input),
+      ),
+    advance: (...args) =>
+      withPrepared(
+        [{ kind: "advance", id: args[0], resultBodySupplied: args[5] !== undefined }],
+        (ops) => ops.advance(...args),
+      ),
+    advanceMemberForward: (...args) =>
+      withPrepared(
+        [{ kind: "advance", id: args[0], resultBodySupplied: args[5] !== undefined }],
+        (ops) => ops.advanceMemberForward(...args),
+      ),
   });
 });
 /** @public Canonical service layer; open operations have no expiry and never retarget. */

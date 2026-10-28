@@ -50,12 +50,24 @@ const secretLayer = (values: Map<string, Uint8Array>) =>
       remove: () => Effect.die("Unexpected key removal"),
     }),
   );
-export const testLayer = (options: { filename?: string; keys?: Map<string, Uint8Array> } = {}) => {
+export const testLayer = (
+  options: {
+    filename?: string;
+    keys?: Map<string, Uint8Array>;
+    secrets?: ServerSecretStore.ServerSecretStore["Service"];
+  } = {},
+) => {
   const db = NativeSql.layer.pipe(
     Layer.provideMerge(
       Envelope.layer.pipe(
         Layer.provideMerge(
-          KeyProvider.layer.pipe(Layer.provideMerge(secretLayer(options.keys ?? secrets()))),
+          KeyProvider.layer.pipe(
+            Layer.provideMerge(
+              options.secrets
+                ? Layer.succeed(ServerSecretStore.ServerSecretStore, options.secrets)
+                : secretLayer(options.keys ?? secrets()),
+            ),
+          ),
         ),
       ),
     ),
