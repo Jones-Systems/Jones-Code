@@ -4084,6 +4084,25 @@
       ]
     },
     {
+      "id": "jones-launcher-handoff",
+      "tests": [
+        "apps/server/src/jones/cloud/launcherPointer.test.ts",
+        "apps/server/src/jones/cloud/launcherHandoffProcesses.test.ts",
+        "apps/server/src/jones/updates/launcherHandoff.test.ts",
+        "apps/server/src/jones/updates/UpdateAdmissionFence.test.ts",
+        "apps/server/src/jones/updates/hostWork.test.ts",
+        "apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts",
+        "apps/server/src/jones/cloud/qualifiedLauncher.test.ts",
+        "apps/server/src/jones/cloud/launcherCapability.test.ts",
+        "apps/server/src/serviceLauncher.test.ts",
+        "apps/server/src/cloud/serviceLauncherClient.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/cloud/launcherPointer.test.ts apps/server/src/jones/cloud/launcherHandoffProcesses.test.ts apps/server/src/jones/updates/launcherHandoff.test.ts apps/server/src/jones/updates/UpdateAdmissionFence.test.ts apps/server/src/jones/updates/hostWork.test.ts apps/server/src/jones/cloud/qualifiedCommitAttempt.test.ts apps/server/src/jones/cloud/qualifiedLauncher.test.ts apps/server/src/jones/cloud/launcherCapability.test.ts apps/server/src/serviceLauncher.test.ts apps/server/src/cloud/serviceLauncherClient.test.ts apps/server/src/serverRuntimeStartup.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
       "id": "jones-provider-writer-retirement",
       "tests": [
         "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
