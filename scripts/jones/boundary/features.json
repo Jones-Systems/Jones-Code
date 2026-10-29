@@ -2603,6 +2603,15 @@
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
       "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes."
+    },
+    {
+      "id": "packaged-recovery-harness",
+      "tests": [
+        "scripts/jones/updates/packaged-recovery-fixture.node-test.mjs",
+        "scripts/jones/updates/packaged-recovery-launcher.node-test.mjs",
+        "scripts/jones/updates/packaged-recovery-preload.node-test.mjs"
+      ],
+      "scope": "Digest-bound isolated packaged-recovery fixtures, one-shot external preload crash points and captured-launcher settlement restart controls. Source-generated SEA checks qualify the harness only; real Jones artifacts, the complete RH-F1 matrix and installed continuity remain separate acceptance."
     }
   ]
 }
