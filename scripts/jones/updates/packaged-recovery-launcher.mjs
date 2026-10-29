@@ -763,7 +763,13 @@ export function preparePackagedInstallObservation(input) {
   return preparePackagedObservation({ ...input, installing: true });
 }
 
-async function preparePackagedObservation({ prepared, requestIds, signal, installing }) {
+async function preparePackagedObservation({
+  prepared,
+  requestIds,
+  installOperationId,
+  signal,
+  installing,
+}) {
   signal?.throwIfAborted();
   prepared = structuredClone(prepared);
   requestIds = Array.isArray(requestIds) ? [...requestIds] : requestIds;
@@ -792,6 +798,17 @@ async function preparePackagedObservation({ prepared, requestIds, signal, instal
         ? "idle staged Install fixture required"
         : "isolated reconciliation fixture and two distinct request IDs required",
     );
+  if (
+    installOperationId !== undefined &&
+    (installing ||
+      typeof installOperationId !== "string" ||
+      !uuid.test(installOperationId) ||
+      installOperationId === operationId ||
+      requestIds.includes(installOperationId) ||
+      prepared.kind !== "legacy-failed" ||
+      prepared.state.update?.status !== "failed")
+  )
+    fail("distinct fixed unsettled Install operation ID and legacy failed fixture required");
   const allocation = await NodeFSP.lstat(root);
   if (
     !allocation.isDirectory() ||
@@ -856,6 +873,16 @@ async function preparePackagedObservation({ prepared, requestIds, signal, instal
     identity: launcher.identity,
     operationId,
     ...(installing ? { binding: operationBinding(prepared.staged) } : { requestIds: ids }),
+    ...(installOperationId === undefined
+      ? {}
+      : {
+          installOperationId,
+          installBinding: {
+            targetVersion: prepared.staged.receipt.version,
+            dbPath: prepared.staged.binding.dbPath,
+            stagedHandle: prepared.staged.stagedHandle,
+          },
+        }),
     childExecutable,
     childIdentity,
     childVersion,
@@ -935,7 +962,13 @@ async function preparePackagedObservation({ prepared, requestIds, signal, instal
     }
     NodeAssert.deepEqual(
       (await NodeFSP.readdir(directory)).sort(),
-      ["ready.json", ...ids.flatMap((id) => [id + ".request.json", id + ".reply.json"])].sort(),
+      [
+        "ready.json",
+        ...ids.flatMap((id) => [id + ".request.json", id + ".reply.json"]),
+        ...(installOperationId === undefined
+          ? []
+          : [installOperationId + ".request.json", installOperationId + ".refused.json"]),
+      ].sort(),
       "incomplete or unexpected observer records",
     );
     NodeAssert.deepEqual((await boundedRecord(NodePath.join(directory, "ready.json"))).value, {
@@ -943,8 +976,36 @@ async function preparePackagedObservation({ prepared, requestIds, signal, instal
       fixtureId,
       operationId,
       requestIds: ids,
+      ...(installOperationId === undefined ? {} : { installOperationId }),
       launcherPid,
     });
+    let admissionRefusal;
+    if (installOperationId !== undefined) {
+      const common = {
+        protocol: 1,
+        fixtureId,
+        operationId,
+        requestId: installOperationId,
+        launcherPid,
+        childPid,
+      };
+      NodeAssert.deepEqual(
+        (await boundedRecord(NodePath.join(directory, installOperationId + ".request.json"))).value,
+        { ...common, phase: "install-request" },
+      );
+      admissionRefusal = (
+        await boundedRecord(NodePath.join(directory, installOperationId + ".refused.json"))
+      ).value;
+      NodeAssert.deepEqual(admissionRefusal, {
+        ...common,
+        phase: "install-refused",
+        reason:
+          "failed-operation-unsettled: " +
+          operationId +
+          " requires reconciliation before another Install; the current server remains active.",
+        sendCallbackCompleted: true,
+      });
+    }
     const replies = [];
     for (const [index, requestId] of ids.entries()) {
       const common = { protocol: 1, fixtureId, operationId, requestId, launcherPid, childPid };
@@ -970,6 +1031,7 @@ async function preparePackagedObservation({ prepared, requestIds, signal, instal
       schema: "jones.packaged-reconciliation-observation/v1",
       operationId,
       replies,
+      ...(admissionRefusal === undefined ? {} : { admissionRefusal }),
       packagedRecoveryMatrixPassed: false,
       processIdentityScope: "captured-child-handle-only",
       externalDescendantSettlementRequired: true,
@@ -995,6 +1057,7 @@ async function preparePackagedObservation({ prepared, requestIds, signal, instal
 export async function exercisePackagedLegacyReconciliation({
   prepared,
   requestIds,
+  installOperationId,
   token,
   signal,
 }) {
@@ -1016,6 +1079,7 @@ export async function exercisePackagedLegacyReconciliation({
   const observation = await preparePackagedReconciliationObservation({
     prepared,
     requestIds,
+    installOperationId,
     signal,
   });
   const ids = [...requestIds];
@@ -1125,6 +1189,7 @@ export async function exercisePackagedLegacyReconciliation({
     return state;
   };
   let client;
+  let installReceipt;
   const inspect = async () => {
     if (failure || stage === "complete" || !child) return;
     if (stage === "runtime") {
@@ -1161,6 +1226,49 @@ export async function exercisePackagedLegacyReconciliation({
       const watcher = NodeFS.watch(directory, { persistent: false }, () => enqueue());
       watches.push(watcher);
       watcher.once("error", failControl);
+      if (installOperationId === undefined) {
+        stage = "first-reply";
+        await client.reconcile(ids[0]);
+      } else {
+        stage = "install-refusal";
+        installReceipt = await client.installOperation(installOperationId);
+      }
+    }
+    if (stage === "install-refusal") {
+      let refusal;
+      try {
+        refusal = (
+          await boundedRecord(
+            NodePath.join(root, "ipc-observations", installOperationId + ".refused.json"),
+          )
+        ).value;
+      } catch (cause) {
+        if (cause.code === "ENOENT") return;
+        throw cause;
+      }
+      NodeAssert.deepEqual(refusal, {
+        protocol: 1,
+        fixtureId: prepared.fixtureId,
+        operationId,
+        requestId: installOperationId,
+        phase: "install-refused",
+        ...captured,
+        reason:
+          "failed-operation-unsettled: " +
+          operationId +
+          " requires reconciliation before another Install; the current server remains active.",
+        sendCallbackCompleted: true,
+      });
+      await intact();
+      await NodeAssert.rejects(NodeFSP.lstat(settlementPath), { code: "ENOENT" });
+      if (originalOutcome)
+        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
+      else await NodeAssert.rejects(NodeFSP.lstat(outcomePath), { code: "ENOENT" });
+      await NodeAssert.rejects(
+        NodeFSP.lstat(NodePath.join(operationDirectory, installOperationId + ".json")),
+        { code: "ENOENT" },
+      );
+      await client.state();
       stage = "first-reply";
       await client.reconcile(ids[0]);
     }
@@ -1301,6 +1409,7 @@ export async function exercisePackagedLegacyReconciliation({
       archivedOutcome: prepared.archivedOutcome,
       command,
       observation: pair,
+      ...(installReceipt === undefined ? {} : { installReceipt }),
       state,
       settlement: firstSettlement?.value ?? null,
       ...(refusalReason === undefined
