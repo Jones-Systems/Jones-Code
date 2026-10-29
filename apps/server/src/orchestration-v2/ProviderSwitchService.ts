@@ -1,4 +1,7 @@
-import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
+import {
+  executionProjection,
+  executionWorkspace,
+} from "../jones/threadConfiguration/executionSelection.ts";
 import {
   ModelSelection,
   OrchestrationV2ThreadProjection,
@@ -228,10 +231,10 @@ export const layer: Layer.Layer<
                           modelSelection: current,
                           runtimeMode: projection.thread.runtimeMode,
                           interactionMode: projection.thread.interactionMode,
-                          workspace:
-                            currentSession?.cwd ??
-                            projection.thread.worktreePath ??
-                            "<unresolved-workspace>",
+                          workspace: executionWorkspace(
+                            projection.thread.worktreePath,
+                            currentSession,
+                          ),
                           capabilities:
                             negotiatedCapabilities ?? currentInstance.value.capabilities,
                         },
