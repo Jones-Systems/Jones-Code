@@ -29,7 +29,12 @@ async function removeQualifiedScratch(path: string): Promise<void> {
   } catch (cause) {
     // Only scratch remains here; cleanup must not replace a primary error or invalidate
     // a payload and receipt already published by atomic rename.
-    console.warn("Qualified runtime scratch cleanup failed; outcome preserved.", { path, cause });
+    process.stderr.write(
+      `Qualified runtime scratch cleanup failed; outcome preserved. ${JSON.stringify({
+        path,
+        cause: cause instanceof Error ? cause.message.slice(0, 512) : "Unknown cleanup failure",
+      })}\n`,
+    );
   }
 }
 

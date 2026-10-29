@@ -1040,99 +1040,101 @@ it("rejects every changed immutable cache field and stale incoming binding", asy
   });
 });
 
-for (const operation of ["stage", "adopt"] as const) {
-  for (const outcome of ["validated", "failed", "cancelled", "copy-failed"] as const) {
-    if (operation === "adopt" && outcome === "cancelled") continue;
-    it(`preserves ${operation} ${outcome} outcome when owned scratch removal fails`, async () => {
-      await fixture(async (base, _payload, artifact) => {
-        const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
-        const primary = new Error(`${operation} ${outcome}`);
-        const cleanup = Object.assign(new Error("owned scratch removal refused"), {
-          code: "ENOTEMPTY",
-        });
-        const controller = new AbortController();
-        const versions = NodePath.join(base, "runtime", "versions");
-        const prefix = operation === "stage" ? ".jones-stage-" : ".jones-adopt-";
-        const prior = NodePath.join(versions, `${prefix}earlier`);
-        await NodeFSP.mkdir(prior);
-        await NodeFSP.writeFile(NodePath.join(prior, "keep"), "earlier invocation");
-        const removed: string[] = [];
-        const rm = NodeFS.promises.rm.bind(NodeFS.promises);
-        const removal = vi
-          .spyOn(NodeFS.promises, "rm")
-          .mockImplementation(async (path, options) => {
-            if (typeof path === "string" && NodePath.basename(path).startsWith(prefix)) {
-              removed.push(path);
-              throw cleanup;
-            }
-            return rm(path, options);
-          });
-        const cp = NodeFS.promises.cp.bind(NodeFS.promises);
-        const copy = vi.spyOn(NodeFS.promises, "cp").mockImplementation(async (...args) => {
-          if (outcome === "copy-failed") throw primary;
-          return cp(...args);
-        });
-        NodeModule.syncBuiltinESMExports();
-        const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
-        try {
-          const validate = async () => {
-            if (outcome === "failed") throw primary;
-            if (outcome === "cancelled") controller.abort(primary);
-          };
-          const pending =
-            operation === "stage"
-              ? stageQualifiedRuntime({
-                  artifact,
-                  binding,
-                  host: fixtureHost,
-                  validate,
-                  options: { signal: controller.signal },
-                })
-              : enrollQualifiedRuntime({ artifact, baseDir: base, host: fixtureHost, validate });
-          if (outcome === "validated") {
-            const result = await pending;
-            const expected = "receipt" in result ? result.receipt : result;
-            assert.deepEqual(
-              await readQualifiedRuntimeReceipt(base, artifact.version, fixtureHost),
-              expected,
-            );
-            if ("stagedHandle" in result) {
-              assert.deepEqual(
-                await verifyStagedQualifiedRuntime(
-                  base,
-                  baseline,
-                  result.stagedHandle,
-                  fixtureHost,
-                ),
-                result,
-              );
-            }
-          } else {
-            await NodeAssert.rejects(pending, (cause) => cause === primary);
-            await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(versions, artifact.version)), {
-              code: "ENOENT",
-            });
-          }
-          assert.lengthOf(removed, 1);
-          assert.equal(NodePath.dirname(removed[0]!), versions);
-          assert.notEqual(removed[0], prior);
-          assert.equal(
-            await NodeFSP.readFile(NodePath.join(prior, "keep"), "utf8"),
-            "earlier invocation",
-          );
-          assert.isTrue(
-            warning.mock.calls.some(
-              (call) => call[1]?.path === removed[0] && call[1]?.cause === cleanup,
-            ),
-          );
-          assert.isTrue((await NodeFSP.lstat(removed[0]!)).isDirectory());
-        } finally {
-          removal.mockRestore();
-          copy.mockRestore();
-          NodeModule.syncBuiltinESMExports();
-          warning.mockRestore();
-        }
+it.each([
+  ["stage", "validated"],
+  ["stage", "failed"],
+  ["stage", "cancelled"],
+  ["stage", "copy-failed"],
+  ["adopt", "validated"],
+  ["adopt", "failed"],
+  ["adopt", "copy-failed"],
+] as const)(
+  "preserves %s %s outcome when owned scratch removal fails",
+  async (operation, outcome) => {
+    await fixture(async (base, _payload, artifact) => {
+      const binding = await currentQualifiedRuntimeBinding(base, baseline, fixtureHost);
+      const primary = new Error(`${operation} ${outcome}`);
+      const cleanup = Object.assign(new Error("owned scratch removal refused"), {
+        code: "ENOTEMPTY",
       });
+      const controller = new AbortController();
+      const versions = NodePath.join(base, "runtime", "versions");
+      const prefix = operation === "stage" ? ".jones-stage-" : ".jones-adopt-";
+      const prior = NodePath.join(versions, `${prefix}earlier`);
+      await NodeFSP.mkdir(prior);
+      await NodeFSP.writeFile(NodePath.join(prior, "keep"), "earlier invocation");
+      const removed: string[] = [];
+      const rm = NodeFS.promises.rm.bind(NodeFS.promises);
+      const removal = vi.spyOn(NodeFS.promises, "rm").mockImplementation(async (path, options) => {
+        if (typeof path === "string" && NodePath.basename(path).startsWith(prefix)) {
+          removed.push(path);
+          throw cleanup;
+        }
+        return rm(path, options);
+      });
+      const cp = NodeFS.promises.cp.bind(NodeFS.promises);
+      const copy = vi.spyOn(NodeFS.promises, "cp").mockImplementation(async (...args) => {
+        if (outcome === "copy-failed") throw primary;
+        return cp(...args);
+      });
+      const warning = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+      NodeModule.syncBuiltinESMExports();
+      try {
+        const validate = async () => {
+          if (outcome === "failed") throw primary;
+          if (outcome === "cancelled") controller.abort(primary);
+        };
+        const pending =
+          operation === "stage"
+            ? stageQualifiedRuntime({
+                artifact,
+                binding,
+                host: fixtureHost,
+                validate,
+                options: { signal: controller.signal },
+              })
+            : enrollQualifiedRuntime({ artifact, baseDir: base, host: fixtureHost, validate });
+        if (outcome === "validated") {
+          const result = await pending;
+          const expected = "receipt" in result ? result.receipt : result;
+          assert.deepEqual(
+            await readQualifiedRuntimeReceipt(base, artifact.version, fixtureHost),
+            expected,
+          );
+          if ("stagedHandle" in result) {
+            assert.deepEqual(
+              await verifyStagedQualifiedRuntime(base, baseline, result.stagedHandle, fixtureHost),
+              result,
+            );
+          }
+        } else {
+          await NodeAssert.rejects(pending, (cause) => cause === primary);
+          await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(versions, artifact.version)), {
+            code: "ENOENT",
+          });
+        }
+        assert.lengthOf(removed, 1);
+        assert.equal(NodePath.dirname(removed[0]!), versions);
+        assert.notEqual(removed[0], prior);
+        assert.equal(
+          await NodeFSP.readFile(NodePath.join(prior, "keep"), "utf8"),
+          "earlier invocation",
+        );
+        assert.isTrue(
+          warning.mock.calls.some(
+            (call) =>
+              typeof call[0] === "string" &&
+              call[0].includes("Qualified runtime scratch cleanup failed; outcome preserved.") &&
+              call[0].includes(JSON.stringify({ path: removed[0], cause: cleanup.message })),
+          ),
+        );
+        assert.isTrue((await NodeFSP.lstat(removed[0]!)).isDirectory());
+      } finally {
+        removal.mockRestore();
+        copy.mockRestore();
+        warning.mockRestore();
+        NodeModule.syncBuiltinESMExports();
+      }
     });
-  }
-}
+  },
+);
