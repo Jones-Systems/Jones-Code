@@ -1,4 +1,9 @@
-import * as MemberEnrollments from "./runtime/memberEnrollment.ts";
+import * as MemberPreparation from "./runtime/memberPreparation.ts";
+import * as MemberSourcePorts from "./runtime/memberSourcePorts.ts";
+import * as MemberForwarder from "./forwarding/forwarder.ts";
+import * as MemberHomeClient from "./forwarding/homeClient.ts";
+import * as MemberTransport from "./forwarding/memberTransport.ts";
+import * as MemberOperations from "./operations/memberOperations.ts";
 import * as MemberLocalCallers from "./runtime/memberRecordedCaller.ts";
 import * as MemberAdmission from "./runtime/memberAdmission.ts";
 import * as MemberHomeReadRouting from "./forwarding/memberHomeReadRouting.ts";
@@ -206,25 +211,11 @@ export const nativeHomeRuntimeLayer = Layer.unwrap(
   ),
 );
 
-/** Source-owned local association and caller evidence; no home registry or grant is acquired. */
+/** Requires the genuine invocation-scoped MemberEnrollments supplied by MemberPreparation. */
 const nativeMemberEvidenceLayer = Layer.unwrap(
   Effect.sync(() =>
-    MemberAdmission.layer.pipe(
-      Layer.provideMerge(MemberLocalCallers.layer),
-      Layer.provideMerge(
-        MemberEnrollments.layer.pipe(
-          Layer.provide(
-            Layer.effect(
-              SourceEnrollments.SourceIssuer,
-              Effect.map(SourceAuthority.NativeStoreAuthority, (authority) => ({
-                authority,
-                build: readNativeProviderBuild,
-              })),
-            ),
-          ),
-          Layer.provideMerge(nativePersistenceLayer),
-        ),
-      ),
+    MemberSourcePorts.requestAdmissionLayer.pipe(
+      Layer.provide(MemberAdmission.layer.pipe(Layer.provide(MemberLocalCallers.layer))),
     ),
   ),
 );
@@ -261,4 +252,27 @@ export const nativeMemberOwnPlacementRequestLayer = Layer.unwrap(
   Effect.sync(() =>
     MemberReadAdmission.ownPlacementLayer.pipe(Layer.provideMerge(nativeMemberFixedClientLayer)),
   ),
+);
+
+/** @public Build per authenticated member request; the application owns the shared forward locks. */
+export const nativeMemberForwardRequestLayer = Layer.unwrap(
+  Effect.sync(() => {
+    const ports = MemberSourcePorts.layer.pipe(
+      Layer.provideMerge(nativeMemberReadRequestLayer),
+      Layer.provideMerge(nativeMemberEvidenceLayer),
+      Layer.provide(sourceProviderLayer),
+    );
+    const forwarder = MemberForwarder.layer.pipe(
+      Layer.provideMerge(MemberHomeClient.layer),
+      Layer.provideMerge(ports),
+    );
+    return Layer.mergeAll(MemberOperations.layer, MemberTransport.layer).pipe(
+      Layer.provideMerge(forwarder),
+    );
+  }),
+);
+
+/** @public Selection and request owners enter this capability before consuming member services. */
+export const nativeMemberPreparationLayer = MemberPreparation.layer.pipe(
+  Layer.provideMerge(nativePersistenceLayer),
 );

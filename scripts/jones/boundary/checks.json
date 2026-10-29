@@ -9,10 +9,12 @@
         "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts"
+        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "commands": [
-        "vp test run apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

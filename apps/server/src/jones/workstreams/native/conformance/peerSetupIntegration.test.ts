@@ -76,6 +76,9 @@ import * as Startup from "../runtime/startup.ts";
 import { selectMember } from "../runtime/memberStartup.ts";
 import * as Admission from "../runtime/memberAdmission.ts";
 import * as Callers from "../runtime/memberRecordedCaller.ts";
+import * as MemberPreparation from "../runtime/memberPreparation.ts";
+import * as CurrentFixture from "../runtime/currentAuthority.testkit.ts";
+import { RegistryError } from "../registry/session.ts";
 
 vi.mock("../../../../../package.json", () => ({
   default: {
@@ -265,7 +268,7 @@ const fixture = Effect.gen(function* () {
             client: { deviceType: "bot" },
           });
       if (!existing) originalIssues.set(env, issued);
-      return { f, env, context, owner, issued, life };
+      return { f, env, context, owner, issued, life, live };
     });
   const h = yield* makeEnvironment("home:test"),
     m = yield* makeEnvironment("member:test");
@@ -1075,4 +1078,100 @@ it.effect(
       expect((yield* f.request).bytes).toBe(original.bytes);
       expect(f.calls.filter((c) => c.tool === "jones_workstreams_home_bind")).toHaveLength(1);
     }).pipe(Effect.scoped),
+);
+
+it.effect(
+  "prepares genuine accepted M on the selected application SQL and expires every escaped member service",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        const prepared = yield* f.prepare();
+        expect((yield* f.follow(prepared, "apply")).state).toBe("bound");
+        const retained = yield* f.request;
+        const b = F.decodeWorkstreamsHomeBindBody(retained.request.intent.bind_request_body);
+        const authority = yield* CurrentFixture.prepare({
+          home: f.M.f.baseDir,
+          database: f.M.f.dbPath,
+          context: {
+            source_instance_id: b.source.authority.environment_id,
+            authority_namespace: b.source.authority.authority_namespace,
+            store_generation: b.source.authority.store_generation,
+          },
+        }).pipe(Effect.provide(f.M.all));
+        const sql = Context.get(f.M.all, SqlClient.SqlClient);
+        const input = {
+          text: JSON.stringify({
+            mode: "native-member",
+            registry: { ...home, canonical_origin: "https://native.workstreams.invalid" },
+            bootstrap: {
+              home: f.M.f.baseDir,
+              database: f.M.f.dbPath,
+              key_provider: "server-secret-store",
+              source_session_id: b.source.enrollment.session.session_id,
+            },
+          }),
+          legacyActivationPresent: false,
+          home: f.M.f.baseDir,
+          database: f.M.f.dbPath,
+          environmentId: f.M.env,
+        };
+        yield* Effect.gen(function* () {
+          const preparation = yield* MemberPreparation.MemberPreparation;
+          const before = yield* sql`SELECT total_changes() AS changes`;
+          const escaped = yield* preparation.withPrepared((members) =>
+            Effect.gen(function* () {
+              const proof = yield* members.getValidatedBySessionId(
+                b.source.enrollment.session.session_id,
+              );
+              expect(Option.isSome(proof)).toBe(true);
+              expect(
+                yield* selectMember(input).pipe(
+                  Effect.provideService(Members.MemberEnrollments, members),
+                ),
+              ).toMatchObject({
+                mode: "native-member",
+                problem: null,
+                sourceSessionId: b.source.enrollment.session.session_id,
+              });
+              expect(
+                yield* members
+                  .materialize(b.source.enrollment.session.session_id)
+                  .pipe(Effect.flip),
+              ).toMatchObject({ code: "owner_unqualified" });
+              return () => members.getValidatedBySessionId(b.source.enrollment.session.session_id);
+            }),
+          );
+          expect(yield* sql`SELECT total_changes() AS changes`).toEqual(before);
+          expect(yield* escaped().pipe(Effect.flip)).toMatchObject({ code: "owner_unqualified" });
+          expect(
+            yield* sql
+              .withTransaction(
+                preparation.withPrepared(() => Effect.die("Unexpected ambient callback")),
+              )
+              .pipe(Effect.flip),
+          ).toMatchObject({ code: "preparation_in_transaction" });
+          const otherSql = Context.get(f.H.all, SqlClient.SqlClient);
+          expect(
+            yield* preparation
+              .withPrepared(() => Effect.die("Unexpected substituted SQL"))
+              .pipe(Effect.provideService(SqlClient.SqlClient, otherSql), Effect.flip),
+          ).toMatchObject({ code: "authority_fenced" });
+          const sentinel = new RegistryError({ code: "invalid_request" });
+          expect(
+            yield* preparation.withPrepared(() => Effect.fail(sentinel)).pipe(Effect.flip),
+          ).toBe(sentinel);
+          expect(yield* sql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
+          expect(yield* sql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
+        }).pipe(
+          Effect.provide(
+            MemberPreparation.layer.pipe(
+              Layer.provide(authority),
+              Layer.provide(Layer.succeed(Authority.NativeStoreAuthority, f.M.live)),
+              Layer.provideMerge(Layer.succeedContext(f.M.all)),
+            ),
+          ),
+        );
+      }),
+    ),
 );

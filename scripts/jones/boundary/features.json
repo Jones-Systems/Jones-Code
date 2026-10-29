@@ -10,7 +10,9 @@
         "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/memberHomeReadRouting.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/memberSourceReadAdmission.test.ts",
-        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts"
+        "apps/server/src/jones/workstreams/native/read/memberReadAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "scope": "Original local caller/run/credential ceilings, validated source-owned member association, request-local coherent home read permission and exact-own-thread private placement proof. Separate retained source lookup is lookup-only. Selected member startup, authenticated recovery storage and actual endpoint mounts remain integration gates. No home registry/grants or general forwarding exceptions are created on members."
     },
