@@ -274,7 +274,8 @@ function milestoneController() {
       if (closed) return;
       if (item.milestone.kind === "complete")
         terminalBefore(item.milestone.outcome, "sampler wait");
-      if (!acceptSampler(item)) throw new Error(`Expected sampler wait, saw ${item.milestone.kind}`);
+      if (!acceptSampler(item))
+        throw new Error(`Expected sampler wait, saw ${item.milestone.kind}`);
       if (samplerAborted) throw new Error("Sampler aborted before retirement receipt");
     }
     return sampler;
@@ -338,10 +339,7 @@ function milestoneController() {
         [],
       );
     },
-    run: async (
-      driver: Promise<DriverOutcome>,
-      held: (milestone: GenerationMilestone) => void,
-    ) => {
+    run: async (driver: Promise<DriverOutcome>, held: (milestone: GenerationMilestone) => void) => {
       let releasedStableWaits = 0;
       while (true) {
         const item = await next(driver);
@@ -427,7 +425,12 @@ function fixture(holdReplacement = false, startupFailure?: Error) {
     boundary(async () => {
       if (!observe || !captured)
         throw new Error("Qualification must supply observation and capture callbacks");
-      expect(_command).toEqual({ file: "/synthetic/node", args: [], env: {}, build: bootstrap.build });
+      expect(_command).toEqual({
+        file: "/synthetic/node",
+        args: [],
+        env: {},
+        build: bootstrap.build,
+      });
       expect(bootstrap.authorityId).toBe("qualification");
       const pid = 10_000 + children.length;
       starts++;
@@ -667,31 +670,37 @@ it.each([
     const { children, journalOrder, clock } = owned;
     const signal = new AbortController();
     external.readerWindowIncomplete = case_.readerLimit;
-    const driver = observed(runNativeQualification({
-      count: case_.count,
-      directory: "/synthetic/qualification",
-      command: { file: "/synthetic/node", args: [], env: {}, build: "a".repeat(64) },
-      windows: case_.windows,
-      acquisitionsPerWindow: case_.acquisitions,
-      filesPerKey: case_.files,
-      signal: signal.signal,
-      sample: clock.sample,
-    }));
-    const controlling = observed(clock.run(driver, (milestone) => {
-      expect(children).toHaveLength(case_.count + 1);
-      expect(
-        children.flatMap((child) => child.requests).filter((request) => request.operation === "open"),
-      ).toHaveLength(4 * case_.count + 1);
-      expect(children.at(-1)!.pid).toBe(milestone.pid);
-      expect(children.at(-1)!.bootstrap).toEqual(milestone.bootstrap);
-      expect(children.at(-1)!.exited).toBe(false);
-      expect(children.reduce((total, child) => total + child.requests.length, 0)).toBe(
-        owned.heldRequests,
-      );
-      expect(clock.pendingMilestones).not.toContain("retire");
-      expect(clock.pendingMilestones).not.toContain("journal");
-      expect(clock.pendingMilestones).not.toContain("startup");
-    }));
+    const driver = observed(
+      runNativeQualification({
+        count: case_.count,
+        directory: "/synthetic/qualification",
+        command: { file: "/synthetic/node", args: [], env: {}, build: "a".repeat(64) },
+        windows: case_.windows,
+        acquisitionsPerWindow: case_.acquisitions,
+        filesPerKey: case_.files,
+        signal: signal.signal,
+        sample: clock.sample,
+      }),
+    );
+    const controlling = observed(
+      clock.run(driver, (milestone) => {
+        expect(children).toHaveLength(case_.count + 1);
+        expect(
+          children
+            .flatMap((child) => child.requests)
+            .filter((request) => request.operation === "open"),
+        ).toHaveLength(4 * case_.count + 1);
+        expect(children.at(-1)!.pid).toBe(milestone.pid);
+        expect(children.at(-1)!.bootstrap).toEqual(milestone.bootstrap);
+        expect(children.at(-1)!.exited).toBe(false);
+        expect(children.reduce((total, child) => total + child.requests.length, 0)).toBe(
+          owned.heldRequests,
+        );
+        expect(clock.pendingMilestones).not.toContain("retire");
+        expect(clock.pendingMilestones).not.toContain("journal");
+        expect(clock.pendingMilestones).not.toContain("startup");
+      }),
+    );
     cleanupFixture = () => owned.finish(driver, controlling, signal);
     let failure: { cause: unknown } | undefined;
     try {
@@ -737,7 +746,9 @@ it.each([
         true,
       );
       // Files are exercised by the real fixture driver; external writes alone are mocked.
-      expect(external.writes).toBe(8 * case_.count * (case_.files + 1) + 6 * (12 * case_.count + 1));
+      expect(external.writes).toBe(
+        8 * case_.count * (case_.files + 1) + 6 * (12 * case_.count + 1),
+      );
       expect(report.steadyRotations).toBe(0);
       expect(report.generationEvidence.length).toBeGreaterThan(case_.count);
       expect(
@@ -798,16 +809,20 @@ it("observes startup rejection before the replacement-pool milestone without adv
   const startupFailure = new Error("controlled startup rejection");
   const owned = fixture(true, startupFailure);
   const signal = new AbortController();
-  const driver = observed(runNativeQualification({
-    count: 2,
-    directory: "/synthetic/startup-rejection",
-    command: { file: "/synthetic/node", args: [], env: {}, build: "a".repeat(64) },
-    signal: signal.signal,
-    sample: owned.clock.sample,
-  }));
-  const controlling = observed(owned.clock.run(driver, () => {
-    throw new Error("Startup rejection must precede replacement-pool entry");
-  }));
+  const driver = observed(
+    runNativeQualification({
+      count: 2,
+      directory: "/synthetic/startup-rejection",
+      command: { file: "/synthetic/node", args: [], env: {}, build: "a".repeat(64) },
+      signal: signal.signal,
+      sample: owned.clock.sample,
+    }),
+  );
+  const controlling = observed(
+    owned.clock.run(driver, () => {
+      throw new Error("Startup rejection must precede replacement-pool entry");
+    }),
+  );
   cleanupFixture = () => owned.finish(driver, controlling, signal);
   let failure: { cause: unknown } | undefined;
   try {
