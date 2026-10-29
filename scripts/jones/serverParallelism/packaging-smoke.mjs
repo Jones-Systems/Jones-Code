@@ -4,7 +4,10 @@ import { mkdtemp, realpath, mkdir, writeFile, readFile, rm, readdir } from "node
 import { tmpdir } from "node:os";
 import { join, isAbsolute } from "node:path";
 import { ComputeSupervisor } from "../../../apps/server/src/jones/serverCompute/supervisor.ts";
-import { ProcessSlot, withComputeChildOperations } from "../../../apps/server/src/jones/serverCompute/processSlot.ts";
+import {
+  ProcessSlot,
+  withComputeChildOperations,
+} from "../../../apps/server/src/jones/serverCompute/processSlot.ts";
 import { GenerationJournal } from "../../../apps/server/src/jones/serverCompute/journal.ts";
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
 import { qualificationDecision } from "./qualificationResult.mjs";
@@ -37,8 +40,11 @@ const supervisor = new ComputeSupervisor({
   journal,
   start: async (boot, register, onExit) => {
     const child = await ProcessSlot.start(command, boot, register, onExit);
-    runtimeGenerations.push({ pid: child.pid, bootstrap: child.bootstrap,
-      runtimeMetadata: child.runtimeMetadata ?? null });
+    runtimeGenerations.push({
+      pid: child.pid,
+      bootstrap: child.bootstrap,
+      runtimeMetadata: child.runtimeMetadata ?? null,
+    });
     started++;
     return withComputeChildOperations(child, {
       request: (request, signal, timing) => {
@@ -109,7 +115,8 @@ try {
       cancellation: cancelled && cancellationDispatched,
       capturedExit: retired === started,
       journalRetirement: remaining.length === 0,
-      runtimeMetadataRetained: runtimeGenerations.length >= count &&
+      runtimeMetadataRetained:
+        runtimeGenerations.length >= count &&
         runtimeGenerations.every((generation) => generation.runtimeMetadata !== null),
     },
     started,

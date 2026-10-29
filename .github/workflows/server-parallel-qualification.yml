@@ -84,6 +84,7 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
 
       - name: Admit job storage and create owned scratch
+        id: scratch
         run: |
           set -euo pipefail
           TMPDIR="$RUNNER_TEMP/jones-server-parallel-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -91,7 +92,11 @@ jobs:
           export TMPDIR JONES_SP_REPORTS
           printf '%s\n' "TMPDIR=$TMPDIR" "JONES_SP_REPORTS=$JONES_SP_REPORTS" >> "$GITHUB_ENV"
           mkdir -m 700 -p "$TMPDIR" "$JONES_SP_REPORTS"
+          test ! -L "$TMPDIR"
+          test ! -L "$JONES_SP_REPORTS"
           printf '%s\n' "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" > "$TMPDIR/OWNER"
+          printf '%s\n' "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" > "$JONES_SP_REPORTS/OWNER"
+          printf 'scratch=%s\nreports=%s\nowned=true\n' "$TMPDIR" "$JONES_SP_REPORTS" >> "$GITHUB_OUTPUT"
           node scripts/jones/serverParallelism/storage.mjs "$GITHUB_WORKSPACE" > "$JONES_SP_REPORTS/storage-install.json"
           node scripts/jones/serverParallelism/storage.mjs "$TMPDIR" > "$JONES_SP_REPORTS/storage-scratch.json"
           git rev-parse HEAD > "$JONES_SP_REPORTS/SOURCE_COMMIT"
@@ -173,18 +178,18 @@ jobs:
           node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed"
 
       - name: Preserve original outcomes, manifests, build identities and missing evidence
-        if: always()
+        if: ${{ always() && steps.scratch.outputs.owned == 'true' && steps.scratch.outputs.reports != '' && steps.scratch.outputs.scratch != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: server-parallel-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ env.JONES_SP_REPORTS }}/
-            ${{ env.TMPDIR }}/**/journal/**
+            ${{ steps.scratch.outputs.reports }}/
+            ${{ steps.scratch.outputs.scratch }}/**/journal/**
           if-no-files-found: error
           retention-days: 7
 
       - name: Remove only this job's scratch and finished build outputs
-        if: always()
+        if: ${{ always() && steps.scratch.outputs.owned == 'true' }}
         env:
           EXPECTED_OWNER: ${{ github.run_id }}.${{ github.run_attempt }}
           JOB_CANCELLED: ${{ job.status == 'cancelled' }}

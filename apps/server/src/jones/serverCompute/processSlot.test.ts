@@ -450,24 +450,46 @@ it("binds frozen metadata to captured bootstrap, preserves it through wrappers a
   const records: ComputeChild[] = [];
   for (const generation of [1, 2]) {
     const boot = { ...bootstrap, slotGeneration: generation, nonce: `metadata-${generation}` };
-    const child = await ProcessSlot.start({ file: process.execPath,
-      args: ["--max-old-space-size=256", "-e", readinessSource()], env: {}, build: boot.build },
-      boot, async () => {}, () => {}, undefined, (starting) => {
+    const child = await ProcessSlot.start(
+      {
+        file: process.execPath,
+        args: ["--max-old-space-size=256", "-e", readinessSource()],
+        env: {},
+        build: boot.build,
+      },
+      boot,
+      async () => {},
+      () => {},
+      undefined,
+      (starting) => {
         expect(starting.runtimeMetadata).toBeUndefined();
-        records.push(withComputeChildOperations(starting, {
-          request: (...args) => starting.request(...args),
-          retire: () => starting.retire(),
-        }));
-      });
-    let requests = 0, retirements = 0;
+        records.push(
+          withComputeChildOperations(starting, {
+            request: (...args) => starting.request(...args),
+            retire: () => starting.retire(),
+          }),
+        );
+      },
+    );
+    let requests = 0,
+      retirements = 0;
     const wrapper = withComputeChildOperations(child, {
-      request: async () => { requests++; return { items: [], final: { type: "done" } }; },
-      retire: async () => { retirements++; await child.retire(); },
+      request: async () => {
+        requests++;
+        return { items: [], final: { type: "done" } };
+      },
+      retire: async () => {
+        retirements++;
+        await child.retire();
+      },
     });
     const metadata = child.runtimeMetadata;
     try {
-      expect(metadata).toEqual({ heapLimitBytes: 300 * 1024 * 1024, availableParallelism: 5,
-        parallelismSource: "node:os.availableParallelism" });
+      expect(metadata).toEqual({
+        heapLimitBytes: 300 * 1024 * 1024,
+        availableParallelism: 5,
+        parallelismSource: "node:os.availableParallelism",
+      });
       expect(Object.isFrozen(metadata)).toBe(true);
       expect(records.at(-1)?.runtimeMetadata).toBe(metadata);
       expect(Reflect.set(metadata!, "availableParallelism", 999)).toBe(false);
@@ -477,8 +499,19 @@ it("binds frozen metadata to captured bootstrap, preserves it through wrappers a
       boot.nonce = "mutated-caller";
       expect(child.bootstrap.nonce).toBe(`metadata-${generation}`);
       expect(Object.isFrozen(child.bootstrap)).toBe(true);
-      await wrapper.request({ ...child.bootstrap, requestId: 1, operation: "list", input: null,
-        token: { authorityId: boot.authorityId, slotId: 0, slotGeneration: generation, keyId: "key", incarnation: 1 } });
+      await wrapper.request({
+        ...child.bootstrap,
+        requestId: 1,
+        operation: "list",
+        input: null,
+        token: {
+          authorityId: boot.authorityId,
+          slotId: 0,
+          slotGeneration: generation,
+          keyId: "key",
+          incarnation: 1,
+        },
+      });
       expect(requests).toBe(1);
     } finally {
       await wrapper.retire();
@@ -493,19 +526,41 @@ it("binds frozen metadata to captured bootstrap, preserves it through wrappers a
 });
 
 it.each([
-  { availableParallelism: 0 }, { availableParallelism: -1 }, { availableParallelism: 1.5 },
-  { availableParallelism: "5" }, { availableParallelism: null },
+  { availableParallelism: 0 },
+  { availableParallelism: -1 },
+  { availableParallelism: 1.5 },
+  { availableParallelism: "5" },
+  { availableParallelism: null },
   { availableParallelism: Number.MAX_SAFE_INTEGER + 1 },
-  { heapLimit: 256 * 1024 * 1024 - 1 }, { heapLimit: 400 * 1024 * 1024 + 1 },
-  { heapLimit: "314572800" }, { heapLimit: null }, { extra: 1 },
-  { omit: "availableParallelism" }, { omit: "heapLimit" },
-  { nonce: "wrong-nonce" }, { slotGeneration: 2 }, { build: "b".repeat(64) },
+  { heapLimit: 256 * 1024 * 1024 - 1 },
+  { heapLimit: 400 * 1024 * 1024 + 1 },
+  { heapLimit: "314572800" },
+  { heapLimit: null },
+  { extra: 1 },
+  { omit: "availableParallelism" },
+  { omit: "heapLimit" },
+  { nonce: "wrong-nonce" },
+  { slotGeneration: 2 },
+  { build: "b".repeat(64) },
 ])("rejects malformed or misbound nativeReady before retaining metadata: %j", async (patch) => {
   const capture: { child?: ComputeChild } = {};
-  await expect(ProcessSlot.start({ file: process.execPath,
-    args: ["--max-old-space-size=256", "-e", readinessSource(patch)], env: {}, build: bootstrap.build },
-    bootstrap, async () => {}, () => {}, undefined, (child) => { capture.child = child; }))
-    .rejects.toMatchObject({ reason: "unavailable" });
+  await expect(
+    ProcessSlot.start(
+      {
+        file: process.execPath,
+        args: ["--max-old-space-size=256", "-e", readinessSource(patch)],
+        env: {},
+        build: bootstrap.build,
+      },
+      bootstrap,
+      async () => {},
+      () => {},
+      undefined,
+      (child) => {
+        capture.child = child;
+      },
+    ),
+  ).rejects.toMatchObject({ reason: "unavailable" });
   expect(capture.child).toBeDefined();
   expect(capture.child?.runtimeMetadata).toBeUndefined();
   expect(() => process.kill(capture.child!.pid, 0)).toThrow();
@@ -514,13 +569,27 @@ it.each([
 it("rejects duplicate nativeReady without replacing the first immutable record", async () => {
   const capture: { child?: ComputeChild } = {};
   let notify!: () => void;
-  const failed = new Promise<void>((resolve) => { notify = resolve; });
+  const failed = new Promise<void>((resolve) => {
+    notify = resolve;
+  });
   let child: ProcessSlot | undefined;
   try {
     try {
-      child = await ProcessSlot.start({ file: process.execPath,
-        args: ["--max-old-space-size=256", "-e", readinessSource({}, true)], env: {}, build: bootstrap.build },
-        bootstrap, async () => {}, notify, undefined, (starting) => { capture.child = starting; });
+      child = await ProcessSlot.start(
+        {
+          file: process.execPath,
+          args: ["--max-old-space-size=256", "-e", readinessSource({}, true)],
+          env: {},
+          build: bootstrap.build,
+        },
+        bootstrap,
+        async () => {},
+        notify,
+        undefined,
+        (starting) => {
+          capture.child = starting;
+        },
+      );
     } catch (cause) {
       expect(cause).toMatchObject({ reason: "unavailable" });
     }

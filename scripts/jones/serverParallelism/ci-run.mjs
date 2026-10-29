@@ -24,12 +24,14 @@ const env = {
   JONES_SP_SOURCE_TREE: sourceTree,
   T3CODE_DEV_SEED: "0",
 };
-const blockReceipts = [], blockExpected = [];
+const blockReceipts = [],
+  blockExpected = [];
 const results = [],
   reports = [],
   predicates = {};
 let active,
-  cancelled = false;
+  cancelled = false,
+  admissionClosed = false;
 const stop = () => {
   cancelled = true;
   const child = active;
@@ -45,7 +47,7 @@ const deadline = setTimeout(stop, 55 * 60_000);
 process.once("SIGINT", stop);
 process.once("SIGTERM", stop);
 async function run(name, file, args, extra = {}, timeoutMs = 12 * 60_000) {
-  if (cancelled) {
+  if (cancelled || admissionClosed) {
     results.push({ name, outcome: "unknown", reason: "cancelled-before-start" });
     return false;
   }
@@ -93,6 +95,17 @@ async function run(name, file, args, extra = {}, timeoutMs = 12 * 60_000) {
   return result.code === 0;
 }
 const node = (name, args, extra) => run(name, process.execPath, args, extra);
+function requireRetirement(proved, name) {
+  if (proved === true) return;
+  admissionClosed = true;
+  predicates.nativeRetirement = "unknown";
+  results.push({
+    name: "remaining-native-cohorts",
+    outcome: "unknown",
+    reason: `${name}: retirement-unproved; zero further native admissions`,
+  });
+  throw new Error(`${name}: retirement unproved; retaining scratch and closing admission`);
+}
 async function report(name, path) {
   try {
     const value = JSON.parse(await readFile(path, "utf8"));
@@ -108,6 +121,11 @@ async function report(name, path) {
     reports.push({ name, path, outcome: "unknown", error: String(cause) });
     predicates[name] = "unknown";
   }
+  if (/^(baseline|native|packaging)-/.test(name))
+    requireRetirement(
+      reports.at(-1)?.cleanupProved === true && results.at(-1)?.capturedExit === true,
+      name,
+    );
 }
 try {
   await writeFile(
@@ -248,7 +266,12 @@ try {
         manifestExists = false;
       }
       if (!manifestExists) {
-        blockExpected.push({ os: process.platform === "linux" ? "linux-x64" : "macos-arm64", form, profile, build: "unknown" });
+        blockExpected.push({
+          os: process.platform === "linux" ? "linux-x64" : "macos-arm64",
+          form,
+          profile,
+          build: "unknown",
+        });
         predicates[`fault-${form}-${profile}`] = "unknown";
         results.push({
           name: `fault-${form}-${profile}`,
@@ -258,20 +281,39 @@ try {
         continue;
       }
       const blockOutput = join(output, `native-block-${form}-${profile}`);
-      const binding = { os: process.platform === "linux" ? "linux-x64" : "macos-arm64", form, profile,
-        build: JSON.parse(await readFile(path, "utf8")).build };
+      const binding = {
+        os: process.platform === "linux" ? "linux-x64" : "macos-arm64",
+        form,
+        profile,
+        build: JSON.parse(await readFile(path, "utf8")).build,
+      };
       blockExpected.push(binding);
-      await run(`native-block-${form}-${profile}`, process.execPath, [
-        "scripts/jones/serverParallelism/native-block-run.mjs", path, blockOutput, profile,
-      ], {}, 240_000);
+      await run(
+        `native-block-${form}-${profile}`,
+        process.execPath,
+        ["scripts/jones/serverParallelism/native-block-run.mjs", path, blockOutput, profile],
+        {},
+        240_000,
+      );
+      const blockCommand = results.at(-1);
+      let retirementProved = false;
       try {
         const receipt = JSON.parse(await readFile(join(blockOutput, "receipt.json"), "utf8"));
-        const { verifyNativeBlockArtifacts } = await import("./native-block-verify.mjs");
+        const { verifyNativeBlockArtifacts, verifyNativeBlockRetirement } =
+          await import("./native-block-verify.mjs");
         receipt.artifactsVerified = await verifyNativeBlockArtifacts(receipt, binding, blockOutput);
         blockReceipts.push(receipt);
+        retirementProved =
+          blockCommand?.capturedExit === true &&
+          (await verifyNativeBlockRetirement(receipt, blockOutput, profile === "vps" ? 3 : 2));
       } catch (cause) {
-        reports.push({ name: `native-block-${form}-${profile}`, outcome: "unknown", error: String(cause) });
+        reports.push({
+          name: `native-block-${form}-${profile}`,
+          outcome: "unknown",
+          error: String(cause),
+        });
       }
+      requireRetirement(retirementProved, `native-block-${form}-${profile}`);
       const fault = await run(
         `fault-${form}-${profile}`,
         "vp",
@@ -282,33 +324,46 @@ try {
           "--maxWorkers=1",
           "--testNamePattern=guardian|private dispatch",
         ],
-        { JONES_SP_COMMAND_MANIFEST: path, JONES_SP_PROFILE: profile,
-          JONES_SP_NATIVE_BLOCK_RECEIPT: join(blockOutput, "receipt.json") },
+        {
+          JONES_SP_COMMAND_MANIFEST: path,
+          JONES_SP_PROFILE: profile,
+          JONES_SP_NATIVE_BLOCK_RECEIPT: join(blockOutput, "receipt.json"),
+        },
       );
       predicates[`fault-${form}-${profile}`] = fault;
+      requireRetirement(
+        fault === true && results.at(-1)?.capturedExit === true,
+        `fault-${form}-${profile}`,
+      );
     }
   }
   const snapshot = join(output, "snapshot.json");
   await node("snapshot", ["scripts/jones/serverParallelism/snapshot.mjs", snapshot, "2000"]);
   await report("snapshot", snapshot);
   const nativeBlock = nativeBlockMatrixDecision(blockReceipts, blockExpected);
-  predicates.nativeExecutionAtParentLoss = blockExpected.length === 8 ? nativeBlock.predicate : "unknown";
-  await writeFile(join(output, "native-block-matrix.json"), JSON.stringify(nativeBlock, null, 2) + "\n");
+  predicates.nativeExecutionAtParentLoss =
+    blockExpected.length === 8 ? nativeBlock.predicate : "unknown";
+  await writeFile(
+    join(output, "native-block-matrix.json"),
+    JSON.stringify(nativeBlock, null, 2) + "\n",
+  );
 } finally {
   clearTimeout(deadline);
   process.removeListener("SIGINT", stop);
   process.removeListener("SIGTERM", stop);
   predicates.commandsSucceeded =
     results.length > 0 && results.every((result) => result.outcome === "passed");
-  predicates.completed = !cancelled;
+  predicates.completed = !cancelled && !admissionClosed;
   predicates.nativeExecutionAtParentLoss ??= "unknown";
   const lifecycleReports = reports.filter((value) =>
     /^(baseline|native|packaging)-/.test(value.name),
   );
   predicates.cleanupProved =
+    !admissionClosed &&
     lifecycleReports.length === 18 &&
     lifecycleReports.every((value) => value.cleanupProved === true) &&
-    blockReceipts.length === 8 && blockReceipts.every((value) => value.cleanupProved === true) &&
+    blockReceipts.length === 8 &&
+    blockReceipts.every((value) => value.cleanupProved === true) &&
     results.filter((value) => value.name.startsWith("fault-")).length === 8 &&
     results
       .filter((value) => value.name.startsWith("fault-"))

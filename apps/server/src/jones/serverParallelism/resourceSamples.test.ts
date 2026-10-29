@@ -50,7 +50,13 @@ Call graph:
   ]);
   expect(result.raw).toBe(raw);
   expect(parseMacNativeThreads(124, raw).status).toBe("unavailable");
-  expect(parseMacNativeThreads(123, raw.replace("Thread_0x2", "Thread_0x1")).status).toBe("unavailable");
-  expect(parseMacNativeThreads(123, "Process: node [123]\n + 1 fff-bg-0").status).toBe("unavailable");
-  expect(parseMacNativeThreads(123, raw.replace("Process:", "Unattributed:")).status).toBe("unavailable");
+  expect(parseMacNativeThreads(123, raw.replace("Thread_0x2", "Thread_0x1")).status).toBe(
+    "unavailable",
+  );
+  expect(parseMacNativeThreads(123, "Process: node [123]\n + 1 fff-bg-0").status).toBe(
+    "unavailable",
+  );
+  expect(parseMacNativeThreads(123, raw.replace("Process:", "Unattributed:")).status).toBe(
+    "unavailable",
+  );
 });

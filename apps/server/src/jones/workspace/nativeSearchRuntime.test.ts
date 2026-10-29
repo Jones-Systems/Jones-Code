@@ -347,19 +347,23 @@ it.effect(
     ),
 );
 
-
 it.effect("passes the supported qualification log option only when explicitly supplied", () =>
-  Effect.scoped(Effect.gen(function* () {
-    const finder = {
-      destroy: vi.fn(),
-      waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
-    } as unknown as FileFinder;
-    const create = vi.spyOn(FileFinder, "create").mockReturnValue({ ok: true, value: finder });
-    yield* WorkspaceSearchIndex.make("/synthetic/ordinary");
-    expect(create.mock.calls[0]?.[0]).not.toHaveProperty("logFilePath");
-    yield* WorkspaceSearchIndex.make("/synthetic/blocked-workspace", "paths", {
-      logFilePath: "/synthetic/barrier/native-block.log",
-    });
-    expect(create.mock.calls[1]?.[0]).toHaveProperty("logFilePath", "/synthetic/barrier/native-block.log");
-  })),
+  Effect.scoped(
+    Effect.gen(function* () {
+      const finder = {
+        destroy: vi.fn(),
+        waitForIndexReady: vi.fn(async () => ({ ok: true as const, value: true })),
+      } as unknown as FileFinder;
+      const create = vi.spyOn(FileFinder, "create").mockReturnValue({ ok: true, value: finder });
+      yield* WorkspaceSearchIndex.make("/synthetic/ordinary");
+      expect(create.mock.calls[0]?.[0]).not.toHaveProperty("logFilePath");
+      yield* WorkspaceSearchIndex.make("/synthetic/blocked-workspace", "paths", {
+        logFilePath: "/synthetic/barrier/native-block.log",
+      });
+      expect(create.mock.calls[1]?.[0]).toHaveProperty(
+        "logFilePath",
+        "/synthetic/barrier/native-block.log",
+      );
+    }),
+  ),
 );

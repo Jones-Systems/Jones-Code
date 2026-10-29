@@ -22,14 +22,20 @@ export interface MacPerformanceCores {
 }
 export async function sampleMacPerformanceCores(): Promise<MacPerformanceCores> {
   const source = "sysctl:hw.perflevel0.physicalcpu" as const;
-  if (process.platform !== "darwin") return { source, status: "unavailable", value: null, raw: "not-macos" };
+  if (process.platform !== "darwin")
+    return { source, status: "unavailable", value: null, raw: "not-macos" };
   try {
     const { stdout } = await execute("/usr/sbin/sysctl", ["-n", "hw.perflevel0.physicalcpu"], {
-      timeout: 2_000, maxBuffer: 4096,
+      timeout: 2_000,
+      maxBuffer: 4096,
     });
     const value = /^\s*[1-9][0-9]*\s*$/.test(stdout) ? Number(stdout.trim()) : NaN;
-    return { source, status: Number.isSafeInteger(value) ? "observed" : "unavailable",
-      value: Number.isSafeInteger(value) ? value : null, raw: stdout };
+    return {
+      source,
+      status: Number.isSafeInteger(value) ? "observed" : "unavailable",
+      value: Number.isSafeInteger(value) ? value : null,
+      raw: stdout,
+    };
   } catch {
     return { source, status: "unavailable", value: null, raw: "sysctl-unavailable" };
   }
@@ -37,13 +43,25 @@ export async function sampleMacPerformanceCores(): Promise<MacPerformanceCores> 
 
 /** Only named OS threads from one captured PID; no host-wide process discovery. */
 export function parseMacNativeThreads(pid: number, raw: string): NativePoolObservation {
-  const unavailable = (): NativePoolObservation => ({ pid, method: "macos-sample", status: "unavailable",
-    threads: [], raw, error: "unattributed-or-malformed-sample" });
-  if (!Number.isSafeInteger(pid) || pid <= 0 || raw.length > 4 * 1024 * 1024 ||
-    !new RegExp(`^Process:\\s+.+\\[${pid}\\]\\s*$`, "m").test(raw)) return unavailable();
+  const unavailable = (): NativePoolObservation => ({
+    pid,
+    method: "macos-sample",
+    status: "unavailable",
+    threads: [],
+    raw,
+    error: "unattributed-or-malformed-sample",
+  });
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    raw.length > 4 * 1024 * 1024 ||
+    !new RegExp(`^Process:\\s+.+\\[${pid}\\]\\s*$`, "m").test(raw)
+  )
+    return unavailable();
   // sample's call-graph thread headers carry stable OS thread IDs, unlike stack frame rows.
-  const threads = [...raw.matchAll(/^\s*\d+ Thread_(0x[0-9a-f]+|[0-9]+):?\s+(.+)$/gmi)]
-    .map((match) => ({ tid: match[1]!, name: match[2]!.trim() }));
+  const threads = [...raw.matchAll(/^\s*\d+ Thread_(0x[0-9a-f]+|[0-9]+):?\s+(.+)$/gim)].map(
+    (match) => ({ tid: match[1]!, name: match[2]!.trim() }),
+  );
   if (threads.length === 0 || new Set(threads.map((row) => row.tid)).size !== threads.length)
     return unavailable();
   // Unnamed main/runtime threads remain in the raw receipt; only exact names attest native pools.
@@ -58,27 +76,43 @@ export async function sampleNativePools(pid: number): Promise<NativePoolObservat
     if (process.platform === "linux") {
       const before = await readFile(`/proc/${pid}/stat`, "utf8");
       const tids = await readdir(`/proc/${pid}/task`);
-      const threads = await Promise.all(tids.map(async (tid) => {
-        if (!/^[1-9][0-9]*$/.test(tid)) throw new Error("Invalid task ID");
-        return { tid, name: (await readFile(`/proc/${pid}/task/${tid}/comm`, "utf8")).trimEnd() };
-      }));
+      const threads = await Promise.all(
+        tids.map(async (tid) => {
+          if (!/^[1-9][0-9]*$/.test(tid)) throw new Error("Invalid task ID");
+          return { tid, name: (await readFile(`/proc/${pid}/task/${tid}/comm`, "utf8")).trimEnd() };
+        }),
+      );
       const after = await readFile(`/proc/${pid}/stat`, "utf8");
       const start = (stat: string) => stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
       if (!start(before) || start(before) !== start(after)) throw new Error("PID identity changed");
-      return { pid, method, status: "complete", threads, raw: JSON.stringify({ pid, start: start(before), threads }) };
+      return {
+        pid,
+        method,
+        status: "complete",
+        threads,
+        raw: JSON.stringify({ pid, start: start(before), threads }),
+      };
     }
     if (process.platform !== "darwin") throw new Error("Unsupported OS");
     scratch = await mkdtemp(join(tmpdir(), "jones-native-pools-"));
     const output = join(scratch, "sample.txt");
     // Bounded, nonprivileged, exact captured PID. Failure never supplies a physical-CPU fallback.
     await execute("/usr/bin/sample", [String(pid), "1", "10", "-file", output], {
-      timeout: 3_000, maxBuffer: 64 * 1024,
+      timeout: 3_000,
+      maxBuffer: 64 * 1024,
     });
     if ((await stat(output)).size > 4 * 1024 * 1024) throw new Error("Sample output exceeds bound");
     const raw = await readFile(output, "utf8");
     return parseMacNativeThreads(pid, raw);
   } catch {
-    return { pid, method, status: "unavailable", threads: [], raw: "", error: "native-pool-observer-unavailable" };
+    return {
+      pid,
+      method,
+      status: "unavailable",
+      threads: [],
+      raw: "",
+      error: "native-pool-observer-unavailable",
+    };
   } finally {
     if (scratch) await rm(scratch, { recursive: true });
   }

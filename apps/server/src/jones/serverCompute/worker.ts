@@ -199,14 +199,21 @@ export function decodeNativeBlockQualification(argument: string): {
     throw computeFailure("protocol");
   const value: unknown = JSON.parse(argument.slice(prefix.length));
   const path = (input: unknown): input is string =>
-    typeof input === "string" && input.length <= 1800 &&
-    isAbsolute(input) && normalize(input) === input && !/[\x00-\x1f\x7f]/.test(input);
-  if (!record(value) || !keys(value, ["targetWorkspace", "logFileHint"]) ||
-      !path(value.targetWorkspace) || !path(value.logFileHint) ||
-      basename(value.targetWorkspace) !== "blocked-workspace" ||
-      basename(value.logFileHint) !== "native-block.log" ||
-      basename(dirname(value.logFileHint)) !== "barrier" ||
-      dirname(dirname(value.logFileHint)) !== dirname(value.targetWorkspace))
+    typeof input === "string" &&
+    input.length <= 1800 &&
+    isAbsolute(input) &&
+    normalize(input) === input &&
+    !/[\x00-\x1f\x7f]/.test(input);
+  if (
+    !record(value) ||
+    !keys(value, ["targetWorkspace", "logFileHint"]) ||
+    !path(value.targetWorkspace) ||
+    !path(value.logFileHint) ||
+    basename(value.targetWorkspace) !== "blocked-workspace" ||
+    basename(value.logFileHint) !== "native-block.log" ||
+    basename(dirname(value.logFileHint)) !== "barrier" ||
+    dirname(dirname(value.logFileHint)) !== dirname(value.targetWorkspace)
+  )
     throw computeFailure("protocol");
   return Object.freeze({ targetWorkspace: value.targetWorkspace, logFileHint: value.logFileHint });
 }
@@ -323,7 +330,9 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
           const scope = await Effect.runPromise(Scope.make());
           try {
             const runtime = await execute(
-              make(key.cwd, key.variant, createOptions).pipe(Effect.provideService(Scope.Scope, scope)),
+              make(key.cwd, key.variant, createOptions).pipe(
+                Effect.provideService(Scope.Scope, scope),
+              ),
               job.controller.signal,
             );
             resident = { token: request.token, key, scope, runtime };

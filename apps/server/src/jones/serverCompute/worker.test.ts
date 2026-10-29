@@ -190,7 +190,6 @@ it("keeps four generation allocation tombstones despite failed creates, close AC
   expect(() => replacement.reserve({ ...token(0), slotGeneration: 2 }, key(0))).not.toThrow();
 });
 
-
 it("closes the qualification argument to a single path-shaped native log option", () => {
   const value = {
     targetWorkspace: "/synthetic/case/blocked-workspace",
@@ -199,12 +198,18 @@ it("closes the qualification argument to a single path-shaped native log option"
   const argument = (input: unknown) => "--qualification-native-block=" + JSON.stringify(input);
   expect(decodeNativeBlockQualification(argument(value))).toEqual(value);
   expect(Object.isFrozen(decodeNativeBlockQualification(argument(value)))).toBe(true);
-  for (const invalid of [null, [], {}, { ...value, pid: 123 }, { ...value, signal: "SIGKILL" },
+  for (const invalid of [
+    null,
+    [],
+    {},
+    { ...value, pid: 123 },
+    { ...value, signal: "SIGKILL" },
     { ...value, logFileHint: "/elsewhere/native-block.log" },
     { ...value, targetWorkspace: "relative/blocked-workspace" },
     { ...value, targetWorkspace: "/synthetic/case/../blocked-workspace" },
     { ...value, logFileHint: value.logFileHint + "\0" },
-    { ...value, logFileHint: "x".repeat(5000) }])
+    { ...value, logFileHint: "x".repeat(5000) },
+  ])
     expect(() => decodeNativeBlockQualification(argument(invalid))).toThrow();
   expect(() => decodeNativeBlockQualification(JSON.stringify(value))).toThrow();
   expect(() => decodeNativeBlockQualification("--qualification-native-block={")).toThrow();

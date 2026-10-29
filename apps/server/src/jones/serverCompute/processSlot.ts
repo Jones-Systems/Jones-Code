@@ -54,7 +54,9 @@ export function withComputeChildOperations(
   return {
     pid: child.pid,
     bootstrap: child.bootstrap,
-    get runtimeMetadata() { return child.runtimeMetadata; },
+    get runtimeMetadata() {
+      return child.runtimeMetadata;
+    },
     request: operations.request,
     retire: operations.retire,
   };
