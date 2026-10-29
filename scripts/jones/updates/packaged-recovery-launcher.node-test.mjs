@@ -76,6 +76,9 @@ NodeTest.test(
             environmentId:await fs.readFile(path.join(home,"userdata","environment-id"),"utf8"),
             currentVersion:context.childVersion,capability:{check:true,download:true,install:true},
           });
+          const requestedPort=Number(process.env.T3CODE_PORT);
+          if(!Number.isInteger(requestedPort)||requestedPort<1||requestedPort>65535)
+            throw new Error("Packaged server requires a port from 1 to 65535.");
           const server=http.createServer(async(request,response)=>{
             response.setHeader("content-type","application/json");
             if(request.headers.authorization!=="Bearer synthetic-legacy-fixture-token"){
@@ -110,7 +113,7 @@ NodeTest.test(
               response.end(JSON.stringify(await snapshot()));
             }catch(error){response.writeHead(500);response.end("{}");console.error(error.message)}
           });
-          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve)});
+          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(requestedPort,"127.0.0.1",resolve)});
           const runtime=path.join(home,"userdata","server-runtime.json");
           const port=server.address().port;
           await fs.writeFile(runtime+".synthetic.tmp",JSON.stringify({
@@ -128,7 +131,7 @@ NodeTest.test(
           state=JSON.parse(await fs.readFile(statePath,"utf8"));
           if(state.protocol!==4 || !state.update) throw new Error("Synthetic launcher refuses invalid service state.");
         }catch(error){console.error(error.message);process.exitCode=1;return}
-        const {writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement,assertNoUnreconciledUpdateOperations,FailedOperationUnsettledError}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
+        const {archiveUpdateOperation,writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement,assertNoUnreconciledUpdateOperations,FailedOperationUnsettledError}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
         const {removeQualifiedRecoveryPayload}=load(${JSON.stringify(NodeURL.fileURLToPath(backup))});
 
         if(state.update.status==="failed"){
@@ -137,6 +140,7 @@ NodeTest.test(
           const child=spawn(active,["serve"],{
             env:{...process.env,T3CODE_HOME:home,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
               protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",updateSettlementProtocol:1,
+              update:state.update,
             })},stdio:["inherit","inherit","inherit","ipc"],
           });
           let queue=Promise.resolve();
@@ -144,6 +148,7 @@ NodeTest.test(
             if(message.type==="request-update"){
               queue=queue.then(async()=>{
                 try {
+                  await archiveUpdateOperation(home,state.update);
                   await assertNoUnreconciledUpdateOperations(home,state.update);
                   throw new Error("synthetic fixture expected an unsettled operation");
                 } catch(error) {
@@ -657,6 +662,7 @@ NodeTest.test(
           const planBytes = await NodeFSP.readFile(planPath);
           const plan = JSON.parse(planBytes);
           NodeAssert.equal(plan.operationId, prepared.operationId);
+          NodeAssert.deepEqual(plan.retainedUpdate, prepared.state.update);
           NodeAssert.equal(
             plan.childExecutable,
             NodePath.join(
@@ -789,6 +795,8 @@ NodeTest.test(
               fixedIds,
             );
             NodeAssert.equal(result.assertionsPassed, true);
+            NodeAssert.equal(result.installArchive.created, !archivedOutcome);
+            NodeAssert.match(result.installArchive.sha256, /^[a-f0-9]{64}$/);
             NodeAssert.equal(result.packagedRecoveryMatrixPassed, false);
             NodeAssert.equal(result.externalDescendantSettlementRequired, true);
             NodeAssert.equal(result.installReceipt.operationId, input.installOperationId);
@@ -916,6 +924,9 @@ NodeTest.test(
           const http=require("node:http"),pending=new Map();
           process.on("message",m=>{if(m.type==="update-accepted"){
             const resolve=pending.get(m.updateId);if(resolve){pending.delete(m.updateId);resolve()}}});
+          const requestedPort=Number(process.env.T3CODE_PORT);
+          if(!Number.isInteger(requestedPort)||requestedPort<1||requestedPort>65535)
+            throw new Error("Packaged server requires a port from 1 to 65535.");
           const server=http.createServer(async(req,res)=>{
             res.setHeader("content-type","application/json");
             if(req.headers.authorization!=="Bearer synthetic-accepted-fixture-token"){res.writeHead(401);res.end("{}");return}
@@ -933,7 +944,7 @@ NodeTest.test(
                 updatedAt:new Date().toISOString(),...(refused?{}:{acceptedAt:new Date().toISOString()})}));
             }catch(e){res.writeHead(500);res.end("{}");console.error(e.message)}
           });
-          await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const port=server.address().port;
+          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(requestedPort,"127.0.0.1",resolve)});const port=server.address().port;
           await write(path.join(home,"userdata","server-runtime.json"),{version:1,pid:process.pid,host:"127.0.0.1",port,
             origin:"http://127.0.0.1:"+port,startedAt:new Date().toISOString(),serviceManaged:true});
           process.once("SIGTERM",()=>server.close(()=>{if(process.connected)process.disconnect()}));

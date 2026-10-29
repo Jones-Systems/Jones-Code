@@ -3,6 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeHttp from "node:http";
+import * as NodeNet from "node:net";
 import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
@@ -15,6 +16,25 @@ const preload = NodeURL.fileURLToPath(new URL("./packaged-recovery-preload.cjs",
 const fail = (message) => {
   throw new Error("Packaged launcher preload probe refused: " + message);
 };
+
+async function availableLoopbackPort(signal) {
+  signal?.throwIfAborted();
+  const port = await new Promise((resolve, reject) => {
+    const server = NodeNet.createServer();
+    server.once("error", reject);
+    server.listen({ host: "127.0.0.1", port: 0, exclusive: true }, () => {
+      const address = server.address();
+      server.close((cause) => {
+        if (cause) reject(cause);
+        else if (address === null || typeof address === "string")
+          reject(new Error("Loopback port unavailable."));
+        else resolve(String(address.port));
+      });
+    });
+  });
+  signal?.throwIfAborted();
+  return port;
+}
 
 async function digest(filename) {
   const hash = NodeCrypto.createHash("sha256");
@@ -269,6 +289,7 @@ export async function exercisePackagedSettlementRestart({ prepared, phase, signa
     operationId,
   });
   const args = ["__service-launcher"];
+  const port = await availableLoopbackPort(signal);
   let observed;
   const run = (stopWhenRecovered) => {
     let inspection = Promise.resolve();
@@ -283,7 +304,7 @@ export async function exercisePackagedSettlementRestart({ prepared, phase, signa
             ...options.env,
             T3CODE_HOME: baseDir,
             T3CODE_HOST: "127.0.0.1",
-            T3CODE_PORT: "0",
+            T3CODE_PORT: port,
             NODE_OPTIONS: "--require " + JSON.stringify(preload),
             JONES_PACKAGED_RECOVERY_FIXTURE: NodePath.join(root, "fault-plan.json"),
           },
@@ -872,7 +893,9 @@ async function preparePackagedObservation({
     executable: launcher.executable,
     identity: launcher.identity,
     operationId,
-    ...(installing ? { binding: operationBinding(prepared.staged) } : { requestIds: ids }),
+    ...(installing
+      ? { binding: operationBinding(prepared.staged) }
+      : { requestIds: ids, retainedUpdate: prepared.state.update }),
     ...(installOperationId === undefined
       ? {}
       : {
@@ -1149,6 +1172,7 @@ export async function exercisePackagedLegacyReconciliation({
     return entries;
   };
   const heldBefore = refusalReason === undefined ? undefined : await snapshotHeld();
+  const port = await availableLoopbackPort(signal);
   let stage = "runtime";
   let firstSettlement;
   let firstOutcome;
@@ -1190,6 +1214,7 @@ export async function exercisePackagedLegacyReconciliation({
   };
   let client;
   let installReceipt;
+  let installArchive;
   const inspect = async () => {
     if (failure || stage === "complete" || !child) return;
     if (stage === "runtime") {
@@ -1218,6 +1243,10 @@ export async function exercisePackagedLegacyReconciliation({
         token,
         signal: controlSignal,
       });
+      if (originalOutcome)
+        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
+      else await NodeAssert.rejects(NodeFSP.lstat(outcomePath), { code: "ENOENT" });
+      await NodeAssert.rejects(NodeFSP.lstat(settlementPath), { code: "ENOENT" });
       await intact();
       await client.state();
       const directory = NodePath.join(root, "ipc-observations");
@@ -1259,11 +1288,21 @@ export async function exercisePackagedLegacyReconciliation({
           " requires reconciliation before another Install; the current server remains active.",
         sendCallbackCompleted: true,
       });
+      const archived = await boundedRecord(outcomePath);
+      NodeAssert.deepEqual(archived.value, {
+        schema: 1,
+        operationId,
+        binding: reservation.value.binding,
+        status: "failed",
+      });
+      if (originalOutcome) NodeAssert.deepEqual(archived.bytes, originalOutcome.bytes);
+      installArchive = {
+        created: originalOutcome === undefined,
+        sha256: NodeCrypto.createHash("sha256").update(archived.bytes).digest("hex"),
+      };
+      originalOutcome = archived;
       await intact();
       await NodeAssert.rejects(NodeFSP.lstat(settlementPath), { code: "ENOENT" });
-      if (originalOutcome)
-        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
-      else await NodeAssert.rejects(NodeFSP.lstat(outcomePath), { code: "ENOENT" });
       await NodeAssert.rejects(
         NodeFSP.lstat(NodePath.join(operationDirectory, installOperationId + ".json")),
         { code: "ENOENT" },
@@ -1364,7 +1403,7 @@ export async function exercisePackagedLegacyReconciliation({
             ...observation.environment,
             T3CODE_HOME: baseDir,
             T3CODE_HOST: "127.0.0.1",
-            T3CODE_PORT: "0",
+            T3CODE_PORT: port,
             T3CODE_NO_BROWSER: "true",
             T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
           },
@@ -1407,6 +1446,7 @@ export async function exercisePackagedLegacyReconciliation({
       schema: "jones.packaged-legacy-reconciliation/v1",
       operationId,
       archivedOutcome: prepared.archivedOutcome,
+      ...(installArchive === undefined ? {} : { installArchive }),
       command,
       observation: pair,
       ...(installReceipt === undefined ? {} : { installReceipt }),
@@ -1475,6 +1515,7 @@ export async function exercisePackagedAcceptedFailure({
     arm: "accepted-update",
     ...fault,
   });
+  const port = await availableLoopbackPort(signal);
   const nativePath = NodePath.join(baseDir, "runtime", "service-state.json");
   const operations = NodePath.join(baseDir, "runtime", "jones-update-operations");
   const reservedPath = NodePath.join(operations, operationId + ".json");
@@ -1643,7 +1684,7 @@ export async function exercisePackagedAcceptedFailure({
               JONES_PACKAGED_RECOVERY_FIXTURE: NodePath.join(root, "fault-plan.json"),
               T3CODE_HOME: baseDir,
               T3CODE_HOST: "127.0.0.1",
-              T3CODE_PORT: "0",
+              T3CODE_PORT: port,
               T3CODE_NO_BROWSER: "true",
               T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
             },
