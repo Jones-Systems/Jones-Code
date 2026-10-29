@@ -65,4 +65,10 @@ export function withQualificationFixture<A>(
 
 export function probeHistoricalFixtureImports(
   source: QualificationDatabaseSource,
+  options?: {
+    readonly resolutionGuard?: {
+      dependencyURL(root: string, specifier: string, importerURL: string): string;
+    };
+    readonly importState?: { launched?: number; settled?: number; firstError?: unknown };
+  },
 ): Promise<readonly string[]>;

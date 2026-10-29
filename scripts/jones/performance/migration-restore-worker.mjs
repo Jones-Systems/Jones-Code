@@ -30,6 +30,7 @@ import {
   validateMigrationRestoreRequest,
 } from "./migration-restore.mjs";
 import { readRuntimeBinding } from "./runtime-binding.mjs";
+import { drainHistoricalImports } from "./historical-resolution.mjs";
 import { preserveForeignContent, qualificationSqliteApi } from "./qualification-adapters.mjs";
 
 const receivingRoot = NodePath.resolve(import.meta.dirname, "../../..");
@@ -68,11 +69,11 @@ function checkSource(source, current) {
   return current ? assertCurrentDatabaseSource(source) : assertQualificationDatabaseSource(source);
 }
 
-export async function probeMigrationRestoreImports(source, current) {
-  return Object.keys(await loadModules(source, current));
+export async function probeMigrationRestoreImports(source, current, options) {
+  return Object.keys(await loadModules(source, current, options));
 }
 
-async function loadModules(source, current) {
+async function loadModules(source, current, { resolutionGuard, importState } = {}) {
   checkSource(source, current);
   const require = NodeModule.createRequire(
     NodePath.join(source.worktreePath, "apps/server/package.json"),
@@ -102,16 +103,23 @@ async function loadModules(source, current) {
       Birth: "apps/server/src/jones/importedHistory/ApplicationBirth.ts",
     });
   return Object.fromEntries(
-    await Promise.all([
-      ...Object.entries(dependencies).map(async ([key, specifier]) => [
-        key,
-        await import(NodeURL.pathToFileURL(require.resolve(specifier)).href),
-      ]),
-      ...Object.entries(files).map(async ([key, relative]) => [
-        key,
-        await import(NodeURL.pathToFileURL(NodePath.join(source.worktreePath, relative)).href),
-      ]),
-    ]),
+    await drainHistoricalImports(
+      [
+        ...Object.entries(dependencies).map(([key, specifier]) => async () => [
+          key,
+          await import(
+            resolutionGuard
+              ? resolutionGuard.dependencyURL(source.worktreePath, specifier, import.meta.url)
+              : NodeURL.pathToFileURL(require.resolve(specifier)).href
+          ),
+        ]),
+        ...Object.entries(files).map(([key, relative]) => async () => [
+          key,
+          await import(NodeURL.pathToFileURL(NodePath.join(source.worktreePath, relative)).href),
+        ]),
+      ],
+      importState,
+    ),
   );
 }
 
@@ -219,7 +227,9 @@ async function nativePhase(record, binding, use) {
 
 async function runtimePhase(record, source, current, binding, signal, mode, use) {
   checkSource(source, current);
+  record.closeKnown = false;
   const modules = await loadModules(source, current);
+  record.closeKnown = true;
   const permit = assertOwnedDatabase(record.owner, {
     databaseRelativePath: record.relativePath,
     access: "readwrite",

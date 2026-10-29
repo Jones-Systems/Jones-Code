@@ -47,6 +47,8 @@ export function installHistoricalResolutionGuard({
     inputBindings.set(input.root, { ...input, keys });
   }
   const records = new Map();
+  const dependencyBridges = new Map();
+  let closed = false;
   function capture(path, root) {
     if (records.has(path)) return;
     NodeAssert.ok(records.size < maxRecords, "resolution record bound exceeded");
@@ -106,7 +108,8 @@ export function installHistoricalResolutionGuard({
         bridges.includes(importer) &&
         historicalRoots.includes(targetRoot) &&
         specifier.startsWith("file:") &&
-        !inside(NodePath.join(targetRoot, "node_modules"), resolved);
+        (!NodePath.relative(targetRoot, resolved).split(NodePath.sep).includes("node_modules") ||
+          dependencyBridges.get(`${importer}\0${result.url}`)?.sourceRoot === targetRoot);
       NodeAssert.ok(
         importerRoot === targetRoot || explicitSourceBridge,
         "dependency resolution escaped its source owner",
@@ -125,6 +128,23 @@ export function installHistoricalResolutionGuard({
     },
   });
   return {
+    dependencyURL(root, specifier, importerURL) {
+      NodeAssert.equal(closed, false, "resolution guard already closed");
+      const importer = NodeFS.realpathSync(NodeURL.fileURLToPath(importerURL));
+      NodeAssert.ok(bridges.includes(importer), "dependency bridge caller is not a bound worker");
+      NodeAssert.ok(roots.includes(root), "dependency bridge source is unbound");
+      const require = NodeModule.createRequire(NodePath.join(root, "apps/server/package.json"));
+      const resolved = NodeFS.realpathSync(require.resolve(specifier));
+      NodeAssert.equal(owner(resolved), root, "dependency resolution escaped its source owner");
+      capture(resolved, root);
+      const url = NodeURL.pathToFileURL(resolved).href;
+      NodeAssert.ok(
+        dependencyBridges.size < maxRecords || dependencyBridges.has(`${importer}\0${url}`),
+        "dependency bridge bound exceeded",
+      );
+      dependencyBridges.set(`${importer}\0${url}`, { sourceRoot: root, importer, specifier, url });
+      return url;
+    },
     receipt() {
       for (const input of sourceInputs)
         NodeAssert.equal(
@@ -146,9 +166,34 @@ export function installHistoricalResolutionGuard({
         roots,
         inputBindings: sourceInputs,
         records: [...records.values()],
+        dependencyBridges: [...dependencyBridges.values()],
         packagedBuild: "unqualified",
       };
     },
-    close: () => hooks.deregister(),
+    close() {
+      hooks.deregister();
+      closed = true;
+    },
   };
+}
+
+// A rejecting import does not cancel evaluation of its siblings. Keep their original
+// promises observed until every launched import settles, and preserve the first failure.
+export async function drainHistoricalImports(loaders, state = {}) {
+  state.launched = loaders.length;
+  state.settled = 0;
+  const results = await Promise.allSettled(
+    loaders.map(async (load) => {
+      try {
+        return await load();
+      } catch (error) {
+        state.firstError ??= error;
+        throw error;
+      } finally {
+        state.settled += 1;
+      }
+    }),
+  );
+  if (state.firstError) throw state.firstError;
+  return results.map((result) => result.value);
 }

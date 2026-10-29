@@ -8,7 +8,10 @@ import {
   inspectHistoricalPreparationReceipt,
   preparationPins,
 } from "./historical-preparation.mjs";
-import { installHistoricalResolutionGuard } from "./historical-resolution.mjs";
+import {
+  drainHistoricalImports,
+  installHistoricalResolutionGuard,
+} from "./historical-resolution.mjs";
 import {
   migrationRestoreSchema,
   nativeBackupSchema,
@@ -143,13 +146,71 @@ export function assertStrictHistoricalResults(results, candidate, sourceParent) 
     assertStrictHistoricalResult(result.caseId, result, candidate, sourceParent);
   return results;
 }
-export function historicalQualificationClosureKnown(results, pendingCase, failedEvidence) {
+export function historicalQualificationClosureKnown(
+  results,
+  pendingCase,
+  failedEvidence,
+  preflight,
+) {
+  if (
+    !preflight?.complete ||
+    !preflight.guardClosed ||
+    !preflight.batches?.length ||
+    preflight.batches.some(
+      (batch) => !batch.finished || batch.firstError || batch.launched !== batch.settled,
+    ) ||
+    (results.length === 0 && pendingCase === undefined)
+  )
+    return false;
   const closedCase = (result) =>
     result?.runnerClosed === true &&
     result.cleanup?.absent === true &&
     result.phases?.length > 0 &&
     result.phases.every((phase) => phase.closeKnown === true);
   return results.every(closedCase) && (pendingCase === undefined || closedCase(failedEvidence));
+}
+// Each probe owns all its import promises. Cancellation bounds the caller's wait,
+// but cannot cancel module evaluation; an unfinished probe keeps guard/root custody.
+export async function consumeHistoricalImportPreflight(probes, preflight, signal) {
+  preflight.complete = false;
+  preflight.batches = [];
+  for (const probe of probes) {
+    signal?.throwIfAborted();
+    const batch = { launched: 0, settled: 0, finished: false };
+    preflight.batches.push(batch);
+    const pending = Promise.resolve()
+      .then(() => probe(batch))
+      .finally(() => {
+        batch.finished = true;
+      });
+    let abort;
+    try {
+      await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          abort = () => reject(signal.reason);
+          signal?.addEventListener("abort", abort, { once: true });
+          if (signal?.aborted) abort();
+        }),
+      ]);
+    } catch (error) {
+      // The loader can observe a rejection before its last sibling settles.
+      throw batch.firstError ?? error;
+    } finally {
+      if (abort) signal?.removeEventListener("abort", abort);
+    }
+  }
+  preflight.complete = true;
+}
+export function finalizeHistoricalImportPreflight(preflight, guard) {
+  preflight.importsSettled =
+    Boolean(preflight.batches?.length) &&
+    preflight.batches.every((batch) => batch.finished && batch.launched === batch.settled);
+  preflight.guardClosed = false;
+  if (preflight.importsSettled && guard) {
+    guard.close();
+    preflight.guardClosed = true;
+  }
 }
 function saveEvidence(request, value) {
   const bytes = JSON.stringify(value);
@@ -171,7 +232,13 @@ function saveEvidence(request, value) {
   }
   return path;
 }
+let retainedImportPreflight;
 export async function qualifyHistorical(request, signal) {
+  NodeAssert.equal(
+    retainedImportPreflight,
+    undefined,
+    "prior import closure unknown; retry refused",
+  );
   NodeAssert.equal(request.explicitSyntheticRequest, true);
   NodeAssert.ok(Number.isSafeInteger(request.maxEvidenceBytes) && request.maxEvidenceBytes > 0);
   const preparation = assertHistoricalPreparationReceipt(
@@ -204,10 +271,12 @@ export async function qualifyHistorical(request, signal) {
   process.env.JONES_PERFORMANCE_SOURCE_PARENT = preparation.sourceParent;
 
   let guard;
+  const preflight = { complete: false, batches: [] };
   const results = [],
     imports = [];
   let originalError,
     postconditionError,
+    guardError,
     resolution,
     evidencePath,
     evidenceError,
@@ -228,20 +297,46 @@ export async function qualifyHistorical(request, signal) {
       maxRecords: preparation.bounds.maxEntries,
       maxFileBytes: preparation.bounds.maxFileBytes,
     });
-    const { probeHistoricalFixtureImports } = await import("./fixtures-historical-worker.mjs");
-    const { probeMigrationRestoreImports } = await import("./migration-restore-worker.mjs");
+    let probeHistoricalFixtureImports, probeMigrationRestoreImports;
     const sources = Object.fromEntries(
       preparation.sources.map(({ source }) => [NodePath.basename(source.worktreePath), source]),
     );
-    imports.push({
-      source: sources.history,
-      modules: await probeHistoricalFixtureImports(sources.history),
-    });
-    for (const source of [sources["lease-current"], sources.lease, preparation.candidate])
-      imports.push({
-        source,
-        modules: await probeMigrationRestoreImports(source, source === preparation.candidate),
-      });
+    await consumeHistoricalImportPreflight(
+      [
+        async (importState) => {
+          const workers = await drainHistoricalImports(
+            [
+              () => import("./fixtures-historical-worker.mjs"),
+              () => import("./migration-restore-worker.mjs"),
+            ],
+            importState,
+          );
+          ({ probeHistoricalFixtureImports } = workers[0]);
+          ({ probeMigrationRestoreImports } = workers[1]);
+        },
+        async (importState) =>
+          imports.push({
+            source: sources.history,
+            modules: await probeHistoricalFixtureImports(sources.history, {
+              resolutionGuard: guard,
+              importState,
+            }),
+          }),
+        ...[sources["lease-current"], sources.lease, preparation.candidate].map(
+          (source) => async (importState) =>
+            imports.push({
+              source,
+              modules: await probeMigrationRestoreImports(
+                source,
+                source === preparation.candidate,
+                { resolutionGuard: guard, importState },
+              ),
+            }),
+        ),
+      ],
+      preflight,
+      signal,
+    );
     // No database exists until every consumed loader imports under the resolution hook.
     resolution = guard.receipt();
     for (const caseId of strictHistoricalCases) {
@@ -287,24 +382,50 @@ export async function qualifyHistorical(request, signal) {
     } catch (error) {
       postconditionError = errorValue(error);
     }
-    guard?.close();
-    if (oldParent === undefined) delete process.env.JONES_PERFORMANCE_SOURCE_PARENT;
-    else process.env.JONES_PERFORMANCE_SOURCE_PARENT = oldParent;
+    try {
+      finalizeHistoricalImportPreflight(preflight, guard);
+    } catch (error) {
+      guardError = errorValue(error);
+    }
+    if (!preflight.guardClosed) retainedImportPreflight = { guard, preflight };
+    if (preflight.guardClosed) {
+      if (oldParent === undefined) delete process.env.JONES_PERFORMANCE_SOURCE_PARENT;
+      else process.env.JONES_PERFORMANCE_SOURCE_PARENT = oldParent;
+    }
   }
-  const consumerClosed = historicalQualificationClosureKnown(results, pendingCase, failedEvidence);
+  const consumerClosed = historicalQualificationClosureKnown(
+    results,
+    pendingCase,
+    failedEvidence,
+    preflight,
+  );
   const report = {
     schema: "jones-strict-historical-qualification/v1",
-    outcome: originalError || postconditionError || monitorError ? "failed" : "complete",
+    outcome:
+      originalError || postconditionError || monitorError || guardError ? "failed" : "complete",
     preparationReceiptSha256: request.preparationReceiptSha256,
     candidate: preparation.candidate,
     runtime,
     imports,
+    importPreflight: {
+      complete: preflight.complete,
+      importsSettled: preflight.importsSettled,
+      guardClosed: preflight.guardClosed,
+      sourceParentRetained: !preflight.guardClosed,
+      batches: preflight.batches.map(({ launched, settled, finished, firstError }) => ({
+        launched,
+        settled,
+        finished,
+        ...(firstError ? { failure: errorValue(firstError) } : {}),
+      })),
+    },
     resolution,
     results,
     failedEvidence,
     originalError,
     postconditionError,
     monitorError,
+    guardError,
     consumerClosed,
     packagedBuild: "unqualified",
   };
@@ -316,7 +437,7 @@ export async function qualifyHistorical(request, signal) {
   return {
     consumerClosed: consumerClosed && Boolean(evidencePath),
     value: report,
-    originalError: originalError ?? postconditionError ?? monitorError,
+    originalError: originalError ?? postconditionError ?? monitorError ?? guardError,
     evidenceError,
     evidencePath,
   };

@@ -193,14 +193,38 @@ NodeTest.test(
 NodeTest.test(
   "failed acceptance never releases a returned case with unknown resource closure",
   () => {
+    const preflight = {
+      complete: true,
+      guardClosed: true,
+      batches: [{ launched: 2, settled: 2, finished: true }],
+    };
     const result = receipt("foreign-87");
-    NodeAssert.equal(historicalQualificationClosureKnown([result], undefined), true);
+    NodeAssert.equal(
+      historicalQualificationClosureKnown([result], undefined, undefined, preflight),
+      true,
+    );
     result.runnerClosed = false;
-    NodeAssert.equal(historicalQualificationClosureKnown([result], undefined), false);
-    NodeAssert.equal(historicalQualificationClosureKnown([], "foreign-87", undefined), false);
+    NodeAssert.equal(
+      historicalQualificationClosureKnown([result], undefined, undefined, preflight),
+      false,
+    );
+    NodeAssert.equal(
+      historicalQualificationClosureKnown([], "foreign-87", undefined, preflight),
+      false,
+    );
     result.runnerClosed = true;
-    NodeAssert.equal(historicalQualificationClosureKnown([], "foreign-87", result), true);
+    NodeAssert.equal(
+      historicalQualificationClosureKnown([], "foreign-87", result, preflight),
+      true,
+    );
     result.phases[0].closeKnown = false;
-    NodeAssert.equal(historicalQualificationClosureKnown([], "foreign-87", result), false);
+    NodeAssert.equal(
+      historicalQualificationClosureKnown([], "foreign-87", result, preflight),
+      false,
+    );
   },
 );
+
+NodeTest.test("empty results never prove import preflight closure", () => {
+  NodeAssert.equal(historicalQualificationClosureKnown([], undefined, undefined), false);
+});
