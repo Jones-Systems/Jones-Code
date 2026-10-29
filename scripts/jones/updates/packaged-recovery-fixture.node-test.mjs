@@ -6,13 +6,14 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeTest from "node:test";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
-import { seedPackagedRecoveryFixture } from "./packaged-recovery-fixture.mjs";
+import { seedPackagedRecoveryFixture, legacyRefusalCases } from "./packaged-recovery-fixture.mjs";
 import {
   qualifiedPayloadDigest,
   verifyStagedQualifiedRuntime,
 } from "../../../apps/server/src/jones/cloud/qualifiedRuntime.ts";
 import {
   readOperationReservation,
+  evaluateLegacyUpdateSettlement,
   readUpdateOperationSettlement,
   writeFailedUpdateOperation,
 } from "../../../apps/server/src/jones/updates/launcherOperation.ts";
@@ -172,6 +173,64 @@ NodeTest.test(
 );
 
 NodeTest.test(
+  "seeds each unsafe legacy variant for typed refusal without settling or executing payloads",
+  linux,
+  async () => {
+    for (const [legacyVariant, reason] of Object.entries(legacyRefusalCases)) {
+      await fixture(async (input) => {
+        const prepared = await seedPackagedRecoveryFixture({
+          ...input,
+          kind: "legacy-failed",
+          legacyVariant,
+          archivedOutcome: legacyVariant === "archived-without-reason",
+        });
+        const reservationPath = NodePath.join(
+          prepared.baseDir,
+          "runtime",
+          "jones-update-operations",
+          operationId + ".json",
+        );
+        const reservation = await NodeFSP.readFile(reservationPath);
+        const statePath = NodePath.join(prepared.baseDir, "runtime", "service-state.json");
+        const stateBytes = await NodeFSP.readFile(statePath);
+        const outcomePath = NodePath.join(
+          prepared.baseDir,
+          "runtime",
+          "jones-update-operations",
+          operationId + ".outcome.json",
+        );
+        const outcome = prepared.archivedOutcome ? await NodeFSP.readFile(outcomePath) : undefined;
+        for (let repeat = 0; repeat < 2; repeat++) {
+          NodeAssert.deepEqual(
+            await evaluateLegacyUpdateSettlement({
+              baseDir: prepared.baseDir,
+              operationId,
+              current: prepared.state.update,
+              active: {
+                activeVersion: prepared.state.activeVersion,
+                activeSourceSha: (legacyVariant === "active-changed"
+                  ? input.candidate
+                  : input.active
+                ).receipt.sourceSha,
+              },
+            }),
+            { result: "refused", reason },
+          );
+          NodeAssert.equal(
+            await readUpdateOperationSettlement(prepared.baseDir, operationId),
+            undefined,
+          );
+          NodeAssert.deepEqual(await NodeFSP.readFile(reservationPath), reservation);
+          NodeAssert.deepEqual(await NodeFSP.readFile(statePath), stateBytes);
+          if (outcome) NodeAssert.deepEqual(await NodeFSP.readFile(outcomePath), outcome);
+          else await NodeAssert.rejects(NodeFSP.lstat(outcomePath), { code: "ENOENT" });
+        }
+      });
+    }
+  },
+);
+
+NodeTest.test(
   "refuses modified payloads and stale active bindings before writing the fixture root",
   linux,
   async () => {
@@ -230,6 +289,10 @@ NodeTest.test("refuses unsupported seed combinations before allocating state", l
       { kind: "committed" },
       { archivedOutcome: true },
       { recoveryPayload: "yes" },
+      { legacyVariant: "restore-pending" },
+      { kind: "legacy-failed", legacyVariant: "unknown" },
+      { kind: "legacy-failed", legacyVariant: "archived-without-reason" },
+      { kind: "legacy-failed", legacyVariant: "trial-evidence", recoveryPayload: false },
     ]) {
       await NodeAssert.rejects(
         seedPackagedRecoveryFixture({ ...input, ...patch }),

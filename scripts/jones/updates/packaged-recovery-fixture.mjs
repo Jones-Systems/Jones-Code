@@ -99,6 +99,14 @@ function artifact(input) {
   return { ...metadata, payloadDirectory: input.directory };
 }
 
+export const legacyRefusalCases = Object.freeze({
+  "archived-without-reason": "insufficient-evidence",
+  "restore-pending": "restore-pending",
+  "active-changed": "active-changed",
+  "trial-evidence": "trial-evidence-present",
+  "other-failed-reason": "insufficient-evidence",
+});
+
 export async function seedPackagedRecoveryFixture({
   root,
   active,
@@ -107,6 +115,7 @@ export async function seedPackagedRecoveryFixture({
   kind = "pending",
   recoveryPayload = true,
   archivedOutcome = false,
+  legacyVariant,
 }) {
   // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone fixture binds its actual host without loading application services.
   if (process.platform !== "linux") refuse("Linux fixture required");
@@ -116,7 +125,12 @@ export async function seedPackagedRecoveryFixture({
     !["pending", "legacy-failed"].includes(kind) ||
     typeof recoveryPayload !== "boolean" ||
     typeof archivedOutcome !== "boolean" ||
-    (kind === "pending" && archivedOutcome)
+    (kind === "pending" && archivedOutcome) ||
+    (legacyVariant !== undefined &&
+      (kind !== "legacy-failed" ||
+        !Object.hasOwn(legacyRefusalCases, legacyVariant) ||
+        (legacyVariant === "archived-without-reason" && !archivedOutcome) ||
+        (["restore-pending", "trial-evidence"].includes(legacyVariant) && !recoveryPayload)))
   )
     refuse("unsupported recovery fixture");
   const allocation = await physicalPrivateRoot(root);
@@ -203,7 +217,31 @@ export async function seedPackagedRecoveryFixture({
           status: "failed",
           reason: "launcher-restarted",
         };
-  const state = { protocol: 4, activeVersion: previous.receipt.version, update };
+  let activeVersion = previous.receipt.version;
+  if (legacyVariant === "archived-without-reason") delete update.reason;
+  if (legacyVariant === "other-failed-reason") update.reason = "verification-failed";
+  if (legacyVariant === "active-changed") {
+    await enrollQualifiedRuntime({
+      baseDir,
+      host,
+      artifact: artifact(next),
+      validate: async () => {},
+    });
+    activeVersion = next.receipt.version;
+  }
+  if (["restore-pending", "trial-evidence"].includes(legacyVariant)) {
+    await privateJson(
+      NodePath.join(
+        baseDir,
+        "runtime",
+        "db-backup",
+        operationId,
+        legacyVariant === "restore-pending" ? ".restore-pending" : "resume-dispatched.json",
+      ),
+      { operationId },
+    );
+  }
+  const state = { protocol: 4, activeVersion, update };
   await privateJson(NodePath.join(baseDir, "runtime", "service-state.json"), state);
   const prepared = {
     schema: "jones.packaged-recovery-fixture/v1",
@@ -214,6 +252,7 @@ export async function seedPackagedRecoveryFixture({
     baseDir,
     operationId,
     kind,
+    ...(legacyVariant === undefined ? {} : { legacyVariant }),
     recoveryPayload,
     archivedOutcome,
     launcher: {

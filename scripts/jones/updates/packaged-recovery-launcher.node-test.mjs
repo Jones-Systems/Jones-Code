@@ -129,13 +129,15 @@ NodeTest.test(
             if(message.type!=="reconcile-failed-update")return;
             queue=queue.then(async()=>{
               let existing=await readUpdateOperationSettlement(home,message.operationId);
-              let result="already-settled";
+              let result="already-settled",reason;
               if(!existing){
                 const evaluated=await evaluateLegacyUpdateSettlement({
                   baseDir:home,operationId:message.operationId,current:state.update,
                   active:{activeVersion:state.activeVersion,activeSourceSha:qualified.binding.activeSourceSha},
                 });
-                if(evaluated.result!=="settle")throw new Error("Synthetic legacy evaluation refused: "+evaluated.reason);
+                if(evaluated.result==="refused"){
+                  result="refused";reason=evaluated.reason;
+                }else{
                 const nativePending={...state.update,status:"pending",phase:"accepted",dbPath:qualified.binding.dbPath};
                 const digests=await writeFailedUpdateOperation(home,nativePending);
                 await removeQualifiedRecoveryPayload(home,id,qualified.binding.dbPath,{transactionId:id,qualified},"failed-before-trial");
@@ -147,11 +149,12 @@ NodeTest.test(
                     recordedAt:new Date().toISOString()},
                 });
                 result=publication.result;
+                }
               }else{
                 await publishUpdateOperationSettlement(home,existing);
               }
               await new Promise((resolve,reject)=>child.send({
-                type:"update-reconciled",operationId:message.operationId,requestId:message.requestId,result,
+                type:"update-reconciled",operationId:message.operationId,requestId:message.requestId,result,...(reason===undefined?{}:{reason}),
               },error=>error?reject(error):resolve()));
             }).catch(error=>{console.error(error.message);child.kill("SIGTERM")});
           });
@@ -629,13 +632,19 @@ NodeTest.test(
         },
       );
 
-      for (const archivedOutcome of [false, true]) {
+      for (const { archivedOutcome, legacyVariant } of [
+        { archivedOutcome: false },
+        { archivedOutcome: true },
+        { archivedOutcome: true, legacyVariant: "restore-pending" },
+      ]) {
         await t.test(
-          "runs the real HTTP/IPC transport control with archivedOutcome=" + archivedOutcome,
+          "runs the real HTTP/IPC transport control with archivedOutcome=" +
+            archivedOutcome +
+            (legacyVariant ?? ""),
           async () => {
             const caseRoot = NodePath.join(
               parent,
-              "jones-packaged-recovery-legacy-" + archivedOutcome,
+              "jones-packaged-recovery-legacy-" + archivedOutcome + (legacyVariant ?? ""),
             );
             await NodeFSP.mkdir(caseRoot, { mode: 0o700 });
             const prepared = await seedPackagedRecoveryFixture({
@@ -645,6 +654,7 @@ NodeTest.test(
               operationId: "12345678-1234-4234-8234-123456789abc",
               kind: "legacy-failed",
               archivedOutcome,
+              legacyVariant,
             });
             const input = {
               prepared,
@@ -671,9 +681,23 @@ NodeTest.test(
             NodeAssert.equal(result.externalDescendantSettlementRequired, true);
             NodeAssert.deepEqual(
               result.observation.replies.map((reply) => reply.result),
-              ["settled", "already-settled"],
+              legacyVariant ? ["refused", "refused"] : ["settled", "already-settled"],
             );
-            NodeAssert.equal(result.settlement.basis, "legacy-reconciled");
+            if (legacyVariant) {
+              NodeAssert.equal(result.settlement, null);
+              NodeAssert.deepEqual(result.refusal, {
+                variant: legacyVariant,
+                reason: "restore-pending",
+                heldEvidenceUnchanged: true,
+              });
+              NodeAssert.ok(
+                result.observation.replies.every((reply) => reply.reason === "restore-pending"),
+              );
+              await NodeAssert.rejects(
+                preparePackagedReconciliationObservation({ prepared, requestIds: fixedIds }),
+                /occupied|EEXIST/,
+              );
+            } else NodeAssert.equal(result.settlement.basis, "legacy-reconciled");
             NodeAssert.equal(result.state.update.id, prepared.operationId);
             NodeAssert.equal(result.state.update.status, "failed");
             NodeAssert.ok(!JSON.stringify(result).includes(input.token));
