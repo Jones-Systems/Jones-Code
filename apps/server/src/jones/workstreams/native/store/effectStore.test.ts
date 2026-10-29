@@ -1,3 +1,4 @@
+import * as PeerEnvelope from "../runtime/peerEffectEnvelope.ts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -505,5 +506,107 @@ it.effect.each(["verify_reference", "refresh_linked_pr", "request_native_t3_sett
         ),
       ).toBe(true);
       expect(yield* persistedRecovery).toEqual(before);
+    }).pipe(Effect.provide(testLayer())),
+);
+
+const peerRecovery = (f: RecoveryFixture) => {
+  const commandId = f.request.receipt.command_id;
+  const digest = f.request.receipt.request_sha256;
+  return PeerEnvelope.wrapPeerEffectIntent(
+    JSON.stringify(f.reservation.intent),
+    f.request.request_body,
+    digest,
+    {
+      schema: "jones-workstreams-peer-effect-recovery/2",
+      kind: "source-recorded-forward",
+      incoming_peer_pin_id: "home:original-pin",
+      incoming_peer_pin_revision: 2,
+      source_readmission: {
+        contract: "workstreams-source-readmission/2.0.0",
+        command_id: commandId,
+        command_request_sha256: digest,
+        accepted_forward: {
+          forward_id: "jwf-retained-native-original",
+          source_operation_id: commandId,
+          parent_operation_id: null,
+          command_ids: [commandId],
+          request_sha256: digest,
+          recorded_caller_sha256: "a".repeat(64),
+          expected_home: { ...scope, home_environment_id: "home:test", server_generation: 1 },
+          canonical_origin: "https://native.workstreams.invalid",
+          source_authority: {
+            environment_id: "source:test",
+            authority_namespace: "source-authority",
+            store_generation: 1,
+          },
+          source_enrollment_id: "source:enrollment",
+          source_enrollment_session_id: "source:session",
+          principal_id: "principal:test",
+          singleton_binding_version: 1,
+          source_binding_version: 1,
+          member_pin_id: "source:pin",
+          member_pin_bound_revision: 2,
+          outbound_link_generation: "member-to-home:original",
+        },
+      },
+      original_ceiling: {
+        access: "full-access",
+        runtime_mode: "auto",
+        interaction_mode: "default",
+        scopes: ["orchestration:read", "orchestration:operate"],
+        permissions: ["workstreams:read", "workstreams:write"],
+      },
+    },
+    "c".repeat(64),
+    "home-to-source:original",
+  );
+};
+it.effect(
+  "persists and replays a distinct encrypted PEER wrapper without manufacturing a HOME caller",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const effects = yield* EffectStore.EffectStore;
+      const sql = yield* SqlClient.SqlClient;
+      const f = recoveryFixture();
+      const recovery = yield* peerRecovery(f);
+      const reservation = { ...f.reservation, peer_recovery: recovery };
+      yield* effects.reserve(scope, f.request, reservation);
+      yield* effects.reserve(scope, f.request, reservation);
+      const active = yield* effects.active(scope);
+      expect(active).toEqual([reservation]);
+      expect(active[0]?.peer_recovery?.format).toBe("jones-native-effect-recovery/2");
+      expect(active[0]?.recovery).toBeUndefined();
+      expect(active[0]?.peer_recovery && "recorded_caller" in active[0].peer_recovery).toBe(false);
+      const ciphertext = JSON.stringify(
+        yield* sql`SELECT envelope FROM jones_workstreams_external_reservations`,
+      );
+      expect(ciphertext).not.toContain("home-to-source:original");
+      expect(ciphertext).not.toContain("source-authority");
+      expect(yield* sql`SELECT * FROM jones_workstreams_external_reservations`).toHaveLength(1);
+    }).pipe(Effect.provide(testLayer())),
+);
+it.effect.each([
+  ["principal", { principal_id: "principal:other" }],
+  ["reference", { native_reference_id: "reference:other" }],
+  ["effect", { effect: "verify_reference" as const }],
+  ["generation", { server_generation: 2 }],
+  ["admitted version", { admitted_registry_version: 1 }],
+] as const)(
+  "refuses PEER reservation %s substitution before durable acceptance",
+  ([_label, delta]) =>
+    Effect.gen(function* () {
+      yield* seed;
+      const effects = yield* EffectStore.EffectStore;
+      const sql = yield* SqlClient.SqlClient;
+      const f = recoveryFixture();
+      const recovery = yield* peerRecovery(f);
+      expect(
+        (yield* effects
+          .reserve(scope, f.request, { ...f.reservation, ...delta, peer_recovery: recovery })
+          .pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      expect(yield* effects.active(scope)).toEqual([]);
+      expect(yield* sql`SELECT * FROM jones_workstreams_receipts`).toEqual([]);
     }).pipe(Effect.provide(testLayer())),
 );

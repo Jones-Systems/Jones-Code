@@ -67,6 +67,29 @@ export const ceilingAllows = (
     (ceiling.access !== "read-only" &&
       ceiling.interaction_mode !== "plan" &&
       ceiling.scopes.includes("orchestration:operate")));
+/** Raw native row validation shared by live registration and authoritative retained recovery.
+ * This lookup does not authenticate, register or grant invocation authority.
+ */
+export const readNativeSessionRow = Effect.fn("NativePeerSessions.readRow")(function* (
+  sessionId: unknown,
+) {
+  const id = yield* decodeSessionId(sessionId).pipe(
+    Effect.mapError(() => new PeerSessionError({ code: "unauthenticated" })),
+  );
+  const sessions = yield* Sessions.AuthSessionRepository;
+  const row = yield* sessions.getById({ sessionId: id }).pipe(Effect.mapError(mapFailure));
+  const now = DateTime.toEpochMillis(yield* DateTime.now);
+  if (
+    Option.isNone(row) ||
+    row.value.revokedAt !== null ||
+    row.value.issuedAt.epochMilliseconds > now ||
+    row.value.expiresAt.epochMilliseconds <= now ||
+    row.value.method !== "bearer-access-token" ||
+    !row.value.scopes.includes("orchestration:read")
+  )
+    return yield* new PeerSessionError({ code: "not_current" });
+  return row.value;
+});
 const makeNative = Effect.gen(function* () {
   const auth = yield* Auth.EnvironmentAuth,
     sessions = yield* Sessions.AuthSessionRepository;
@@ -78,28 +101,16 @@ const makeNative = Effect.gen(function* () {
     scope: Mcp.McpInvocationScope,
     access: Pin["session"]["ceiling"]["access"],
   ) {
-    const id = yield* decodeSessionId(scope.client?.sessionId).pipe(
-      Effect.mapError(() => new PeerSessionError({ code: "unauthenticated" })),
+    const r = yield* readNativeSessionRow(scope.client?.sessionId).pipe(
+      Effect.provideService(Sessions.AuthSessionRepository, sessions),
     );
-    const row = yield* sessions.getById({ sessionId: id }).pipe(Effect.mapError(mapFailure));
-    const now = DateTime.toEpochMillis(yield* DateTime.now);
-    if (
-      Option.isNone(row) ||
-      row.value.revokedAt !== null ||
-      row.value.issuedAt.epochMilliseconds > now ||
-      row.value.expiresAt.epochMilliseconds <= now ||
-      row.value.method !== "bearer-access-token" ||
-      !row.value.scopes.includes("orchestration:read")
-    )
-      return yield* new PeerSessionError({ code: "not_current" });
-    const r = row.value,
-      modes = Mcp.clientModeCeiling(scope.client);
+    const modes = Mcp.clientModeCeiling(scope.client);
     const write =
       access !== "read-only" &&
       r.scopes.includes("orchestration:operate") &&
       modes.interactionMode !== "plan";
     return {
-      session_id: id,
+      session_id: r.sessionId,
       subject: r.subject,
       method: r.method,
       issued_at: DateTime.formatIso(r.issuedAt),

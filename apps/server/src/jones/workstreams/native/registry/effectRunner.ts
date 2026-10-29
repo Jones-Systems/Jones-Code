@@ -175,7 +175,10 @@ const make = Effect.gen(function* () {
           if (!item) return null;
           // Initial execution and retries use the accepted encrypted wrapper,
           // never a caller captured from the live invocation after queueing.
+          if (item.peer_recovery)
+            return yield* new Session.RegistryError({ code: "peer_recovery_unmounted" });
           if (!item.recovery) return yield* new Session.RegistryError({ code: "unknown_effect" });
+
           const intent = item.intent as ExternalIntent;
           if (expectedIntent && canonicalJson(expectedIntent) !== canonicalJson(intent))
             return yield* new Session.RegistryError({ code: "unknown_effect" });

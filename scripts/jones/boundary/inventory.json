@@ -2190,7 +2190,14 @@
     "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/memberPreparation.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/runtime/memberApplication.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/runtime/memberApplication.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerEffectEnvelope.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerEffectEnvelope.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerEffectOrigin.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerEffectOrigin.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/retainedPeerSession.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/retainedPeerSession.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/peerEffectRecovery.testkit.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

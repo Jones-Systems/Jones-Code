@@ -12,6 +12,7 @@ import * as ReceiptStore from "./receiptStore.ts";
 import * as HistoryStore from "./historyStore.ts";
 import * as NativeSql from "./sql.ts";
 import * as Recorded from "../runtime/recordedCaller.ts";
+import type * as PeerEffect from "../runtime/peerEffectEnvelope.ts";
 
 export interface Reservation {
   readonly command_id: string;
@@ -21,11 +22,23 @@ export interface Reservation {
   readonly server_generation: number;
   readonly admitted_registry_version: number;
   readonly intent: unknown;
+  readonly peer_recovery?: PeerEffect.StoredPeerEffectV2;
   readonly recovery?: NonNullable<
     Effect.Success<ReturnType<typeof Recorded.unwrapEffectIntent>>["recovery"]
   >;
 }
 const decodeRequest = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown));
+const decodePeerAssociation = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    admitted_registry_version: Schema.Int,
+    command: Schema.Struct({
+      command_id: Schema.String,
+      action: Schema.Struct({ operation: Schema.String }),
+    }),
+    reference: Schema.Struct({ native_reference_id: Schema.String }),
+  }),
+);
+
 type Failure = SqlError | NativeSql.StoreError | NativeSql.CryptoError;
 export class EffectStore extends Context.Service<
   EffectStore,
@@ -67,6 +80,29 @@ const make = Effect.gen(function* () {
   const db = yield* NativeSql.NativeSql;
   const receipts = yield* ReceiptStore.ReceiptStore;
   const historyStore = yield* HistoryStore.HistoryStore;
+  const validatePeer = Effect.fn("EffectStore.validatePeer")(function* (
+    scope: NativeSql.OwnerScope,
+    reservation: Reservation,
+  ) {
+    const recovery = reservation.peer_recovery;
+    if (!recovery) return;
+    const identity = recovery.recovery.source_readmission.accepted_forward;
+    const intent = yield* decodePeerAssociation(reservation.intent).pipe(
+      Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
+    );
+    if (
+      identity.expected_home.registry_instance_id !== scope.registry_instance_id ||
+      identity.expected_home.owner_id !== scope.owner_id ||
+      identity.expected_home.server_generation !== reservation.server_generation ||
+      identity.principal_id !== reservation.principal_id ||
+      recovery.recovery.source_readmission.command_id !== reservation.command_id ||
+      intent.command.command_id !== reservation.command_id ||
+      intent.command.action.operation !== reservation.effect ||
+      intent.reference.native_reference_id !== reservation.native_reference_id ||
+      intent.admitted_registry_version !== reservation.admitted_registry_version
+    )
+      return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+  });
   const active = Effect.fn("EffectStore.active")((scope: NativeSql.OwnerScope) =>
     db.transaction(
       scope,
@@ -89,7 +125,7 @@ const make = Effect.gen(function* () {
             Effect.provideService(Crypto.Crypto, recoveryCrypto),
             Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
           );
-          result.push({
+          const saved: Reservation = {
             command_id: row.command_id,
             principal_id: row.principal_id,
             native_reference_id: row.native_reference_id,
@@ -98,7 +134,10 @@ const make = Effect.gen(function* () {
             admitted_registry_version: row.admitted_registry_version,
             intent: decoded.intent,
             ...(decoded.recovery ? { recovery: decoded.recovery } : {}),
-          });
+            ...(decoded.peer_recovery ? { peer_recovery: decoded.peer_recovery } : {}),
+          };
+          yield* validatePeer(scope, saved);
+          result.push(saved);
         }
         return result;
       }),
@@ -139,23 +178,36 @@ const make = Effect.gen(function* () {
           const saved = yield* receipts.save(scope, receipt, null);
           if (!["pending", "unresolved"].includes(saved.receipt.state))
             return yield* new NativeSql.StoreError({ reason: "conflict" });
-          if (reservation.recovery) {
-            const decoded = yield* Recorded.unwrapEffectIntent(reservation.recovery).pipe(
+          if (reservation.recovery && reservation.peer_recovery)
+            return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+          const retained = reservation.peer_recovery ?? reservation.recovery;
+          if (retained) {
+            const decoded = yield* Recorded.unwrapEffectIntent(retained).pipe(
               Effect.provideService(Crypto.Crypto, recoveryCrypto),
               Effect.mapError(() => new NativeSql.StoreError({ reason: "invalid_payload" })),
             );
-            const record = reservation.recovery.recorded_caller;
+            const recovery = retained;
             if (
               receipt.origin !== "native" ||
-              receipt.request_body !== reservation.recovery.request_body ||
-              receipt.receipt.request_sha256 !== reservation.recovery.request_sha256 ||
-              canonicalJson(decoded.intent) !== canonicalJson(reservation.intent) ||
-              record.destination.registry_instance_id !== scope.registry_instance_id ||
-              record.destination.owner_id !== scope.owner_id ||
-              record.destination.home_generation !== reservation.server_generation ||
-              record.registry_principal_id !== reservation.principal_id
+              receipt.request_body !== recovery.request_body ||
+              receipt.receipt.request_sha256 !== recovery.request_sha256 ||
+              canonicalJson(decoded.intent) !== canonicalJson(reservation.intent)
             )
               return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+            if (recovery.format === "jones-native-effect-recovery/2") {
+              yield* validatePeer(scope, reservation);
+              if (receipt.receipt.operation !== reservation.effect)
+                return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+            } else {
+              const record = recovery.recorded_caller;
+              if (
+                record.destination.registry_instance_id !== scope.registry_instance_id ||
+                record.destination.owner_id !== scope.owner_id ||
+                record.destination.home_generation !== reservation.server_generation ||
+                record.registry_principal_id !== reservation.principal_id
+              )
+                return yield* new NativeSql.StoreError({ reason: "invalid_payload" });
+            }
           }
           const envelope = yield* db.sealJson(
             {
@@ -164,9 +216,14 @@ const make = Effect.gen(function* () {
               record_id: reservation.command_id,
               revision: reservation.admitted_registry_version,
             },
-            reservation.recovery ?? reservation.intent,
+            reservation.peer_recovery ?? reservation.recovery ?? reservation.intent,
           );
-          const { intent: _intent, recovery: _recovery, ...row } = reservation;
+          const {
+            intent: _intent,
+            recovery: _recovery,
+            peer_recovery: _peerRecovery,
+            ...row
+          } = reservation;
           yield* sql`INSERT INTO jones_workstreams_external_reservations ${sql.insert({ ...scope, ...row, state: "active", envelope })}`;
         }),
       ),

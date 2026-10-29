@@ -1,3 +1,5 @@
+import * as PeerEffect from "./peerEffectEnvelope.ts";
+
 import { AuthOrchestrationReadScope, AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
@@ -454,11 +456,25 @@ export const wrapEffectIntent = Effect.fn("RecordedCaller.wrapEffectIntent")(fun
     recorded_caller: yield* decodeRecordedCaller(record),
   };
 });
+interface UnwrappedEffectIntent {
+  readonly intent: unknown;
+  readonly recovery: typeof StoredEffectIntent.Type | null;
+  readonly peer_recovery?: PeerEffect.StoredPeerEffectV2;
+}
 export const unwrapEffectIntent = Effect.fn("RecordedCaller.unwrapEffectIntent")(function* (
   stored: unknown,
-) {
+): Effect.fn.Return<UnwrappedEffectIntent, RecordedCallerFence, Crypto.Crypto> {
   if (typeof stored !== "object" || stored === null || !("format" in stored))
     return { intent: stored, recovery: null };
+  if (stored.format === "jones-native-effect-recovery/2") {
+    const value = yield* PeerEffect.decodeStoredPeerEffect(stored).pipe(
+      Effect.mapError(() => new RecordedCallerFence({ code: "malformed" })),
+    );
+    const intent = yield* decodeJson(value.intent_body).pipe(
+      Effect.mapError(() => new RecordedCallerFence({ code: "malformed" })),
+    );
+    return { intent, recovery: null, peer_recovery: value };
+  }
   const value = yield* decodeEffectIntent(stored).pipe(
     Effect.mapError(() => new RecordedCallerFence({ code: "malformed" })),
   );
