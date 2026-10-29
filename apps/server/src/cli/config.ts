@@ -26,6 +26,7 @@ import { resolveServiceLauncherMode } from "../cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "../config.ts";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
 import { isProcessAlive, readPersistedServerRuntimeState } from "../serverRuntimeState.ts";
+import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
 
 const modeFlag = Flag.Literals("mode", ServerConfig.RuntimeMode.literals).pipe(
   Flag.withDescription("Runtime mode. `desktop` keeps loopback defaults unless overridden."),
@@ -94,6 +95,10 @@ export const traceMaxFilesConfig = Config.Int("T3CODE_TRACE_MAX_FILES").pipe(
 );
 
 const EnvServerConfig = Config.all({
+  serverParallelismProfile: Config.String("JONES_SERVER_PARALLELISM_PROFILE").pipe(
+    Config.option,
+    Config.map(Option.getOrUndefined),
+  ),
   logLevel: Config.LogLevel("T3CODE_LOG_LEVEL").pipe(Config.withDefault("Info")),
   traceMinLevel: Config.LogLevel("T3CODE_TRACE_MIN_LEVEL").pipe(Config.withDefault("Info")),
   traceTimingEnabled: Config.Boolean("T3CODE_TRACE_TIMING_ENABLED").pipe(Config.withDefault(true)),
@@ -267,6 +272,17 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
   const env = yield* EnvServerConfig;
+  const serverParallelism = yield* Effect.try({
+    try: () => resolveServerParallelismProfile(env.serverParallelismProfile),
+    catch: () =>
+      new Config.ConfigError(
+        new Schema.SchemaError(
+          new SchemaIssue.InvalidValue({
+            message: "JONES_SERVER_PARALLELISM_PROFILE must be laptop or vps.",
+          }),
+        ),
+      ),
+  });
   const normalizedFlags = {
     mode: flags.mode ?? Option.none(),
     port: flags.port ?? Option.none(),
@@ -472,6 +488,7 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
   );
 
   const config: ServerConfig.ServerConfig["Service"] = {
+    serverParallelism,
     logLevel,
     traceMinLevel: env.traceMinLevel,
     traceTimingEnabled: env.traceTimingEnabled,

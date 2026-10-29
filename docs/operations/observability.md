@@ -139,6 +139,43 @@ Metrics are not written to a local file.
 
 If OTLP is not configured, metrics still exist in-process, but you will not have a local artifact to inspect.
 
+Pool timings use the existing metric registry through the Jones pool adapter.
+Reader queue, startup, checkpoint admission, worker execution, estimated reply and
+lease duration are separate. Compute admission, queue, startup, job and
+`request_round_trip` are parent-local intervals. The roundtrip includes guardian
+arm/disarm, execution and result delivery. Child-local `execute` timestamps bracket
+open, list, path/content search, refresh and close, including awaited failure or
+cancellation cleanup. `reply` measures chunk preparation, serialization, credit
+waits and writes up to terminal-envelope preparation, separately from execution.
+`parent_continuation` covers post-validation terminal credit/disarm completion and the
+supervisor's result fence/readiness update; it excludes later caller work.
+
+Each request optionally exchanges parent-send, child-receive, child-terminal and
+parent-receive monotonic timestamps. Different clock origins and asymmetric
+latency are allowed. `reply_delivery` is the midpoint of a nonnegative interval,
+with lower/upper bounds and half-width uncertainty; it includes terminal encoding
+and pipe scheduling through parent frame decode/validation, and is never exact
+network transfer. The clock-offset interval
+allows 1 ms resolution plus 1000 ppm relative drift over the bounded exchange.
+Out-of-envelope clock evidence makes the estimate unavailable. Roundtrip minus
+execution is never reported as exact transfer. Missing timing is `null` in
+observations and qualification reports; the metric adapter sets
+`jones_server_pool_timing_available` to zero without inserting a zero duration.
+
+Validated guardian RSS samples flow through the same nonthrowing observer to
+`jones_server_compute_resident_bytes`, preserving bytes exactly. RSS is sampled
+independently on FD3; it is not a hard memory cap. Qualification retains raw
+timing/bounds/RSS observations alongside separate aggregate OS samples. Generation
+is a per-slot gauge instead of an ever-growing metric label; PIDs and clock values
+are not labels.
+
+Native scan/warmup gauges are incomplete readiness samples. Zero does not prove
+native quiescence. `activeForegroundOpenRefresh`, `chargedAllocations` and
+`retiringGenerations` measure different lifetimes; only captured exit followed by
+durable retirement releases a generation's charges. Keep paths, SQL, content and
+credentials out of all pool metric labels. The adapter swallows sink failure and
+retains no observation queue.
+
 ### Event Loop Stalls
 
 `apps/server/src/observability/EventLoopMonitor.ts` samples the server's event loop every 30 s. When

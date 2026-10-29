@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
 
 import * as ServerConfig from "../../config.ts";
+import { resolveServerParallelismProfile } from "../../jones/serverParallelism/config.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
@@ -171,6 +172,7 @@ export function makeReplayServerConfig(
       desktopBootstrapToken: undefined,
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
+      serverParallelism: resolveServerParallelismProfile(undefined),
       stateDir,
       authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),
