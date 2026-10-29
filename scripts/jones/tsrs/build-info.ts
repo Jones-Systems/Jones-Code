@@ -5,7 +5,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Identity from "./identity.ts";
-import { processIdentity } from "./patch.ts";
+import { processIdentity, CommandCancelled, cancellationExitCode } from "./patch.ts";
 import { configurationSnapshots } from "./config-inputs.ts";
 import {
   canonical,
@@ -327,7 +327,7 @@ async function coordinated<A>(
   const lock = Identity.path.join(namespace, "admission.lock");
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + 10000;
   for (;;) {
-    if (signal.aborted) throw new Error("Build-info admission cancelled.");
+    if (signal.aborted) throw new CommandCancelled(signal);
     const attempt = new Map<string, string>();
     let uncertain = false;
     try {
@@ -543,14 +543,15 @@ export async function runWithBuildInfo(options: StatefulCheck): Promise<number> 
     const seed = await readSeed(paths.entry, identity, STATE_SCHEMA);
     await create(working, seed ? convertSelfReference(seed, output, working) : Buffer.alloc(0));
     options.log?.(`[tsrs] ${seed ? "seed validated" : "cache miss"}: ${output}; ${working}`);
-    if (signal.aborted || !(await unchanged()))
-      throw new Error("Cancelled or changed configuration before checking.");
+    if (signal.aborted) throw new CommandCancelled(signal);
+    if (!(await unchanged())) throw new Error("Changed configuration before checking.");
     exitConfirmed = false;
     try {
       result = await run([...args, "--tsBuildInfoFile", working], () => {
         spawned = true;
       });
       exitConfirmed = true;
+      if (signal.aborted) result = cancellationExitCode(signal);
     } catch (error) {
       exitConfirmed = !spawned;
       throw error;
