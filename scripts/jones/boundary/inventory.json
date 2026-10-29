@@ -2329,6 +2329,7 @@
     "apps/web/src/jones/pendingSends/send.test.ts": "jones-owned",
     "apps/web/src/jones/pendingSends/sidebar.ts": "jones-owned",
     "apps/web/src/jones/pendingSends/sidebar.test.ts": "jones-owned",
+    "apps/web/src/jones/pendingSends/sidebar.browser.test.tsx": "jones-owned",
     "apps/web/src/jones/pendingSends/send.ts": "jones-owned",
     "apps/web/src/jones/pendingSends/PendingSendsCoordinator.tsx": "jones-owned",
     "apps/web/src/jones/pendingSends/hooks.ts": "jones-owned",

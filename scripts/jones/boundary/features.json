@@ -2527,12 +2527,13 @@
         "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
         "apps/web/src/jones/pendingSends/send.test.ts",
         "apps/web/src/jones/pendingSends/sidebar.test.ts",
+        "apps/web/src/jones/pendingSends/sidebar.browser.test.tsx",
         "apps/web/src/jones/pendingSends/store.test.ts",
         "apps/web/src/jones/pendingSends/app.browser.test.tsx",
         "packages/client-runtime/src/operations/commands.test.ts",
         "packages/client-runtime/src/state/threadCommands.test.ts"
       ],
-      "scope": "Web and desktop renderer pending sends admit before asynchronous preparation, survive navigation in memory, preserve monotonic authoritative acceptance, retry only the exact frozen request by explicit action, and hand local Working and previews to correlated server evidence. Composer, plan followup, lifecycle text commands and fanout targets share the prepared-turn seam. Pending-only targets remain routable until correlated handoff, and fanout uncertainty guards clear only for the accepted target, including Retry and late failures. Synthetic whole-app connection coverage controls commit independently from acknowledgement; no real provider, installed runtime or mobile change."
+      "scope": "Web and desktop renderer pending sends admit before asynchronous preparation, survive navigation in memory, preserve monotonic authoritative acceptance, retry only the exact frozen request by explicit action, and hand local Working and previews to correlated server evidence. Composer, plan followup, lifecycle text commands and fanout targets share the prepared-turn seam. Pending-only targets remain routable until correlated handoff, and fanout uncertainty guards clear only for the accepted target, including Retry and late failures. Synthetic whole-app connection coverage controls commit independently from acknowledgement; no real provider, installed runtime or mobile change. Sidebar subscriptions cache effective pending projections per hook input and environment/thread, preserving bookkeeping-only row/list identity. The adjacent sidebar.browser.test.tsx uses the real pending store, shell/delegated Atom graph and permission helpers; only connection construction and the session producer are mocked. Jones-owned test imports consume apps/web/test/render.tsx, apps/web/src/rpc/atomRegistry.ts, apps/web/src/state/session.ts, apps/web/src/types.ts and public client-runtime connection, state/threads and state/models exports, with local synthetic fixtures. Existing optimistic-send-feedback fragment directory ownership covers this test; no upstream-to-Jones edge, shared implementation edit or upstream test exception is added."
     },
     {
       "id": "delegated-task-supervision",
