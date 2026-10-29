@@ -511,6 +511,14 @@
       "types": "./src/jones/shutdownBudget.ts",
       "import": "./src/jones/shutdownBudget.ts"
     },
+    "./jones/sqliteReadPriority": {
+      "types": "./src/jones/sqliteReadPriority.ts",
+      "import": "./src/jones/sqliteReadPriority.ts"
+    },
+    "./jones/sqliteReaderContracts": {
+      "types": "./src/jones/sqliteReaderContracts.ts",
+      "import": "./src/jones/sqliteReaderContracts.ts"
+    },
     "./jones/workstreamsRegistryBinding": {
       "types": "./src/jones/workstreamsRegistryBinding.ts",
       "import": "./src/jones/workstreamsRegistryBinding.ts"

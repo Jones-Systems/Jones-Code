@@ -16,6 +16,7 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
+import { resolveServerParallelismProfile } from "../../jones/serverParallelism/config.ts";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
@@ -138,6 +139,7 @@ export function makeReplayServerConfig(
       desktopBootstrapToken: undefined,
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
+      serverParallelism: resolveServerParallelismProfile(undefined),
       stateDir,
       authorityStateDir: path.join(baseDir, "native-store-authority"),
       dbPath: path.join(stateDir, "state.sqlite"),

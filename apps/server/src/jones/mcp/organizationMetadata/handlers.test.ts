@@ -25,6 +25,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import { ServerConfig, deriveServerPaths } from "../../../config.ts";
 import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
+import { resolveServerParallelismProfile } from "../../serverParallelism/config.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
 import { APP_IDENTITY } from "../../runtimeIdentity/AppIdentity.ts";
@@ -40,6 +41,7 @@ const configLayer = Layer.effect(
   deriveServerPaths("/synthetic/effective-home", undefined).pipe(
     Effect.map((derivedPaths) =>
       ServerConfig.of({
+        serverParallelism: resolveServerParallelismProfile(undefined),
         logLevel: "Error",
         traceMinLevel: "Info",
         traceTimingEnabled: true,

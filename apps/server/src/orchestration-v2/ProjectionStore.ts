@@ -7291,6 +7291,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         sequenceRows,
         providerThreadRows,
         pendingTurnItemRows,
+        dependencyRows,
       ] = yield* Effect.all([
         readForThreadIds(selectShellRunRows, forkSourceIds),
         readForThreadIds(selectShellRunItemCounts, forkSourceIds),
@@ -7312,6 +7313,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             ),
           ),
         ),
+        resultDependencies.dependencies(),
       ]);
       return {
         targetThreadIds,
@@ -7322,6 +7324,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
         sequenceRows,
         providerThreadRows,
         pendingTurnItemRows,
+        dependencyRows,
       };
     });
 
@@ -7334,6 +7337,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       sequenceRows,
       providerThreadRows,
       pendingTurnItemRows,
+      dependencyRows,
     }: Effect.Success<ReturnType<typeof readShellSnapshotRows>>) {
       const { runOrdinalsByThreadId, itemCountsByThreadId } = runMapsByThreadId({
         runRows,
@@ -7342,9 +7346,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
       const shellItemCountsByThreadId = shellItemCountMap(shellItemCountRows);
       const { providerThreadsByThreadId, pendingTurnItemsByThreadId } =
         yield* pendingBackgroundDataByThreadId({ providerThreadRows, pendingTurnItemRows });
-      const dependenciesByThreadId = dependencyRosterByThread(
-        yield* resultDependencies.dependencies(),
-      );
+      // Decode may run after the lease is released. Never query SQL here.
+      const dependenciesByThreadId = dependencyRosterByThread(dependencyRows);
       const states = yield* Effect.forEach(threadRows, (row) =>
         shellThreadStateFromRow({
           row,
