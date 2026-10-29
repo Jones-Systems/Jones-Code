@@ -113,6 +113,7 @@ export function HomeRouteScreen() {
     renameThread,
     regenerateThreadTitle,
     unsettleThread,
+    undoSettleThread,
   } = useThreadListActions();
   const pendingTasks = usePendingNewTasks();
   const { openPendingTask, confirmDeletePendingTask } =
@@ -256,6 +257,7 @@ export function HomeRouteScreen() {
           onSnoozeThread={snoozeThread}
           onUnsnoozeThread={unsnoozeThread}
           onUnsettleThread={unsettleThread}
+          onUndoSettleThread={undoSettleThread}
           onPinThread={pinThread}
           onUnpinThread={unpinThread}
           onSetThreadAutoSettle={setThreadAutoSettle}
