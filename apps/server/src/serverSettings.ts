@@ -218,11 +218,15 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
 
   const updateTestSettings = (
     update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
+    patch: ServerSettingsPatch,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Ref.get(currentSettingsRef).pipe(
         Effect.flatMap(update),
         Effect.flatMap(normalizeServerSettings),
+        Effect.tap((nextSettings) =>
+          validateExplicitTextGenerationSelection(nextSettings, patch, "test settings"),
+        ),
         Effect.tap((nextSettings) => Ref.set(currentSettingsRef, nextSettings)),
         Effect.map(resolveTextGenerationProvider),
       ),
@@ -233,16 +237,23 @@ const makeTest = Effect.fn("serverSettings.makeTest")(function* (
     ready: Effect.void,
     getSettings,
     updateSettings: (patch) =>
-      updateTestSettings((currentSettings) =>
-        Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+      updateTestSettings(
+        (currentSettings) => Effect.succeed(applyServerSettingsPatch(currentSettings, patch)),
+        patch,
       ),
     updateProviderInstance: (mutation, patch = {}) =>
-      updateTestSettings((currentSettings) =>
-        Effect.gen(function* () {
-          yield* ensureProviderInstanceMutationAllowed(currentSettings, mutation, "test settings");
-          const patched = applyServerSettingsPatch(currentSettings, patch);
-          return applyProviderInstanceMutation(patched, mutation);
-        }),
+      updateTestSettings(
+        (currentSettings) =>
+          Effect.gen(function* () {
+            yield* ensureProviderInstanceMutationAllowed(
+              currentSettings,
+              mutation,
+              "test settings",
+            );
+            const patched = applyServerSettingsPatch(currentSettings, patch);
+            return applyProviderInstanceMutation(patched, mutation);
+          }),
+        patch,
       ),
     withSettingsSnapshot: (use) =>
       writeSemaphore.withPermits(1)(getSettings.pipe(Effect.flatMap(use))),
@@ -367,6 +378,31 @@ function selectionSupportsTextGeneration(
   selection: ModelSelection,
 ): boolean {
   return settings.providerInstances[selection.instanceId]?.driver !== ACP_REGISTRY_DRIVER;
+}
+
+function validateExplicitTextGenerationSelection(
+  settings: ServerSettings,
+  patch: ServerSettingsPatch,
+  settingsPath: string,
+): Effect.Effect<void, ServerSettingsError> {
+  const selectionPatch = patch.textGenerationModelSelection;
+  if (
+    selectionPatch === undefined ||
+    Object.keys(selectionPatch).length === 0 ||
+    (isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection) &&
+      selectionSupportsTextGeneration(settings, settings.textGenerationModelSelection))
+  )
+    return Effect.void;
+  return Effect.fail(
+    new ServerSettingsError({
+      settingsPath,
+      operation: "normalize",
+      providerInstanceId: settings.textGenerationModelSelection.instanceId,
+      cause: new Error(
+        "Explicit text-generation selection requires an enabled provider with text-generation support.",
+      ),
+    }),
+  );
 }
 
 function resolveTextGenerationProvider(settings: ServerSettings): ServerSettings {
@@ -942,6 +978,7 @@ const make = Effect.gen(function* () {
 
   const updateAndPersistSettings = (
     update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
+    patch: ServerSettingsPatch,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
@@ -953,7 +990,8 @@ const make = Effect.gen(function* () {
             cause: parseFailure.value,
           });
         }
-        const updated = yield* update(current);
+        const updated = yield* update(current).pipe(Effect.flatMap(normalizeServerSettings));
+        yield* validateExplicitTextGenerationSelection(updated, patch, settingsPath);
         const persisted = yield* persistSettingsSecrets(current, updated);
         const next = yield* normalizeServerSettings(persisted.settings);
         const materialized = yield* Effect.uninterruptibleMask(() =>
@@ -1095,16 +1133,19 @@ const make = Effect.gen(function* () {
       Effect.map(resolveTextGenerationProvider),
     ),
     updateSettings: (patch) =>
-      updateAndPersistSettings((current) =>
-        Effect.succeed(applyServerSettingsPatch(current, patch)),
+      updateAndPersistSettings(
+        (current) => Effect.succeed(applyServerSettingsPatch(current, patch)),
+        patch,
       ),
     updateProviderInstance: (mutation, patch = {}) =>
-      updateAndPersistSettings((current) =>
-        Effect.gen(function* () {
-          yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
-          const patched = applyServerSettingsPatch(current, patch);
-          return applyProviderInstanceMutation(patched, mutation);
-        }),
+      updateAndPersistSettings(
+        (current) =>
+          Effect.gen(function* () {
+            yield* ensureProviderInstanceMutationAllowed(current, mutation, settingsPath);
+            const patched = applyServerSettingsPatch(current, patch);
+            return applyProviderInstanceMutation(patched, mutation);
+          }),
+        patch,
       ),
     withSettingsSnapshot,
     get streamChanges() {
