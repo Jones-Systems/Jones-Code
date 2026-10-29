@@ -15,6 +15,7 @@ import {
 } from "./guard.mjs";
 
 import { assertQualificationDatabaseSource, assertSyntheticDatabaseSource } from "./sources.mjs";
+import { qualificationSqliteApi } from "./qualification-adapters.mjs";
 
 const requestLimit = 49 * 1024;
 const receiptLimit = 24 * 1024;
@@ -220,7 +221,7 @@ async function loadSource(source) {
     Option: "effect/Option",
     Stream: "effect/Stream",
     Logger: "effect/Logger",
-    SqlClient: "effect/sql/SqlClient",
+    SqlClient: qualificationSqliteApi(false).sqlClient,
     NodeServices: "@effect/platform-node/NodeServices",
   };
   const files = {

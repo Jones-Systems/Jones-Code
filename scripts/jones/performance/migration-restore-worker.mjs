@@ -30,6 +30,7 @@ import {
   validateMigrationRestoreRequest,
 } from "./migration-restore.mjs";
 import { readRuntimeBinding } from "./runtime-binding.mjs";
+import { preserveForeignContent, qualificationSqliteApi } from "./qualification-adapters.mjs";
 
 const receivingRoot = NodePath.resolve(import.meta.dirname, "../../..");
 const lookupIndex = "orchestration_events_v2_created_threads_idx";
@@ -78,11 +79,11 @@ async function loadModules(source, current) {
     Layer: "effect/Layer",
     ManagedRuntime: "effect/ManagedRuntime",
     Logger: "effect/Logger",
-    SqlClient: "effect/sql/SqlClient",
+    SqlClient: qualificationSqliteApi(current).sqlClient,
     NodeServices: "@effect/platform-node/NodeServices",
   };
   const files = {
-    Sqlite: "apps/server/src/persistence/Layers/Sqlite.ts",
+    Sqlite: qualificationSqliteApi(current).modulePath,
     Client: "packages/shared/src/nodeSqliteClient.ts",
   };
   if (current)
@@ -229,7 +230,7 @@ async function runtimePhase(record, source, current, binding, signal, mode, use)
     let database =
       mode === "client"
         ? modules.Client.layer({ filename: permit.canonicalPath })
-        : modules.Sqlite.makeSqlitePersistenceLive(permit.canonicalPath);
+        : modules.Sqlite[qualificationSqliteApi(current).factory](permit.canonicalPath);
     database = database.pipe(Layer.provide(modules.NodeServices.layer));
     let layer = database;
     if (mode === "import") {
@@ -829,49 +830,32 @@ export async function runBoundMigrationRestoreCase(request, input) {
       evidence.backups.push(await nativeBackup(seed, receiving, input.binding, input.signal));
       evidence.initializationCopyBasis =
         "native-backup-to-registered-destination; initializer absent-destination copy covered separately by initializeV2Database.test.ts";
-      if (specification.kind === "foreign") {
-        evidence.foreignGuard = (
-          await phase(
-            "receiving-guard-preserves-foreign-content",
-            receiving,
-            candidate,
-            true,
-            "client",
-            async ({ modules, run, query }) => {
-              const before = await capture(query);
-              const entries = await Promise.all(
-                receivingJonesManifest(candidate).map(async ({ id, name, path }) => [
-                  id,
-                  name,
-                  (await import(NodeURL.pathToFileURL(path).href)).default,
-                ]),
-              );
-              await run(modules.Guard.runJonesMigrations(entries));
-              const after = await capture(query);
-              for (const [table, summary] of Object.entries(before.content.tables)) {
-                if (table !== "jones_sql_migrations")
-                  NodeAssert.deepEqual(
-                    after.content.tables[table],
-                    summary,
-                    `foreign guard changed ${table}`,
-                  );
-              }
-              for (const definition of before.content.definitions)
-                NodeAssert.ok(
-                  after.content.definitions.some(
-                    (item) => JSON.stringify(item) === JSON.stringify(definition),
-                  ),
-                  "foreign guard changed a recorded schema definition",
+      evidence.foreignGuard = await preserveForeignContent(
+        specification.kind,
+        async () =>
+          (
+            await phase(
+              "receiving-guard-preserves-foreign-content",
+              receiving,
+              candidate,
+              true,
+              "client",
+              async ({ modules, run, query }) => {
+                const before = await capture(query);
+                const entries = await Promise.all(
+                  receivingJonesManifest(candidate).map(async ({ id, name, path }) => [
+                    id,
+                    name,
+                    (await import(NodeURL.pathToFileURL(path).href)).default,
+                  ]),
                 );
-              NodeAssert.deepEqual(
-                after.content.ledgers.jones_sql_migrations.filter(({ id }) => id < 100),
-                before.content.ledgers.jones_sql_migrations.filter(({ id }) => id < 100),
-              );
-              return { unchangedForeignContent: true, adoptedForeignFeatures: false };
-            },
-          )
-        ).value;
-      }
+                await run(modules.Guard.runJonesMigrations(entries));
+                const after = await capture(query);
+                return { before, after };
+              },
+            )
+          ).value,
+      );
       let destination = receiving;
       if (specification.id === "restore-pre") {
         destination = allocate("restored-pre", "statev2.sqlite");
