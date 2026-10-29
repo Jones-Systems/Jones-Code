@@ -454,286 +454,354 @@ const makeIdleHarness = (options: HarnessOptions = {}) =>
 const awaitIdleAgentReady = (threadId: ThreadId) =>
   WorktreeSetupTracker.WorktreeSetupTracker.use((tracker) =>
     tracker.stream(threadId).pipe(
-      Stream.filter((snapshot) => snapshot?.stages.some((stage) => stage.id === "agent" && stage.status === "done") === true),
+      Stream.filter(
+        (snapshot) =>
+          snapshot?.stages.some((stage) => stage.id === "agent" && stage.status === "done") ===
+          true,
+      ),
       Stream.runHead,
     ),
   );
 
-it.effect("holds an idle new-worktree first send, then retries the same command once in the prepared checkout", () =>
-  Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const allow = yield* Deferred.make<void>();
-    const harness = makeIdleHarness({
-      createWorktree: () => Deferred.succeed(entered, undefined).pipe(
-        Effect.andThen(Deferred.await(allow)),
-        Effect.as({ worktree: { path: "/repo-worktrees/feature", refName: "feature", headSha: "abc" } } as never),
-      ),
-    });
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
-      const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const input = launchInput({
-        command: "idle-gated",
-        thread: "idle-gated",
-        workspace: { type: "worktree", baseRef: "main" },
+it.effect(
+  "holds an idle new-worktree first send, then retries the same command once in the prepared checkout",
+  () =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const allow = yield* Deferred.make<void>();
+      const harness = makeIdleHarness({
+        createWorktree: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(allow)),
+            Effect.as({
+              worktree: { path: "/repo-worktrees/feature", refName: "feature", headSha: "abc" },
+            } as never),
+          ),
       });
-      const launched = yield* launches.launch(input);
-      yield* Deferred.await(entered);
-      const send = idleSend(launched.threadId);
-      const failure = yield* threads.dispatch(send).pipe(Effect.flip);
-      assert.equal(failure._tag, "OrchestratorDispatchError");
-      if (failure._tag === "OrchestratorDispatchError")
-        assert.propertyVal(failure.cause, "_tag", "IdleWorktreeAdmissionError");
-      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(send.commandId)));
-      const held = yield* threads.getThreadProjection(launched.threadId);
-      assert.isEmpty(held.messages);
-      assert.isEmpty(held.runs);
-      assert.isEmpty(held.checkpointScopes);
-      assert.isEmpty(yield* outbox.listByCommandId(send.commandId));
-      yield* Effect.all([launches.launch(input), launches.launch(input)], { concurrency: "unbounded" });
-      assert.lengthOf(harness.createWorktree.mock.calls, 1);
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const input = launchInput({
+          command: "idle-gated",
+          thread: "idle-gated",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(entered);
+        const send = idleSend(launched.threadId);
+        const failure = yield* threads.dispatch(send).pipe(Effect.flip);
+        assert.equal(failure._tag, "OrchestratorDispatchError");
+        if (failure._tag === "OrchestratorDispatchError")
+          assert.propertyVal(failure.cause, "_tag", "IdleWorktreeAdmissionError");
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(send.commandId)));
+        const held = yield* threads.getThreadProjection(launched.threadId);
+        assert.isEmpty(held.messages);
+        assert.isEmpty(held.runs);
+        assert.isEmpty(held.checkpointScopes);
+        assert.isEmpty(yield* outbox.listByCommandId(send.commandId));
+        yield* Effect.all([launches.launch(input), launches.launch(input)], {
+          concurrency: "unbounded",
+        });
+        assert.lengthOf(harness.createWorktree.mock.calls, 1);
 
-      const independent = yield* launches.launch(launchInput({ command: "idle-independent", thread: "idle-independent", message: "Independent root" }));
-      assert.equal(independent.projection.runs[0]?.status, "preparing");
-      yield* Deferred.succeed(allow, undefined);
-      yield* awaitIdleAgentReady(launched.threadId);
-      yield* threads.dispatch(send);
-      yield* threads.dispatch(send);
-      const ready = yield* threads.getThreadProjection(launched.threadId);
-      assert.lengthOf(ready.messages, 1);
-      assert.lengthOf(ready.runs, 1);
-      assert.equal(ready.checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
-      assert.lengthOf((yield* outbox.listByCommandId(send.commandId)).filter(({ request }) => request.type === "provider-turn.start"), 1);
-      assert.isTrue((yield* launches.launch(input)).resumed);
-      assert.lengthOf(harness.createWorktree.mock.calls, 1);
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`UPDATE jones_idle_worktree_admission SET phase = 'unresolved' WHERE thread_id = ${launched.threadId}`;
-      assert.isTrue((yield* threads.dispatch(send)).replayed);
-      yield* threads.dispatch(idleSend(launched.threadId, "new-after-hold")).pipe(Effect.flip);
-      assert.lengthOf((yield* threads.getThreadProjection(launched.threadId)).runs, 1);
-    }).pipe(Effect.provide(harness.layer));
-  }),
+        const independent = yield* launches.launch(
+          launchInput({
+            command: "idle-independent",
+            thread: "idle-independent",
+            message: "Independent root",
+          }),
+        );
+        assert.equal(independent.projection.runs[0]?.status, "preparing");
+        yield* Deferred.succeed(allow, undefined);
+        yield* awaitIdleAgentReady(launched.threadId);
+        yield* threads.dispatch(send);
+        yield* threads.dispatch(send);
+        const ready = yield* threads.getThreadProjection(launched.threadId);
+        assert.lengthOf(ready.messages, 1);
+        assert.lengthOf(ready.runs, 1);
+        assert.equal(ready.checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
+        assert.lengthOf(
+          (yield* outbox.listByCommandId(send.commandId)).filter(
+            ({ request }) => request.type === "provider-turn.start",
+          ),
+          1,
+        );
+        assert.isTrue((yield* launches.launch(input)).resumed);
+        assert.lengthOf(harness.createWorktree.mock.calls, 1);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE jones_idle_worktree_admission SET phase = 'unresolved' WHERE thread_id = ${launched.threadId}`;
+        assert.isTrue((yield* threads.dispatch(send)).replayed);
+        yield* threads.dispatch(idleSend(launched.threadId, "new-after-hold")).pipe(Effect.flip);
+        assert.lengthOf((yield* threads.getThreadProjection(launched.threadId)).runs, 1);
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
 
 it.effect.each([
   { async: false, finish: "complete" },
   { async: true, finish: "interrupt" },
   { async: true, finish: "failure" },
-])("idle admission preserves setup async=$async and its checkout after $finish", ({ async, finish }) =>
-  Effect.gen(function* () {
-    const writeEntered = yield* Deferred.make<void>();
-    const allowWrite = yield* Deferred.make<void>();
-    const completionEntered = yield* Deferred.make<void>();
-    const complete = yield* Deferred.make<void>();
-    let producer: Fiber.Fiber<unknown, unknown> | undefined;
-    const harness = makeIdleHarness({
-      runSetup: () => Effect.gen(function* () {
-        producer = yield* Effect.fiber;
-        return {
-          status: "started" as const,
-          terminalId: "idle-setup",
-          scriptId: "setup",
-          scriptName: "Setup",
-          scriptCommand: "synthetic-setup",
-          cwd: "/repo-worktrees/feature",
-          async,
-          writeCompletion: Deferred.succeed(writeEntered, undefined).pipe(Effect.andThen(Deferred.await(allowWrite))),
-          completion: Deferred.succeed(completionEntered, undefined).pipe(
-            Effect.andThen(Deferred.await(complete)),
-            Effect.as({ exitCode: finish === "failure" ? 1 : 0, durationMs: 0 }),
-          ),
-        };
-      }),
-    });
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
-      const input = launchInput({
-        command: "idle-setup-gate",
-        thread: "idle-setup-gate",
-        workspace: { type: "worktree", baseRef: "main" },
-      });
-      const launched = yield* launches.launch(input);
-      const send = idleSend(launched.threadId);
-      yield* Deferred.await(writeEntered);
-      yield* threads.dispatch(send).pipe(Effect.flip);
-      yield* Deferred.succeed(allowWrite, undefined);
-      yield* Deferred.await(completionEntered);
-      if (!async) {
-        yield* threads.dispatch(send).pipe(Effect.flip);
-        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(send.commandId)));
-        yield* Deferred.succeed(complete, undefined);
-      }
-      yield* awaitIdleAgentReady(launched.threadId);
-      yield* threads.dispatch(send);
-      assert.equal((yield* threads.getThreadProjection(launched.threadId)).checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
-      if (finish === "interrupt") yield* Fiber.interrupt(producer!);
-      if (finish === "failure") {
-        yield* Deferred.succeed(complete, undefined);
-        yield* Fiber.join(producer!);
-        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-        assert.equal((yield* tracker.get(launched.threadId))?.stages.find((stage) => stage.id === "setup-script")?.status, "failed");
-      }
-      assert.isEmpty(harness.removeWorktree.mock.calls);
-      const after = yield* threads.getThreadProjection(launched.threadId);
-      assert.equal(after.thread.worktreePath, "/repo-worktrees/feature");
-      assert.lengthOf(after.runs, 1);
-      const sink = yield* EventSink.EventSinkV2;
-      assert.equal((yield* sink.idleWorktreeAdmission!.read(launched.threadId))?.phase, "ready");
-    }).pipe(Effect.provide(harness.layer));
-  }),
-);
-
-it.effect.each(["before-commit", "after-commit"] as const)("preserves an idle checkout when release is uncertain %s", (outcome) =>
-  Effect.gen(function* () {
-    let attempts = 0;
-    let producer: Fiber.Fiber<unknown, unknown> | undefined;
-    const harness = makeIdleHarness({
-      idleAdmission: (store) => ({
-        ...store,
-        release: (identity) => {
-          if (attempts++ > 0) return store.release(identity);
-          return Effect.gen(function* () {
+])(
+  "idle admission preserves setup async=$async and its checkout after $finish",
+  ({ async, finish }) =>
+    Effect.gen(function* () {
+      const writeEntered = yield* Deferred.make<void>();
+      const allowWrite = yield* Deferred.make<void>();
+      const completionEntered = yield* Deferred.make<void>();
+      const complete = yield* Deferred.make<void>();
+      let producer: Fiber.Fiber<unknown, unknown> | undefined;
+      const harness = makeIdleHarness({
+        runSetup: () =>
+          Effect.gen(function* () {
             producer = yield* Effect.fiber;
-            if (outcome === "after-commit") yield* store.release(identity);
-            return yield* Effect.interrupt;
-          });
-        },
-      }),
-    });
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-      const sink = yield* EventSink.EventSinkV2;
-      const input = launchInput({
-        command: "idle-uncertain",
-        thread: "idle-uncertain",
-        workspace: { type: "worktree", baseRef: "main" },
+            return {
+              status: "started" as const,
+              terminalId: "idle-setup",
+              scriptId: "setup",
+              scriptName: "Setup",
+              scriptCommand: "synthetic-setup",
+              cwd: "/repo-worktrees/feature",
+              async,
+              writeCompletion: Deferred.succeed(writeEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(allowWrite)),
+              ),
+              completion: Deferred.succeed(completionEntered, undefined).pipe(
+                Effect.andThen(Deferred.await(complete)),
+                Effect.as({ exitCode: finish === "failure" ? 1 : 0, durationMs: 0 }),
+              ),
+            };
+          }),
       });
-      const launched = yield* launches.launch(input);
-      yield* tracker.stream(launched.threadId).pipe(Stream.filter((state) => state?.phase === "cancelled"), Stream.runHead);
-      yield* Fiber.await(producer!);
-      assert.isEmpty(harness.removeWorktree.mock.calls);
-      assert.equal((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath, "/repo-worktrees/feature");
-      const record = yield* sink.idleWorktreeAdmission!.read(launched.threadId);
-      assert.equal(record?.phase, outcome === "after-commit" ? "ready" : "prepared");
-      assert.isFalse(record?.cleanupOwned);
-      yield* launches.launch(input);
-      yield* threads.dispatch(idleSend(launched.threadId));
-      assert.lengthOf(harness.createWorktree.mock.calls, 1);
-      assert.lengthOf((yield* threads.getThreadProjection(launched.threadId)).runs, 1);
-    }).pipe(Effect.provide(harness.layer));
-  }),
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const input = launchInput({
+          command: "idle-setup-gate",
+          thread: "idle-setup-gate",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        const send = idleSend(launched.threadId);
+        yield* Deferred.await(writeEntered);
+        yield* threads.dispatch(send).pipe(Effect.flip);
+        yield* Deferred.succeed(allowWrite, undefined);
+        yield* Deferred.await(completionEntered);
+        if (!async) {
+          yield* threads.dispatch(send).pipe(Effect.flip);
+          assert.isTrue(Option.isNone(yield* receipts.getByCommandId(send.commandId)));
+          yield* Deferred.succeed(complete, undefined);
+        }
+        yield* awaitIdleAgentReady(launched.threadId);
+        yield* threads.dispatch(send);
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).checkpointScopes[0]?.cwd,
+          "/repo-worktrees/feature",
+        );
+        if (finish === "interrupt") yield* Fiber.interrupt(producer!);
+        if (finish === "failure") {
+          yield* Deferred.succeed(complete, undefined);
+          const producerExit = yield* Fiber.await(producer!);
+        assert.isTrue(Exit.isSuccess(producerExit));
+          const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+          assert.equal(
+            (yield* tracker.get(launched.threadId))?.stages.find(
+              (stage) => stage.id === "setup-script",
+            )?.status,
+            "failed",
+          );
+        }
+        assert.isEmpty(harness.removeWorktree.mock.calls);
+        const after = yield* threads.getThreadProjection(launched.threadId);
+        assert.equal(after.thread.worktreePath, "/repo-worktrees/feature");
+        assert.lengthOf(after.runs, 1);
+        const sink = yield* EventSink.EventSinkV2;
+        assert.equal((yield* sink.idleWorktreeAdmission!.read(launched.threadId))?.phase, "ready");
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
 
-it.effect.each(["interrupt", "complete"])("a stale idle preparation cannot remove, clear or release the current workspace after %s", (finish) =>
-  Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const complete = yield* Deferred.make<void>();
-    let producer: Fiber.Fiber<unknown, unknown> | undefined;
-    const harness = makeIdleHarness({
-      runSetup: () => Effect.gen(function* () {
-        producer = yield* Effect.fiber;
-        yield* Deferred.succeed(entered, undefined);
-        yield* Deferred.await(complete);
-        return { status: "no-script" as const };
-      }),
-    });
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const sql = yield* SqlClient.SqlClient;
-      const input = launchInput({
-        command: "idle-stale",
-        thread: "idle-stale",
-        workspace: { type: "worktree", baseRef: "main" },
+it.effect.each(["before-commit", "after-commit"] as const)(
+  "preserves an idle checkout when release is uncertain %s",
+  (outcome) =>
+    Effect.gen(function* () {
+      let attempts = 0;
+      let producer: Fiber.Fiber<unknown, unknown> | undefined;
+      const harness = makeIdleHarness({
+        idleAdmission: (store) => ({
+          ...store,
+          release: (identity) => {
+            if (attempts++ > 0) return store.release(identity);
+            return Effect.gen(function* () {
+              producer = yield* Effect.fiber;
+              if (outcome === "after-commit") yield* store.release(identity);
+              return yield* Effect.interrupt;
+            });
+          },
+        }),
       });
-      const launched = yield* launches.launch(input);
-      yield* Deferred.await(entered);
-      yield* sql`UPDATE jones_idle_worktree_admission SET generation = 'replacement-generation' WHERE thread_id = ${launched.threadId}`;
-      if (finish === "interrupt") yield* Fiber.interrupt(producer!);
-      else {
-        yield* Deferred.succeed(complete, undefined);
-        yield* Fiber.join(producer!);
-      }
-      assert.isEmpty(harness.removeWorktree.mock.calls);
-      assert.equal((yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath, "/repo-worktrees/feature");
-      yield* threads.dispatch(idleSend(launched.threadId)).pipe(Effect.flip);
-      assert.isEmpty((yield* threads.getThreadProjection(launched.threadId)).runs);
-    }).pipe(Effect.provide(harness.layer));
-  }),
-);
-
-it.effect.each([false, true])("accepted idle creation reentry resumes only an unissued preparation, issued=%s", (issued) =>
-  Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const allow = yield* Deferred.make<void>();
-    const harness = makeIdleHarness({
-      createWorktree: () => Deferred.succeed(entered, undefined).pipe(
-        Effect.andThen(Deferred.await(allow)),
-        Effect.as({ worktree: { path: "/repo-worktrees/feature", refName: "feature", headSha: "abc" } } as never),
-      ),
-    });
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const sink = yield* EventSink.EventSinkV2;
-      const input = launchInput({
-        command: "idle-accepted-reentry",
-        thread: "idle-accepted-reentry",
-        workspace: { type: "worktree", baseRef: "main" },
-      });
-      const identity: IdleWorktreeAdmission.Intent = {
-        threadId: input.threadId,
-        commandId: input.commandId,
-        generation: "accepted-generation",
-        requestKey: legacyPayloadHash(canonicalLegacyPayload({
-          projectId: input.projectId,
-          workspaceStrategy: input.workspaceStrategy,
-          runSetupScript: true,
-          reuseExistingThread: false,
-        })),
-        claimType: "thread.create",
-      };
-      yield* threads.dispatch({
-        type: "thread.create",
-        commandId: input.commandId,
-        threadId: input.threadId,
-        projectId: input.projectId,
-        title: input.title,
-        modelSelection,
-        runtimeMode: input.runtimeMode,
-        interactionMode: input.interactionMode,
-        branch: null,
-        worktreePath: null,
-        createdBy: input.createdBy,
-        creationSource: input.creationSource,
-      }).pipe(Effect.provideService(IdleWorktreeAdmission.LaunchIntent, identity));
-      if (issued) {
-        yield* sink.idleWorktreeAdmission!.issueWorktree(identity);
-        const failure = yield* launches.launch(input).pipe(Effect.flip);
-        assert.equal(failure._tag, "ThreadLaunchError");
-        if (failure._tag === "ThreadLaunchError")
-          assert.equal(failure.operation, "provision-worktree");
-        assert.isEmpty(harness.createWorktree.mock.calls);
-        yield* threads.dispatch(idleSend(input.threadId)).pipe(Effect.flip);
-        assert.equal((yield* sink.idleWorktreeAdmission!.read(input.threadId))?.phase, "worktree_issued");
-      } else {
-        const results = yield* Effect.all([launches.launch(input), launches.launch(input)], { concurrency: "unbounded" });
-        assert.isTrue(results.every((result) => result.resumed));
-        yield* Deferred.await(entered);
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const sink = yield* EventSink.EventSinkV2;
+        const input = launchInput({
+          command: "idle-uncertain",
+          thread: "idle-uncertain",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* tracker.stream(launched.threadId).pipe(
+          Stream.filter((state) => state?.phase === "cancelled"),
+          Stream.runHead,
+        );
+        yield* Fiber.await(producer!);
+        assert.isEmpty(harness.removeWorktree.mock.calls);
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath,
+          "/repo-worktrees/feature",
+        );
+        const record = yield* sink.idleWorktreeAdmission!.read(launched.threadId);
+        assert.equal(record?.phase, outcome === "after-commit" ? "ready" : "prepared");
+        assert.isFalse(record?.cleanupOwned);
+        yield* launches.launch(input);
+        yield* threads.dispatch(idleSend(launched.threadId));
         assert.lengthOf(harness.createWorktree.mock.calls, 1);
-        yield* Deferred.succeed(allow, undefined);
-        yield* awaitIdleAgentReady(input.threadId);
-        yield* threads.dispatch(idleSend(input.threadId));
-        assert.equal((yield* threads.getThreadProjection(input.threadId)).checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
-      }
-    }).pipe(Effect.provide(harness.layer));
-  }),
+        assert.lengthOf((yield* threads.getThreadProjection(launched.threadId)).runs, 1);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect.each(["interrupt", "complete"])(
+  "a stale idle preparation cannot remove, clear or release the current workspace after %s",
+  (finish) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const complete = yield* Deferred.make<void>();
+      let producer: Fiber.Fiber<unknown, unknown> | undefined;
+      const harness = makeIdleHarness({
+        runSetup: () =>
+          Effect.gen(function* () {
+            producer = yield* Effect.fiber;
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(complete);
+            return { status: "no-script" as const };
+          }),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        const input = launchInput({
+          command: "idle-stale",
+          thread: "idle-stale",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(entered);
+        yield* sql`UPDATE jones_idle_worktree_admission SET generation = 'replacement-generation' WHERE thread_id = ${launched.threadId}`;
+        if (finish === "interrupt") yield* Fiber.interrupt(producer!);
+        else {
+          yield* Deferred.succeed(complete, undefined);
+          const producerExit = yield* Fiber.await(producer!);
+        assert.isTrue(Exit.isSuccess(producerExit));
+        }
+        assert.isEmpty(harness.removeWorktree.mock.calls);
+        assert.equal(
+          (yield* threads.getThreadProjection(launched.threadId)).thread.worktreePath,
+          "/repo-worktrees/feature",
+        );
+        yield* threads.dispatch(idleSend(launched.threadId)).pipe(Effect.flip);
+        assert.isEmpty((yield* threads.getThreadProjection(launched.threadId)).runs);
+      }).pipe(Effect.provide(harness.layer));
+    }),
+);
+
+it.effect.each([false, true])(
+  "accepted idle creation reentry resumes only an unissued preparation, issued=%s",
+  (issued) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const allow = yield* Deferred.make<void>();
+      const harness = makeIdleHarness({
+        createWorktree: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(allow)),
+            Effect.as({
+              worktree: { path: "/repo-worktrees/feature", refName: "feature", headSha: "abc" },
+            } as never),
+          ),
+      });
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sink = yield* EventSink.EventSinkV2;
+        const input = launchInput({
+          command: "idle-accepted-reentry",
+          thread: "idle-accepted-reentry",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const identity: IdleWorktreeAdmission.Intent = {
+          threadId: input.threadId,
+          commandId: input.commandId,
+          generation: "accepted-generation",
+          requestKey: legacyPayloadHash(
+            canonicalLegacyPayload({
+              projectId: input.projectId,
+              workspaceStrategy: input.workspaceStrategy,
+              runSetupScript: true,
+              reuseExistingThread: false,
+            }),
+          ),
+          claimType: "thread.create",
+        };
+        yield* threads
+          .dispatch({
+            type: "thread.create",
+            commandId: input.commandId,
+            threadId: input.threadId,
+            projectId: input.projectId,
+            title: input.title,
+            modelSelection,
+            runtimeMode: input.runtimeMode,
+            interactionMode: input.interactionMode,
+            branch: null,
+            worktreePath: null,
+            createdBy: input.createdBy,
+            creationSource: input.creationSource,
+          })
+          .pipe(Effect.provideService(IdleWorktreeAdmission.LaunchIntent, identity));
+        if (issued) {
+          yield* sink.idleWorktreeAdmission!.issueWorktree(identity);
+          const failure = yield* launches.launch(input).pipe(Effect.flip);
+          assert.equal(failure._tag, "ThreadLaunchError");
+          if (failure._tag === "ThreadLaunchError")
+            assert.equal(failure.operation, "provision-worktree");
+          assert.isEmpty(harness.createWorktree.mock.calls);
+          yield* threads.dispatch(idleSend(input.threadId)).pipe(Effect.flip);
+          assert.equal(
+            (yield* sink.idleWorktreeAdmission!.read(input.threadId))?.phase,
+            "worktree_issued",
+          );
+        } else {
+          const results = yield* Effect.all([launches.launch(input), launches.launch(input)], {
+            concurrency: "unbounded",
+          });
+          assert.isTrue(results.every((result) => result.resumed));
+          yield* Deferred.await(entered);
+          assert.lengthOf(harness.createWorktree.mock.calls, 1);
+          yield* Deferred.succeed(allow, undefined);
+          yield* awaitIdleAgentReady(input.threadId);
+          yield* threads.dispatch(idleSend(input.threadId));
+          assert.equal(
+            (yield* threads.getThreadProjection(input.threadId)).checkpointScopes[0]?.cwd,
+            "/repo-worktrees/feature",
+          );
+        }
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
 
 it.effect("resumes an accepted idle creation before admitting a newly supplied first message", () =>
@@ -883,52 +951,68 @@ it.effect("atomically holds the expected-empty claim of an existing idle draft",
       yield* Deferred.succeed(allow, undefined);
       yield* awaitIdleAgentReady(input.threadId);
       yield* threads.dispatch(send);
-      assert.equal((yield* threads.getThreadProjection(input.threadId)).checkpointScopes[0]?.cwd, "/repo-worktrees/feature");
+      assert.equal(
+        (yield* threads.getThreadProjection(input.threadId)).checkpointScopes[0]?.cwd,
+        "/repo-worktrees/feature",
+      );
     }).pipe(Effect.provide(harness.layer));
   }),
 );
 
-it.effect.each([false, true])("failed or cancelled idle setup keeps first-send admission held, cancelled=%s", (cancelled) =>
-  Effect.gen(function* () {
-    const entered = yield* Deferred.make<void>();
-    const finish = yield* Deferred.make<void>();
-    const harness = makeIdleHarness({
-      runSetup: () => Deferred.succeed(entered, undefined).pipe(
-        Effect.andThen(Deferred.await(finish)),
-        Effect.andThen(Effect.fail(new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
-          operation: "openTerminal",
-          threadId: ThreadId.make("idle-setup-failure"),
-          projectId,
-          worktreePath: "/repo-worktrees/feature",
-          cause: "synthetic setup failure",
-        }))),
-      ),
-    });
-    yield* Effect.gen(function* () {
-      const launches = yield* ThreadLaunch.ThreadLaunchService;
-      const threads = yield* ThreadManagement.ThreadManagementService;
-      const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
-      const sink = yield* EventSink.EventSinkV2;
-      const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
-      const input = launchInput({
-        command: "idle-setup-failure",
-        thread: "idle-setup-failure",
-        workspace: { type: "worktree", baseRef: "main" },
+it.effect.each([false, true])(
+  "failed or cancelled idle setup keeps first-send admission held, cancelled=%s",
+  (cancelled) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const finish = yield* Deferred.make<void>();
+      const harness = makeIdleHarness({
+        runSetup: () =>
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(finish)),
+            Effect.andThen(
+              Effect.fail(
+                new ProjectSetupScriptRunner.ProjectSetupScriptOperationError({
+                  operation: "openTerminal",
+                  threadId: ThreadId.make("idle-setup-failure"),
+                  projectId,
+                  worktreePath: "/repo-worktrees/feature",
+                  cause: "synthetic setup failure",
+                }),
+              ),
+            ),
+          ),
       });
-      const launched = yield* launches.launch(input);
-      yield* Deferred.await(entered);
-      if (cancelled) assert.isTrue(yield* tracker.cancel(launched.threadId));
-      else yield* Deferred.succeed(finish, undefined);
-      yield* tracker.stream(launched.threadId).pipe(Stream.filter((state) => state?.phase === (cancelled ? "cancelled" : "failed")), Stream.runHead);
-      const send = idleSend(launched.threadId);
-      yield* threads.dispatch(send).pipe(Effect.flip);
-      assert.isTrue(Option.isNone(yield* receipts.getByCommandId(send.commandId)));
-      assert.isEmpty((yield* threads.getThreadProjection(launched.threadId)).runs);
-      assert.equal((yield* sink.idleWorktreeAdmission!.read(launched.threadId))?.phase, "unresolved");
-      yield* launches.launch(input).pipe(Effect.flip);
-      assert.lengthOf(harness.createWorktree.mock.calls, 1);
-    }).pipe(Effect.provide(harness.layer));
-  }),
+      yield* Effect.gen(function* () {
+        const launches = yield* ThreadLaunch.ThreadLaunchService;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
+        const sink = yield* EventSink.EventSinkV2;
+        const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
+        const input = launchInput({
+          command: "idle-setup-failure",
+          thread: "idle-setup-failure",
+          workspace: { type: "worktree", baseRef: "main" },
+        });
+        const launched = yield* launches.launch(input);
+        yield* Deferred.await(entered);
+        if (cancelled) assert.isTrue(yield* tracker.cancel(launched.threadId));
+        else yield* Deferred.succeed(finish, undefined);
+        yield* tracker.stream(launched.threadId).pipe(
+          Stream.filter((state) => state?.phase === (cancelled ? "cancelled" : "failed")),
+          Stream.runHead,
+        );
+        const send = idleSend(launched.threadId);
+        yield* threads.dispatch(send).pipe(Effect.flip);
+        assert.isTrue(Option.isNone(yield* receipts.getByCommandId(send.commandId)));
+        assert.isEmpty((yield* threads.getThreadProjection(launched.threadId)).runs);
+        assert.equal(
+          (yield* sink.idleWorktreeAdmission!.read(launched.threadId))?.phase,
+          "unresolved",
+        );
+        yield* launches.launch(input).pipe(Effect.flip);
+        assert.lengthOf(harness.createWorktree.mock.calls, 1);
+      }).pipe(Effect.provide(harness.layer));
+    }),
 );
 
 it.effect.each(

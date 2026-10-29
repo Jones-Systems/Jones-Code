@@ -58,6 +58,8 @@ export class IdleWorktreeAdmissionError extends Schema.TaggedError<IdleWorktreeA
   }
 }
 
+const isIdleWorktreeAdmissionError = Schema.is(IdleWorktreeAdmissionError);
+
 interface Row {
   readonly thread_id: string;
   readonly launch_command_id: string;
@@ -77,7 +79,7 @@ export const sameIdentity = (record: Identity, identity: Identity): boolean =>
 export const makeIdleWorktreeAdmission = (sql: SqlClient.SqlClient) => {
   const present = makeJonesTablePresence(sql);
   const persistence = (threadId: ThreadId) => (cause: unknown) =>
-    cause instanceof IdleWorktreeAdmissionError
+    isIdleWorktreeAdmissionError(cause)
       ? cause
       : new IdleWorktreeAdmissionError({ threadId, reason: "persistence", cause });
   const read = Effect.fn("IdleWorktreeAdmission.read")(
@@ -168,7 +170,9 @@ export const makeIdleWorktreeAdmission = (sql: SqlClient.SqlClient) => {
             (event) =>
               event.threadId === input.threadId &&
               event.type ===
-                (intent.claimType === "thread.create" ? "thread.created" : "thread.metadata-updated"),
+                (intent.claimType === "thread.create"
+                  ? "thread.created"
+                  : "thread.metadata-updated"),
           )
         )
           return yield* new IdleWorktreeAdmissionError({
@@ -185,7 +189,8 @@ export const makeIdleWorktreeAdmission = (sql: SqlClient.SqlClient) => {
     issueWorktree: (identity: Identity) => transition(identity, ["pending"], "worktree_issued"),
     recordWorkspace: (identity: Identity, path: string) =>
       transition(identity, ["worktree_issued"], "workspace_committed", path),
-    issueSetup: (identity: Identity) => transition(identity, ["workspace_committed"], "setup_issued"),
+    issueSetup: (identity: Identity) =>
+      transition(identity, ["workspace_committed"], "setup_issued"),
     prepareRelease: (identity: Identity, path: string) =>
       transition(identity, ["workspace_committed", "setup_issued"], "prepared", path),
     release: Effect.fn("IdleWorktreeAdmission.release")(

@@ -1,5 +1,6 @@
 import { ProviderDriverKind } from "@t3tools/contracts";
 import {
+  hasUnknownRuntimeBinding,
   ProviderAdapterProtocolError,
   ProviderRuntimeBindingError,
 } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -48,8 +49,7 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
     Effect.sync(() => {
       if (attempt.complete) return;
       attempt.abandoned = true;
-      if (attempt.mayHaveIssued && attempt.producer !== undefined)
-        uncertain.add(attempt.producer);
+      if (attempt.mayHaveIssued && attempt.producer !== undefined) uncertain.add(attempt.producer);
     });
   const unknown = (cause?: unknown) =>
     new ProviderRuntimeBindingError({
@@ -102,7 +102,9 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
       return yield* effect.pipe(
         Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon(attempt) : Effect.void)),
         Effect.mapError((cause) =>
-          attempt.mayHaveIssued && !attempt.complete ? unknown(cause) : cause,
+          attempt.mayHaveIssued && !attempt.complete && !hasUnknownRuntimeBinding(cause)
+            ? unknown(cause)
+            : cause,
         ),
       );
     }),
@@ -114,10 +116,7 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
       const attempt = yield* StartupAttemptContext;
       if (uncertain.has(producer)) return yield* unknown();
       if (attempt === undefined || attempt.complete) return yield* request;
-      if (
-        attempt.abandoned ||
-        (attempt.producer !== undefined && attempt.producer !== producer)
-      )
+      if (attempt.abandoned || (attempt.producer !== undefined && attempt.producer !== producer))
         return yield* unknown();
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {

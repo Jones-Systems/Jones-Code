@@ -1698,7 +1698,9 @@ describe("CodexAdapterV2 session initialize", () => {
       yield* Deferred.succeed(releaseInitialize, undefined);
 
       yield* TestClock.adjust(0);
-      const failure = yield* session.ensureThread("thread-initialize-interrupted").pipe(Effect.flip);
+      const failure = yield* session
+        .ensureThread("thread-initialize-interrupted")
+        .pipe(Effect.flip);
       assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(failure));
       assert.equal(session.initializeRequests(), 1);
       assert.deepEqual(session.requests, ["initialize"]);
@@ -1733,7 +1735,9 @@ describe("CodexAdapterV2 session initialize", () => {
       assert.deepEqual(session.requests, ["initialize", "thread/start"]);
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
     ),
   );
 
@@ -1776,7 +1780,10 @@ describe("CodexAdapterV2 session initialize", () => {
                   {
                     type: "emit_inbound",
                     label: "thread/resume",
-                    frame: { id: 3, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+                    frame: {
+                      id: 3,
+                      result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } },
+                    },
                   },
                 ];
         const session = yield* openReplaySession(
@@ -1784,8 +1791,8 @@ describe("CodexAdapterV2 session initialize", () => {
             scenario: `silent-startup-${method.replaceAll("/", "-")}`,
             entries: heldEntries.map((entry, index) =>
               entry.type === "emit_inbound" &&
-                entry.label === method &&
-                (method !== "thread/start" || index >= 5)
+              entry.label === method &&
+              (method !== "thread/start" || index >= 5)
                 ? { ...entry, label: "withheld-startup" }
                 : entry,
             ),
@@ -1810,7 +1817,9 @@ describe("CodexAdapterV2 session initialize", () => {
           Deferred.succeed(physicalExit, undefined).pipe(Effect.asVoid),
         );
         const existing =
-          method === "initialize" ? undefined : yield* session.ensureThread("existing-bound-thread");
+          method === "initialize"
+            ? undefined
+            : yield* session.ensureThread("existing-bound-thread");
         if (existing !== undefined) yield* Queue.take(session.events);
         awaitingResponse = true;
         const caller = yield* (
@@ -1865,103 +1874,107 @@ describe("CodexAdapterV2 session initialize", () => {
       ),
   );
 
-  it.effect("refuses a captured runtime stop queued before another startup becomes uncertain", () =>
-    Effect.gen(function* () {
-      const awaiting = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const observed = yield* Deferred.make<void>();
-      const physicalExit = yield* Deferred.make<void>();
-      let closes = 0;
-      let awaitingResponse = false;
-      const nativeThreadId = "captured-stop-existing-thread";
-      const session = yield* openReplaySession(
-        makeCodexReplayTranscript({
-          scenario: "captured-stop-before-startup-uncertainty",
-          entries: [
-            ...replayPreamble(nativeThreadId).slice(0, 5),
-            ...replayPreamble("late-unbound-thread")
-              .slice(3, 5)
-              .map((entry) => {
-                const remapped = withReplayRequestId(entry, 3);
-                return remapped.type === "emit_inbound"
-                  ? { ...remapped, label: "withheld-startup" }
-                  : remapped;
-              }),
-          ],
-        }),
-        (entry) =>
-          entry.label === "withheld-startup"
-            ? Deferred.succeed(awaiting, undefined).pipe(Effect.andThen(Deferred.await(release)))
-            : Effect.void,
-        {
-          processExit: Deferred.await(physicalExit),
-          onClose: Effect.sync(() => {
-            closes++;
+  it.effect(
+    "refuses a captured runtime stop queued before another startup becomes uncertain",
+    () =>
+      Effect.gen(function* () {
+        const awaiting = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const observed = yield* Deferred.make<void>();
+        const physicalExit = yield* Deferred.make<void>();
+        let closes = 0;
+        let awaitingResponse = false;
+        const nativeThreadId = "captured-stop-existing-thread";
+        const session = yield* openReplaySession(
+          makeCodexReplayTranscript({
+            scenario: "captured-stop-before-startup-uncertainty",
+            entries: [
+              ...replayPreamble(nativeThreadId).slice(0, 5),
+              ...replayPreamble("late-unbound-thread")
+                .slice(3, 5)
+                .map((entry) => {
+                  const remapped = withReplayRequestId(entry, 3);
+                  return remapped.type === "emit_inbound"
+                    ? { ...remapped, label: "withheld-startup" }
+                    : remapped;
+                }),
+            ],
           }),
-          onResponse: (method) =>
-            awaitingResponse && method === "thread/start"
-              ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
+          (entry) =>
+            entry.label === "withheld-startup"
+              ? Deferred.succeed(awaiting, undefined).pipe(Effect.andThen(Deferred.await(release)))
               : Effect.void,
-        },
-      );
-      yield* Effect.addFinalizer(() =>
-        Deferred.succeed(physicalExit, undefined).pipe(Effect.asVoid),
-      );
-      const existing = yield* session.ensureThread("existing-bound-thread");
-      yield* Queue.take(session.events);
-      awaitingResponse = true;
-      const startup = yield* session.ensureThread("abandoned-startup-thread").pipe(
-        Effect.result,
-        Effect.forkChild({ startImmediately: true }),
-      );
-      yield* Deferred.await(awaiting);
-      const captured = yield* session.runtime.captureRuntimeStop!(existing);
-      assert.isNotNull(captured);
-      assert.isTrue(yield* captured!.isCurrent);
-      const stopping = yield* captured!.stop.pipe(
-        Effect.result,
-        Effect.forkChild({ startImmediately: true }),
-      );
-      assert.isUndefined(stopping.pollUnsafe(), "Stop must queue behind the startup permit");
+          {
+            processExit: Deferred.await(physicalExit),
+            onClose: Effect.sync(() => {
+              closes++;
+            }),
+            onResponse: (method) =>
+              awaitingResponse && method === "thread/start"
+                ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+          },
+        );
+        yield* Effect.addFinalizer(() =>
+          Deferred.succeed(physicalExit, undefined).pipe(Effect.asVoid),
+        );
+        const existing = yield* session.ensureThread("existing-bound-thread");
+        yield* Queue.take(session.events);
+        awaitingResponse = true;
+        const startup = yield* session.ensureThread("abandoned-startup-thread").pipe(
+          Effect.result,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        yield* Deferred.await(awaiting);
+        const captured = yield* session.runtime.captureRuntimeStop!(existing);
+        assert.isNotNull(captured);
+        assert.isTrue(yield* captured!.isCurrent);
+        const stopping = yield* captured!.stop.pipe(
+          Effect.result,
+          Effect.forkChild({ startImmediately: true }),
+        );
+        assert.isUndefined(stopping.pollUnsafe(), "Stop must queue behind the startup permit");
 
-      yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS);
-      const expired = yield* Fiber.join(startup);
-      assert.equal(expired._tag, "Failure");
-      if (expired._tag === "Failure")
-        assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
-      assert.isFalse(yield* captured!.isCurrent);
-      assert.equal(closes, 0, "a previously captured Stop cannot close an uncertain producer");
-      yield* TestClock.adjust("3 seconds");
-      const stopped = yield* Fiber.join(stopping);
-      assert.equal(stopped._tag, "Failure");
-      if (stopped._tag === "Failure")
-        assert.equal(stopped.failure._tag, "ProviderAdapterProtocolError");
-      assert.isFalse(yield* Deferred.isDone(physicalExit));
+        yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS);
+        const expired = yield* Fiber.join(startup);
+        assert.equal(expired._tag, "Failure");
+        if (expired._tag === "Failure")
+          assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
+        assert.isFalse(yield* captured!.isCurrent);
+        assert.equal(closes, 0, "a previously captured Stop cannot close an uncertain producer");
+        yield* TestClock.adjust("3 seconds");
+        const stopped = yield* Fiber.join(stopping);
+        assert.equal(stopped._tag, "Failure");
+        if (stopped._tag === "Failure")
+          assert.equal(stopped.failure._tag, "ProviderAdapterProtocolError");
+        assert.isFalse(yield* Deferred.isDone(physicalExit));
 
-      yield* Deferred.succeed(release, undefined);
-      yield* Deferred.await(observed);
-      yield* TestClock.adjust(0);
-      assert.equal(yield* Queue.size(session.events), 0, "the late ACK must not bind its caller");
-      assert.isFalse(yield* captured!.isCurrent);
-      assert.isNull(yield* session.runtime.captureRuntimeStop!(existing));
-      yield* session.notify("model/rerouted", {
-        threadId: nativeThreadId,
-        toModel: "gpt-6",
-        fromModel: "gpt-5.4",
-        reason: "fallback",
-      });
-      const event = yield* Queue.take(session.events);
-      assert.equal(event.type, "runtime_identity.observed");
-      if (event.type === "runtime_identity.observed")
-        assert.equal(event.binding.providerThreadId, existing.id);
-      assert.deepEqual(session.requests, ["initialize", "thread/start", "thread/start"]);
-      assert.equal(closes, 0);
-      assert.isFalse(yield* Deferred.isDone(physicalExit));
-      yield* Deferred.succeed(physicalExit, undefined);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
-    ),
+        yield* Deferred.succeed(release, undefined);
+        yield* Deferred.await(observed);
+        yield* TestClock.adjust(0);
+        assert.equal(yield* Queue.size(session.events), 0, "the late ACK must not bind its caller");
+        assert.isFalse(yield* captured!.isCurrent);
+        assert.isNull(yield* session.runtime.captureRuntimeStop!(existing));
+        yield* session.notify("model/rerouted", {
+          threadId: nativeThreadId,
+          toModel: "gpt-6",
+          fromModel: "gpt-5.4",
+          reason: "fallback",
+        });
+        const event = yield* Queue.take(session.events);
+        assert.equal(event.type, "runtime_identity.observed");
+        if (event.type === "runtime_identity.observed")
+          assert.equal(event.binding.providerThreadId, existing.id);
+        assert.deepEqual(session.requests, ["initialize", "thread/start", "thread/start"]);
+        assert.equal(closes, 0);
+        assert.isFalse(yield* Deferred.isDone(physicalExit));
+        yield* Deferred.succeed(physicalExit, undefined);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
   );
 });
 
@@ -4378,7 +4391,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
   );
 
   it.effect(
-    "binds a 149-second start acknowledgement and admits its queued sibling without replay",
+    "binds a 149-second acknowledgement and readmits an expired sibling without replay",
     () =>
       Effect.gen(function* () {
         const nativeThreadId = "delayed-start";
@@ -4401,6 +4414,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         );
         const transcript = makeCodexReplayTranscript({ scenario: nativeThreadId, entries });
         let sends = 0;
+        let threadStarts = 0;
         const driver = yield* CodexReplay.makeReplayDriver(transcript, {
           beforeEmitInbound: (entry) =>
             entry.label === "turn/start"
@@ -4417,6 +4431,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                   request: (method, params) =>
                     Effect.sync(() => {
                       if (method === "turn/start") sends++;
+                      if (method === "thread/start") threadStarts++;
                     }).pipe(Effect.andThen(client.request(method, params))),
                 })),
               ),
@@ -4435,29 +4450,49 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           )
           .pipe(Effect.result, Effect.forkScoped);
         yield* Deferred.await(replyScheduled);
+        const siblingInput = {
+          threadId: ThreadId.make("queued-sibling"),
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+        };
         const sibling = yield* harness.runtime
-          .ensureThread({
-            threadId: ThreadId.make("queued-sibling"),
-            modelSelection: CODEX_TEST_MODEL_SELECTION,
-            runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
-          })
+          .ensureThread(siblingInput)
           .pipe(Effect.result, Effect.forkScoped);
-        yield* TestClock.adjust("148 seconds");
+        yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS - 1);
+        assert.isUndefined(
+          sibling.pollUnsafe(),
+          "the sibling must queue before its caller deadline",
+        );
+        assert.equal(threadStarts, 1, "the queued sibling has not dispatched a native request");
+        yield* TestClock.adjust(1);
+        assert.isDefined(
+          sibling.pollUnsafe(),
+          "the queued sibling must expire at its caller deadline",
+        );
+        const expired = yield* Fiber.join(sibling);
+        assert.equal(expired._tag, "Failure");
+        if (expired._tag === "Failure") {
+          assert.equal(expired.failure._tag, "ProviderAdapterProtocolError");
+          assert.nestedPropertyVal(expired.failure, "cause._tag", "CodexStartupNotDispatched");
+          assert.nestedPropertyVal(expired.failure, "cause.operation", "ensure");
+          assert.nestedPropertyVal(expired.failure, "cause.budgetMs", CODEX_STARTUP_BUDGET_MS);
+          assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
+        }
+        assert.equal(threadStarts, 1, "expiry must not dispatch or replay the queued native request");
+        yield* TestClock.adjust(148_000 - CODEX_STARTUP_BUDGET_MS);
         assert.isUndefined(
           start.pollUnsafe(),
           "the original attempt must still await its acknowledgement",
-        );
-        assert.isUndefined(
-          sibling.pollUnsafe(),
-          "the sibling must queue behind the original start",
         );
         assert.equal(sends, 1);
         assert.lengthOf(harness.terminalEvents(), 0);
         yield* TestClock.adjust("1 second");
         assert.equal((yield* Fiber.join(start))._tag, "Success");
-        const siblingResult = yield* Fiber.join(sibling);
+        const siblingResult = yield* harness.runtime.ensureThread(siblingInput).pipe(Effect.result);
         assert.equal(siblingResult._tag, "Success");
         if (siblingResult._tag !== "Success") return;
+        assert.equal(siblingResult.success.nativeThreadRef?.nativeId, "queued-sibling");
+        assert.equal(threadStarts, 2, "only the explicit new admission may create the sibling");
         yield* harness.firstTerminal;
         const providerTurnId = (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
           driver: CodexAdapterV2.CODEX_DRIVER_KIND,

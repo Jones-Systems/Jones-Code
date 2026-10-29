@@ -66,12 +66,17 @@ it.effect(
           Effect.gen(function* () {
             yield* Queue.offer(entered, effect.id);
             if (effect.id === effects[3]!.id) {
-              yield* startup.run(
-                "ensure",
-                startup.withinPermit(
-                  startup.observe(healthyProducer, Effect.sync(() => ++healthyDispatches)),
-                ),
-              ).pipe(Effect.orDie);
+              yield* startup
+                .run(
+                  "ensure",
+                  startup.withinPermit(
+                    startup.observe(
+                      healthyProducer,
+                      Effect.sync(() => ++healthyDispatches),
+                    ),
+                  ),
+                )
+                .pipe(Effect.orDie);
               yield* Deferred.succeed(healthyFinished, undefined);
               return;
             }
@@ -80,14 +85,16 @@ it.effect(
                 "ensure",
                 lifecyclePermit.withPermits(1)(
                   startup.withinPermit(
-                    startup.observe(
-                      producer,
-                      Effect.sync(() => dispatches++).pipe(
-                        Effect.andThen(Deferred.succeed(sent, undefined)),
-                        Effect.andThen(Deferred.await(response)),
-                        Effect.tap(() => Deferred.succeed(observed, undefined)),
-                      ),
-                    ).pipe(Effect.tap(() => Effect.sync(() => bindings++))),
+                    startup
+                      .observe(
+                        producer,
+                        Effect.sync(() => dispatches++).pipe(
+                          Effect.andThen(Deferred.succeed(sent, undefined)),
+                          Effect.andThen(Deferred.await(response)),
+                          Effect.tap(() => Deferred.succeed(observed, undefined)),
+                        ),
+                      )
+                      .pipe(Effect.tap(() => Effect.sync(() => bindings++))),
                   ),
                 ),
               )
@@ -104,7 +111,10 @@ it.effect(
         Effect.forkScoped,
       );
       const occupied = yield* Effect.forEach([0, 1, 2], () => Queue.take(entered));
-      assert.sameMembers(occupied, effects.slice(0, 3).map((effect) => effect.id));
+      assert.sameMembers(
+        occupied,
+        effects.slice(0, 3).map((effect) => effect.id),
+      );
       yield* Deferred.await(sent);
       yield* TestClock.adjust(0);
       assert.equal(dispatches, 1, "two claimed starts wait for the same lifecycle permit");

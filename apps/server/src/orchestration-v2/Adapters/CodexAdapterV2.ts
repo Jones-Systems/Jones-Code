@@ -1874,17 +1874,18 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         const lifecyclePermit = yield* Semaphore.make(1);
         const admitThread = (producer: CodexRuntimeProducer, threadId: ThreadId) =>
           Effect.suspend(() => {
-            const detail = hasUnknownNativeStart() || startup.isUncertain(producer)
-              ? "Codex cannot admit a thread while a native start is unconfirmed."
-              : !producer.active || producer !== currentProducer
-                ? "Codex cannot admit a thread to an inactive or replaced runtime producer."
-                : [...producer.bindings].some(
-                      ([nativeId, bound]) =>
-                        bound.appThreadId === threadId &&
-                        threadRetirements.owns(producer, nativeId),
-                    )
-                  ? "Codex cannot rejoin a conversation committed to writer transfer in this producer."
-                  : undefined;
+            const detail =
+              hasUnknownNativeStart() || startup.isUncertain(producer)
+                ? "Codex cannot admit a thread while a native start is unconfirmed."
+                : !producer.active || producer !== currentProducer
+                  ? "Codex cannot admit a thread to an inactive or replaced runtime producer."
+                  : [...producer.bindings].some(
+                        ([nativeId, bound]) =>
+                          bound.appThreadId === threadId &&
+                          threadRetirements.owns(producer, nativeId),
+                      )
+                    ? "Codex cannot rejoin a conversation committed to writer transfer in this producer."
+                    : undefined;
             return detail !== undefined
               ? Effect.fail(new ProviderRuntimeBindingError({ driver: CODEX_PROVIDER, detail }))
               : (input.runtimeLifecycle?.admit({

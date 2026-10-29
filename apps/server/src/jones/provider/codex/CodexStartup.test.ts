@@ -35,7 +35,10 @@ describe("Codex startup caller budget", () => {
         .pipe(Effect.forkChild);
       yield* Deferred.await(held);
       let dispatches = 0;
-      const request = startup.observe(producer, Effect.sync(() => ++dispatches));
+      const request = startup.observe(
+        producer,
+        Effect.sync(() => ++dispatches),
+      );
       const queued = yield* startup
         .run("ensure", permit.withPermits(1)(startup.withinPermit(request)))
         .pipe(Effect.result, Effect.forkChild);
@@ -81,7 +84,12 @@ describe("Codex startup caller budget", () => {
         .run(
           "resume",
           permit.withPermits(1)(
-            startup.withinPermit(startup.observe(producer, Effect.sync(() => ++dispatches))),
+            startup.withinPermit(
+              startup.observe(
+                producer,
+                Effect.sync(() => ++dispatches),
+              ),
+            ),
           ),
         )
         .pipe(Effect.result, Effect.forkChild);
@@ -111,9 +119,7 @@ describe("Codex startup caller budget", () => {
       const exited = yield* Deferred.make<void>();
       let closes = 0;
       const retirement = yield* makeCodexProducerRetirement(
-        Effect.sync(() => closes++).pipe(
-          Effect.andThen(Scope.close(producer.scope, Exit.void)),
-        ),
+        Effect.sync(() => closes++).pipe(Effect.andThen(Scope.close(producer.scope, Exit.void))),
       );
       retirement.captureProcessExit(Deferred.await(exited));
       yield* retirement.observeProcessExit;
@@ -173,13 +179,15 @@ describe("Codex startup caller budget", () => {
         .run(
           "ensure",
           startup.withinPermit(
-            startup.observe(producer, Effect.void, "reply").pipe(
-              Effect.andThen(
-                Effect.fail(
-                  CodexErrors.CodexAppServerRequestError.invalidRequest("admission refused"),
+            startup
+              .observe(producer, Effect.void, "reply")
+              .pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    CodexErrors.CodexAppServerRequestError.invalidRequest("admission refused"),
+                  ),
                 ),
               ),
-            ),
           ),
         )
         .pipe(Effect.result);
@@ -193,11 +201,13 @@ describe("Codex startup caller budget", () => {
         .run(
           "start",
           startup.withinPermit(
-            startup.observe(producer, Effect.succeed("native-thread")).pipe(
-              Effect.andThen(startup.complete),
-              Effect.andThen(Deferred.succeed(turnReady, undefined)),
-              Effect.andThen(Deferred.await(finishTurn)),
-            ),
+            startup
+              .observe(producer, Effect.succeed("native-thread"))
+              .pipe(
+                Effect.andThen(startup.complete),
+                Effect.andThen(Deferred.succeed(turnReady, undefined)),
+                Effect.andThen(Deferred.await(finishTurn)),
+              ),
           ),
         )
         .pipe(Effect.forkChild);

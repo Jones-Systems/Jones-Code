@@ -57,41 +57,45 @@ it.effect("requires committed workspace metadata and the exact generation before
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("keeps issued outcomes held across reconstruction and replays only completed preparation", () =>
-  Effect.gen(function* () {
-    const { sql, store, workspace } = yield* fixture;
-    yield* store.issueWorktree(intent);
-    const restarted = makeIdleWorktreeAdmission(sql);
-    assert.equal((yield* restarted.read(intent.threadId))?.phase, "worktree_issued");
-    assert.equal((yield* restarted.issueWorktree(intent).pipe(Effect.flip)).reason, "unresolved");
-    yield* workspace;
-    yield* store.recordWorkspace(intent, "/worktrees/idle");
-    yield* store.prepareRelease(intent, "/worktrees/idle");
-    yield* restarted.release(intent);
-    assert.equal((yield* restarted.read(intent.threadId))?.phase, "ready");
-  }).pipe(Effect.provide(memory)),
+it.effect(
+  "keeps issued outcomes held across reconstruction and replays only completed preparation",
+  () =>
+    Effect.gen(function* () {
+      const { sql, store, workspace } = yield* fixture;
+      yield* store.issueWorktree(intent);
+      const restarted = makeIdleWorktreeAdmission(sql);
+      assert.equal((yield* restarted.read(intent.threadId))?.phase, "worktree_issued");
+      assert.equal((yield* restarted.issueWorktree(intent).pipe(Effect.flip)).reason, "unresolved");
+      yield* workspace;
+      yield* store.recordWorkspace(intent, "/worktrees/idle");
+      yield* store.prepareRelease(intent, "/worktrees/idle");
+      yield* restarted.release(intent);
+      assert.equal((yield* restarted.read(intent.threadId))?.phase, "ready");
+    }).pipe(Effect.provide(memory)),
 );
 
-it.effect("stale generations cannot release, recover cleanup ownership, or mark a ready checkout unresolved", () =>
-  Effect.gen(function* () {
-    const { store, workspace } = yield* fixture;
-    yield* store.issueWorktree(intent);
-    yield* workspace;
-    yield* store.recordWorkspace(intent, "/worktrees/idle");
-    yield* store.prepareRelease(intent, "/worktrees/idle");
-    const stale = { ...intent, generation: "old-generation" };
-    assert.equal((yield* store.release(stale).pipe(Effect.flip)).reason, "identity_conflict");
-    assert.equal(
-      (yield* store.markUnresolved(stale).pipe(Effect.flip)).reason,
-      "identity_conflict",
-    );
-    assert.isFalse(yield* store.cleanupAllowed(stale));
-    assert.isFalse(yield* store.cleanupAllowed(intent));
-    assert.equal((yield* store.read(intent.threadId))?.phase, "prepared");
-    yield* store.release(intent);
-    yield* store.markUnresolved(intent);
-    assert.equal((yield* store.read(intent.threadId))?.phase, "ready");
-  }).pipe(Effect.provide(memory)),
+it.effect(
+  "stale generations cannot release, recover cleanup ownership, or mark a ready checkout unresolved",
+  () =>
+    Effect.gen(function* () {
+      const { store, workspace } = yield* fixture;
+      yield* store.issueWorktree(intent);
+      yield* workspace;
+      yield* store.recordWorkspace(intent, "/worktrees/idle");
+      yield* store.prepareRelease(intent, "/worktrees/idle");
+      const stale = { ...intent, generation: "old-generation" };
+      assert.equal((yield* store.release(stale).pipe(Effect.flip)).reason, "identity_conflict");
+      assert.equal(
+        (yield* store.markUnresolved(stale).pipe(Effect.flip)).reason,
+        "identity_conflict",
+      );
+      assert.isFalse(yield* store.cleanupAllowed(stale));
+      assert.isFalse(yield* store.cleanupAllowed(intent));
+      assert.equal((yield* store.read(intent.threadId))?.phase, "prepared");
+      yield* store.release(intent);
+      yield* store.markUnresolved(intent);
+      assert.equal((yield* store.read(intent.threadId))?.phase, "ready");
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect("treats deleted upstream threads and unmarked null worktrees as absent", () =>
@@ -110,11 +114,9 @@ it.effect("treats deleted upstream threads and unmarked null worktrees as absent
 it.effect("rolls preparation state back with its owning transaction", () =>
   Effect.gen(function* () {
     const { sql, store } = yield* fixture;
-    const result = yield* store.issueWorktree(intent).pipe(
-      Effect.andThen(Effect.fail("rollback")),
-      sql.withTransaction,
-      Effect.exit,
-    );
+    const result = yield* store
+      .issueWorktree(intent)
+      .pipe(Effect.andThen(Effect.fail("rollback")), sql.withTransaction, Effect.exit);
     assert.isTrue(Exit.isFailure(result));
     assert.equal((yield* store.read(intent.threadId))?.phase, "pending");
   }).pipe(Effect.provide(memory)),

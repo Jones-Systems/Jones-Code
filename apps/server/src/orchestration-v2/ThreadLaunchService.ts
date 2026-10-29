@@ -1805,10 +1805,7 @@ const make = Effect.gen(function* () {
           idleCleanupOwned = false;
           yield* idleWorktrees!.prepareRelease(identity, worktreePath!);
           yield* idleWorktrees!.release(identity);
-        }).pipe(
-          Effect.mapError(mapError(input, "release-run", threadId)),
-          Effect.uninterruptible,
-        );
+        }).pipe(Effect.mapError(mapError(input, "release-run", threadId)), Effect.uninterruptible);
       }
       if (runId !== null) {
         if (input.legacyBootstrap !== undefined) {
@@ -2337,10 +2334,9 @@ const make = Effect.gen(function* () {
     const recorded = yield* readCurrent;
     if (recorded.phase === "ready") return;
     if (recorded.phase === "prepared")
-      return yield* idleWorktrees!.release(identity).pipe(
-        Effect.mapError(mapError(input, "release-run", threadId)),
-        Effect.uninterruptible,
-      );
+      return yield* idleWorktrees!
+        .release(identity)
+        .pipe(Effect.mapError(mapError(input, "release-run", threadId)), Effect.uninterruptible);
     if (!(yield* reservePreparation(input.commandId))) return;
     yield* Effect.gen(function* () {
       const current = yield* readCurrent;
@@ -2362,13 +2358,14 @@ const make = Effect.gen(function* () {
       yield* releasePreparation(input.commandId);
       if (current.phase === "ready") return;
       if (current.phase === "prepared")
-        return yield* idleWorktrees!.release(identity).pipe(
-          Effect.mapError(mapError(input, "release-run", threadId)),
-          Effect.uninterruptible,
-        );
-      return yield* mapError(input, "provision-worktree", threadId)(
-        new IdleWorktreeAdmission.IdleWorktreeAdmissionError({ threadId, reason: "unresolved" }),
-      );
+        return yield* idleWorktrees!
+          .release(identity)
+          .pipe(Effect.mapError(mapError(input, "release-run", threadId)), Effect.uninterruptible);
+      return yield* mapError(
+        input,
+        "provision-worktree",
+        threadId,
+      )(new IdleWorktreeAdmission.IdleWorktreeAdmissionError({ threadId, reason: "unresolved" }));
     }).pipe(Effect.onError(() => releasePreparation(input.commandId)));
   });
 
@@ -2565,12 +2562,13 @@ const make = Effect.gen(function* () {
         if (
           (holdsIdleWorktree && idleRecord === null) ||
           (idleRecord !== null &&
-            (idleRecord.commandId !== input.commandId ||
-              idleRecord.requestKey !== idleRequestKey))
+            (idleRecord.commandId !== input.commandId || idleRecord.requestKey !== idleRequestKey))
         )
-          return yield* mapError(input, "read-receipt", threadId)(
-            "Idle worktree launch has no matching durable preparation identity.",
-          );
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Idle worktree launch has no matching durable preparation identity.");
         if (idleRecord !== null)
           yield* resumeIdlePreparation({ ...input, workspaceStrategy }, idleRecord);
         let runId: RunId | null = null;
