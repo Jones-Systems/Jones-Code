@@ -56,6 +56,54 @@ vi.mock("./connection/runtime", async () => {
 });
 
 const selectedEnvironment = EnvironmentId.make("remote-selected");
+
+it.each([
+  [
+    "stale",
+    "collector_disconnected",
+    "Host status collector is disconnected",
+    "Check the collector connection to the Netdata parent",
+  ],
+  [
+    "stale",
+    "sample_expired",
+    "Host status sample has expired",
+    "Wait for a recent collector sample",
+  ],
+  [
+    "upstream_unavailable",
+    "upstream_failure",
+    "Host status source unavailable",
+    "Check the host status source connection",
+  ],
+] as const)(
+  "explains %s / %s with a bounded recovery hint",
+  (reason, diagnostic, explanation, recovery) => {
+    const metrics = hostStatusMetrics({ id: "vps", status: "unavailable", reason, diagnostic });
+    expect(metrics.tooltipLines).toEqual([
+      explanation,
+      recovery,
+      "Retries every 10 seconds while visible",
+    ]);
+    expect(metrics.detail).toBe(metrics.tooltipLines.join(". "));
+    expect(metrics.cpu).toBe("—");
+  },
+);
+
+it("keeps legacy and mismatched diagnostics on the generic reason", () => {
+  expect(
+    hostStatusMetrics({ id: "vps", status: "unavailable", reason: "stale" }).tooltipLines,
+  ).toEqual(["Host status sample is stale"]);
+  expect(
+    hostStatusMetrics({
+      id: "vps",
+      status: "unavailable",
+      reason: "not_configured",
+      diagnostic: "collector_disconnected",
+    }).tooltipLines,
+  ).toEqual(["Not configured"]);
+});
+
 function prepare(base = "https://app.example", token: string | null = null) {
   harness.prepared.set(selectedEnvironment, {
     environmentId: selectedEnvironment,
