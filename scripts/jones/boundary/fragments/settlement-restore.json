@@ -20,7 +20,13 @@
     "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
     "apps/web/src/jones/settlementRestore/menu.ts",
     "apps/web/src/jones/settlementRestore/threadMenu.ts",
-    "apps/web/src/jones/settlementRestore/threadMenu.test.ts"
+    "apps/web/src/jones/settlementRestore/threadMenu.test.ts",
+    "apps/mobile/src/jones/settlementRestore/action.ts",
+    "apps/mobile/src/jones/settlementRestore/menu.ts",
+    "apps/mobile/src/jones/settlementRestore/runtime.test.ts",
+    "apps/mobile/src/jones/settlementRestore/runtime.ts",
+    "apps/mobile/src/jones/settlementRestore/wiring.test.ts",
+    "apps/mobile/src/jones/settlementRestore/promisePorts.testkit.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -84,6 +90,22 @@
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/settlementRestore/threadMenu.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/home/useThreadListActions.ts",
+      "to": "apps/mobile/src/jones/settlementRestore/runtime.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/thread-list-v2-items.tsx",
+      "to": "apps/mobile/src/jones/settlementRestore/menu.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "apps/mobile/src/jones/settlementRestore/runtime.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "apps/mobile/src/jones/settlementRestore/menu.ts"
     }
   ]
 }
