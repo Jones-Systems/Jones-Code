@@ -4099,6 +4099,110 @@
       ]
     },
     {
+      "id": "sp-contracts",
+      "tests": [
+        "apps/server/src/cli/config.test.ts",
+        "apps/server/src/jones/serverParallelism/config.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/cli/config.test.ts apps/server/src/jones/serverParallelism/config.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "sp-readers",
+      "tests": [
+        "packages/shared/src/jones/sqliteReadPriority.test.ts",
+        "packages/shared/src/jones/sqliteReaders/admission.test.ts",
+        "packages/shared/src/jones/sqliteReaders/checkpoint.test.ts",
+        "packages/shared/src/jones/sqliteReaders/lifecycle.test.ts",
+        "packages/shared/src/nodeSqliteClient.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/shared/src/jones/sqliteReadPriority.test.ts packages/shared/src/jones/sqliteReaders/admission.test.ts packages/shared/src/jones/sqliteReaders/checkpoint.test.ts packages/shared/src/jones/sqliteReaders/lifecycle.test.ts packages/shared/src/nodeSqliteClient.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "sp-compute",
+      "tests": [
+        "apps/server/src/jones/serverCompute/guardian.test.ts",
+        "apps/server/src/jones/serverCompute/journal.test.ts",
+        "apps/server/src/jones/serverCompute/processSlot.test.ts",
+        "apps/server/src/jones/serverCompute/protocol.test.ts",
+        "apps/server/src/jones/serverCompute/residency.test.ts",
+        "apps/server/src/jones/serverCompute/supervisor.test.ts",
+        "apps/server/src/jones/serverCompute/worker.test.ts",
+        "apps/server/src/jones/serverCompute/workerCommand.test.ts",
+        "apps/server/src/jones/workspace/nativeSearchRuntime.test.ts",
+        "apps/server/src/jones/workspace/searchWorkerProxy.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/serverCompute/guardian.test.ts apps/server/src/jones/serverCompute/journal.test.ts apps/server/src/jones/serverCompute/processSlot.test.ts apps/server/src/jones/serverCompute/protocol.test.ts apps/server/src/jones/serverCompute/residency.test.ts apps/server/src/jones/serverCompute/supervisor.test.ts apps/server/src/jones/serverCompute/worker.test.ts apps/server/src/jones/serverCompute/workerCommand.test.ts apps/server/src/jones/workspace/nativeSearchRuntime.test.ts apps/server/src/jones/workspace/searchWorkerProxy.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "sp-integration",
+      "tests": [
+        "apps/server/src/jones/serverParallelism/composition.test.ts",
+        "apps/server/src/jones/serverParallelism/config.test.ts",
+        "apps/server/src/jones/serverParallelism/controlProgress.integration.test.ts",
+        "apps/server/src/jones/serverParallelism/observations.test.ts",
+        "apps/server/src/jones/serverParallelism/shellCapture.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Refresh.integration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/Settlement.test.ts",
+        "apps/server/src/orchestration-v2/ProjectionStore.test.ts",
+        "apps/server/src/workspace/WorkspaceEntries.test.ts",
+        "apps/server/src/workspace/WorkspaceFileSystem.test.ts",
+        "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
+        "apps/server/src/jones/serverParallelism/metrics.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts",
+        "apps/server/src/jones/serverParallelism/resourceSamples.test.ts",
+        "apps/server/src/jones/serverParallelism/nativeThreadBudget.test.ts",
+        "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
+        "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
+        "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
+        "apps/server/src/cli/project.test.ts",
+        "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+        "apps/server/src/serverRuntimeStartup.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/mcp/OrchestratorMcpToolkit.integration.test.ts apps/server/src/jones/serverParallelism/metrics.test.ts apps/server/src/jones/serverParallelism/composition.test.ts apps/server/src/jones/serverParallelism/config.test.ts apps/server/src/jones/serverParallelism/controlProgress.integration.test.ts apps/server/src/jones/serverParallelism/observations.test.ts apps/server/src/jones/serverParallelism/shellCapture.integration.test.ts apps/server/src/jones/threadResultDependencies/Refresh.integration.test.ts apps/server/src/jones/threadResultDependencies/Settlement.test.ts apps/server/src/orchestration-v2/ProjectionStore.test.ts apps/server/src/workspace/WorkspaceEntries.test.ts apps/server/src/workspace/WorkspaceFileSystem.test.ts --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 scripts/jones/serverParallelism/buildIdentity.node-test.mjs scripts/jones/serverParallelism/commandIdentity.node-test.mjs scripts/jones/serverParallelism/qualificationResult.node-test.mjs scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
+        "vp test run apps/server/src/jones/serverParallelism/resourceSamples.test.ts apps/server/src/jones/serverParallelism/nativeThreadBudget.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/cli/project.test.ts apps/server/src/serverRuntimeStartup.autoPull.test.ts apps/server/src/serverRuntimeStartup.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "sp-packaging",
+      "tests": [
+        "apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts",
+        "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
+        "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
+        "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
+        "scripts/jones/serverParallelism/native-block-proof.node-test.mjs"
+      ],
+      "commands": [
+        "test -n \"$JONES_SP_COMMAND_MANIFEST\" && vp test run apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "node --test --test-concurrency=1 scripts/jones/serverParallelism/buildIdentity.node-test.mjs scripts/jones/serverParallelism/commandIdentity.node-test.mjs scripts/jones/serverParallelism/qualificationResult.node-test.mjs scripts/jones/serverParallelism/native-block-proof.node-test.mjs"
+      ]
+    },
+    {
+      "id": "sp-performance",
+      "tests": ["apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts"],
+      "commands": [
+        "test -n \"$JONES_SP_COMMAND_MANIFEST\" && vp test run apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts --maxWorkers=1 --no-file-parallelism"
+      ]
+    },
+    {
+      "id": "sp-boundary",
+      "tests": [],
+      "commands": [
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run knip --workspace apps/server --workspace packages/shared --workspace scripts"
+      ]
+    },
+    {
       "id": "jones-launcher-handoff",
       "tests": [
         "apps/server/src/jones/cloud/launcherPointer.test.ts",

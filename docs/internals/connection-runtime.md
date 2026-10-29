@@ -157,7 +157,7 @@ Opening a thread, loading its messages, sending, and stopping are the requests a
 user waits on. Background work runs in the same server: pull-request discovery
 and settlement sweeps, VCS status polling, source-control discovery, and storage
 cleanup. Client activity leases gate some of it, such as VCS status polling,
-but it has no general foreground priority. These resources are shared today:
+but only selected read bodies use background reader admission. These resources are shared today:
 
 - One WebSocket per environment carries every RPC call and subscription in
   order. Cold thread snapshots and history pages normally use HTTP. The server
@@ -167,9 +167,11 @@ but it has no general foreground priority. These resources are shared today:
   the loop, socket frames included, while it executes, and a transaction holds
   the writer until it ends, so other writer work, reads included, queues behind
   it. Outside a write transaction, only work wrapped in `NodeSqliteClient.readOnly`
-  uses the single reader worker, which also runs one transaction at a time.
-  File-backed server databases require that reader for marked reads: an
-  unavailable reader fails the read instead of running it on the serving loop.
+  uses the configured two/three-reader pool. One reader is reserved for interactive
+  work; shared readers take queued background work first and otherwise accept
+  interactive borrowing. Each transaction/reservation stays on one connection.
+  File-backed server databases require pool admission for marked reads: unavailable
+  capacity fails the read instead of running it on the serving loop.
   A startup timeout retires the worker; later demand retries after termination
   and a bounded cooldown. Other SQLite consumers retain their default writer
   fallback, and reads inside an existing write transaction retain that writer.
@@ -193,7 +195,16 @@ but it has no general foreground priority. These resources are shared today:
   VcsProcess has no foreground reservation; source-control discovery probes use
   its separate, smaller pool.
 - The orchestration [effect worker](../../apps/server/src/orchestration-v2/EffectWorker.ts)
-  shares a few slots among turn start, steer, and checkpoint capture.
+  shares a few slots among turn start, steer, and checkpoint capture. Its urgent,
+  action and mixed claims, deadline probes and execution reads explicitly restore
+  interactive priority, even after a background caller. Classify maintenance at
+  the executing read body, never around an entire daemon or dispatch loop.
+- Workspace indexing and search share one application-owned compute layer across
+  all transports. Each profile has two/three productive children. Provider process
+  placement and allowances remain independent. Native readiness is incomplete:
+  finder allocation charges last until whole-generation exit and journal retirement,
+  including after a finder closes or a scan reports ready. This prevents native
+  tails/watchers from overlapping uncharged replacement generations.
 - On the client, most thread commands, Send and Stop included, share one serial
   lane per environment and thread. Mutations therefore dispatch in submission
   order, and a slow command delays that thread's next Send. Earlier-history loads
@@ -209,8 +220,9 @@ When adding or changing work that uses these resources:
   dependency. Give independent work, such as a history page, its own key so it
   neither waits behind nor delays Send or Stop.
 - Keep pure reads off the writer when they do not need its transaction. Each
-  move adds queueing on the single reader, so check reader wait before routing
-  more work there.
+  move adds pool queueing, so check priority, admission wait and snapshot lifetime
+  before routing more work there. Capture shell dependency rows with the rows and
+  watermark in the same transaction; deferred decoding cannot acquire SQL.
 - Bound background subprocess work with its own concurrency limit, a deadline,
   and coalescing of repeated requests for a target that is still queued, so a
   burst cannot hold the permits a foreground operation needs.

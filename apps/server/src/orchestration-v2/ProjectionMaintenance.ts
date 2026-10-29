@@ -1,3 +1,4 @@
+import { backgroundRead, interactiveRead } from "../jones/serverParallelism/readClassification.ts";
 import { ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
@@ -229,8 +230,13 @@ export const layer: Layer.Layer<
 
     // Keep first/latest keyed events for replay order; page every event to bound sparse scans.
     const compactEventStore = Effect.fn("ProjectionMaintenance.compactEventStore")(function* (
-      betweenPages: Effect.Effect<void> = Effect.void,
+      betweenPages?: Effect.Effect<void>,
     ) {
+      // DatabaseStorage's automatic compactor supplies its duty-cycle hook.
+      // The offline/manual DatabaseMaintenance caller supplies none. Keep its
+      // reads interactive; classify only the automatic scan bodies below.
+      const classifyRead = betweenPages === undefined ? interactiveRead : backgroundRead;
+      const pauseBetweenPages = betweenPages ?? Effect.void;
       const bounds = yield* sql<{
         readonly event_sequence: number;
         readonly receipt_row_id: number;
@@ -238,7 +244,7 @@ export const layer: Layer.Layer<
         SELECT
           COALESCE((SELECT MAX(sequence) FROM orchestration_events), 0) AS event_sequence,
           COALESCE((SELECT MAX(rowid) FROM orchestration_command_receipts), 0) AS receipt_row_id
-      `.pipe(NodeSqliteClient.readOnly);
+      `.pipe(NodeSqliteClient.readOnly, classifyRead);
       let throughSequence = bounds[0]?.event_sequence ?? 0;
       let throughReceiptRowId = bounds[0]?.receipt_row_id ?? 0;
       const retainedThreadIds = new Set<string>();
@@ -293,7 +299,7 @@ export const layer: Layer.Layer<
           WHERE event.sequence <= ${throughSequence}
           ORDER BY event.sequence DESC
           LIMIT ${COMPACTION_PAGE_SIZE + 1}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, classifyRead);
         const page = rows.slice(0, COMPACTION_PAGE_SIZE);
         const obsolete: number[] = [];
         for (const row of page) {
@@ -347,7 +353,7 @@ export const layer: Layer.Layer<
         }
         throughSequence =
           rows.length <= COMPACTION_PAGE_SIZE ? 0 : (page.at(-1)?.sequence ?? 1) - 1;
-        if (throughSequence > 0 || throughReceiptRowId > 0) yield* betweenPages;
+        if (throughSequence > 0 || throughReceiptRowId > 0) yield* pauseBetweenPages;
       }
 
       while (throughReceiptRowId > 0) {
@@ -372,7 +378,7 @@ export const layer: Layer.Layer<
           WHERE receipt.rowid <= ${throughReceiptRowId}
           ORDER BY receipt.rowid DESC
           LIMIT ${COMPACTION_PAGE_SIZE + 1}
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, classifyRead);
         const page = rows.slice(0, COMPACTION_PAGE_SIZE);
         const obsolete = page
           .filter((row) => row.imported_legacy_thread === 1)
@@ -385,7 +391,7 @@ export const layer: Layer.Layer<
         }
         throughReceiptRowId = (page.at(-1)?.row_id ?? 1) - 1;
         if (rows.length <= COMPACTION_PAGE_SIZE) break;
-        yield* betweenPages;
+        yield* pauseBetweenPages;
       }
 
       const freelistRows = yield* sql<{ readonly freelist_count: number }>`PRAGMA freelist_count`;

@@ -1,3 +1,4 @@
+import { backgroundRead, interactiveRead } from "./jones/serverParallelism/readClassification.ts";
 import { LifecycleError } from "./jones/workspaceLifecycle/Protocol.ts";
 import { withOperation } from "./jones/workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup } from "./jones/workspaceLifecycle/NativeBoundary.ts";
@@ -57,6 +58,14 @@ import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
+
+const automaticInventory = Context.Reference<boolean>("jones/StorageCleanup/automaticInventory", {
+  defaultValue: () => false,
+});
+const inventoryRead = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.flatMap(automaticInventory, (automatic) =>
+    effect.pipe(automatic ? backgroundRead : interactiveRead),
+  );
 
 const decodeCleanupThread = Schema.decodeUnknownEffect(
   Schema.fromJsonString(OrchestrationV2AppThreadJson),
@@ -349,8 +358,10 @@ const make = Effect.gen(function* () {
 
   // Large snapshots take seconds; use the reader worker instead of blocking the event loop.
   const readThreads = Effect.fn("StorageCleanup.readThreads")(function* () {
-    const snapshot = yield* projections.getShellSnapshot().pipe(NodeSqliteClient.readOnly);
-    const projects = yield* projectStore.listShells();
+    const snapshot = yield* projections
+      .getShellSnapshot()
+      .pipe(NodeSqliteClient.readOnly, inventoryRead);
+    const projects = yield* projectStore.listShells().pipe(inventoryRead);
     return { projects, threads: [...snapshot.threads, ...snapshot.archivedThreads] };
   });
 
@@ -380,7 +391,7 @@ const make = Effect.gen(function* () {
       SELECT DISTINCT json_extract(payload_json, '$.worktreePath') AS "worktreePath"
       FROM orchestration_v2_projection_threads
       WHERE json_extract(payload_json, '$.worktreePath') IS NOT NULL
-    `.pipe(NodeSqliteClient.readOnly);
+    `.pipe(NodeSqliteClient.readOnly, inventoryRead);
     const referenced = new Set<string>();
     for (const row of rows) {
       const resolved = path.resolve(row.worktreePath);
@@ -749,13 +760,13 @@ const make = Effect.gen(function* () {
           FROM orchestration_v2_projection_threads t
           JOIN projection_projects p ON p.project_id = t.project_id
           WHERE t.deleted_at IS NOT NULL
-        `.pipe(NodeSqliteClient.readOnly);
+        `.pipe(NodeSqliteClient.readOnly, inventoryRead);
     const deletedThreads = (yield* Effect.forEach(deletedRows, (row) =>
       decodeCleanupThread(row.payload_json).pipe(
         Effect.map((thread) => ({ ...thread, workspaceRoot: row.workspaceRoot })),
       ),
     )).filter((thread) => thread.worktreePath !== null && thread.branch !== null);
-    const snapshot = yield* readThreads();
+    const snapshot = yield* readThreads().pipe(inventoryRead);
     const refreshedDefaultRefs = new Map<string, Set<string>>();
     const defaultBranches = new Map<string, string | null>();
     const groups = Map.groupBy(
@@ -958,7 +969,7 @@ const make = Effect.gen(function* () {
           );
         // Re-read this path's threads and sessions so new activity cancels removal; full per-worktree snapshots take seconds.
         const blockedSinceCheck = Effect.fnUntraced(function* () {
-          const latestProjects = yield* projectStore.listShells();
+          const latestProjects = yield* projectStore.listShells().pipe(inventoryRead);
           if (yield* containsProjectRoot(worktreePath, [project, ...latestProjects]))
             return "contains a project checkout";
           const latest = (yield* projections.getThreadWorktreePaths({
@@ -975,7 +986,7 @@ const make = Effect.gen(function* () {
             const pendingCleanup = yield* sql`
               SELECT 1 FROM orchestration_v2_effect_outbox
               WHERE thread_id = ${thread.id} AND status NOT IN ('succeeded', 'cancelled') LIMIT 1
-            `.pipe(NodeSqliteClient.readOnly);
+            `.pipe(NodeSqliteClient.readOnly, inventoryRead);
             if (pendingCleanup.length > 0) return "thread deletion is still pending";
           }
           const latestShells = yield* Effect.forEach(latest, (entry) =>
@@ -1005,7 +1016,7 @@ const make = Effect.gen(function* () {
           const sessionRows = yield* sql<{ payload_json: string }>`
             SELECT payload_json FROM orchestration_v2_projection_provider_sessions
             WHERE status != 'stopped'
-          `.pipe(NodeSqliteClient.readOnly);
+          `.pipe(NodeSqliteClient.readOnly, inventoryRead);
           const sessions = yield* Effect.forEach(sessionRows, (row) =>
             decodeCleanupSession(row.payload_json),
           );
@@ -1051,7 +1062,7 @@ const make = Effect.gen(function* () {
             Effect.map((server) => resolveWorktreeCleanup(server, thread.projectId)),
           );
           const currentLive = Effect.gen(function* () {
-            const current = yield* readThreads();
+            const current = yield* readThreads().pipe(inventoryRead);
             return (
               !hasTerminal(worktreePath) &&
               !current.threads.some(
@@ -1159,7 +1170,7 @@ const make = Effect.gen(function* () {
     }
     yield* reportOrphanWorktrees(
       roots,
-      yield* projectStore.list({ includeDeleted: true }),
+      yield* projectStore.list({ includeDeleted: true }).pipe(inventoryRead),
       entries,
     );
   });
@@ -1304,7 +1315,11 @@ const make = Effect.gen(function* () {
   const worker = yield* makeDrainableWorker(
     (completion: Deferred.Deferred<StorageCleanupReport, ServerSettingsError> | undefined) =>
       (completion === undefined ? Ref.set(automaticSweepQueued, false) : Effect.void).pipe(
-        Effect.andThen(sweep(completion === undefined ? "automatic" : "manual")),
+        Effect.andThen(
+          sweep(completion === undefined ? "automatic" : "manual").pipe(
+            Effect.provideService(automaticInventory, completion === undefined),
+          ),
+        ),
         Effect.exit,
         Effect.flatMap((exit) =>
           completion === undefined

@@ -1,3 +1,4 @@
+import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
 import {
   CommandId,
   MessageId,
@@ -973,6 +974,7 @@ export const layer = Layer.effect(
     const runDueTasks = Effect.fn("ScheduledTaskService.runDueTasks")(function* () {
       const now = yield* localNow;
       const tasks = yield* listDueTasks(now).pipe(
+        backgroundRead,
         Effect.mapError((cause) => taskError("Could not list schedule tasks.", { cause })),
       );
       const due = tasks.flatMap((task) =>

@@ -1960,6 +1960,16 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
       />
     </div>,
   );
+  // Wait for the visible prefix before awaiting full pagination, so engine and
+  // font startup belong to opening. The project timeout still caps the whole test.
+  await vi.waitFor(
+    () =>
+      expect(
+        screen.container.querySelector("[data-office-pages]"),
+        JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
+      ).not.toBeNull(),
+    { timeout: 10_000 },
+  );
   await vi.waitFor(
     () =>
       expect(
