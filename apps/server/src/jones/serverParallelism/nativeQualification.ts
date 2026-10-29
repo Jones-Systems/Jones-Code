@@ -64,7 +64,9 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const workload = qualificationWorkload(options);
   const { windows, acquisitions, files } = workload;
   await NodeFSP.mkdir(directory, { recursive: false, mode: 0o700 });
-  const observationStream = qualificationStream<ComputeObservation>(workload.capacities.observations);
+  const observationStream = qualificationStream<ComputeObservation>(
+    workload.capacities.observations,
+  );
   const observations = observationStream.rows;
   const observe = (event: ComputeObservation) => observationStream.append(event);
   const captured = new Map<number, ComputeChild>();
@@ -84,9 +86,15 @@ export async function runNativeQualification(options: NativeQualificationOptions
   };
   const resourceStream = qualificationStream<ResourceRow>(workload.capacities.resources);
   const resources = resourceStream.rows;
-  const executionStream = qualificationStream<{ pid: number; phase: string; start: number; end: number }>(workload.capacities.executions);
+  const executionStream = qualificationStream<{
+    pid: number;
+    phase: string;
+    start: number;
+    end: number;
+  }>(workload.capacities.executions);
   const executions = executionStream.rows;
-  let stopped = false, samplerFailure = false;
+  let stopped = false,
+    samplerFailure = false;
   let productiveOverlapSamples = 0,
     rotations = 0,
     coldReopens = 0;
@@ -176,7 +184,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
           if (request.operation === "open") {
             coldReopens++;
             if (isKey(request.input)) {
-              keySlots.set(keyIdentity(request.input.cwd, request.input.variant), request.token.slotId);
+              keySlots.set(
+                keyIdentity(request.input.cwd, request.input.variant),
+                request.token.slotId,
+              );
               const key = /^workspace-([0-9]+)$/.exec(NodePath.basename(request.input.cwd));
               if (key && NodePath.dirname(request.input.cwd) === directory)
                 keyNeedles.set(request.token.keyId, `needle-${key[1]} alpha beta`);
@@ -202,7 +213,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
                 });
               }
             });
-            generationEvidence.completed(record, request, result, keyNeedles.get(request.token.keyId));
+            generationEvidence.completed(
+              record,
+              request,
+              result,
+              keyNeedles.get(request.token.keyId),
+            );
             return result;
           } finally {
             if (data) {
@@ -241,7 +257,8 @@ export async function runNativeQualification(options: NativeQualificationOptions
     now: () => performance.now(),
     pools: sampleNativePools,
     resources: sampleResources,
-    method: HostProcess.Platform.defaultValue() === "linux" ? "linux-proc-task-comm" : "macos-sample",
+    method:
+      HostProcess.Platform.defaultValue() === "linux" ? "linux-proc-task-comm" : "macos-sample",
     signal: controller.signal,
   });
   const phaseCheckpoint = async () => {
@@ -301,9 +318,9 @@ export async function runNativeQualification(options: NativeQualificationOptions
     while (!stopped) {
       await sampleResources();
       // Measurement cadence only. Progress assertions use jobs/CPU and captured exit, never this delay.
-      await NodeTimersPromises.setTimeout(10, undefined, { signal: samplingController.signal }).catch(
-        () => {},
-      );
+      await NodeTimersPromises.setTimeout(10, undefined, {
+        signal: samplingController.signal,
+      }).catch(() => {});
       if (samplingController.signal.aborted) return;
     }
   })();
@@ -319,13 +336,24 @@ export async function runNativeQualification(options: NativeQualificationOptions
         await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), content);
       keys.push(supervisor.register({ cwd, variant: key % 2 === 0 ? "paths" : "content" }));
     }
-    const qualifyGeneration = (handle: LogicalFinderHandle) => generationEvidence.qualify(handle, phase, async () => {
-      const result = await supervisor.run(handle, "searchContents", {
-        query: "needle", limit: 32, caseSensitive: true, wholeWord: false, useRegex: false,
-      }, controller.signal);
-      if (result.matches.length === 0) throw new Error("Generation basis grep did no useful work");
-      generationEvidence.confirmPositive(handle);
-    });
+    const qualifyGeneration = (handle: LogicalFinderHandle) =>
+      generationEvidence.qualify(handle, phase, async () => {
+        const result = await supervisor.run(
+          handle,
+          "searchContents",
+          {
+            query: "needle",
+            limit: 32,
+            caseSensitive: true,
+            wholeWord: false,
+            useRegex: false,
+          },
+          controller.signal,
+        );
+        if (result.matches.length === 0)
+          throw new Error("Generation basis grep did no useful work");
+        generationEvidence.confirmPositive(handle);
+      });
     const request = async (handle: LogicalFinderHandle) => {
       if (controller.signal.aborted) throw new Error("Qualification deadline");
       if (handle.key.variant === "content") {
@@ -496,9 +524,15 @@ export async function runNativeQualification(options: NativeQualificationOptions
       resources: resourceStream.report(),
     };
     const retentionComplete = qualificationRetentionComplete(retention);
-    const generationEvidenceComplete = generations.length >= count && generations.every((record) =>
-      record.grep !== undefined && !record.faulted && record.poolReads.length > 0 &&
-      record.poolReads.every((read) => read.observation.status === "complete"));
+    const generationEvidenceComplete =
+      generations.length >= count &&
+      generations.every(
+        (record) =>
+          record.grep !== undefined &&
+          !record.faulted &&
+          record.poolReads.length > 0 &&
+          record.poolReads.every((read) => read.observation.status === "complete"),
+      );
     const resourceResult = resourcePredicates(
       resources.map((row) => row.sample),
       process.pid,
@@ -643,9 +677,13 @@ export async function runNativeQualification(options: NativeQualificationOptions
       resources,
       retention,
       generationEvidence: generations.map((record) => ({
-        pid: record.pid, bootstrap: record.bootstrap, grep: record.grep ?? null,
+        pid: record.pid,
+        bootstrap: record.bootstrap,
+        grep: record.grep ?? null,
         retirementStartedAt: record.retirementStartedAt ?? null,
-        basisGrepAttempted: record.basisGrepAttempted, basisGrepFailure: record.basisGrepFailure ?? null, poolReads: record.poolReads,
+        basisGrepAttempted: record.basisGrepAttempted,
+        basisGrepFailure: record.basisGrepFailure ?? null,
+        poolReads: record.poolReads,
       })),
       productiveOverlapSamples,
       executions,
@@ -676,10 +714,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
         churnFailuresAbsent:
           churnWindows.length === 2 &&
           churnWindows.every((window) => Object.keys(window.failures).length === 0),
-        resourcesComplete:
-          resourceResult.resourcesComplete && !samplerFailure && retentionComplete,
+        resourcesComplete: resourceResult.resourcesComplete && !samplerFailure && retentionComplete,
         observationComplete:
-          retentionComplete && generationEvidenceComplete &&
+          retentionComplete &&
+          generationEvidenceComplete &&
           windowsResult.every((window) => !window.observationLimitReached),
         // Resource ceilings and throughput regression need exact-host interpretation against baseline.
         generationEvidenceComplete,

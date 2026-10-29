@@ -13,10 +13,14 @@ export function qualificationWorkload(input: {
   if (
     ![windows, acquisitions, files].every(Number.isSafeInteger) ||
     ![2, 3].includes(count) ||
-    windows < 3 || windows > 5 ||
-    acquisitions < 500 || acquisitions > 2_000 ||
-    files < 128 || files > 2_048
-  ) throw new Error("Qualification workload outside bounded representative envelope");
+    windows < 3 ||
+    windows > 5 ||
+    acquisitions < 500 ||
+    acquisitions > 2_000 ||
+    files < 128 ||
+    files > 2_048
+  )
+    throw new Error("Qualification workload outside bounded representative envelope");
   const workloadMs = 600_000;
   // This bounds the wire grace, not journal I/O. A longer run is incomplete.
   const shutdownMs = LIMITS.destroyMs + count * (100 + LIMITS.reapMs);
@@ -37,18 +41,42 @@ export function qualificationWorkload(input: {
   // One first-grep checkpoint per generation, plus stable phase boundaries.
   const basisCheckpoints = opens + count * (2 * windows + 10);
   const terms = {
-    dataJobs, basisGreps, opens, closes, registrations, maintenancePumps,
-    maintenanceStatus, guardianMessages, generationTransitions, basisCheckpoints,
+    dataJobs,
+    basisGreps,
+    opens,
+    closes,
+    registrations,
+    maintenancePumps,
+    maintenanceStatus,
+    guardianMessages,
+    generationTransitions,
+    basisCheckpoints,
   };
   // Emitter audit: supervisor admission/queue/job + request's round-trip/four
   // timing rows + count/pump/finalizer rows fit 32 per job. Implicit opens,
   // registration, shutdown closes, startup/retirement, maintenance pump/status
   // and ProcessSlot guardian messages have separate allowances below. This is
   // a successful-workload envelope, not permission to forgive faults/extra work.
-  const observationUnits = dataJobs + basisGreps + opens + closes + registrations +
-    maintenancePumps + maintenanceStatus + guardianMessages + generationTransitions;
+  const observationUnits =
+    dataJobs +
+    basisGreps +
+    opens +
+    closes +
+    registrations +
+    maintenancePumps +
+    maintenanceStatus +
+    guardianMessages +
+    generationTransitions;
   return {
-    count, windows, acquisitions, files, workloadMs, shutdownMs, retentionMs, churnSets, terms,
+    count,
+    windows,
+    acquisitions,
+    files,
+    workloadMs,
+    shutdownMs,
+    retentionMs,
+    churnSets,
+    terms,
     capacities: {
       observations: 32 * observationUnits,
       executions: dataJobs + basisGreps,
@@ -67,9 +95,14 @@ export function qualificationRetentionComplete(input: {
   readonly executions: { readonly overflow: boolean };
   readonly resources: { readonly overflow: boolean };
 }) {
-  return Number.isFinite(input.elapsedMs) && input.elapsedMs >= 0 &&
-    input.elapsedMs <= input.workload.retentionMs && !input.observations.overflow &&
-    !input.executions.overflow && !input.resources.overflow;
+  return (
+    Number.isFinite(input.elapsedMs) &&
+    input.elapsedMs >= 0 &&
+    input.elapsedMs <= input.workload.retentionMs &&
+    !input.observations.overflow &&
+    !input.executions.overflow &&
+    !input.resources.overflow
+  );
 }
 
 /** Ordered, on-demand retention. Once lost, evidence never becomes complete again. */
@@ -85,6 +118,12 @@ export function qualificationStream<T>(capacity: number) {
       if (rows.length < capacity) rows.push(row);
       else overflow = true;
     },
-    report: () => ({ capacity, attempted, retained: rows.length, dropped: attempted - rows.length, overflow }),
+    report: () => ({
+      capacity,
+      attempted,
+      retained: rows.length,
+      dropped: attempted - rows.length,
+      overflow,
+    }),
   };
 }

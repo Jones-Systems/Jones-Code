@@ -509,18 +509,14 @@ native(
       slotId: 0,
       slotGeneration: 1,
     };
-    const child = NodeChildProcess.spawn(
-      manifest.file,
-      [...manifest.args, JSON.stringify(boot)],
-      {
-        stdio: ["pipe", "pipe", "pipe", "pipe"],
-        env: minimalWorkerEnvironment(
-          process.env,
-          manifest.runtimeForm === "sea",
-          manifest.runtimeForm === "electron",
-        ),
-      },
-    );
+    const child = NodeChildProcess.spawn(manifest.file, [...manifest.args, JSON.stringify(boot)], {
+      stdio: ["pipe", "pipe", "pipe", "pipe"],
+      env: minimalWorkerEnvironment(
+        process.env,
+        manifest.runtimeForm === "sea",
+        manifest.runtimeForm === "electron",
+      ),
+    });
     // Keep stdin and FD3 valid and send no GO: any admission already defeats rejection.
     await expectWrongBuildRejection(child);
   },

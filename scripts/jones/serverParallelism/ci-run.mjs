@@ -168,15 +168,17 @@ try {
     roots.length === 1
       ? NodePath.join(installedRoot, roots[0], "t3")
       : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
-  for (const [form, executable, entry] of scope === "full" ? [
-    ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
-    [
-      "electron",
-      electron ?? NodePath.join(output, "MISSING-ELECTRON"),
-      NodePath.join(root, "apps/server/dist/bin.mjs"),
-    ],
-    ["sea", sea, "-"],
-  ] : []) {
+  for (const [form, executable, entry] of scope === "full"
+    ? [
+        ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
+        [
+          "electron",
+          electron ?? NodePath.join(output, "MISSING-ELECTRON"),
+          NodePath.join(root, "apps/server/dist/bin.mjs"),
+        ],
+        ["sea", sea, "-"],
+      ]
+    : []) {
     const path = NodePath.join(output, `${form}-command.json`);
     await node(`manifest-${form}`, [
       "scripts/jones/serverParallelism/artifact-command.mjs",
