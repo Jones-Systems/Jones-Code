@@ -131,7 +131,7 @@ NodeTest.test(
           state=JSON.parse(await fs.readFile(statePath,"utf8"));
           if(state.protocol!==4 || !state.update) throw new Error("Synthetic launcher refuses invalid service state.");
         }catch(error){console.error(error.message);process.exitCode=1;return}
-        const {writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement,assertNoUnreconciledUpdateOperations,FailedOperationUnsettledError}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
+        const {archiveUpdateOperation,writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement,assertNoUnreconciledUpdateOperations,FailedOperationUnsettledError}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
         const {removeQualifiedRecoveryPayload}=load(${JSON.stringify(NodeURL.fileURLToPath(backup))});
 
         if(state.update.status==="failed"){
@@ -140,6 +140,7 @@ NodeTest.test(
           const child=spawn(active,["serve"],{
             env:{...process.env,T3CODE_HOME:home,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
               protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",updateSettlementProtocol:1,
+              update:state.update,
             })},stdio:["inherit","inherit","inherit","ipc"],
           });
           let queue=Promise.resolve();
@@ -147,6 +148,7 @@ NodeTest.test(
             if(message.type==="request-update"){
               queue=queue.then(async()=>{
                 try {
+                  await archiveUpdateOperation(home,state.update);
                   await assertNoUnreconciledUpdateOperations(home,state.update);
                   throw new Error("synthetic fixture expected an unsettled operation");
                 } catch(error) {
@@ -660,6 +662,7 @@ NodeTest.test(
           const planBytes = await NodeFSP.readFile(planPath);
           const plan = JSON.parse(planBytes);
           NodeAssert.equal(plan.operationId, prepared.operationId);
+          NodeAssert.deepEqual(plan.retainedUpdate, prepared.state.update);
           NodeAssert.equal(
             plan.childExecutable,
             NodePath.join(
@@ -792,6 +795,8 @@ NodeTest.test(
               fixedIds,
             );
             NodeAssert.equal(result.assertionsPassed, true);
+            NodeAssert.equal(result.installArchive.created, !archivedOutcome);
+            NodeAssert.match(result.installArchive.sha256, /^[a-f0-9]{64}$/);
             NodeAssert.equal(result.packagedRecoveryMatrixPassed, false);
             NodeAssert.equal(result.externalDescendantSettlementRequired, true);
             NodeAssert.equal(result.installReceipt.operationId, input.installOperationId);

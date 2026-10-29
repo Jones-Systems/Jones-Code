@@ -893,7 +893,9 @@ async function preparePackagedObservation({
     executable: launcher.executable,
     identity: launcher.identity,
     operationId,
-    ...(installing ? { binding: operationBinding(prepared.staged) } : { requestIds: ids }),
+    ...(installing
+      ? { binding: operationBinding(prepared.staged) }
+      : { requestIds: ids, retainedUpdate: prepared.state.update }),
     ...(installOperationId === undefined
       ? {}
       : {
@@ -1212,6 +1214,7 @@ export async function exercisePackagedLegacyReconciliation({
   };
   let client;
   let installReceipt;
+  let installArchive;
   const inspect = async () => {
     if (failure || stage === "complete" || !child) return;
     if (stage === "runtime") {
@@ -1240,6 +1243,10 @@ export async function exercisePackagedLegacyReconciliation({
         token,
         signal: controlSignal,
       });
+      if (originalOutcome)
+        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
+      else await NodeAssert.rejects(NodeFSP.lstat(outcomePath), { code: "ENOENT" });
+      await NodeAssert.rejects(NodeFSP.lstat(settlementPath), { code: "ENOENT" });
       await intact();
       await client.state();
       const directory = NodePath.join(root, "ipc-observations");
@@ -1281,11 +1288,21 @@ export async function exercisePackagedLegacyReconciliation({
           " requires reconciliation before another Install; the current server remains active.",
         sendCallbackCompleted: true,
       });
+      const archived = await boundedRecord(outcomePath);
+      NodeAssert.deepEqual(archived.value, {
+        schema: 1,
+        operationId,
+        binding: reservation.value.binding,
+        status: "failed",
+      });
+      if (originalOutcome) NodeAssert.deepEqual(archived.bytes, originalOutcome.bytes);
+      installArchive = {
+        created: originalOutcome === undefined,
+        sha256: NodeCrypto.createHash("sha256").update(archived.bytes).digest("hex"),
+      };
+      originalOutcome = archived;
       await intact();
       await NodeAssert.rejects(NodeFSP.lstat(settlementPath), { code: "ENOENT" });
-      if (originalOutcome)
-        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
-      else await NodeAssert.rejects(NodeFSP.lstat(outcomePath), { code: "ENOENT" });
       await NodeAssert.rejects(
         NodeFSP.lstat(NodePath.join(operationDirectory, installOperationId + ".json")),
         { code: "ENOENT" },
@@ -1429,6 +1446,7 @@ export async function exercisePackagedLegacyReconciliation({
       schema: "jones.packaged-legacy-reconciliation/v1",
       operationId,
       archivedOutcome: prepared.archivedOutcome,
+      ...(installArchive === undefined ? {} : { installArchive }),
       command,
       observation: pair,
       ...(installReceipt === undefined ? {} : { installReceipt }),
