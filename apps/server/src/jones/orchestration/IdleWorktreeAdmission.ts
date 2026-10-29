@@ -207,13 +207,16 @@ export const makeIdleWorktreeAdmission = (sql: SqlClient.SqlClient) => {
       (effect, identity) =>
         effect.pipe(sql.withTransaction, Effect.mapError(persistence(identity.threadId))),
     ),
-    markUnresolved: (identity: Identity) =>
-      Effect.gen(function* () {
+    markUnresolved: Effect.fn("IdleWorktreeAdmission.markUnresolved")(
+      function* (identity: Identity) {
         const record = yield* current(identity);
         if (record.phase === "pending" || record.phase === "prepared" || record.phase === "ready")
           return;
         yield* transition(identity, [record.phase], "unresolved");
-      }).pipe(sql.withTransaction, Effect.mapError(persistence(identity.threadId))),
+      },
+      (effect, identity) =>
+        effect.pipe(sql.withTransaction, Effect.mapError(persistence(identity.threadId))),
+    ),
     cleanupAllowed: (identity: Identity) =>
       read(identity.threadId).pipe(
         Effect.map(
