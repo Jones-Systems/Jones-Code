@@ -15,13 +15,26 @@ export const observerSha256 = digest(await readFile(new URL(import.meta.url)));
 async function boundedRead(path, limit) {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const buffer = Buffer.alloc(limit + 1);
-    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > limit) throw new Error("OS evidence exceeds bound");
-    return buffer.subarray(0, bytesRead).toString("utf8");
+    return await readBoundedEvidence(file, limit);
   } finally {
     await file.close();
   }
+}
+// procfs may return a single page even when the supplied buffer has room for the whole file.
+export async function readBoundedEvidence(file, limit) {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 4 * 1024 * 1024)
+    throw new Error("Invalid OS evidence bound");
+  const buffer = Buffer.alloc(limit + 1);
+  let offset = 0;
+  while (offset < buffer.length) {
+    const { bytesRead } = await file.read(buffer, offset, buffer.length - offset, null);
+    if (!Number.isSafeInteger(bytesRead) || bytesRead < 0 || bytesRead > buffer.length - offset)
+      throw new Error("Invalid OS evidence read");
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset > limit) throw new Error("OS evidence exceeds bound");
+  return buffer.subarray(0, offset).toString("utf8");
 }
 const identity = (stat) => ({ device: stat.dev, inode: stat.ino, mode: stat.mode & 0o777 });
 export async function prepareNativeBlockFifos(directory, pid) {

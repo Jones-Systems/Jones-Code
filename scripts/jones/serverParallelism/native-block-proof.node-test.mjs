@@ -8,9 +8,32 @@ import {
   nativeBlockCohortRetired,
 } from "./native-block-proof.mjs";
 import { nativeBlockTestProof } from "./native-block-proof-fixture.mjs";
+import { readBoundedEvidence } from "./native-block-observer.mjs";
 const H = "a".repeat(64);
 const expected = { os: "linux-x64", form: "source", profile: "laptop", build: H };
 const valid = nativeBlockTestProof;
+
+test("OS evidence reads continue through short pages and retain the aggregate byte bound", async () => {
+  const reader = (text) => {
+    const bytes = Buffer.from(text);
+    let position = 0;
+    return {
+      async read(buffer, offset, length, filePosition) {
+        assert.equal(filePosition, null);
+        const count = Math.min(3, length, bytes.length - position);
+        bytes.copy(buffer, offset, position, position + count);
+        position += count;
+        return { bytesRead: count };
+      },
+    };
+  };
+  const maps = "node image\nlibfff.so\nffi-rs.node\n";
+  assert.equal(await readBoundedEvidence(reader(maps), Buffer.byteLength(maps)), maps);
+  assert.equal(await readBoundedEvidence(reader(""), 1), "");
+  await assert.rejects(readBoundedEvidence(reader(maps), Buffer.byteLength(maps) - 1));
+  await assert.rejects(readBoundedEvidence(reader("x"), 0));
+  await assert.rejects(readBoundedEvidence({ read: async () => ({ bytesRead: -1 }) }, 8));
+});
 
 test("next-cohort admission requires captured exit, absence and journal retirement", () => {
   const retired = {
@@ -41,10 +64,7 @@ test("next-cohort admission requires captured exit, absence and journal retireme
   const unknownProof = { ...retired, normalResult: false, predicate: "unknown" };
   assert.equal(nativeBlockCohortRetired(unknownProof, 2), false);
   assert.equal(nativeBlockCohortRetired({ ...unknownProof, cleanupRecovery: true }, 2), true);
-  assert.equal(
-    nativeBlockCohortRetired({ ...unknownProof, sameJournalRecovered: true }, 2),
-    false,
-  );
+  assert.equal(nativeBlockCohortRetired({ ...unknownProof, sameJournalRecovered: true }, 2), false);
   assert.equal(
     nativeBlockCohortRetired(
       { ...unknownProof, sameJournalRecovered: true, replacementUseful: true },

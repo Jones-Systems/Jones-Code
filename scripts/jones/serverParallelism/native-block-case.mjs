@@ -370,24 +370,23 @@ export async function runNativeBlockCase({ manifestPath, scratch, output, profil
     mode: "release",
     artifacts: output,
   });
-  const killed =
-    nativeBlockCohortRetired(negative, profile === "vps" ? 3 : 2)
-      ? await fixture({
-          manifestPath,
-          directory: join(scratch, "kill"),
-          profile,
-          mode: "kill",
-          artifacts: output,
-        })
-      : {
-          held: "unknown",
-          parentExit: { captured: false },
-          childrenAbsent: "unknown",
-          sameJournalRecovered: false,
-          replacementUseful: false,
-          cleanupProved: false,
-          reason: "Negative-control retirement unproved; zero subsequent native admissions",
-        };
+  const killed = nativeBlockCohortRetired(negative, profile === "vps" ? 3 : 2)
+    ? await fixture({
+        manifestPath,
+        directory: join(scratch, "kill"),
+        profile,
+        mode: "kill",
+        artifacts: output,
+      })
+    : {
+        held: "unknown",
+        parentExit: { captured: false },
+        childrenAbsent: "unknown",
+        sameJournalRecovered: false,
+        replacementUseful: false,
+        cleanupProved: false,
+        reason: "Negative-control retirement unproved; zero subsequent native admissions",
+      };
   const os =
     process.platform === "linux" && process.arch === "x64"
       ? "linux-x64"
