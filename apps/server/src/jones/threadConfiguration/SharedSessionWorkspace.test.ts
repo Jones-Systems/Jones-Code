@@ -113,11 +113,12 @@ it.effect.each(["codex", "opencode"] as const)(
       assert.equal(projection.providerSessions[0]!.cwd, "/workspace/opener");
       assert.equal(projection.thread.worktreePath, "/workspace/current");
     }).pipe(
-      Effect.provide(layer),
       Effect.provide(
         Layer.mergeAll(
+          layer,
           Layer.mock(Sessions.ProviderSessionManagerV2)({
-            detach: () => Effect.die("An unchanged shared conversation must not retire its writer."),
+            detach: () =>
+              Effect.die("An unchanged shared conversation must not retire its writer."),
           }),
           Layer.mock(Sink.EventSinkV2)({
             writeIfRunCurrent: () => Effect.die("Reuse must not persist a replacement binding."),
