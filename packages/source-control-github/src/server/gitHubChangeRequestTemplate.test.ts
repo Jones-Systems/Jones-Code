@@ -12,6 +12,15 @@ import * as TestSourceControlHost from "@t3tools/source-control-testing/TestSour
 
 import * as GitHubChangeRequestTemplate from "./gitHubChangeRequestTemplate.ts";
 
+const SINGLE_TEMPLATE_PATHS = [
+  ".github/pull_request_template.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  "pull_request_template.md",
+  "PULL_REQUEST_TEMPLATE.md",
+  "docs/pull_request_template.md",
+  "docs/PULL_REQUEST_TEMPLATE.md",
+] as const;
+
 const TEMPLATE_DIRECTORIES = [
   ".github/PULL_REQUEST_TEMPLATE",
   "PULL_REQUEST_TEMPLATE",
@@ -33,13 +42,30 @@ const runGit = (cwd: string, args: ReadonlyArray<string>) =>
     });
   });
 
+const makeTempDirectoryWithRemovalCheck = (prefix: string) =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    let directory: string | undefined;
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        if (directory !== undefined) {
+          assert.isFalse(
+            yield* fileSystem.exists(directory),
+            `Fixture directory remains: ${directory}`,
+          );
+        }
+      }).pipe(Effect.orDie),
+    );
+    directory = yield* fileSystem.makeTempDirectoryScoped({ prefix });
+    return directory;
+  });
+
 const runWithTempDirectory = <A, E, R>(
   test: (cwd: string) => Effect.Effect<A, E, R | FileSystem.FileSystem | Path.Path>,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pr-template-" });
+      const cwd = yield* makeTempDirectoryWithRemovalCheck("t3-pr-template-");
       yield* runGit(cwd, ["init", "--initial-branch=main"]);
       yield* runGit(cwd, ["config", "user.email", "test@example.com"]);
       yield* runGit(cwd, ["config", "user.name", "Test User"]);
@@ -68,6 +94,18 @@ const detectTemplate = (cwd: string, treeish = "HEAD") =>
     const { git } = yield* SourceControlHost.SourceControlHost;
     return yield* GitHubChangeRequestTemplate.detect(cwd, treeish, git.execute);
   });
+
+it.effect.each(SINGLE_TEMPLATE_PATHS)("recognizes $0", (relativePath) =>
+  runWithTempDirectory((cwd) =>
+    Effect.gen(function* () {
+      yield* writeTemplate(cwd, relativePath, `template from ${relativePath}`);
+      yield* commitTemplates(cwd);
+
+      const template = yield* detectTemplate(cwd);
+      assert.strictEqual(Option.getOrUndefined(template), `template from ${relativePath}`);
+    }),
+  ),
+);
 
 it.effect("reads templates from the requested base tree", () =>
   runWithTempDirectory((cwd) =>
@@ -160,9 +198,8 @@ it.effect.skipIf(!symlinksSupported)(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const outsideDirectory = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-pr-template-outside-",
-        });
+        const outsideDirectory =
+          yield* makeTempDirectoryWithRemovalCheck("t3-pr-template-outside-");
         const outsideTemplate = path.join(outsideDirectory, "secret.md");
         yield* fileSystem.writeFileString(outsideTemplate, "LOCAL_SECRET_SENTINEL");
         const escapedTemplatePath = path.join(cwd, ".github", "pull_request_template.md");
@@ -188,9 +225,8 @@ it.effect.skipIf(!symlinksSupported)(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const outsideDirectory = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-pr-template-outside-",
-        });
+        const outsideDirectory =
+          yield* makeTempDirectoryWithRemovalCheck("t3-pr-template-outside-");
         const templatePath = yield* writeTemplate(
           cwd,
           ".github/pull_request_template.md",
