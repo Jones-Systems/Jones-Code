@@ -1044,7 +1044,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
       await sampler;
       await resourceTail;
       // Drain only reads already admitted by the full collector, after workload/retirement.
-      if (options.diagnostic) await Promise.all([...pendingDiagnosticReads]);
+      if (options.diagnostic) await Promise.all(pendingDiagnosticReads);
       monitor.disable();
       finishPhase();
     }

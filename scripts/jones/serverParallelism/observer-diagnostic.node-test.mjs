@@ -1,5 +1,5 @@
-import { test } from "node:test";
-import * as assert from "node:assert/strict";
+import * as NodeTest from "node:test";
+import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -90,7 +90,7 @@ const report = {
   shutdownProved: true,
   resources: [],
   windows: [],
-  diagnostic: { mode: "full", eligible: false, cpuRetention: retained },
+  diagnostic: { mode: "full", eligible: false, cpuResources: [], cpuRetention: retained },
   retention: {
     workload: { count: 2, windows: 3, acquisitions: 500, files: 512, workloadMs: 600_000 },
     observations: retained,
@@ -108,78 +108,78 @@ const completion = {
   aborted: false,
 };
 
-test("admits only the exact Linux source workload, build and unchanged baseline", () => {
-  assert.doesNotThrow(() => validateDiagnosticAdmission(admission));
-  assert.throws(() => validateDiagnosticAdmission({ ...admission, platform: "darwin" }));
-  assert.throws(() => validateDiagnosticAdmission({ ...admission, source: "e".repeat(40) }));
-  assert.throws(() => validateDiagnosticAdmission({ ...admission, build: "e".repeat(64) }));
-  assert.throws(() => validateDiagnosticAdmission({ ...admission, mode: "FULL" }));
-  assert.throws(() =>
+NodeTest.test("admits only the exact Linux source workload, build and unchanged baseline", () => {
+  NodeAssert.doesNotThrow(() => validateDiagnosticAdmission(admission));
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...admission, platform: "darwin" }));
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...admission, source: "e".repeat(40) }));
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...admission, build: "e".repeat(64) }));
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...admission, mode: "FULL" }));
+  NodeAssert.throws(() =>
     validateDiagnosticAdmission({ ...admission, manifest: { ...manifest, runtimeForm: "bundle" } }),
   );
-  assert.throws(() =>
+  NodeAssert.throws(() =>
     validateDiagnosticAdmission({ ...admission, baseline: { ...baseline, count: 3 } }),
   );
-  assert.throws(() =>
+  NodeAssert.throws(() =>
     validateDiagnosticAdmission({ ...admission, baseline: { ...baseline, files: 2048 } }),
   );
-  assert.throws(() =>
+  NodeAssert.throws(() =>
     validateDiagnosticAdmission({ ...admission, baseline: { ...baseline, acquisitions: 501 } }),
   );
-  assert.throws(() =>
+  NodeAssert.throws(() =>
     validateDiagnosticAdmission({ ...admission, baseline: { ...baseline, cleanupProved: false } }),
   );
 });
 
-test("requires a separately selected full receipt for the one control and never chooses favorable latency", () => {
-  assert.throws(() => validateDiagnosticAdmission({ ...admission, mode: "cpu-stat-only" }));
-  assert.doesNotThrow(() =>
+NodeTest.test("requires a separately selected full receipt for the one control and never chooses favorable latency", () => {
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...admission, mode: "cpu-stat-only" }));
+  NodeAssert.doesNotThrow(() =>
     validateDiagnosticAdmission({ ...admission, mode: "cpu-stat-only", prior }),
   );
-  assert.throws(() =>
+  NodeAssert.throws(() =>
     validateDiagnosticAdmission({
       ...admission,
       mode: "cpu-stat-only",
       prior: { ...prior, mode: "cpu-stat-only" },
     }),
   );
-  assert.throws(() =>
+  NodeAssert.throws(() =>
     validateDiagnosticAdmission({
       ...admission,
       mode: "cpu-stat-only",
       prior: { ...prior, baselineHash: "e".repeat(64) },
     }),
   );
-  assert.throws(() => validateDiagnosticAdmission({ ...admission, prior }));
+  NodeAssert.throws(() => validateDiagnosticAdmission({ ...admission, prior }));
   const favorable = {
     ...report,
     diagnostic: { ...report.diagnostic, mode: "cpu-stat-only" },
     predicates: { productiveOverlap: true, normalTargets: true },
   };
-  assert.equal(diagnosticCompletion({ ...completion, report: favorable }), true);
-  assert.equal(summarizeDiagnostic(favorable, []).eligible, false);
+  NodeAssert.equal(diagnosticCompletion({ ...completion, report: favorable }), true);
+  NodeAssert.equal(summarizeDiagnostic(favorable, []).eligible, false);
 });
 
-test("makes timeout, loss, absent cleanup, failure and cancellation incomplete independently of official predicates", () => {
-  assert.equal(diagnosticCompletion(completion), true);
-  assert.equal(diagnosticCompletion({ ...completion, elapsedMs: 600_001 }), false);
-  assert.equal(
+NodeTest.test("makes timeout, loss, absent cleanup, failure and cancellation incomplete independently of official predicates", () => {
+  NodeAssert.equal(diagnosticCompletion(completion), true);
+  NodeAssert.equal(diagnosticCompletion({ ...completion, elapsedMs: 600_001 }), false);
+  NodeAssert.equal(
     diagnosticCompletion({ ...completion, trace: { ...retained, dropped: 1, overflow: true } }),
     false,
   );
-  assert.equal(
+  NodeAssert.equal(
     diagnosticCompletion({
       ...completion,
       cleanup: { shutdownProved: true, fixtureRemoved: false },
     }),
     false,
   );
-  assert.equal(diagnosticCompletion({ ...completion, cleanup: undefined }), false);
-  assert.equal(diagnosticCompletion({ ...completion, error: { raw: "failed read" } }), false);
-  assert.equal(diagnosticCompletion({ ...completion, aborted: true }), false);
+  NodeAssert.equal(diagnosticCompletion({ ...completion, cleanup: undefined }), false);
+  NodeAssert.equal(diagnosticCompletion({ ...completion, error: { raw: "failed read" } }), false);
+  NodeAssert.equal(diagnosticCompletion({ ...completion, aborted: true }), false);
 });
 
-test("requires captured exit, stream close and journal retirement separately", () => {
+NodeTest.test("requires captured exit, stream close and journal retirement separately", () => {
   const boot = { slotGeneration: 1, nonce: "n" };
   const events = ["spawn", "retire-resolved", "captured-close", "retired-end"].map((event) => ({
     kind: event === "retired-end" || event === "retire-resolved" ? "qualification" : "lifecycle",
@@ -187,10 +187,10 @@ test("requires captured exit, stream close and journal retirement separately", (
     pid: 2,
     bootstrap: boot,
   }));
-  assert.equal(diagnosticLifecycleComplete(events), false);
+  NodeAssert.equal(diagnosticLifecycleComplete(events), false);
   events.push({ kind: "lifecycle", event: "captured-exit", pid: 2, bootstrap: boot });
-  assert.equal(diagnosticLifecycleComplete(events), true);
-  assert.equal(
+  NodeAssert.equal(diagnosticLifecycleComplete(events), true);
+  NodeAssert.equal(
     diagnosticLifecycleComplete(
       events.map((row) =>
         row.event === "captured-exit" ? { ...row, bootstrap: { ...boot, nonce: "reused" } } : row,
@@ -200,7 +200,7 @@ test("requires captured exit, stream close and journal retirement separately", (
   );
 });
 
-test("retains missing CPU rows and sticky start-time mismatch without bridging a successful retry", () => {
+NodeTest.test("retains missing CPU rows and sticky start-time mismatch without bridging a successful retry", () => {
   const boot = { version: 1, build, authorityId: "a", slotId: 0, slotGeneration: 1, nonce: "n" };
   const rows = [1, 2, 3, 4, 5].map((readId) => ({
     readId,
@@ -235,23 +235,23 @@ test("retains missing CPU rows and sticky start-time mismatch without bridging a
     },
   });
   const summary = summarizeDiagnostic({ ...report, resources: rows }, events);
-  assert.equal(summary.resourceIntervals.length, 5);
-  assert.equal(summary.resourceIntervals[1].available, false);
-  assert.equal(
+  NodeAssert.equal(summary.resourceIntervals.length, 5);
+  NodeAssert.equal(summary.resourceIntervals[1].available, false);
+  NodeAssert.equal(
     summary.cpuEnvelopes.some((row) => row.relation === "contained"),
     false,
   );
-  assert.equal(summary.resourceIntervals[4].relation, "pid-identity-mismatch");
+  NodeAssert.equal(summary.resourceIntervals[4].relation, "pid-identity-mismatch");
 });
 
-test("binds all separate artifacts and refuses output collisions before fixture creation", async () => {
+NodeTest.test("binds all separate artifacts and refuses output collisions before fixture creation", async () => {
   const directory = await NodeFSP.mkdtemp(
     NodePath.join(NodeOS.tmpdir(), "jones-observer-admission-"),
   );
   const output = NodePath.join(directory, "report.json");
   try {
     await assertNewDiagnosticPaths(output, [NodePath.join(directory, "manifest.json")]);
-    await assert.rejects(assertNewDiagnosticPaths(output, [output]));
+    await NodeAssert.rejects(assertNewDiagnosticPaths(output, [output]));
     const boot = { slotGeneration: 1, nonce: "n" };
     const events = ["spawn", "captured-exit", "captured-close", "retired-end"].map((event) => ({
       kind: event === "retired-end" ? "qualification" : "lifecycle",
@@ -277,10 +277,10 @@ test("binds all separate artifacts and refuses output collisions before fixture 
       artifacts[kind] = { sha256: NodeCrypto.createHash("sha256").update(bytes).digest("hex") };
     }
     const receipt = { ...prior, elapsedMs: 1, aborted: false, artifacts };
-    assert.equal(await verifyDiagnosticArtifacts(receipt, output), true);
-    await assert.rejects(assertNewDiagnosticPaths(output, []));
+    NodeAssert.equal(await verifyDiagnosticArtifacts(receipt, output), true);
+    await NodeAssert.rejects(assertNewDiagnosticPaths(output, []));
     await NodeFSP.writeFile(`${output}.cleanup.json`, JSON.stringify({ shutdownProved: false }));
-    assert.equal(await verifyDiagnosticArtifacts(receipt, output), false);
+    NodeAssert.equal(await verifyDiagnosticArtifacts(receipt, output), false);
   } finally {
     await NodeFSP.rm(directory, { recursive: true, force: true }).catch(() => {});
   }
