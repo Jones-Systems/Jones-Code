@@ -2,6 +2,19 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-word-ci-trace",
+      "tests": [
+        "apps/web/src/jones/wordCiTrace.test.ts",
+        "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx"
+      ],
+      "commands": [
+        "cd apps/web && vp test run --project unit src/jones/wordCiTrace.test.ts",
+        "cd apps/web && vp test run --project browser src/components/files/AttachmentFilePreview.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-pull-request-check-observation",
       "tests": [
         "packages/contracts/src/jones/pullRequestCheckObservation.test.ts",

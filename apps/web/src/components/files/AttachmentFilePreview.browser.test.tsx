@@ -1,8 +1,9 @@
 import DocumentPages, { sanitizeDocumentHtml } from "./DocumentPages";
 import { act, render, stubGlobal, type Screen } from "../../../test/render";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
-import { page, userEvent } from "vite-plus/test/browser";
+import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
+import { commands, page, userEvent } from "vite-plus/test/browser";
+import type { WordWorkerEvidence } from "~/jones/wordCiTrace";
 import "~/index.css";
 
 const { refresh, assetUrlState } = vi.hoisted(() => ({
@@ -1973,6 +1974,15 @@ it("keeps spreadsheet dates on their calendar day west of UTC", async () => {
 });
 
 it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (pages) => {
+  const capture: WordWorkerEvidence = { marks: [], disposed: false, capped: false };
+  if (pages === 100) {
+    onTestFinished(async (context) => {
+      Object.assign(context.task.meta, {
+        jonesWordCiTrace: await commands.wordCiTrace("finish", capture),
+      });
+    });
+    await commands.wordCiTrace("start");
+  }
   // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only clock origin; does not control pass/fail or waits.
   const testStartedAt = performance.now();
   // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only timestamps correlate browser and worker events; assertions and timeouts remain unchanged.
@@ -1984,6 +1994,7 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
   };
   using _trace = {
     [Symbol.dispose]() {
+      capture.disposed = true;
       console.info("Word CI timing", JSON.stringify({ pages, workerTrace }));
     },
   };
@@ -2001,11 +2012,24 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         record({ worker: name, event: "started" });
         this.addEventListener("message", (event) => {
           const data = event.data;
+          if (pages === 100 && data?.type === "jones-word-open-phase") {
+            if (capture.marks.length < 128) {
+              capture.marks.push({
+                worker: name,
+                traceId: data.traceId,
+                mark: data.mark,
+                phase: data.phase,
+              });
+            } else capture.capped = true;
+          }
           record({
             worker: name,
             event: "reply",
             type: data?.type,
             phase: data?.phase,
+            traceId: data?.traceId,
+            phaseId: data?.phaseId,
+            mark: data?.mark,
             workerPerformanceNowMs: data?.elapsedMs,
             openElapsedMs: data?.openElapsedMs,
             id: data?.id,

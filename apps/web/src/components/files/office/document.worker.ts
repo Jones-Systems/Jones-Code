@@ -74,15 +74,24 @@ const opened: Lazy<Opened> = { value: undefined };
 serveWorker<WordMethods>({
   open: async (input) => {
     const openStartedAt = input.traceOpen === true ? performance.now() : undefined;
+    // @effect-diagnostics-next-line cryptoRandomUUID:off -- Diagnostic-only worker token; no Effect runtime or production identity is involved.
+    const traceId = input.traceOpen === true ? crypto.randomUUID() : undefined;
+    let phaseId = 0;
     const trace =
       input.traceOpen === true
-        ? (phase: string) =>
+        ? (phase: string) => {
+            const mark = `jones-word:${traceId}:${++phaseId}:${phase}`;
+            performance.mark(mark);
             postMessage({
               type: "jones-word-open-phase",
+              traceId,
+              phaseId,
+              mark,
               phase,
               elapsedMs: Math.round(performance.now()),
               openElapsedMs: Math.round(performance.now() - openStartedAt!),
-            })
+            });
+          }
         : undefined;
     trace?.("open-received");
     if (opened.value) throw new Error("The worker already holds a document");
