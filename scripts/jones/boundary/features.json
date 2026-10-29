@@ -2712,6 +2712,15 @@
         "scripts/jones/updates/packaged-recovery-preload.node-test.mjs"
       ],
       "scope": "Digest-bound isolated packaged-recovery fixtures, one-shot external preload crash points and captured-launcher settlement restart controls. Source-generated SEA checks qualify the harness only; real Jones artifacts, the complete RH-F1 matrix and installed continuity remain separate acceptance."
+    },
+    {
+      "id": "fleet-checkpoint",
+      "tests": [
+        "apps/server/src/jones/fleetCheckpoint/Checkpoint.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Connected.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Configuration.test.ts"
+      ],
+      "scope": "Typed native checkpoint place/get/cancel-pending through the existing fixed Fleet controller client. Original caller identity, bounded process uncertainty and exact native receipt attribution; no new queue, installation or activation."
     }
   ]
 }
