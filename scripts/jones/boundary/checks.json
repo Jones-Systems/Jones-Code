@@ -901,13 +901,18 @@
         "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
         "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
         "apps/web/src/jones/settlementRestore/threadMenu.test.ts",
-        "apps/web/src/hooks/useThreadActionMenu.test.ts"
+        "apps/web/src/hooks/useThreadActionMenu.test.ts",
+        "apps/mobile/src/jones/settlementRestore/runtime.test.ts",
+        "apps/mobile/src/jones/settlementRestore/wiring.test.ts",
+        "apps/mobile/src/features/home/useThreadListActions.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/settlementRestore/ apps/web/src/jones/settlementRestore/ apps/web/src/hooks/useThreadActionMenu.test.ts apps/web/src/hooks/useThreadActions.undo.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/mobile/src/jones/settlementRestore/ apps/mobile/src/features/home/useThreadListActions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/mobile typecheck"
       ]
     },
     {
