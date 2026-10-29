@@ -28,6 +28,9 @@ import {
   observeJonesUpdateSnapshot,
   observeJonesUpdateState,
   resolveJonesExactSourceAction,
+  resolveJonesAlternativeAction,
+  sameJonesReplacementStep,
+  jonesAlternativePresentation,
   type JonesExactSourceInput,
   type JonesUpdateObservation,
 } from "./jonesUpdates.ts";
@@ -549,6 +552,108 @@ const offered: JonesUpdateProvenance = {
   architecture: "x64",
   version: "0.0.45-preview.20261011.2.1",
 };
+
+describe("generic alternative selection", () => {
+  const environmentId = EnvironmentId.make("generic-alternative-host");
+  const offer = {
+    provenance: { ...offered, sourceSha: "f".repeat(40), artifactId: 5 },
+    checkedAt: "2026-10-29T00:00:00Z",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  const state: JonesUpdateState = {
+    ...staged,
+    environmentId,
+    currentVersion: "installed",
+    installedSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "c".repeat(40),
+    },
+    provenance: offered,
+    capability: {
+      check: true,
+      download: true,
+      install: true,
+      exactSource: true,
+      replaceStaged: true,
+    },
+    alternativeCandidate: offer,
+    migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+  };
+  const resolve = (
+    patch: Partial<JonesUpdateState> = {},
+    freshness: JonesUpdateObservation["freshness"] = "fresh",
+  ) =>
+    resolveJonesAlternativeAction({
+      environmentId,
+      observation: { state: { ...state, ...patch }, freshness },
+      canOperate: true,
+      alternative: offer,
+    });
+
+  it("captures the installed binding, retained handle/source and distinct exact target without offering Install", () => {
+    const decision = resolve();
+    expect(decision).toEqual({
+      status: "ready",
+      step: {
+        kind: "replace-exact",
+        targetSource: offer.provenance.sourceSha,
+        replace: {
+          stagedHandle: "fixed-stage",
+          sourceSha: offered.sourceSha,
+          environmentId,
+          currentVersion: "installed",
+          expectedInstalledSource: "a".repeat(40),
+          alternative: offer,
+        },
+      },
+    });
+    expect(jonesAlternativePresentation(state)).toEqual({
+      label: "Alternative",
+      version: offered.version,
+      buildStartedAt: undefined,
+      sourceSha: offer.provenance.sourceSha,
+    });
+    const changed = resolve({ stagedHandle: "competing-client-stage" });
+    expect(
+      decision.status === "ready" &&
+        changed.status === "ready" &&
+        sameJonesReplacementStep(decision.step, changed.step),
+    ).toBe(false);
+  });
+
+  it("refuses stale, absent, changed and expired offers, follower policy and unsupported hosts", () => {
+    for (const patch of [
+      { alternativeCandidate: { ...offer, provenance: { ...offer.provenance, artifactId: 99 } } },
+      { alternativeCandidate: { ...offer, expiresAt: "2000-01-01T00:00:00Z" } },
+      { environmentId: EnvironmentId.make("other") },
+      { policy: { role: "follower", leaderSource: offer.provenance.sourceSha } },
+      { capability: { check: true, download: true, install: true, exactSource: true } },
+      { phase: "preparing" },
+      { phase: "installing" },
+    ] satisfies Array<Partial<JonesUpdateState>>)
+      expect(resolve(patch).status).toBe("unavailable");
+    const { alternativeCandidate: _offer, ...withoutOffer } = state;
+    const { stagedHandle: _handle, ...withoutStage } = state;
+    const { installedSource: _source, ...withoutInstalled } = state;
+    for (const missing of [withoutOffer, withoutStage, withoutInstalled])
+      expect(
+        resolveJonesAlternativeAction({
+          environmentId,
+          observation: { state: missing, freshness: "fresh" },
+          canOperate: true,
+        }).status,
+      ).toBe("unavailable");
+    expect(resolve({}, "stale").status).toBe("unavailable");
+    expect(
+      resolveJonesAlternativeAction({
+        environmentId,
+        observation: { state, freshness: "fresh" },
+        canOperate: false,
+      }).status,
+    ).toBe("unavailable");
+  });
+});
 
 it("presents an offered build's version before download and leaves an older host's absent", () => {
   const { stagedHandle: _handle, ...unstaged } = staged;
