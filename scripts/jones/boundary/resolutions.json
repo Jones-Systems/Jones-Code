@@ -201,7 +201,7 @@
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "fcd00a98f907f60334b894225104530c060946f172ee4f9a66f5ddcb234cc8a1"
+          "sha256": "eead531256f589048c5dc297f0ca2bfecda52ebdf4db956b43784c6987e89cfe"
         }
       ],
       "targets": []
@@ -218,7 +218,7 @@
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "fcd00a98f907f60334b894225104530c060946f172ee4f9a66f5ddcb234cc8a1"
+          "sha256": "eead531256f589048c5dc297f0ca2bfecda52ebdf4db956b43784c6987e89cfe"
         }
       ],
       "targets": []
