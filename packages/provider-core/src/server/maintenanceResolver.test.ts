@@ -10,6 +10,7 @@ import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
@@ -99,13 +100,14 @@ const noSpawn = ChildProcessSpawner.make(() =>
 );
 
 function stdoutSpawner(
-  onSpawn: (command: string, args: ReadonlyArray<string>) => string,
+  onSpawn: (command: string, args: ReadonlyArray<string>, env: NodeJS.ProcessEnv | undefined) => string,
   exitCodeOf: (args: ReadonlyArray<string>) => number = () => 0,
 ) {
   return ChildProcessSpawner.make((command) => {
-    const { command: executable, args } = command as unknown as {
+    const { command: executable, args, options } = command as unknown as {
       readonly command: string;
       readonly args: ReadonlyArray<string>;
+      readonly options: { readonly env?: NodeJS.ProcessEnv };
     };
     return Effect.succeed(
       ChildProcessSpawner.makeHandle({
@@ -115,7 +117,7 @@ function stdoutSpawner(
         kill: () => Effect.void,
         unref: Effect.succeed(Effect.void),
         stdin: Sink.drain,
-        stdout: Stream.encodeText(Stream.make(onSpawn(executable, args))),
+        stdout: Stream.encodeText(Stream.make(onSpawn(executable, args, options.env))),
         stderr: Stream.empty,
         all: Stream.empty,
         getInputFd: () => Sink.drain,
@@ -300,6 +302,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
               "@example/package-tool@latest",
             ],
             lockKey: `npm-global:${normalizeCommandPath(tempDir)}`,
+            env: { PATH: "" },
           },
         });
       }),
@@ -533,6 +536,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       expect(capabilities.update).toMatchObject({
         command: "vp i -g @anthropic-ai/claude-code",
         lockKey: "vite-plus-global",
+        env: {},
       });
     }),
   );
@@ -652,9 +656,16 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     "advertises $case for pnpm-global installs",
     (fixture) =>
       Effect.gen(function* () {
-        const tempDir = yield* makeTempDir("t3-pnpm-latest");
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pnpm-latest-" });
         const pnpmBinDir = NodePath.join(tempDir, "pnpm-bin");
         writeExecutable(NodePath.join(pnpmBinDir, "pnpm"));
+        const env = {
+          PATH: pnpmBinDir,
+          HOME: NodePath.join(tempDir, "instance-home"),
+          PNPM_HOME: pnpmBinDir,
+        };
+        const probes: string[] = [];
         const link = linkIntoPackage(tempDir, "package-tool", [
           ".local",
           "share",
@@ -668,22 +679,30 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
 
         const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
           packageToolUpdate,
-          { binaryPath: link, env: { PATH: "" } },
+          { binaryPath: link, env },
         ).pipe(
-          Effect.provideService(HostProcess.Environment, { PATH: pnpmBinDir }),
+          Effect.provideService(HostProcess.Environment, { PATH: NodePath.join(tempDir, "ambient") }),
           Effect.provideService(
             ChildProcessSpawner.ChildProcessSpawner,
             stdoutSpawner(
-              (_command, args) =>
-                args[0] === "outdated"
+              (command, args, probeEnv) => {
+                expect(probeEnv).toEqual(env);
+                expect(command).toBe(
+                  args[0] === "--version" ? "pnpm" : NodePath.join(pnpmBinDir, "pnpm"),
+                );
+                probes.push(args[0]!);
+                if (args[0] === "--version") return "11.1.3";
+                return args[0] === "outdated"
                   ? JSON.stringify(fixture.outdated)
                   : JSON.stringify([
                       { dependencies: { "@example/package-tool": { version: "1.0.0" } } },
-                    ]),
+                    ]);
+              },
               (args) => (args[0] === "outdated" ? fixture.exitCode : 0),
             ),
           ),
         );
+        expect(capabilities.update?.env).toEqual(env);
 
         const provider = yield* enrichProviderSnapshotWithVersionAdvisory(
           installedPackageToolProvider,
@@ -703,8 +722,78 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           currentVersion: "1.0.0",
           latestVersion: fixture.expected,
         });
-      }),
+        expect(probes).toEqual(
+          fixture.expected === "1.0.0" ? ["--version", "outdated", "ls"] : ["--version", "outdated"],
+        );
+      }).pipe(Effect.scoped),
     { skip: !symlinksSupported || windowsHost },
+  );
+
+  it.effect.skipIf(windowsHost)(
+    "keeps pnpm candidate caches separate across instance environments with the same PATH",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-pnpm-env-cache-" });
+        const pnpmBinDir = NodePath.join(tempDir, "bin");
+        const pnpmPath = NodePath.join(pnpmBinDir, "pnpm");
+        writeExecutable(pnpmPath);
+        const envA = { PATH: pnpmBinDir, HOME: `${tempDir}/a`, PNPM_HOME: `${tempDir}/a/pnpm` };
+        const envB = { PATH: pnpmBinDir, HOME: `${tempDir}/b`, PNPM_HOME: `${tempDir}/b/pnpm` };
+        const candidateHomes: Array<string | undefined> = [];
+        const spawner = stdoutSpawner((command, args, env) => {
+          expect(env).toEqual(env?.HOME === envA.HOME ? envA : envB);
+          if (args[0] === "--version") return "11.1.3";
+          expect(command).toBe(pnpmPath);
+          expect(args[0]).toBe("outdated");
+          candidateHomes.push(env?.HOME);
+          return JSON.stringify({
+            "@example/package-tool": { latest: env?.HOME === envA.HOME ? "1.1.0" : "2.2.0" },
+          });
+        });
+        const resolve = (env: NodeJS.ProcessEnv) => {
+          const binaryPath = NodePath.join(
+            env.PNPM_HOME!,
+            "global/5/node_modules/@example/package-tool/bin/package-tool.js",
+          );
+          return resolvePackageManagedProviderMaintenance(
+            {
+              provider: driver("packageTool"),
+              npmPackageName: "@example/package-tool",
+              nativeUpdate: null,
+            },
+            {
+              binaryPath,
+              resolvedCommandPath: binaryPath,
+              realCommandPath: binaryPath,
+              env,
+              platform: "linux",
+            },
+          ).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner));
+        };
+        const a = yield* resolve(envA);
+        const b = yield* resolve(envB);
+        const reorderedA = yield* resolve({
+          PNPM_HOME: envA.PNPM_HOME,
+          HOME: envA.HOME,
+          PATH: envA.PATH,
+        });
+        expect(a.update?.env).toEqual(envA);
+        expect(b.update?.env).toEqual(envB);
+        expect(yield* resolveLatestProviderVersion(a)).toBe("1.1.0");
+        expect(yield* resolveLatestProviderVersion(b)).toBe("2.2.0");
+        expect(yield* resolveLatestProviderVersion(reorderedA)).toBe("1.1.0");
+        expect(candidateHomes).toEqual([envA.HOME, envB.HOME]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(ProviderLatestVersions.layer),
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HostProcess.Environment, { PATH: "/ambient/pnpm", HOME: "/ambient" }),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("pnpm candidates should not come from npm")),
+        ),
+      ),
   );
 
   it.effect.skipIf(windowsHost)(
@@ -729,6 +818,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         expect(capabilities.update).toMatchObject({
           command: "bun i -g @example/package-tool@latest",
           lockKey: "bun-global",
+          env: { PATH: bunBinDir },
         });
       }),
   );
@@ -759,6 +849,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           executable: nativePath,
           args: ["update"],
           lockKey: "nativePackageTool-native",
+          env: { PATH: nativeBinDir },
         },
       });
     }),
@@ -866,9 +957,10 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     expect(windows.update?.command).toBe("& 'C:\\Program Files\\Tool\\tool.exe' update");
   });
 
-  it.effect.skipIf(windowsHost)("carries the native updater's environment into the action", () =>
+  it.effect.skipIf(windowsHost)("preserves instance environment with native updater overrides", () =>
     Effect.gen(function* () {
-      const tempDir = yield* makeTempDir("t3-native-env");
+      const fileSystem = yield* FileSystem.FileSystem;
+      const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-native-env-" });
       const nativePath = NodePath.join(tempDir, ".local", "bin", "native-package-tool");
       writeExecutable(nativePath);
       const resolver = makePackageManagedProviderMaintenanceResolver({
@@ -877,17 +969,21 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         nativeUpdate: {
           args: ["update"],
           isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
-          env: { TOOL_HOME: tempDir },
+          env: { CODEX_HOME: NodePath.join(tempDir, "shared-codex-home") },
         },
       });
 
       const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(resolver, {
         binaryPath: nativePath,
-        env: { PATH: "" },
+        env: { PATH: "", CODEX_HOME: NodePath.join(tempDir, "instance-codex-home"), HOME: tempDir },
       }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
 
-      expect(capabilities.update?.env).toEqual({ TOOL_HOME: tempDir });
-    }),
+      expect(capabilities.update?.env).toEqual({
+        PATH: "",
+        CODEX_HOME: NodePath.join(tempDir, "shared-codex-home"),
+        HOME: tempDir,
+      });
+    }).pipe(Effect.scoped),
   );
 
   it("recognizes Homebrew kegs and casks from the real executable path", () => {
@@ -1121,6 +1217,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
       expect(capabilities.update).toMatchObject({
         command: "yarn global add @example/package-tool@latest",
         lockKey: "yarn-global",
+        env: { PATH: "" },
       });
       expect(makeTargetedProviderUpdateAction(capabilities, "2.0.0")?.args).toEqual([
         "global",
@@ -1152,6 +1249,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         expect((yield* resolve).update).toMatchObject({
           command: "volta install @example/package-tool@latest",
           lockKey: "volta",
+          env: { PATH: "" },
         });
       }),
   );
@@ -1179,6 +1277,7 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
         executable: brewPath,
         args: ["upgrade", "package-tool"],
         lockKey: "homebrew",
+        env: { PATH: "" },
       });
     }),
   );
