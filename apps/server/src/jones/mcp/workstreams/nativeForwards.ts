@@ -3,6 +3,11 @@ import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Parent from "@t3tools/contracts/jones/workstreamsForwardQualification";
 import * as Raw from "@t3tools/contracts/jones/workstreamsForwardReadmission";
 import * as NativeWire from "@t3tools/contracts/jones/workstreamsNative";
+import * as RetainedWire from "@t3tools/contracts/jones/workstreamsRetainedSourceEffect";
+import {
+  WorkstreamsNativeAttestationRequest,
+  WorkstreamsNativeSettlementRequest,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
@@ -11,6 +16,7 @@ import * as Access from "../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Home from "../../workstreams/native/forwarding/homeForwardPort.ts";
 import * as Source from "../../workstreams/native/forwarding/sourceReadmissionPort.ts";
+import * as Retained from "../../workstreams/native/forwarding/retainedSourceEffectPort.ts";
 import type { RegistryError } from "../../workstreams/native/registry/session.ts";
 
 const failure = Schema.Union([McpCapabilityUnavailableError, OrchestratorMcpFailure]);
@@ -150,6 +156,49 @@ export const sourceHandlers = Access.toLayer(
             return yield* source.lookupRaw(request, invocation);
           }),
         ),
+      ),
+    };
+  }),
+);
+
+const retainedParameters = NativeWire.closedWorkstreamsNative(
+  Schema.Struct({
+    contract: Schema.Literal(RetainedWire.WORKSTREAMS_SOURCE_RETAINED_EFFECT_CONTRACT_V1),
+    source_readmission: Raw.WorkstreamsSourceReadmissionRequestV2,
+    receiving_home_pin_id: NativeWire.WorkstreamsNativeId,
+    receiving_home_pin_revision: NativeWire.WorkstreamsNativeVersion,
+    kind: Schema.Literals(["attest", "settle_lookup", "settle"]),
+    request: Schema.Union([
+      WorkstreamsNativeAttestationRequest,
+      WorkstreamsNativeSettlementRequest,
+    ]),
+  }),
+).pipe(Schema.decodeTo(RetainedWire.WorkstreamsRetainedSourceEffectRequestV1));
+
+export const retainedSourceToolkit = Toolkit.make(
+  Tool.make(Retained.SOURCE_RETAINED_EFFECT_TOOL, {
+    description:
+      "Invoke the source provider for one exact accepted raw Workstreams command. Requires authenticated home and original-caller readmission. Lookup remains observation-only; this tool cannot accept a new forward, retarget it, or relay arbitrary work.",
+    parameters: retainedParameters,
+    success: RetainedWire.WorkstreamsRetainedSourceEffectResultV1,
+    failure,
+    failureMode: "return",
+    dependencies: [...dependencies],
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, true)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+);
+
+export const retainedSourceHandlers = Access.toLayer(
+  retainedSourceToolkit,
+  Effect.gen(function* () {
+    const source = yield* Retained.RetainedSourceEffects;
+    return {
+      jones_workstreams_source_retained_effect: Access.writes(
+        (request) => invoke((invocation) => source.invoke(request, invocation), true),
+        { linkedCallers: "allowed" },
       ),
     };
   }),

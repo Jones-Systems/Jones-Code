@@ -2414,6 +2414,16 @@
       "id": "workstreams-native-forwarding-mcp",
       "tests": ["apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts"],
       "scope": "Conditional fixed home forward/readback and closed V2|V3 source readmission MCP adapters. Domain producers retain genuine authentication/currentness and ledger authority; absent producers register no tools. These transport fixtures do not qualify mounted member startup or physical peers."
+    },
+    {
+      "id": "workstreams-native-retained-source-effects",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/readmissionV2.test.ts",
+        "apps/server/src/jones/workstreams/nativeProvider/dispatchAdmission.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Closed fixed provider carrier authenticated by exact incoming home invocation and original encrypted raw source intent. Genuine member readmission and source enrollment bind target, command bytes and bind-pair pins; native provider rechecks the original caller after dispatch claiming, lookup remains observation-only. Provider external ports are disclosed synthetic fixtures. Home retained PEER reservations/recovery and selected application startup remain integration gates. A registered-tool application case uses isolated encrypted home/member databases, genuine peer authentication and original HTTP caller revocation; packaged owner metadata and external provider ports remain synthetic."
     }
   ]
 }

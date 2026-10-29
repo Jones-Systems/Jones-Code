@@ -62,6 +62,12 @@ import * as MemberRecords from "../store/memberEnrollmentStore.ts";
 import * as Bindings from "../store/bindingStore.ts";
 import * as Test from "../store/sql.testkit.ts";
 import * as Readmission from "./readmissionV2.ts";
+import * as Retained from "./retainedSourceEffects.ts";
+import * as RetainedPort from "./retainedSourceEffectPort.ts";
+import * as RetainedWire from "@t3tools/contracts/jones/workstreamsRetainedSourceEffect";
+import * as LocalProvider from "../providers/localAttestation.ts";
+import { makeWorkstreamsNativeProvider } from "../../nativeProvider/service.ts";
+import { makeProviderFixture } from "../../nativeProvider/testFixtures.ts";
 
 const decodeBindBody = Schema.decodeUnknownEffect(HomeWire.WorkstreamsHomeBindBodyV2);
 const decodeIntent = Schema.decodeUnknownEffect(MemberWire.WorkstreamsMemberEnrollmentIntentV1);
@@ -463,24 +469,43 @@ const scenario = () => {
     const accept = Effect.fn("ReadmissionFixture.accept")(function* (
       kind: "command" | "operation" | "appearance" = "command",
       evidence?: unknown,
+      effect?: "attest" | "settle",
     ) {
       const caller = yield* (yield* Admission.MemberAdmission)
-        .captureWrite({ kind: "metadata" })
+        .captureWrite(
+          effect
+            ? { kind: "thread", environment_id: source.environment_id, thread_id: state.shell.id }
+            : { kind: "metadata" },
+        )
         .pipe(Effect.provideService(Mcp.McpInvocationContext, scope));
-      const id = kind + ":source-original-00001";
+      const id = kind + (effect ? ":" + effect : "") + ":source-original-00001";
       const rawCommand =
         JSON.stringify(
           {
             command_id: id,
             expected_server_generation: 1,
             expected_registry_version: 0,
-            action: {
-              operation: "create_workstream",
-              name: "raw-command-sentinel",
-              lifecycle: "active",
-              progress: { state: "unknown" },
-              sort_order: 0,
-            },
+            action:
+              effect === "attest"
+                ? {
+                    operation: "verify_reference",
+                    native_reference_id: "reference:test",
+                    expected_attestation_version: 0,
+                  }
+                : effect === "settle"
+                  ? {
+                      operation: "request_native_t3_settlement",
+                      native_reference_id: "reference:test",
+                      expected_attestation_version: 1,
+                      native_action: "settle",
+                    }
+                  : {
+                      operation: "create_workstream",
+                      name: "raw-command-sentinel",
+                      lifecycle: "active",
+                      progress: { state: "unknown" },
+                      sort_order: 0,
+                    },
           },
           null,
           2,
@@ -585,8 +610,8 @@ const scenario = () => {
       yield* (yield* Operations.OperationStore).acceptMemberForward({
         operation_id: id,
         kind: kind === "operation" ? "create_workstream" : kind,
-        thread_environment_id: null,
-        thread_id: null,
+        thread_environment_id: effect ? source.environment_id : null,
+        thread_id: effect ? state.shell.id : null,
         origin,
         destination: {
           ...Test.scope,
@@ -1064,6 +1089,197 @@ it.effect(
             f.invocation,
           ),
         ).toMatchObject({ state: "denied", reason: "request_conflict" });
+      }).pipe(Effect.provide(f.runtime));
+    }).pipe(Effect.provide(s.base));
+  },
+);
+
+type SourceFixture = Effect.Success<ReturnType<typeof scenario>["prepare"]>;
+const decodeRetainedCarrier = Schema.decodeUnknownSync(
+  RetainedWire.WorkstreamsRetainedSourceEffectRequestV1,
+);
+const retainedCarrier = (
+  r: Effect.Success<ReturnType<SourceFixture["accept"]>>,
+  kind: "attest" | "settle" | "settle_lookup",
+) => {
+  const a = r.caller.association;
+  const target = r.caller.local.target;
+  if (target.kind !== "thread") throw new Error("Expected original thread target");
+  const request = {
+    owner_id: a.home.owner_id,
+    principal_id: a.principal_id,
+    identity: {
+      provider: "t3" as const,
+      resource_kind: "thread" as const,
+      source_instance_id: a.source.environment_id,
+      id_kind: "internal" as const,
+      native_id: target.thread_id,
+      account_provenance: { kind: "not_account_scoped" as const },
+    },
+    expected_authority_namespace: a.source.authority_namespace,
+    expected_store_generation: a.source.store_generation,
+  };
+  return decodeRetainedCarrier({
+    contract: RetainedWire.WORKSTREAMS_SOURCE_RETAINED_EFFECT_CONTRACT_V1,
+    source_readmission: r.raw,
+    receiving_home_pin_id: a.home_pin_id,
+    receiving_home_pin_revision: a.home_pin_bound_revision,
+    kind,
+    request:
+      kind === "attest"
+        ? request
+        : {
+            ...request,
+            command_id: r.raw.command_id,
+            native_reference_id: "reference:test",
+            native_action: "settle",
+            request_sha256: r.raw.command_request_sha256,
+            reservation_sha256: "d".repeat(64),
+          },
+  });
+};
+const retainedProvider = (f: SourceFixture, beforeClaim = Effect.void) =>
+  Effect.gen(function* () {
+    const fixture = makeProviderFixture();
+    const dispatches: string[] = [];
+    const provider = makeWorkstreamsNativeProvider(
+      {
+        ...fixture.ports,
+        authority: { readCurrent: Effect.sync(() => f.state.authority) },
+        build: Effect.succeed(Option.some(build)),
+        attempts: {
+          ...fixture.ports.attempts,
+          startDispatch: (request, at) =>
+            fixture.ports.attempts.startDispatch(request, at).pipe(Effect.tap(() => beforeClaim)),
+        },
+        engine: {
+          dispatch: (command) =>
+            Effect.sync(() => {
+              dispatches.push(command.type);
+              return { sequence: 1, storedEvents: [] };
+            }),
+        },
+      },
+      "v2",
+    );
+    const service = yield* RetainedPort.RetainedSourceEffects.pipe(
+      Effect.provide(
+        Retained.layer.pipe(Layer.provide(Layer.succeed(LocalProvider.NativeProvider, provider))),
+      ),
+    );
+    return { service, dispatches, fixture };
+  });
+
+it.effect(
+  "retained source attestation consumes real accepted bytes and original peer/caller admission",
+  () => {
+    const s = scenario();
+    return Effect.gen(function* () {
+      const f = yield* s.prepare;
+      yield* Effect.gen(function* () {
+        const r = yield* f.accept("command", undefined, "attest");
+        const { service, dispatches } = yield* retainedProvider(f);
+        const carrier = retainedCarrier(r, "attest");
+        const before = yield* f.counts;
+        f.state.enforce = true;
+        const result = yield* service.invoke(carrier, f.invocation);
+        expect(result).toMatchObject({
+          state: "result",
+          request: carrier,
+          result: {
+            state: "attested",
+            request: carrier.request,
+          },
+        });
+        expect(dispatches).toEqual([]);
+        expect(yield* f.counts).toEqual(before);
+        expect(yield* service.invoke(carrier, { ...f.invocation })).toMatchObject({
+          state: "denied",
+          reason: "home_changed",
+        });
+        expect(
+          yield* service.invoke(
+            {
+              ...carrier,
+              receiving_home_pin_id: r.caller.association.member_pin_id,
+            },
+            f.invocation,
+          ),
+        ).toMatchObject({ state: "denied", reason: "request_conflict" });
+        f.state.attached = false;
+        expect(yield* service.invoke(carrier, f.invocation)).toMatchObject({
+          state: "denied",
+          reason: "caller_changed",
+        });
+        expect(dispatches).toEqual([]);
+      }).pipe(Effect.provide(f.runtime));
+    }).pipe(Effect.provide(s.base));
+  },
+);
+
+it.effect(
+  "retained settlement lookup stays lookup-only before and after a single dispatch claim",
+  () => {
+    const s = scenario();
+    return Effect.gen(function* () {
+      const f = yield* s.prepare;
+      yield* Effect.gen(function* () {
+        const r = yield* f.accept("command", undefined, "settle");
+        const { service, dispatches } = yield* retainedProvider(f);
+        const lookup = retainedCarrier(r, "settle_lookup");
+        const call = retainedCarrier(r, "settle");
+        expect(yield* service.invoke(lookup, f.invocation)).toMatchObject({
+          state: "result",
+          result: { state: "unknown", reason: "attempt_not_found" },
+        });
+        expect(dispatches).toEqual([]);
+        expect((yield* service.invoke(call, f.invocation)).state).toBe("result");
+        expect(dispatches).toEqual(["thread.settle"]);
+        yield* service.invoke(call, f.invocation);
+        yield* service.invoke(lookup, f.invocation);
+        expect(dispatches).toEqual(["thread.settle"]);
+        if (call.kind === "attest") throw new Error("Expected settlement");
+        expect(
+          yield* service.invoke(
+            {
+              ...call,
+              request: { ...call.request, native_action: "unsettle" },
+            },
+            f.invocation,
+          ),
+        ).toMatchObject({ state: "denied", reason: "request_conflict" });
+        const prior = f.state.external.length;
+        expect(
+          yield* f.sql.withTransaction(service.invoke(call, f.invocation)).pipe(Effect.flip),
+        ).toMatchObject({ code: "preparation_in_transaction" });
+        expect(f.state.external).toHaveLength(prior);
+      }).pipe(Effect.provide(f.runtime));
+    }).pipe(Effect.provide(s.base));
+  },
+);
+
+it.effect(
+  "original-caller revocation during provider preparation prevents actual native dispatch",
+  () => {
+    const s = scenario();
+    return Effect.gen(function* () {
+      const f = yield* s.prepare;
+      yield* Effect.gen(function* () {
+        const r = yield* f.accept("command", undefined, "settle");
+        const { service, dispatches, fixture } = yield* retainedProvider(
+          f,
+          Effect.sync(() => {
+            f.state.attached = false;
+          }),
+        );
+        const call = retainedCarrier(r, "settle");
+        expect(yield* service.invoke(call, f.invocation)).toMatchObject({
+          state: "denied",
+          reason: "caller_changed",
+        });
+        expect(dispatches).toEqual([]);
+        expect([...fixture.attempts.values()]).toHaveLength(1);
+        expect([...fixture.attempts.values()][0]!.dispatchStartedAt).not.toBeNull();
       }).pipe(Effect.provide(f.runtime));
     }).pipe(Effect.provide(s.base));
   },

@@ -20,6 +20,9 @@ import * as Transport from "../forwarding/memberTransport.ts";
 import * as HomeClient from "../forwarding/homeClient.ts";
 import * as Readmission from "../forwarding/readmissionV2.ts";
 import * as SourceReadmission from "../forwarding/sourceReadmissionPort.ts";
+import * as Retained from "../forwarding/retainedSourceEffects.ts";
+import * as RetainedPort from "../forwarding/retainedSourceEffectPort.ts";
+import * as Provider from "../providers/localAttestation.ts";
 import * as Store from "../store/operationStore.ts";
 import { RegistryError } from "../registry/session.ts";
 import * as Members from "./memberEnrollment.ts";
@@ -40,6 +43,7 @@ export class MemberApplication extends Context.Service<
     readonly recoverOpen: Forwarder.MemberForwarder["Service"]["recoverOpen"];
     readonly lookupParent: SourceReadmission.SourceReadmission["Service"]["lookupParent"];
     readonly lookupRaw: SourceReadmission.SourceReadmission["Service"]["lookupRaw"];
+    readonly invokeRetainedEffect: RetainedPort.RetainedSourceEffects["Service"]["invoke"];
   }
 >()("t3/jones/workstreams/native/runtime/memberApplication") {}
 
@@ -110,14 +114,14 @@ const make = Effect.gen(function* () {
               Effect.flatMap(Reads.MemberReads, (reads) => reads.read(request, placement)).pipe(
                 Effect.provide(
                   Layer.fresh(Integration.nativeMemberReadRequestLayer).pipe(
-                    Layer.provide(Layer.succeedContext(prepared)),
+                    Layer.provideMerge(Layer.succeedContext(prepared)),
                   ),
                 ),
               ),
           });
           return yield* effect.pipe(
             Effect.provide(
-              Layer.fresh(requestLayer).pipe(Layer.provide(Layer.succeedContext(context))),
+              Layer.fresh(requestLayer).pipe(Layer.provideMerge(Layer.succeedContext(context))),
             ),
           );
         }),
@@ -127,6 +131,19 @@ const make = Effect.gen(function* () {
   const source = Layer.unwrap(
     Effect.sync(() =>
       Readmission.layer.pipe(Layer.provide(Integration.nativeMemberAdmissionRequestLayer)),
+    ),
+  );
+  const retainedSource = Layer.unwrap(
+    Effect.sync(() =>
+      Retained.layer.pipe(
+        Layer.provide(source),
+        Layer.provide(
+          Layer.effect(
+            Provider.NativeProvider,
+            Effect.map(Runtime.NativeWorkstreamsRuntime, (runtime) => runtime.providerV2),
+          ),
+        ),
+      ),
     ),
   );
   // Recovery consumes retained callers directly; it never runs the fresh-caller read bootstrap.
@@ -182,6 +199,13 @@ const make = Effect.gen(function* () {
       run(
         recovery,
         Effect.flatMap(Forwarder.MemberForwarder, (forwarder) => forwarder.recoverOpen()),
+      ),
+    invokeRetainedEffect: (request, invocation) =>
+      run(
+        retainedSource,
+        Effect.flatMap(RetainedPort.RetainedSourceEffects, (source) =>
+          source.invoke(request, invocation),
+        ),
       ),
     lookupParent: (request, invocation) =>
       run(

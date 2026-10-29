@@ -3,6 +3,9 @@ import { EnvironmentId } from "@t3tools/contracts";
 import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Parent from "@t3tools/contracts/jones/workstreamsForwardQualification";
 import * as Raw from "@t3tools/contracts/jones/workstreamsForwardReadmission";
+import * as RetainedWire from "@t3tools/contracts/jones/workstreamsRetainedSourceEffect";
+import * as Retained from "../../workstreams/native/forwarding/retainedSourceEffectPort.ts";
+import { request as providerRequest } from "../../workstreams/nativeProvider/testFixtures.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -408,17 +411,22 @@ it.effect("returns bounded error codes without protected domain causes", () =>
 );
 
 it.effect.each([
-  [false, false],
-  [true, false],
-  [false, true],
-  [true, true],
+  [false, false, false],
+  [true, false, false],
+  [false, true, false],
+  [true, true, false],
+  [false, false, true],
+  [true, false, true],
+  [false, true, true],
+  [true, true, true],
 ] as const)(
-  "registers only supplied home=%s and source=%s domain producers",
-  ([hasHome, hasSource]) =>
+  "registers only supplied home=%s source=%s retained=%s domain producers",
+  ([hasHome, hasSource, hasRetained]) =>
     Effect.gen(function* () {
       const expected = [
         ...(hasHome ? Object.keys(ForwardMcp.homeToolkit.tools) : []),
         ...(hasSource ? Object.keys(ForwardMcp.sourceToolkit.tools) : []),
+        ...(hasRetained ? Object.keys(ForwardMcp.retainedSourceToolkit.tools) : []),
       ];
       expect((yield* McpServer.McpServer).tools.map(({ tool }) => tool.name).sort()).toEqual(
         expected.sort(),
@@ -428,11 +436,17 @@ it.effect.each([
         Layer.mergeAll(
           Server.layerNativeHomeForwardToolkit,
           Server.layerNativeSourceReadmissionToolkit,
+          Server.layerNativeRetainedSourceToolkit,
         ).pipe(
           Layer.provide(
             Layer.mergeAll(
               hasHome ? Layer.succeed(Home.HomeTools, homeService()) : Layer.empty,
               hasSource ? Layer.succeed(Source.SourceReadmission, sourceService()) : Layer.empty,
+              hasRetained
+                ? Layer.succeed(Retained.RetainedSourceEffects, {
+                    invoke: () => Effect.succeed(retainedUnknown),
+                  })
+                : Layer.empty,
             ),
           ),
           Layer.provideMerge(McpServer.McpServer.layer),
@@ -440,4 +454,103 @@ it.effect.each([
         ),
       ),
     ),
+);
+
+const decodeRetainedCarrier = Schema.decodeUnknownSync(
+  ForwardMcp.retainedSourceToolkit.tools.jones_workstreams_source_retained_effect.parametersSchema,
+);
+const retainedCarrier: RetainedWire.WorkstreamsRetainedSourceEffectRequestV1 = {
+  contract: RetainedWire.WORKSTREAMS_SOURCE_RETAINED_EFFECT_CONTRACT_V1,
+  source_readmission: raw,
+  receiving_home_pin_id: "home-pin:test",
+  receiving_home_pin_revision: 4,
+  kind: "settle_lookup",
+  request: providerRequest,
+};
+const retainedUnknown: RetainedWire.WorkstreamsRetainedSourceEffectResultV1 = {
+  contract: retainedCarrier.contract,
+  request: retainedCarrier,
+  state: "unavailable",
+  reason: "authority_unavailable",
+};
+
+it.effect("registers one closed retained-effect carrier and passes the original invocation", () =>
+  Effect.gen(function* () {
+    let calls = 0;
+    expect(Object.keys(ForwardMcp.retainedSourceToolkit.tools)).toEqual([
+      Retained.SOURCE_RETAINED_EFFECT_TOOL,
+    ]);
+    const decode = decodeRetainedCarrier;
+    expect(decode(retainedCarrier)).toEqual(retainedCarrier);
+    for (const extra of [{ tool: "other" }, { environmentId: "redirect" }, { caller: {} }])
+      expect(() => decode({ ...retainedCarrier, ...extra })).toThrow();
+    const toolkit = yield* ForwardMcp.retainedSourceToolkit.pipe(
+      Effect.provide(
+        Access.HandlersLayer.layer(ForwardMcp.retainedSourceHandlers).pipe(
+          Layer.provide(
+            Layer.succeed(Retained.RetainedSourceEffects, {
+              invoke: (request, scope) =>
+                Effect.sync(() => {
+                  calls++;
+                  expect(request).toEqual(retainedCarrier);
+                  expect(scope).toBe(invocation);
+                  return retainedUnknown;
+                }),
+            }),
+          ),
+        ),
+      ),
+    );
+    const replies = yield* toolkit
+      .handle(Retained.SOURCE_RETAINED_EFFECT_TOOL, retainedCarrier)
+      .pipe(Stream.unwrap, Stream.runCollect);
+    expect(replies.at(-1)?.result).toEqual(retainedUnknown);
+    expect(calls).toBe(1);
+  }).pipe(
+    Effect.provide(threads),
+    Effect.provideService(Invocation.McpInvocationContext, invocation),
+  ),
+);
+
+it.effect.each([
+  ["read-only", "default"],
+  ["full-access", "plan"],
+] as const)(
+  "retained effect refuses %s/%s before reaching the producer",
+  ([access, interactionMode]) =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const toolkit = yield* ForwardMcp.retainedSourceToolkit.pipe(
+        Effect.provide(
+          Access.HandlersLayer.layer(ForwardMcp.retainedSourceHandlers).pipe(
+            Layer.provide(
+              Layer.succeed(Retained.RetainedSourceEffects, {
+                invoke: () =>
+                  Effect.sync(() => {
+                    calls++;
+                    return retainedUnknown;
+                  }),
+              }),
+            ),
+          ),
+        ),
+      );
+      const scope = {
+        ...invocation,
+        client: {
+          ...invocation.client!,
+          access,
+          narrowedTo: { runtimeMode: "full-access" as const, interactionMode },
+        },
+      };
+      const result = yield* toolkit
+        .handle(Retained.SOURCE_RETAINED_EFFECT_TOOL, retainedCarrier)
+        .pipe(
+          Stream.unwrap,
+          Stream.runCollect,
+          Effect.provideService(Invocation.McpInvocationContext, scope),
+        );
+      expect(result.at(-1)?.isFailure).toBe(true);
+      expect(calls).toBe(0);
+    }).pipe(Effect.provide(threads)),
 );

@@ -64,6 +64,10 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/workstreams/native/forwarding/sourceReadmissionPort.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/retainedSourceEffectPort.ts"
     }
   ]
 }

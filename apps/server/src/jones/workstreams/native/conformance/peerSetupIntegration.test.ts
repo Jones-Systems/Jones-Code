@@ -18,6 +18,10 @@ import * as F from "@t3tools/contracts/jones/workstreamsHomeBind";
 import * as ForwardWire from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as ParentWire from "@t3tools/contracts/jones/workstreamsForwardQualification";
 import * as RawWire from "@t3tools/contracts/jones/workstreamsForwardReadmission";
+import * as RetainedWire from "@t3tools/contracts/jones/workstreamsRetainedSourceEffect";
+import { canonicalWorkstreamsSnapshotJson as canonicalSnapshot } from "@t3tools/contracts/jones/workstreamsSnapshot";
+import * as RetainedPort from "../forwarding/retainedSourceEffectPort.ts";
+import * as Integration from "../integration.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
@@ -65,11 +69,12 @@ import { NativeHome } from "../mode/authorityMode.ts";
 import * as NativeForwards from "../../../mcp/workstreams/nativeForwards.ts";
 import * as Runtime from "../../runtimeIntegration/native.ts";
 import * as ProviderTest from "../../nativeProvider/testFixtures.ts";
-import { makeWorkstreamsNativeProvider } from "../../nativeProvider/service.ts";
+import { makeWorkstreamsNativeProvider, sha256Bytes } from "../../nativeProvider/service.ts";
 import { NativeProviderEnrollmentError } from "../../nativeProvider/enrollment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../../orchestration-v2/ThreadManagementService.ts";
+import { liveThreadShell } from "../../../../mcp/McpToolAccess.testkit.ts";
 import * as PeerLinks from "../../../../peer/PeerLinks.ts";
 import * as PeerClient from "../../../../peer/PeerMcpClient.ts";
 import * as Tools from "../../../mcp/workstreams/nativeSetups.ts";
@@ -108,6 +113,10 @@ vi.mock("../../../../../package.json", () => ({
     },
   },
 }));
+const decodeRetainedArgs = Schema.decodeUnknownEffect(
+  NativeForwards.retainedSourceToolkit.tools.jones_workstreams_source_retained_effect
+    .parametersSchema,
+);
 const home = { ...Test.scope, home_environment_id: "home:test", server_generation: 1 };
 const address: W.WorkstreamsPeerSetupAddress = {
   setup_id: "setup:test",
@@ -1253,6 +1262,15 @@ it.effect(
         const sourceBase = Layer.mergeAll(
           Layer.succeedContext(f.M.all),
           Layer.succeed(Authority.NativeStoreAuthority, f.M.live),
+          // Explicit external projection fixture; caller/session/enrollment/owner services stay genuine.
+          Layer.mock(ThreadManagementService)({
+            getThreadShell: (id) =>
+              Effect.succeed(
+                id === "thread:retained-source"
+                  ? liveThreadShell(id, { runtimeMode: "approval-required" })
+                  : null,
+              ),
+          }),
         );
         const resources = yield* Layer.build(
           Layer.mergeAll(
@@ -1283,7 +1301,10 @@ it.effect(
           )
           .pipe(Effect.provide(resources));
         expect(selected).toMatchObject({ mode: "native-member", problem: null });
-        const providerPorts = ProviderTest.makeProviderFixture().ports;
+        const providerPorts = {
+          ...ProviderTest.makeProviderFixture().ports,
+          authority: { readCurrent: f.M.live.readCurrent },
+        };
         const runtime = Runtime.NativeWorkstreamsRuntime.of({
           provider: makeWorkstreamsNativeProvider(providerPorts),
           providerV2: makeWorkstreamsNativeProvider(providerPorts, "v2"),
@@ -1513,6 +1534,233 @@ it.effect(
           { state: "committed" },
           { state: "committed" },
         ]);
+
+        // Seed one exact raw source intent through genuine admission and encrypted storage.
+        // The receiving home's raw PEER reservation/runner is a separate, still-fenced gate.
+        const nextSession = yield* auth.issueSession({
+          subject: "retained-source-application",
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const nextAuth = yield* auth.authenticateHttpRequest(
+          HttpRequest.fromWeb(
+            new Request("https://member.invalid/api/workstreams", {
+              headers: { authorization: "Bearer " + nextSession.token },
+            }),
+          ),
+        );
+        const nextPrincipal = { ...nextAuth, scopes: new Set(nextAuth.scopes) };
+        const retained = yield* Context.get(resources, MemberPreparation.MemberPreparation)
+          .withPrepared((members) =>
+            Effect.flatMap(Effect.context<never>(), (requestContext) =>
+              Effect.gen(function* () {
+                expect(
+                  (yield* members.getValidatedBySessionId(
+                    bind.source.enrollment.session.session_id,
+                  ))._tag,
+                ).toBe("Some");
+                expect(
+                  Option.isSome(yield* Effect.serviceOption(EnvironmentAuthenticatedPrincipal)),
+                ).toBe(true);
+                expect(Option.isSome(yield* Effect.serviceOption(Mcp.McpInvocationContext))).toBe(
+                  false,
+                );
+                expect(yield* SqlClient.SqlClient).toBe(msql);
+                const admission = yield* Admission.MemberAdmission;
+                const caller = yield* admission.captureWrite({
+                  kind: "thread",
+                  environment_id: f.M.env,
+                  thread_id: "thread:retained-source",
+                });
+                yield* (yield* admission.readmitWrite(caller)).checkCurrent();
+                const a = caller.association;
+                const id = "command:retained-source-application-01";
+                const body =
+                  JSON.stringify(
+                    {
+                      command_id: id,
+                      expected_server_generation: a.home.server_generation,
+                      expected_registry_version: 0,
+                      action: {
+                        operation: "verify_reference",
+                        native_reference_id: "reference:retained-source",
+                        expected_attestation_version: 0,
+                      },
+                    },
+                    null,
+                    2,
+                  ) + "\n";
+                const identity: ForwardWire.WorkstreamsForwardIdentity = {
+                  forward_id: "jwf-retained-source-application-01",
+                  source_operation_id: id,
+                  parent_operation_id: null,
+                  command_ids: [id],
+                  request_sha256: sha256Bytes(body),
+                  recorded_caller_sha256: sha256Bytes(canonicalSnapshot(caller)),
+                  expected_home: a.home,
+                  canonical_origin: a.canonical_origin,
+                  source_authority: a.source,
+                  source_enrollment_id: a.enrollment_id,
+                  source_enrollment_session_id: a.enrollment_session_id,
+                  principal_id: a.principal_id,
+                  singleton_binding_version: a.singleton_binding_version,
+                  source_binding_version: a.source_binding_version,
+                  member_pin_id: a.member_pin_id,
+                  member_pin_bound_revision: a.pin_bound_revision,
+                  outbound_link_generation: a.link_generation,
+                };
+                const forward: ForwardWire.WorkstreamsForwardRequest = {
+                  contract: ForwardWire.WORKSTREAMS_NATIVE_FORWARDING_CONTRACT,
+                  kind: "command",
+                  identity,
+                  request: {
+                    expected_home: a.home,
+                    body,
+                    body_sha256: sha256Bytes(body),
+                    relay: {
+                      source_environment_id: a.source.environment_id,
+                      origin: caller.local.origin,
+                      linked_origin_environment_id: null,
+                      hop: 1,
+                    },
+                  },
+                };
+                const envelope = JSON.stringify(forward, null, 2) + "\n";
+                yield* Context.get(resources, OperationStore.OperationStore).acceptMemberForward({
+                  operation_id: id,
+                  kind: "command",
+                  thread_environment_id: f.M.env,
+                  thread_id: "thread:retained-source",
+                  origin: caller.local.origin,
+                  destination: {
+                    registry_instance_id: a.home.registry_instance_id,
+                    owner_id: a.home.owner_id,
+                    home_environment_id: a.home.home_environment_id,
+                    home_generation: a.home.server_generation,
+                    principal_id: a.principal_id,
+                    binding_version: a.singleton_binding_version,
+                  },
+                  child_command_ids: [id],
+                  request_body: body,
+                  accepted_at: Test.now,
+                  member_forward: {
+                    schema: "jones-workstreams-member-forward-accepted/1",
+                    kind: "MEMBER-FORWARD",
+                    forward_request_body: envelope,
+                    forward_request_sha256: sha256Bytes(envelope),
+                    recorded_caller: caller,
+                  },
+                });
+                return { caller, identity };
+              }).pipe(
+                Effect.provide(
+                  Layer.fresh(Integration.nativeMemberAdmissionRequestLayer).pipe(
+                    Layer.provideMerge(
+                      Layer.succeedContext(
+                        Context.merge(
+                          requestContext,
+                          Context.make(Startup.Startup, selected).pipe(
+                            Context.add(SqlClient.SqlClient, msql),
+                            Context.add(
+                              AuthRows.AuthSessionRepository,
+                              Context.get(resources, AuthRows.AuthSessionRepository),
+                            ),
+                            Context.add(
+                              ThreadManagementService,
+                              Context.get(resources, ThreadManagementService),
+                            ),
+                          ),
+                        ).pipe(Context.add(Members.MemberEnrollments, members)),
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          )
+          .pipe(
+            Effect.provideService(SqlClient.SqlClient, msql),
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal),
+          );
+        const retainedToolkit = yield* NativeForwards.retainedSourceToolkit.pipe(
+          Effect.provide(
+            Access.HandlersLayer.layer(NativeForwards.retainedSourceHandlers).pipe(
+              Layer.provide(
+                Layer.succeed(RetainedPort.RetainedSourceEffects, {
+                  invoke: app.invokeRetainedEffect,
+                }),
+              ),
+            ),
+          ),
+        );
+        f.mountTool(f.M.env, RetainedPort.SOURCE_RETAINED_EFFECT_TOOL, (args) =>
+          decodeRetainedArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              retainedToolkit.handle(RetainedPort.SOURCE_RETAINED_EFFECT_TOOL, decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
+          ),
+        );
+        const a = retained.caller.association;
+        const carrier: RetainedWire.WorkstreamsRetainedSourceEffectRequestV1 = {
+          contract: RetainedWire.WORKSTREAMS_SOURCE_RETAINED_EFFECT_CONTRACT_V1,
+          source_readmission: {
+            contract: RawWire.WORKSTREAMS_SOURCE_READMISSION_CONTRACT_V2,
+            accepted_forward: retained.identity,
+            command_id: retained.identity.command_ids[0]!,
+            command_request_sha256: retained.identity.request_sha256,
+          },
+          receiving_home_pin_id: a.home_pin_id,
+          receiving_home_pin_revision: a.home_pin_bound_revision,
+          kind: "attest",
+          request: {
+            owner_id: a.home.owner_id,
+            principal_id: a.principal_id,
+            identity: {
+              provider: "t3",
+              resource_kind: "thread",
+              source_instance_id: f.M.env,
+              id_kind: "internal",
+              native_id: "thread:retained-source",
+              account_provenance: { kind: "not_account_scoped" },
+            },
+            expected_authority_namespace: a.source.authority_namespace,
+            expected_store_generation: a.source.store_generation,
+          },
+        };
+        const memberEnvironment = EnvironmentId.make(f.M.env);
+        const generation = yield* Context.get(f.H.all, PeerLinks.PeerLinks).currentGeneration(
+          memberEnvironment,
+        );
+        if (Option.isNone(generation))
+          return yield* Effect.die("Missing genuine outbound generation");
+        const invokeRetained = () =>
+          Context.get(f.H.all, PeerClient.PeerMcpClient).call({
+            environmentId: memberEnvironment,
+            expectedGeneration: generation.value,
+            tool: RetainedPort.SOURCE_RETAINED_EFFECT_TOOL,
+            arguments: { ...carrier },
+            limits: { runtimeMode: "full-access", interactionMode: "default" },
+            success: RetainedWire.WorkstreamsRetainedSourceEffectResultV1,
+          });
+        expect(yield* invokeRetained()).toMatchObject({
+          state: "result",
+          request: carrier,
+          result: { state: "attested", request: carrier.request },
+        });
+        expect(yield* auth.revokeSession(nextSession.sessionId)).toBe(true);
+        expect(yield* invokeRetained()).toMatchObject({
+          state: "denied",
+          reason: "caller_changed",
+        });
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id='command:retained-source-application-01'`,
+        ).toEqual([{ state: "accepted" }]);
+        expect(yield* msql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
+        expect(yield* msql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
       }),
     ),
 );

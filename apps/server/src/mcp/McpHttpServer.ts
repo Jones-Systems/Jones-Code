@@ -5,6 +5,7 @@ import * as NativeSetupMcp from "../jones/mcp/workstreams/nativeSetups.ts";
 import * as NativeForwardMcp from "../jones/mcp/workstreams/nativeForwards.ts";
 import * as NativeHomeForward from "../jones/workstreams/native/forwarding/homeForwardPort.ts";
 import * as NativeSourceReadmission from "../jones/workstreams/native/forwarding/sourceReadmissionPort.ts";
+import * as NativeRetainedSource from "../jones/workstreams/native/forwarding/retainedSourceEffectPort.ts";
 import * as NativePeerSetup from "../jones/workstreams/native/runtime/peerSetup.ts";
 import * as NativeHomeBind from "../jones/workstreams/native/runtime/homeBind.ts";
 import * as NativeReadProtocol from "../jones/workstreams/native/forwarding/homeReadProtocol.ts";
@@ -1240,6 +1241,20 @@ export const layerNativeSourceReadmissionToolkit = Layer.unwrap(
   ),
 );
 
+/** Absent until an application supplies the genuine retained-command source producer. */
+export const layerNativeRetainedSourceToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeRetainedSource.RetainedSourceEffects), (source) =>
+    Option.isNone(source)
+      ? Layer.empty
+      : toolkitRegistration(
+          NativeForwardMcp.retainedSourceToolkit,
+          NativeForwardMcp.retainedSourceHandlers,
+        ).pipe(
+          Layer.provide(Layer.succeed(NativeRetainedSource.RetainedSourceEffects, source.value)),
+        ),
+  ),
+);
+
 const layerNativePeerSetupToolkit = Layer.unwrap(
   Effect.map(Effect.serviceOption(NativePeerSetup.PeerSetup), (setup) =>
     Option.isNone(setup)
@@ -1253,6 +1268,7 @@ const layerNativePeerSetupToolkit = Layer.unwrap(
 export const layer = Layer.mergeAll(
   layerNativeHomeForwardToolkit,
   layerNativeSourceReadmissionToolkit,
+  layerNativeRetainedSourceToolkit,
   layerNativePeerSetupToolkit,
   layerNativeHomeBindToolkit,
   layerNativeHomeReadToolkit,
