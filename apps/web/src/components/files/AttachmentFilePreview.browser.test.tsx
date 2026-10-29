@@ -32,6 +32,97 @@ import BinaryViewer from "./BinaryViewer";
 import { decodeImagePreview } from "./decodeImagePreview";
 import type { BinaryWorkerResult } from "./binaryPreviewProtocol";
 
+function observeOfficeViewerWorker(kind: "rtf" | "epub" | "ods", holdOpen = false) {
+  let markOpened!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    markOpened = resolve;
+  });
+  let releaseOpen: (() => void) | undefined;
+  let resolveReply!: (result: OfficeWorkerResult) => void;
+  let rejectReply!: (error: Error) => void;
+  const reply = new Promise<OfficeWorkerResult>((resolve, reject) => {
+    resolveReply = resolve;
+    rejectReply = reject;
+  });
+  const listeners = new AbortController();
+  const opening = new WeakSet<Worker>();
+  const observed = new WeakSet<Worker>();
+  const stub = stubGlobal(
+    "Worker",
+    class extends Worker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        if (!new URL(String(args[0]), document.baseURI).pathname.includes("officePreview.worker"))
+          return;
+        observed.add(this);
+        this.addEventListener(
+          "message",
+          (event: MessageEvent<OfficeWorkerResult>) => {
+            if (!opening.has(this)) {
+              rejectReply(new Error("Office viewer replied before its open request"));
+            } else if (event.data.type === "error") {
+              rejectReply(new Error(event.data.message));
+            } else {
+              resolveReply(event.data);
+            }
+          },
+          { once: true, signal: listeners.signal },
+        );
+        this.addEventListener(
+          "error",
+          () => rejectReply(new Error("Office viewer worker failed")),
+          {
+            once: true,
+            signal: listeners.signal,
+          },
+        );
+      }
+      override postMessage(
+        message: unknown,
+        options?: Transferable[] | StructuredSerializeOptions,
+      ) {
+        const forward = () => {
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        };
+        if (
+          observed.has(this) &&
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "open"
+        ) {
+          if (!("kind" in message) || message.kind !== kind) {
+            rejectReply(new Error("Office viewer opened an unexpected document kind"));
+          }
+          markOpened();
+          const sendOpen = () => {
+            opening.add(this);
+            forward();
+          };
+          if (holdOpen) releaseOpen = sendOpen;
+          else sendOpen();
+          return;
+        }
+        forward();
+      }
+    },
+  );
+  return {
+    reply,
+    opened,
+    release() {
+      if (!releaseOpen) throw new Error("Office viewer has not requested its document yet");
+      releaseOpen();
+      releaseOpen = undefined;
+    },
+    [Symbol.dispose]() {
+      listeners.abort();
+      stub[Symbol.dispose]();
+    },
+  };
+}
+
 function officePreviewState(screen: Screen) {
   const root = screen.container.querySelector<HTMLElement>(
     "[data-office-pages], .scrollbar-gutter-both",
@@ -2807,6 +2898,7 @@ it.each(["rtf", "epub", "ods"] as const)(
     } finally {
       worker.terminate();
     }
+    using viewer = observeOfficeViewerWorker(kind, kind === "ods");
     await using screen = await render(
       <div style={{ display: "flex", height: 400, width: 600 }}>
         <AttachmentFilePreview
@@ -2817,6 +2909,13 @@ it.each(["rtf", "epub", "ods"] as const)(
         />
       </div>,
     );
+    if (kind === "ods") {
+      await viewer.opened;
+      expect(screen.container.textContent).not.toContain("North");
+      viewer.release();
+    }
+    const viewerResult = await viewer.reply;
+    expect(viewerResult.type).toBe(kind === "ods" ? "ods" : "document");
     if (kind === "rtf") {
       await vi.waitFor(
         () => expect(screen.container.textContent, officePreviewState(screen)).toContain("1 page"),

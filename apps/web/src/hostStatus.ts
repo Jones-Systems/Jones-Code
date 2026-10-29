@@ -45,14 +45,28 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
           invalid_response: "Invalid host status response",
           stale: "Host status sample is stale",
         }[host.reason];
+    const diagnosis =
+      host?.reason === "stale" && host.diagnostic === "collector_disconnected"
+        ? [
+            "Host status collector is disconnected",
+            "Check the collector connection to the Netdata parent",
+          ]
+        : host?.reason === "stale" && host.diagnostic === "sample_expired"
+          ? ["Host status sample has expired", "Wait for a recent collector sample"]
+          : host?.reason === "upstream_unavailable" && host.diagnostic === "upstream_failure"
+            ? [reason, "Check the host status source connection"]
+            : undefined;
+    const tooltipLines = diagnosis
+      ? [...diagnosis, "Retries every 10 seconds while visible"]
+      : [reason];
     return {
       cpu: UNAVAILABLE_READING,
       ram: UNAVAILABLE_READING,
       cpuHealth: "unavailable",
       ramHealth: "unavailable",
       health: "unavailable",
-      detail: reason,
-      tooltipLines: [reason],
+      detail: tooltipLines.join(". "),
+      tooltipLines,
     } as const;
   }
   const cpuHealth = utilizationHealth(host.cpuUsagePercent);

@@ -486,6 +486,7 @@ function installObserver(filename) {
       "identity",
       "operationId",
       ...(installing ? ["binding"] : ["requestIds"]),
+      ...(plan.retainedUpdate === undefined ? [] : ["retainedUpdate"]),
       ...(plan.installOperationId === undefined ? [] : ["installOperationId", "installBinding"]),
       "childExecutable",
       "childIdentity",
@@ -579,6 +580,19 @@ function installObserver(filename) {
       if (error.code !== "ENOENT") throw error;
     }
   }
+  if (plan.retainedUpdate !== undefined) {
+    const state = privateJson(path.join(home, "runtime", "service-state.json"));
+    ensure(
+      !installing &&
+        plan.retainedUpdate !== null &&
+        plan.retainedUpdate.status === "failed" &&
+        plan.retainedUpdate.id === plan.operationId &&
+        state.protocol === 4 &&
+        state.activeVersion === plan.childVersion &&
+        require("node:util").isDeepStrictEqual(state.update, plan.retainedUpdate),
+      "retained failed update differs from native state",
+    );
+  }
   const owner = privateJson(path.join(root, "fixture-owner.json"));
   ensure(
     exactKeys(owner, ["protocol", "purpose", "fixtureId", "executable", "identity"]) &&
@@ -658,7 +672,7 @@ function installObserver(filename) {
     if (
       context.protocol !== 4 ||
       context.childVersion !== plan.childVersion ||
-      context.update !== undefined
+      !require("node:util").isDeepStrictEqual(context.update, plan.retainedUpdate)
     )
       return Reflect.apply(originalSpawn, this, arguments);
     ensure(
