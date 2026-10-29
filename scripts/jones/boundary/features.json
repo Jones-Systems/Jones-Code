@@ -2712,6 +2712,11 @@
         "scripts/jones/updates/packaged-recovery-preload.node-test.mjs"
       ],
       "scope": "Digest-bound isolated packaged-recovery fixtures, one-shot external preload crash points and captured-launcher settlement restart controls. Source-generated SEA checks qualify the harness only; real Jones artifacts, the complete RH-F1 matrix and installed continuity remain separate acceptance."
+    },
+    {
+      "id": "desktop-push-compatibility",
+      "tests": ["scripts/jones/ci/desktop-push-compatibility.node-test.mjs"],
+      "scope": "Ongoing genuine main-push desktop artifact publication for retained pre-590 push-only consumers. Frozen e85e058eb7435cab22ba4486c263067755dd098f consumer executes actual discovery, same-source CI, authenticated archive staging and event/source agreement; event-isolated concurrency preserves push publication. Each artifact retains seven-day expiry; no installed adoption or perpetual availability claim."
     }
   ]
 }

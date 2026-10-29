@@ -4331,6 +4331,16 @@
         "node --test --test-concurrency=1 scripts/jones/updates/packaged-recovery-fixture.node-test.mjs scripts/jones/updates/packaged-recovery-launcher.node-test.mjs scripts/jones/updates/packaged-recovery-preload.node-test.mjs",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-desktop-push-compatibility",
+      "tests": ["scripts/jones/ci/desktop-push-compatibility.node-test.mjs"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/desktop-push-compatibility.node-test.mjs",
+        "vp lint --threads=1 scripts/jones/ci/desktop-push-compatibility.node-test.mjs",
+        "vp fmt --check --threads=1 .github/workflows/artifact-desktop-mac.yml scripts/jones/ci/desktop-push-compatibility.node-test.mjs scripts/jones/ci/fixtures/pre590/consumer.json scripts/jones/boundary/fragments/desktop-push-compatibility.json",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
