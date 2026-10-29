@@ -61,13 +61,25 @@ export async function combinedReaderWriterWindow(
   computeObservations?: () => readonly ComputeObservation[],
   diagnostic?: DiagnosticSink,
 ) {
-  const emit = (event: Extract<DiagnosticEvent, { kind: "combined" }>["event"], index?: number, cpu?: DiagnosticCpu, atMs?: number) => {
-    if (diagnostic) observeSafely(diagnostic)({
-      kind: "combined", event, atMs: atMs ?? performance.now(), phase: "combined",
-      ...(index === undefined ? {} : { index }), ...(cpu ? { cpu } : {}),
-    });
+  const emit = (
+    event: Extract<DiagnosticEvent, { kind: "combined" }>["event"],
+    index?: number,
+    cpu?: DiagnosticCpu,
+    atMs?: number,
+  ) => {
+    if (diagnostic)
+      observeSafely(diagnostic)({
+        kind: "combined",
+        event,
+        atMs: atMs ?? performance.now(),
+        phase: "combined",
+        ...(index === undefined ? {} : { index }),
+        ...(cpu ? { cpu } : {}),
+      });
   };
-  const cpuStart = diagnostic ? { process: process.cpuUsage(), thread: process.threadCpuUsage() } : undefined;
+  const cpuStart = diagnostic
+    ? { process: process.cpuUsage(), thread: process.threadCpuUsage() }
+    : undefined;
   let diagnosticCpu: DiagnosticCpu | undefined;
   emit("window-begin");
   const observations: SqliteReaderObservation[] = [];
@@ -80,81 +92,91 @@ export async function combinedReaderWriterWindow(
     readerFailureMode: "fail",
     readerPool: readerPoolOptions(count, (event) => {
       if (observations.length < 100_000) observations.push(event);
-      if (diagnostic) observeSafely(diagnostic)({
-        kind: "combined", event: "reader-observation", atMs: performance.now(), phase: "combined",
-        observation: { ...event },
-      });
+      if (diagnostic)
+        observeSafely(diagnostic)({
+          kind: "combined",
+          event: "reader-observation",
+          atMs: performance.now(),
+          phase: "combined",
+          observation: { ...event },
+        });
     }),
   });
   try {
     await Effect.runPromise(
-    Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`PRAGMA journal_mode = WAL`;
-      yield* sql`CREATE TABLE IF NOT EXISTS synthetic_load(id INTEGER PRIMARY KEY, value TEXT)`;
-      emit("database-ready");
-      emit("sql-load-begin");
-      yield* Effect.all(
-        [
-          Effect.promise(compute),
-          Effect.forEach(
-            Array.from({ length: acquisitions }),
-            (_, index) => diagnostic ?
-              Effect.gen(function* () {
-                emit("reader-begin", index);
-                yield* sql<{ value: number }>`SELECT COUNT(*) AS value FROM synthetic_load`.pipe(
-                  NodeSqliteClient.readOnly,
-                  index % 2 === 0 ? backgroundRead : interactiveRead,
-                  Effect.ensuring(Effect.sync(() => emit("reader-end", index))),
-                );
-                yield* Effect.yieldNow;
-              }) : sql<{ value: number }>`SELECT COUNT(*) AS value FROM synthetic_load`.pipe(
-                NodeSqliteClient.readOnly,
-                index % 2 === 0 ? backgroundRead : interactiveRead,
-                Effect.andThen(Effect.yieldNow),
-              ),
-            { concurrency: count * 2, discard: true },
-          ),
-          Effect.forEach(
-            Array.from({ length: acquisitions }),
-            (_, index) =>
-              Effect.gen(function* () {
-                const start = performance.now();
-                emit("writer-begin", index, undefined, start);
-                yield* sql.withTransaction(
-                  sql`INSERT INTO synthetic_load(value) VALUES (${String(index)})`,
-                );
-                const end = performance.now();
-                writerMs.push(end - start);
-                emit("writer-end", index, undefined, end);
-                yield* Effect.yieldNow;
-              }),
-            { discard: true },
-          ),
-          Effect.forEach(
-            Array.from({ length: acquisitions }),
-            (_, index) =>
-              Effect.gen(function* () {
-                const start = performance.now();
-                emit("control-begin", index, undefined, start);
-                yield* sql`SELECT 1`.pipe(NodeSqliteClient.readOnly, interactiveRead);
-                const end = performance.now();
-                controlMs.push(end - start);
-                emit("control-end", index, undefined, end);
-                yield* Effect.yieldNow;
-              }),
-            { discard: true },
-          ),
-        ],
-        { concurrency: "unbounded", discard: true },
-      );
-      emit("sql-load-end");
-    }).pipe(Effect.provide(database.pipe(Layer.provide(NodeServices.layer)))),
-  );
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`PRAGMA journal_mode = WAL`;
+        yield* sql`CREATE TABLE IF NOT EXISTS synthetic_load(id INTEGER PRIMARY KEY, value TEXT)`;
+        emit("database-ready");
+        emit("sql-load-begin");
+        yield* Effect.all(
+          [
+            Effect.promise(compute),
+            Effect.forEach(
+              Array.from({ length: acquisitions }),
+              (_, index) =>
+                diagnostic
+                  ? Effect.gen(function* () {
+                      emit("reader-begin", index);
+                      yield* sql<{
+                        value: number;
+                      }>`SELECT COUNT(*) AS value FROM synthetic_load`.pipe(
+                        NodeSqliteClient.readOnly,
+                        index % 2 === 0 ? backgroundRead : interactiveRead,
+                        Effect.ensuring(Effect.sync(() => emit("reader-end", index))),
+                      );
+                      yield* Effect.yieldNow;
+                    })
+                  : sql<{ value: number }>`SELECT COUNT(*) AS value FROM synthetic_load`.pipe(
+                      NodeSqliteClient.readOnly,
+                      index % 2 === 0 ? backgroundRead : interactiveRead,
+                      Effect.andThen(Effect.yieldNow),
+                    ),
+              { concurrency: count * 2, discard: true },
+            ),
+            Effect.forEach(
+              Array.from({ length: acquisitions }),
+              (_, index) =>
+                Effect.gen(function* () {
+                  const start = performance.now();
+                  emit("writer-begin", index, undefined, start);
+                  yield* sql.withTransaction(
+                    sql`INSERT INTO synthetic_load(value) VALUES (${String(index)})`,
+                  );
+                  const end = performance.now();
+                  writerMs.push(end - start);
+                  emit("writer-end", index, undefined, end);
+                  yield* Effect.yieldNow;
+                }),
+              { discard: true },
+            ),
+            Effect.forEach(
+              Array.from({ length: acquisitions }),
+              (_, index) =>
+                Effect.gen(function* () {
+                  const start = performance.now();
+                  emit("control-begin", index, undefined, start);
+                  yield* sql`SELECT 1`.pipe(NodeSqliteClient.readOnly, interactiveRead);
+                  const end = performance.now();
+                  controlMs.push(end - start);
+                  emit("control-end", index, undefined, end);
+                  yield* Effect.yieldNow;
+                }),
+              { discard: true },
+            ),
+          ],
+          { concurrency: "unbounded", discard: true },
+        );
+        emit("sql-load-end");
+      }).pipe(Effect.provide(database.pipe(Layer.provide(NodeServices.layer)))),
+    );
   } finally {
-    if (cpuStart) diagnosticCpu = {
-      process: process.cpuUsage(cpuStart.process), thread: process.threadCpuUsage(cpuStart.thread),
-    };
+    if (cpuStart)
+      diagnosticCpu = {
+        process: process.cpuUsage(cpuStart.process),
+        thread: process.threadCpuUsage(cpuStart.thread),
+      };
     emit("window-end", undefined, diagnosticCpu);
   }
   const computeEvents = computeObservations?.() ?? null;

@@ -13,7 +13,13 @@ import {
 } from "./qualificationRetention.ts";
 import { NativeGenerationEvidence, type EvidenceGeneration } from "./nativeGenerationEvidence.ts";
 import { observeSafely } from "./observations.ts";
-import { diagnosticError, type DiagnosticCpu, type DiagnosticEvent, type DiagnosticIdentity, type DiagnosticSink } from "./diagnosticObservation.ts";
+import {
+  diagnosticError,
+  type DiagnosticCpu,
+  type DiagnosticEvent,
+  type DiagnosticIdentity,
+  type DiagnosticSink,
+} from "./diagnosticObservation.ts";
 import { isKey } from "../serverCompute/protocol.ts";
 import { ProcessSlot, withComputeChildOperations } from "../serverCompute/processSlot.ts";
 import type { ComputeChild } from "../serverCompute/processSlot.ts";
@@ -71,7 +77,15 @@ export async function runNativeQualification(options: NativeQualificationOptions
   // Admission precedes fixture creation, journal acquisition and every external collector.
   const workload = qualificationWorkload(options);
   const { windows, acquisitions, files } = workload;
-  if (options.diagnostic && (HostProcess.Platform.defaultValue() !== "linux" || count !== 2 || windows !== 3 || acquisitions !== 500 || files !== 512 || !["full", "cpu-stat-only"].includes(options.diagnostic.mode)))
+  if (
+    options.diagnostic &&
+    (HostProcess.Platform.defaultValue() !== "linux" ||
+      count !== 2 ||
+      windows !== 3 ||
+      acquisitions !== 500 ||
+      files !== 512 ||
+      !["full", "cpu-stat-only"].includes(options.diagnostic.mode))
+  )
     throw new Error("Diagnostic requires Linux source N2/W3/A500/F512");
   await NodeFSP.mkdir(directory, { recursive: false, mode: 0o700 });
   const observationStream = qualificationStream<ComputeObservation>(
@@ -111,13 +125,41 @@ export async function runNativeQualification(options: NativeQualificationOptions
     coldReopens = 0;
   let phase = "fixture";
   const diagnosticSink = observeSafely(options.diagnostic?.sink);
-  const emit = (event: Extract<DiagnosticEvent, { kind: "qualification" }>["event"], identity: DiagnosticIdentity = {}, detail: { cpu?: DiagnosticCpu; raw?: string; timing?: import("./observations.ts").ComputeRequestTiming; loop?: { p99Ms: number; maxMs: number } } = {}, eventPhase = phase) => {
-    if (options.diagnostic) diagnosticSink({ kind: "qualification", event, atMs: performance.now(), phase: eventPhase, ...identity, ...detail });
+  const emit = (
+    event: Extract<DiagnosticEvent, { kind: "qualification" }>["event"],
+    identity: DiagnosticIdentity = {},
+    detail: {
+      cpu?: DiagnosticCpu;
+      raw?: string;
+      timing?: import("./observations.ts").ComputeRequestTiming;
+      loop?: { p99Ms: number; maxMs: number };
+    } = {},
+    eventPhase = phase,
+  ) => {
+    if (options.diagnostic)
+      diagnosticSink({
+        kind: "qualification",
+        event,
+        atMs: performance.now(),
+        phase: eventPhase,
+        ...identity,
+        ...detail,
+      });
   };
   const cpuSnapshot = () => ({ process: process.cpuUsage(), thread: process.threadCpuUsage() });
   let phaseCpu = options.diagnostic ? cpuSnapshot() : undefined;
   const finishPhase = () => {
-    if (phaseCpu) emit("phase-end", {}, { cpu: { process: process.cpuUsage(phaseCpu.process), thread: process.threadCpuUsage(phaseCpu.thread) } });
+    if (phaseCpu)
+      emit(
+        "phase-end",
+        {},
+        {
+          cpu: {
+            process: process.cpuUsage(phaseCpu.process),
+            thread: process.threadCpuUsage(phaseCpu.thread),
+          },
+        },
+      );
   };
   const setPhase = (next: string) => {
     finishPhase();
@@ -130,17 +172,39 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const parentCpuStart = process.cpuUsage(),
     mainThreadCpuStart = process.threadCpuUsage();
   const requestMs: number[] = [];
-  const cpuResourceStream = qualificationStream<{ readId: number; atMs: number; finishedAtMs: number; phase: string; sample: CpuStatReceipt; generations: ResourceRow["generations"] }>(workload.capacities.resources);
+  const cpuResourceStream = qualificationStream<{
+    readId: number;
+    atMs: number;
+    finishedAtMs: number;
+    phase: string;
+    sample: CpuStatReceipt;
+    generations: ResourceRow["generations"];
+  }>(workload.capacities.resources);
   let resourceReadId = 0;
   const pendingDiagnosticReads = new Set<Promise<void>>();
   const trackPending = (pending: Promise<unknown>) => {
-    const settled = pending.then(() => {}, () => {});
+    const settled = pending.then(
+      () => {},
+      () => {},
+    );
     pendingDiagnosticReads.add(settled);
     void settled.then(() => pendingDiagnosticReads.delete(settled));
   };
-  const journalIdentity = (slotId: number, slotGeneration: number, nonce: string, pid?: number): DiagnosticIdentity => ({
+  const journalIdentity = (
+    slotId: number,
+    slotGeneration: number,
+    nonce: string,
+    pid?: number,
+  ): DiagnosticIdentity => ({
     ...(pid === undefined ? {} : { pid }),
-    bootstrap: { version: 1, build: command.build, authorityId: journal.claim.authorityId, slotId, slotGeneration, nonce },
+    bootstrap: {
+      version: 1,
+      build: command.build,
+      authorityId: journal.claim.authorityId,
+      slotId,
+      slotGeneration,
+      nonce,
+    },
   });
   const journal = await GenerationJournal.acquire(NodePath.join(directory, "journal"), count);
   const supervisor = new ComputeSupervisor({
@@ -151,21 +215,36 @@ export async function runNativeQualification(options: NativeQualificationOptions
       reserve: async (slot, generation, nonce) => {
         const identity = journalIdentity(slot, generation, nonce);
         emit("reserve-begin", identity);
-        try { await journal.reserve(slot, generation, nonce); emit("reserve-end", identity); }
-        catch (cause) { emit("reserve-error", identity, diagnosticError(cause)); throw cause; }
+        try {
+          await journal.reserve(slot, generation, nonce);
+          emit("reserve-end", identity);
+        } catch (cause) {
+          emit("reserve-error", identity, diagnosticError(cause));
+          throw cause;
+        }
       },
       registered: async (slot, generation, nonce, pid) => {
         const identity = journalIdentity(slot, generation, nonce, pid);
         emit("register-begin", identity);
-        try { await journal.registered(slot, generation, nonce, pid); emit("register-end", identity); }
-        catch (cause) { emit("register-error", identity, diagnosticError(cause)); throw cause; }
+        try {
+          await journal.registered(slot, generation, nonce, pid);
+          emit("register-end", identity);
+        } catch (cause) {
+          emit("register-error", identity, diagnosticError(cause));
+          throw cause;
+        }
       },
       release: journal.release.bind(journal),
       retired: async (slot, generation, nonce, pid) => {
         const identity = journalIdentity(slot, generation, nonce, pid);
         emit("retired-begin", identity);
-        try { await journal.retired(slot, generation, nonce, pid); emit("retired-end", identity); }
-        catch (cause) { emit("retired-error", identity, diagnosticError(cause)); throw cause; }
+        try {
+          await journal.retired(slot, generation, nonce, pid);
+          emit("retired-end", identity);
+        } catch (cause) {
+          emit("retired-error", identity, diagnosticError(cause));
+          throw cause;
+        }
         const record = generations.find(
           (item) =>
             item.pid === pid &&
@@ -248,10 +327,22 @@ export async function runNativeQualification(options: NativeQualificationOptions
           }
           const requestPhase = phase;
           const identity: DiagnosticIdentity = {
-            pid: child.pid, bootstrap: record.bootstrap, requestId: request.requestId,
-            operation: request.operation, token: Object.freeze({ ...request.token }),
-            role: request.operation === "search" ? "path" : request.operation === "searchContents"
-              ? (typeof request.input === "object" && request.input !== null && "query" in request.input && request.input.query === "qualification-absent-marker" ? "absent-grep" : "positive-grep") : "other",
+            pid: child.pid,
+            bootstrap: record.bootstrap,
+            requestId: request.requestId,
+            operation: request.operation,
+            token: Object.freeze({ ...request.token }),
+            role:
+              request.operation === "search"
+                ? "path"
+                : request.operation === "searchContents"
+                  ? typeof request.input === "object" &&
+                    request.input !== null &&
+                    "query" in request.input &&
+                    request.input.query === "qualification-absent-marker"
+                    ? "absent-grep"
+                    : "positive-grep"
+                  : "other",
           };
           emit("request-begin", identity, {}, requestPhase);
           const data = !["open", "close", "status"].includes(request.operation);
@@ -273,11 +364,18 @@ export async function runNativeQualification(options: NativeQualificationOptions
                   end: timing.worker.executionCompletedMs + timing.delivery.offsetLowerMs,
                 });
               }
-              emit("request-timing", identity, { timing: {
-                ...timing,
-                ...(timing.worker ? { worker: { ...timing.worker } } : {}),
-                ...(timing.delivery ? { delivery: { ...timing.delivery } } : {}),
-              } }, requestPhase);
+              emit(
+                "request-timing",
+                identity,
+                {
+                  timing: {
+                    ...timing,
+                    ...(timing.worker ? { worker: { ...timing.worker } } : {}),
+                    ...(timing.delivery ? { delivery: { ...timing.delivery } } : {}),
+                  },
+                },
+                requestPhase,
+              );
             });
             generationEvidence.completed(
               record,
@@ -301,8 +399,13 @@ export async function runNativeQualification(options: NativeQualificationOptions
           record.retirementStartedAt = performance.now();
           const identity = { pid: child.pid, bootstrap: record.bootstrap };
           emit("retire-begin", identity);
-          try { await child.retire(); emit("retire-resolved", identity); }
-          catch (cause) { emit("retire-error", identity, diagnosticError(cause)); throw cause; }
+          try {
+            await child.retire();
+            emit("retire-resolved", identity);
+          } catch (cause) {
+            emit("retire-error", identity, diagnosticError(cause));
+            throw cause;
+          }
           record.exitCapturedAt = performance.now();
           active.delete(child.pid);
         },
@@ -337,10 +440,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const phaseCheckpoint = async () => {
     emit("checkpoint-begin");
     try {
-    for (const record of generations.filter((item) => item.exitCapturedAt === undefined))
-      await generationEvidence.checkpoint(record, phase);
-    await sampleResources();
-    } finally { emit("checkpoint-end"); }
+      for (const record of generations.filter((item) => item.exitCapturedAt === undefined))
+        await generationEvidence.checkpoint(record, phase);
+      await sampleResources();
+    } finally {
+      emit("checkpoint-end");
+    }
   };
   async function collectResources() {
     const before = new Set([...active].filter(([, jobs]) => jobs > 0).map(([pid]) => pid));
@@ -355,27 +460,69 @@ export async function runNativeQualification(options: NativeQualificationOptions
       at = performance.now(),
       sampledPhase = phase;
     const readId = ++resourceReadId;
-    const diagnostic = options.diagnostic ? {
-      sink: diagnosticSink, readId, phase: sampledPhase, trackPending,
-      identities: new Map(bindings.map((binding) => [binding.pid, binding])),
-    } : undefined;
+    const diagnostic = options.diagnostic
+      ? {
+          sink: diagnosticSink,
+          readId,
+          phase: sampledPhase,
+          trackPending,
+          identities: new Map(bindings.map((binding) => [binding.pid, binding])),
+        }
+      : undefined;
     const cpuStart = diagnostic ? cpuSnapshot() : undefined;
-    if (diagnostic) diagnosticSink({ kind: "resource", stage: "batch", edge: "begin", readId, phase: sampledPhase, atMs: at });
+    if (diagnostic)
+      diagnosticSink({
+        kind: "resource",
+        stage: "batch",
+        edge: "begin",
+        readId,
+        phase: sampledPhase,
+        atMs: at,
+      });
     let sample: ProcessResourceSample;
     try {
       if (options.diagnostic?.mode === "cpu-stat-only") {
         const cpu = await sampleCpuStats(requested, diagnostic);
-        cpuResourceStream.append({ readId, atMs: at, finishedAtMs: performance.now(), phase: sampledPhase, sample: cpu, generations: bindings });
-        sample = processResourceSample(requested, [], ["diagnostic-cpu-stat-only:resource-fields-unavailable"]);
+        cpuResourceStream.append({
+          readId,
+          atMs: at,
+          finishedAtMs: performance.now(),
+          phase: sampledPhase,
+          sample: cpu,
+          generations: bindings,
+        });
+        sample = processResourceSample(
+          requested,
+          [],
+          ["diagnostic-cpu-stat-only:resource-fields-unavailable"],
+        );
       } else sample = await (options.sample ?? sampleProcesses)(requested, diagnostic);
     } catch (cause) {
-      if (diagnostic) diagnosticSink({ kind: "resource", stage: "batch", edge: "error", readId, phase: sampledPhase, atMs: performance.now(), ...diagnosticError(cause) });
+      if (diagnostic)
+        diagnosticSink({
+          kind: "resource",
+          stage: "batch",
+          edge: "error",
+          readId,
+          phase: sampledPhase,
+          atMs: performance.now(),
+          ...diagnosticError(cause),
+        });
       sample = processResourceSample(requested, [], ["sampler-threw"]);
     } finally {
-      if (diagnostic && cpuStart) diagnosticSink({
-        kind: "resource", stage: "batch", edge: "end", readId, phase: sampledPhase, atMs: performance.now(),
-        cpu: { process: process.cpuUsage(cpuStart.process), thread: process.threadCpuUsage(cpuStart.thread) },
-      });
+      if (diagnostic && cpuStart)
+        diagnosticSink({
+          kind: "resource",
+          stage: "batch",
+          edge: "end",
+          readId,
+          phase: sampledPhase,
+          atMs: performance.now(),
+          cpu: {
+            process: process.cpuUsage(cpuStart.process),
+            thread: process.threadCpuUsage(cpuStart.thread),
+          },
+        });
     }
     if (
       sample.status !== "complete" ||
@@ -520,17 +667,29 @@ export async function runNativeQualification(options: NativeQualificationOptions
           count,
           acquisitions,
           async () => {
-            if (options.diagnostic) diagnosticSink({ kind: "combined", event: "compute-begin", phase, atMs: performance.now() });
+            if (options.diagnostic)
+              diagnosticSink({
+                kind: "combined",
+                event: "compute-begin",
+                phase,
+                atMs: performance.now(),
+              });
             try {
-            // Continuous useful work on every child; all resident keys participate.
-            await Promise.all(
-              Array.from({ length: count }, async (_, lane) => {
-                for (let round = 0; round < acquisitions; round++)
-                  await request(cohorts[lane]![round % 4]!);
-              }),
-            );
+              // Continuous useful work on every child; all resident keys participate.
+              await Promise.all(
+                Array.from({ length: count }, async (_, lane) => {
+                  for (let round = 0; round < acquisitions; round++)
+                    await request(cohorts[lane]![round % 4]!);
+                }),
+              );
             } finally {
-              if (options.diagnostic) diagnosticSink({ kind: "combined", event: "compute-end", phase, atMs: performance.now() });
+              if (options.diagnostic)
+                diagnosticSink({
+                  kind: "combined",
+                  event: "compute-end",
+                  phase,
+                  atMs: performance.now(),
+                });
             }
           },
           () => observations.slice(observationStart),
@@ -542,7 +701,11 @@ export async function runNativeQualification(options: NativeQualificationOptions
           loop: { p99: loop.percentile(99) / 1e6, max: loop.max / 1e6 },
         });
       } finally {
-        emit("loop-window-end", {}, { loop: { p99Ms: loop.percentile(99) / 1e6, maxMs: loop.max / 1e6 } });
+        emit(
+          "loop-window-end",
+          {},
+          { loop: { p99Ms: loop.percentile(99) / 1e6, maxMs: loop.max / 1e6 } },
+        );
         loop.disable();
       }
     }
@@ -769,13 +932,23 @@ export async function runNativeQualification(options: NativeQualificationOptions
           })
         : "unknown";
     return {
-      ...(options.diagnostic ? { eligible: false as const, diagnostic: {
-        eligible: false as const, mode: options.diagnostic.mode,
-        cpuResources: cpuResourceStream.rows, cpuRetention: cpuResourceStream.report(),
-        nominalSamplingGapMs: 10,
-        cpuMeaning: "Read/phase wall spans overlap work; process CPU includes reader/checkpoint threads. Thread CPU includes interleaved parent work, not observer-exclusive CPU.",
-      } } : {}),
-      schema: options.diagnostic ? "jones.server-parallelism.native-diagnostic/v1" : "jones.server-parallelism.native-qualification/v1",
+      ...(options.diagnostic
+        ? {
+            eligible: false as const,
+            diagnostic: {
+              eligible: false as const,
+              mode: options.diagnostic.mode,
+              cpuResources: cpuResourceStream.rows,
+              cpuRetention: cpuResourceStream.report(),
+              nominalSamplingGapMs: 10,
+              cpuMeaning:
+                "Read/phase wall spans overlap work; process CPU includes reader/checkpoint threads. Thread CPU includes interleaved parent work, not observer-exclusive CPU.",
+            },
+          }
+        : {}),
+      schema: options.diagnostic
+        ? "jones.server-parallelism.native-diagnostic/v1"
+        : "jones.server-parallelism.native-qualification/v1",
       build: command.build,
       count,
       windows: windowsResult,

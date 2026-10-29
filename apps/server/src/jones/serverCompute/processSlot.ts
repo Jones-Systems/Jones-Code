@@ -1,5 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off -- Captured child callbacks and independent deadline/control transport require Node primitives.
-import type { DiagnosticEvent, DiagnosticSink } from "../serverParallelism/diagnosticObservation.ts";
+import type {
+  DiagnosticEvent,
+  DiagnosticSink,
+} from "../serverParallelism/diagnosticObservation.ts";
 import * as NodeChildProcess from "node:child_process";
 import type * as NodeStream from "node:stream";
 import { computeFailure, ComputeFailure } from "./failure.ts";
@@ -130,12 +133,19 @@ export class ProcessSlot implements ComputeChild {
   ): void {
     if (!this.diagnostic) return;
     observeSafely(this.diagnostic)({
-      kind: "lifecycle", event, atMs: performance.now(), phase: "process-slot",
-      pid: this.pid, bootstrap: this.bootstrap,
-      ...(request ? {
-        requestId: request.requestId, operation: request.operation,
-        token: Object.freeze({ ...request.token }),
-      } : {}),
+      kind: "lifecycle",
+      event,
+      atMs: performance.now(),
+      phase: "process-slot",
+      pid: this.pid,
+      bootstrap: this.bootstrap,
+      ...(request
+        ? {
+            requestId: request.requestId,
+            operation: request.operation,
+            token: Object.freeze({ ...request.token }),
+          }
+        : {}),
       ...(timing ? { timing } : {}),
     });
   }
@@ -196,14 +206,32 @@ export class ProcessSlot implements ComputeChild {
     );
     if (diagnostic) {
       const emit = observeSafely(diagnostic);
-      const identity = { pid: child.pid, bootstrap: Object.freeze({ ...bootstrap }), phase: "process-slot" };
+      const identity = {
+        pid: child.pid,
+        bootstrap: Object.freeze({ ...bootstrap }),
+        phase: "process-slot",
+      };
       emit({ ...identity, kind: "lifecycle", event: "spawn", atMs: performance.now() });
-      child.once("exit", (code, signal) => emit({
-        ...identity, kind: "lifecycle", event: "captured-exit", atMs: performance.now(), code, signal,
-      }));
-      child.once("close", (code, signal) => emit({
-        ...identity, kind: "lifecycle", event: "captured-close", atMs: performance.now(), code, signal,
-      }));
+      child.once("exit", (code, signal) =>
+        emit({
+          ...identity,
+          kind: "lifecycle",
+          event: "captured-exit",
+          atMs: performance.now(),
+          code,
+          signal,
+        }),
+      );
+      child.once("close", (code, signal) =>
+        emit({
+          ...identity,
+          kind: "lifecycle",
+          event: "captured-close",
+          atMs: performance.now(),
+          code,
+          signal,
+        }),
+      );
     }
     if (!child.pid) {
       // Observe spawn errors without leaking an unhandled event. Reservation remains unresolved.
@@ -403,9 +431,16 @@ export class ProcessSlot implements ComputeChild {
       else {
         pending.receivedMs = performance.now();
         if (reply.timing) pending.timing = reply.timing;
-        this.trace("terminal-receive", pending.request, reply.timing ? {
-          worker: { ...reply.timing }, delivery: estimateReplyDelivery(reply.timing, pending.receivedMs),
-        } : undefined);
+        this.trace(
+          "terminal-receive",
+          pending.request,
+          reply.timing
+            ? {
+                worker: { ...reply.timing },
+                delivery: estimateReplyDelivery(reply.timing, pending.receivedMs),
+              }
+            : undefined,
+        );
       }
       // Acknowledged only after strict schema/token validation and bounded assembly.
       await this.send("credit", { requestId: reply.requestId });

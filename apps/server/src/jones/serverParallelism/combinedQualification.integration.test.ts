@@ -33,30 +33,60 @@ it.effect.each([2, 3] as const)(
 );
 
 it.effect("retains reader/writer/control and setup boundaries while a diagnostic sink throws", () =>
-  Effect.scoped(Effect.gen(function* () {
-    vi.useFakeTimers({ toFake: ["Date", "performance"] });
-    vi.setSystemTime(0);
-    yield* Effect.addFinalizer(() => Effect.sync(() => { vi.useRealTimers(); }));
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-sp-diagnostic-window-" });
-    const events: import("./diagnosticObservation.ts").DiagnosticEvent[] = [];
-    const report = yield* Effect.promise(() => combinedReaderWriterWindow(
-      path.join(directory, "synthetic.sqlite"), 2, 4, () => Promise.resolve(), undefined,
-      (event) => { events.push(event); throw new Error("diagnostic sink"); },
-    ));
-    assert.equal(report.readerQueue.count, 8);
-    assert.equal(report.writer.count, 4);
-    assert.equal(report.control.count, 4);
-    assert.equal(events.filter((event) => event.kind === "combined" && event.event === "writer-begin").length, 4);
-    assert.equal(events.filter((event) => event.kind === "combined" && event.event === "writer-end").length, 4);
-    assert.equal(events.filter((event) => event.kind === "combined" && event.event === "control-end").length, 4);
-    assert.equal(events.filter((event) => event.kind === "combined" && event.event === "reader-end").length, 4);
-    const kinds = events.flatMap((event) => event.kind === "combined" ? [event.event] : []);
-    assert.isTrue(kinds.indexOf("window-begin") < kinds.indexOf("database-ready"));
-    assert.isTrue(kinds.indexOf("sql-load-end") < kinds.indexOf("window-end"));
-    assert.isDefined(report.diagnosticCpu);
-    assert.equal(vi.getMockedSystemTime()?.getTime(), 0);
-    assert.equal(report.observationLimitReached, false);
-  })).pipe(Effect.provide(NodeServices.layer)),
+  Effect.scoped(
+    Effect.gen(function* () {
+      vi.useFakeTimers({ toFake: ["Date", "performance"] });
+      vi.setSystemTime(0);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          vi.useRealTimers();
+        }),
+      );
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({
+        prefix: "jones-sp-diagnostic-window-",
+      });
+      const events: import("./diagnosticObservation.ts").DiagnosticEvent[] = [];
+      const report = yield* Effect.promise(() =>
+        combinedReaderWriterWindow(
+          path.join(directory, "synthetic.sqlite"),
+          2,
+          4,
+          () => Promise.resolve(),
+          undefined,
+          (event) => {
+            events.push(event);
+            throw new Error("diagnostic sink");
+          },
+        ),
+      );
+      assert.equal(report.readerQueue.count, 8);
+      assert.equal(report.writer.count, 4);
+      assert.equal(report.control.count, 4);
+      assert.equal(
+        events.filter((event) => event.kind === "combined" && event.event === "writer-begin")
+          .length,
+        4,
+      );
+      assert.equal(
+        events.filter((event) => event.kind === "combined" && event.event === "writer-end").length,
+        4,
+      );
+      assert.equal(
+        events.filter((event) => event.kind === "combined" && event.event === "control-end").length,
+        4,
+      );
+      assert.equal(
+        events.filter((event) => event.kind === "combined" && event.event === "reader-end").length,
+        4,
+      );
+      const kinds = events.flatMap((event) => (event.kind === "combined" ? [event.event] : []));
+      assert.isTrue(kinds.indexOf("window-begin") < kinds.indexOf("database-ready"));
+      assert.isTrue(kinds.indexOf("sql-load-end") < kinds.indexOf("window-end"));
+      assert.isDefined(report.diagnosticCpu);
+      assert.equal(vi.getMockedSystemTime()?.getTime(), 0);
+      assert.equal(report.observationLimitReached, false);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );

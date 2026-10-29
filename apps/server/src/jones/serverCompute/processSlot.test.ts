@@ -2,7 +2,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeStream from "node:stream";
-import { diagnosticTrace, type DiagnosticEvent } from "../serverParallelism/diagnosticObservation.ts";
+import {
+  diagnosticTrace,
+  type DiagnosticEvent,
+} from "../serverParallelism/diagnosticObservation.ts";
 import { guardianSource } from "./guardian.ts";
 import { ProcessSlot, withComputeChildOperations, type ComputeChild } from "./processSlot.ts";
 import type {
@@ -604,32 +607,51 @@ it("rejects duplicate nativeReady without replacing the first immutable record",
   }
 });
 
-
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
-function diagnosticPeer(patch: Record<string, unknown> = {}, boot: Bootstrap = bootstrap, pid = 321) {
+function diagnosticPeer(
+  patch: Record<string, unknown> = {},
+  boot: Bootstrap = bootstrap,
+  pid = 321,
+) {
   const child = new NodeChildProcess.ChildProcess();
-  const input = new NodeStream.PassThrough(), output = new NodeStream.PassThrough(), stderr = new NodeStream.PassThrough();
+  const input = new NodeStream.PassThrough(),
+    output = new NodeStream.PassThrough(),
+    stderr = new NodeStream.PassThrough();
   let terminated!: () => void;
-  const terminateRequested = new Promise<void>((resolve) => { terminated = resolve; });
+  const terminateRequested = new Promise<void>((resolve) => {
+    terminated = resolve;
+  });
   const control = new NodeStream.Duplex({
     read() {},
     write(chunk, _encoding, callback) {
       const message = JSON.parse(String(chunk)) as { type: string; requestId?: number };
-      const send = (body: Record<string, unknown>) => control.push(JSON.stringify({ ...boot, ...body }) + "\n");
+      const send = (body: Record<string, unknown>) =>
+        control.push(JSON.stringify({ ...boot, ...body }) + "\n");
       if (message.type === "go") {
         send({ type: "go" });
-        send({ type: "nativeReady", heapLimit: 300 * 1024 * 1024, availableParallelism: 2, ...patch });
+        send({
+          type: "nativeReady",
+          heapLimit: 300 * 1024 * 1024,
+          availableParallelism: 2,
+          ...patch,
+        });
       } else if (message.type === "loaded") send({ type: "loaded" });
-      else if (message.type === "arm" || message.type === "disarm") send({ type: message.type === "arm" ? "armed" : "disarmed", requestId: message.requestId });
+      else if (message.type === "arm" || message.type === "disarm")
+        send({ type: message.type === "arm" ? "armed" : "disarmed", requestId: message.requestId });
       else if (message.type === "terminate") terminated();
       callback();
     },
   });
   Object.defineProperty(child, "pid", { value: pid });
-  Object.assign(child, { stdin: input, stdout: output, stderr, stdio: [input, output, stderr, control] });
+  Object.assign(child, {
+    stdin: input,
+    stdout: output,
+    stderr,
+    stdio: [input, output, stderr, control],
+  });
   vi.spyOn(child, "kill").mockImplementation(() => {
     queueMicrotask(() => child.emit("exit", null, "SIGKILL"));
     return true;
@@ -639,91 +661,247 @@ function diagnosticPeer(patch: Record<string, unknown> = {}, boot: Bootstrap = b
   const requests = (async () => {
     for await (const value of frames(input, LIMITS.requestBytes)) {
       const request = value as Request & { clock: { parentSentMs: number } };
-      await writeFrame(output, {
-        ...boot, requestId: request.requestId, operation: request.operation, token: request.token, sequence: 0,
-        timing: { parentSentMs: request.clock.parentSentMs, receivedMs: 1000 + pid - 321, executionStartedMs: 1000 + pid - 321, executionCompletedMs: 1000 + pid - 321, executionOutcome: "ok", replyStartedMs: 1000 + pid - 321, handoffMs: 1000 + pid - 321 },
-        body: { type: "done" },
-      }, LIMITS.batchBytes);
+      await writeFrame(
+        output,
+        {
+          ...boot,
+          requestId: request.requestId,
+          operation: request.operation,
+          token: request.token,
+          sequence: 0,
+          timing: {
+            parentSentMs: request.clock.parentSentMs,
+            receivedMs: 1000 + pid - 321,
+            executionStartedMs: 1000 + pid - 321,
+            executionCompletedMs: 1000 + pid - 321,
+            executionOutcome: "ok",
+            replyStartedMs: 1000 + pid - 321,
+            handoffMs: 1000 + pid - 321,
+          },
+          body: { type: "done" },
+        },
+        LIMITS.batchBytes,
+      );
     }
   })().catch(() => {});
   return { child, terminateRequested, requests };
 }
 describe("synchronous diagnostic ownership isolation", () => {
-  beforeEach(() => { vi.useFakeTimers({ toFake: ["Date", "performance"] }); vi.setSystemTime(0); });
-  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
-  it.each(["throw", "full"] as const)("keeps request sequencing and distinct exit/close/retire milestones with a %s sink", async (mode) => {
-    const peer = diagnosticPeer();
-    const trace = diagnosticTrace(mode === "full" ? 1 : 100), events: DiagnosticEvent[] = [], faults: unknown[] = [];
-    const child = await ProcessSlot.start(
-      { file: "synthetic", args: [], env: {}, build: bootstrap.build }, bootstrap,
-      async () => {}, (cause) => faults.push(cause), undefined, undefined,
-      (event) => { trace.append(event); events.push(event); if (mode === "throw") throw new Error("sink"); },
-    );
-    try {
-      const request: Request = { ...bootstrap, requestId: 7, operation: "close", input: null, token: { authorityId: bootstrap.authorityId, slotId: 0, slotGeneration: 1, keyId: "key", incarnation: 1 } };
-      expect((await child.request(request)).final).toEqual({ type: "done" });
-      expect(faults).toEqual([]);
-      expect(events.filter((row) => row.kind === "lifecycle" && ["parent-send", "terminal-receive", "disarm", "settle"].includes(row.event)).map((row) => [row.kind === "lifecycle" ? row.event : "", row.requestId, row.token])).toEqual(["parent-send", "terminal-receive", "disarm", "settle"].map((event) => [event, 7, request.token]));
-      expect(events).toContainEqual(expect.objectContaining({ event: "terminal-receive", timing: expect.objectContaining({ worker: expect.objectContaining({ receivedMs: 1000 }), delivery: expect.objectContaining({ offsetLowerMs: -1001, offsetUpperMs: -999 }) }) }));
-      const retirement = child.retire();
-      await peer.terminateRequested;
-      expect(faults).toEqual([]);
-      expect(events.some((row) => row.kind === "lifecycle" && row.event === "captured-exit")).toBe(false);
-      peer.child.emit("exit", 0, null);
-      await retirement;
-      expect(faults).toHaveLength(1);
-      expect(events.filter((row) => row.kind === "lifecycle" && row.event === "captured-exit")).toHaveLength(1);
-      expect(events.some((row) => row.kind === "lifecycle" && row.event === "captured-close")).toBe(false);
-      peer.child.emit("close", 0, null);
-      expect(events.filter((row) => row.kind === "lifecycle" && row.event === "captured-close")).toHaveLength(1);
-      expect(events.every((row) => row.pid === 321 && row.bootstrap?.nonce === bootstrap.nonce && row.atMs === 0)).toBe(true);
-      expect(trace.report().overflow).toBe(mode === "full");
-      expect(vi.getMockedSystemTime()?.getTime()).toBe(0);
-    } finally { peer.child.emit("exit", 0, null); await child.retire().catch(() => {}); await peer.requests; }
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date", "performance"] });
+    vi.setSystemTime(0);
   });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+  it.each(["throw", "full"] as const)(
+    "keeps request sequencing and distinct exit/close/retire milestones with a %s sink",
+    async (mode) => {
+      const peer = diagnosticPeer();
+      const trace = diagnosticTrace(mode === "full" ? 1 : 100),
+        events: DiagnosticEvent[] = [],
+        faults: unknown[] = [];
+      const child = await ProcessSlot.start(
+        { file: "synthetic", args: [], env: {}, build: bootstrap.build },
+        bootstrap,
+        async () => {},
+        (cause) => faults.push(cause),
+        undefined,
+        undefined,
+        (event) => {
+          trace.append(event);
+          events.push(event);
+          if (mode === "throw") throw new Error("sink");
+        },
+      );
+      try {
+        const request: Request = {
+          ...bootstrap,
+          requestId: 7,
+          operation: "close",
+          input: null,
+          token: {
+            authorityId: bootstrap.authorityId,
+            slotId: 0,
+            slotGeneration: 1,
+            keyId: "key",
+            incarnation: 1,
+          },
+        };
+        expect((await child.request(request)).final).toEqual({ type: "done" });
+        expect(faults).toEqual([]);
+        expect(
+          events
+            .filter(
+              (row) =>
+                row.kind === "lifecycle" &&
+                ["parent-send", "terminal-receive", "disarm", "settle"].includes(row.event),
+            )
+            .map((row) => [row.kind === "lifecycle" ? row.event : "", row.requestId, row.token]),
+        ).toEqual(
+          ["parent-send", "terminal-receive", "disarm", "settle"].map((event) => [
+            event,
+            7,
+            request.token,
+          ]),
+        );
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            event: "terminal-receive",
+            timing: expect.objectContaining({
+              worker: expect.objectContaining({ receivedMs: 1000 }),
+              delivery: expect.objectContaining({ offsetLowerMs: -1001, offsetUpperMs: -999 }),
+            }),
+          }),
+        );
+        const retirement = child.retire();
+        await peer.terminateRequested;
+        expect(faults).toEqual([]);
+        expect(
+          events.some((row) => row.kind === "lifecycle" && row.event === "captured-exit"),
+        ).toBe(false);
+        peer.child.emit("exit", 0, null);
+        await retirement;
+        expect(faults).toHaveLength(1);
+        expect(
+          events.filter((row) => row.kind === "lifecycle" && row.event === "captured-exit"),
+        ).toHaveLength(1);
+        expect(
+          events.some((row) => row.kind === "lifecycle" && row.event === "captured-close"),
+        ).toBe(false);
+        peer.child.emit("close", 0, null);
+        expect(
+          events.filter((row) => row.kind === "lifecycle" && row.event === "captured-close"),
+        ).toHaveLength(1);
+        expect(
+          events.every(
+            (row) => row.pid === 321 && row.bootstrap?.nonce === bootstrap.nonce && row.atMs === 0,
+          ),
+        ).toBe(true);
+        expect(trace.report().overflow).toBe(mode === "full");
+        expect(vi.getMockedSystemTime()?.getTime()).toBe(0);
+      } finally {
+        peer.child.emit("exit", 0, null);
+        await child.retire().catch(() => {});
+        await peer.requests;
+      }
+    },
+  );
 
   it("still rejects mismatched readiness and captures real exit when the sink throws", async () => {
     const peer = diagnosticPeer({ nonce: "mismatch" });
     const events: DiagnosticEvent[] = [];
-    await expect(ProcessSlot.start(
-      { file: "synthetic", args: [], env: {}, build: bootstrap.build }, bootstrap,
-      async () => {}, () => {}, undefined, undefined,
-      (event) => { events.push(event); throw new Error("sink"); },
-    )).rejects.toMatchObject({ reason: "unavailable" });
-    expect(events).toContainEqual(expect.objectContaining({ event: "captured-exit", signal: "SIGKILL" }));
+    await expect(
+      ProcessSlot.start(
+        { file: "synthetic", args: [], env: {}, build: bootstrap.build },
+        bootstrap,
+        async () => {},
+        () => {},
+        undefined,
+        undefined,
+        (event) => {
+          events.push(event);
+          throw new Error("sink");
+        },
+      ),
+    ).rejects.toMatchObject({ reason: "unavailable" });
+    expect(events).toContainEqual(
+      expect.objectContaining({ event: "captured-exit", signal: "SIGKILL" }),
+    );
     expect(events.some((row) => row.kind === "lifecycle" && row.event === "loaded")).toBe(false);
     await peer.requests;
   });
-  it.each(["parallel", "serialized"] as const)("retains raw clocks and request/token identity across children in %s traffic", async (mode) => {
-    const boots = [bootstrap, { ...bootstrap, slotId: 1, nonce: "second" }];
-    const peers = boots.map((boot, index) => diagnosticPeer({}, boot, 321 + index));
-    const events: DiagnosticEvent[] = [];
-    const children = await Promise.all(boots.map((boot) => ProcessSlot.start(
-      { file: "synthetic", args: [], env: {}, build: boot.build }, boot,
-      async () => {}, () => {}, undefined, undefined, (event) => { events.push(event); },
-    )));
-    try {
-      const call = (index: number) => {
-        const boot = boots[index]!;
-        return children[index]!.request({ ...boot, requestId: 9, operation: "close", input: null, token: { authorityId: boot.authorityId, slotId: boot.slotId, slotGeneration: boot.slotGeneration, keyId: `key-${index}`, incarnation: 1 } });
-      };
-      if (mode === "parallel") await Promise.all([call(0), call(1)]);
-      else { await call(0); await call(1); }
-      const terminals = events.filter((row) => row.kind === "lifecycle" && row.event === "terminal-receive");
-      expect(terminals).toHaveLength(2);
-      expect(terminals.map((row) => [row.pid, row.requestId, row.token?.keyId]).sort()).toEqual([[321, 9, "key-0"], [322, 9, "key-1"]]);
-      expect(terminals).toContainEqual(expect.objectContaining({ pid: 322, timing: expect.objectContaining({ worker: expect.objectContaining({ receivedMs: 1001 }) }) }));
-      const cancelled = new AbortController(); cancelled.abort();
-      await expect(children[0]!.request({ ...bootstrap, requestId: 10, operation: "close", input: null, token: { authorityId: bootstrap.authorityId, slotId: 0, slotGeneration: 1, keyId: "key-0", incarnation: 1 } }, cancelled.signal)).rejects.toMatchObject({ reason: "cancelled" });
-      expect(events.some((row) => row.requestId === 10)).toBe(false);
-    } finally {
-      await Promise.all(children.map(async (child, index) => {
-        peers[index]!.child.emit("exit", 0, null);
-        await child.retire().catch(() => {});
-        peers[index]!.child.emit("close", 0, null);
-        await peers[index]!.requests;
-      }));
-    }
-  });
-
+  it.each(["parallel", "serialized"] as const)(
+    "retains raw clocks and request/token identity across children in %s traffic",
+    async (mode) => {
+      const boots = [bootstrap, { ...bootstrap, slotId: 1, nonce: "second" }];
+      const peers = boots.map((boot, index) => diagnosticPeer({}, boot, 321 + index));
+      const events: DiagnosticEvent[] = [];
+      const children = await Promise.all(
+        boots.map((boot) =>
+          ProcessSlot.start(
+            { file: "synthetic", args: [], env: {}, build: boot.build },
+            boot,
+            async () => {},
+            () => {},
+            undefined,
+            undefined,
+            (event) => {
+              events.push(event);
+            },
+          ),
+        ),
+      );
+      try {
+        const call = (index: number) => {
+          const boot = boots[index]!;
+          return children[index]!.request({
+            ...boot,
+            requestId: 9,
+            operation: "close",
+            input: null,
+            token: {
+              authorityId: boot.authorityId,
+              slotId: boot.slotId,
+              slotGeneration: boot.slotGeneration,
+              keyId: `key-${index}`,
+              incarnation: 1,
+            },
+          });
+        };
+        if (mode === "parallel") await Promise.all([call(0), call(1)]);
+        else {
+          await call(0);
+          await call(1);
+        }
+        const terminals = events.filter(
+          (row) => row.kind === "lifecycle" && row.event === "terminal-receive",
+        );
+        expect(terminals).toHaveLength(2);
+        expect(terminals.map((row) => [row.pid, row.requestId, row.token?.keyId]).sort()).toEqual([
+          [321, 9, "key-0"],
+          [322, 9, "key-1"],
+        ]);
+        expect(terminals).toContainEqual(
+          expect.objectContaining({
+            pid: 322,
+            timing: expect.objectContaining({
+              worker: expect.objectContaining({ receivedMs: 1001 }),
+            }),
+          }),
+        );
+        const cancelled = new AbortController();
+        cancelled.abort();
+        await expect(
+          children[0]!.request(
+            {
+              ...bootstrap,
+              requestId: 10,
+              operation: "close",
+              input: null,
+              token: {
+                authorityId: bootstrap.authorityId,
+                slotId: 0,
+                slotGeneration: 1,
+                keyId: "key-0",
+                incarnation: 1,
+              },
+            },
+            cancelled.signal,
+          ),
+        ).rejects.toMatchObject({ reason: "cancelled" });
+        expect(events.some((row) => row.requestId === 10)).toBe(false);
+      } finally {
+        await Promise.all(
+          children.map(async (child, index) => {
+            peers[index]!.child.emit("exit", 0, null);
+            await child.retire().catch(() => {});
+            peers[index]!.child.emit("close", 0, null);
+            await peers[index]!.requests;
+          }),
+        );
+      }
+    },
+  );
 });
