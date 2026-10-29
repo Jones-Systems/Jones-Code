@@ -344,6 +344,49 @@ export check's workspace selectors as more workspaces become clean. Review calle
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
 
+### Server parallelism qualification
+
+Run the synthetic pool harness only on a host admitted for the repository's
+supported Node/native dependencies and storage budget. It writes disposable state,
+never live userdata. The source changes alone are not qualification evidence.
+
+Create a command manifest using `scripts/jones/serverParallelism/source-command.mjs`
+for the absolute source `apps/server/src/bin.ts`, or `artifact-command.mjs` for an
+actual bundled Node, Electron Node-mode or SEA installed layout. The latter takes
+`<bundle|electron|sea> <absolute executable> <absolute entry or -> <absolute manifest>`.
+Each manifest binds the hidden command and actual build identity; the harness
+reconstructs the production minimal child environment rather than accepting secrets.
+
+Invoke `qualify.mjs <manifest> <absolute report> <laptop|vps> [baseline-report]` for
+each profile/runtime form. It runs three steady combined reader/writer/control and
+productive-native windows with at least 500 acquisitions, then overflow and churn.
+Reports retain aggregate process samples and explicit missing capabilities.
+A passing source test or idle PID is not proof of N-way productive CPU overlap.
+No baseline means writer/throughput regression acceptance remains unknown. A failed
+retirement retains its exact scratch/journal for owner reconciliation; successful
+retirement permits the invoking harness to remove its own fixture.
+
+The advisory `Server parallel qualification` workflow defaults to bounded
+`source-evidence`: one unchanged baseline and one real source run for each
+profile, including churn and shutdown. It also runs matching-build and
+wrong-build dispatch checks. These reports cannot qualify the full matrix.
+After reviewing those prerequisites, select `scope: full` on the workflow's
+manual dispatch to exercise source, bundle, Electron and SEA on both platforms.
+Missing or failed cells remain explicit; a narrower diagnostic scope never
+substitutes for full performance qualification.
+
+Set `JONES_SP_COMMAND_MANIFEST` to the qualified manifest when running
+`nativeProcess.integration.test.ts`; absent manifests produce explicit skips.
+Run the native file separately for each of the four runtime forms. Its parent-loss
+case kills only its captured fixture parent, then proves child absence through the
+same conservative OS probe as restart admission. Source/bundle/Linux checks do not
+substitute for Electron/SEA/macOS packaging evidence.
+
+`snapshot.mjs <absolute report> [thread-count]` measures real shell capture, deferred
+decode, schema projection, synchronous JSON encoding and compression separately.
+Only measured contiguous encoding or qualified decode/projection/loop attribution
+activates a snapshot-offload follow-up. A payload-size guess does not activate it.
+
 ## Desktop artifacts
 
 Local artifact builds are unsigned by default and write to `release/`:

@@ -25,7 +25,7 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
-import type { BrowserContext, Page } from "playwright-core";
+import type { BrowserContext, CDPSession, Page } from "playwright-core";
 import { beforeEach, expect, vi } from "vite-plus/test";
 
 import * as ServerConfig from "../config.ts";
@@ -35,6 +35,7 @@ import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 
 vi.mock("./ServerBrowserContexts.ts", () => ({
@@ -469,6 +470,58 @@ it.live("preview_open reports its navigation timeout instead of the request budg
     }),
   ).pipe(Effect.provide(layer)),
 );
+
+it.live("preview_snapshot reports the page budget after an ARIA timeout", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      contexts[0]!.page.ariaSnapshot.mockRejectedValue(
+        Object.assign(new Error("locator.ariaSnapshot: Timeout 8000ms exceeded."), {
+          name: "TimeoutError",
+        }),
+      );
+
+      const error = yield* broker
+        .invoke<PreviewAutomationSnapshot>({
+          scope,
+          operation: "snapshot",
+          tabId,
+          input: {},
+        })
+        .pipe(Effect.flip);
+
+      expect(error).toMatchObject({
+        _tag: "PreviewAutomationTimeoutError",
+        operation: "snapshot",
+        timeoutMs: 10_000,
+        outcome: "reported",
+      });
+      expect(error.message).toBe("Preview automation snapshot timed out after 10000ms.");
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it("includes the page budget when the snapshot timer expires", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  try {
+    const failure = ServerBrowserPage.snapshot({
+      page: {} as Page,
+      cdp: { send: () => new Promise<never>(() => {}) } as unknown as CDPSession,
+      renderScale: "display",
+      consoleEntries: [],
+      networkEntries: [],
+      actionTimeline: [],
+    }).catch((error: unknown) => error);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await failure).toMatchObject({
+      tag: "PreviewAutomationTimeoutError",
+      detail: { timeoutMs: 10_000 },
+    });
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 it.live.each(["desktop" as const, undefined])(
   "explicit desktop targets ($0 runtime) fail without creating a server tab",

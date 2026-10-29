@@ -202,13 +202,11 @@ export function QuestionAttachments(props: {
       />
       <FilePreviewModal source={previewFile} onRequestClose={() => setPreviewFile(null)} />
       <VideoPreviewModal source={previewVideo} onRequestClose={() => setPreviewVideo(null)} />
-      <Text className="font-sans text-xs text-foreground-muted">
-        {props.messageMode && props.hasChoice
-          ? "Note (optional): sent with your choice"
-          : props.messageMode
-            ? "Your answer"
-            : "Your answer · Typing replaces your choice"}
-      </Text>
+      {!(props.messageMode && props.hasChoice) ? (
+        <Text className="font-sans text-xs text-foreground-muted">
+          {props.messageMode ? "Your answer" : "Your answer · Typing replaces your choice"}
+        </Text>
+      ) : null}
       <TextInputWrapper onPaste={paste}>
         <TextInput
           value={props.value}

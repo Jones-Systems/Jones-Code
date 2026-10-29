@@ -177,6 +177,90 @@ describe("monitor uses the existing runtime command path", () => {
     expect(restoreObservedSettlement).toHaveBeenCalledTimes(1);
     expect(frames.at(-1)).toMatchObject({ status: "unavailable" });
   });
+  it("reconciles the exact unknown rowless Restore after recovery without admitting another Restore", async () => {
+    const { controller, action, frames, store, input } = setup();
+    const settleCommandId = CommandId.make("observed-settle");
+    const settledInput = {
+      ...input,
+      threads: input.threads.map((thread) => ({
+        ...thread,
+        settledAt: "2026-10-26T08:00:00.000Z",
+      })),
+    };
+    store.setCohort([testEnvironment], [], emptyCounts());
+    ports.values.set("inputs", [settledInput]);
+    store.result({
+      ...refOf(action),
+      type: "actionResult",
+      actionId: "settle",
+      commandId: settleCommandId,
+      settleCommandId,
+      status: "accepted",
+      reason: null,
+    });
+    const restore = {
+      ...refOf(action),
+      type: "restore" as const,
+      actionId: "restore",
+      commandId: CommandId.make("restore-command"),
+      settleCommandId,
+    };
+    vi.mocked(restoreObservedSettlement).mockRejectedValueOnce(new Error("Connection lost"));
+    await controller.dispatch(restore);
+    expect(store.results.get(restore.actionId)?.status).toBe("unknown");
+    expect(store.rows).toHaveLength(0);
+    await controller.dispatch({
+      ...restore,
+      actionId: "repeat-restore",
+      commandId: CommandId.make("repeat-restore-command"),
+    });
+    expect(frames.at(-1)).toMatchObject({ status: "unavailable" });
+    expect(restoreObservedSettlement).toHaveBeenCalledTimes(1);
+    const reconcile = {
+      ...refOf(action),
+      type: "reconcile" as const,
+      actionId: "reconcile",
+      commandId: CommandId.make("reconcile-command"),
+      originalActionId: restore.actionId,
+      originalCommandId: restore.commandId,
+    };
+    await controller.dispatch({
+      ...reconcile,
+      actionId: "wrong-identity",
+      commandId: CommandId.make("wrong-reconcile-command"),
+      originalCommandId: CommandId.make("different-restore-command"),
+    });
+    expect(frames.at(-1)).toMatchObject({ status: "unavailable" });
+    ports.values.set("inputs", [
+      { ...settledInput, environment: { ...testEnvironment, transport: "disconnected" } },
+    ]);
+    await controller.dispatch({
+      ...reconcile,
+      actionId: "offline",
+      commandId: CommandId.make("offline-reconcile-command"),
+    });
+    expect(frames.at(-1)).toMatchObject({ status: "unavailable" });
+    expect(restoreObservedSettlement).toHaveBeenCalledTimes(1);
+    ports.values.set("inputs", [settledInput]);
+    await controller.dispatch(reconcile);
+    expect(restoreObservedSettlement).toHaveBeenCalledTimes(2);
+    expect(restoreObservedSettlement).toHaveBeenLastCalledWith(
+      { environmentId: action.environmentId, threadId: action.threadId },
+      settleCommandId,
+      { settleWasNoop: false },
+    );
+    expect(store.results.get(restore.actionId)).toMatchObject({
+      commandId: restore.commandId,
+      status: "accepted",
+    });
+    expect(frames.at(-1)).toMatchObject({
+      actionId: reconcile.actionId,
+      status: "accepted",
+    });
+    await controller.dispatch(reconcile);
+    expect(restoreObservedSettlement).toHaveBeenCalledTimes(2);
+    expect(ports.run).not.toHaveBeenCalled();
+  });
   it.each([false, true])(
     "dispatches safe queue mode with exact saved context when active=%s",
     async (active) => {

@@ -115,6 +115,16 @@ it.effect.each([
   },
   { action: "receipt", clientRequestId: "original-request", requestDigest: "a".repeat(64) },
   { action: "delivery_receipt", deliveryId: "original-delivery" },
+  {
+    action: "discover_deliveries",
+    expected: {
+      owner,
+      goalId: "goal",
+      revision: "1",
+      generation: "0",
+      snapshotDigest: "a".repeat(64),
+    },
+  },
 ] satisfies readonly C.ContinuityRequest[])(
   "read-only owner can use the actual tool read operation %o",
   (request) =>

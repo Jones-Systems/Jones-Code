@@ -48,7 +48,6 @@ export function deriveQuestionAnswerFooterState(input: {
   return {
     notes,
     hasChoice,
-    fieldLabel: notes && hasChoice ? "Note (optional): sent with your choice" : "Your answer",
     blockedReason,
     showField: progress.activeQuestion?.allowCustomAnswer !== false,
     fieldDisabled,
@@ -75,18 +74,14 @@ export function isQuestionAnswerSubmitKey(
     KeyboardEvent,
     "key" | "shiftKey" | "altKey" | "ctrlKey" | "metaKey" | "isComposing" | "keyCode" | "repeat"
   >,
-  literal: boolean,
-  messageMode = false,
 ): boolean {
   return (
-    !messageMode &&
     event.key === "Enter" &&
     !event.shiftKey &&
     !event.altKey &&
     !event.isComposing &&
     event.keyCode !== 229 &&
-    !event.repeat &&
-    (!literal || event.ctrlKey || event.metaKey)
+    !event.repeat
   );
 }
 

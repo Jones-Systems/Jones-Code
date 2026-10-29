@@ -59,6 +59,65 @@ const expected = (snapshot: ContinuitySnapshot) => ({
 });
 
 it.effect(
+  "delivery keyset reads include settled rows, bound payloads and use the existing primary key",
+  () =>
+    Effect.gen(function* () {
+      const store = yield* Store.GoalContinuityStore;
+      const sql = yield* SqlClient.SqlClient;
+      for (let i = 0; i < 12; i++) {
+        yield* store.writeRow(
+          {
+            ...owner,
+            kind: "delivery",
+            namespace: "server",
+            key: `delivery-${String(i).padStart(2, "0")}`,
+          },
+          null,
+          { text: i === 4 ? "😀".repeat(270000) : String(i) },
+          i % 2 === 0,
+        );
+      }
+      yield* store.writeRow(
+        { ...owner, kind: "delivery", namespace: "other", key: "foreign" },
+        null,
+        {},
+      );
+      const page = yield* store.readOnly(
+        store.deliveryPage(owner.environmentId, owner.threadId, ""),
+      );
+      expect(page.map((row) => row.key)).toEqual([
+        "delivery-00",
+        "delivery-01",
+        "delivery-02",
+        "delivery-03",
+        "delivery-04",
+      ]);
+      expect(page[1]!.open).toBe(false);
+      expect(page[4]!.payload).toBe("");
+      const next = yield* store.readOnly(
+        store.deliveryPage(owner.environmentId, owner.threadId, "delivery-03"),
+      );
+      expect(next.map((row) => row.key)).toEqual([
+        "delivery-04",
+        "delivery-05",
+        "delivery-06",
+        "delivery-07",
+        "delivery-08",
+      ]);
+      const plan = yield* sql<{
+        detail: string;
+      }>`EXPLAIN QUERY PLAN SELECT receipt_key FROM jones_goal_continuity_receipts
+      WHERE kind='delivery' AND environment_id=${owner.environmentId} AND thread_id=${owner.threadId}
+      AND namespace='server' AND receipt_key > 'delivery-03' ORDER BY receipt_key LIMIT 5`;
+      expect(plan.map((row) => row.detail).join(" ")).toContain("SEARCH");
+      expect(plan.map((row) => row.detail).join(" ")).not.toMatch(/SCAN|TEMP B-TREE/);
+      expect(
+        yield* store.deliveryPage(owner.environmentId, "foreign" as typeof owner.threadId, ""),
+      ).toEqual([]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "competing stale CAS cannot overwrite the winner and rollback preserves its current pointer",
   () =>
     Effect.gen(function* () {

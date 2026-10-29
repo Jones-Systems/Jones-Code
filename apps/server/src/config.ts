@@ -23,6 +23,10 @@ import packageJson from "../package.json" with { type: "json" };
 import { holdJonesServerNativeWriterFence } from "./jones/updates/nativeWriterStartup.ts";
 import type { Configuration as FleetCheckpointConfiguration } from "./jones/fleetCheckpoint/Configuration.ts";
 import type { Configuration as WorkspaceLifecycleConfiguration } from "./jones/workspaceLifecycle/Configuration.ts";
+import {
+  resolveServerParallelismProfile,
+  type ServerParallelismConfig,
+} from "./jones/serverParallelism/config.ts";
 
 // Official release workflows set this telemetry channel; other builds report dev.
 // Unlike __T3CODE_BUILD_CHANNEL__, this is not the sign-in page's latest/nightly channel.
@@ -113,6 +117,7 @@ export class ServerConfig extends Context.Service<
     readonly resourceMonitorPath?: string | undefined;
     readonly fleetCheckpoint?: FleetCheckpointConfiguration | undefined;
     readonly workspaceLifecycle?: WorkspaceLifecycleConfiguration | undefined;
+    readonly serverParallelism: ServerParallelismConfig;
     readonly autoBootstrapProjectFromCwd: boolean;
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
@@ -125,7 +130,15 @@ export class ServerConfig extends Context.Service<
   ) => layerTest(cwd, baseDirOrPrefix);
 }
 
-export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
+// Standalone CLI clients construct configuration without starting server pools.
+export const make = (
+  config: Omit<ServerConfig["Service"], "serverParallelism"> &
+    Partial<Pick<ServerConfig["Service"], "serverParallelism">>,
+) =>
+  ServerConfig.of({
+    ...config,
+    serverParallelism: config.serverParallelism ?? resolveServerParallelismProfile(undefined),
+  });
 
 export const otlpResource = (
   config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,
@@ -311,6 +324,7 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   yield* ensureServerDirectories(derivedPaths).pipe(Effect.orDie);
 
   return ServerConfig.of({
+    serverParallelism: resolveServerParallelismProfile(undefined),
     logLevel: "Error",
     traceMinLevel: "Info",
     traceTimingEnabled: true,

@@ -1,0 +1,26 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-writer-retirement",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/providerRetirement/RetirementLedger.ts",
+    "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
+    "apps/server/src/jones/provider/codex/CodexRetirement.ts",
+    "apps/server/src/jones/provider/codex/CodexRetirement.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/RetirementLedger.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexRetirement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
+    }
+  ]
+}

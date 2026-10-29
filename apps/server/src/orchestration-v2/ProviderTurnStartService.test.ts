@@ -335,6 +335,7 @@ function makeLocalCommandHarness(input: {
   };
   readonly logoutFailure?: string;
   readonly openFailure?: unknown;
+  readonly retirementFailure?: unknown;
   readonly ensureThreadFailure?: unknown;
   readonly historyReadFailureAfterFallback?: unknown;
   readonly unknownResumeBinding?: boolean;
@@ -534,7 +535,16 @@ function makeLocalCommandHarness(input: {
         createdAt: now,
       },
     ],
-    providerSessions: [],
+    providerSessions:
+      "retirementFailure" in input
+        ? [
+            {
+              id: providerSessionId,
+              driver: providerThread.driver,
+              providerInstanceId: newInstanceId,
+            } as OrchestrationV2ThreadProjection["providerSessions"][number],
+          ]
+        : [],
     providerTurns: [],
     contextHandoffs:
       input.effortProof?.duringHandoff === undefined
@@ -877,7 +887,7 @@ function makeLocalCommandHarness(input: {
             instanceChanged: false,
             modelChanged: false,
             targetProviderThreadId: null,
-            releaseProviderSessionIds: [],
+            releaseProviderSessionIds: "retirementFailure" in input ? [providerSessionId] : [],
             transition: { type: "reuse" },
           }),
       }),
@@ -933,6 +943,16 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
           open,
+          detach: ({ providerSessionId, requireWriterRetirement }) => {
+            expect(requireWriterRetirement).toBe(true);
+            return Effect.fail(
+              new ProviderSessionManager.ProviderSessionReleaseError({
+                providerSessionId,
+                reason: "manual_shutdown",
+                cause: input.retirementFailure,
+              }),
+            );
+          },
           get: () =>
             Effect.succeed(
               input.liveKeepWarmSession
@@ -2040,4 +2060,23 @@ effectIt.effect(
       expect(harness.open.mock.calls[0]?.[0].modelSelection.options).toBeUndefined();
       expect(harness.projection().runs.at(-1)?.modelSelection.options).toBeUndefined();
     }),
+);
+
+effectIt.effect("terminalizes an unresolved writer retirement before opening its replacement", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      retirementFailure: new Error("Previous writer is still alive."),
+    });
+    yield* harness.start;
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    const projection = harness.projection();
+    expect(projection.runs.at(-1)).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.attempts[0]).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.nodes[0]).toMatchObject({ status: "failed", startedAt: null });
+    expect(projection.turnItems).toMatchObject([
+      { type: "error", title: "Previous provider writer could not retire", status: "failed" },
+    ]);
+  }),
 );

@@ -87,6 +87,9 @@ jobs:
       - name: Check startup qualification fixtures
         run: node --test --test-concurrency=1 scripts/jones/updates/native-startup-fixture.node-test.mjs scripts/jones/updates/native-fixture-support.node-test.mjs
 
+      - name: Check packaged recovery harness controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/packaged-recovery-fixture.node-test.mjs scripts/jones/updates/packaged-recovery-launcher.node-test.mjs scripts/jones/updates/packaged-recovery-preload.node-test.mjs
+
       - name: Qualify Chromium-mode native startup refusal
         run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
 

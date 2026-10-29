@@ -5,6 +5,7 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import { vi } from "vite-plus/test";
 
+import * as NativeSearchRuntime from "./nativeSearchRuntime.ts";
 import * as WorkspaceSearchIndex from "../../workspace/WorkspaceSearchIndex.ts";
 
 const pendingImmediates = new Set<NodeJS.Immediate>();
@@ -65,7 +66,7 @@ function makeIndex(grep: FileFinder["grep"]) {
     grep,
   } as unknown as FileFinder;
   vi.spyOn(FileFinder, "create").mockReturnValueOnce({ ok: true, value: finder });
-  return { index: WorkspaceSearchIndex.make("/workspace/project", "content"), destroy };
+  return { index: NativeSearchRuntime.make("/workspace/project", "content"), destroy };
 }
 
 it.effect(

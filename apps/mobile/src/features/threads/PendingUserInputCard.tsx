@@ -344,20 +344,6 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               ) : null}
               {notes ? (
                 <>
-                  {!question.multiSelect && draft?.selectedOptionValues?.[0] ? (
-                    <Button
-                      label="Clear choice"
-                      tone="text"
-                      disabled={responseDisabled}
-                      onPress={() =>
-                        props.onSelectOption(
-                          props.pendingUserInput.requestId,
-                          question,
-                          draft.selectedOptionValues![0]!,
-                        )
-                      }
-                    />
-                  ) : null}
                   <Text numberOfLines={3} className="font-sans text-xs text-foreground-muted">
                     Sends:{" "}
                     {resolvePendingUserInputAnswer(question, draft, { notes }) ??
