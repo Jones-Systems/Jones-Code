@@ -1,5 +1,7 @@
 import {
   OrchestratorMcpFailure,
+  ProjectId,
+  ProviderInstanceId,
   RunId,
   ThreadId,
   TurnItemId,
@@ -36,12 +38,43 @@ const item = (
 const page = (
   items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>,
   nextPosition: number | null = null,
-) =>
-  ({
-    items,
-    nextPosition,
-    hasMore: nextPosition !== null,
-  }) as OrchestratorMcpThreadReadResult;
+  envelopeThreadId = threadId,
+): OrchestratorMcpThreadReadResult => ({
+  thread: {
+    threadId: envelopeThreadId,
+    projectId: ProjectId.make("remote-project"),
+    title: "Remote task",
+    createdBy: "user",
+    creationSource: "web",
+    status: "completed",
+    latestRunId: runId,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    model: "synthetic-model",
+    runtimeMode: "auto",
+    interactionMode: "default",
+    linkedPullRequest: null,
+    titleRegeneration: null,
+    branch: null,
+    worktreePath: null,
+    parentThreadId: null,
+    relationshipToParent: null,
+    runCount: 1,
+    itemCount: items.length,
+    pendingRequestCount: 0,
+    archived: false,
+    settled: false,
+    settledAt: null,
+    snoozed: false,
+    snoozedUntil: null,
+    createdAt: "2026-10-22T00:00:00.000Z",
+    updatedAt: "2026-10-22T00:00:00.000Z",
+  },
+  recentRuns: [],
+  items,
+  nextPosition,
+  hasMore: nextPosition !== null,
+});
 const readPages = (pages: ReadonlyArray<OrchestratorMcpThreadReadResult>) => {
   let index = 0;
   return () =>
@@ -54,6 +87,47 @@ const readPages = (pages: ReadonlyArray<OrchestratorMcpThreadReadResult>) => {
           }),
         );
 };
+
+it.effect.each([
+  { name: "first empty page", pages: [page([], null, ThreadId.make("other-thread"))] },
+  {
+    name: "later timeline page",
+    pages: [
+      page([item({ textTruncated: false })], 0),
+      page([], null, ThreadId.make("other-thread")),
+    ],
+  },
+  {
+    name: "text continuation",
+    pages: [
+      page([item()]),
+      page([item({ text: "suffix", textTruncated: false })], null, ThreadId.make("other-thread")),
+    ],
+  },
+])("rejects a wrong-thread envelope on the $name", ({ pages }) =>
+  Effect.gen(function* () {
+    const result = yield* lastReply(readPages(pages), threadId, runId).pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+    if (result._tag === "Failure") expect(result.failure.code).toBe("orchestration_error");
+  }),
+);
+
+it.effect("accepts inherited source items inside the requested thread envelope", () =>
+  Effect.gen(function* () {
+    const sourceThreadId = ThreadId.make("ancestor-thread");
+    const result = yield* lastReply(
+      readPages([
+        page([item({ visibility: "inherited", sourceThreadId })]),
+        page([
+          item({ visibility: "inherited", sourceThreadId, text: "suffix", textTruncated: false }),
+        ]),
+      ]),
+      threadId,
+      runId,
+    );
+    expect(result).toBe("prefixsuffix");
+  }),
+);
 
 it.effect.each([
   { name: "missing continuation offset", pages: [page([item({ nextTextOffset: undefined })])] },
