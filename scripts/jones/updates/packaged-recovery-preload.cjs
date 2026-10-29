@@ -498,29 +498,34 @@ function installObserver(filename) {
     const target = path.join(directory, name + ".json");
     const bytes = JSON.stringify(value) + "\n";
     ensure(Buffer.byteLength(bytes) <= 2048, "observer projection exceeded bound");
-    let fd;
+    const temporary = target + ".writing";
+    const fd = fs.openSync(
+      temporary,
+      fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW,
+      0o600,
+    );
+    const owned = fs.fstatSync(fd);
     try {
-      fd = fs.openSync(
-        target,
-        fs.constants.O_WRONLY |
-          fs.constants.O_CREAT |
-          fs.constants.O_EXCL |
-          fs.constants.O_NOFOLLOW,
-        0o600,
-      );
+      fs.writeFileSync(fd, bytes);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.linkSync(temporary, target);
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       ensure(
         JSON.stringify(privateJson(target)) === JSON.stringify(value),
         "observer receipt collision",
       );
-      return;
-    }
-    try {
-      fs.writeFileSync(fd, bytes);
-      fs.fsyncSync(fd);
     } finally {
-      fs.closeSync(fd);
+      const retained = fs.lstatSync(temporary);
+      ensure(
+        retained.dev === owned.dev && retained.ino === owned.ino,
+        "observer temporary identity differs",
+      );
+      fs.unlinkSync(temporary);
     }
     const parent = fs.openSync(
       directory,

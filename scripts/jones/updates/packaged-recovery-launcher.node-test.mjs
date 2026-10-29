@@ -15,6 +15,7 @@ import {
   settlementRestartPhases,
   createPackagedRecoveryHttpClient,
   preparePackagedReconciliationObservation,
+  exercisePackagedLegacyReconciliation,
 } from "./packaged-recovery-launcher.mjs";
 
 NodeTest.test(
@@ -59,14 +60,111 @@ NodeTest.test(
       const load=require("node:module").createRequire(process.execPath);
       (async()=>{
         const home=process.env.T3CODE_HOME;
+        if(process.argv.includes("serve")){
+          const http=require("node:http");
+          const context=JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+          const pending=new Map();
+          process.on("message",message=>{
+            if(message.type==="update-reconciled"){
+              const reply=pending.get(message.requestId);
+              if(reply){pending.delete(message.requestId);reply.resolve(message)}
+            }
+          });
+          const snapshot=async()=>({
+            source:"jones-actions",channel:"jones-main",phase:"blocked",
+            environmentId:await fs.readFile(path.join(home,"userdata","environment-id"),"utf8"),
+            currentVersion:context.childVersion,capability:{check:true,download:true,install:true},
+          });
+          const server=http.createServer(async(request,response)=>{
+            response.setHeader("content-type","application/json");
+            if(request.headers.authorization!=="Bearer synthetic-legacy-fixture-token"){
+              response.writeHead(401);response.end("{}");return
+            }
+            try{
+              if(request.method==="POST" && request.url==="/api/jones-updates/reconcile"){
+                const chunks=[];let size=0;
+                for await(const chunk of request){size+=chunk.length;if(size>4096)throw new Error("fixture input bound");chunks.push(chunk)}
+                const body=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                await new Promise((resolve,reject)=>{
+                  pending.set(body.requestId,{resolve,reject});
+                  process.send({type:"reconcile-failed-update",operationId:body.operationId,requestId:body.requestId},error=>{if(error)reject(error)});
+                });
+              }else if(request.method!=="GET" || request.url!=="/api/jones-updates"){
+                response.writeHead(404);response.end("{}");return
+              }
+              response.end(JSON.stringify(await snapshot()));
+            }catch(error){response.writeHead(500);response.end("{}");console.error(error.message)}
+          });
+          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve)});
+          const runtime=path.join(home,"userdata","server-runtime.json");
+          const port=server.address().port;
+          await fs.writeFile(runtime+".synthetic.tmp",JSON.stringify({
+            version:1,pid:process.pid,host:"127.0.0.1",port,origin:"http://127.0.0.1:"+port,
+            startedAt:new Date().toISOString(),serviceManaged:true,
+          }),{mode:0o600});
+          await fs.rename(runtime+".synthetic.tmp",runtime);
+          process.once("SIGTERM",()=>server.close(()=>{if(process.connected)process.disconnect()}));
+          return;
+        }
+
         const statePath=path.join(home,"runtime","service-state.json");
         let state;
         try{
           state=JSON.parse(await fs.readFile(statePath,"utf8"));
           if(state.protocol!==4 || !state.update) throw new Error("Synthetic launcher refuses invalid service state.");
         }catch(error){console.error(error.message);process.exitCode=1;return}
-        const {writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
+        const {writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
         const {removeQualifiedRecoveryPayload}=load(${JSON.stringify(NodeURL.fileURLToPath(backup))});
+
+        if(state.update.status==="failed"){
+          const qualified=state.update.qualified,id=state.update.id;
+          const active=path.join(home,"runtime","versions",state.activeVersion,"t3");
+          const child=spawn(active,["serve"],{
+            env:{...process.env,T3CODE_HOME:home,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
+              protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",updateSettlementProtocol:1,
+            })},stdio:["inherit","inherit","inherit","ipc"],
+          });
+          let queue=Promise.resolve();
+          child.on("message",message=>{
+            if(message.type!=="reconcile-failed-update")return;
+            queue=queue.then(async()=>{
+              let existing=await readUpdateOperationSettlement(home,message.operationId);
+              let result="already-settled";
+              if(!existing){
+                const evaluated=await evaluateLegacyUpdateSettlement({
+                  baseDir:home,operationId:message.operationId,current:state.update,
+                  active:{activeVersion:state.activeVersion,activeSourceSha:qualified.binding.activeSourceSha},
+                });
+                if(evaluated.result!=="settle")throw new Error("Synthetic legacy evaluation refused: "+evaluated.reason);
+                const nativePending={...state.update,status:"pending",phase:"accepted",dbPath:qualified.binding.dbPath};
+                const digests=await writeFailedUpdateOperation(home,nativePending);
+                await removeQualifiedRecoveryPayload(home,id,qualified.binding.dbPath,{transactionId:id,qualified},"failed-before-trial");
+                const publication=await publishUpdateOperationSettlement(home,{
+                  schema:1,operationId:id,status:"failed",settlement:"no-effect",basis:"legacy-reconciled",...digests,
+                  evidence:{phaseAtFailure:"accepted",nativeReason:"launcher-restarted",candidateStarted:false,
+                    activeVersion:state.activeVersion,activeSourceSha:qualified.binding.activeSourceSha,
+                    recoveryPayload:"removed",restorePending:false,cause:null,writerLauncherVersion:"1.0.0",
+                    recordedAt:new Date().toISOString()},
+                });
+                result=publication.result;
+              }else{
+                await publishUpdateOperationSettlement(home,existing);
+              }
+              await new Promise((resolve,reject)=>child.send({
+                type:"update-reconciled",operationId:message.operationId,requestId:message.requestId,result,
+              },error=>error?reject(error):resolve()));
+            }).catch(error=>{console.error(error.message);child.kill("SIGTERM")});
+          });
+          process.once("SIGTERM",()=>{if(child.exitCode===null && child.signalCode===null)child.kill("SIGTERM")});
+          child.once("close",()=>{process.exitCode=0});
+          child.once("error",error=>{console.error(error.message);process.exitCode=1});
+          const capability=path.join(home,"runtime","jones-launcher-capability.json");
+          await fs.writeFile(capability+".synthetic.tmp",JSON.stringify({
+            launcherPid:process.pid,childPid:child.pid,updateSettlementProtocol:1,
+          }),{mode:0o600});
+          await fs.rename(capability+".synthetic.tmp",capability);
+          return;
+        }
         const update=state.update, qualified=update.qualified, id=update.id;
         const digests=await writeFailedUpdateOperation(home,update);
         await removeQualifiedRecoveryPayload(home,id,qualified.binding.dbPath,
@@ -530,6 +628,60 @@ NodeTest.test(
           await NodeAssert.rejects(NodeFSP.lstat(caseRoot), { code: "ENOENT" });
         },
       );
+
+      for (const archivedOutcome of [false, true]) {
+        await t.test(
+          "runs the real HTTP/IPC transport control with archivedOutcome=" + archivedOutcome,
+          async () => {
+            const caseRoot = NodePath.join(
+              parent,
+              "jones-packaged-recovery-legacy-" + archivedOutcome,
+            );
+            await NodeFSP.mkdir(caseRoot, { mode: 0o700 });
+            const prepared = await seedPackagedRecoveryFixture({
+              root: caseRoot,
+              active: { payloadDirectory, receipt: receipt(true) },
+              candidate: { payloadDirectory, receipt: receipt(false) },
+              operationId: "12345678-1234-4234-8234-123456789abc",
+              kind: "legacy-failed",
+              archivedOutcome,
+            });
+            const input = {
+              prepared,
+              requestIds: [
+                "22345678-1234-4234-8234-123456789abc",
+                "32345678-1234-4234-8234-123456789abc",
+              ],
+              token: "synthetic-legacy-fixture-token",
+            };
+            await NodeAssert.rejects(
+              exercisePackagedLegacyReconciliation({ ...input, token: "unsafe\nbearer" }),
+              /explicit in-memory bearer/,
+            );
+            const fixedIds = [...input.requestIds];
+            const execution = exercisePackagedLegacyReconciliation(input);
+            input.requestIds[0] = "42345678-1234-4234-8234-123456789abc";
+            const result = await execution;
+            NodeAssert.deepEqual(
+              result.observation.replies.map((reply) => reply.requestId),
+              fixedIds,
+            );
+            NodeAssert.equal(result.assertionsPassed, true);
+            NodeAssert.equal(result.packagedRecoveryMatrixPassed, false);
+            NodeAssert.equal(result.externalDescendantSettlementRequired, true);
+            NodeAssert.deepEqual(
+              result.observation.replies.map((reply) => reply.result),
+              ["settled", "already-settled"],
+            );
+            NodeAssert.equal(result.settlement.basis, "legacy-reconciled");
+            NodeAssert.equal(result.state.update.id, prepared.operationId);
+            NodeAssert.equal(result.state.update.status, "failed");
+            NodeAssert.ok(!JSON.stringify(result).includes(input.token));
+            await NodeFSP.rm(caseRoot, { recursive: true });
+            await NodeAssert.rejects(NodeFSP.lstat(caseRoot), { code: "ENOENT" });
+          },
+        );
+      }
 
       const refused = NodePath.join(parent, "jones-packaged-recovery-wrong-digest");
       await NodeFSP.mkdir(refused, { mode: 0o700 });
