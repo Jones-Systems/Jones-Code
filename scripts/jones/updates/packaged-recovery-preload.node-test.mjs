@@ -373,3 +373,144 @@ test("unlink-after leaves a different pinned directory outside the fault", () =>
     { method: "unlink-after", target: "runtime/db-backup/" + operationId + "/database" },
   );
 });
+
+const observationIds = [
+  "22345678-1234-4234-8234-123456789abc",
+  "32345678-1234-4234-8234-123456789abc",
+];
+function observerPlan(f, patch = {}) {
+  const plan = {
+    protocol: 1,
+    fixtureId: f.plan.fixtureId,
+    executable,
+    identity,
+    operationId,
+    requestIds: observationIds,
+    childExecutable: executable,
+    childIdentity: identity,
+    childVersion: "1.0.0",
+    ...patch,
+  };
+  NodeFS.writeFileSync(NodePath.join(f.root, "observer-plan.json"), JSON.stringify(plan), {
+    mode: 0o600,
+  });
+  return {
+    JONES_PACKAGED_RECOVERY_FIXTURE: undefined,
+    JONES_PACKAGED_RECOVERY_OBSERVER: NodePath.join(f.root, "observer-plan.json"),
+  };
+}
+
+test("observes the real captured child IPC pair and callback without recording unrelated data", () => {
+  fixture((f) => {
+    const extra = observerPlan(f);
+    NodeFS.writeFileSync(
+      NodePath.join(f.root, "serve"),
+      `
+      if (process.env.JONES_PACKAGED_RECOVERY_OBSERVER !== undefined) throw Error("observer inherited");
+      const operationId=${JSON.stringify(operationId)}, ids=${JSON.stringify(observationIds)};
+      process.send({type:"unrelated",secret:"fixture-secret-must-not-be-recorded"});
+      process.send({type:"reconcile-failed-update",operationId,requestId:ids[0]});
+      process.on("message",m=>{
+        if(m.type!=="update-reconciled")throw Error("unexpected reply");
+        if(m.requestId===ids[0]&&m.result==="settled")
+          process.send({type:"reconcile-failed-update",operationId,requestId:ids[1]});
+        else if(m.requestId===ids[1]&&m.result==="already-settled")process.disconnect();
+        else throw Error("wrong reply");
+      });`,
+      { mode: 0o600 },
+    );
+    const source = `
+      import {spawn} from "node:child_process"; import {once} from "node:events";
+      const ids=${JSON.stringify(observationIds)}, operationId=${JSON.stringify(operationId)};
+      const c=spawn(process.execPath,["serve"],{env:{...process.env,
+        NODE_OPTIONS:${JSON.stringify("--require " + preload)},
+        T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({protocol:4,childVersion:"1.0.0"})},
+        stdio:["inherit","inherit","inherit","ipc"]});
+      let callbacks=0;
+      c.on("message",m=>{if(m.type==="reconcile-failed-update")
+        c.send({type:"update-reconciled",operationId,requestId:m.requestId,
+          result:m.requestId===ids[0]?"settled":"already-settled"},error=>{
+            if(error)throw error;callbacks++;
+          });
+      });
+      const [code,signal]=await once(c,"close");
+      if(code!==0||signal!==null||callbacks!==2)throw Error("child/callback did not settle");`;
+    passed(run(f, source, extra));
+    const directory = NodePath.join(f.root, "ipc-observations");
+    const names = NodeFS.readdirSync(directory).sort();
+    NodeAssert.deepEqual(
+      names,
+      [
+        "ready.json",
+        ...observationIds.flatMap((id) => [id + ".request.json", id + ".reply.json"]),
+      ].sort(),
+    );
+    for (const [i, id] of observationIds.entries()) {
+      const request = JSON.parse(
+        NodeFS.readFileSync(NodePath.join(directory, id + ".request.json")),
+      );
+      const reply = JSON.parse(NodeFS.readFileSync(NodePath.join(directory, id + ".reply.json")));
+      NodeAssert.equal(request.phase, "request");
+      NodeAssert.equal(reply.result, i === 0 ? "settled" : "already-settled");
+      NodeAssert.equal(reply.sendCallbackCompleted, true);
+      NodeAssert.equal(reply.childPid, request.childPid);
+      NodeAssert.notEqual(reply.childPid, reply.launcherPid);
+      NodeAssert.equal(reply.operationId, operationId);
+    }
+    NodeAssert.ok(
+      names.every(
+        (name) =>
+          !NodeFS.readFileSync(NodePath.join(directory, name), "utf8").includes("fixture-secret"),
+      ),
+    );
+    const before = names.map((name) => NodeFS.readFileSync(NodePath.join(directory, name)));
+    const repeat = run(f, source, extra);
+    NodeAssert.notEqual(repeat.status, 0);
+    NodeAssert.deepEqual(
+      names.map((name) => NodeFS.readFileSync(NodePath.join(directory, name))),
+      before,
+    );
+  });
+});
+
+test("refuses invalid observer bindings before entry or child execution", () => {
+  for (const patch of [
+    { requestIds: [observationIds[0], observationIds[0]] },
+    { operationId: "wrong" },
+    { identity: { ...identity, ino: "0" } },
+    { childIdentity: { ...identity, ino: "0" } },
+    { fixtureId: "0".repeat(32) },
+    { extra: true },
+  ])
+    fixture((f) => {
+      const env = observerPlan(f, patch);
+      const marker = NodePath.join(f.root, "entry-ran");
+      const result = run(
+        f,
+        'import {writeFileSync} from "node:fs";writeFileSync(' +
+          JSON.stringify(marker) +
+          ',"bad");',
+        env,
+      );
+      NodeAssert.notEqual(result.status, 0);
+      NodeAssert.equal(NodeFS.existsSync(marker), false);
+    });
+});
+
+test("refuses a matching launcher context with different child arguments before spawning", () => {
+  fixture((f) => {
+    const env = observerPlan(f);
+    const result = run(
+      f,
+      `import {spawn} from "node:child_process";
+      spawn(process.execPath,["--version"],{env:{...process.env,T3_SERVICE_LAUNCHER_CONTEXT:
+        JSON.stringify({protocol:4,childVersion:"1.0.0"})},stdio:["inherit","inherit","inherit","ipc"]});`,
+      env,
+    );
+    NodeAssert.notEqual(result.status, 0);
+    NodeAssert.match(result.stderr, /observer active child launch differs/);
+    NodeAssert.deepEqual(NodeFS.readdirSync(NodePath.join(f.root, "ipc-observations")), [
+      "ready.json",
+    ]);
+  });
+});

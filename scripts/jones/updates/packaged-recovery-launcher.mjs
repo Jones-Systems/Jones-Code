@@ -674,3 +674,161 @@ export async function createPackagedRecoveryHttpClient({
       }),
   });
 }
+
+export async function preparePackagedReconciliationObservation({ prepared, requestIds, signal }) {
+  signal?.throwIfAborted();
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+  const { root, baseDir, launcher, operationId } = structuredClone(prepared);
+  if (
+    prepared.schema !== "jones.packaged-recovery-fixture/v1" ||
+    !NodePath.isAbsolute(root) ||
+    (await NodeFSP.realpath(root)) !== root ||
+    !NodePath.basename(root).startsWith("jones-packaged-recovery-") ||
+    baseDir !== NodePath.join(root, "home") ||
+    (await NodeFSP.realpath(baseDir)) !== baseDir ||
+    !uuid.test(operationId) ||
+    !Array.isArray(requestIds) ||
+    requestIds.length !== 2 ||
+    !requestIds.every((id) => typeof id === "string" && uuid.test(id)) ||
+    new Set(requestIds).size !== 2
+  )
+    fail("isolated reconciliation fixture and two distinct request IDs required");
+  const allocation = await NodeFSP.lstat(root);
+  if (
+    !allocation.isDirectory() ||
+    allocation.uid !== process.getuid() ||
+    (allocation.mode & 0o077) !== 0 ||
+    allocation.dev !== prepared.allocation.dev ||
+    allocation.ino !== prepared.allocation.ino
+  )
+    fail("reconciliation fixture allocation differs");
+  NodeAssert.deepEqual(
+    (await boundedRecord(NodePath.join(root, "prepared-fixture.json"))).value,
+    prepared,
+  );
+  NodeAssert.deepEqual(
+    (await boundedRecord(NodePath.join(baseDir, "runtime", "service-state.json"))).value,
+    prepared.state,
+  );
+  if (
+    (await NodeFSP.realpath(launcher.executable)) !== launcher.executable ||
+    launcher.executable !== NodePath.join(prepared.inputs.candidate.payloadDirectory, "t3") ||
+    (await digest(launcher.executable)) !== launcher.sha256
+  )
+    fail("observer launcher executable differs");
+  NodeAssert.deepEqual(await executableIdentity(launcher.executable), launcher.identity);
+  NodeAssert.deepEqual((await boundedRecord(NodePath.join(root, "fixture-owner.json"))).value, {
+    protocol: 1,
+    purpose: "jones-packaged-recovery",
+    fixtureId: prepared.fixtureId,
+    executable: launcher.executable,
+    identity: launcher.identity,
+  });
+  const childVersion = prepared.staged.binding.activeVersion;
+  if (childVersion !== prepared.inputs.active.receipt.version)
+    fail("observer child version differs");
+  const childExecutable = NodePath.join(baseDir, "runtime", "versions", childVersion, "t3");
+  if (
+    (await NodeFSP.realpath(childExecutable)) !== childExecutable ||
+    (await digest(childExecutable)) !== prepared.inputs.active.executableSha256
+  )
+    fail("observer active payload differs");
+  const childIdentity = await executableIdentity(childExecutable);
+  const ids = [...requestIds];
+  const fixtureId = prepared.fixtureId;
+  const planPath = NodePath.join(root, "observer-plan.json");
+  const directory = NodePath.join(root, "ipc-observations");
+  try {
+    await NodeFSP.lstat(directory);
+    fail("observer directory is occupied");
+  } catch (cause) {
+    if (cause.code !== "ENOENT") throw cause;
+  }
+  await writePrivate(planPath, {
+    protocol: 1,
+    fixtureId,
+    executable: launcher.executable,
+    identity: launcher.identity,
+    operationId,
+    requestIds: ids,
+    childExecutable,
+    childIdentity,
+    childVersion,
+  });
+  const parent = await NodeFSP.open(root, NodeFS.constants.O_RDONLY | NodeFS.constants.O_DIRECTORY);
+  try {
+    await parent.sync();
+  } finally {
+    await parent.close();
+  }
+  return Object.freeze({
+    environment: Object.freeze({
+      NODE_OPTIONS: "--require " + JSON.stringify(preload),
+      JONES_PACKAGED_RECOVERY_OBSERVER: planPath,
+    }),
+    readPair: async ({ launcherPid, childPid }) => {
+      signal?.throwIfAborted();
+      if (
+        ![launcherPid, childPid].every((pid) => Number.isSafeInteger(pid) && pid > 0) ||
+        launcherPid === childPid
+      )
+        fail("distinct captured observer processes required");
+      const current = await NodeFSP.lstat(root);
+      if (
+        (await NodeFSP.realpath(root)) !== root ||
+        current.dev !== allocation.dev ||
+        current.ino !== allocation.ino ||
+        current.uid !== allocation.uid ||
+        (current.mode & 0o077) !== 0
+      )
+        fail("reconciliation fixture changed");
+      const stat = await NodeFSP.lstat(directory);
+      if (
+        (await NodeFSP.realpath(directory)) !== directory ||
+        !stat.isDirectory() ||
+        stat.uid !== process.getuid() ||
+        (stat.mode & 0o077) !== 0
+      )
+        fail("unsafe observer directory");
+      NodeAssert.deepEqual(
+        (await NodeFSP.readdir(directory)).sort(),
+        ["ready.json", ...ids.flatMap((id) => [id + ".request.json", id + ".reply.json"])].sort(),
+        "incomplete or unexpected observer records",
+      );
+      NodeAssert.deepEqual((await boundedRecord(NodePath.join(directory, "ready.json"))).value, {
+        protocol: 1,
+        fixtureId,
+        operationId,
+        requestIds: ids,
+        launcherPid,
+      });
+      const replies = [];
+      for (const [index, requestId] of ids.entries()) {
+        const common = { protocol: 1, fixtureId, operationId, requestId, launcherPid, childPid };
+        NodeAssert.deepEqual(
+          (await boundedRecord(NodePath.join(directory, requestId + ".request.json"))).value,
+          { ...common, phase: "request" },
+        );
+        const reply = (await boundedRecord(NodePath.join(directory, requestId + ".reply.json")))
+          .value;
+        NodeAssert.deepEqual(reply, {
+          ...common,
+          phase: "reply",
+          result: index === 0 ? "settled" : "already-settled",
+          sendCallbackCompleted: true,
+        });
+        replies.push(reply);
+      }
+      NodeAssert.deepEqual(await executableIdentity(launcher.executable), launcher.identity);
+      NodeAssert.deepEqual(await executableIdentity(childExecutable), childIdentity);
+      return {
+        schema: "jones.packaged-reconciliation-observation/v1",
+        operationId,
+        replies,
+        packagedRecoveryMatrixPassed: false,
+        processIdentityScope: "captured-child-handle-only",
+        externalDescendantSettlementRequired: true,
+      };
+    },
+  });
+}
