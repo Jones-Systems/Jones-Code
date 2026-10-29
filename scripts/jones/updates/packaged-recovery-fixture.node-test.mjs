@@ -7,6 +7,7 @@ import * as NodeTest from "node:test";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { seedPackagedRecoveryFixture, legacyRefusalCases } from "./packaged-recovery-fixture.mjs";
+import { preparePackagedInstallObservation } from "./packaged-recovery-launcher.mjs";
 import {
   qualifiedPayloadDigest,
   verifyStagedQualifiedRuntime,
@@ -530,6 +531,45 @@ NodeTest.test(
       NodeAssert.equal(replay.signal, null);
       NodeAssert.equal(replay.status, 0, replay.stderr);
       NodeAssert.deepEqual(await NodeFSP.readFile(prepared.staged.binding.dbPath), original);
+    });
+  },
+);
+
+NodeTest.test(
+  "stages an idle fixture without pre-seeding acceptance, reservation or backup",
+  linux,
+  async () => {
+    await fixture(async (input) => {
+      const prepared = await seedPackagedRecoveryFixture({
+        ...input,
+        kind: "staged",
+        recoveryPayload: false,
+      });
+      NodeAssert.equal(prepared.state.update, undefined);
+      NodeAssert.equal(
+        await readOperationReservation(prepared.baseDir, input.operationId),
+        undefined,
+      );
+      await NodeAssert.rejects(
+        NodeFSP.lstat(NodePath.join(prepared.baseDir, "runtime", "db-backup", input.operationId)),
+        { code: "ENOENT" },
+      );
+      const verified = await verifyStagedQualifiedRuntime(
+        prepared.baseDir,
+        input.active.receipt.version,
+        prepared.staged.stagedHandle,
+      );
+      NodeAssert.deepEqual(verified, prepared.staged);
+      const observer = await preparePackagedInstallObservation({ prepared });
+      NodeAssert.equal(typeof observer.readAcceptance, "function");
+      const plan = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(input.root, "observer-plan.json")),
+      );
+      NodeAssert.equal(plan.protocol, 2);
+      NodeAssert.equal(plan.binding.stagedHandle, prepared.staged.stagedHandle);
+      await NodeAssert.rejects(observer.readAcceptance({ launcherPid: 100, childPid: 101 }), {
+        code: "ENOENT",
+      });
     });
   },
 );

@@ -514,3 +514,163 @@ test("refuses a matching launcher context with different child arguments before 
     ]);
   });
 });
+
+for (const mismatch of [false, true]) {
+  test(
+    "live acceptance " +
+      (mismatch
+        ? "refuses mismatched durable evidence"
+        : "arms only after captured request and native send callback"),
+    () => {
+      fixture(
+        (f) => {
+          const binding = {
+            baseDir: f.home,
+            dbPath: NodePath.join(f.home, "userdata", "statev2.sqlite"),
+            environmentId: "synthetic-fixture",
+            currentVersion: "1.0.0",
+            expectedInstalledSource: "c".repeat(40),
+            targetSource: "a".repeat(40),
+            stagedHandle: "fixed-staged-handle",
+            targetVersion: "1.0.1",
+          };
+          NodeFS.writeFileSync(f.target, "retained");
+          const statePath = NodePath.join(f.home, "runtime", "service-state.json");
+          NodeFS.writeFileSync(statePath, JSON.stringify({ protocol: 4, activeVersion: "1.0.0" }), {
+            mode: 0o600,
+          });
+          const env = observerPlan(f);
+          const planPath = NodePath.join(f.root, "observer-plan.json");
+          const plan = JSON.parse(NodeFS.readFileSync(planPath));
+          delete plan.requestIds;
+          plan.protocol = 2;
+          plan.binding = binding;
+          NodeFS.writeFileSync(planPath, JSON.stringify(plan), { mode: 0o600 });
+          NodeFS.writeFileSync(
+            NodePath.join(f.root, "serve"),
+            `
+        if(process.env.JONES_PACKAGED_RECOVERY_OBSERVER!==undefined ||
+          process.env.JONES_PACKAGED_RECOVERY_FIXTURE!==undefined)throw Error("fixture activation inherited");
+        process.send({type:"request-update",operationId:${JSON.stringify(operationId)},
+          targetVersion:"1.0.1",dbPath:${JSON.stringify(binding.dbPath)},stagedHandle:"fixed-staged-handle"});
+        process.on("message",message=>{if(message.type==="update-accepted")process.disconnect()});
+      `,
+            { mode: 0o600 },
+          );
+          const source = `
+        import * as fs from "node:fs/promises";
+        import {spawn} from "node:child_process"; import {once} from "node:events";
+        const home=${JSON.stringify(f.home)},statePath=${JSON.stringify(statePath)},target=${JSON.stringify(f.target)};
+        const binding=${JSON.stringify(binding)},id=${JSON.stringify(operationId)};
+        const write=async(file,value)=>{const h=await fs.open(file,"w",0o600);
+          try{await h.writeFile(JSON.stringify(value));await h.sync()}finally{await h.close()}};
+        const c=spawn(process.execPath,["serve"],{env:{...process.env,
+          NODE_OPTIONS:${JSON.stringify("--require " + preload)},
+          T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({protocol:4,childVersion:"1.0.0"})},
+          stdio:["inherit","inherit","inherit","ipc"]});
+        let finished;
+        c.once("message",message=>{
+          finished=(async()=>{
+            if(message.type!=="request-update"||message.operationId!==id)throw Error("request differs");
+            await write(statePath,{protocol:4,activeVersion:"1.0.0",update:{
+              id,status:"pending",phase:"accepted",fromVersion:"1.0.0",targetVersion:"1.0.1",
+              dbPath:binding.dbPath,qualified:{stagedHandle:"fixed-staged-handle"}}});
+            if(await fs.readFile(target,"utf8")!=="retained")throw Error("armed before acceptance");
+            await fs.mkdir(home+"/runtime/jones-update-operations",{mode:0o700});
+            await write(home+"/runtime/jones-update-operations/"+id+".json",
+              {schema:1,operationId:id,binding:{...binding,targetSource:${JSON.stringify(mismatch ? "b".repeat(40) : "a".repeat(40))}}});
+            const dir=await fs.open(home+"/runtime/jones-update-operations","r");
+            try{await dir.sync()}finally{await dir.close()}
+            await new Promise((resolve,reject)=>c.send({type:"update-accepted",updateId:id},error=>error?reject(error):resolve()));
+            try{await fs.readFile(target);throw Error("fault did not arm")}
+            catch(error){if(error.code!=="EIO")throw error}
+          })();
+          finished.catch(error=>{console.error(error);process.exitCode=1;c.kill("SIGTERM")});
+        });
+        const [code,signal]=await once(c,"close");await finished;
+        if(code!==0||signal!==null)throw Error("child not settled");
+      `;
+          const result = run(f, source, {
+            ...env,
+            JONES_PACKAGED_RECOVERY_FIXTURE: NodePath.join(f.root, "fault-plan.json"),
+          });
+          const directory = NodePath.join(f.root, "ipc-observations");
+          if (mismatch) {
+            NodeAssert.notEqual(result.status, 0);
+            NodeAssert.match(result.stderr, /matching durable native evidence/);
+            NodeAssert.equal(
+              NodeFS.existsSync(NodePath.join(directory, operationId + ".accepted.json")),
+              false,
+            );
+            NodeAssert.equal(NodeFS.existsSync(NodePath.join(f.root, "fault-fired.json")), false);
+          } else {
+            passed(result);
+            const receipt = JSON.parse(
+              NodeFS.readFileSync(NodePath.join(directory, operationId + ".accepted.json")),
+            );
+            NodeAssert.equal(receipt.sendCallbackCompleted, true);
+            NodeAssert.equal(receipt.operationId, operationId);
+            NodeAssert.match(receipt.stateSha256, /^[a-f0-9]{64}$/);
+            NodeAssert.equal(
+              receipt.reservationSha256,
+              NodeCrypto.createHash("sha256")
+                .update(
+                  NodeFS.readFileSync(
+                    NodePath.join(
+                      f.home,
+                      "runtime",
+                      "jones-update-operations",
+                      operationId + ".json",
+                    ),
+                  ),
+                )
+                .digest("hex"),
+            );
+            NodeAssert.equal(NodeFS.existsSync(NodePath.join(f.root, "fault-fired.json")), true);
+          }
+          NodeAssert.equal(NodeFS.readFileSync(f.target, "utf8"), "retained");
+        },
+        { arm: "accepted-update" },
+      );
+    },
+  );
+}
+
+test("live acceptance refuses seeded pending state before the entry runs", () => {
+  fixture((f) => {
+    const env = observerPlan(f);
+    const name = NodePath.join(f.root, "observer-plan.json"),
+      plan = JSON.parse(NodeFS.readFileSync(name));
+    delete plan.requestIds;
+    plan.protocol = 2;
+    plan.binding = {
+      baseDir: f.home,
+      dbPath: NodePath.join(f.home, "userdata", "statev2.sqlite"),
+      environmentId: "fixture",
+      currentVersion: "1.0.0",
+      expectedInstalledSource: "c".repeat(40),
+      targetSource: "a".repeat(40),
+      stagedHandle: "fixed-staged-handle",
+      targetVersion: "1.0.1",
+    };
+    NodeFS.writeFileSync(name, JSON.stringify(plan), { mode: 0o600 });
+    NodeFS.writeFileSync(
+      NodePath.join(f.home, "runtime", "service-state.json"),
+      JSON.stringify({
+        protocol: 4,
+        activeVersion: "1.0.0",
+        update: { id: operationId, status: "pending", phase: "accepted" },
+      }),
+      { mode: 0o600 },
+    );
+    const marker = NodePath.join(f.root, "entry-ran");
+    const result = run(
+      f,
+      'import {writeFileSync} from "node:fs";writeFileSync(' + JSON.stringify(marker) + ',"bad")',
+      env,
+    );
+    NodeAssert.notEqual(result.status, 0);
+    NodeAssert.match(result.stderr, /idle native state/);
+    NodeAssert.equal(NodeFS.existsSync(marker), false);
+  });
+});

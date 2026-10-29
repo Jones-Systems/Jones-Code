@@ -122,10 +122,11 @@ export async function seedPackagedRecoveryFixture({
   if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(operationId))
     refuse("operation ID must be a fixed UUID v4");
   if (
-    !["pending", "legacy-failed"].includes(kind) ||
+    !["pending", "legacy-failed", "staged"].includes(kind) ||
     typeof recoveryPayload !== "boolean" ||
     typeof archivedOutcome !== "boolean" ||
     (kind === "pending" && archivedOutcome) ||
+    (kind === "staged" && (recoveryPayload || archivedOutcome)) ||
     (legacyVariant !== undefined &&
       (kind !== "legacy-failed" ||
         !Object.hasOwn(legacyRefusalCases, legacyVariant) ||
@@ -185,7 +186,8 @@ export async function seedPackagedRecoveryFixture({
     options: { eventLoop: "worker" },
   });
   if (staged.receipt.payloadSha256 !== next.receipt.payloadSha256) refuse("staged payload changed");
-  await reserveUpdateOperation(baseDir, operationId, operationBinding(staged));
+  if (kind !== "staged")
+    await reserveUpdateOperation(baseDir, operationId, operationBinding(staged));
   const pending = {
     id: operationId,
     fromVersion: previous.receipt.version,
@@ -241,7 +243,7 @@ export async function seedPackagedRecoveryFixture({
       { operationId },
     );
   }
-  const state = { protocol: 4, activeVersion, update };
+  const state = { protocol: 4, activeVersion, ...(kind === "staged" ? {} : { update }) };
   await privateJson(NodePath.join(baseDir, "runtime", "service-state.json"), state);
   const prepared = {
     schema: "jones.packaged-recovery-fixture/v1",
