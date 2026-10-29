@@ -23,6 +23,16 @@ export function bundleFileSystem(
   return versions.electron === undefined ? NodeFS : (load("original-fs") as typeof NodeFS);
 }
 
+async function removeQualifiedScratch(path: string): Promise<void> {
+  try {
+    await bundleFileSystem().promises.rm(path, { recursive: true, force: true });
+  } catch (cause) {
+    // Only scratch remains here; cleanup must not replace a primary error or invalidate
+    // a payload and receipt already published by atomic rename.
+    console.warn("Qualified runtime scratch cleanup failed; outcome preserved.", { path, cause });
+  }
+}
+
 export const QUALIFIED_UPDATES_PROTOCOL = 1 as const;
 // Historical enrollment receipts need a distinct stage format that old launchers refuse.
 export const RECOVERED_QUALIFIED_STAGE_PROTOCOL = 2 as const;
@@ -864,7 +874,7 @@ export async function stageQualifiedRuntime(input: {
           await directory.close();
         }
       } finally {
-        await NodeFSP.rm(ownedScratch, { recursive: true, force: true });
+        await removeQualifiedScratch(ownedScratch);
       }
     }
     const staged: StagedQualifiedRuntime = {
@@ -1055,7 +1065,7 @@ export async function enrollQualifiedRuntime(input: {
       await directory.close();
     }
   } finally {
-    await NodeFSP.rm(owner, { recursive: true, force: true });
+    await removeQualifiedScratch(owner);
   }
   return receipt;
 }
