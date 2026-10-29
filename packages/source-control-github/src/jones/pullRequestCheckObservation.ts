@@ -47,7 +47,7 @@ const WorkflowPage = Schema.Struct({
   workflow_runs: Schema.Array(Workflow),
 });
 
-export class CheckObservationChanged extends Data.TaggedError("CheckObservationChanged")<{
+class CheckObservationChanged extends Data.TaggedError("CheckObservationChanged")<{
   readonly message: string;
 }> {}
 

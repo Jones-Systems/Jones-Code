@@ -1,6 +1,6 @@
 import type { PullRequestCheck, PullRequestCheckObservation } from "@t3tools/contracts";
 
-export const failedCheck = (check: PullRequestCheck) =>
+const failedCheck = (check: PullRequestCheck) =>
   check.status === "failure" || check.status === "cancelled" || check.status === "action-required";
 
 export function observationInFlight(observation: PullRequestCheckObservation | undefined): boolean {
