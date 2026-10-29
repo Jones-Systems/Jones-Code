@@ -417,6 +417,7 @@ describe("real monitor renderer interactions", () => {
     expect(sends[0]).toMatchObject({ type: "send", threadId: "done", text: "composed reply" });
   });
   it("submits standard single-choice input rows immediately after the final answer", async () => {
+    using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
     const { store, intents, rows, container } = setup();
     await using screen = await render(<MonitorUI store={store} />, { container, router: false });
     await expand(container);
@@ -447,14 +448,15 @@ describe("real monitor renderer interactions", () => {
         },
       });
     });
+    await screen.getByRole("textbox", { name: "Custom answer: one" }).fill("Verified workspace B");
     await screen.getByRole("radio", { name: "Done one" }).click();
     expect(intents.filter((intent) => intent.type === "respondToUserInput")).toHaveLength(0);
     await screen.getByRole("radio", { name: "Done two" }).click();
     expect(intents.filter((intent) => intent.type === "respondToUserInput")).toMatchObject([
       {
         requestId: "quick-input",
-        answers: { one: "one", two: "two" },
-        draftRevision: 2,
+        answers: { one: "one\nNote: Verified workspace B", two: "two" },
+        draftRevision: 3,
       },
     ]);
   });

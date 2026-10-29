@@ -10,7 +10,7 @@ import {
   type UserInputQuestion,
 } from "@t3tools/contracts";
 import { useLayoutEffect } from "react";
-import { beforeEach, expect, it, vi } from "vite-plus/test";
+import { expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { ComposerPendingUserInputPanel } from "../../components/chat/ComposerPendingUserInputPanel";
@@ -134,15 +134,17 @@ async function click(label: string) {
   expect(button, label).toBeDefined();
   await act(() => button!.click());
 }
-beforeEach(() => {
+function setup(): Disposable {
   fixture++;
   respond.mockReset();
   respond.mockResolvedValue(AsyncResult.success(undefined));
-});
+  return { [Symbol.dispose]: () => respond.mockReset() };
+}
 
 it.each(["message", "live"] as const)(
   "submits a %s single choice on click without Send",
   async (capability) => {
+    using _fixture = setup();
     await using _screen = await render(
       <Questions questions={[question("action")]} capability={capability} />,
     );
@@ -157,6 +159,7 @@ it.each(["message", "live"] as const)(
 );
 
 it("includes typed notes, fences duplicate clicks and retries the same choice after failure", async () => {
+  using _fixture = setup();
   let finish!: (value: unknown) => void;
   respond.mockImplementation(
     () =>
@@ -187,6 +190,7 @@ it("includes typed notes, fences duplicate clicks and retries the same choice af
 });
 
 it("advances choices and sends the complete batch even when the last missing answer is earlier", async () => {
+  using _fixture = setup();
   await using _screen = await render(
     <Questions questions={[question("first"), question("second"), question("third")]} />,
   );
@@ -208,6 +212,7 @@ it("advances choices and sends the complete batch even when the last missing ans
 });
 
 it("keeps multi-select editable until explicit submission", async () => {
+  using _fixture = setup();
   await using _screen = await render(<Questions questions={[question("many", true)]} />);
   await click("Done");
   await click("Blocked");
@@ -221,6 +226,7 @@ it("keeps multi-select editable until explicit submission", async () => {
 });
 
 it("blocks unfinished attachment preparation and never submits merely because it finishes", async () => {
+  using _fixture = setup();
   await using _screen = await render(<Questions questions={[question("action")]} />);
   const key = questionAttachmentDraftId(
     EnvironmentId.make("quick-response-env"),
@@ -239,6 +245,7 @@ it("blocks unfinished attachment preparation and never submits merely because it
 });
 
 it("uses digit shortcuts to advance and send, while ignoring held and composing keys", async () => {
+  using _fixture = setup();
   await using _screen = await render(
     <Questions questions={[question("first"), question("second")]} />,
   );
