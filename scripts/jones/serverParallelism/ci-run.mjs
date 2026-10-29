@@ -14,7 +14,10 @@ if (!NodePath.isAbsolute(output ?? "") || !NodePath.isAbsolute(installedRoot ?? 
   throw new Error("ci-run.mjs <absolute reports directory> <absolute extracted archive directory>");
 await NodeFSP.mkdir(output, { recursive: true, mode: 0o700 });
 const root = NodePath.resolve(import.meta.dirname, "../../.."),
-  source = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+  source = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD"], {
+    cwd: root,
+    encoding: "utf8",
+  }).trim();
 const sourceTree = NodeChildProcess.execFileSync("git", ["rev-parse", "HEAD^{tree}"], {
   cwd: root,
   encoding: "utf8",
@@ -92,7 +95,10 @@ async function run(name, file, args, extra = {}, timeoutMs = 12 * 60_000) {
     outcome: result.code === 0 ? "passed" : "failed",
     log,
   });
-  await NodeFSP.writeFile(NodePath.join(output, "commands.json"), JSON.stringify(results, null, 2) + "\n");
+  await NodeFSP.writeFile(
+    NodePath.join(output, "commands.json"),
+    JSON.stringify(results, null, 2) + "\n",
+  );
   return result.code === 0;
 }
 const node = (name, args, extra) => run(name, process.execPath, args, extra);
@@ -299,7 +305,9 @@ try {
       const blockCommand = results.at(-1);
       let retirementProved = false;
       try {
-        const receipt = JSON.parse(await NodeFSP.readFile(NodePath.join(blockOutput, "receipt.json"), "utf8"));
+        const receipt = JSON.parse(
+          await NodeFSP.readFile(NodePath.join(blockOutput, "receipt.json"), "utf8"),
+        );
         const { verifyNativeBlockArtifacts, verifyNativeBlockRetirement } =
           await import("./native-block-verify.mjs");
         receipt.artifactsVerified = await verifyNativeBlockArtifacts(receipt, binding, blockOutput);

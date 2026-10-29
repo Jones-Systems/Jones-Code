@@ -94,13 +94,17 @@ async function boundedExit(exited) {
   }
 }
 async function journalBinding(directory, candidate, count) {
-  const claim = JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "journal", "pool.claim"), "utf8"));
+  const claim = JSON.parse(
+    await NodeFSP.readFile(NodePath.join(directory, "journal", "pool.claim"), "utf8"),
+  );
   if (claim.authorityId !== candidate.subject.authorityId || claim.count !== count)
     throw new Error("Changed journal authority");
   const pids = [],
     slots = [];
   for (let i = 0; i < count; i++) {
-    const record = JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "journal", `slot-${i}.json`), "utf8"));
+    const record = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(directory, "journal", `slot-${i}.json`), "utf8"),
+    );
     if (
       record.state !== "registered" ||
       record.authorityId !== claim.authorityId ||
@@ -130,7 +134,8 @@ async function journalBinding(directory, candidate, count) {
 }
 async function absence(pids) {
   const expires = performance.now() + 5000;
-  while (!pids.every(proveAbsent) && performance.now() < expires) await NodeTimersPromises.setTimeout(20);
+  while (!pids.every(proveAbsent) && performance.now() < expires)
+    await NodeTimersPromises.setTimeout(20);
   return pids.length > 0 && pids.every(proveAbsent);
 }
 async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
@@ -257,7 +262,10 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
             manifest.runtimeForm === "electron",
           ),
         };
-        const recovered = await GenerationJournal.acquire(NodePath.join(directory, "journal"), count);
+        const recovered = await GenerationJournal.acquire(
+          NodePath.join(directory, "journal"),
+          count,
+        );
         sameJournalRecovered = recovered.claim.authorityId !== candidate.subject.authorityId;
         const replacement = new ComputeSupervisor({
           count,
@@ -336,7 +344,10 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
 }
 
 export async function runNativeBlockCase({ manifestPath, scratch, output, profile }) {
-  if (![manifestPath, scratch, output].every(NodePath.isAbsolute) || !["laptop", "vps"].includes(profile))
+  if (
+    ![manifestPath, scratch, output].every(NodePath.isAbsolute) ||
+    !["laptop", "vps"].includes(profile)
+  )
     throw new Error("Unbound native block case");
   const manifest = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8"));
   const allowed = ["schema", "runtimeForm", "file", "args", "build", "identityResolver"];
@@ -389,9 +400,11 @@ export async function runNativeBlockCase({ manifestPath, scratch, output, profil
         reason: "Negative-control retirement unproved; zero subsequent native admissions",
       };
   const os =
-    HostProcess.Platform.defaultValue() === "linux" && HostProcess.Architecture.defaultValue() === "x64"
+    HostProcess.Platform.defaultValue() === "linux" &&
+    HostProcess.Architecture.defaultValue() === "x64"
       ? "linux-x64"
-      : HostProcess.Platform.defaultValue() === "darwin" && HostProcess.Architecture.defaultValue() === "arm64"
+      : HostProcess.Platform.defaultValue() === "darwin" &&
+          HostProcess.Architecture.defaultValue() === "arm64"
         ? "macos-arm64"
         : "unsupported";
   const subject = killed.candidate?.subject;
@@ -491,13 +504,18 @@ export async function runNativeBlockCase({ manifestPath, scratch, output, profil
     reasons: [negative.reason, killed.reason].filter(Boolean),
     exactProductiveNativePhaseAtKill: "unknown",
   };
-  await NodeFSP.writeFile(NodePath.join(output, "receipt.json"), JSON.stringify(result, null, 2) + "\n", {
-    flag: "wx",
-    mode: 0o600,
-  });
+  await NodeFSP.writeFile(
+    NodePath.join(output, "receipt.json"),
+    JSON.stringify(result, null, 2) + "\n",
+    {
+      flag: "wx",
+      mode: 0o600,
+    },
+  );
   if (proof.cleanupProved) {
     for (const directory of [NodePath.join(scratch, "release"), NodePath.join(scratch, "kill")]) {
-      if ((await NodeFSP.lstat(directory)).isSymbolicLink()) throw new Error("Changed fixture scratch");
+      if ((await NodeFSP.lstat(directory)).isSymbolicLink())
+        throw new Error("Changed fixture scratch");
       await NodeFSP.rm(directory, { recursive: true });
     }
   }

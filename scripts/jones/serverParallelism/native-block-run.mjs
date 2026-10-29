@@ -13,6 +13,8 @@ if (
   throw new Error(
     "native-block-run.mjs <absolute manifest> <absolute evidence directory> <laptop|vps>",
   );
-const scratch = await NodeFSP.realpath(await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-native-block-")));
+const scratch = await NodeFSP.realpath(
+  await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-native-block-")),
+);
 const result = await runNativeBlockCase({ manifestPath, scratch, output, profile });
 if (result.predicate !== true) process.exitCode = 1;

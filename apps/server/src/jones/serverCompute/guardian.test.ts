@@ -10,7 +10,7 @@ const owned: NodeChildProcess.ChildProcess[] = [];
 afterEach(async () => {
   for (const child of owned.splice(0))
     if (child.exitCode === null && child.signalCode === null) {
-      const exited = NodeEvents.once(child, "exit");
+      const exited = NodeEvents.EventEmitter.once(child, "exit");
       child.kill("SIGKILL");
       await exited;
     }
@@ -44,7 +44,7 @@ const start = () => {
 it("observes lifetime EOF independently while the child main thread is synchronously blocked", async () => {
   const { child, pipe, messages } = start();
   expect((await messages.next()).value).toMatchObject({ type: "ready", pid: child.pid });
-  const exited = NodeEvents.once(child, "exit");
+  const exited = NodeEvents.EventEmitter.once(child, "exit");
   pipe.destroy();
   expect((await exited)[1]).toBe("SIGKILL");
 });
@@ -56,7 +56,7 @@ it("arms a hard deadline on the independent guardian and self-kills only its own
   expect((await messages.next()).value?.type).toBe("go");
   await writeControl(pipe, { ...boot, type: "loaded" });
   expect((await messages.next()).value?.type).toBe("loaded");
-  const exited = NodeEvents.once(child, "exit");
+  const exited = NodeEvents.EventEmitter.once(child, "exit");
   // The blocked OS child uses its own real clock; a parent fake clock cannot drive this hard deadline.
   // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- This is an absolute cross-process deadline, not an elapsed-time assertion.
   await writeControl(pipe, { ...boot, type: "arm", requestId: 1, deadline: Date.now() + 100 });
@@ -67,7 +67,7 @@ it("arms a hard deadline on the independent guardian and self-kills only its own
 it("fails closed on a malformed lifetime command without accepting a PID/signal target", async () => {
   const { child, pipe, messages } = start();
   await messages.next();
-  const exited = NodeEvents.once(child, "exit");
+  const exited = NodeEvents.EventEmitter.once(child, "exit");
   await writeControl(pipe, { ...boot, type: "terminate", pid: process.pid, signal: "SIGTERM" });
   expect((await exited)[1]).toBe("SIGKILL");
 });
@@ -84,7 +84,7 @@ it("survives no missing guardian FD route: native work cannot outlive failed gua
     },
   );
   owned.push(child);
-  expect((await NodeEvents.once(child, "exit"))[1]).toBe("SIGKILL");
+  expect((await NodeEvents.EventEmitter.once(child, "exit"))[1]).toBe("SIGKILL");
 });
 
 /** Only the OS pipe, process and clock are synthetic; execute the actual embedded guardian state machine. */

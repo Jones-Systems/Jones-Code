@@ -22,10 +22,14 @@ const targetWorkspace = NodePath.join(directory, "blocked-workspace"),
   barrier = NodePath.join(directory, "barrier");
 await NodeFSP.mkdir(barrier, { mode: 0o700 });
 await NodeFSP.mkdir(targetWorkspace, { mode: 0o700 });
-await NodeFSP.writeFile(NodePath.join(targetWorkspace, "file-native-block.txt"), "useful native block result\n", {
-  flag: "wx",
-  mode: 0o600,
-});
+await NodeFSP.writeFile(
+  NodePath.join(targetWorkspace, "file-native-block.txt"),
+  "useful native block result\n",
+  {
+    flag: "wx",
+    mode: 0o600,
+  },
+);
 const qualifier =
   "--qualification-native-block=" +
   JSON.stringify({
@@ -165,10 +169,14 @@ try {
   for (let i = 0; i < count; i++) {
     const cwd = NodePath.join(directory, `workspace-${i}`);
     await NodeFSP.mkdir(cwd, { mode: 0o700 });
-    await NodeFSP.writeFile(NodePath.join(cwd, `file-${i}.txt`), "productive pinned native search\n", {
-      flag: "wx",
-      mode: 0o600,
-    });
+    await NodeFSP.writeFile(
+      NodePath.join(cwd, `file-${i}.txt`),
+      "productive pinned native search\n",
+      {
+        flag: "wx",
+        mode: 0o600,
+      },
+    );
     handles.push(supervisor.register({ cwd, variant: "paths" }));
   }
   await Promise.all(

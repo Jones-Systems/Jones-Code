@@ -18,7 +18,9 @@ if (!NodePath.isAbsolute(output ?? "") || !["laptop", "vps"].includes(profile))
 const count = profile === "vps" ? 3 : 2,
   acquisitions = 500,
   files = 512;
-const scratch = await NodeFSP.realpath(await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-baseline-")));
+const scratch = await NodeFSP.realpath(
+  await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-baseline-")),
+);
 const scope = await Effect.runPromise(Scope.make());
 const runtimes = new Map(),
   keys = [],

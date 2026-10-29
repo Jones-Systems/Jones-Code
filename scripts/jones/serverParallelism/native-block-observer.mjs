@@ -133,7 +133,10 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       !(await nativeBlockFifosUnchanged(table))
     )
       throw new Error("Missing captured synthetic binding");
-    if (HostProcess.Platform.defaultValue() === "linux" && HostProcess.Architecture.defaultValue() === "x64") {
+    if (
+      HostProcess.Platform.defaultValue() === "linux" &&
+      HostProcess.Architecture.defaultValue() === "x64"
+    ) {
       const base = `/proc/${subject.pid}`,
         task = `${base}/task/${subject.pid}`;
       const stat = processStat(await boundedRead(`${base}/stat`, 4096));
@@ -251,7 +254,10 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       binaryPaths,
       binaryDigests,
       witness: {
-        method: HostProcess.Platform.defaultValue() === "linux" ? "linux-syscall-path" : "macos-native-stack",
+        method:
+          HostProcess.Platform.defaultValue() === "linux"
+            ? "linux-syscall-path"
+            : "macos-native-stack",
         artifact,
         sha256: digest(bytes),
         parserSha256,
@@ -286,7 +292,10 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       binaryPaths,
       binaryDigests,
       witness: {
-        method: HostProcess.Platform.defaultValue() === "linux" ? "linux-syscall-path" : "macos-native-stack",
+        method:
+          HostProcess.Platform.defaultValue() === "linux"
+            ? "linux-syscall-path"
+            : "macos-native-stack",
         artifact,
         sha256: digest(bytes),
         parserSha256,
@@ -300,5 +309,8 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
 export async function releaseNativeBlockFifo(table, path) {
   if (!table.some((item) => item.path === path) || !(await nativeBlockFifosUnchanged(table)))
     throw new Error("Cannot release an unproved FIFO");
-  return NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK | NodeFS.constants.O_NOFOLLOW);
+  return NodeFSP.open(
+    path,
+    NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK | NodeFS.constants.O_NOFOLLOW,
+  );
 }

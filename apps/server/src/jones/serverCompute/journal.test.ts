@@ -182,9 +182,9 @@ it("holds restart admission for an incompletely registered slot, even when paren
   await expect(GenerationJournal.acquire(directory, 2, "linux")).rejects.toMatchObject({
     reason: "retirement-unknown",
   });
-  expect(JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "pool.claim"), "utf8"))).toEqual(
-    old.claim,
-  );
+  expect(
+    JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "pool.claim"), "utf8")),
+  ).toEqual(old.claim);
   const guard = await NodeFSP.readFile(NodePath.join(directory, "recovery.claim"), "utf8");
   await expect(GenerationJournal.acquire(directory, 2, "linux")).rejects.toBeDefined();
   expect(await NodeFSP.readFile(NodePath.join(directory, "recovery.claim"), "utf8")).toBe(guard);
@@ -254,7 +254,7 @@ it("refuses a new authority when even one registered child PID is still present"
   await expect(GenerationJournal.acquire(directory, 2, "linux")).rejects.toMatchObject({
     reason: "retirement-unknown",
   });
-  expect(JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "pool.claim"), "utf8"))).toEqual(
-    old.claim,
-  );
+  expect(
+    JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "pool.claim"), "utf8")),
+  ).toEqual(old.claim);
 });

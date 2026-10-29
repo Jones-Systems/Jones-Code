@@ -141,8 +141,7 @@ export class GenerationJournal {
     count: 2 | 3,
     platform: NodeJS.Platform = HostProcess.Platform.defaultValue(),
   ): Promise<GenerationJournal> {
-    if (platform !== "darwin" && platform !== "linux")
-      throw computeFailure("unavailable");
+    if (platform !== "darwin" && platform !== "linux") throw computeFailure("unavailable");
     // Refuse redirected ancestors as well as leaf records. The server supplies its canonical stateDir.
     const absolute = NodePath.resolve(directory),
       root = NodePath.parse(absolute).root;

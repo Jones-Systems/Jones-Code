@@ -213,7 +213,8 @@ export function decodeNativeBlockQualification(argument: string): {
     NodePath.basename(value.targetWorkspace) !== "blocked-workspace" ||
     NodePath.basename(value.logFileHint) !== "native-block.log" ||
     NodePath.basename(NodePath.dirname(value.logFileHint)) !== "barrier" ||
-    NodePath.dirname(NodePath.dirname(value.logFileHint)) !== NodePath.dirname(value.targetWorkspace)
+    NodePath.dirname(NodePath.dirname(value.logFileHint)) !==
+      NodePath.dirname(value.targetWorkspace)
   )
     throw computeFailure("protocol");
   return Object.freeze({ targetWorkspace: value.targetWorkspace, logFileHint: value.logFileHint });

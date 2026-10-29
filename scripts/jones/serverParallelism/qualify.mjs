@@ -6,7 +6,12 @@ import { runNativeQualification } from "../../../apps/server/src/jones/serverPar
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
 import { qualificationDecision, requiredNativePredicates } from "./qualificationResult.mjs";
 const [manifestPath, output, profile, baselinePath] = process.argv.slice(2);
-if (!manifestPath || !output || !NodePath.isAbsolute(output) || !["laptop", "vps"].includes(profile))
+if (
+  !manifestPath ||
+  !output ||
+  !NodePath.isAbsolute(output) ||
+  !["laptop", "vps"].includes(profile)
+)
   throw new Error(
     "Usage: qualify.mjs <manifest.json> <absolute report.json> <laptop|vps> [baseline.json]",
   );
@@ -36,14 +41,18 @@ const command = {
     manifest.runtimeForm === "electron",
   ),
 };
-const scratch = await NodeFSP.realpath(await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-qualification-")));
+const scratch = await NodeFSP.realpath(
+  await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-qualification-")),
+);
 let cleanupProved = false;
 const controller = new AbortController();
 const stop = () => controller.abort();
 process.once("SIGTERM", stop);
 process.once("SIGINT", stop);
 try {
-  const baseline = baselinePath ? JSON.parse(await NodeFSP.readFile(baselinePath, "utf8")) : undefined;
+  const baseline = baselinePath
+    ? JSON.parse(await NodeFSP.readFile(baselinePath, "utf8"))
+    : undefined;
   const usable =
     baseline?.schema === "jones.server-parallelism.baseline/v1" &&
     baseline.profile === profile &&

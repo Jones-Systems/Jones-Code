@@ -8,11 +8,11 @@ it("accepts only completed termination as retirement proof", async () => {
     finish = resolve;
   });
   let proved = false;
-  const retiring = retireReaderWorker({ terminate: () => pending } as NodeWorkerThreads.Worker).then(
-    (value) => {
-      proved = value;
-    },
-  );
+  const retiring = retireReaderWorker({
+    terminate: () => pending,
+  } as NodeWorkerThreads.Worker).then((value) => {
+    proved = value;
+  });
   await Promise.resolve();
   assert.isFalse(proved);
   finish(1);

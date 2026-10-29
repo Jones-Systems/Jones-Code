@@ -60,7 +60,9 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
     )
       return false;
     const evidence = JSON.parse(bytes),
-      killed = JSON.parse(await ownedEvidence(NodePath.join(directory, "kill-lifecycle.json"), directory));
+      killed = JSON.parse(
+        await ownedEvidence(NodePath.join(directory, "kill-lifecycle.json"), directory),
+      );
     const released = JSON.parse(
       await ownedEvidence(NodePath.join(directory, "release-lifecycle.json"), directory),
     );
@@ -166,7 +168,10 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       )
     )
       return false;
-    const negativeBytes = await ownedEvidence(NodePath.join(directory, "release-witness.json"), directory);
+    const negativeBytes = await ownedEvidence(
+      NodePath.join(directory, "release-witness.json"),
+      directory,
+    );
     const negative = JSON.parse(negativeBytes);
     const negativeParsed = parseLinuxWitness(
       negative.raw,

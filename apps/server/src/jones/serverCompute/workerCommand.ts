@@ -90,8 +90,7 @@ export function minimalWorkerEnvironment(
 export async function resolveWorkerCommand(
   platform: NodeJS.Platform = HostProcess.Platform.defaultValue(),
 ): Promise<WorkerCommand> {
-  if (platform !== "darwin" && platform !== "linux")
-    throw computeFailure("unavailable");
+  if (platform !== "darwin" && platform !== "linux") throw computeFailure("unavailable");
   const sea = NodeSea.isSea(),
     electron = process.versions.electron !== undefined;
   const entry = process.argv[1];

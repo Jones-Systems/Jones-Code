@@ -22,7 +22,8 @@ export function serverComputeBuildIdentity(
       const hash = NodeCrypto.createHash("sha256");
       const add = (name: string, bytes: string | Uint8Array) => {
         hash.update(
-          JSON.stringify([name, NodeCrypto.createHash("sha256").update(bytes).digest("hex")]) + "\n",
+          JSON.stringify([name, NodeCrypto.createHash("sha256").update(bytes).digest("hex")]) +
+            "\n",
         );
       };
       add("options", JSON.stringify(options));

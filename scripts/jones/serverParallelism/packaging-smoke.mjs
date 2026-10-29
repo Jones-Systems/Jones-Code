@@ -24,7 +24,9 @@ const command = {
     manifest.runtimeForm === "electron",
   ),
 };
-const scratch = await NodeFSP.realpath(await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-package-")));
+const scratch = await NodeFSP.realpath(
+  await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-package-")),
+);
 const journalPath = NodePath.join(scratch, "journal"),
   journal = await GenerationJournal.acquire(journalPath, count);
 let cancelNext = false,
@@ -73,7 +75,10 @@ try {
     const cwd = NodePath.join(scratch, `workspace-${index}`);
     await NodeFSP.mkdir(cwd);
     for (let file = 0; file < 128; file++)
-      await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), "needle Ελληνικά\n".repeat(256));
+      await NodeFSP.writeFile(
+        NodePath.join(cwd, `file-${file}.txt`),
+        "needle Ελληνικά\n".repeat(256),
+      );
     handles.push(supervisor.register({ cwd, variant: "content" }));
   }
   await Promise.all(handles.map((handle) => supervisor.ensure(handle)));

@@ -57,5 +57,8 @@ try {
 } catch (cause) {
   report = { outcome: "failed", activationDecision: "unknown", error: String(cause) };
 }
-await NodeFSP.writeFile(output, JSON.stringify(report, null, 2) + "\n", { flag: "wx", mode: 0o600 });
+await NodeFSP.writeFile(output, JSON.stringify(report, null, 2) + "\n", {
+  flag: "wx",
+  mode: 0o600,
+});
 if (report.outcome !== "passed") process.exitCode = 1;

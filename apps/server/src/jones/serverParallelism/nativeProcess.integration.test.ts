@@ -180,15 +180,19 @@ for (const invalid of ["bootstrap", "missing-fd3", "wrong-build"] as const)
               slotId: 0,
               slotGeneration: 1,
             };
-      const child = NodeChildProcess.spawn(manifest.file, [...manifest.args, JSON.stringify(boot)], {
-        stdio:
-          invalid === "wrong-build" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
-        env: minimalWorkerEnvironment(
-          process.env,
-          manifest.runtimeForm === "sea",
-          manifest.runtimeForm === "electron",
-        ),
-      });
+      const child = NodeChildProcess.spawn(
+        manifest.file,
+        [...manifest.args, JSON.stringify(boot)],
+        {
+          stdio:
+            invalid === "wrong-build" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
+          env: minimalWorkerEnvironment(
+            process.env,
+            manifest.runtimeForm === "sea",
+            manifest.runtimeForm === "electron",
+          ),
+        },
+      );
       child.stdin!.end();
       child.stdout!.resume();
       child.stderr!.resume();

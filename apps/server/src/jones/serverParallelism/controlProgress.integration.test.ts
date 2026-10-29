@@ -196,9 +196,7 @@ it.effect.each(controlCases)(
               .slice(observationStart)
               .some(
                 (event) =>
-                  event.slotId === 0 &&
-                  event.priority === "interactive" &&
-                  event.outcome === "ok",
+                  event.slotId === 0 && event.priority === "interactive" && event.outcome === "ok",
               ),
           );
           yield* outbox.awaitSettled("effect:reserved-control");
