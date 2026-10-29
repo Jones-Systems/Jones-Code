@@ -61,7 +61,8 @@
     "packages/ssh/vite.config.ts",
     "packages/tailscale/package.json",
     "packages/tailscale/vite.config.ts",
-    "scripts/vite.config.ts"
+    "scripts/vite.config.ts",
+    "tsconfig.base.json"
   ],
   "tombstones": [],
   "allowedImports": [
