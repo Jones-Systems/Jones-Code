@@ -12,6 +12,11 @@ import * as Schema from "effect/Schema";
 import * as PeerMcpTransport from "../jones/peerTransport/PeerMcpTransport.ts";
 import type { LinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 
+export {
+  lookupSendReceipt,
+  type SendReceiptLookupInput,
+} from "../jones/peerTransport/PeerMcpTransport.ts";
+
 /** The limits a call carries to the peer: the calling agent's modes here. */
 export interface PeerCallLimits {
   readonly runtimeMode: RuntimeMode;

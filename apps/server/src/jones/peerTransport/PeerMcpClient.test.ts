@@ -1,4 +1,4 @@
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -74,6 +74,186 @@ const fixture = (
     Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
   );
 };
+
+const receiptInput = {
+  environmentId: input.environmentId,
+  expectedGeneration: "generation-1",
+  origin: {
+    schemaVersion: "t3.linked-message-origin/v1",
+    environmentId: "original-source",
+    thread: { threadId: "original-caller", title: "Original caller" },
+  } satisfies LinkedMessageOrigin,
+  limits: input.limits,
+  request: {
+    threadId: ThreadId.make("original-destination-thread"),
+    clientRequestId: "fwd:original-forwarded-send-key",
+    requestDigest: "sha256:original-finalized-send-digest",
+  },
+  success: input.success,
+};
+
+it.effect("receipt lookup forwards only the exact captured identity without SEND", () => {
+  const methods: Array<string> = [];
+  const calls: Array<unknown> = [];
+  const origins: Array<string | undefined> = [];
+  const limits: Array<string | undefined> = [];
+  const requestWithExtra = { ...receiptInput.request, unexpected: "must-not-forward" };
+  return Effect.gen(function* () {
+    // The unchanged production preimages deliberately fail this assertion, not collection.
+    expect(typeof PeerMcpClient.lookupSendReceipt).toBe("function");
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    expect(
+      yield* PeerMcpClient.lookupSendReceipt(client, {
+        ...receiptInput,
+        request: requestWithExtra,
+      }),
+    ).toEqual({ count: 7 });
+    expect(calls).toEqual([
+      { name: "t3_thread_send_receipt_lookup", arguments: receiptInput.request },
+    ]);
+    expect(methods).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+    expect(JSON.parse(Buffer.from(origins[0]!, "base64url").toString("utf8"))).toEqual(
+      receiptInput.origin,
+    );
+    expect(limits).toEqual(["auto/default"]);
+  }).pipe(
+    Effect.provide(
+      fixture(
+        (body, request) => {
+          if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON request");
+          const sent = JSON.parse(new TextDecoder().decode(request.body.body));
+          calls.push(sent.params);
+          origins.push(request.headers[LINKED_MESSAGE_ORIGIN_HEADER]);
+          limits.push(request.headers["t3-mode-limit"]);
+          return answer(body.id, { content: [], structuredContent: { count: 7 } });
+        },
+        links,
+        (method) => methods.push(method),
+      ),
+    ),
+  );
+});
+
+it.effect.each([
+  { expectedGeneration: undefined },
+  { expectedGeneration: "" },
+  { expectedGeneration: "  " },
+  { origin: undefined },
+])("receipt lookup rejects an incomplete original capture before client effects: %j", (invalid) => {
+  let calls = 0;
+  const client: Pick<PeerMcpClient.PeerMcpClient["Service"], "call"> = {
+    call: () => {
+      calls++;
+      return Effect.die("An incomplete capture must not invoke the client");
+    },
+  };
+  return Effect.gen(function* () {
+    const capture = { ...receiptInput };
+    // Simulate malformed JavaScript input at the typed adapter boundary.
+    Object.assign(capture, invalid);
+    const failure = yield* PeerMcpClient.lookupSendReceipt(client, capture).pipe(Effect.flip);
+    expect(failure.code).toBe("invalid_request");
+    expect(calls).toBe(0);
+  });
+});
+
+it.effect.each(["during-resolution", "before-dispatch"] as const)(
+  "receipt lookup refuses relinking %s without dispatching a lookup",
+  (when) => {
+    let checks = 0;
+    const methods: Array<string> = [];
+    const relinkingLinks = Layer.mock(PeerLinks.PeerLinks)({
+      resolve: () =>
+        Effect.succeed({
+          url: "https://peer.invalid",
+          token: "synthetic-token",
+          generation: when === "during-resolution" ? "generation-2" : "generation-1",
+          link: {},
+        } as PeerLinks.ResolvedPeerLink),
+      currentGeneration: () =>
+        Effect.sync(() =>
+          Option.some(
+            when === "during-resolution" || ++checks >= 3 ? "generation-2" : "generation-1",
+          ),
+        ),
+      recordOutcome: () => Effect.void,
+    });
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const failure = yield* PeerMcpClient.lookupSendReceipt(client, receiptInput).pipe(
+        Effect.flip,
+      );
+      expect(failure.code).toBe("invalid_request");
+      expect(failure.message).toContain("not dispatched");
+      expect(methods).toEqual(
+        when === "during-resolution" ? [] : ["initialize", "notifications/initialized"],
+      );
+    }).pipe(
+      Effect.provide(
+        fixture(
+          (body) => answer(body.id, { content: [], structuredContent: { count: 1 } }),
+          relinkingLinks,
+          (method) => methods.push(method),
+        ),
+      ),
+    );
+  },
+);
+
+it.effect.each([
+  "peer-refusal",
+  "lost-session",
+  "http-failure",
+  "unsupported-tool",
+  "malformed-result",
+  "lost-body",
+] as const)("receipt lookup preserves %s failure with one attempt and no fallback", (kind) => {
+  const tools: Array<string> = [];
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const failure = yield* PeerMcpClient.lookupSendReceipt(client, receiptInput).pipe(Effect.flip);
+    expect(failure._tag).toBe("OrchestratorMcpFailure");
+    if (kind === "peer-refusal") {
+      expect(failure.code).toBe("capability_denied");
+      expect(failure.message).toBe("Exact original authorization unavailable");
+    }
+    expect(tools).toEqual(["t3_thread_send_receipt_lookup"]);
+  }).pipe(
+    Effect.provide(
+      fixture((body, request) => {
+        if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON request");
+        const sent = JSON.parse(new TextDecoder().decode(request.body.body));
+        tools.push(sent.params.name);
+        if (kind === "lost-session") return new Response(null, { status: 404 });
+        if (kind === "http-failure") return new Response(null, { status: 503 });
+        if (kind === "unsupported-tool")
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            error: { code: -32601, message: "Unknown tool" },
+          });
+        if (kind === "lost-body")
+          return new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.error(new Error("Synthetic response loss"));
+              },
+            }),
+          );
+        if (kind === "peer-refusal")
+          return answer(body.id, {
+            content: [],
+            isError: true,
+            structuredContent: {
+              code: "capability_denied",
+              message: "Exact original authorization unavailable",
+            },
+          });
+        return answer(body.id, { content: [], structuredContent: { count: "malformed" } });
+      }),
+    ),
+  );
+});
 
 it.effect.each([
   { name: "omitted", expectedGeneration: undefined, refused: false },
