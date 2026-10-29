@@ -4244,6 +4244,18 @@
         "vp run --filter @t3tools/provider-core typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-packaged-recovery-harness",
+      "tests": [
+        "scripts/jones/updates/packaged-recovery-fixture.node-test.mjs",
+        "scripts/jones/updates/packaged-recovery-launcher.node-test.mjs",
+        "scripts/jones/updates/packaged-recovery-preload.node-test.mjs"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/updates/packaged-recovery-fixture.node-test.mjs scripts/jones/updates/packaged-recovery-launcher.node-test.mjs scripts/jones/updates/packaged-recovery-preload.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
