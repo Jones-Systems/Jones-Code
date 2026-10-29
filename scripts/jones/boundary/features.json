@@ -1389,6 +1389,9 @@
     {
       "id": "client-launch",
       "tests": [
+        "apps/server/src/jones/orchestration/IdleWorktreeAdmission.test.ts",
+        "apps/server/src/jones/orchestration/IdleWorktreeAdmission.integration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts",
         "packages/contracts/src/jones/clientLaunch.test.ts",
         "apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
@@ -1414,7 +1417,7 @@
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts"
       ],
-      "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Cross-host launch propagates the authoritative linked origin through keyed and unkeyed paths; the existing project-handler harness covers integration and keeps its upstream assertions."
+      "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Cross-host launch propagates the authoritative linked origin through keyed and unkeyed paths; the existing project-handler harness covers integration and keeps its upstream assertions. Idle new-worktree launches preserve the optional initial message and hold new sends with sparse Jones metadata until workspace preparation is ready. Hold acceptance is atomic with thread creation; accepted receipts replay, unknown preparation remains fenced, and readiness relinquishes automatic checkout cleanup ownership. Shared launch and orchestration edits are narrow transaction and admission hooks."
     },
     {
       "id": "request-economy",
@@ -2661,6 +2664,8 @@
     {
       "id": "provider-writer-retirement",
       "tests": [
+        "apps/server/src/jones/provider/codex/CodexStartup.test.ts",
+        "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts",
         "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
         "apps/server/src/jones/provider/codex/CodexRetirement.test.ts",
         "apps/server/src/jones/orchestration/LateSteer.test.ts",
@@ -2674,7 +2679,7 @@
         "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
-      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes."
+      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes. Codex startup uses an injectable caller deadline while exact-producer response observers retain uncertain native outcomes. New admissions are fenced before permit release, existing bound sessions retain events and controls, and unknown load outcomes cannot retry or fall back to a fresh conversation. The sixty-second default is a conservative design assumption, with no added healthy-path RPC."
     },
     {
       "id": "packaged-recovery-harness",

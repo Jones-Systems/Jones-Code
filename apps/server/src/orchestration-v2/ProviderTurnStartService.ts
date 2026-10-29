@@ -998,7 +998,11 @@ export const layer: Layer.Layer<
       ) {
         const loaded = yield* Effect.result(load);
         if (loaded._tag === "Success") return loaded.success;
-        if (input.willRetry === true && findSteerFailure(loaded.failure) === undefined)
+        if (
+          input.willRetry === true &&
+          findSteerFailure(loaded.failure) === undefined &&
+          !hasUnknownRuntimeBinding(loaded.failure)
+        )
           return yield* loaded.failure;
         yield* settleStartFailure({
           signal: preserveNativeConversation

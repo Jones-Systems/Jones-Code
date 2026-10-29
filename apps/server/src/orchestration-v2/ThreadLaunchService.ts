@@ -1,4 +1,5 @@
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Path from "effect/Path";
 import * as NativeBootstrap from "../jones/nativeCreation/NativeBootstrapDispatch.ts";
@@ -174,6 +175,7 @@ type PreparationInput = Pick<
    * records the workspace, and a branch rename may still be running.
    */
   readonly reusedWorktree?: { readonly baseRef: string | undefined };
+  readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Identity;
 };
 
 export interface ThreadLaunchPreparationInput {
@@ -308,6 +310,7 @@ const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration.TextGeneration;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const eventSink = yield* EventSink.EventSinkV2;
+  const idleWorktrees = eventSink.idleWorktreeAdmission;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
@@ -1288,6 +1291,7 @@ const make = Effect.gen(function* () {
     let setupTerminalId: string | null = null;
     let workspaceRecorded = false;
     let runReleased = false;
+    let idleCleanupOwned = true;
     // Stop background renames before forgetting worktrees; completed renames record them again.
     let branchRename: Fiber.Fiber<unknown> | null = null;
     if (input.workspaceStrategy.type === "worktree") {
@@ -1358,6 +1362,10 @@ const make = Effect.gen(function* () {
           ? input.workspaceStrategy.worktreePath
           : null;
       if (input.workspaceStrategy.type === "worktree") {
+        if (input.idleWorktreeAdmission !== undefined)
+          yield* idleWorktrees!
+            .issueWorktree(input.idleWorktreeAdmission)
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
         if (runId !== null) {
           yield* threads
             .dispatch({
@@ -1475,6 +1483,17 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       workspaceRecorded = true;
+      if (input.idleWorktreeAdmission !== undefined) {
+        if (worktreePath === null)
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )("Idle worktree path is unavailable.");
+        yield* idleWorktrees!
+          .recordWorkspace(input.idleWorktreeAdmission, worktreePath)
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      }
 
       if (
         reused === undefined &&
@@ -1581,6 +1600,10 @@ const make = Effect.gen(function* () {
           ? yield* legacySetupHooks(input, threadId, runId, lifetime)
           : undefined;
       const cwd = worktreePath ?? project.workspaceRoot;
+      if (input.idleWorktreeAdmission !== undefined && input.runSetupScript !== false)
+        yield* idleWorktrees!
+          .issueSetup(input.idleWorktreeAdmission)
+          .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
       const setup = yield* (
         input.runSetupScript === false
           ? Effect.succeed({ status: "no-script" as const })
@@ -1774,6 +1797,19 @@ const make = Effect.gen(function* () {
       }
       yield* setupTracker.markUncancellable(threadId);
       yield* setupTracker.stageStatus(threadId, "agent", "running");
+      if (input.idleWorktreeAdmission !== undefined) {
+        const identity = input.idleWorktreeAdmission;
+        // Withdraw cleanup before either durable release write. A lost reply can already expose the checkout.
+        // This generation never regains cleanup ownership, including on interruption or failed readback.
+        yield* Effect.gen(function* () {
+          idleCleanupOwned = false;
+          yield* idleWorktrees!.prepareRelease(identity, worktreePath!);
+          yield* idleWorktrees!.release(identity);
+        }).pipe(
+          Effect.mapError(mapError(input, "release-run", threadId)),
+          Effect.uninterruptible,
+        );
+      }
       if (runId !== null) {
         if (input.legacyBootstrap !== undefined) {
           const current = yield* threads
@@ -1899,6 +1935,8 @@ const make = Effect.gen(function* () {
       Effect.onError((cause) =>
         Effect.gen(function* () {
           const cancelled = Cause.hasInterruptsOnly(cause);
+          if (input.idleWorktreeAdmission !== undefined)
+            yield* idleWorktrees!.markUnresolved(input.idleWorktreeAdmission).pipe(Effect.ignore);
           yield* setupTracker.finish(
             threadId,
             cancelled ? "cancelled" : "failed",
@@ -1912,6 +1950,11 @@ const make = Effect.gen(function* () {
             input.legacyBootstrap === undefined &&
             tracked &&
             createdWorktreePath &&
+            idleCleanupOwned &&
+            (input.idleWorktreeAdmission === undefined ||
+              (yield* idleWorktrees!
+                .cleanupAllowed(input.idleWorktreeAdmission)
+                .pipe(Effect.catchCause(() => Effect.succeed(false))))) &&
             ((cancelled && !runReleased) || !workspaceRecorded)
           ) {
             if (branchRename !== null) yield* Fiber.interrupt(branchRename);
@@ -2276,6 +2319,59 @@ const make = Effect.gen(function* () {
     yield* preparation.pipe(Effect.forkIn(preparationScope));
   });
 
+  const resumeIdlePreparation = Effect.fn("ThreadLaunchService.resumeIdlePreparation")(function* (
+    input: PreparationInput,
+    identity: IdleWorktreeAdmission.Identity,
+  ) {
+    const threadId = identity.threadId;
+    const readCurrent = idleWorktrees!.read(threadId).pipe(
+      Effect.mapError(mapError(input, "read-receipt", threadId)),
+      Effect.flatMap((current) =>
+        current !== null && IdleWorktreeAdmission.sameIdentity(current, identity)
+          ? Effect.succeed(current)
+          : Effect.fail(
+              mapError(input, "read-receipt", threadId)("Idle preparation identity changed."),
+            ),
+      ),
+    );
+    const recorded = yield* readCurrent;
+    if (recorded.phase === "ready") return;
+    if (recorded.phase === "prepared")
+      return yield* idleWorktrees!.release(identity).pipe(
+        Effect.mapError(mapError(input, "release-run", threadId)),
+        Effect.uninterruptible,
+      );
+    if (!(yield* reservePreparation(input.commandId))) return;
+    yield* Effect.gen(function* () {
+      const current = yield* readCurrent;
+      if (current.phase === "pending") {
+        // A creation retry may now carry a message. Its original idle producer still has no run or message.
+        yield* schedulePreparation(
+          {
+            commandId: input.commandId,
+            projectId: input.projectId,
+            workspaceStrategy: input.workspaceStrategy,
+            ...(input.runSetupScript === undefined ? {} : { runSetupScript: input.runSetupScript }),
+            idleWorktreeAdmission: identity,
+          },
+          threadId,
+          null,
+        );
+        return;
+      }
+      yield* releasePreparation(input.commandId);
+      if (current.phase === "ready") return;
+      if (current.phase === "prepared")
+        return yield* idleWorktrees!.release(identity).pipe(
+          Effect.mapError(mapError(input, "release-run", threadId)),
+          Effect.uninterruptible,
+        );
+      return yield* mapError(input, "provision-worktree", threadId)(
+        new IdleWorktreeAdmission.IdleWorktreeAdmissionError({ threadId, reason: "unresolved" }),
+      );
+    }).pipe(Effect.onError(() => releasePreparation(input.commandId)));
+  });
+
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (request) {
       // Scratch has no Git repository. Normalize before folder allocation so
@@ -2389,6 +2485,26 @@ const make = Effect.gen(function* () {
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
+        const holdsIdleWorktree =
+          workspaceStrategy.type === "worktree" && input.initialMessage === undefined;
+        const idleRequestKey = legacyPayloadHash(
+          canonicalLegacyPayload({
+            projectId: input.projectId,
+            workspaceStrategy,
+            runSetupScript: input.runSetupScript !== false,
+            reuseExistingThread: input.reuseExistingThread === true,
+          }),
+        );
+        const idleIntent: IdleWorktreeAdmission.Intent | undefined = holdsIdleWorktree
+          ? {
+              threadId: candidateThreadId,
+              commandId: input.commandId,
+              requestKey: idleRequestKey,
+              generation: yield* randomUuidV4,
+              claimType:
+                input.reuseExistingThread === true ? "thread.metadata.update" : "thread.create",
+            }
+          : undefined;
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -2425,6 +2541,7 @@ const make = Effect.gen(function* () {
                   : { legacyBootstrap: input.legacyBootstrap }),
               });
         const claimed = yield* claimDispatch.pipe(
+          Effect.provideService(IdleWorktreeAdmission.LaunchIntent, idleIntent),
           Effect.mapError(
             mapError(
               input,
@@ -2439,6 +2556,23 @@ const make = Effect.gen(function* () {
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
+        const idleRecord =
+          idleWorktrees === undefined
+            ? null
+            : yield* idleWorktrees
+                .read(threadId)
+                .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+        if (
+          (holdsIdleWorktree && idleRecord === null) ||
+          (idleRecord !== null &&
+            (idleRecord.commandId !== input.commandId ||
+              idleRecord.requestKey !== idleRequestKey))
+        )
+          return yield* mapError(input, "read-receipt", threadId)(
+            "Idle worktree launch has no matching durable preparation identity.",
+          );
+        if (idleRecord !== null)
+          yield* resumeIdlePreparation({ ...input, workspaceStrategy }, idleRecord);
         let runId: RunId | null = null;
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
@@ -2475,13 +2609,16 @@ const make = Effect.gen(function* () {
                 ? {}
                 : { sourcePlanRef: input.initialMessage.sourcePlanRef }),
               modelSelection: input.modelSelection,
-              dispatchMode: {
-                type: "defer_start",
-                workspaceStrategy,
-                ...(input.runSetupScript === undefined
-                  ? {}
-                  : { runSetupScript: input.runSetupScript }),
-              },
+              dispatchMode:
+                idleRecord !== null
+                  ? { type: "start_immediately" }
+                  : {
+                      type: "defer_start",
+                      workspaceStrategy,
+                      ...(input.runSetupScript === undefined
+                        ? {}
+                        : { runSetupScript: input.runSetupScript }),
+                    },
               createdBy: input.createdBy,
               creationSource: input.creationSource,
               ...(input.legacyBootstrap === undefined
@@ -2608,7 +2745,8 @@ const make = Effect.gen(function* () {
             }
           }
         }
-        const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
+        const shouldSchedule =
+          idleRecord === null && (runId === null ? Option.isNone(launchReceipt) : runIsPreparing);
         const boundWorktreePath = projection.thread.worktreePath;
         const preparationStrategy: ThreadLaunchWorkspaceStrategy =
           Option.isSome(launchReceipt) &&
@@ -2706,8 +2844,7 @@ const make = Effect.gen(function* () {
         return {
           threadId,
           projection,
-          // An attempt that failed after claiming the thread recorded nothing, so
-          // only a repeat of the final write counts as resumed.
+          // A message launch resumes only its accepted message; an idle launch resumes its claim.
           resumed:
             input.initialMessage === undefined
               ? Option.isSome(launchReceipt) || claimed.replayed === true

@@ -28,6 +28,7 @@ import {
   type CodexStartDispatch,
 } from "../../jones/provider/codex/CodexLateStartRecovery.ts";
 import { makeCodexPendingStartNotifications } from "../../jones/provider/codex/CodexPendingStartNotifications.ts";
+import { makeCodexStartup } from "../../jones/provider/codex/CodexStartup.ts";
 import * as NativeProvider from "../../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import * as BackgroundLiveness from "../../jones/provider/observations/ProviderSessionBackgroundLiveness.ts";
 import type * as RuntimeObservation from "../../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
@@ -1745,6 +1746,7 @@ export interface CodexAdapterV2Options {
   readonly failoverEvidence?: CodexFailoverEvidence.CodexFailoverEvidence["Service"];
   readonly onUsageLimits?: ManagedServerProvider["applyUsageLimits"];
   readonly resolveRuntime?: Effect.Effect<CodexEffectiveRuntime, ProviderSetupError, Scope.Scope>;
+  readonly startupBudgetMs?: number;
   readonly crypto: Crypto.Crypto;
   readonly fileSystem: FileSystem.FileSystem;
   readonly idAllocator: IdAllocator.IdAllocatorV2["Service"];
@@ -1868,10 +1870,11 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           );
         const producers = new Map<string, CodexRuntimeProducer>();
         const threadRetirements = makeCodexThreadRetirements<CodexRuntimeProducer>();
+        const startup = makeCodexStartup(adapterOptions.startupBudgetMs);
         const lifecyclePermit = yield* Semaphore.make(1);
         const admitThread = (producer: CodexRuntimeProducer, threadId: ThreadId) =>
           Effect.suspend(() => {
-            const detail = hasUnknownNativeStart()
+            const detail = hasUnknownNativeStart() || startup.isUncertain(producer)
               ? "Codex cannot admit a thread while a native start is unconfirmed."
               : !producer.active || producer !== currentProducer
                 ? "Codex cannot admit a thread to an inactive or replaced runtime producer."
@@ -2140,23 +2143,27 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               threadId: input.threadId,
               cwd: input.runtimePolicy.cwd,
             });
-            yield* client
-              .request("initialize", {
-                clientInfo: buildCodexInitializeParams().clientInfo,
-                capabilities: CODEX_CLIENT_CAPABILITIES,
-              })
+            const producer = (yield* CodexProducerContext) ?? currentProducer;
+            yield* startup
+              .observe(
+                producer,
+                producer.client.request("initialize", {
+                  clientInfo: buildCodexInitializeParams().clientInfo,
+                  capabilities: CODEX_CLIENT_CAPABILITIES,
+                }),
+                "reply",
+              )
               .pipe(
                 Effect.catchTags({
-                  // Interruption can leave Codex initialized before the local flag is set.
+                  // Codex can already be initialized when this connection first handshakes.
                   CodexAppServerRequestError: (error) =>
                     error.code === -32600 && error.errorMessage === "Already initialized"
                       ? Effect.void
                       : Effect.fail(error),
                 }),
               );
-            yield* client.notify("initialized", undefined);
+            yield* producer.client.notify("initialized", undefined);
             yield* Ref.set(initialized, true);
-            const producer = currentProducer;
             const launcher =
               adapterOptions.processAttribution === undefined
                 ? null
@@ -8688,13 +8695,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.andThen(admitThread(currentProducer, threadInput.threadId)),
               Effect.andThen(mcpSessions.read(threadInput.threadId)),
               Effect.flatMap((mcpSession) =>
-                client.request(
-                  "thread/start",
-                  codexThreadRuntimeParams({
-                    mcpSession,
-                    modelSelection: threadInput.modelSelection,
-                    runtimePolicy: threadInput.runtimePolicy,
-                  }),
+                startup.observe(
+                  currentProducer,
+                  client.request(
+                    "thread/start",
+                    codexThreadRuntimeParams({
+                      mcpSession,
+                      modelSelection: threadInput.modelSelection,
+                      runtimePolicy: threadInput.runtimePolicy,
+                    }),
+                  ),
                 ),
               ),
               Effect.flatMap((response) => {
@@ -8751,21 +8761,25 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 currentProducer,
                 threadInput.threadId ?? threadInput.providerThread.appThreadId ?? input.threadId,
               );
-              const resume = client.raw.request("thread/resume", {
-                threadId: nativeThreadId,
-                excludeTurns: true,
-                ...codexThreadRuntimeParams({
-                  mcpSession: yield* readMcpSession(
-                    threadInput.threadId ?? threadInput.providerThread.appThreadId,
-                  ),
-                  ...(threadInput.modelSelection === undefined
-                    ? {}
-                    : { modelSelection: threadInput.modelSelection }),
-                  ...(threadInput.runtimePolicy === undefined
-                    ? {}
-                    : { runtimePolicy: threadInput.runtimePolicy }),
+              const producer = (yield* CodexProducerContext) ?? currentProducer;
+              const resume = startup.observe(
+                producer,
+                client.raw.request("thread/resume", {
+                  threadId: nativeThreadId,
+                  excludeTurns: true,
+                  ...codexThreadRuntimeParams({
+                    mcpSession: yield* readMcpSession(
+                      threadInput.threadId ?? threadInput.providerThread.appThreadId,
+                    ),
+                    ...(threadInput.modelSelection === undefined
+                      ? {}
+                      : { modelSelection: threadInput.modelSelection }),
+                    ...(threadInput.runtimePolicy === undefined
+                      ? {}
+                      : { runtimePolicy: threadInput.runtimePolicy }),
+                  }),
                 }),
-              });
+              );
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
                   resume.pipe(
@@ -8778,8 +8792,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                         ) {
                           return Effect.fail(cause);
                         }
-                        return client.raw
-                          .request("thread/unarchive", { threadId: nativeThreadId })
+                        return startup
+                          .observe(
+                            producer,
+                            client.raw.request("thread/unarchive", { threadId: nativeThreadId }),
+                            "reply",
+                          )
                           .pipe(Effect.andThen(resume));
                       },
                     }),
@@ -10004,6 +10022,12 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               Effect.timeout("30 seconds"),
             );
             if (revision.revision !== currentProducer.resolvedRuntime?.revision) {
+              if (startup.isUncertain(currentProducer))
+                return yield* new ProviderRuntimeBindingError({
+                  driver: CODEX_PROVIDER,
+                  detail:
+                    "Codex startup is unconfirmed; replacing its runtime producer is not safe.",
+                });
               if (pending !== undefined)
                 return yield* toProtocolError(
                   "The native fork's runtime revision changed before its first prompt.",
@@ -10171,6 +10195,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           assertControlAdmission.pipe(Effect.andThen(effect));
         const withMutationPermit = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
           withControlAdmission(lifecyclePermit.withPermits(1)(withControlAdmission(effect)));
+        const withStartupPermit = <A, E, R>(
+          operation: "ensure" | "resume" | "start",
+          effect: Effect.Effect<A, E, R>,
+        ) => startup.run(operation, withMutationPermit(startup.withinPermit(effect)));
         const assertThreadNotRetiring = (providerThread: OrchestrationV2ProviderThread) =>
           Effect.suspend(() =>
             threadRetirements.owns(currentProducer, providerThread.nativeThreadRef?.nativeId ?? "")
@@ -10192,6 +10220,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               producer.bindings.size !== 1 ||
               producer.bindings.get(nativeId)?.id !== providerThread.id ||
               hasUnknownNativeStart() ||
+              startup.isUncertain(producer) ||
               capacityScopeClosed ||
               (yield* Ref.get(activeTurns)).size > 0 ||
               (yield* Ref.get(pendingRootTurns)).size > 0 ||
@@ -10299,6 +10328,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               // Shared physical processes cannot be closed on behalf of only one native thread.
               if (
                 !producer.active ||
+                startup.isUncertain(producer) ||
                 producer.processExit === undefined ||
                 producer.bindings.size !== 1 ||
                 bound?.id !== providerThread.id ||
@@ -10359,9 +10389,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             },
           ),
           ensureThread: (value) =>
-            withMutationPermit(
+            withStartupPermit(
+              "ensure",
               Effect.suspend(() =>
-                hasUnknownNativeStart()
+                hasUnknownNativeStart() || startup.isUncertain(currentProducer)
                   ? Effect.fail(
                       new ProviderRuntimeBindingError({
                         driver: CODEX_PROVIDER,
@@ -10373,9 +10404,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
             ),
           resumeThread: (value) =>
-            withMutationPermit(
+            withStartupPermit(
+              "resume",
               Effect.suspend(() =>
-                hasUnknownNativeStart()
+                hasUnknownNativeStart() || startup.isUncertain(currentProducer)
                   ? Effect.fail(
                       new ProviderRuntimeBindingError({
                         driver: CODEX_PROVIDER,
@@ -10411,7 +10443,8 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 ? toProtocolError(
                     "Codex has an unconfirmed native effect; another prompt is not safe.",
                   )
-                : withMutationPermit(
+                : withStartupPermit(
+                    "start",
                     Effect.gen(function* () {
                       if (hasUnknownNativeStart() || capacityScopeClosed)
                         return yield* toProtocolError(
@@ -10462,6 +10495,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       // retain the already-built native parameters and never re-read defaults.
                       yield* dispatchInput.revalidateStartAdmission ?? Effect.void;
                       yield* prepareProducer(dispatchInput);
+                      yield* startup.complete;
                       yield* withProducer(runtime.startTurn(dispatchInput));
                     }),
                   ),
