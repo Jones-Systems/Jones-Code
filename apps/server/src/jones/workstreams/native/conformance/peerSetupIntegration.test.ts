@@ -15,6 +15,9 @@ import {
 } from "@t3tools/contracts";
 import * as W from "@t3tools/contracts/jones/workstreamsPeerSetup";
 import * as F from "@t3tools/contracts/jones/workstreamsHomeBind";
+import * as ForwardWire from "@t3tools/contracts/jones/workstreamsForwarding";
+import * as ParentWire from "@t3tools/contracts/jones/workstreamsForwardQualification";
+import * as RawWire from "@t3tools/contracts/jones/workstreamsForwardReadmission";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
@@ -49,6 +52,21 @@ import m125 from "../../../persistence/Migrations/125_JonesWorkstreamsNative.ts"
 import m126 from "../../../persistence/Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
 import m128 from "../../../persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.ts";
 import m129 from "../../../persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts";
+import m130 from "../../../persistence/Migrations/130_JonesWorkstreamsForwardReceipts.ts";
+import * as MemberApp from "../runtime/memberApplication.ts";
+import * as Forwarder from "../forwarding/forwarder.ts";
+import * as SourcePort from "../forwarding/sourceReadmissionPort.ts";
+import * as HomePort from "../forwarding/homeForwardPort.ts";
+import * as SourceQualification from "../forwarding/sourceForwardQualification.ts";
+import * as Receiving from "../forwarding/receivingAuthority.ts";
+import * as OperationStore from "../store/operationStore.ts";
+import * as NativeSession from "../registry/session.ts";
+import { NativeHome } from "../mode/authorityMode.ts";
+import * as NativeForwards from "../../../mcp/workstreams/nativeForwards.ts";
+import * as Runtime from "../../runtimeIntegration/native.ts";
+import * as ProviderTest from "../../nativeProvider/testFixtures.ts";
+import { makeWorkstreamsNativeProvider } from "../../nativeProvider/service.ts";
+import { NativeProviderEnrollmentError } from "../../nativeProvider/enrollment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../../orchestration-v2/ThreadManagementService.ts";
@@ -99,6 +117,17 @@ const address: W.WorkstreamsPeerSetupAddress = {
 const threads = Layer.mock(ThreadManagementService)({ getThreadShell: () => Effect.succeed(null) });
 const mode = Schema.decodeUnknownSync(
   Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
+);
+
+const decodeForwardArgs = Schema.decodeUnknownEffect(ForwardWire.WorkstreamsForwardRequest);
+const decodeReadbackArgs = Schema.decodeUnknownEffect(
+  ForwardWire.WorkstreamsForwardReadbackRequest,
+);
+const decodeSourceArgs = Schema.decodeUnknownEffect(
+  Schema.Union([
+    ParentWire.WorkstreamsSourceParentReadmissionRequestV3,
+    RawWire.WorkstreamsSourceReadmissionRequestV2,
+  ]),
 );
 
 const fixture = Effect.gen(function* () {
@@ -282,6 +311,8 @@ const fixture = Effect.gen(function* () {
     narrow: false,
     mutateFinal: false,
     loseBindReply: false,
+    loseForwardReply: false,
+    forwardOffline: false,
     loseMemberReply: false,
     forgedReceipt: false,
     unknownReadback: false,
@@ -290,6 +321,14 @@ const fixture = Effect.gen(function* () {
     beforeDispatch: Effect.void as Effect.Effect<void>,
     beforeReadback: Effect.void as Effect.Effect<void>,
   };
+  type Extension = (
+    args: unknown,
+  ) => Effect.Effect<
+    { readonly isFailure: boolean; readonly result: unknown } | undefined,
+    never,
+    Mcp.McpInvocationContext | ThreadManagementService
+  >;
+  const extensions = new Map<string, Extension>();
   let dispatch: (
     receiver: string,
     request: HttpClientRequest.HttpClientRequest,
@@ -385,6 +424,11 @@ const fixture = Effect.gen(function* () {
           { headers: { "mcp-session-id": "transport:" + receiver } },
         );
       if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      if (
+        state.forwardOffline &&
+        [HomePort.HOME_FORWARD_TOOL, HomePort.HOME_FORWARD_READBACK_TOOL].includes(body.params.name)
+      )
+        return new Response(null, { status: 503 });
       yield* state.beforeDispatch;
       const req = HttpRequest.fromWeb(
         new Request(request.url, { method: "POST", headers: request.headers }),
@@ -445,13 +489,17 @@ const fixture = Effect.gen(function* () {
             return at.bindTools
               .handle("jones_workstreams_home_bind_readback", body.params.arguments)
               .pipe(Stream.unwrap, Stream.runCollect, Effect.map(last));
-          default:
-            return Effect.die("unregistered fixture tool");
+          default: {
+            const extension = extensions.get(receiver + "/" + body.params.name);
+            return extension
+              ? extension(body.params.arguments)
+              : Effect.die("unregistered fixture tool");
+          }
         }
       })();
       const reply = yield* handled.pipe(
         Effect.provideService(Mcp.McpInvocationContext, scope),
-        Effect.provide(threads),
+        Effect.provide(threads.pipe(Layer.provideMerge(Layer.succeedContext(at.all)))),
       );
       if (!reply || reply.isFailure)
         return Response.json({
@@ -491,6 +539,8 @@ const fixture = Effect.gen(function* () {
       )
         return new Response(null, { status: 503 });
       if (state.loseBindReply && body.params.name === "jones_workstreams_home_bind")
+        return new Response(null, { status: 503 });
+      if (state.loseForwardReply && body.params.name === HomePort.HOME_FORWARD_TOOL)
         return new Response(null, { status: 503 });
       return Response.json({
         jsonrpc: "2.0",
@@ -549,6 +599,8 @@ const fixture = Effect.gen(function* () {
       return M;
     },
     calls,
+    mountTool: (receiver: string, tool: string, handler: Extension) =>
+      extensions.set(receiver + "/" + tool, handler),
     state,
     request,
     counts,
@@ -1172,6 +1224,295 @@ it.effect(
             ),
           ),
         );
+      }),
+    ),
+);
+
+it.effect(
+  "composes genuine member application forwarding with registered home and source handlers",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        expect((yield* f.follow(yield* f.prepare(), "apply")).state).toBe("bound");
+        const bind = F.decodeWorkstreamsHomeBindBody(
+          (yield* f.request).request.intent.bind_request_body,
+        );
+        yield* m130.pipe(Effect.provide(f.H.all));
+        // Release/build/launcher and remote HTTP are synthetic external ports; owner, auth,
+        // SQL, encrypted stores, member admission, registration and forwarding are production.
+        const sourceAuthority = yield* CurrentFixture.prepare({
+          home: f.M.f.baseDir,
+          database: f.M.f.dbPath,
+          context: {
+            source_instance_id: bind.source.authority.environment_id,
+            authority_namespace: bind.source.authority.authority_namespace,
+            store_generation: bind.source.authority.store_generation,
+          },
+        }).pipe(Effect.provide(f.M.all));
+        const sourceBase = Layer.mergeAll(
+          Layer.succeedContext(f.M.all),
+          Layer.succeed(Authority.NativeStoreAuthority, f.M.live),
+        );
+        const resources = yield* Layer.build(
+          Layer.mergeAll(
+            MemberPreparation.layer,
+            OperationStore.layer,
+            Native.layer,
+            Forwarder.locksLayer,
+          ).pipe(Layer.provideMerge(sourceAuthority), Layer.provideMerge(sourceBase)),
+        );
+        const selected = yield* Context.get(resources, MemberPreparation.MemberPreparation)
+          .withPrepared((members) =>
+            selectMember({
+              text: JSON.stringify({
+                mode: "native-member",
+                registry: { ...home, canonical_origin: "https://native.workstreams.invalid" },
+                bootstrap: {
+                  home: f.M.f.baseDir,
+                  database: f.M.f.dbPath,
+                  key_provider: "server-secret-store",
+                  source_session_id: bind.source.enrollment.session.session_id,
+                },
+              }),
+              legacyActivationPresent: false,
+              home: f.M.f.baseDir,
+              database: f.M.f.dbPath,
+              environmentId: f.M.env,
+            }).pipe(Effect.provideService(Members.MemberEnrollments, members)),
+          )
+          .pipe(Effect.provide(resources));
+        expect(selected).toMatchObject({ mode: "native-member", problem: null });
+        const providerPorts = ProviderTest.makeProviderFixture().ports;
+        const runtime = Runtime.NativeWorkstreamsRuntime.of({
+          provider: makeWorkstreamsNativeProvider(providerPorts),
+          providerV2: makeWorkstreamsNativeProvider(providerPorts, "v2"),
+          enrollments: { getBySessionId: () => Effect.fail(new NativeProviderEnrollmentError()) },
+        });
+        const app = yield* MemberApp.MemberApplication.pipe(
+          Effect.provide(
+            MemberApp.layer.pipe(
+              Layer.provide(Layer.succeed(Startup.Startup, selected)),
+              Layer.provide(Layer.succeed(Runtime.NativeWorkstreamsRuntime, runtime)),
+              Layer.provide(Layer.succeedContext(resources)),
+            ),
+          ),
+        );
+        const sourceTools = yield* NativeForwards.sourceToolkit.pipe(
+          Effect.provide(
+            Access.HandlersLayer.layer(NativeForwards.sourceHandlers).pipe(
+              Layer.provide(
+                Layer.succeed(SourcePort.SourceReadmission, {
+                  lookupParent: app.lookupParent,
+                  lookupRaw: app.lookupRaw,
+                }),
+              ),
+            ),
+          ),
+        );
+        f.mountTool(f.M.env, SourcePort.SOURCE_READMISSION_TOOL, (args) =>
+          decodeSourceArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              sourceTools.handle(SourcePort.SOURCE_READMISSION_TOOL, decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
+          ),
+        );
+        const homeContext = JSON.parse(NodeFS.readFileSync(f.H.f.authorityPath, "utf8"));
+        const homeAuthority = yield* CurrentFixture.prepare({
+          home: f.H.f.baseDir,
+          database: f.H.f.dbPath,
+          context: {
+            source_instance_id: homeContext.environment_id,
+            authority_namespace: homeContext.authority_namespace,
+            store_generation: homeContext.store_generation,
+          },
+        }).pipe(Effect.provide(f.H.all));
+        const homeBase = Layer.mergeAll(
+          Layer.succeedContext(f.H.all),
+          Layer.succeed(Authority.NativeStoreAuthority, f.H.live),
+          Layer.succeed(NativeHome, {
+            ...home,
+            canonical_origin: "https://native.workstreams.invalid",
+            served_by_environment_id: f.H.env,
+          }),
+        );
+        const homeTools = yield* HomePort.HomeTools.pipe(
+          Effect.provide(
+            Receiving.layer.pipe(
+              Layer.provide(Layer.mergeAll(SourceQualification.layer, NativeSession.layer)),
+              Layer.provide(homeAuthority),
+              Layer.provide(homeBase),
+            ),
+          ),
+        );
+        const homeBox = yield* NativeForwards.homeToolkit.pipe(
+          Effect.provide(
+            Access.HandlersLayer.layer(NativeForwards.homeHandlers).pipe(
+              Layer.provide(Layer.succeed(HomePort.HomeTools, homeTools)),
+            ),
+          ),
+        );
+        f.mountTool(f.H.env, HomePort.HOME_FORWARD_TOOL, (args) =>
+          decodeForwardArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              homeBox.handle(HomePort.HOME_FORWARD_TOOL, decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
+          ),
+        );
+        f.mountTool(f.H.env, HomePort.HOME_FORWARD_READBACK_TOOL, (args) =>
+          decodeReadbackArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              homeBox.handle(HomePort.HOME_FORWARD_READBACK_TOOL, decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
+          ),
+        );
+        const auth = Context.get(f.M.all, Auth.EnvironmentAuth);
+        const issued = yield* auth.issueSession({
+          subject: "member-application",
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const authenticated = yield* auth.authenticateHttpRequest(
+          HttpRequest.fromWeb(
+            new Request("https://member.invalid/api/workstreams", {
+              headers: { authorization: "Bearer " + issued.token },
+            }),
+          ),
+        );
+        const principal = { ...authenticated, scopes: new Set(authenticated.scopes) };
+        const request = {
+          contract: "workstream-operations/1.0.0" as const,
+          operation_id: "operation:composed-member-01",
+          origin: { kind: "app" as const },
+          kind: "create_workstream" as const,
+          registry: { registry_id: home.registry_instance_id, owner_id: home.owner_id },
+          workstream: {
+            name: "Composed member",
+            lifecycle: "active" as const,
+            progress: { state: "unknown" as const },
+            sort_order: 0,
+          },
+        };
+        const before = f.calls.length;
+        expect(
+          yield* app
+            .submitOperation({ request, wait_ms: 0 })
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+              Effect.provideService(SqlClient.SqlClient, Context.get(f.H.all, SqlClient.SqlClient)),
+              Effect.flip,
+            ),
+        ).toMatchObject({ code: "authority_fenced" });
+        expect(
+          yield* Context.get(f.M.all, SqlClient.SqlClient)
+            .withTransaction(app.submitOperation({ request, wait_ms: 0 }))
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal), Effect.flip),
+        ).toMatchObject({ code: "preparation_in_transaction" });
+        expect(f.calls).toHaveLength(before);
+        const result = yield* app
+          .submitOperation({ request, wait_ms: 0 })
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(result).toMatchObject({
+          state: "committed",
+          kind: "create_workstream",
+          operation_id: request.operation_id,
+        });
+        const repeated = yield* app
+          .submitOperation({ request, wait_ms: 0 })
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(repeated).toEqual(result);
+        const hsql = Context.get(f.H.all, SqlClient.SqlClient),
+          msql = Context.get(f.M.all, SqlClient.SqlClient);
+        expect(yield* hsql`SELECT workstream_id FROM jones_workstreams_records`).toHaveLength(1);
+        expect(yield* hsql`SELECT state FROM jones_workstreams_forward_receipts`).toEqual([
+          { state: "completed" },
+        ]);
+        expect(yield* msql`SELECT state FROM jones_workstreams_operations`).toEqual([
+          { state: "committed" },
+        ]);
+        expect(yield* msql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
+        expect(yield* msql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
+        expect(
+          f.calls.slice(before).some((call) => call.tool === "jones_workstreams_home_read_result"),
+        ).toBe(false);
+        expect(
+          f.calls.slice(before).some((call) => call.tool === SourcePort.SOURCE_READMISSION_TOOL),
+        ).toBe(true);
+        expect(yield* app.recoverOpen()).toEqual([]);
+        const lostRequest = { ...request, operation_id: "operation:composed-lost-reply-01" };
+        f.state.loseForwardReply = true;
+        const lost = yield* app
+          .submitOperation({ request: lostRequest, wait_ms: 0 })
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(lost.state).toBe("reconciling");
+        expect(yield* hsql`SELECT state FROM jones_workstreams_forward_receipts`).toEqual([
+          { state: "completed" },
+          { state: "completed" },
+        ]);
+        const forwards = f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL).length;
+        f.state.loseForwardReply = false;
+        const recovered = yield* app.recoverOpen();
+        expect(recovered).toEqual([
+          expect.objectContaining({ operation_id: lostRequest.operation_id, state: "committed" }),
+        ]);
+        expect(f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
+          forwards,
+        );
+        expect(yield* app.recoverOpen()).toEqual([]);
+        f.state.forwardOffline = true;
+        expect(
+          (yield* app
+            .submitOperation({
+              request: { ...request, operation_id: "operation:composed-offline-01" },
+              wait_ms: 0,
+            })
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+              Effect.result,
+            ))._tag,
+        ).toBe("Failure");
+        f.state.forwardOffline = false;
+        expect(
+          yield* msql`SELECT operation_id FROM jones_workstreams_operations WHERE operation_id='operation:composed-offline-01'`,
+        ).toEqual([]);
+        const retainedCalls = f.calls.length;
+        expect(yield* auth.revokeSession(issued.sessionId)).toBe(true);
+        expect(
+          (yield* app
+            .readOperation(request.operation_id)
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+              Effect.result,
+            ))._tag,
+        ).toBe("Failure");
+        expect(
+          (yield* app
+            .submitOperation({ request, wait_ms: 0 })
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, principal),
+              Effect.result,
+            ))._tag,
+        ).toBe("Failure");
+        expect(f.calls).toHaveLength(retainedCalls);
+        expect(yield* hsql`SELECT workstream_id FROM jones_workstreams_records`).toHaveLength(2);
+        expect(yield* msql`SELECT state FROM jones_workstreams_operations`).toEqual([
+          { state: "committed" },
+          { state: "committed" },
+        ]);
       }),
     ),
 );

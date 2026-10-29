@@ -14,7 +14,7 @@
         "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
-      "scope": "Original local caller/run/credential ceilings, validated source-owned member association, request-local coherent home read permission and exact-own-thread private placement proof. Separate retained source lookup is lookup-only. Selected member startup, authenticated recovery storage and actual endpoint mounts remain integration gates. No home registry/grants or general forwarding exceptions are created on members."
+      "scope": "Original local caller/run/credential ceilings, validated source-owned member association, request-local coherent home read permission and exact-own-thread private placement proof. MemberApplication retains application resources and forward locks, with separate fresh-request, lookup-only source and retained-recovery graphs. Authenticated two-environment synthetic composition qualifies create, replay, lost reply, preflight refusal and original-session revocation. Selected member startup and actual application endpoint mounts remain integration gates. No home registry/grants or general forwarding exceptions are created on members."
     },
     {
       "id": "workstreams-member-binding-foundation",

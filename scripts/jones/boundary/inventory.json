@@ -2189,7 +2189,8 @@
     "apps/server/src/jones/workstreams/native/runtime/currentAuthority.testkit.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/runtime/memberPreparation.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/runtime/memberPreparation.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/memberApplication.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -211,8 +211,8 @@ export const nativeHomeRuntimeLayer = Layer.unwrap(
   ),
 );
 
-/** Requires the genuine invocation-scoped MemberEnrollments supplied by MemberPreparation. */
-const nativeMemberEvidenceLayer = Layer.unwrap(
+/** @public Requires the genuine invocation-scoped MemberEnrollments supplied by MemberPreparation. */
+export const nativeMemberAdmissionRequestLayer = Layer.unwrap(
   Effect.sync(() =>
     MemberSourcePorts.requestAdmissionLayer.pipe(
       Layer.provide(MemberAdmission.layer.pipe(Layer.provide(MemberLocalCallers.layer))),
@@ -223,7 +223,7 @@ const nativeMemberFixedClientLayer = Layer.unwrap(
   Effect.sync(() =>
     PeerHomeReadClient.layer.pipe(
       Layer.provideMerge(
-        MemberHomeReadRouting.layer.pipe(Layer.provideMerge(nativeMemberEvidenceLayer)),
+        MemberHomeReadRouting.layer.pipe(Layer.provideMerge(nativeMemberAdmissionRequestLayer)),
       ),
     ),
   ),
@@ -258,8 +258,7 @@ export const nativeMemberOwnPlacementRequestLayer = Layer.unwrap(
 export const nativeMemberForwardRequestLayer = Layer.unwrap(
   Effect.sync(() => {
     const ports = MemberSourcePorts.layer.pipe(
-      Layer.provideMerge(nativeMemberReadRequestLayer),
-      Layer.provideMerge(nativeMemberEvidenceLayer),
+      Layer.provideMerge(nativeMemberAdmissionRequestLayer),
       Layer.provide(sourceProviderLayer),
     );
     const forwarder = MemberForwarder.layer.pipe(
