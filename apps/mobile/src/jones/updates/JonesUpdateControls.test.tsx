@@ -194,6 +194,91 @@ afterEach(() => {
 });
 
 describe("mobile host update controls", () => {
+  const alternativeState = () => {
+    const retained = state(true);
+    return {
+      ...retained,
+      capability: { ...retained.capability, replaceStaged: true },
+      migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+      alternativeCandidate: {
+        provenance: { ...retained.provenance!, sourceSha: "f".repeat(40), artifactId: 99 },
+        checkedAt: stamp,
+        expiresAt: "2099-01-01T00:00:00Z",
+      },
+    };
+  };
+
+  it("shows separate retained and alternative builds and confirms exact replacement without installing", async () => {
+    const retained = alternativeState();
+    await render(retained);
+    expect(container.textContent).toContain("Downloaded");
+    expect(container.textContent).toContain("Alternative");
+    expect(container.textContent).toContain("Downloaded migrations: 1 upstream, 1 Jones");
+    harness.action.mockImplementation(async () =>
+      success({ ...retained, provenance: retained.alternativeCandidate.provenance }),
+    );
+    await click("Replace download");
+    expect(harness.action).not.toHaveBeenCalled();
+    expect(harness.alert.mock.calls.at(-1)?.[1]).toContain("aaaaaaa");
+    await answer("Replace download");
+    expect(harness.action).toHaveBeenCalledTimes(1);
+    expect(harness.action.mock.calls[0]?.[0]).toMatchObject({
+      environmentId,
+      input: {
+        action: "downloadExact",
+        input: {
+          targetSource: "f".repeat(40),
+          replace: {
+            stagedHandle: "stage",
+            sourceSha: source,
+            currentVersion: "old",
+            expectedInstalledSource: installed,
+            environmentId,
+            alternative: retained.alternativeCandidate,
+            operationId: expect.any(String),
+          },
+        },
+      },
+    });
+    expect(harness.operation).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Choose Install separately");
+  });
+
+  it("cancels or refuses a changed offer after confirmation and retains unknown work across remount", async () => {
+    const retained = alternativeState();
+    await render(retained);
+    await click("Replace download");
+    await answer("Cancel");
+    expect(harness.action).not.toHaveBeenCalled();
+    await click("Replace download");
+    harness.observation = {
+      state: {
+        ...retained,
+        alternativeCandidate: {
+          ...retained.alternativeCandidate,
+          provenance: { ...retained.alternativeCandidate.provenance, artifactId: 100 },
+        },
+      },
+      freshness: "fresh",
+    };
+    await answer("Replace download");
+    expect(harness.action).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Nothing was sent");
+    await render(retained);
+    harness.action.mockRejectedValue(new Error("Synthetic lost reply"));
+    await click("Replace download");
+    await answer("Replace download");
+    const sent = harness.action.mock.calls[0]?.[0];
+    expect(sent.input.input.replace.operationId).toBeDefined();
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render(retained);
+    expect(button("Replace download").disabled).toBe(true);
+    expect(container.textContent).toContain("nothing will be resent");
+    await click("Replace download");
+    expect(harness.action).toHaveBeenCalledTimes(1);
+  });
+
   it("Download starts only the exact remote download and displays its receipt", async () => {
     await render();
     await click("Download");

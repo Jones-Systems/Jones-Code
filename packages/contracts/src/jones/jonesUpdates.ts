@@ -42,6 +42,28 @@ export const JonesUpdateProvenance = Schema.Struct({
 });
 export type JonesUpdateProvenance = typeof JonesUpdateProvenance.Type;
 
+/** Discovery metadata only; it carries neither a staged handle nor a migration plan. */
+export const JonesUpdateAlternative = Schema.Struct({
+  provenance: JonesUpdateProvenance,
+  checkedAt: Schema.String,
+  expiresAt: Schema.String,
+});
+export type JonesUpdateAlternative = typeof JonesUpdateAlternative.Type;
+
+export function sameJonesUpdateAlternative(
+  left: JonesUpdateAlternative | undefined,
+  right: JonesUpdateAlternative | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.checkedAt === right.checkedAt &&
+    left.expiresAt === right.expiresAt &&
+    (Object.keys(JonesUpdateProvenance.fields) as Array<keyof JonesUpdateProvenance>).every(
+      (key) => left.provenance[key] === right.provenance[key],
+    )
+  );
+}
+
 export const JonesUpdateCapability = Schema.Struct({
   check: Schema.Boolean,
   download: Schema.Boolean,
@@ -135,6 +157,7 @@ export const JonesUpdateState = Schema.Struct({
   operation: Schema.optionalKey(JonesOperationReceipt),
   checkClassification: Schema.optionalKey(JonesCheckClassification),
   provenance: Schema.optionalKey(JonesUpdateProvenance),
+  alternativeCandidate: Schema.optionalKey(JonesUpdateAlternative),
   stagedHandle: Schema.optionalKey(TrimmedNonEmptyString),
   message: Schema.optionalKey(Schema.String),
   checkedAt: Schema.optionalKey(Schema.String),
@@ -219,6 +242,8 @@ export const JonesUpdateExactInput = Schema.Struct({
       environmentId: EnvironmentId,
       currentVersion: TrimmedNonEmptyString,
       expectedInstalledSource: Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/)),
+      /** Present only for generic Check offers; laptop matching retains its installed-source semantics. */
+      alternative: Schema.optionalKey(JonesUpdateAlternative),
     }),
   ),
 });

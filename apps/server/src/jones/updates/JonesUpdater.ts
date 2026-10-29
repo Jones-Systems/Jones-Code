@@ -5,7 +5,10 @@ import type {
   JonesRecoveryPolicy,
 } from "@t3tools/contracts/jones/jonesOperations";
 import * as Schema from "effect/Schema";
-import { JonesCheckClassification } from "@t3tools/contracts/jones/jonesUpdates";
+import {
+  JonesCheckClassification,
+  sameJonesUpdateAlternative,
+} from "@t3tools/contracts/jones/jonesUpdates";
 import type { PreparationJoin } from "./preparation/supervisor.ts";
 import { readJonesBuildStartedAt } from "@t3tools/contracts/jones/fleet-updates";
 import type {
@@ -219,7 +222,8 @@ export class JonesUpdater {
   ) {
     this.host = host;
     this.actions = actions;
-    this.state = host.initialState;
+    const { alternativeCandidate: _offer, ...initialState } = host.initialState;
+    this.state = initialState;
   }
 
   snapshot(): JonesUpdateState {
@@ -292,6 +296,7 @@ export class JonesUpdater {
     )
       return this.snapshot();
     const retainedState = this.snapshot();
+    this.clearAlternative();
     const { policy: _previous, ...rest } = this.state;
     this.state = policy === undefined ? rest : { ...rest, policy };
     // Latest wins: a follower stops preparing a build its laptop no longer runs.
@@ -338,7 +343,22 @@ export class JonesUpdater {
     this.state = state;
   }
 
+  private clearAlternative(): void {
+    const { alternativeCandidate: _offer, ...state } = this.state;
+    this.state = state;
+  }
+
   private publish(patch: Partial<JonesUpdateState>): JonesUpdateState {
+    if (
+      (patch.phase !== undefined &&
+        ["downloading", "verifying", "preparing", "installing"].includes(patch.phase)) ||
+      patch.operation !== undefined ||
+      patch.stagedHandle !== undefined ||
+      patch.installedSource !== undefined ||
+      patch.currentVersion !== undefined ||
+      patch.capability !== undefined
+    )
+      this.clearAlternative();
     this.state = { ...this.state, ...patch };
     this.revision += 1;
     this.host.stateChanged?.(this.snapshot());
@@ -444,12 +464,14 @@ export class JonesUpdater {
   /** Runs one check under the busy latch; its result keeps candidate display metadata paired. */
   private async runCheck(targetSource: string | undefined): Promise<JonesCheckRun> {
     const staged = this.state.stagedHandle !== undefined;
+    if (targetSource === undefined) this.clearAlternative();
     // A host that already holds a settled result keeps showing it until this check replaces it.
     if (!staged && this.state.checkedAt === undefined)
       this.publish({ phase: "checking", message: "Checking qualified main builds…" });
     try {
+      const installedSource = await this.host.installedSource();
       const result = await this.actions.check({
-        installedSource: await this.host.installedSource(),
+        installedSource,
         platform: this.host.platform,
         architecture: this.host.architecture,
         ...(targetSource === undefined ? {} : { targetSource }),
@@ -463,6 +485,7 @@ export class JonesUpdater {
         // A follower offers only its laptop's build, with the tree the repository records for it.
         const refusal = followerTargetRefusal(this.state.policy, candidate.source, candidate.tree);
         if (refusal !== undefined) {
+          this.clearAlternative();
           this.candidate = undefined;
           this.candidateBuildStartedAt = undefined;
           return {
@@ -474,12 +497,29 @@ export class JonesUpdater {
         }
         this.candidate = candidate;
         this.candidateBuildStartedAt = buildStartedAt;
-        if (staged)
+        if (staged) {
+          const alternativeCandidate =
+            targetSource === undefined &&
+            this.state.policy === undefined &&
+            installedSource === this.state.installedSource?.sha &&
+            candidate.source !== this.state.provenance?.sourceSha &&
+            candidate.source !== this.state.installedSource?.sha
+              ? {
+                  provenance: candidateProvenance(candidate, buildStartedAt),
+                  checkedAt,
+                  expiresAt: candidate.expiresAt,
+                }
+              : undefined;
           return {
-            state: this.publish({ checkedAt }),
+            state: this.publish({
+              checkedAt,
+              ...(alternativeCandidate === undefined ? {} : { alternativeCandidate }),
+            }),
             candidate,
             ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
           };
+        }
+        this.clearAlternative();
         const { migrationPlan: _previousPlan, ...state } = this.state;
         this.state = state;
         return {
@@ -493,6 +533,9 @@ export class JonesUpdater {
           ...(buildStartedAt === undefined ? {} : { buildStartedAt }),
         };
       }
+      this.clearAlternative();
+      this.candidate = undefined;
+      this.candidateBuildStartedAt = undefined;
       if (staged) return { state: this.publish({ checkedAt }), candidate: undefined };
       return {
         state: this.publish({
@@ -512,6 +555,9 @@ export class JonesUpdater {
         candidate: undefined,
       };
     } catch (error) {
+      this.clearAlternative();
+      this.candidate = undefined;
+      this.candidateBuildStartedAt = undefined;
       return {
         state: staged ? this.publish({ checkedAt: new Date().toISOString() }) : this.fail(error),
         candidate: undefined,
@@ -552,6 +598,15 @@ export class JonesUpdater {
     if (replace !== undefined) {
       const refusal = this.replacementRefusal(replace);
       if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+      if (
+        replace.alternative !== undefined &&
+        replace.alternative.provenance.sourceSha !== targetSource
+      )
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: "The alternative target changed. Check again; the download was retained.",
+        };
     }
     // A superseded preparation releases the host as soon as it is stopped; the newer target
     // goes next. A running one is observed through the busy host, never awaited.
@@ -593,6 +648,22 @@ export class JonesUpdater {
       if (same?.provenance?.sourceSha === targetSource) return same;
       const refusal = this.replacementRefusal(replace);
       if (refusal !== undefined) return { ...this.snapshot(), phase: "blocked", message: refusal };
+      if (
+        replace.alternative !== undefined &&
+        !sameJonesUpdateAlternative(replace.alternative, {
+          ...replace.alternative,
+          provenance: candidateProvenance(candidate, run.buildStartedAt),
+          expiresAt: candidate.expiresAt,
+        })
+      ) {
+        this.clearAlternative();
+        this.publish({});
+        return {
+          ...this.snapshot(),
+          phase: "blocked",
+          message: "The qualified alternative changed. Check again; the download was retained.",
+        };
+      }
       const retired = await this.retireStagedOperation(
         {
           operationId: replace.operationId,
@@ -602,7 +673,9 @@ export class JonesUpdater {
           targetSource: replace.sourceSha,
           stagedHandle: replace.stagedHandle,
         },
-        () => followerTargetRefusal(this.state.policy, candidate.source, candidate.tree),
+        () =>
+          followerTargetRefusal(this.state.policy, candidate.source, candidate.tree) ??
+          this.alternativeRefusal(replace.alternative),
       );
       if (!retired.retired)
         return {
@@ -648,7 +721,12 @@ export class JonesUpdater {
     if (
       this.heldJobs.size > 0 ||
       this.busy ||
-      ["preparing", "installing"].includes(this.state.phase)
+      ["preparing", "installing"].includes(this.state.phase) ||
+      (this.state.operation !== undefined &&
+        (this.state.operation.code === "launcher-unconfirmed" ||
+          ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(
+            this.state.operation.phase,
+          )))
     )
       return "An update operation is still active.";
     // An empty slot cannot prove that this replacement completed in an earlier server lifetime.
@@ -662,6 +740,20 @@ export class JonesUpdater {
       replace.expectedInstalledSource !== this.state.installedSource?.sha
     )
       return "The retained stage belongs to another immutable binding.";
+    return this.alternativeRefusal(replace.alternative);
+  }
+
+  private alternativeRefusal(
+    alternative: JonesUpdateState["alternativeCandidate"],
+  ): string | undefined {
+    if (
+      alternative !== undefined &&
+      (this.state.policy !== undefined ||
+        !sameJonesUpdateAlternative(alternative, this.state.alternativeCandidate) ||
+        !Number.isFinite(Date.parse(alternative.expiresAt)) ||
+        Date.parse(alternative.expiresAt) <= Date.now())
+    )
+      return "The qualified alternative changed or expired. Check again; the download was retained.";
     return undefined;
   }
 
@@ -888,6 +980,7 @@ export class JonesUpdater {
         stagedHandle: _handle,
         provenance: _provenance,
         migrationPlan: _plan,
+        alternativeCandidate: _offer,
         ...rest
       } = this.state;
       this.state = rest;
