@@ -343,7 +343,7 @@ it("ignores digits, Shift+Enter and IME while typing, then submits once with Ent
   expect(output("messages")).toBe("[]");
 });
 
-it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter", async (value) => {
+it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Enter", async (value) => {
   await using _fixture = await setupTest();
   await act(
     async () =>
@@ -353,12 +353,42 @@ it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter",
   );
   expect(answerField().value).toBe("  original\n  ");
   await typeAnswer(value);
-  expect((await key({})).defaultPrevented).toBe(false);
-  expect(output("answer")).toBe("null");
-  await key({ ctrlKey: true });
+  expect((await key({})).defaultPrevented).toBe(true);
   expect(output("answer")).toBe(JSON.stringify({ approach: value }));
   expect(output("messages")).toBe("[]");
 });
+
+it.each(["live", "message"] as const)(
+  "saves each %s free-form answer with Enter, advances one question, and sends on the last",
+  async (capability) => {
+    await using _fixture = await setupTest();
+    const questions = [0, 1, 2].map((index) => ({
+      ...question,
+      id: `question-${index}`,
+      header: `Question ${index + 1}`,
+      options: [],
+      initialAnswer: "",
+    }));
+    await act(async () => root.rerender(<Harness questions={questions} capability={capability} />));
+    for (const [index, answer] of ["First answer", "Second answer", "Third answer"].entries()) {
+      expect(container.textContent).toContain(`${index + 1}/3`);
+      await typeAnswer(answer);
+      expect((await key({})).defaultPrevented).toBe(true);
+      if (index < 2) {
+        expect(output("answer")).toBe("null");
+        expect(answerField().value).toBe("");
+      }
+    }
+    expect(output("answer")).toBe(
+      JSON.stringify({
+        "question-0": "First answer",
+        "question-1": "Second answer",
+        "question-2": "Third answer",
+      }),
+    );
+    expect(output("messages")).toBe("[]");
+  },
+);
 
 it("keeps each answer across Continue, Back, minimize and restore", async () => {
   await using _fixture = await setupTest();
@@ -1082,7 +1112,7 @@ it("jumps freely with native sibling buttons, expands the current collapsed ques
   );
 });
 
-it("keeps choice plus multiline note until Clear choice and never sends on message-mode Enter", async () => {
+it("keeps choice plus multiline note until Clear choice and sends with Enter", async () => {
   await using _fixture = await setupTest();
   using _timers = fakeTimers();
   await act(async () => root.rerender(<Harness capability="message" />));
@@ -1096,17 +1126,16 @@ it("keeps choice plus multiline note until Clear choice and never sends on messa
   expect(answerField().value).toBe("First line\nSecond line");
   expect(container.textContent).not.toContain("Sends:");
   expect(container.querySelector('[role="status"]')).toBeNull();
-  expect((await key({})).defaultPrevented).toBe(false);
-  expect((await key({ ctrlKey: true })).defaultPrevented).toBe(false);
+  expect((await key({ shiftKey: true })).defaultPrevented).toBe(false);
   expect(output("answer")).toBe("null");
   await act(() => button("Clear choice").click());
   expect(answerField().value).toBe("First line\nSecond line");
   expect(container.querySelector('button[aria-pressed="true"]')).toBeNull();
-  await act(() => button("Send").click());
+  expect((await key({})).defaultPrevented).toBe(true);
   expect(output("answer")).toBe(JSON.stringify({ approach: "First line\nSecond line" }));
 });
 
-it("inserts a real newline in a valid final message answer and sends its choice and note only explicitly", async () => {
+it("inserts a newline with Shift+Enter and sends its choice and note with Enter", async () => {
   await using _fixture = await setupTest();
   await act(async () => root.rerender(<Harness capability="message" />));
   await act(() =>
@@ -1115,10 +1144,10 @@ it("inserts a real newline in a valid final message answer and sends its choice 
   await typeAnswer("First paragraph");
   await act(() => answerField().focus());
   answerField().setSelectionRange(answerField().value.length, answerField().value.length);
-  await userEvent.keyboard("{Enter}Second paragraph");
+  await userEvent.keyboard("{Shift>}{Enter}{/Shift}Second paragraph");
   expect(answerField().value).toBe("First paragraph\nSecond paragraph");
   expect(output("answer")).toBe("null");
-  await act(() => button("Send").click());
+  await userEvent.keyboard("{Enter}");
   expect(output("answer")).toBe(
     JSON.stringify({ approach: "Incremental\nNote: First paragraph\nSecond paragraph" }),
   );

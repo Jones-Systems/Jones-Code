@@ -4,6 +4,11 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "project-favicon-search-demand",
+      "tests": ["apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx"],
+      "scope": "Mount the existing favicon picker only while open and editable. The accepted-shared boolean gate in apps/web/src/components/settings/ProjectSettingsPanel.tsx needs no extraction: a separate module would duplicate upstream UI machinery. The Jones-owned browser test imports the actual panel and apps/web/test/render.tsx registry/router harness; the actual dialog, components/files/projectFilesQueryState.ts, state/queries.ts and state/query.ts remain real through the lazy synthetic search atom. Both filesystem-read and project-edit grants are present. Covers closed cold/stale demand, server/cwd targeting, typing/image selection, close/reopen and edit-permission loss/recovery; server/query/dialog behavior is unchanged."
+    },
+    {
       "id": "native-goal-continuity",
       "tests": [
         "apps/server/scripts/jones/currentFixtures.test.ts",
@@ -1277,7 +1282,7 @@
         "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts",
         "apps/mobile/src/lib/threadActivity.test.ts"
       ],
-      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Collapse, literal-answer, attachment and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. The card reuses existing answer contracts and persisted request shapes without runtime activation. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments. Structured owner requests use sequential progress-button navigation, explicit Continue/Send and message-mode choice notes, newline editing and all-question gating. Native provider replacement semantics remain; option selection never advances. Integrated UI and native evidence are separately root-owned."
+      "scope": "Dedicated question-card written answers and isolated answer attachments; the main web and mobile composers retain ordinary thread messages. Live questions force queue delivery to preserve waiting provider tools and needs-input state. Collapse, literal-answer, attachment and permission behavior remains. The legacy ChatComposer question branches stay inert through its slot hook to bound upstream divergence. The card reuses existing answer contracts and persisted request shapes without runtime activation. Workspace file-drag overlays clear on capture-phase drops without rerouting nested reply attachments. Structured owner requests use sequential progress-button navigation, Continue/Send and message-mode choice notes, Enter to advance or send (including literal prefilled answers), Shift+Enter for newline editing and all-question gating. Native provider replacement semantics remain; option selection never advances. Integrated UI and native evidence are separately root-owned."
     },
     {
       "id": "compact-sidebar-header",
