@@ -7,6 +7,10 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/web/src/jones/wordCiTrace.ts": "jones-owned",
+    "apps/web/src/jones/wordCiTrace.test.ts": "jones-owned",
+    "apps/web/test/browserSetup.ts": "hook",
+    "scripts/jones/boundary/fragments/word-ci-trace.json": "jones-owned",
     "apps/mobile/src/features/home/HomeRouteScreen.tsx": "accepted-shared",
     "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts": "jones-owned",
     "apps/server/src/jones/orchestration/IdleWorktreeAdmission.test.ts": "jones-owned",
