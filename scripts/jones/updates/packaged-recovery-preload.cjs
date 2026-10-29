@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { syncBuiltinESMExports } = require("node:module");
 
 const planPath = process.env.JONES_PACKAGED_RECOVERY_FIXTURE;
@@ -25,6 +26,10 @@ function exactKeys(value, keys) {
 }
 
 function privateJson(filename) {
+  return privateRecord(filename).value;
+}
+
+function privateRecord(filename) {
   const fd = fs.openSync(filename, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
   try {
     const stat = fs.fstatSync(fd);
@@ -36,7 +41,11 @@ function privateJson(filename) {
         stat.size <= 8192,
       "unowned or unbounded fixture record",
     );
-    return JSON.parse(fs.readFileSync(fd, "utf8"));
+    const bytes = fs.readFileSync(fd);
+    return {
+      value: JSON.parse(bytes.toString("utf8")),
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+    };
   } finally {
     fs.closeSync(fd);
   }
@@ -108,7 +117,7 @@ function install(filename) {
     "unsupported fault boundary",
   );
   ensure(
-    ["immediate", "pending-update"].includes(plan.arm) &&
+    ["immediate", "pending-update", "accepted-update"].includes(plan.arm) &&
       /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(
         plan.operationId,
       ),
@@ -204,7 +213,27 @@ function install(filename) {
     try {
       ensure(fs.fstatSync(fd).size <= 65536, "unbounded service state");
       const state = JSON.parse(fs.readFileSync(fd, "utf8"));
-      return state.update?.id === plan.operationId && state.update?.status === "pending";
+      if (state.update?.id !== plan.operationId || state.update?.status !== "pending") return false;
+      if (plan.arm !== "accepted-update") return true;
+      let receipt;
+      try {
+        receipt = privateJson(
+          path.join(root, "ipc-observations", plan.operationId + ".accepted.json"),
+        );
+      } catch (error) {
+        if (error.code === "ENOENT") return false;
+        throw error;
+      }
+      ensure(
+        receipt.protocol === 2 &&
+          receipt.fixtureId === plan.fixtureId &&
+          receipt.operationId === plan.operationId &&
+          receipt.launcherPid === process.pid &&
+          receipt.phase === "accepted" &&
+          receipt.sendCallbackCompleted === true,
+        "live acceptance receipt differs",
+      );
+      return state.update.phase === "accepted";
     } finally {
       fs.closeSync(fd);
     }
@@ -428,6 +457,7 @@ function installObserver(filename) {
     "private physical observer fixture required",
   );
   const plan = privateJson(filename);
+  const installing = plan.protocol === 2;
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   ensure(
     exactKeys(plan, [
@@ -436,18 +466,19 @@ function installObserver(filename) {
       "executable",
       "identity",
       "operationId",
-      "requestIds",
+      ...(installing ? ["binding"] : ["requestIds"]),
       "childExecutable",
       "childIdentity",
       "childVersion",
     ]) &&
-      plan.protocol === 1 &&
+      (plan.protocol === 1 || installing) &&
       /^[a-f0-9]{32}$/.test(plan.fixtureId) &&
       uuid.test(plan.operationId) &&
-      Array.isArray(plan.requestIds) &&
-      plan.requestIds.length === 2 &&
-      plan.requestIds.every((id) => typeof id === "string" && uuid.test(id)) &&
-      new Set(plan.requestIds).size === 2 &&
+      (installing ||
+        (Array.isArray(plan.requestIds) &&
+          plan.requestIds.length === 2 &&
+          plan.requestIds.every((id) => typeof id === "string" && uuid.test(id)) &&
+          new Set(plan.requestIds).size === 2)) &&
       typeof plan.childVersion === "string" &&
       plan.childVersion.length > 0 &&
       plan.childVersion.length <= 256,
@@ -470,6 +501,50 @@ function installObserver(filename) {
       sameIdentity(plan.childIdentity, identity(plan.childExecutable)),
     "observer child identity differs",
   );
+  if (installing) {
+    const keys = [
+      "baseDir",
+      "dbPath",
+      "environmentId",
+      "currentVersion",
+      "expectedInstalledSource",
+      "targetSource",
+      "stagedHandle",
+      "targetVersion",
+    ];
+    ensure(
+      exactKeys(plan.binding, keys) &&
+        keys.every(
+          (key) =>
+            typeof plan.binding[key] === "string" &&
+            plan.binding[key].length > 0 &&
+            plan.binding[key].length <= 4096,
+        ) &&
+        plan.binding.baseDir === home &&
+        plan.binding.dbPath === path.join(home, "userdata", "statev2.sqlite") &&
+        plan.binding.currentVersion === plan.childVersion,
+      "invalid Install binding",
+    );
+    const state = privateJson(path.join(home, "runtime", "service-state.json"));
+    ensure(
+      state.protocol === 4 &&
+        state.activeVersion === plan.childVersion &&
+        state.update === undefined,
+      "Install observation requires idle native state",
+    );
+    const reservationPath = path.join(
+      home,
+      "runtime",
+      "jones-update-operations",
+      plan.operationId + ".json",
+    );
+    try {
+      fs.lstatSync(reservationPath);
+      ensure(false, "Install ID is already reserved");
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+  }
   const owner = privateJson(path.join(root, "fixture-owner.json"));
   ensure(
     exactKeys(owner, ["protocol", "purpose", "fixtureId", "executable", "identity"]) &&
@@ -566,6 +641,93 @@ function installObserver(filename) {
     );
     const child = Reflect.apply(originalSpawn, this, arguments);
     captured = true;
+    if (installing) {
+      let requested = false;
+      let accepted = false;
+      const common = {
+        protocol: 2,
+        fixtureId: plan.fixtureId,
+        operationId: plan.operationId,
+        launcherPid: process.pid,
+        childPid: child.pid,
+      };
+      child.on("message", (message) => {
+        if (message?.type !== "request-update" || message.operationId !== plan.operationId) return;
+        ensure(
+          !requested &&
+            message.targetVersion === plan.binding.targetVersion &&
+            message.dbPath === plan.binding.dbPath &&
+            message.stagedHandle === plan.binding.stagedHandle &&
+            Object.keys(message).every((key) =>
+              [
+                "type",
+                "operationId",
+                "targetVersion",
+                "dbPath",
+                "stagedHandle",
+                "stateRecovery",
+                "qualifiedRecoveryProtocol",
+              ].includes(key),
+            ),
+          "Install request differs",
+        );
+        record(plan.operationId + ".request", { ...common, phase: "request" });
+        requested = true;
+      });
+      const originalSend = child.send;
+      child.send = function (message, ...rest) {
+        if (message?.type !== "update-accepted" || message.updateId !== plan.operationId)
+          return Reflect.apply(originalSend, this, [message, ...rest]);
+        ensure(
+          requested &&
+            !accepted &&
+            Object.keys(message).every((key) =>
+              ["type", "updateId", "migrationPlan"].includes(key),
+            ),
+          "Install acceptance differs",
+        );
+        const callback = rest.at(-1);
+        ensure(typeof callback === "function", "Install acceptance requires native send callback");
+        rest[rest.length - 1] = function (error) {
+          if (error == null) {
+            const state = privateRecord(path.join(home, "runtime", "service-state.json"));
+            const reserved = privateRecord(
+              path.join(home, "runtime", "jones-update-operations", plan.operationId + ".json"),
+            );
+            const update = state.value.update;
+            ensure(
+              state.value.protocol === 4 &&
+                state.value.activeVersion === plan.childVersion &&
+                update?.id === plan.operationId &&
+                update.status === "pending" &&
+                update.phase === "accepted" &&
+                update.fromVersion === plan.childVersion &&
+                update.targetVersion === plan.binding.targetVersion &&
+                update.dbPath === plan.binding.dbPath &&
+                update.qualified?.stagedHandle === plan.binding.stagedHandle &&
+                reserved.value.schema === 1 &&
+                reserved.value.operationId === plan.operationId &&
+                exactKeys(reserved.value.binding, Object.keys(plan.binding)) &&
+                Object.keys(plan.binding).every(
+                  (key) => reserved.value.binding[key] === plan.binding[key],
+                ),
+              "Install acceptance lacks matching durable native evidence",
+            );
+            record(plan.operationId + ".accepted", {
+              ...common,
+              phase: "accepted",
+              sendCallbackCompleted: true,
+              stateSha256: state.sha256,
+              reservationSha256: reserved.sha256,
+            });
+            accepted = true;
+          }
+          return Reflect.apply(callback, this, arguments);
+        };
+        return Reflect.apply(originalSend, this, [message, ...rest]);
+      };
+      return child;
+    }
     const seen = new Set();
     const projection = (requestId, phase, extra = {}) => ({
       protocol: 1,
@@ -643,10 +805,10 @@ function installObserver(filename) {
   };
   syncBuiltinESMExports();
   record("ready", {
-    protocol: 1,
+    protocol: plan.protocol,
     fixtureId: plan.fixtureId,
     operationId: plan.operationId,
-    requestIds: plan.requestIds,
+    ...(installing ? {} : { requestIds: plan.requestIds }),
     launcherPid: process.pid,
   });
 }

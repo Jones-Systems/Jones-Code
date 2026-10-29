@@ -9,6 +9,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { runNativeFixtureCommand } from "./native-fixture-support.mjs";
 import { legacyRefusalCases } from "./packaged-recovery-fixture.mjs";
+import { operationBinding } from "../../../apps/server/src/jones/updates/launcherOperation.ts";
 
 const preload = NodeURL.fileURLToPath(new URL("./packaged-recovery-preload.cjs", import.meta.url));
 const fail = (message) => {
@@ -680,7 +681,15 @@ export async function createPackagedRecoveryHttpClient({
   });
 }
 
-export async function preparePackagedReconciliationObservation({ prepared, requestIds, signal }) {
+export function preparePackagedReconciliationObservation(input) {
+  return preparePackagedObservation({ ...input, installing: false });
+}
+
+export function preparePackagedInstallObservation(input) {
+  return preparePackagedObservation({ ...input, installing: true });
+}
+
+async function preparePackagedObservation({ prepared, requestIds, signal, installing }) {
   signal?.throwIfAborted();
   prepared = structuredClone(prepared);
   requestIds = Array.isArray(requestIds) ? [...requestIds] : requestIds;
@@ -697,12 +706,18 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
     baseDir !== NodePath.join(root, "home") ||
     (await NodeFSP.realpath(baseDir)) !== baseDir ||
     !uuid.test(operationId) ||
-    !Array.isArray(requestIds) ||
-    requestIds.length !== 2 ||
-    !requestIds.every((id) => typeof id === "string" && uuid.test(id)) ||
-    new Set(requestIds).size !== 2
+    (!installing &&
+      (!Array.isArray(requestIds) ||
+        requestIds.length !== 2 ||
+        !requestIds.every((id) => typeof id === "string" && uuid.test(id)) ||
+        new Set(requestIds).size !== 2)) ||
+    (installing && (prepared.kind !== "staged" || prepared.state.update !== undefined))
   )
-    fail("isolated reconciliation fixture and two distinct request IDs required");
+    fail(
+      installing
+        ? "idle staged Install fixture required"
+        : "isolated reconciliation fixture and two distinct request IDs required",
+    );
   const allocation = await NodeFSP.lstat(root);
   if (
     !allocation.isDirectory() ||
@@ -750,7 +765,7 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
   )
     fail("observer active payload differs");
   const childIdentity = await executableIdentity(childExecutable);
-  const ids = [...requestIds];
+  const ids = installing ? [] : [...requestIds];
   const fixtureId = prepared.fixtureId;
   const planPath = NodePath.join(root, "observer-plan.json");
   const directory = NodePath.join(root, "ipc-observations");
@@ -761,12 +776,12 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
     if (cause.code !== "ENOENT") throw cause;
   }
   await writePrivate(planPath, {
-    protocol: 1,
+    protocol: installing ? 2 : 1,
     fixtureId,
     executable: launcher.executable,
     identity: launcher.identity,
     operationId,
-    requestIds: ids,
+    ...(installing ? { binding: operationBinding(prepared.staged) } : { requestIds: ids }),
     childExecutable,
     childIdentity,
     childVersion,
@@ -801,6 +816,49 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
       (stat.mode & 0o077) !== 0
     )
       fail("unsafe observer directory");
+    if (installing) {
+      NodeAssert.deepEqual(
+        (await NodeFSP.readdir(directory)).sort(),
+        ["ready.json", operationId + ".request.json", operationId + ".accepted.json"].sort(),
+      );
+      NodeAssert.deepEqual((await boundedRecord(NodePath.join(directory, "ready.json"))).value, {
+        protocol: 2,
+        fixtureId,
+        operationId,
+        launcherPid,
+      });
+      const common = { protocol: 2, fixtureId, operationId, launcherPid, childPid };
+      NodeAssert.deepEqual(
+        (await boundedRecord(NodePath.join(directory, operationId + ".request.json"))).value,
+        { ...common, phase: "request" },
+      );
+      const receipt = (
+        await boundedRecord(NodePath.join(directory, operationId + ".accepted.json"))
+      ).value;
+      NodeAssert.deepEqual(receipt, {
+        ...common,
+        phase: "accepted",
+        sendCallbackCompleted: true,
+        stateSha256: receipt.stateSha256,
+        reservationSha256: receipt.reservationSha256,
+      });
+      if (
+        ![receipt.stateSha256, receipt.reservationSha256].every(
+          (value) => typeof value === "string" && /^[a-f0-9]{64}$/.test(value),
+        )
+      )
+        fail("acceptance digests differ");
+      NodeAssert.deepEqual(await executableIdentity(launcher.executable), launcher.identity);
+      NodeAssert.deepEqual(await executableIdentity(childExecutable), childIdentity);
+      return {
+        schema: "jones.packaged-install-observation/v1",
+        operationId,
+        receipt,
+        packagedRecoveryMatrixPassed: false,
+        processIdentityScope: "captured-child-handle-only",
+        externalDescendantSettlementRequired: true,
+      };
+    }
     NodeAssert.deepEqual(
       (await NodeFSP.readdir(directory)).sort(),
       ["ready.json", ...ids.flatMap((id) => [id + ".request.json", id + ".reply.json"])].sort(),
@@ -848,11 +906,15 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
       NODE_OPTIONS: "--require " + JSON.stringify(preload),
       JONES_PACKAGED_RECOVERY_OBSERVER: planPath,
     }),
-    readPair: (captured) => read(captured, undefined),
-    readRefusalPair: (captured) => {
-      if (refusalReason === undefined) fail("named legacy refusal fixture required");
-      return read(captured, refusalReason);
-    },
+    ...(installing
+      ? { readAcceptance: (captured) => read(captured, undefined) }
+      : {
+          readPair: (captured) => read(captured, undefined),
+          readRefusalPair: (captured) => {
+            if (refusalReason === undefined) fail("named legacy refusal fixture required");
+            return read(captured, refusalReason);
+          },
+        }),
   });
 }
 
