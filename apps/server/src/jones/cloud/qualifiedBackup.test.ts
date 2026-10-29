@@ -622,25 +622,36 @@ it.each([
   { name: "two-core capacity hint", available: 2, busy: 0, idle: 100, expected: 2 },
   { name: "one-core capacity hint", available: 1, busy: 0, idle: 100, expected: 1 },
   { name: "one spare core", available: 4, busy: 75, idle: 25, expected: 2 },
+  {
+    name: "one spare core among ten CPUs",
+    available: 10,
+    busy: 900,
+    idle: 100,
+    count: 10,
+    expected: 2,
+  },
   { name: "less than one spare core", available: 4, busy: 90, idle: 10, expected: 1 },
   { name: "zero capacity hint", available: 0, busy: 0, idle: 100, expected: 4 },
   { name: "nonfinite capacity hint", available: NaN, busy: 0, idle: 100, expected: 4 },
   { name: "fractional capacity hint", available: 1.5, busy: 0, idle: 100, expected: 4 },
-])("selects Linux copy concurrency for $name", async ({ available, busy, idle, expected }) => {
-  let samples = 0;
-  await checkLinuxCopyConcurrency(
-    expected,
-    () => available,
-    () => {
-      if (available === 1) {
-        samples += 1;
-        throw new Error("one-core copies must not sample");
-      }
-      return samples++ === 0 ? cpuSnapshot(0, 0) : cpuSnapshot(busy, idle);
-    },
-  );
-  assert.equal(samples, available === 1 ? 0 : 2);
-});
+])(
+  "selects Linux copy concurrency for $name",
+  async ({ available, busy, idle, count = 4, expected }) => {
+    let samples = 0;
+    await checkLinuxCopyConcurrency(
+      expected,
+      () => available,
+      () => {
+        if (available === 1) {
+          samples += 1;
+          throw new Error("one-core copies must not sample");
+        }
+        return samples++ === 0 ? cpuSnapshot(0, 0, count) : cpuSnapshot(busy, idle, count);
+      },
+    );
+    assert.equal(samples, available === 1 ? 0 : 2);
+  },
+);
 
 it.each([
   { name: "empty", after: [] },

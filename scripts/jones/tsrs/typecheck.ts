@@ -4,7 +4,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Identity from "./identity.ts";
 import { classifyArguments, runWithBuildInfo } from "./build-info.ts";
-import { acquireLock, runChild } from "./patch.ts";
+import { acquireLock, runChild, CommandCancelled } from "./patch.ts";
 
 const FALLBACK_LIMITATION =
   "The pinned fallback misses configured deterministicKeys ERROR TS377049; local or cached success requires authoritative supported-platform CI.";
@@ -41,15 +41,21 @@ export async function launchVerified(
   installed: Identity.Installed,
   signal: AbortSignal,
   launch: (compiler: Identity.Installed, spawned: () => Promise<void>) => Promise<number>,
+  hooks: {
+    readonly contended?: () => void | Promise<void>;
+    readonly acquired?: () => void | Promise<void>;
+  } = {},
 ): Promise<number> {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + 10000;
   let lock: Awaited<ReturnType<typeof acquireLock>>;
   for (;;) {
-    if (signal.aborted) throw new Error("Command cancelled before verification.");
+    if (signal.aborted) throw new CommandCancelled(signal);
     try {
       lock = await acquireLock(installed);
       break;
     } catch (error) {
+      await hooks.contended?.();
+      if (signal.aborted) throw new CommandCancelled(signal);
       if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) throw error;
       // Parallel launchers may observe an in-progress lock write or reclamation.
       // Retrying never admits a compiler without acquiring and verifying again.
@@ -63,8 +69,10 @@ export async function launchVerified(
     await lock.release();
   };
   try {
-    if (signal.aborted) throw new Error("Command cancelled before verification.");
+    await hooks.acquired?.();
+    if (signal.aborted) throw new CommandCancelled(signal);
     const compiler = await Identity.verified(installed);
+    if (signal.aborted) throw new CommandCancelled(signal);
     // Native spawn completion pins the executable inode. Release before waiting
     // for compiler exit so independent typechecks can run in parallel.
     return await launch(compiler, release);
@@ -140,6 +148,9 @@ export async function main(args: string[]): Promise<number> {
       args,
       controller.signal,
     );
+  } catch (error) {
+    if (error instanceof CommandCancelled) return error.exitCode;
+    throw error;
   } finally {
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", terminate);

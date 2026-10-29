@@ -6,6 +6,10 @@ import type {
   ThreadPullRequestWatch,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import {
+  evaluateObservedChecks,
+  type ObservedPass,
+} from "../jones/pullRequestWatch/checkObservation.ts";
 
 /** Bounds consecutive comment-only wakes to stop bot reply loops; check, conflict, or push news resets it. */
 export const PULL_REQUEST_WATCH_WAKE_LIMIT = 10;
@@ -17,6 +21,7 @@ const SNIPPET_LENGTH = 200;
 export type PullRequestWatchChange =
   | { readonly kind: "checks-failed"; readonly failed: ReadonlyArray<PullRequestCheck> }
   | { readonly kind: "checks-passed"; readonly count: number; readonly required: boolean }
+  | ObservedPass
   | { readonly kind: "remarks"; readonly remarks: ReadonlyArray<PullRequestComment> }
   | { readonly kind: "no-checks"; readonly minutes: number }
   | { readonly kind: "conflicting" };
@@ -35,7 +40,13 @@ export function evaluatePullRequestWatch(
   watch: ThreadPullRequestWatch,
   detail: Pick<
     PullRequestDetail,
-    "capabilities" | "headSha" | "checks" | "mergeability" | "viewer" | "author"
+    | "capabilities"
+    | "headSha"
+    | "checks"
+    | "mergeability"
+    | "viewer"
+    | "author"
+    | "jonesCheckObservation"
   >,
   remarks: ReadonlyArray<PullRequestComment> | null,
   now: number,
@@ -49,7 +60,21 @@ export function evaluatePullRequestWatch(
   let passed = headMoved ? false : watch.passed;
   let passedChecks = headMoved ? [] : watch.passedChecks;
   let owedChecks = headMoved ? [] : (watch.owedChecks ?? []);
-  if (detail.checks.length > 0) {
+  if (detail.jonesCheckObservation !== undefined) {
+    const observed = evaluateObservedChecks({
+      headSha,
+      checks: detail.checks,
+      observation: detail.jonesCheckObservation,
+      failedChecks,
+      passed,
+      passedChecks,
+      owedChecks,
+    });
+    if (observed.newlyFailed.length > 0)
+      changes.push({ kind: "checks-failed", failed: observed.newlyFailed });
+    if (observed.pass !== undefined) changes.push(observed.pass);
+    ({ failedChecks, passed, passedChecks, owedChecks } = observed);
+  } else if (detail.checks.length > 0) {
     const failed = detail.checks.filter(isFailedCheck);
     const newlyFailed = failed.filter((check) => !failedChecks.includes(check.name));
     if (newlyFailed.length > 0) changes.push({ kind: "checks-failed", failed: newlyFailed });
@@ -187,6 +212,12 @@ function changeLines(
         ),
       ];
     case "checks-passed":
+      if ("observed" in change)
+        return [
+          change.required
+            ? `- The required gate passed${context.commit}. Advisory checks may still be running.`
+            : `- Observed checks completed${context.commit}: ${change.observed.successful} successful, ${change.observed.skipped} skipped, ${change.observed.neutral} neutral. Required-gate completeness is unknown.`,
+        ];
       return [
         `- All ${change.count} ${change.required ? "required " : ""}${change.count === 1 ? "check" : "checks"} passed${context.commit}.`,
       ];

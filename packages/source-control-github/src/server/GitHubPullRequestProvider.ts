@@ -10,6 +10,7 @@ import type {
   PullRequestActor,
   PullRequestCapabilities,
   PullRequestCheck,
+  PullRequestCheckObservation,
   PullRequestReaction,
   PullRequestViewerPermissions,
 } from "@t3tools/contracts";
@@ -28,6 +29,7 @@ import {
 } from "@t3tools/source-control-core/server/PullRequestProvider";
 import type {
   GitHubRepositoryAccess,
+  GitHubPullRequestCore,
   GitHubViewerAccess,
   GitHubWorkflowRunApproval,
 } from "./gitHubPullRequestJson.ts";
@@ -306,6 +308,27 @@ export const make = Effect.gen(function* () {
 
   const readChecks = (input: ProviderRepositoryRef & { readonly number: number }) =>
     cli.getPullRequestDetail(input).pipe(
+      Effect.flatMap(
+        (
+          pullRequest,
+        ): Effect.Effect<
+          GitHubPullRequestCore & {
+            readonly jonesCheckObservation?: PullRequestCheckObservation | undefined;
+          },
+          GitHubPullRequestApi.GitHubPullRequestApiError
+        > =>
+          pullRequest.state !== "open"
+            ? Effect.succeed({ ...pullRequest, jonesCheckObservation: undefined })
+            : cli
+                .getPullRequestCheckObservation({
+                  ...input,
+                  headSha: pullRequest.headSha,
+                  baseBranch: pullRequest.baseBranch,
+                  headBranch: pullRequest.headBranch,
+                  checks: pullRequest.checks,
+                })
+                .pipe(Effect.map((observation) => ({ ...pullRequest, ...observation }))),
+      ),
       Effect.flatMap((pullRequest) =>
         (pullRequest.state !== "open" || pullRequest.isCrossRepository !== true
           ? Effect.succeed({
@@ -471,7 +494,11 @@ export const make = Effect.gen(function* () {
 
     getChangeRequestChecks: (input) =>
       cli.revalidateChecks(input, readChecks(input)).pipe(
-        Effect.map(({ state, checks }) => ({ state, checks })),
+        Effect.map(({ state, checks, jonesCheckObservation }) => ({
+          state,
+          checks,
+          ...(jonesCheckObservation === undefined ? {} : { jonesCheckObservation }),
+        })),
         Effect.mapError(fail("getChangeRequestChecks")),
       ),
 

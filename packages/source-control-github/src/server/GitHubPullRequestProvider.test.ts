@@ -15,6 +15,21 @@ import type {
 import { gitHubViewerPermissions, loginAvatarUrl, make } from "./GitHubPullRequestProvider.ts";
 import type { GitHubReviewThreadComments } from "./gitHubPullRequestJson.ts";
 
+const observeChecks: GitHubPullRequestApi.GitHubPullRequestApi["Service"]["getPullRequestCheckObservation"] =
+  (input) =>
+    Effect.succeed({
+      headSha: input.headSha ?? "abc123",
+      checks: input.checks,
+      jonesCheckObservation: {
+        headSha: input.headSha ?? "abc123",
+        enumerationComplete: true,
+        workflowState: "complete",
+        requiredSetKnown: false,
+        requiredState: "unknown",
+        requiredChecks: [],
+      },
+    });
+
 const coreFields = {
   reviewRequestTeams: [],
   checksTruncated: false,
@@ -37,6 +52,7 @@ it.effect("maps credential verification failures without relabeling operation fa
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           withVerifiedCredential: (_input, use) =>
             verificationFails
               ? Effect.fail(
@@ -240,6 +256,7 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -308,7 +325,11 @@ describe("gitHubViewerPermissions", () => {
       if (readChecks === undefined) return yield* Effect.die("checks read missing");
       expect(
         yield* readChecks({ cwd: "/w", repository: "acme/web", host: "github.com", number: 7 }),
-      ).toEqual({ state: detail.state, checks: detail.checks });
+      ).toEqual({
+        state: detail.state,
+        checks: detail.checks,
+        jonesCheckObservation: detail.jonesCheckObservation,
+      });
       expect(detail.workflowApprovalsRequired).toBe(1);
       expect(detail.checks).toEqual([
         {
@@ -334,6 +355,7 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -447,6 +469,7 @@ it.effect("does not classify same-repository gates as fork workflow approvals", 
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
+        getPullRequestCheckObservation: observeChecks,
         getPullRequestDetail: () => Effect.succeed({ ...openDetail, isCrossRepository: false }),
         listWorkflowRunsRequiringApproval: () =>
           Effect.die("same-repository pull requests must not probe fork workflow approvals"),
@@ -487,6 +510,7 @@ it.effect("keeps an unsafe workflow approval scope visible as unknown", () =>
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
+        getPullRequestCheckObservation: observeChecks,
         getPullRequestDetail: () => Effect.succeed(openDetail),
         listWorkflowRunsRequiringApproval: () =>
           Effect.fail(
@@ -528,6 +552,7 @@ describe("getViewerPermissions", () => {
   ) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
+      getPullRequestCheckObservation: observeChecks,
       getPullRequestDetail: () =>
         SourceControlRateLimit.Interactive.pipe(
           Effect.tap((allowReserve) => Effect.sync(() => onDetail(allowReserve))),
@@ -573,6 +598,7 @@ describe("getViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           getPullRequestDetail: () =>
             Effect.fail(
               new GitHubPullRequestApi.GitHubPullRequestReadError({
@@ -651,6 +677,7 @@ describe("getChangeRequest commits", () => {
   const layerWith = (commits: GitHubReviewThreadComments["commits"]) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
+      getPullRequestCheckObservation: observeChecks,
       getPullRequestActivity: () =>
         Effect.succeed({
           author: baseDetail.author,
@@ -750,6 +777,7 @@ describe("getChangeRequestActivity dismissed reviews", () => {
   const layerFor = (body: string) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
+      getPullRequestCheckObservation: observeChecks,
       getPullRequestActivity: () =>
         Effect.succeed({ author: null, comments: [dismissedReview(body)], commits: [] }),
       listReviewThreadComments: () => Effect.succeed(threadComments),

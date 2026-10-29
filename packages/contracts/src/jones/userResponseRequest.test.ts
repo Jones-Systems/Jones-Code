@@ -6,6 +6,22 @@ import { UserResponseRequestInput } from "./userResponseRequest.ts";
 const decode = Schema.decodeUnknownSync(UserResponseRequestInput);
 const decodePublicCommand = Schema.decodeUnknownSync(OrchestrationV2Command);
 describe("owner response request input", () => {
+  it("accepts an explicit action completion shortcut without changing review questions", () => {
+    expect(
+      decode({ instruction: "Open Browser.", defaultDone: true, clientRequestId: "action" })
+        .defaultDone,
+    ).toBe(true);
+    expect(() =>
+      decode({
+        questions: [{ prompt: "Which approach?" }],
+        defaultDone: true,
+        clientRequestId: "decision",
+      }),
+    ).toThrow();
+    expect(() =>
+      decode({ instruction: "Open Browser.", defaultDone: "yes", clientRequestId: "invalid" }),
+    ).toThrow();
+  });
   it("accepts one instruction with open text and optional genuine choices", () => {
     expect(
       decode({

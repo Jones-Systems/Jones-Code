@@ -39,6 +39,7 @@ import * as Fiber from "effect/Fiber";
 
 import * as CompilerIdentity from "../tsrs/identity.ts";
 import { launchVerified } from "../tsrs/typecheck.ts";
+import { CommandCancelled } from "../tsrs/patch.ts";
 import * as NodeOS from "node:os";
 
 export const RAW_LIMIT = 16 * 1024 * 1024;
@@ -696,7 +697,9 @@ export async function runCli(
     return firstFailure;
   } catch (error) {
     process.stderr.write(`[incremental] ${message(error)}\n`);
-    return error instanceof Interrupted ? error.exitCode : firstFailure || 1;
+    return error instanceof Interrupted || error instanceof CommandCancelled
+      ? error.exitCode
+      : firstFailure || 1;
   } finally {
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", terminate);

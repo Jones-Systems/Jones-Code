@@ -1060,6 +1060,75 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+it.effect.each(["wrong outer thread", "running result run"] as const)(
+  "retries a matching observation with $0 without false fleet completion",
+  (malformation) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const retryStarted = yield* Deferred.make<void>();
+        const allowValidResponse = yield* Deferred.make<void>();
+        let malformed = false;
+        const forwardedAfterMalformed: string[] = [];
+        const a = yield* makeLaptop(
+          database,
+          offers,
+          undefined,
+          undefined,
+          undefined,
+          (wait) =>
+            wait.pipe(
+              Effect.flatMap((result) =>
+                Effect.gen(function* () {
+                  if (!malformed) {
+                    malformed = true;
+                    expect(result.remoteObservation).toBeDefined();
+                    return malformation === "wrong outer thread"
+                      ? { ...result, threadId: ThreadId.make("wrong-thread") }
+                      : { ...result, resultRun: { runId: boxRunId, status: "running" as const } };
+                  }
+                  yield* Deferred.succeed(retryStarted, undefined);
+                  yield* Deferred.await(allowValidResponse);
+                  return result;
+                }),
+              ),
+            ),
+          (tool) => {
+            if (malformed) forwardedAfterMalformed.push(tool);
+          },
+        );
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+        yield* Ref.set(thread.reply, "Exact settled result.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        const outcome = yield* Effect.raceFirst(
+          Deferred.await(retryStarted).pipe(Effect.as("retry")),
+          taskResult(a, delegated.taskId).pipe(Effect.as("false completion")),
+        ).pipe(Effect.timeout(Duration.seconds(5)));
+        expect(outcome).toBe("retry");
+        const pending = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
+          (task) => task.id === delegated.taskId,
+        );
+        expect(pending?.result).toBeNull();
+        expect(pending?.remoteChild?.stoppedThere).not.toBe(true);
+        expect(yield* Ref.get(thread.stops)).toEqual([]);
+        expect(forwardedAfterMalformed).not.toContain("t3_thread_read");
+        yield* Deferred.succeed(allowValidResponse, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+          status: "completed",
+          result: "Exact settled result.",
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+);
+
 it.effect("a task named only by environment inherits the parent's model, within the link", () =>
   Effect.scoped(
     Effect.gen(function* () {

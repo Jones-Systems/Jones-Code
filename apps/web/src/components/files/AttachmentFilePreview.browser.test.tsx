@@ -32,6 +32,97 @@ import BinaryViewer from "./BinaryViewer";
 import { decodeImagePreview } from "./decodeImagePreview";
 import type { BinaryWorkerResult } from "./binaryPreviewProtocol";
 
+function observeOfficeViewerWorker(kind: "rtf" | "epub" | "ods", holdOpen = false) {
+  let markOpened!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    markOpened = resolve;
+  });
+  let releaseOpen: (() => void) | undefined;
+  let resolveReply!: (result: OfficeWorkerResult) => void;
+  let rejectReply!: (error: Error) => void;
+  const reply = new Promise<OfficeWorkerResult>((resolve, reject) => {
+    resolveReply = resolve;
+    rejectReply = reject;
+  });
+  const listeners = new AbortController();
+  const opening = new WeakSet<Worker>();
+  const observed = new WeakSet<Worker>();
+  const stub = stubGlobal(
+    "Worker",
+    class extends Worker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        if (!new URL(String(args[0]), document.baseURI).pathname.includes("officePreview.worker"))
+          return;
+        observed.add(this);
+        this.addEventListener(
+          "message",
+          (event: MessageEvent<OfficeWorkerResult>) => {
+            if (!opening.has(this)) {
+              rejectReply(new Error("Office viewer replied before its open request"));
+            } else if (event.data.type === "error") {
+              rejectReply(new Error(event.data.message));
+            } else {
+              resolveReply(event.data);
+            }
+          },
+          { once: true, signal: listeners.signal },
+        );
+        this.addEventListener(
+          "error",
+          () => rejectReply(new Error("Office viewer worker failed")),
+          {
+            once: true,
+            signal: listeners.signal,
+          },
+        );
+      }
+      override postMessage(
+        message: unknown,
+        options?: Transferable[] | StructuredSerializeOptions,
+      ) {
+        const forward = () => {
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        };
+        if (
+          observed.has(this) &&
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "open"
+        ) {
+          if (!("kind" in message) || message.kind !== kind) {
+            rejectReply(new Error("Office viewer opened an unexpected document kind"));
+          }
+          markOpened();
+          const sendOpen = () => {
+            opening.add(this);
+            forward();
+          };
+          if (holdOpen) releaseOpen = sendOpen;
+          else sendOpen();
+          return;
+        }
+        forward();
+      }
+    },
+  );
+  return {
+    reply,
+    opened,
+    release() {
+      if (!releaseOpen) throw new Error("Office viewer has not requested its document yet");
+      releaseOpen();
+      releaseOpen = undefined;
+    },
+    [Symbol.dispose]() {
+      listeners.abort();
+      stub[Symbol.dispose]();
+    },
+  };
+}
+
 function officePreviewState(screen: Screen) {
   const root = screen.container.querySelector<HTMLElement>(
     "[data-office-pages], .scrollbar-gutter-both",
@@ -1882,18 +1973,31 @@ it("keeps spreadsheet dates on their calendar day west of UTC", async () => {
 });
 
 it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (pages) => {
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only clock origin; does not control pass/fail or waits.
+  const testStartedAt = performance.now();
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only timestamps correlate browser and worker events; assertions and timeouts remain unchanged.
+  const mainElapsedMs = () => Math.round(performance.now() - testStartedAt);
   const workerTrace: unknown[] = [];
-  const record = (entry: unknown) => {
-    workerTrace.push(entry);
-    if (workerTrace.length > 48) workerTrace.shift();
+  const record = (entry: Record<string, unknown>) => {
+    workerTrace.push({ mainElapsedMs: mainElapsedMs(), ...entry });
+    if (workerTrace.length > 128) workerTrace.shift();
   };
+  using _trace = {
+    [Symbol.dispose]() {
+      console.info("Word CI timing", JSON.stringify({ pages, workerTrace }));
+    },
+  };
+  record({ event: "fixture-start" });
+  const workerNames = new WeakMap<Worker, string>();
+  let workerCount = 0;
   const NativeWorker = Worker;
   using _workers = stubGlobal(
     "Worker",
     class extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options);
-        const name = String(url).split("/").pop();
+        const name = String(++workerCount) + ":" + String(url).split("/").pop();
+        workerNames.set(this, name);
         record({ worker: name, event: "started" });
         this.addEventListener("message", (event) => {
           const data = event.data;
@@ -1902,7 +2006,8 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
             event: "reply",
             type: data?.type,
             phase: data?.phase,
-            elapsedMs: data?.elapsedMs,
+            workerPerformanceNowMs: data?.elapsedMs,
+            openElapsedMs: data?.openElapsedMs,
             id: data?.id,
             ok: data?.ok,
             pages: data?.value?.pages?.length,
@@ -1912,6 +2017,13 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         this.addEventListener("error", (event) =>
           record({ worker: name, event: "error", message: event.message }),
         );
+        this.addEventListener("messageerror", () =>
+          record({ worker: name, event: "messageerror" }),
+        );
+      }
+      override terminate() {
+        record({ worker: workerNames.get(this), event: "terminated" });
+        super.terminate();
       }
       override postMessage(
         message: unknown,
@@ -1925,7 +2037,13 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         };
         if (data.method === "open" && data.input)
           message = { ...data, input: { ...data.input, traceOpen: true } };
-        record({ event: "request", method: data.method, type: data.type, id: data.id });
+        record({
+          worker: workerNames.get(this),
+          event: "request",
+          method: data.method,
+          type: data.type,
+          id: data.id,
+        });
         if (Array.isArray(options)) super.postMessage(message, options);
         else super.postMessage(message, options);
       }
@@ -1950,6 +2068,8 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
   // Binary media must not consume the document's markup budget.
   archive.file("word/media/image.png", new Uint8Array(2_500_000));
   const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
+  record({ event: "fixture-ready", bytes: file.size });
+  record({ event: "render-start" });
   await using screen = await render(
     <div style={{ display: "flex", height: 400, width: 600 }}>
       <AttachmentFilePreview
@@ -1960,16 +2080,25 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
       />
     </div>,
   );
+  record({ event: "render-ready" });
+  const prefixDeadlineMainElapsedMs = mainElapsedMs() + 10_000;
+  record({ event: "prefix-wait-start", deadlineMainElapsedMs: prefixDeadlineMainElapsedMs });
   // Wait for the visible prefix before awaiting full pagination, so engine and
   // font startup belong to opening. The project timeout still caps the whole test.
   await vi.waitFor(
     () =>
       expect(
         screen.container.querySelector("[data-office-pages]"),
-        JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
+        JSON.stringify({
+          viewer: officePreviewState(screen),
+          mainElapsedMs: mainElapsedMs(),
+          prefixDeadlineMainElapsedMs,
+          workerTrace,
+        }),
       ).not.toBeNull(),
     { timeout: 10_000 },
   );
+  record({ event: "visible-prefix-observed" });
   await vi.waitFor(
     () =>
       expect(
@@ -2807,6 +2936,7 @@ it.each(["rtf", "epub", "ods"] as const)(
     } finally {
       worker.terminate();
     }
+    using viewer = observeOfficeViewerWorker(kind, kind === "ods");
     await using screen = await render(
       <div style={{ display: "flex", height: 400, width: 600 }}>
         <AttachmentFilePreview
@@ -2817,6 +2947,13 @@ it.each(["rtf", "epub", "ods"] as const)(
         />
       </div>,
     );
+    if (kind === "ods") {
+      await viewer.opened;
+      expect(screen.container.textContent).not.toContain("North");
+      viewer.release();
+    }
+    const viewerResult = await viewer.reply;
+    expect(viewerResult.type).toBe(kind === "ods" ? "ods" : "document");
     if (kind === "rtf") {
       await vi.waitFor(
         () => expect(screen.container.textContent, officePreviewState(screen)).toContain("1 page"),

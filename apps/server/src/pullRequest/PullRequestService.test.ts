@@ -3176,7 +3176,18 @@ it.effect(
         ],
         providers: [
           fakePullRequestProvider(SourceControlProviderKind.make("github"), {
-            getChangeRequest: () => Effect.succeed(hostedChangeRequest("Description")),
+            getChangeRequest: () =>
+              Effect.succeed({
+                ...hostedChangeRequest("Description"),
+                jonesCheckObservation: {
+                  headSha: "abc123",
+                  enumerationComplete: false,
+                  workflowState: "unknown",
+                  requiredSetKnown: false,
+                  requiredState: "unknown",
+                  requiredChecks: [],
+                },
+              }),
             getChangeRequestChecks: () =>
               Effect.sync(() => {
                 reads += 1;
@@ -3190,8 +3201,10 @@ it.effect(
       expect(yield* service.checks(reference)).toEqual({
         state: detail.state,
         checks: detail.checks,
+        jonesCheckObservation: detail.jonesCheckObservation,
         observedAt: detail.observedAt,
       });
+      expect(detail.jonesCheckObservation?.enumerationComplete).toBe(false);
       expect(reads).toBe(0);
       yield* TestClock.adjust("16 seconds");
       yield* service.detail(reference);

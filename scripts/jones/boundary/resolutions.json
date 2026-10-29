@@ -191,7 +191,7 @@
     },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
-      "sourceSha256": "b378fa5e872e97733aba52a896b37dcdba98fcfa0defa84e10907fe92b324f69",
+      "sourceSha256": "d7fa81c1a12e76a6547f1717261b6f6dd4628252462d57c0c75aa9e90f0f46a0",
       "expression": "\"../../../node_modules/@betteroffice/fonts/assets/Carlito-Regular.ttf?url\"",
       "reason": "Upstream document-rendering fixture loads a real installed external font through a relative node_modules URL. Dependency asset bytes are outside the source boundary; exact test and manifest/catalog hashes bind this unsupported loader, not generated or runtime verification.",
       "anchors": [
@@ -201,7 +201,7 @@
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "fcd00a98f907f60334b894225104530c060946f172ee4f9a66f5ddcb234cc8a1"
+          "sha256": "eead531256f589048c5dc297f0ca2bfecda52ebdf4db956b43784c6987e89cfe"
         }
       ],
       "targets": []
@@ -218,7 +218,7 @@
         },
         {
           "path": "pnpm-workspace.yaml",
-          "sha256": "fcd00a98f907f60334b894225104530c060946f172ee4f9a66f5ddcb234cc8a1"
+          "sha256": "eead531256f589048c5dc297f0ca2bfecda52ebdf4db956b43784c6987e89cfe"
         }
       ],
       "targets": []
