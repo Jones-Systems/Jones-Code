@@ -66,9 +66,9 @@ NodeTest.test(
           const context=JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
           const pending=new Map();
           process.on("message",message=>{
-            if(message.type==="update-reconciled"){
-              const reply=pending.get(message.requestId);
-              if(reply){pending.delete(message.requestId);reply.resolve(message)}
+            if(message.type==="update-reconciled" || message.type==="update-rejected"){
+              const reply=pending.get(message.requestId ?? message.operationId);
+              if(reply){pending.delete(message.requestId ?? message.operationId);reply.resolve(message)}
             }
           });
           const snapshot=async()=>({
@@ -82,6 +82,20 @@ NodeTest.test(
               response.writeHead(401);response.end("{}");return
             }
             try{
+              if(request.method==="POST" && request.url==="/api/jones-updates/operations/start"){
+                const chunks=[];let size=0;
+                for await(const chunk of request){size+=chunk.length;if(size>4096)throw new Error("fixture input bound");chunks.push(chunk)}
+                const body=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                const reply=await new Promise((resolve,reject)=>{
+                  pending.set(body.operationId,{resolve,reject});
+                  process.send({type:"request-update",operationId:body.operationId,
+                    targetVersion:"0.0.0-preview.20261002.101.1",dbPath:path.join(home,"userdata","statev2.sqlite"),
+                    stagedHandle:body.action.stagedHandle},error=>{if(error)reject(error)});
+                });
+                response.end(JSON.stringify({...body,protocol:1,phase:"blocked",updatedAt:new Date().toISOString(),
+                  code:"failed-operation-unsettled",message:reply.reason}));
+                return;
+              }
               if(request.method==="POST" && request.url==="/api/jones-updates/reconcile"){
                 const chunks=[];let size=0;
                 for await(const chunk of request){size+=chunk.length;if(size>4096)throw new Error("fixture input bound");chunks.push(chunk)}
@@ -114,7 +128,7 @@ NodeTest.test(
           state=JSON.parse(await fs.readFile(statePath,"utf8"));
           if(state.protocol!==4 || !state.update) throw new Error("Synthetic launcher refuses invalid service state.");
         }catch(error){console.error(error.message);process.exitCode=1;return}
-        const {writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
+        const {writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement,assertNoUnreconciledUpdateOperations,FailedOperationUnsettledError}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
         const {removeQualifiedRecoveryPayload}=load(${JSON.stringify(NodeURL.fileURLToPath(backup))});
 
         if(state.update.status==="failed"){
@@ -127,6 +141,21 @@ NodeTest.test(
           });
           let queue=Promise.resolve();
           child.on("message",message=>{
+            if(message.type==="request-update"){
+              queue=queue.then(async()=>{
+                try {
+                  await assertNoUnreconciledUpdateOperations(home,state.update);
+                  throw new Error("synthetic fixture expected an unsettled operation");
+                } catch(error) {
+                  if(!(error instanceof FailedOperationUnsettledError))throw error;
+                  await new Promise((resolve,reject)=>child.send({type:"update-rejected",operationId:message.operationId,
+                    reason:"failed-operation-unsettled: "+error.operationId+
+                      " requires reconciliation before another Install; the current server remains active.",
+                  },error=>error?reject(error):resolve()));
+                }
+              }).catch(error=>{console.error(error.message);child.kill("SIGTERM")});
+              return;
+            }
             if(message.type!=="reconcile-failed-update")return;
             queue=queue.then(async()=>{
               let existing=await readUpdateOperationSettlement(home,message.operationId);
@@ -610,6 +639,16 @@ NodeTest.test(
             preparePackagedReconciliationObservation({ prepared, requestIds: [ids[0], ids[0]] }),
             /two distinct request IDs/,
           );
+          for (const installOperationId of ["invalid", prepared.operationId, ids[0]]) {
+            await NodeAssert.rejects(
+              preparePackagedReconciliationObservation({
+                prepared,
+                requestIds: ids,
+                installOperationId,
+              }),
+              /distinct fixed unsettled Install/,
+            );
+          }
           const observation = await preparePackagedReconciliationObservation({
             prepared,
             requestIds: ids,
@@ -735,6 +774,7 @@ NodeTest.test(
                 "32345678-1234-4234-8234-123456789abc",
               ],
               token: "synthetic-legacy-fixture-token",
+              installOperationId: "52345678-1234-4234-8234-123456789abc",
             };
             await NodeAssert.rejects(
               exercisePackagedLegacyReconciliation({ ...input, token: "unsafe\nbearer" }),
@@ -751,6 +791,19 @@ NodeTest.test(
             NodeAssert.equal(result.assertionsPassed, true);
             NodeAssert.equal(result.packagedRecoveryMatrixPassed, false);
             NodeAssert.equal(result.externalDescendantSettlementRequired, true);
+            NodeAssert.equal(result.installReceipt.operationId, input.installOperationId);
+            NodeAssert.equal(result.installReceipt.phase, "blocked");
+            NodeAssert.equal(
+              result.observation.admissionRefusal.requestId,
+              input.installOperationId,
+            );
+            NodeAssert.equal(result.observation.admissionRefusal.sendCallbackCompleted, true);
+            NodeAssert.equal(
+              result.observation.admissionRefusal.reason,
+              "failed-operation-unsettled: " +
+                prepared.operationId +
+                " requires reconciliation before another Install; the current server remains active.",
+            );
             NodeAssert.deepEqual(
               result.observation.replies.map((reply) => reply.result),
               legacyVariant ? ["refused", "refused"] : ["settled", "already-settled"],

@@ -486,6 +486,7 @@ function installObserver(filename) {
       "identity",
       "operationId",
       ...(installing ? ["binding"] : ["requestIds"]),
+      ...(plan.installOperationId === undefined ? [] : ["installOperationId", "installBinding"]),
       "childExecutable",
       "childIdentity",
       "childVersion",
@@ -503,6 +504,20 @@ function installObserver(filename) {
       plan.childVersion.length <= 256,
     "invalid observer bindings",
   );
+  if (plan.installOperationId !== undefined) {
+    ensure(
+      !installing &&
+        typeof plan.installOperationId === "string" &&
+        uuid.test(plan.installOperationId) &&
+        plan.installOperationId !== plan.operationId &&
+        !plan.requestIds.includes(plan.installOperationId) &&
+        exactKeys(plan.installBinding, ["targetVersion", "dbPath", "stagedHandle"]) &&
+        Object.values(plan.installBinding).every(
+          (value) => typeof value === "string" && value.length > 0 && value.length <= 4096,
+        ),
+      "invalid unsettled Install binding",
+    );
+  }
   const executable = fs.realpathSync(process.execPath);
   const home = path.join(root, "home");
   ensure(
@@ -748,6 +763,7 @@ function installObserver(filename) {
       return child;
     }
     const seen = new Set();
+    let installRequested = false;
     const projection = (requestId, phase, extra = {}) => ({
       protocol: 1,
       fixtureId: plan.fixtureId,
@@ -759,6 +775,36 @@ function installObserver(filename) {
       ...extra,
     });
     child.on("message", (message) => {
+      if (
+        plan.installOperationId !== undefined &&
+        message?.type === "request-update" &&
+        message.operationId === plan.installOperationId
+      ) {
+        ensure(
+          !installRequested &&
+            message.targetVersion === plan.installBinding.targetVersion &&
+            message.dbPath === plan.installBinding.dbPath &&
+            message.stagedHandle === plan.installBinding.stagedHandle &&
+            Object.keys(message).every((key) =>
+              [
+                "type",
+                "operationId",
+                "targetVersion",
+                "dbPath",
+                "stagedHandle",
+                "stateRecovery",
+                "qualifiedRecoveryProtocol",
+              ].includes(key),
+            ),
+          "unsettled Install request differs",
+        );
+        installRequested = true;
+        record(
+          plan.installOperationId + ".request",
+          projection(plan.installOperationId, "install-request"),
+        );
+        return;
+      }
       if (
         message?.type !== "reconcile-failed-update" ||
         message.operationId !== plan.operationId ||
@@ -776,6 +822,39 @@ function installObserver(filename) {
     });
     const originalSend = child.send;
     child.send = function (message, ...rest) {
+      if (
+        plan.installOperationId !== undefined &&
+        message?.type === "update-rejected" &&
+        message.operationId === plan.installOperationId
+      ) {
+        const reason =
+          "failed-operation-unsettled: " +
+          plan.operationId +
+          " requires reconciliation before another Install; the current server remains active.";
+        ensure(
+          installRequested &&
+            exactKeys(message, ["type", "operationId", "reason"]) &&
+            message.reason === reason,
+          "unsettled Install refusal differs",
+        );
+        const callback = rest.at(-1);
+        ensure(
+          typeof callback === "function",
+          "unsettled Install refusal requires native send callback",
+        );
+        rest[rest.length - 1] = function (error) {
+          if (error == null)
+            record(
+              plan.installOperationId + ".refused",
+              projection(plan.installOperationId, "install-refused", {
+                reason,
+                sendCallbackCompleted: true,
+              }),
+            );
+          return Reflect.apply(callback, this, arguments);
+        };
+        return Reflect.apply(originalSend, this, [message, ...rest]);
+      }
       if (
         message?.type !== "update-reconciled" ||
         message.operationId !== plan.operationId ||
@@ -828,6 +907,9 @@ function installObserver(filename) {
     fixtureId: plan.fixtureId,
     operationId: plan.operationId,
     ...(installing ? {} : { requestIds: plan.requestIds }),
+    ...(plan.installOperationId === undefined
+      ? {}
+      : { installOperationId: plan.installOperationId }),
     launcherPid: process.pid,
   });
 }

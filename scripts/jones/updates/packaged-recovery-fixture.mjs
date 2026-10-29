@@ -188,7 +188,7 @@ export async function seedPackagedRecoveryFixture({
     options: { eventLoop: "worker" },
   });
   if (staged.receipt.payloadSha256 !== next.receipt.payloadSha256) refuse("staged payload changed");
-  if (kind === "staged") await retainStagedSelection(staged);
+  if (kind === "staged" || kind === "legacy-failed") await retainStagedSelection(staged);
   if (kind !== "staged")
     await reserveUpdateOperation(baseDir, operationId, operationBinding(staged));
   const pending = {
