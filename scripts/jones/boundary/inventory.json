@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/web/src/components/settings/ProjectSettingsPanel.tsx": "accepted-shared",
+    "apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx": "jones-owned",
+    "scripts/jones/boundary/fragments/project-favicon-search-demand.json": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexRetirement.test.ts": "jones-owned",
     "apps/server/src/jones/provider/codex/CodexRetirement.ts": "jones-owned",
     "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts": "jones-owned",
