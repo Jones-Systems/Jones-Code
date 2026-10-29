@@ -4,6 +4,21 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "pull-request-check-observation",
+      "tests": [
+        "packages/contracts/src/jones/pullRequestCheckObservation.test.ts",
+        "packages/source-control-github/src/jones/pullRequestCheckObservation.test.ts",
+        "packages/source-control-github/src/jones/pullRequestCheckExpectations.test.ts",
+        "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts",
+        "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
+        "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts",
+        "apps/server/src/pullRequest/PullRequestService.test.ts",
+        "apps/server/src/orchestration-v2/pullRequestWatch.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Jones-owned same-head REST observation and completion classification distinguish complete enumeration from required-set knowledge. The exact existing Jones-Code github.com/main CI Check policy is bound explicitly; all other targets retain unknown gate completeness. Shared API/provider/service/cache hooks preserve optional metadata and the reactor only extends its existing inFlight predicate. Existing API, provider, service and runtime harnesses prove real composition and persistent watch dedupe; extracting those harness tests would duplicate upstream fixtures. No retry, sweep, connection, merge policy, DB, workflow, dependency or installed-runtime changes."
+    },
+    {
       "id": "jones-triage-bindings",
       "tests": ["apps/server/src/cli/triagePrompt.test.ts"],
       "scope": "The existing CLI prompt owner and canonical playbook bind Jones source, build attribution and issue destinations while retaining t3 command names. Private diagnostics require bounded permission and uploads require explicit approval. The existing upstream harness checks emitted prompts, context and canonical playbook equality; a direct text repair avoids a parallel prompt implementation."

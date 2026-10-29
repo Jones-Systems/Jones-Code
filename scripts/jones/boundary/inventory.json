@@ -2453,7 +2453,20 @@
     "apps/server/src/jones/serverParallelism/diagnosticObservation.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/diagnosticObservation.test.ts": "jones-owned",
     "scripts/jones/serverParallelism/observer-diagnostic.mjs": "jones-owned",
-    "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs": "jones-owned"
+    "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs": "jones-owned",
+    "packages/contracts/src/jones/pullRequestCheckObservation.ts": "jones-owned",
+    "packages/contracts/src/jones/pullRequestCheckObservation.test.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckObservation.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckObservation.test.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckExpectations.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckExpectations.test.ts": "jones-owned",
+    "apps/server/src/jones/pullRequestWatch/checkObservation.ts": "jones-owned",
+    "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/pull-request-check-observation.json": "jones-owned",
+    "packages/source-control-core/src/server/PullRequestProvider.ts": "accepted-shared",
+    "packages/source-control-github/src/server/gitHubConditionalChecks.ts": "accepted-shared",
+    "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts": "jones-tests-in-upstream",
+    "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
