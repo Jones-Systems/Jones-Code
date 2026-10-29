@@ -104,6 +104,8 @@ function install(filename) {
   ensure(
     [
       "readFile-before",
+      "open-before",
+      "readFileSync-before",
       "mkdir-before",
       "rename-after",
       "rm-after",
@@ -126,7 +128,10 @@ function install(filename) {
   ensure(
     typeof plan.target === "string" &&
       plan.target.length <= 4096 &&
-      plan.target.startsWith("runtime/") &&
+      (plan.target.startsWith("runtime/") ||
+        (plan.method === "readFileSync-before" &&
+          plan.arm === "accepted-update" &&
+          plan.target === "userdata/server-runtime.json")) &&
       !plan.target.includes("\\") &&
       !plan.target.includes("\0") &&
       !plan.target.split("/").some((part) => part === "" || part === "." || part === ".."),
@@ -410,6 +415,20 @@ function install(filename) {
         };
       }
       return handle;
+    };
+    syncBuiltinESMExports();
+    return;
+  }
+
+  if (plan.method === "readFileSync-before") {
+    const original = fs.readFileSync;
+    fs.readFileSync = function (...args) {
+      if (matches(args[0]) && claim()) {
+        const error = new Error("Injected packaged recovery readFileSync-before");
+        error.code = "EIO";
+        throw error;
+      }
+      return Reflect.apply(original, this, args);
     };
     syncBuiltinESMExports();
     return;

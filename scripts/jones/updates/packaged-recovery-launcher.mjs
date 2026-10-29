@@ -526,6 +526,7 @@ export async function createPackagedRecoveryHttpClient({
   const operationId = prepared.operationId;
   const stagedHandle = prepared.staged.stagedHandle;
   const binding = structuredClone(prepared.staged.binding);
+  const targetSource = prepared.staged.receipt.sourceSha;
   const currentVersion =
     prepared.legacyVariant === "active-changed"
       ? prepared.state.activeVersion
@@ -559,7 +560,7 @@ export async function createPackagedRecoveryHttpClient({
     return { runtime, capability };
   };
   const initial = await boundRuntime();
-  const endpoint = async (route, payload) => {
+  const endpoint = async (route, payload, project) => {
     signal?.throwIfAborted();
     NodeAssert.deepEqual(await boundRuntime(), initial, "HTTP child changed before request");
     const mutation = payload !== undefined;
@@ -624,6 +625,11 @@ export async function createPackagedRecoveryHttpClient({
         started = true;
         request.end(body);
       });
+      if (project !== undefined) {
+        const projected = project(value);
+        NodeAssert.deepEqual(await boundRuntime(), initial, "HTTP child changed during request");
+        return projected;
+      }
       if (value === null && !mutation) {
         NodeAssert.deepEqual(await boundRuntime(), initial, "HTTP child changed during request");
         return value;
@@ -671,6 +677,74 @@ export async function createPackagedRecoveryHttpClient({
       if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(requestId))
         fail("fixed reconciliation request ID required");
       return endpoint("/api/jones-updates/reconcile", { operationId, requestId });
+    },
+    installOperation: (selectedId = operationId) => {
+      if (
+        typeof selectedId !== "string" ||
+        !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(selectedId)
+      )
+        fail("fixed Install operation ID required");
+      const input = {
+        operationId: selectedId,
+        environmentId: binding.environmentId,
+        expectedInstalledSource: binding.activeSourceSha,
+        action: { kind: "install", stagedHandle, currentVersion, targetSource },
+      };
+      return endpoint("/api/jones-updates/operations/start", input, (value) => {
+        if (
+          value === null ||
+          typeof value !== "object" ||
+          Array.isArray(value) ||
+          value.protocol !== 1 ||
+          value.operationId !== selectedId ||
+          value.environmentId !== input.environmentId ||
+          value.expectedInstalledSource !== input.expectedInstalledSource ||
+          ![
+            "accepted",
+            "running",
+            "stop-requested",
+            "adopting",
+            "handed-off",
+            "held",
+            "completed",
+            "rolled-back",
+            "stopped",
+            "refused",
+            "failed",
+            "blocked",
+            "fenced",
+            "interrupted",
+          ].includes(value.phase) ||
+          typeof value.updatedAt !== "string" ||
+          value.updatedAt.length > 64 ||
+          !Number.isFinite(Date.parse(value.updatedAt)) ||
+          (value.acceptedAt !== undefined &&
+            (typeof value.acceptedAt !== "string" ||
+              value.acceptedAt.length > 64 ||
+              !Number.isFinite(Date.parse(value.acceptedAt)))) ||
+          (value.updateId !== undefined && value.updateId !== selectedId) ||
+          (value.code !== undefined &&
+            (typeof value.code !== "string" || !/^[a-z][a-z0-9-]{0,47}$/.test(value.code))) ||
+          (value.message !== undefined &&
+            (typeof value.message !== "string" || value.message.length > 1024))
+        )
+          fail("Install operation receipt differs from the bound fixture");
+        NodeAssert.deepEqual(value.action, input.action);
+        return {
+          protocol: 1,
+          operationId: selectedId,
+          environmentId: input.environmentId,
+          expectedInstalledSource: input.expectedInstalledSource,
+          action: { ...input.action },
+          phase: value.phase,
+          updatedAt: value.updatedAt,
+          ...Object.fromEntries(
+            ["acceptedAt", "updateId", "code", "message"]
+              .filter((key) => value[key] !== undefined)
+              .map((key) => [key, value[key]]),
+          ),
+        };
+      });
     },
     install: () =>
       endpoint("/api/jones-updates/install", {
@@ -1252,5 +1326,301 @@ export async function exercisePackagedLegacyReconciliation({
     for (const watcher of watches) watcher.close();
     cancellation.abort(new Error("Reconciliation control finished."));
     await work;
+  }
+}
+
+export async function exercisePackagedAcceptedFailure({
+  prepared,
+  step,
+  freshOperationId,
+  token,
+  signal,
+}) {
+  signal?.throwIfAborted();
+  prepared = structuredClone(prepared);
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+  if (
+    prepared.kind !== "staged" ||
+    !["reverify", "backup", "ownership"].includes(step) ||
+    typeof freshOperationId !== "string" ||
+    !uuid.test(freshOperationId) ||
+    freshOperationId === prepared.operationId ||
+    typeof token !== "string" ||
+    !/^[\x21-\x7e]{16,8192}$/.test(token)
+  )
+    fail("idle staged fixture, named failure, distinct fresh ID and in-memory bearer required");
+  const { root, baseDir, operationId, launcher, staged } = prepared;
+  const observation = await preparePackagedInstallObservation({ prepared, signal });
+  const fault =
+    step === "reverify"
+      ? { method: "open-before", target: "runtime/staged-updates/" + staged.stagedHandle + ".json" }
+      : step === "backup"
+        ? { method: "mkdir-before", target: "runtime/db-backup/" + operationId + ".staging" }
+        : { method: "readFileSync-before", target: "userdata/server-runtime.json" };
+  await writePrivate(NodePath.join(root, "fault-plan.json"), {
+    protocol: 1,
+    fixtureId: prepared.fixtureId,
+    executable: launcher.executable,
+    identity: launcher.identity,
+    operationId,
+    arm: "accepted-update",
+    ...fault,
+  });
+  const nativePath = NodePath.join(baseDir, "runtime", "service-state.json");
+  const operations = NodePath.join(baseDir, "runtime", "jones-update-operations");
+  const reservedPath = NodePath.join(operations, operationId + ".json");
+  const outcomePath = NodePath.join(operations, operationId + ".outcome.json");
+  const settlementPath = NodePath.join(
+    baseDir,
+    "runtime",
+    "jones-update-settlements",
+    operationId + ".json",
+  );
+  const causePath = NodePath.join(
+    baseDir,
+    "runtime",
+    "jones-update-settlements",
+    "causes",
+    operationId + ".json",
+  );
+  const databaseBefore = await NodeFSP.lstat(staged.binding.dbPath);
+  const intactDatabase = async () => {
+    const stat = await NodeFSP.lstat(staged.binding.dbPath);
+    NodeAssert.equal(stat.dev, databaseBefore.dev);
+    NodeAssert.equal(stat.ino, databaseBefore.ino);
+    const db = new NodeSqlite.DatabaseSync(staged.binding.dbPath, { readOnly: true });
+    try {
+      NodeAssert.equal(db.prepare("SELECT value FROM fixture_marker").get().value, "before");
+    } finally {
+      db.close();
+    }
+  };
+  let acceptance, originalReservation, originalOutcome, originalSettlement, causeRecord, committed;
+  const runs = [];
+  const launch = async (first) => {
+    let child,
+      captured,
+      client,
+      failure,
+      ready = false,
+      freshStarted = false,
+      complete = false;
+    let work = Promise.resolve();
+    const watches = [];
+    const cancellation = new AbortController();
+    const controlSignal = signal
+      ? AbortSignal.any([signal, cancellation.signal])
+      : cancellation.signal;
+    const stop = () => {
+      for (const w of watches) w.close();
+      if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+    };
+    const failed = (error) => {
+      failure ??= error;
+      stop();
+    };
+    const inspect = async () => {
+      if (failure || complete || !child) return;
+      if (!ready) {
+        let runtime, capability;
+        try {
+          runtime = (await boundedRecord(NodePath.join(baseDir, "userdata", "server-runtime.json")))
+            .value;
+          capability = (
+            await boundedRecord(NodePath.join(baseDir, "runtime", "jones-launcher-capability.json"))
+          ).value;
+        } catch (error) {
+          if (error.code === "ENOENT") return;
+          throw error;
+        }
+        if (capability.launcherPid !== child.pid || capability.childPid !== runtime.pid) return;
+        captured = { launcherPid: child.pid, childPid: runtime.pid };
+        client = await createPackagedRecoveryHttpClient({
+          prepared,
+          ...captured,
+          token,
+          signal: controlSignal,
+        });
+        ready = true;
+        if (first) {
+          const receipt = await client.installOperation();
+          if (!["accepted", "running", "handed-off"].includes(receipt.phase))
+            fail("first Install was not admitted");
+          return;
+        }
+        const native = (await boundedRecord(nativePath)).value;
+        NodeAssert.equal(native.activeVersion, prepared.state.activeVersion);
+        NodeAssert.equal(native.update.id, operationId);
+        NodeAssert.equal(native.update.status, "failed");
+        NodeAssert.equal(native.update.reason, "launcher-restarted");
+        NodeAssert.deepEqual((await boundedRecord(reservedPath)).bytes, originalReservation.bytes);
+        originalOutcome = await boundedRecord(outcomePath);
+        NodeAssert.deepEqual(originalOutcome.value, {
+          schema: 1,
+          operationId,
+          binding: originalReservation.value.binding,
+          status: "failed",
+        });
+        originalSettlement = await boundedRecord(settlementPath);
+        const settled = originalSettlement.value;
+        NodeAssert.equal(settled.schema, 1);
+        NodeAssert.equal(settled.operationId, operationId);
+        NodeAssert.equal(settled.status, "failed");
+        NodeAssert.equal(settled.settlement, "no-effect");
+        NodeAssert.equal(settled.basis, "launcher-recorded");
+        NodeAssert.equal(
+          settled.reservationSha256,
+          NodeCrypto.createHash("sha256").update(originalReservation.bytes).digest("hex"),
+        );
+        NodeAssert.equal(
+          settled.outcomeSha256,
+          NodeCrypto.createHash("sha256").update(originalOutcome.bytes).digest("hex"),
+        );
+        NodeAssert.equal(settled.evidence.phaseAtFailure, "accepted");
+        NodeAssert.equal(settled.evidence.nativeReason, "launcher-restarted");
+        NodeAssert.equal(settled.evidence.candidateStarted, false);
+        NodeAssert.equal(settled.evidence.restorePending, false);
+        NodeAssert.ok(["absent", "removed"].includes(settled.evidence.recoveryPayload));
+        NodeAssert.equal(
+          settled.evidence.cause,
+          causeRecord.value.message || causeRecord.value.code,
+        );
+        NodeAssert.equal(settled.evidence.activeVersion, staged.binding.activeVersion);
+        NodeAssert.equal(settled.evidence.activeSourceSha, staged.binding.activeSourceSha);
+        await NodeAssert.rejects(
+          NodeFSP.lstat(NodePath.join(baseDir, "runtime", "db-backup", operationId, "database")),
+          { code: "ENOENT" },
+        );
+        await intactDatabase();
+        const refused = await client.installOperation(operationId);
+        if (!["blocked", "failed", "refused", "interrupted"].includes(refused.phase))
+          fail("failed Install ID was readmitted");
+        NodeAssert.deepEqual((await boundedRecord(nativePath)).value, native);
+        const next = await client.installOperation(freshOperationId);
+        if (!["accepted", "running", "handed-off"].includes(next.phase))
+          fail("fresh Install was not admitted");
+        freshStarted = true;
+      }
+      if (!first && freshStarted) {
+        const state = (await boundedRecord(nativePath)).value;
+        if (state.update?.id !== freshOperationId || state.update.status !== "committed") return;
+        NodeAssert.equal(state.activeVersion, staged.receipt.version);
+        NodeAssert.equal(state.update.fromVersion, staged.binding.activeVersion);
+        NodeAssert.equal(state.update.targetVersion, staged.receipt.version);
+        NodeAssert.deepEqual((await boundedRecord(reservedPath)).bytes, originalReservation.bytes);
+        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
+        NodeAssert.deepEqual((await boundedRecord(settlementPath)).bytes, originalSettlement.bytes);
+        await intactDatabase();
+        committed = state;
+        complete = true;
+        stop();
+      }
+    };
+    const enqueue = () => {
+      work = work.then(inspect).catch(failed);
+    };
+    let command;
+    try {
+      command = await runNativeFixtureCommand(launcher.executable, ["__service-launcher"], root, {
+        signal,
+        spawn: (file, args, options) => {
+          child = NodeChildProcess.spawn(file, args, {
+            ...options,
+            env: {
+              ...options.env,
+              ...(first
+                ? observation.environment
+                : { NODE_OPTIONS: "--require " + JSON.stringify(preload) }),
+              JONES_PACKAGED_RECOVERY_FIXTURE: NodePath.join(root, "fault-plan.json"),
+              T3CODE_HOME: baseDir,
+              T3CODE_HOST: "127.0.0.1",
+              T3CODE_PORT: "0",
+              T3CODE_NO_BROWSER: "true",
+              T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
+            },
+          });
+          for (const directory of [
+            NodePath.join(baseDir, "runtime"),
+            NodePath.join(baseDir, "userdata"),
+          ]) {
+            const watcher = NodeFS.watch(directory, { persistent: false }, () => enqueue());
+            watches.push(watcher);
+            watcher.once("error", failed);
+          }
+          child.once("error", failed);
+          child.once("close", () => {
+            for (const w of watches) w.close();
+            cancellation.abort(new Error("Captured Install launcher closed"));
+          });
+          enqueue();
+          return child;
+        },
+      });
+      await work;
+      if (failure) throw failure;
+      if (first) {
+        if (command.code !== 1 || command.stoppedBy !== null || !ready)
+          fail("accepted failure did not exit through the expected launcher boundary");
+        acceptance = await observation.readAcceptance(captured);
+        NodeAssert.deepEqual((await boundedRecord(NodePath.join(root, "fault-fired.json"))).value, {
+          protocol: 1,
+          fixtureId: prepared.fixtureId,
+          operationId,
+          ...fault,
+        });
+        originalReservation = await boundedRecord(reservedPath);
+        NodeAssert.equal(
+          NodeCrypto.createHash("sha256").update(originalReservation.bytes).digest("hex"),
+          acceptance.receipt.reservationSha256,
+        );
+        causeRecord = await boundedRecord(causePath);
+        NodeAssert.equal(causeRecord.value.schema, 1);
+        NodeAssert.equal(causeRecord.value.operationId, operationId);
+        NodeAssert.equal(causeRecord.value.step, step);
+        NodeAssert.match(causeRecord.value.code, /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/);
+        NodeAssert.equal(typeof causeRecord.value.message, "string");
+        NodeAssert.ok(Buffer.byteLength(causeRecord.value.message) <= 512);
+        await intactDatabase();
+      } else if (
+        !complete ||
+        !(
+          (command.code === 0 && command.stoppedBy === null) ||
+          (command.code === null && command.stoppedBy === "SIGTERM")
+        )
+      )
+        fail("fresh Install did not commit before launcher exit");
+      runs.push({ code: command.code, stoppedBy: command.stoppedBy, captured });
+    } finally {
+      cancellation.abort(new Error("Install control finished"));
+      stop();
+      await work;
+    }
+  };
+  try {
+    await launch(true);
+    await launch(false);
+    NodeAssert.deepEqual(await executableIdentity(launcher.executable), launcher.identity);
+    if ((await digest(launcher.executable)) !== launcher.sha256) fail("launcher artifact changed");
+    const result = {
+      schema: "jones.packaged-accepted-failure/v1",
+      step,
+      operationId,
+      freshOperationId,
+      acceptance,
+      cause: causeRecord.value,
+      settlement: originalSettlement.value,
+      committed,
+      runs,
+      assertionsPassed: true,
+      packagedRecoveryMatrixPassed: false,
+      processIdentityScope: "captured-child-handle-only",
+      externalDescendantSettlementRequired: true,
+    };
+    await writePrivate(NodePath.join(root, "accepted-failure-result.json"), result);
+    return result;
+  } catch (error) {
+    error.preserveScratch = true;
+    error.scratchRoot = root;
+    throw error;
   }
 }

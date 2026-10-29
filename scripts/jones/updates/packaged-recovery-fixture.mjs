@@ -15,6 +15,8 @@ import {
   writeFailedUpdateOperation,
 } from "../../../apps/server/src/jones/updates/launcherOperation.ts";
 
+import { retainStagedSelection } from "../../../apps/server/src/jones/updates/stagedSelection.ts";
+
 const refuse = (message) => {
   throw new Error("Packaged recovery fixture refused: " + message);
 };
@@ -186,6 +188,7 @@ export async function seedPackagedRecoveryFixture({
     options: { eventLoop: "worker" },
   });
   if (staged.receipt.payloadSha256 !== next.receipt.payloadSha256) refuse("staged payload changed");
+  if (kind === "staged") await retainStagedSelection(staged);
   if (kind !== "staged")
     await reserveUpdateOperation(baseDir, operationId, operationBinding(staged));
   const pending = {
