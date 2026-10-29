@@ -553,6 +553,43 @@ describe("pull request toolkit handlers", () => {
 });
 
 describe("listThreadPullRequests", () => {
+  it("preserves the seven-layer native order when a newly appended top refreshes stale snapshots", () => {
+    const numbers = [507, 508, 510, 512, 513, 514, 516];
+    const stored = [507, 510, 512, 513, 514, 516, 508];
+    const stack = {
+      kind: "native" as const,
+      id: "stack-509",
+      number: 509,
+      url: "https://github.com/Jones-Systems/Jones-Code/stack/509",
+      base: "main",
+      layers: numbers.map((number) => ({
+        number,
+        headBranch: `layer-${number}`,
+        state: "open" as const,
+      })),
+    };
+    const result = listThreadPullRequests({
+      pullRequests: stored.map((number) =>
+        makeLink(number, {
+          repository: "Jones-Systems/Jones-Code",
+          url: `https://github.com/Jones-Systems/Jones-Code/pull/${number}`,
+          source: "stack",
+          // Only the appended top has the latest authoritative membership.
+          stack: number === 516 ? stack : { ...stack, layers: stack.layers.slice(0, -1) },
+        }),
+      ),
+    });
+    expect(result.chains).toEqual([{ kind: "native", numbers }]);
+    expect(result.pullRequests.map((entry) => entry.number)).toEqual(stored);
+    for (const [index, number] of numbers.entries()) {
+      expect(result.pullRequests.find((entry) => entry.number === number)?.stack).toEqual({
+        kind: "native",
+        position: index + 1,
+        size: numbers.length,
+      });
+    }
+  });
+
   it("reports a native stack position for each member", () => {
     const stack = {
       kind: "native" as const,

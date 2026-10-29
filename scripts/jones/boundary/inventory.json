@@ -11,6 +11,7 @@
     "packages/provider-core/src/server/maintenanceResolver.test.ts": "jones-tests-in-upstream",
     "apps/server/src/provider/CodexInstallation.ts": "accepted-shared",
     "apps/server/src/provider/CodexInstallation.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts": "jones-tests-in-upstream",
     ".github/triage/PLAYBOOK.md": "accepted-shared",
     "apps/server/src/cli/triagePrompt.ts": "accepted-shared",
     "apps/server/src/cli/triagePrompt.test.ts": "jones-tests-in-upstream",
