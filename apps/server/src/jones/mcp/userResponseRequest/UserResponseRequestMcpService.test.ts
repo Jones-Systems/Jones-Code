@@ -623,6 +623,64 @@ it.effect("serial dispatch refuses a fresh record whose bound run ended before a
   }).pipe(Effect.provide(testLayer)),
 );
 
+it.effect(
+  "persists standard action options, deduplicates retries and delivers Done after recovery",
+  () =>
+    Effect.gen(function* () {
+      const { orchestrator, sink, now, run } = yield* seed;
+      const service = yield* Service.UserResponseRequestMcpService;
+      const input = {
+        instruction: "Open Browser.",
+        defaultDone: true,
+        clientRequestId: "action-done",
+      };
+      const first = yield* service.request(scope, input);
+      expect(yield* service.request(scope, input)).toEqual({ ...first, created: false });
+      expect(
+        (yield* service.request(scope, { ...input, defaultDone: false }).pipe(Effect.result))._tag,
+      ).toBe("Failure");
+      expect(
+        (yield* orchestrator.getThreadProjection(threadId)).turnItems.find(
+          (item) => item.type === "user_input_request",
+        ),
+      ).toMatchObject({
+        questions: [
+          {
+            id: "response",
+            options: [{ label: "Done", description: "Done" }],
+            allowCustomAnswer: true,
+          },
+        ],
+      });
+      yield* sink.write({
+        commandId: CommandId.make("action-complete"),
+        events: [
+          {
+            id: EventId.make("action-complete"),
+            type: "run.updated",
+            threadId,
+            runId: run.id,
+            occurredAt: now,
+            payload: { ...run, status: "completed", completedAt: now },
+          },
+        ],
+      });
+      yield* Recovery.ProviderRuntimeRecoveryService.use((value) => value.recover);
+      yield* orchestrator.dispatch({
+        type: "runtime-request.respond",
+        commandId: CommandId.make("action-answer"),
+        threadId,
+        requestId: first.requestId,
+        answers: { response: "Done" },
+      });
+      const projection = yield* orchestrator.getThreadProjection(threadId);
+      expect(
+        projection.runtimeRequests.find((request) => request.id === first.requestId),
+      ).toMatchObject({ status: "resolved", answers: { response: "Done" } });
+      expect(projection.messages.map((message) => message.text)).toEqual(["Open Browser.\nDone"]);
+    }).pipe(Effect.provide(testLayer)),
+);
+
 it("publishes a self-only object input schema", () => {
   const schema = Tool.getJsonSchema(UserResponseRequestToolkit.tools.t3_request_user_response);
   expect(schema).toMatchObject({

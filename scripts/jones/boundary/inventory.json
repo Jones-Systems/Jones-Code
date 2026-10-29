@@ -2471,6 +2471,7 @@
     "apps/server/src/jones/serverParallelism/diagnosticObservation.test.ts": "jones-owned",
     "scripts/jones/serverParallelism/observer-diagnostic.mjs": "jones-owned",
     "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs": "jones-owned",
+    "apps/web/src/jones/questionAnswer/QuickResponseSubmission.browser.test.tsx": "jones-owned",
     "packages/contracts/src/jones/pullRequestCheckObservation.ts": "jones-owned",
     "packages/contracts/src/jones/pullRequestCheckObservation.test.ts": "jones-owned",
     "packages/source-control-github/src/jones/pullRequestCheckObservation.ts": "jones-owned",

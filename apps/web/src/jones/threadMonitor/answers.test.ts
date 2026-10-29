@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 const v2Projection = makeThreadProjectionFixture();
 const v2Now = v2Projection.updatedAt;
-import { normalizeMonitorAnswers } from "./answers";
+import { normalizeMonitorAnswers, monitorInputChoice, monitorInputDraft } from "./answers";
 import { refOf } from "./store";
 import { testRow } from "./fixtures.test-support";
 const requestId = RuntimeRequestId.make("actual-request");
@@ -94,6 +94,24 @@ describe("monitor uses current input normalization", () => {
       "actual-custom": "custom answer",
     });
   });
+  it("retains exact choice values and notes through message-mode normalization", () => {
+    const withNotes = {
+      ...projection,
+      turnItems: projection.turnItems.map((item) => ({
+        ...item,
+        questions: item.questions.map((question) => ({ ...question, allowCustomAnswer: true })),
+      })),
+    };
+    expect(
+      normalizeMonitorAnswers(withNotes, {
+        ...action,
+        answers: {
+          ...action.answers,
+          "actual-single": "  exact-provider-value  \nNote: Verified workspace B",
+        },
+      }),
+    ).toMatchObject({ "actual-single": "  exact-provider-value  \nNote: Verified workspace B" });
+  });
   it("refuses invented options, incomplete answers, obsolete requests and non-resumable capability", () => {
     expect(
       normalizeMonitorAnswers(projection, {
@@ -125,5 +143,34 @@ describe("monitor uses current input normalization", () => {
         action,
       ),
     ).toBeNull();
+  });
+});
+
+it("preserves message-mode choice notes across selection, retry and editing without changing live answers", () => {
+  const question = {
+    id: "action",
+    header: "Action",
+    question: "Confirm?",
+    allowCustomAnswer: true,
+    multiSelect: false,
+    options: [
+      { label: "Done", value: "done" },
+      { label: "Blocked", value: "blocked" },
+    ],
+  };
+  const answer = monitorInputChoice(question, "Verified workspace B", "done", true);
+  expect(answer).toBe("done\nNote: Verified workspace B");
+  expect(monitorInputDraft(question, answer, true)).toEqual({
+    selected: ["done"],
+    custom: "Verified workspace B",
+  });
+  expect(monitorInputChoice(question, answer, "done", true)).toBe(answer);
+  expect(monitorInputChoice(question, answer, "blocked", true)).toBe(
+    "blocked\nNote: Verified workspace B",
+  );
+  expect(monitorInputChoice(question, "Replace this live answer", "done", false)).toBe("done");
+  expect(monitorInputDraft(question, "plain response", false)).toEqual({
+    selected: [],
+    custom: "plain response",
   });
 });

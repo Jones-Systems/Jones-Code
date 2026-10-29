@@ -407,8 +407,10 @@ in the preceding chat message. Web and desktop share the question card; mobile
 uses the same sequential answer semantics. Existing routed Markdown keeps PR and
 thread links actionable.
 
-Start with nothing selected. Choose or type an answer, then use **Continue**;
-selection and digit shortcuts never advance or send. The progress buttons beside
+Start with nothing selected. Clicking a single-choice option or its digit shortcut
+commits that answer, advances to an unanswered question, and sends when every
+question has an answer. Multi-select choices remain editable until **Continue**
+or **Send**; custom text uses those explicit controls. The progress buttons beside
 `i/N` jump to any question and expand a collapsed card, including its current
 question. **Back**, jumps and collapse preserve drafts. On the final question,
 **Send** remains blocked until every question has an answer, with a reason naming
@@ -416,10 +418,16 @@ the first missing answer. Native permission prompts remain separate.
 
 For message-mode owner requests, text supplements a selected choice as a note;
 **Sends:** previews the reply. **Clear choice** keeps the text as the whole answer.
-Enter adds a newline and only the explicit controls continue or send. Replies
+Enter keeps its existing response-field behavior. Enter notes before clicking a
+choice to include them in the immediate reply; custom-text replies still use
+**Continue** or **Send**. Replies
 have no length cap; the field scrolls after ten lines on web and within a bounded
 height on mobile. Live provider questions keep their existing replacement and
-field-key semantics, with select-only choices.
+field-key semantics, with single-choice submission on selection.
+Action handoffs can request `defaultDone: true` to supply a normal **Done** option
+when no explicit choices are provided. Specific completion and known-blocker
+choices use the same rows and always retain free text. Legacy requests that omit
+this opt-in retain their original normalized payload and retry identity.
 
 Evidence: focused automated contracts, server delivery, helper and headless-browser
 checks cover these behaviors. Integrated renderer journeys and native mobile
