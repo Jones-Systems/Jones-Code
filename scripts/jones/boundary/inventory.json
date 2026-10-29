@@ -9,6 +9,9 @@
   "paths": {
     "apps/server/src/provider/CodexInstallation.ts": "accepted-shared",
     "apps/server/src/provider/CodexInstallation.test.ts": "jones-tests-in-upstream",
+    ".github/triage/PLAYBOOK.md": "accepted-shared",
+    "apps/server/src/cli/triagePrompt.ts": "accepted-shared",
+    "apps/server/src/cli/triagePrompt.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/ProjectSettingsPanel.tsx": "accepted-shared",
     "apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx": "jones-owned",
     "scripts/jones/boundary/fragments/project-favicon-search-demand.json": "jones-owned",
