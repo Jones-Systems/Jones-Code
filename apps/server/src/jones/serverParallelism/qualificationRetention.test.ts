@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Production harness/supervisor with controlled external child, filesystem, clock and journal boundaries; no native process or fixture files.
 import { afterEach, beforeEach, expect, it, vi } from "vite-plus/test";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import type { ComputeChild, SlotResult } from "../serverCompute/processSlot.ts";
 import type { Bootstrap, Request } from "../serverCompute/protocol.ts";
 import type { ComputeObservation } from "./observations.ts";
@@ -104,8 +105,9 @@ let cleanupFixture: (() => Promise<void>) | undefined;
 beforeEach(() => {
   if (cleanupFixture) throw new Error("Previous qualification fixture was not joined");
   vi.useFakeTimers({
-    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"],
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance", "Date"],
   });
+  vi.setSystemTime(0);
   external.writes = 0;
   external.mkdirs = 0;
   external.readerWindowIncomplete = false;
@@ -120,6 +122,12 @@ afterEach(async () => {
     vi.restoreAllMocks();
   }
 });
+
+function clockNow() {
+  const now = vi.getMockedSystemTime();
+  if (!now) throw new Error("Expected fixture-owned fake time");
+  return now.getTime();
+}
 
 type Outcome<T> = { kind: "fulfilled"; value: T } | { kind: "rejected"; cause: unknown };
 type DriverOutcome = Outcome<Awaited<ReturnType<typeof runNativeQualification>>>;
@@ -191,7 +199,7 @@ function milestoneController() {
         : milestone.kind === "sampler-wait"
           ? { kind: "sampler-wait", ordinal: milestone.ordinal }
           : milestone;
-    trace.push({ at: performance.now(), state, milestone: receipt });
+    trace.push({ at: clockNow(), state, milestone: receipt });
     if (trace.length > 64) trace.shift();
   };
   const enqueue = (milestone: Milestone, release: () => void) => {
@@ -357,13 +365,13 @@ function milestoneController() {
         if (milestone.kind === "stable-wait") {
           expect(milestone.ordinal).toBe(releasedStableWaits + 1);
           if (milestone.ordinal > 2) throw new Error("Unexpected stable-wait ordinal");
-          await advance(milestone.ordinal === 1 ? 3_000 : 599_750 - performance.now());
-          expect(performance.now()).toBe(milestone.ordinal === 1 ? 3_000 : 599_750);
+          await advance(milestone.ordinal === 1 ? 3_000 : 599_750 - clockNow());
+          expect(clockNow()).toBe(milestone.ordinal === 1 ? 3_000 : 599_750);
           releasedStableWaits++;
         } else if (milestone.kind === "replacement-pool") {
-          const at = performance.now();
+          const at = clockNow();
           await advance(0);
-          expect(performance.now()).toBe(at);
+          expect(clockNow()).toBe(at);
           held(milestone);
         } else if (milestone.kind === "retire" || milestone.kind === "journal") {
           await sampleBoundary(driver, milestone);
@@ -490,7 +498,7 @@ function fixture(holdReplacement = false, startupFailure?: Error) {
                       },
                     ]
                   : [];
-            const at = performance.now();
+            const at = clockNow();
             timing?.({
               worker: {
                 parentSentMs: at,
@@ -554,7 +562,8 @@ function fixture(holdReplacement = false, startupFailure?: Error) {
       ).toBe(true);
       return {
         pid,
-        method: process.platform === "linux" ? "linux-proc-task-comm" : "macos-sample",
+        method:
+          HostProcess.Platform.defaultValue() === "linux" ? "linux-proc-task-comm" : "macos-sample",
         status: "complete",
         threads: [
           { tid: "1", name: "fff-bg-0" },
@@ -802,7 +811,6 @@ it.each([
       await owned.finish(driver, controlling, signal, failure);
     }
   },
-  120_000,
 );
 
 it("observes startup rejection before the replacement-pool milestone without advancing time", async () => {
@@ -837,7 +845,7 @@ it("observes startup rejection before the replacement-pool milestone without adv
     expect(external.reserves).toBe(1);
     expect(external.registrations).toBe(0);
     expect(owned.clock.stableWaits).toBe(0);
-    expect(performance.now()).toBe(0);
+    expect(clockNow()).toBe(0);
   } catch (cause) {
     failure = { cause };
   } finally {

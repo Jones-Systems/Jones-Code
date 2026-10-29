@@ -337,8 +337,9 @@ async function expectWrongBuildRejection(child: NodeChildProcess.ChildProcess) {
     );
 }
 
-for (const order of ["buffered-before-exit", "ready-then-nonzero"] as const)
-  it(`private dispatch observer rejects ${order} through stream drain`, async () => {
+it.each(["buffered-before-exit", "ready-then-nonzero"] as const)(
+  "private dispatch observer rejects %s through stream drain",
+  async (order) => {
     const child = new NodeEvents.EventEmitter();
     const streams = {
       input: new NodeStream.PassThrough(),
@@ -361,9 +362,10 @@ for (const order of ["buffered-before-exit", "ready-then-nonzero"] as const)
     } finally {
       observer.dispose();
     }
-  });
+  },
+);
 
-for (const invalid of [
+it.each([
   "stdout",
   "malformed",
   "truncated",
@@ -373,37 +375,36 @@ for (const invalid of [
   "observer-error",
   "premature-close",
   "cleanup",
-] as const)
-  it(`private dispatch observer rejects ${invalid}`, async () => {
-    const child = new NodeEvents.EventEmitter();
-    const streams = {
-      input: new NodeStream.PassThrough(),
-      output: new NodeStream.PassThrough(),
-      diagnostics: new NodeStream.PassThrough(),
-      control: new NodeStream.PassThrough(),
-    };
-    const observer = observeWrongBuild(child, streams);
-    try {
-      if (invalid === "stdout") streams.output.write('{"type":"result"}\n');
-      if (invalid === "malformed") streams.control.write("not-json\n");
-      if (invalid === "truncated") streams.control.write('{"type":"rea');
-      if (invalid === "error") child.emit("error", new Error("spawn failed"));
-      if (invalid === "observer-error") streams.control.emit("error", new Error("read failed"));
-      if (invalid === "cleanup") observer.fail("Wrong-build required test cleanup SIGKILL");
-      if (invalid === "premature-close") streams.control.destroy();
-      const code = invalid === "signal" ? null : invalid === "zero" ? 0 : 1;
-      const signal = invalid === "signal" ? "SIGKILL" : null;
-      child.emit("exit", code, signal);
-      child.emit("close", code, signal);
-      streams.output.end();
-      if (invalid !== "premature-close") streams.control.end();
-      streams.diagnostics.end();
-      await observer.drained;
-      expect(() => observer.assertRejected()).toThrow();
-    } finally {
-      observer.dispose();
-    }
-  });
+] as const)("private dispatch observer rejects %s", async (invalid) => {
+  const child = new NodeEvents.EventEmitter();
+  const streams = {
+    input: new NodeStream.PassThrough(),
+    output: new NodeStream.PassThrough(),
+    diagnostics: new NodeStream.PassThrough(),
+    control: new NodeStream.PassThrough(),
+  };
+  const observer = observeWrongBuild(child, streams);
+  try {
+    if (invalid === "stdout") streams.output.write('{"type":"result"}\n');
+    if (invalid === "malformed") streams.control.write("not-json\n");
+    if (invalid === "truncated") streams.control.write('{"type":"rea');
+    if (invalid === "error") child.emit("error", new Error("spawn failed"));
+    if (invalid === "observer-error") streams.control.emit("error", new Error("read failed"));
+    if (invalid === "cleanup") observer.fail("Wrong-build required test cleanup SIGKILL");
+    if (invalid === "premature-close") streams.control.destroy();
+    const code = invalid === "signal" ? null : invalid === "zero" ? 0 : 1;
+    const signal = invalid === "signal" ? "SIGKILL" : null;
+    child.emit("exit", code, signal);
+    child.emit("close", code, signal);
+    streams.output.end();
+    if (invalid !== "premature-close") streams.control.end();
+    streams.diagnostics.end();
+    await observer.drained;
+    expect(() => observer.assertRejected()).toThrow();
+  } finally {
+    observer.dispose();
+  }
+});
 
 it("private dispatch observer accepts only a drained natural rejection", async () => {
   const child = new NodeEvents.EventEmitter();

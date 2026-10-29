@@ -52,11 +52,9 @@ export function qualificationWorkload(input: {
     generationTransitions,
     basisCheckpoints,
   };
-  // Emitter audit: supervisor admission/queue/job + request's round-trip/four
-  // timing rows + count/pump/finalizer rows fit 32 per job. Implicit opens,
-  // registration, shutdown closes, startup/retirement, maintenance pump/status
-  // and ProcessSlot guardian messages have separate allowances below. This is
-  // a successful-workload envelope, not permission to forgive faults/extra work.
+  // Admission, queue, request timing and count/finalizer rows fit 32 per job.
+  // Opens, registration, shutdown, lifecycle, maintenance and guardian messages
+  // have separate allowances. Faults and extra work still make evidence incomplete.
   const observationUnits =
     dataJobs +
     basisGreps +

@@ -27,10 +27,18 @@ afterEach(async () => {
     await pool.shutdown().catch(() => {});
   }
 });
-const fakeClock = () =>
+const fakeClock = () => {
   vi.useFakeTimers({
-    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"],
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance", "Date"],
   });
+  vi.setSystemTime(0);
+};
+function clockNow() {
+  const now = vi.getMockedSystemTime();
+  if (!now) throw new Error("Expected fixture-owned fake time");
+  return now.getTime();
+}
+
 type Gate = ReturnType<typeof deferred>;
 type TestChild = ComputeChild & {
   requests: Request[];
@@ -475,9 +483,9 @@ it("fails fault-bound jobs once during drain without replay while genuinely unbo
   old.exit.resolve();
   await old.journalStarted.promise;
   await f.waitForCounts((value) => value.chargedAllocations === 4);
-  const beforeDrain = performance.now();
+  const beforeDrain = clockNow();
   await vi.advanceTimersByTimeAsync(0);
-  expect(performance.now()).toBe(beforeDrain);
+  expect(clockNow()).toBe(beforeDrain);
   expect(f.children).toHaveLength(2); // Fault cooldown, not a free allocation or an eager replay.
   await vi.advanceTimersByTimeAsync(1000);
   await Promise.all([overflow, future]);
@@ -636,9 +644,9 @@ it("finishes already-started retirement without a speculative replacement after 
   old.exit.resolve();
   await old.journalStarted.promise;
   await f.waitForCounts((value) => value.chargedAllocations === 4);
-  const beforeDrain = performance.now();
+  const beforeDrain = clockNow();
   await vi.advanceTimersByTimeAsync(0);
-  expect(performance.now()).toBe(beforeDrain);
+  expect(clockNow()).toBe(beforeDrain);
   expect(f.children).toHaveLength(2);
   expect(f.counts().chargedAllocations).toBe(4);
 });

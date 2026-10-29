@@ -36,10 +36,17 @@ const namedPools = (pid: number): NativePoolObservation => ({
   ],
 });
 
+function clockNow() {
+  const now = vi.getMockedSystemTime();
+  if (!now) throw new Error("Expected fixture-owned fake time");
+  return now.getTime();
+}
+
 function fixture(count: 2 | 3 = 2) {
   vi.useFakeTimers({
-    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance"],
+    toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "performance", "Date"],
   });
+  vi.setSystemTime(0);
   const captured = new Map<number, ComputeChild>();
   const records: EvidenceGeneration[] = [];
   const events: ComputeObservation[] = [];
@@ -61,7 +68,7 @@ function fixture(count: 2 | 3 = 2) {
   const observerController = new AbortController();
   const evidence = new NativeGenerationEvidence({
     captured,
-    now: () => performance.now(),
+    now: () => clockNow(),
     method: "linux-proc-task-comm",
     signal: observerController.signal,
     pools: async (pid) => {
@@ -93,7 +100,7 @@ function fixture(count: 2 | 3 = 2) {
           journalEntered.resolve();
           await journalRelease.promise;
         }
-        record.journalRetiredAt = performance.now();
+        record.journalRetiredAt = clockNow();
         captured.delete(pid);
       },
     },
@@ -102,7 +109,7 @@ function fixture(count: 2 | 3 = 2) {
       const record: EvidenceGeneration = {
         bootstrap,
         pid,
-        startedAt: performance.now(),
+        startedAt: clockNow(),
         nativePools: [],
         poolReads: [],
         faulted: false,
@@ -145,12 +152,12 @@ function fixture(count: 2 | 3 = 2) {
           return result;
         },
         retire: async () => {
-          record.retirementStartedAt = performance.now();
+          record.retirementStartedAt = clockNow();
           if (holdExit) {
             exitEntered.resolve();
             await exitRelease.promise;
           }
-          record.exitCapturedAt = performance.now();
+          record.exitCapturedAt = clockNow();
         },
       };
       captured.set(pid, child);
@@ -242,7 +249,7 @@ it.each([2, 3] as const)(
     expect(last.poolReads).toHaveLength(0);
     const opens = f.requested.filter((request) => request.operation === "open").length;
     expect(opens).toBe(4 * count + 1);
-    expect(performance.now()).toBe(0); // Shorter than one background sampler tick.
+    expect(clockNow()).toBe(0); // Shorter than one background sampler tick.
     f.release.resolve();
     await next;
     expect(last.poolReads).toHaveLength(1);
