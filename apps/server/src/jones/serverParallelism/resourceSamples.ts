@@ -1,10 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Qualification-only OS observations of task-captured processes.
-import { readFile, readdir, stat, mkdtemp, rm } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-const execute = promisify(execFile);
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeUtil from "node:util";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 let clockTicks: Promise<number> | undefined;
 export interface NativePoolObservation {
   readonly pid: number;
@@ -22,7 +23,7 @@ export interface MacPerformanceCores {
 }
 export async function sampleMacPerformanceCores(): Promise<MacPerformanceCores> {
   const source = "sysctl:hw.perflevel0.physicalcpu" as const;
-  if (process.platform !== "darwin")
+  if (HostProcess.Platform.defaultValue() !== "darwin")
     return { source, status: "unavailable", value: null, raw: "not-macos" };
   try {
     const { stdout } = await execute("/usr/sbin/sysctl", ["-n", "hw.perflevel0.physicalcpu"], {
@@ -70,19 +71,23 @@ export function parseMacNativeThreads(pid: number, raw: string): NativePoolObser
 
 export async function sampleNativePools(pid: number): Promise<NativePoolObservation> {
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error("Invalid captured PID");
-  const method = process.platform === "linux" ? "linux-proc-task-comm" : "macos-sample";
+  const method =
+    HostProcess.Platform.defaultValue() === "linux" ? "linux-proc-task-comm" : "macos-sample";
   let scratch: string | undefined;
   try {
-    if (process.platform === "linux") {
-      const before = await readFile(`/proc/${pid}/stat`, "utf8");
-      const tids = await readdir(`/proc/${pid}/task`);
+    if (HostProcess.Platform.defaultValue() === "linux") {
+      const before = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
+      const tids = await NodeFSP.readdir(`/proc/${pid}/task`);
       const threads = await Promise.all(
         tids.map(async (tid) => {
           if (!/^[1-9][0-9]*$/.test(tid)) throw new Error("Invalid task ID");
-          return { tid, name: (await readFile(`/proc/${pid}/task/${tid}/comm`, "utf8")).trimEnd() };
+          return {
+            tid,
+            name: (await NodeFSP.readFile(`/proc/${pid}/task/${tid}/comm`, "utf8")).trimEnd(),
+          };
         }),
       );
-      const after = await readFile(`/proc/${pid}/stat`, "utf8");
+      const after = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
       const start = (stat: string) => stat.slice(stat.lastIndexOf(")") + 2).split(" ")[19];
       if (!start(before) || start(before) !== start(after)) throw new Error("PID identity changed");
       return {
@@ -93,16 +98,17 @@ export async function sampleNativePools(pid: number): Promise<NativePoolObservat
         raw: JSON.stringify({ pid, start: start(before), threads }),
       };
     }
-    if (process.platform !== "darwin") throw new Error("Unsupported OS");
-    scratch = await mkdtemp(join(tmpdir(), "jones-native-pools-"));
-    const output = join(scratch, "sample.txt");
+    if (HostProcess.Platform.defaultValue() !== "darwin") throw new Error("Unsupported OS");
+    scratch = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-native-pools-"));
+    const output = NodePath.join(scratch, "sample.txt");
     // Bounded, nonprivileged, exact captured PID. Failure never supplies a physical-CPU fallback.
     await execute("/usr/bin/sample", [String(pid), "1", "10", "-file", output], {
       timeout: 3_000,
       maxBuffer: 64 * 1024,
     });
-    if ((await stat(output)).size > 4 * 1024 * 1024) throw new Error("Sample output exceeds bound");
-    const raw = await readFile(output, "utf8");
+    if ((await NodeFSP.stat(output)).size > 4 * 1024 * 1024)
+      throw new Error("Sample output exceeds bound");
+    const raw = await NodeFSP.readFile(output, "utf8");
     return parseMacNativeThreads(pid, raw);
   } catch {
     return {
@@ -114,7 +120,7 @@ export async function sampleNativePools(pid: number): Promise<NativePoolObservat
       error: "native-pool-observer-unavailable",
     };
   } finally {
-    if (scratch) await rm(scratch, { recursive: true });
+    if (scratch) await NodeFSP.rm(scratch, { recursive: true });
   }
 }
 export interface ProcessResources {
@@ -214,7 +220,7 @@ export async function sampleProcesses(pids: readonly number[]): Promise<ProcessR
   const rows: ProcessResources[] = [],
     errors: string[] = [];
   try {
-    if (process.platform === "linux") {
+    if (HostProcess.Platform.defaultValue() === "linux") {
       const hz = await (clockTicks ??= execute("getconf", ["CLK_TCK"], { timeout: 2_000 }).then(
         (result) => Number(result.stdout.trim()),
       ));
@@ -222,10 +228,10 @@ export async function sampleProcesses(pids: readonly number[]): Promise<ProcessR
       for (const pid of pids) {
         try {
           const [text, status, tasks, descriptors] = await Promise.all([
-            readFile(`/proc/${pid}/stat`, "utf8"),
-            readFile(`/proc/${pid}/status`, "utf8"),
-            readdir(`/proc/${pid}/task`),
-            readdir(`/proc/${pid}/fd`),
+            NodeFSP.readFile(`/proc/${pid}/stat`, "utf8"),
+            NodeFSP.readFile(`/proc/${pid}/status`, "utf8"),
+            NodeFSP.readdir(`/proc/${pid}/task`),
+            NodeFSP.readdir(`/proc/${pid}/fd`),
           ]);
           const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
           let inotifyDescriptors = 0,
@@ -233,7 +239,7 @@ export async function sampleProcesses(pids: readonly number[]): Promise<ProcessR
             watchesKnown = true;
           for (const descriptor of descriptors) {
             try {
-              const info = await readFile(`/proc/${pid}/fdinfo/${descriptor}`, "utf8");
+              const info = await NodeFSP.readFile(`/proc/${pid}/fdinfo/${descriptor}`, "utf8");
               if (info.includes("inotify")) inotifyDescriptors++;
               inotifyWatches += [...info.matchAll(/^inotify wd:/gm)].length;
             } catch {
@@ -252,7 +258,7 @@ export async function sampleProcesses(pids: readonly number[]): Promise<ProcessR
           errors.push(`pid:${pid}:unavailable`);
         }
       }
-    } else if (process.platform === "darwin") {
+    } else if (HostProcess.Platform.defaultValue() === "darwin") {
       const result = await execute("ps", ["-o", "pid=,time=,rss=", "-p", pids.join(",")], {
         timeout: 2_000,
       });

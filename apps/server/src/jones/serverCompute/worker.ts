@@ -1,12 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off preferSchemaOverJson:off -- Hidden entry is the native callback/runtime boundary with a closed bootstrap decoder.
 import type * as EffectTypes from "effect/Effect";
 import type * as ScopeTypes from "effect/Scope";
-import { Worker } from "node:worker_threads";
-import { isAbsolute, normalize, dirname, basename } from "node:path";
-import { getHeapStatistics } from "node:v8";
-import { availableParallelism } from "node:os";
-import { setImmediate as nodeTurn } from "node:timers/promises";
-import type { Writable } from "node:stream";
+import * as NodeWorkerThreads from "node:worker_threads";
+import * as NodePath from "node:path";
+import * as NodeV8 from "node:v8";
+import * as NodeOS from "node:os";
+import * as NodeTimersPromises from "node:timers/promises";
+import type * as NodeStream from "node:stream";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { guardianSource } from "./guardian.ts";
 import { currentBuildIdentity } from "./workerCommand.ts";
 import { computeFailure } from "./failure.ts";
@@ -37,14 +38,14 @@ export class WorkerReplies {
   private credits: number = LIMITS.credits;
   private wake: (() => void) | undefined;
   private readonly request: Request;
-  private readonly output: Writable;
+  private readonly output: NodeStream.Writable;
   private readonly now: () => number;
   private readonly receivedMs: number;
   private execution:
     | Pick<ReplyTiming, "executionStartedMs" | "executionCompletedMs" | "executionOutcome">
     | undefined;
   private replyStartedMs: number | undefined;
-  constructor(request: Request, output: Writable, now = () => performance.now()) {
+  constructor(request: Request, output: NodeStream.Writable, now = () => performance.now()) {
     this.request = request;
     this.output = output;
     this.now = now;
@@ -116,7 +117,7 @@ export class WorkerReplies {
           await this.send({ type: "chunk", items: batch });
           batch = [];
           bytes = 2048;
-          await nodeTurn();
+          await NodeTimersPromises.setImmediate();
         }
         batch.push(item);
         bytes += size;
@@ -201,18 +202,18 @@ export function decodeNativeBlockQualification(argument: string): {
   const path = (input: unknown): input is string =>
     typeof input === "string" &&
     input.length <= 1800 &&
-    isAbsolute(input) &&
-    normalize(input) === input &&
+    NodePath.isAbsolute(input) &&
+    NodePath.normalize(input) === input &&
     !/[\x00-\x1f\x7f]/.test(input);
   if (
     !record(value) ||
     !keys(value, ["targetWorkspace", "logFileHint"]) ||
     !path(value.targetWorkspace) ||
     !path(value.logFileHint) ||
-    basename(value.targetWorkspace) !== "blocked-workspace" ||
-    basename(value.logFileHint) !== "native-block.log" ||
-    basename(dirname(value.logFileHint)) !== "barrier" ||
-    dirname(dirname(value.logFileHint)) !== dirname(value.targetWorkspace)
+    NodePath.basename(value.targetWorkspace) !== "blocked-workspace" ||
+    NodePath.basename(value.logFileHint) !== "native-block.log" ||
+    NodePath.basename(NodePath.dirname(value.logFileHint)) !== "barrier" ||
+    NodePath.dirname(NodePath.dirname(value.logFileHint)) !== NodePath.dirname(value.targetWorkspace)
   )
     throw computeFailure("protocol");
   return Object.freeze({ targetWorkspace: value.targetWorkspace, logFileHint: value.logFileHint });
@@ -220,23 +221,24 @@ export function decodeNativeBlockQualification(argument: string): {
 
 /** Closed hidden command. Root dispatches here before loading the normal server graph. */
 export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>): Promise<void> {
+  const platform = HostProcess.Platform.defaultValue();
   if (
     (args.length !== 1 && args.length !== 2) ||
     args.some((argument) => Buffer.byteLength(argument) > 4096) ||
-    (process.platform !== "linux" && process.platform !== "darwin")
+    (platform !== "linux" && platform !== "darwin")
   )
     throw computeFailure("protocol");
   const qualification = args.length === 2 ? decodeNativeBlockQualification(args[0]!) : undefined;
   const boot = decodeBootstrap(JSON.parse(args.at(-1)!));
   let qualificationUsed = false;
   if (boot.build !== (await currentBuildIdentity())) throw computeFailure("protocol");
-  const heapLimit = getHeapStatistics().heap_size_limit;
+  const heapLimit = NodeV8.getHeapStatistics().heap_size_limit;
   const heapSelected =
     process.execArgv.includes("--max-old-space-size=256") ||
     process.env.NODE_OPTIONS === "--max-old-space-size=256";
   if (!heapSelected || heapLimit < 256 * 1024 * 1024 || heapLimit > 400 * 1024 * 1024)
     throw computeFailure("unavailable");
-  const guardian = new Worker(guardianSource, { eval: true, workerData: boot });
+  const guardian = new NodeWorkerThreads.Worker(guardianSource, { eval: true, workerData: boot });
   // In a Worker, process.exit would exit only that thread. This callback is on child main.
   guardian.on("error", () => process.kill(process.pid, "SIGKILL"));
   guardian.on("exit", () => process.kill(process.pid, "SIGKILL"));
@@ -256,7 +258,7 @@ export async function runServerComputeWorkerCommand(args: ReadonlyArray<string>)
   guardian.postMessage({
     type: "nativeReady",
     heapLimit,
-    availableParallelism: availableParallelism(),
+    availableParallelism: NodeOS.availableParallelism(),
   });
   // Preserve typed native errors across the Promise boundary (runPromise rejection can wrap a Cause).
   const execute = async <A, E>(

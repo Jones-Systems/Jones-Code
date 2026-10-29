@@ -1,10 +1,13 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- This native Promise boundary bounds termination with a cleanup-owned real-time deadline.
 import * as NodeTimers from "node:timers";
 
-import type { Worker } from "node:worker_threads";
+import type * as NodeWorkerThreads from "node:worker_threads";
 
 /** A timeout is uncertainty, never permission to replace a native connection. */
-export const retireReaderWorker = async (worker: Worker, timeoutMs = 10_000): Promise<boolean> => {
+export const retireReaderWorker = async (
+  worker: NodeWorkerThreads.Worker,
+  timeoutMs = 10_000,
+): Promise<boolean> => {
   let timer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
   try {
     return await Promise.race([

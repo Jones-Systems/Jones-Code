@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Real response encoding and credits use bounded synthetic pipes, without a native finder.
-import { PassThrough } from "node:stream";
+import * as NodeStream from "node:stream";
 import { expect, it } from "vite-plus/test";
 import {
   decodeReply,
@@ -38,7 +38,7 @@ it.each(["open", "list", "search", "searchContents", "refresh", "close"] as cons
   "brackets %s execution separately from chunking and preserves failure/cancellation settlement",
   async (operation: Operation) => {
     for (const mode of ["ok", "failed", "cancelled"] as const) {
-      const pipe = new PassThrough(),
+      const pipe = new NodeStream.PassThrough(),
         decoded: Reply[] = [];
       const controller = new AbortController();
       let now = 1_000_000,
@@ -133,7 +133,7 @@ it.each(["open", "list", "search", "searchContents", "refresh", "close"] as cons
 );
 
 it("rejects an unwritable frame before waiting on exhausted credits and leaves no sequence hole", async () => {
-  const pipe = new PassThrough(),
+  const pipe = new NodeStream.PassThrough(),
     decoded: unknown[] = [];
   const read = (async () => {
     for await (const frame of frames(pipe, LIMITS.batchBytes))

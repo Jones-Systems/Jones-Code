@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Synthetic snapshot codec qualification at an explicit runtime boundary.
-import { gzipSync } from "node:zlib";
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import * as NodeZlib from "node:zlib";
+import * as NodePerfHooks from "node:perf_hooks";
 import { ThreadId, OrchestrationV2ShellSnapshotJson } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -35,7 +35,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
       }
       const samples = [];
       for (let window = 0; window < 3; window++) {
-        const loop = monitorEventLoopDelay({ resolution: 10 });
+        const loop = NodePerfHooks.monitorEventLoopDelay({ resolution: 10 });
         loop.enable();
         try {
           const capturedAt = performance.now();
@@ -55,7 +55,7 @@ export async function measureSnapshotPipeline(threadCount = 2_000) {
           const bytes = JSON.stringify(projected);
           const encodeMs = performance.now() - encodedAt;
           const compressedAt = performance.now(),
-            compressed = gzipSync(bytes);
+            compressed = NodeZlib.gzipSync(bytes);
           const compressionMs = performance.now() - compressedAt;
           // Let the loop monitor observe this pipeline's blocking interval.
           yield* Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));

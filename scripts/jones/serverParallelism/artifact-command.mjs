@@ -1,26 +1,26 @@
 // Produce the command manifest from a qualified installed layout. Does not run it.
-import { readFile, writeFile, access } from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import { executableIdentity, stampedIdentity } from "./commandIdentity.mjs";
-import { isAbsolute } from "node:path";
+import * as NodePath from "node:path";
 const [runtimeForm, file, entry, output] = process.argv.slice(2);
 if (
   !["bundle", "electron", "sea"].includes(runtimeForm) ||
   !file ||
   !entry ||
   !output ||
-  !isAbsolute(file) ||
-  !isAbsolute(output) ||
-  (runtimeForm !== "sea" && !isAbsolute(entry))
+  !NodePath.isAbsolute(file) ||
+  !NodePath.isAbsolute(output) ||
+  (runtimeForm !== "sea" && !NodePath.isAbsolute(entry))
 )
   throw new Error(
     "Usage: artifact-command.mjs <bundle|electron|sea> <absolute executable> <absolute entry or -> <absolute manifest.json>",
   );
-await access(file);
-const input = await readFile(runtimeForm === "sea" ? file : entry);
+await NodeFSP.access(file);
+const input = await NodeFSP.readFile(runtimeForm === "sea" ? file : entry);
 const build = runtimeForm === "sea" ? executableIdentity(input) : stampedIdentity(input);
 if (!build || build === "f07a6bb84e82d6c130f80e7f7f398ea97a36ca2a6b5209ff71e56f613f0507c1")
   throw new Error("Missing complete-input build stamp");
-await writeFile(
+await NodeFSP.writeFile(
   output,
   JSON.stringify(
     {

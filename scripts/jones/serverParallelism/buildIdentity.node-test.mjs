@@ -1,12 +1,12 @@
-import { test } from "node:test";
-import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import * as NodeTest from "node:test";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { serverComputeBuildIdentity, computeBuildPlaceholder } from "./buildIdentity.ts";
 
-test("one complete-input digest stamps every chunk and changes with sibling code or lock bytes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "jones-build-id-"));
+NodeTest.test("one complete-input digest stamps every chunk and changes with sibling code or lock bytes", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-build-id-"));
   try {
     for (const file of [
       "package.json",
@@ -17,8 +17,8 @@ test("one complete-input digest stamps every chunk and changes with sibling code
       "apps/server/vite.config.ts",
       "patches/@ff-labs__fff-node@0.11.0.patch",
     ]) {
-      await mkdir(dirname(join(root, file)), { recursive: true });
-      await writeFile(join(root, file), file);
+      await NodeFSP.mkdir(NodePath.dirname(NodePath.join(root, file)), { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(root, file), file);
     }
     const build = async (sibling) => {
       const bundle = Object.fromEntries(
@@ -44,19 +44,19 @@ test("one complete-input digest stamps every chunk and changes with sibling code
       const ids = Object.values(bundle).map(
         (chunk) => /jones-server-compute-build:([a-f0-9]{64})/.exec(chunk.code)[1],
       );
-      assert.equal(new Set(ids).size, 1);
-      assert.notEqual(ids[0], computeBuildPlaceholder);
+      NodeAssert.equal(new Set(ids).size, 1);
+      NodeAssert.notEqual(ids[0], computeBuildPlaceholder);
       return ids[0];
     };
     const first = await build("worker A");
-    assert.equal(first, await build("worker A"));
-    assert.notEqual(first, await build("worker B"));
-    await writeFile(
-      join(root, "pnpm-lock.yaml"),
+    NodeAssert.equal(first, await build("worker A"));
+    NodeAssert.notEqual(first, await build("worker B"));
+    await NodeFSP.writeFile(
+      NodePath.join(root, "pnpm-lock.yaml"),
       "different actual external dependency resolution",
     );
-    assert.notEqual(first, await build("worker A"));
+    NodeAssert.notEqual(first, await build("worker A"));
   } finally {
-    await rm(root, { recursive: true });
+    await NodeFSP.rm(root, { recursive: true });
   }
 });

@@ -104,7 +104,7 @@ export function observeRequestTiming(
     phase: "reply_delivery",
     durationMs: timing?.delivery?.durationMs ?? null,
     estimated: true,
-    ...(timing?.delivery ?? {}),
+    ...timing?.delivery,
   });
   emit({ ...base, phase: "parent_continuation", durationMs: timing?.parentContinuationMs ?? null });
 }

@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Node supervisor is a scoped server capability; no native package loads here.
-import { join } from "node:path";
+import * as NodePath from "node:path";
 import { AgentScope } from "@t3tools/shared/AgentScope";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -44,7 +45,11 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const agentScope = yield* AgentScope;
   const observe = yield* ComputeObserver;
-  const command = yield* Effect.tryPromise({ try: resolveWorkerCommand, catch: failure });
+  const platform = yield* HostProcess.Platform;
+  const command = yield* Effect.tryPromise({
+    try: () => resolveWorkerCommand(platform),
+    catch: failure,
+  });
   // Existing placement/scope policy only. No provider category, core cap or shared scope setting changes.
   const commands = yield* Effect.forEach(
     Array.from({ length: config.serverParallelism.computeWorkerCount }, (_, slot) => slot),
@@ -62,8 +67,9 @@ const make = Effect.gen(function* () {
     Effect.tryPromise({
       try: async () => {
         const journal = await GenerationJournal.acquire(
-          join(config.stateDir, "server-compute"),
+          NodePath.join(config.stateDir, "server-compute"),
           config.serverParallelism.computeWorkerCount,
+          platform,
         ).catch((cause) => {
           throw computeFailure("retirement-unknown", cause);
         });

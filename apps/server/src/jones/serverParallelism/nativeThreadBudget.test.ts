@@ -226,7 +226,7 @@ it.each([0, 1])(
         ),
       },
     }));
-    expect(evaluateNativeThreadBudget({ ...input, samples }).predicate).toBe(extra ? false : true);
+    expect(evaluateNativeThreadBudget({ ...input, samples }).predicate).toBe(!extra);
   },
 );
 

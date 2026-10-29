@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
-import { readFile, writeFile, mkdir, lstat, rm } from "node:fs/promises";
-import { join, isAbsolute } from "node:path";
-import { setTimeout as pause } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
+import * as HostProcess from "../../../packages/shared/src/HostProcess.ts";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeTimersPromises from "node:timers/promises";
+import * as NodeURL from "node:url";
 import {
   GenerationJournal,
   proveAbsent,
@@ -93,13 +94,13 @@ async function boundedExit(exited) {
   }
 }
 async function journalBinding(directory, candidate, count) {
-  const claim = JSON.parse(await readFile(join(directory, "journal", "pool.claim"), "utf8"));
+  const claim = JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "journal", "pool.claim"), "utf8"));
   if (claim.authorityId !== candidate.subject.authorityId || claim.count !== count)
     throw new Error("Changed journal authority");
   const pids = [],
     slots = [];
   for (let i = 0; i < count; i++) {
-    const record = JSON.parse(await readFile(join(directory, "journal", `slot-${i}.json`), "utf8"));
+    const record = JSON.parse(await NodeFSP.readFile(NodePath.join(directory, "journal", `slot-${i}.json`), "utf8"));
     if (
       record.state !== "registered" ||
       record.authorityId !== claim.authorityId ||
@@ -129,16 +130,16 @@ async function journalBinding(directory, candidate, count) {
 }
 async function absence(pids) {
   const expires = performance.now() + 5000;
-  while (!pids.every(proveAbsent) && performance.now() < expires) await pause(20);
+  while (!pids.every(proveAbsent) && performance.now() < expires) await NodeTimersPromises.setTimeout(20);
   return pids.length > 0 && pids.every(proveAbsent);
 }
 async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
-  await mkdir(directory, { mode: 0o700 });
+  await NodeFSP.mkdir(directory, { mode: 0o700 });
   const count = profile === "vps" ? 3 : 2;
-  const child = spawn(
+  const child = NodeChildProcess.spawn(
     process.execPath,
     [
-      fileURLToPath(new URL("./native-block-parent.mjs", import.meta.url)),
+      NodeURL.fileURLToPath(new URL("./native-block-parent.mjs", import.meta.url)),
       manifestPath,
       directory,
       profile,
@@ -196,7 +197,7 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
       subject: candidate.subject,
       capturedParentPid: child.pid,
       table,
-      artifact: join(artifacts, `${mode}-prenative-witness.json`),
+      artifact: NodePath.join(artifacts, `${mode}-prenative-witness.json`),
     });
     if (preNative.outcome !== "unknown")
       throw new Error("Pre-native allocation marker was accepted as native proof");
@@ -207,7 +208,7 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
       subject: candidate.subject,
       capturedParentPid: child.pid,
       table,
-      artifact: join(artifacts, `${mode}-witness.json`),
+      artifact: NodePath.join(artifacts, `${mode}-witness.json`),
     });
     if (box.returned) throw new Error("Native request already returned");
     child.send({ type: "witness-finished", finished: witness.finished });
@@ -247,7 +248,7 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
         // Do not even acquire recovery/admit replacement while any old PID is present or unknown.
         reason = "Old generation absence unknown; replacement admissions remain zero";
       } else {
-        const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+        const manifest = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8"));
         const command = {
           ...manifest,
           env: minimalWorkerEnvironment(
@@ -256,7 +257,7 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
             manifest.runtimeForm === "electron",
           ),
         };
-        const recovered = await GenerationJournal.acquire(join(directory, "journal"), count);
+        const recovered = await GenerationJournal.acquire(NodePath.join(directory, "journal"), count);
         sameJournalRecovered = recovered.claim.authorityId !== candidate.subject.authorityId;
         const replacement = new ComputeSupervisor({
           count,
@@ -269,7 +270,7 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
         });
         try {
           const handle = replacement.register({
-            cwd: join(directory, "workspace-0"),
+            cwd: NodePath.join(directory, "workspace-0"),
             variant: "paths",
           });
           await replacement.ensure(handle);
@@ -294,7 +295,7 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
   if (!cleanupProved && childrenAbsent === true && parentExit.captured === true) {
     try {
       // Cleanup recovery creates no native process and never substitutes for a successful witness/control.
-      const recovered = await GenerationJournal.acquire(join(directory, "journal"), count);
+      const recovered = await GenerationJournal.acquire(NodePath.join(directory, "journal"), count);
       await recovered.release();
       cleanupRecovery = true;
       cleanupProved = true;
@@ -326,8 +327,8 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
     killAt: killAt ?? null,
     normalResult,
   };
-  await writeFile(
-    join(artifacts, `${mode}-lifecycle.json`),
+  await NodeFSP.writeFile(
+    NodePath.join(artifacts, `${mode}-lifecycle.json`),
     JSON.stringify(lifecycle, null, 2) + "\n",
     { flag: "wx", mode: 0o600 },
   );
@@ -335,20 +336,20 @@ async function fixture({ manifestPath, directory, profile, mode, artifacts }) {
 }
 
 export async function runNativeBlockCase({ manifestPath, scratch, output, profile }) {
-  if (![manifestPath, scratch, output].every(isAbsolute) || !["laptop", "vps"].includes(profile))
+  if (![manifestPath, scratch, output].every(NodePath.isAbsolute) || !["laptop", "vps"].includes(profile))
     throw new Error("Unbound native block case");
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const manifest = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8"));
   const allowed = ["schema", "runtimeForm", "file", "args", "build", "identityResolver"];
   if (
     Object.keys(manifest).some((key) => !allowed.includes(key)) ||
     (manifest.identityResolver !== undefined &&
       (manifest.runtimeForm !== "source" ||
         typeof manifest.identityResolver !== "string" ||
-        !isAbsolute(manifest.identityResolver))) ||
+        !NodePath.isAbsolute(manifest.identityResolver))) ||
     manifest.schema !== "jones.server-parallelism.command/v1" ||
     !["source", "bundle", "electron", "sea"].includes(manifest.runtimeForm) ||
     !/^[a-f0-9]{64}$/.test(manifest.build) ||
-    !isAbsolute(manifest.file ?? "") ||
+    !NodePath.isAbsolute(manifest.file ?? "") ||
     !Array.isArray(manifest.args) ||
     !manifest.args.every(
       (value) =>
@@ -358,14 +359,14 @@ export async function runNativeBlockCase({ manifestPath, scratch, output, profil
       ? manifest.args.length !== 1
       : manifest.args.length !== 3 ||
         manifest.args[0] !== "--max-old-space-size=256" ||
-        !isAbsolute(manifest.args[1])) ||
+        !NodePath.isAbsolute(manifest.args[1])) ||
     manifest.args.at(-1) !== "__jones-server-compute"
   )
     throw new Error("Invalid candidate command manifest");
-  await mkdir(output, { mode: 0o700 });
+  await NodeFSP.mkdir(output, { mode: 0o700 });
   const negative = await fixture({
     manifestPath,
-    directory: join(scratch, "release"),
+    directory: NodePath.join(scratch, "release"),
     profile,
     mode: "release",
     artifacts: output,
@@ -373,7 +374,7 @@ export async function runNativeBlockCase({ manifestPath, scratch, output, profil
   const killed = nativeBlockCohortRetired(negative, profile === "vps" ? 3 : 2)
     ? await fixture({
         manifestPath,
-        directory: join(scratch, "kill"),
+        directory: NodePath.join(scratch, "kill"),
         profile,
         mode: "kill",
         artifacts: output,
@@ -388,9 +389,9 @@ export async function runNativeBlockCase({ manifestPath, scratch, output, profil
         reason: "Negative-control retirement unproved; zero subsequent native admissions",
       };
   const os =
-    process.platform === "linux" && process.arch === "x64"
+    HostProcess.Platform.defaultValue() === "linux" && HostProcess.Architecture.defaultValue() === "x64"
       ? "linux-x64"
-      : process.platform === "darwin" && process.arch === "arm64"
+      : HostProcess.Platform.defaultValue() === "darwin" && HostProcess.Architecture.defaultValue() === "arm64"
         ? "macos-arm64"
         : "unsupported";
   const subject = killed.candidate?.subject;
@@ -490,14 +491,14 @@ export async function runNativeBlockCase({ manifestPath, scratch, output, profil
     reasons: [negative.reason, killed.reason].filter(Boolean),
     exactProductiveNativePhaseAtKill: "unknown",
   };
-  await writeFile(join(output, "receipt.json"), JSON.stringify(result, null, 2) + "\n", {
+  await NodeFSP.writeFile(NodePath.join(output, "receipt.json"), JSON.stringify(result, null, 2) + "\n", {
     flag: "wx",
     mode: 0o600,
   });
   if (proof.cleanupProved) {
-    for (const directory of [join(scratch, "release"), join(scratch, "kill")]) {
-      if ((await lstat(directory)).isSymbolicLink()) throw new Error("Changed fixture scratch");
-      await rm(directory, { recursive: true });
+    for (const directory of [NodePath.join(scratch, "release"), NodePath.join(scratch, "kill")]) {
+      if ((await NodeFSP.lstat(directory)).isSymbolicLink()) throw new Error("Changed fixture scratch");
+      await NodeFSP.rm(directory, { recursive: true });
     }
   }
   return result;

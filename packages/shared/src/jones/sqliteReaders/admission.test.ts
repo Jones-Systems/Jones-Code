@@ -349,6 +349,14 @@ it.effect("caller scope closure at election cannot orphan capacity or start its 
     const leaseScope = yield* Scope.make();
     yield* Effect.addFinalizer((exit) => Scope.close(leaseScope, exit));
     let closing: Fiber.Fiber<void> | undefined;
+    let close!: () => void;
+    // Resume a test-owned fiber synchronously at election, before native startup can begin.
+    const closer = yield* Effect.forkChild(
+      Effect.callback<void>((resume) => {
+        close = () => resume(Scope.close(leaseScope, Exit.void));
+      }),
+      { startImmediately: true },
+    );
     let starts = 0;
     const shared = {
       ...slot(),
@@ -363,7 +371,8 @@ it.effect("caller scope closure at election cannot orphan capacity or start its 
         backgroundQueueTimeoutMs: 1_000,
         observe: (event) => {
           if (event.phase === "queue" && event.outcome === "ok" && closing === undefined) {
-            closing = Effect.runFork(Scope.close(leaseScope, Exit.void));
+            closing = closer;
+            close();
           }
         },
       },

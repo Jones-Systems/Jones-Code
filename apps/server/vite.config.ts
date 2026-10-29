@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url";
+import * as NodeURL from "node:url";
 import {
   computeBuildPlaceholder,
   serverComputeBuildIdentity,
@@ -86,7 +86,7 @@ export default mergeConfig(
     },
     pack: {
       plugins: [
-        serverComputeBuildIdentity(fileURLToPath(new URL("../../", import.meta.url)), {
+        serverComputeBuildIdentity(NodeURL.fileURLToPath(new URL("../../", import.meta.url)), {
           packExecutable,
           packExecutableTarget,
           telemetryChannel,

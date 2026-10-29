@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off -- Native work and pinned-package metadata checks run only in the dedicated child.
 import * as NodeModule from "node:module";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import type {
   DirItem,
@@ -40,11 +40,13 @@ import {
 const requireForFff = NodeModule.createRequire(import.meta.url);
 // Resolve through the filesystem, including the repository's ASAR/native-loading patch.
 // Refuse an accidentally substituted package before creating any finder.
-let packageDirectory = dirname(requireForFff.resolve("@ff-labs/fff-node"));
+let packageDirectory = NodePath.dirname(requireForFff.resolve("@ff-labs/fff-node"));
 let pinned = false;
 for (let depth = 0; depth < 4; depth++) {
   try {
-    const metadata = JSON.parse(readFileSync(join(packageDirectory, "package.json"), "utf8")) as {
+    const metadata = JSON.parse(
+      NodeFS.readFileSync(NodePath.join(packageDirectory, "package.json"), "utf8"),
+    ) as {
       name?: string;
       version?: string;
     };
@@ -55,7 +57,7 @@ for (let depth = 0; depth < 4; depth++) {
   } catch {
     /* The resolved JS entry may be nested below the package root. */
   }
-  packageDirectory = dirname(packageDirectory);
+  packageDirectory = NodePath.dirname(packageDirectory);
 }
 if (!pinned) throw new Error("Unsupported workspace native package.");
 const { FileFinder } = requireForFff("@ff-labs/fff-node") as typeof import("@ff-labs/fff-node");

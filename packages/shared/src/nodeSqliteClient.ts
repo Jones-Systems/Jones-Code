@@ -1,5 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Checkpoint admission observes WAL size synchronously with the writer WAL snapshot.
-import * as NodeFs from "node:fs";
+import * as NodeFS from "node:fs";
 import * as NodeSqlite from "node:sqlite";
 import * as NodeUtil from "node:util";
 import * as NodeWorkerThreads from "node:worker_threads";
@@ -979,7 +979,7 @@ const startCheckpointWorker = Effect.fnUntraced(function* (
       const limit = readSafeSqliteInteger(sizeLimit.get()?.journal_size_limit);
       if (limit !== undefined && limit >= 0) {
         try {
-          if (NodeFs.statSync(filename + "-wal").size > limit) blocked = true;
+          if (NodeFS.statSync(filename + "-wal").size > limit) blocked = true;
         } catch (cause) {
           if (!Predicate.hasProperty(cause, "code") || cause.code !== "ENOENT") throw cause;
         }

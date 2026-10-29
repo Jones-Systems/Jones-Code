@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Qualified synthetic harness owns every workspace, journal and captured child.
-import { mkdir, writeFile, rename, rm } from "node:fs/promises";
-import { join } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
-import { setTimeout as pause } from "node:timers/promises";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeTimersPromises from "node:timers/promises";
 import { ComputeSupervisor } from "../serverCompute/supervisor.ts";
 import { GenerationJournal } from "../serverCompute/journal.ts";
 import { isKey } from "../serverCompute/protocol.ts";
@@ -68,7 +69,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
     files > 2_048
   )
     throw new Error("Qualification workload outside bounded representative envelope");
-  await mkdir(directory, { recursive: false, mode: 0o700 });
+  await NodeFSP.mkdir(directory, { recursive: false, mode: 0o700 });
   const observations: ComputeObservation[] = [];
   const observe = (event: ComputeObservation) => {
     if (observations.length < 100_000) observations.push(event);
@@ -105,7 +106,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const parentCpuStart = process.cpuUsage(),
     mainThreadCpuStart = process.threadCpuUsage();
   const requestMs: number[] = [];
-  const journal = await GenerationJournal.acquire(join(directory, "journal"), count);
+  const journal = await GenerationJournal.acquire(NodePath.join(directory, "journal"), count);
   const supervisor = new ComputeSupervisor({
     count,
     build: command.build,
@@ -228,7 +229,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
     },
   });
   const keys: LogicalFinderHandle[] = [];
-  const monitor = monitorEventLoopDelay({ resolution: 10 });
+  const monitor = NodePerfHooks.monitorEventLoopDelay({ resolution: 10 });
   monitor.enable();
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -307,7 +308,9 @@ export async function runNativeQualification(options: NativeQualificationOptions
           });
       }
       // Measurement cadence only. Progress assertions use jobs/CPU and captured exit, never this delay.
-      await pause(10, undefined, { signal: controller.signal }).catch(() => {});
+      await NodeTimersPromises.setTimeout(10, undefined, { signal: controller.signal }).catch(
+        () => {},
+      );
       if (controller.signal.aborted) return;
     }
   })();
@@ -315,12 +318,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
   try {
     // All 8N keys are synthetic and bounded. The first 4N stay resident together.
     for (let key = 0; key < 8 * count; key++) {
-      const cwd = join(directory, `workspace-${key}`);
-      await mkdir(cwd);
-      await writeFile(join(cwd, ".gitignore"), "ignored/\n");
+      const cwd = NodePath.join(directory, `workspace-${key}`);
+      await NodeFSP.mkdir(cwd);
+      await NodeFSP.writeFile(NodePath.join(cwd, ".gitignore"), "ignored/\n");
       const content = `needle-${key} alpha beta\n`.repeat(256);
       for (let file = 0; file < files; file++)
-        await writeFile(join(cwd, `file-${file}.txt`), content);
+        await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), content);
       keys.push(supervisor.register({ cwd, variant: key % 2 === 0 ? "paths" : "content" }));
     }
     const request = async (handle: LogicalFinderHandle) => {
@@ -374,17 +377,17 @@ export async function runNativeQualification(options: NativeQualificationOptions
     if (cohorts.some((cohort) => cohort.length !== 4))
       throw new Error("Incomplete native process cohort mapping");
     phase = "warm-idle";
-    await pause(3_000, undefined, { signal: controller.signal });
+    await NodeTimersPromises.setTimeout(3_000, undefined, { signal: controller.signal });
     const windowsResult = [];
     const steadyRotationStart = rotations;
     for (let window = 0; window < windows; window++) {
       phase = `steady-${window}`;
-      const loop = monitorEventLoopDelay({ resolution: 10 });
+      const loop = NodePerfHooks.monitorEventLoopDelay({ resolution: 10 });
       loop.enable();
       const observationStart = observations.length;
       try {
         const result = await combinedReaderWriterWindow(
-          join(directory, `combined-${window}.sqlite`),
+          NodePath.join(directory, `combined-${window}.sqlite`),
           count,
           acquisitions,
           async () => {
@@ -426,14 +429,17 @@ export async function runNativeQualification(options: NativeQualificationOptions
           try {
             await request(handle);
             // Native filesystem watcher churn and ignored-file changes; actual refresh follows.
-            const changed = join(handle.key.cwd, "churn.txt"),
-              moved = join(handle.key.cwd, "renamed.txt");
-            await writeFile(changed, "needle churn\n".repeat(128));
-            await rename(changed, moved);
-            await mkdir(join(handle.key.cwd, "ignored"), { recursive: true });
-            await writeFile(join(handle.key.cwd, "ignored", "hidden.txt"), "needle ignored");
+            const changed = NodePath.join(handle.key.cwd, "churn.txt"),
+              moved = NodePath.join(handle.key.cwd, "renamed.txt");
+            await NodeFSP.writeFile(changed, "needle churn\n".repeat(128));
+            await NodeFSP.rename(changed, moved);
+            await NodeFSP.mkdir(NodePath.join(handle.key.cwd, "ignored"), { recursive: true });
+            await NodeFSP.writeFile(
+              NodePath.join(handle.key.cwd, "ignored", "hidden.txt"),
+              "needle ignored",
+            );
             await supervisor.run(handle, "refresh", undefined, controller.signal);
-            await rm(moved);
+            await NodeFSP.rm(moved);
           } catch (cause) {
             const reason =
               typeof cause === "object" && cause !== null && "reason" in cause
@@ -456,7 +462,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
       });
     }
     phase = "churn-settling";
-    await pause(3_000, undefined, { signal: controller.signal });
+    await NodeTimersPromises.setTimeout(3_000, undefined, { signal: controller.signal });
     phase = "shutdown";
     await supervisor.shutdown();
     shutdownProved = true;
@@ -575,7 +581,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
     };
     const threadBudget = evaluateNativeThreadBudget({
       configuredN: count,
-      platform: process.platform,
+      platform: HostProcess.Platform.defaultValue(),
       parentPid: process.pid,
       macPerformanceCores,
       generations,
@@ -659,7 +665,9 @@ export async function runNativeQualification(options: NativeQualificationOptions
         ...(threadBudget.basis === "unknown"
           ? ["qualified per-generation native thread pool basis"]
           : []),
-        ...(process.platform === "darwin" ? ["kernel watcher counts (OS-specific)"] : []),
+        ...(HostProcess.Platform.defaultValue() === "darwin"
+          ? ["kernel watcher counts (OS-specific)"]
+          : []),
       ],
     };
   } finally {

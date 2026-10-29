@@ -1,9 +1,9 @@
 // Real same-source negative control: default single reader and the identical
 // native algorithms run in this main process, as before worker offload.
-import { mkdtemp, realpath, mkdir, writeFile, rm, rename } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, isAbsolute } from "node:path";
-import { monitorEventLoopDelay } from "node:perf_hooks";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodePerfHooks from "node:perf_hooks";
 import * as Effect from "effect/Effect";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
@@ -13,12 +13,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { make } from "../../../apps/server/src/jones/workspace/nativeSearchRuntime.ts";
 import { percentiles } from "../../../apps/server/src/jones/serverParallelism/combinedQualification.ts";
 const [output, profile] = process.argv.slice(2);
-if (!isAbsolute(output ?? "") || !["laptop", "vps"].includes(profile))
+if (!NodePath.isAbsolute(output ?? "") || !["laptop", "vps"].includes(profile))
   throw new Error("baseline.mjs <absolute output> <laptop|vps>");
 const count = profile === "vps" ? 3 : 2,
   acquisitions = 500,
   files = 512;
-const scratch = await realpath(await mkdtemp(join(tmpdir(), "jones-sp-baseline-")));
+const scratch = await NodeFSP.realpath(await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-baseline-")));
 const scope = await Effect.runPromise(Scope.make());
 const runtimes = new Map(),
   keys = [],
@@ -69,19 +69,19 @@ const request = async (key) => {
 };
 try {
   for (let index = 0; index < 8 * count; index++) {
-    const cwd = join(scratch, `workspace-${index}`);
-    await mkdir(cwd);
-    await writeFile(join(cwd, ".gitignore"), "ignored/\n");
+    const cwd = NodePath.join(scratch, `workspace-${index}`);
+    await NodeFSP.mkdir(cwd);
+    await NodeFSP.writeFile(NodePath.join(cwd, ".gitignore"), "ignored/\n");
     const content = `needle-${index} alpha beta\n`.repeat(256);
     for (let file = 0; file < files; file++)
-      await writeFile(join(cwd, `file-${file}.txt`), content);
+      await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), content);
     keys.push({ cwd, variant: index % 2 === 0 ? "paths" : "content" });
   }
   for (const key of keys.slice(0, 4 * count)) await runtime(key);
   for (let window = 0; window < 3; window++) {
     const writer = [],
       control = [],
-      loop = monitorEventLoopDelay({ resolution: 10 });
+      loop = NodePerfHooks.monitorEventLoopDelay({ resolution: 10 });
     loop.enable();
     try {
       const sqlWork = Effect.gen(function* () {
@@ -135,7 +135,7 @@ try {
       }).pipe(
         Effect.provide(
           NodeSqliteClient.layer({
-            filename: join(scratch, `baseline-${window}.sqlite`),
+            filename: NodePath.join(scratch, `baseline-${window}.sqlite`),
             checkpointWorker: true,
             readerFailureMode: "fail",
           }),
@@ -159,14 +159,14 @@ try {
       for (const key of keys.slice(0, workingSet)) {
         const begin = performance.now();
         await request(key);
-        const changed = join(key.cwd, "churn.txt"),
-          moved = join(key.cwd, "renamed.txt");
-        await writeFile(changed, "needle churn\n".repeat(128));
-        await rename(changed, moved);
-        await mkdir(join(key.cwd, "ignored"), { recursive: true });
-        await writeFile(join(key.cwd, "ignored", "hidden.txt"), "needle ignored");
+        const changed = NodePath.join(key.cwd, "churn.txt"),
+          moved = NodePath.join(key.cwd, "renamed.txt");
+        await NodeFSP.writeFile(changed, "needle churn\n".repeat(128));
+        await NodeFSP.rename(changed, moved);
+        await NodeFSP.mkdir(NodePath.join(key.cwd, "ignored"), { recursive: true });
+        await NodeFSP.writeFile(NodePath.join(key.cwd, "ignored", "hidden.txt"), "needle ignored");
         await execute((await runtime(key)).refresh());
-        await rm(moved);
+        await NodeFSP.rm(moved);
         latency.push(performance.now() - begin);
       }
       for (const hot of keys.slice(0, count)) await request(hot);
@@ -219,7 +219,7 @@ try {
     report = { ...report, outcome: "failed", cleanupError: String(cause) };
     process.exitCode = 1;
   } finally {
-    await writeFile(
+    await NodeFSP.writeFile(
       output,
       JSON.stringify(
         {

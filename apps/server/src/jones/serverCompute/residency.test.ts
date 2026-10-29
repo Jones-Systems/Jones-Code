@@ -18,7 +18,6 @@ function deferred() {
   void promise.catch(() => {});
   return { promise, resolve, reject };
 }
-const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 const owned: Array<{ pool: ComputeSupervisor; cleanup: () => void }> = [];
 afterEach(async () => {
   vi.useRealTimers();
@@ -50,6 +49,7 @@ type TestChild = ComputeChild & {
 function fixture(count: 2 | 3 = 2) {
   const children: TestChild[] = [],
     events: ComputeObservation[] = [];
+  const observers = new Set<(event: ComputeObservation) => void>();
   const gates = new Map<string, { entered: Gate; release: Gate }>();
   const creates = new Map<string, { entered: Gate; release: Gate }>();
   let status: ScanStatus = { scanning: false, warmupComplete: true },
@@ -76,6 +76,7 @@ function fixture(count: 2 | 3 = 2) {
     journal,
     observe: (event) => {
       events.push(event);
+      for (const observe of observers) observe(event);
     },
     start: async (bootstrap: Bootstrap, register, onExit) => {
       const pid = 100 + children.length;
@@ -163,7 +164,6 @@ function fixture(count: 2 | 3 = 2) {
   const acquire = async (id: number) => {
     const handle = register(id);
     await pool.ensure(handle);
-    await turn();
     return handle;
   };
   const fill = async () => {
@@ -195,6 +195,17 @@ function fixture(count: 2 | 3 = 2) {
     if (!event || !("counts" in event)) throw new Error("Missing lifecycle observation");
     return event.counts;
   };
+  const waitForCounts = (predicate: (value: ReturnType<typeof counts>) => boolean) => {
+    if (predicate(counts())) return Promise.resolve();
+    return new Promise<void>((resolve) => {
+      const observe = (event: ComputeObservation) => {
+        if (!("counts" in event) || !predicate(event.counts)) return;
+        observers.delete(observe);
+        resolve();
+      };
+      observers.add(observe);
+    });
+  };
   const pending = (handle: LogicalFinderHandle, signal?: AbortSignal) => {
     const promise = pool.ensure(handle, signal);
     void promise.catch(() => {});
@@ -210,6 +221,7 @@ function fixture(count: 2 | 3 = 2) {
     owner,
     hold,
     counts,
+    waitForCounts,
     pending,
     events,
     holdCreate: (id: number) => {
@@ -277,7 +289,6 @@ it("holds all charges through captured exit AND successful journal retirement be
   expect(f.counts().chargedAllocations).toBe(8);
   old.journal.resolve();
   await waiting;
-  await turn();
   expect(f.children).toHaveLength(3);
   expect(f.children[2]!.bootstrap).toMatchObject({ slotId: 0, slotGeneration: 2 });
   expect(f.counts().chargedAllocations).toBe(5);
@@ -296,7 +307,6 @@ it.each(["exit", "journal"] as const)(
     if (boundary === "journal") await old.journalStarted.promise;
     old[boundary].reject(computeFailure("retirement-unknown"));
     await rejected;
-    await turn();
     expect(f.counts()).toMatchObject({
       chargedAllocations: 8,
       physicalEntries: 8,
@@ -337,7 +347,6 @@ it("drains all pre-cut sibling work and refresh groups while post-cut arrivals w
     laterRefresh = f.pool.run(handles[4]!, "refresh", undefined);
   otherGate.release.resolve();
   await otherRunning;
-  await turn();
   await f.pool.run(handles[3]!, "list", undefined);
   expect(other.requests.filter((r) => r.operation === "list")).toHaveLength(2);
   expect(old.retireCalls).toBe(0);
@@ -355,7 +364,6 @@ it("drains all pre-cut sibling work and refresh groups while post-cut arrivals w
   // Future work never pins the drain or consumes old tokens. Reserve the new generation for oldest pressure.
   old.exit.resolve();
   await Promise.all([waiting, laterList, laterRefresh]);
-  await turn();
   const replacement = f.children[2]!;
   expect(
     (replacement.requests.find((r) => r.operation === "open")!.input as WorkspaceKey).cwd,
@@ -466,7 +474,7 @@ it("fails fault-bound jobs once during drain without replay while genuinely unbo
   expect(f.counts().chargedAllocations).toBe(8);
   old.exit.resolve();
   await old.journalStarted.promise;
-  await turn();
+  await f.waitForCounts((value) => value.chargedAllocations === 4);
   expect(f.children).toHaveLength(2); // Fault cooldown, not a free allocation or an eager replay.
   await vi.advanceTimersByTimeAsync(1000);
   await Promise.all([overflow, future]);
@@ -482,6 +490,7 @@ it("fails fault-bound jobs once during drain without replay while genuinely unbo
 
 it("reopens every evicted facade only on fresh demand and planned rotations add no cooldown", async () => {
   fakeClock();
+  const now = vi.spyOn(performance, "now");
   const f = fixture(),
     handles = await f.fill();
   const siblings = [handles[0]!, handles[2]!, handles[4]!, handles[6]!],
@@ -493,7 +502,6 @@ it("reopens every evicted facade only on fresh demand and planned rotations add 
   );
   for (let i = 0; i < siblings.length; i++) {
     await f.pool.run(siblings[i]!, "list", undefined);
-    await turn();
     const token = f.token(siblings[i]!);
     expect(token).not.toEqual(oldTokens[i]);
     expect(token.incarnation).toBeGreaterThan(oldTokens[i]!.incarnation);
@@ -502,7 +510,7 @@ it("reopens every evicted facade only on fresh demand and planned rotations add 
     ).toHaveLength(10 + i);
   }
   // The clock has not advanced: repeated planned rotation could not succeed if failure backoff were added.
-  expect(performance.now()).toBe(0);
+  expect(now.mock.results.at(-1)?.value).toBe(0);
 });
 
 it("uses newest sibling access for whole-cohort idle TTL and never restarts without demand", async () => {
@@ -526,7 +534,6 @@ it("uses newest sibling access for whole-cohort idle TTL and never restarts with
   await vi.advanceTimersByTimeAsync(LIMITS.idleMs);
   expect(f.children).toHaveLength(2);
   await f.pool.run(handles[0]!, "list", undefined);
-  await turn();
   expect(f.children).toHaveLength(3);
   expect(f.children[2]!.bootstrap.slotGeneration).toBe(2);
 });
@@ -573,7 +580,6 @@ it("retires a possibly allocating failed open without refunding its charge or re
   expect(f.counts()).toMatchObject({ physicalEntries: 1, chargedAllocations: 1 });
   const future = f.pool.run(handle, "list", undefined);
   void future.catch(() => {});
-  await turn();
   expect(f.children).toHaveLength(1);
   old.exit.resolve();
   await old.journalStarted.promise;
@@ -625,7 +631,7 @@ it("finishes already-started retirement without a speculative replacement after 
   expect(f.counts().chargedAllocations).toBe(8);
   old.exit.resolve();
   await old.journalStarted.promise;
-  await turn();
+  await f.waitForCounts((value) => value.chargedAllocations === 4);
   expect(f.children).toHaveLength(2);
   expect(f.counts().chargedAllocations).toBe(4);
 });

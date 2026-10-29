@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off preferSchemaOverJson:off -- Closed validated JSON is framed on a bounded private pipe.
-import type { Readable, Writable } from "node:stream";
-import { setImmediate as nodeTurn } from "node:timers/promises";
-import { isAbsolute } from "node:path";
+import type * as NodeStream from "node:stream";
+import * as NodeTimersPromises from "node:timers/promises";
+import * as NodePath from "node:path";
 import type {
   FinderToken,
   WorkspaceJobs,
@@ -186,7 +186,7 @@ export function isKey(value: unknown): value is WorkspaceKey {
     typeof value.cwd === "string" &&
     value.cwd.length <= 16_384 &&
     !value.cwd.includes("\0") &&
-    isAbsolute(value.cwd) &&
+    NodePath.isAbsolute(value.cwd) &&
     (value.variant === "paths" || value.variant === "content")
   );
 }
@@ -345,7 +345,7 @@ export function decodeReply(value: unknown, boot: Bootstrap): Reply {
 
 /** Incremental framing: reject a declared oversize before allocation; never buffer an unbounded pipe. */
 export async function* frames(
-  stream: Readable,
+  stream: NodeStream.Readable,
   maxBytes: number,
   onDecodedBytes?: (bytes: number) => void,
 ): AsyncGenerator<unknown> {
@@ -385,7 +385,7 @@ export async function* frames(
         onDecodedBytes?.(bytes.length);
         yield decoded;
         // Each frame is <=256 entries / 256 KiB on this protocol. Let real I/O/cancellation run.
-        await nodeTurn();
+        await NodeTimersPromises.setImmediate();
       }
     }
   }
@@ -406,7 +406,10 @@ export function replyByteTotal(total: number, bytes: number, terminal: boolean):
     throw computeFailure("oversize");
   return next;
 }
-export async function writeEncodedFrame(stream: Writable, payload: Buffer): Promise<void> {
+export async function writeEncodedFrame(
+  stream: NodeStream.Writable,
+  payload: Buffer,
+): Promise<void> {
   const header = Buffer.allocUnsafe(4);
   header.writeUInt32BE(payload.length);
   // One bounded write callback observes stream backpressure and errors, without accumulating listeners.
@@ -415,7 +418,7 @@ export async function writeEncodedFrame(stream: Writable, payload: Buffer): Prom
   );
 }
 export async function writeFrame(
-  stream: Writable,
+  stream: NodeStream.Writable,
   value: unknown,
   maxBytes: number,
 ): Promise<number> {
@@ -425,7 +428,9 @@ export async function writeFrame(
 }
 
 /** NDJSON on FD3 is separately bounded; it never shares data-pipe credit. */
-export async function* controls(stream: Readable): AsyncGenerator<Record<string, unknown>> {
+export async function* controls(
+  stream: NodeStream.Readable,
+): AsyncGenerator<Record<string, unknown>> {
   let pending = "";
   for await (const raw of stream) {
     pending += Buffer.from(raw).toString("utf8");
@@ -447,7 +452,7 @@ export async function* controls(stream: Readable): AsyncGenerator<Record<string,
   }
   if (pending.length) throw computeFailure("protocol");
 }
-export async function writeControl(stream: Writable, value: unknown): Promise<void> {
+export async function writeControl(stream: NodeStream.Writable, value: unknown): Promise<void> {
   const data = JSON.stringify(value) + "\n";
   if (Buffer.byteLength(data) > 4096) throw computeFailure("oversize");
   await new Promise<void>((resolve, reject) =>

@@ -1,6 +1,6 @@
 // Dedicated synthetic parent. It owns FD3 endpoints; observers inherit none of them.
-import { readFile, mkdir, writeFile } from "node:fs/promises";
-import { join, isAbsolute } from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import { ComputeSupervisor } from "../../../apps/server/src/jones/serverCompute/supervisor.ts";
 import { ProcessSlot } from "../../../apps/server/src/jones/serverCompute/processSlot.ts";
 import { GenerationJournal } from "../../../apps/server/src/jones/serverCompute/journal.ts";
@@ -9,20 +9,20 @@ import { LIMITS } from "../../../apps/server/src/jones/serverCompute/protocol.ts
 const [manifestPath, directory, profile, mode] = process.argv.slice(2);
 if (
   process.argv.length !== 6 ||
-  !isAbsolute(manifestPath ?? "") ||
-  !isAbsolute(directory ?? "") ||
+  !NodePath.isAbsolute(manifestPath ?? "") ||
+  !NodePath.isAbsolute(directory ?? "") ||
   !["laptop", "vps"].includes(profile) ||
   !["kill", "release"].includes(mode) ||
   !process.send
 )
   throw new Error("native-block-parent requires bound fixture IPC and exact arguments");
 const count = profile === "vps" ? 3 : 2;
-const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-const targetWorkspace = join(directory, "blocked-workspace"),
-  barrier = join(directory, "barrier");
-await mkdir(barrier, { mode: 0o700 });
-await mkdir(targetWorkspace, { mode: 0o700 });
-await writeFile(join(targetWorkspace, "file-native-block.txt"), "useful native block result\n", {
+const manifest = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8"));
+const targetWorkspace = NodePath.join(directory, "blocked-workspace"),
+  barrier = NodePath.join(directory, "barrier");
+await NodeFSP.mkdir(barrier, { mode: 0o700 });
+await NodeFSP.mkdir(targetWorkspace, { mode: 0o700 });
+await NodeFSP.writeFile(NodePath.join(targetWorkspace, "file-native-block.txt"), "useful native block result\n", {
   flag: "wx",
   mode: 0o600,
 });
@@ -30,7 +30,7 @@ const qualifier =
   "--qualification-native-block=" +
   JSON.stringify({
     targetWorkspace,
-    logFileHint: join(barrier, "native-block.log"),
+    logFileHint: NodePath.join(barrier, "native-block.log"),
   });
 const command = {
   ...manifest,
@@ -41,7 +41,7 @@ const command = {
     manifest.runtimeForm === "electron",
   ),
 };
-const journal = await GenerationJournal.acquire(join(directory, "journal"), count);
+const journal = await GenerationJournal.acquire(NodePath.join(directory, "journal"), count);
 const captured = new Map(),
   attempts = new Map();
 let pending,
@@ -163,9 +163,9 @@ process.once("disconnect", () => {
 try {
   const handles = [];
   for (let i = 0; i < count; i++) {
-    const cwd = join(directory, `workspace-${i}`);
-    await mkdir(cwd, { mode: 0o700 });
-    await writeFile(join(cwd, `file-${i}.txt`), "productive pinned native search\n", {
+    const cwd = NodePath.join(directory, `workspace-${i}`);
+    await NodeFSP.mkdir(cwd, { mode: 0o700 });
+    await NodeFSP.writeFile(NodePath.join(cwd, `file-${i}.txt`), "productive pinned native search\n", {
       flag: "wx",
       mode: 0o600,
     });

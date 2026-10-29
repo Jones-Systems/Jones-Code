@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off -- Captured child callbacks and independent deadline/control transport require Node primitives.
-import { spawn, type ChildProcess } from "node:child_process";
-import type { Duplex, Readable, Writable } from "node:stream";
+import * as NodeChildProcess from "node:child_process";
+import type * as NodeStream from "node:stream";
 import { computeFailure, ComputeFailure } from "./failure.ts";
 import { bootstrapArgument, type WorkerCommand } from "./workerCommand.ts";
 import {
@@ -101,9 +101,9 @@ export class ProcessSlot implements ComputeChild {
   get runtimeMetadata(): ComputeRuntimeMetadata | undefined {
     return this.metadata;
   }
-  private readonly input: Writable;
-  private readonly output: Readable;
-  private readonly control: Duplex;
+  private readonly input: NodeStream.Writable;
+  private readonly output: NodeStream.Readable;
+  private readonly control: NodeStream.Duplex;
   private readonly exited: Promise<void>;
   private exitObserved = false;
   private fault: unknown;
@@ -117,12 +117,12 @@ export class ProcessSlot implements ComputeChild {
   private diagnostics = Buffer.alloc(0);
   private controlWrites = 0;
   private controlTail: Promise<void> = Promise.resolve();
-  private readonly child: ChildProcess;
+  private readonly child: NodeChildProcess.ChildProcess;
   readonly bootstrap: Bootstrap;
   private readonly onExit: (cause: unknown) => void;
   private readonly observe: (event: ComputeObservation) => void;
   private constructor(
-    child: ChildProcess,
+    child: NodeChildProcess.ChildProcess,
     bootstrap: Bootstrap,
     onExit: (cause: unknown) => void,
     observe?: (event: ComputeObservation) => void,
@@ -136,7 +136,7 @@ export class ProcessSlot implements ComputeChild {
     this.pid = child.pid;
     this.input = child.stdin;
     this.output = child.stdout;
-    this.control = child.stdio[3] as Duplex;
+    this.control = child.stdio[3] as NodeStream.Duplex;
     this.exited = new Promise<void>((resolve) => {
       child.once("exit", () => {
         this.exitObserved = true;
@@ -164,11 +164,15 @@ export class ProcessSlot implements ComputeChild {
     observe?: (event: ComputeObservation) => void,
     capture?: (child: ComputeChild) => void,
   ): Promise<ProcessSlot> {
-    const child = spawn(command.file, [...command.args, bootstrapArgument(bootstrap)], {
-      stdio: ["pipe", "pipe", "pipe", "pipe"],
-      env: command.env,
-      windowsHide: true,
-    });
+    const child = NodeChildProcess.spawn(
+      command.file,
+      [...command.args, bootstrapArgument(bootstrap)],
+      {
+        stdio: ["pipe", "pipe", "pipe", "pipe"],
+        env: command.env,
+        windowsHide: true,
+      },
+    );
     if (!child.pid) {
       // Observe spawn errors without leaking an unhandled event. Reservation remains unresolved.
       child.once("error", () => {});

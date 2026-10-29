@@ -158,8 +158,14 @@ it.each([2, 3] as const)(
     const f = fixture(count),
       handles = await Promise.all(Array.from({ length: count }, (_, id) => f.acquire(id)));
     const releases: Array<() => void> = [];
+    const entered: Array<Promise<void>> = [];
     for (const child of f.children) {
       const open = child.requests.find((r) => r.operation === "open")!;
+      entered.push(
+        new Promise<void>((resolve) => {
+          f.requestEntries.set(open.token.keyId, resolve);
+        }),
+      );
       f.gates.set(
         open.token.keyId,
         new Promise<void>((resolve) => {
@@ -168,7 +174,7 @@ it.each([2, 3] as const)(
       );
     }
     const running = handles.map((h) => f.pool.run(h, "list", undefined));
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await Promise.all(entered);
     expect(f.children).toHaveLength(count);
     expect(f.children.every((c) => c.requests.some((r) => r.operation === "list"))).toBe(true);
     releases.forEach((release) => release());

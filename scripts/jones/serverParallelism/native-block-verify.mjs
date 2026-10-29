@@ -1,18 +1,18 @@
-import { readFile, lstat, realpath } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { createHash } from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 import {
   nativeBlockReceiptPredicate,
   nativeBlockCohortRetired,
   parseLinuxWitness,
 } from "./native-block-proof.mjs";
 import { proveAbsent } from "../../../apps/server/src/jones/serverCompute/journal.ts";
-const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 const same = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 async function ownedEvidence(path, directory) {
-  if (dirname(path) !== directory || (await realpath(directory)) !== directory)
+  if (NodePath.dirname(path) !== directory || (await NodeFSP.realpath(directory)) !== directory)
     throw new Error("Evidence outside case directory");
-  const stat = await lstat(path);
+  const stat = await NodeFSP.lstat(path);
   if (
     !stat.isFile() ||
     stat.isSymbolicLink() ||
@@ -21,7 +21,7 @@ async function ownedEvidence(path, directory) {
     (stat.mode & 0o077) !== 0
   )
     throw new Error("Unbound witness artifact");
-  return readFile(path);
+  return NodeFSP.readFile(path);
 }
 export async function verifyNativeBlockRetirement(receipt, directory, count) {
   try {
@@ -29,7 +29,7 @@ export async function verifyNativeBlockRetirement(receipt, directory, count) {
       return false;
     for (const mode of ["release", "kill"]) {
       const cohort = JSON.parse(
-        await ownedEvidence(join(directory, `${mode}-lifecycle.json`), directory),
+        await ownedEvidence(NodePath.join(directory, `${mode}-lifecycle.json`), directory),
       );
       if (!nativeBlockCohortRetired(cohort, count) || !cohort.candidate.children.every(proveAbsent))
         return false;
@@ -53,16 +53,16 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
     const bytes = await ownedEvidence(proof.witness.artifact, directory);
     if (
       digest(bytes) !== proof.witness.sha256 ||
-      digest(await readFile(new URL("./native-block-proof.mjs", import.meta.url))) !==
+      digest(await NodeFSP.readFile(new URL("./native-block-proof.mjs", import.meta.url))) !==
         proof.witness.parserSha256 ||
-      digest(await readFile(new URL("./native-block-observer.mjs", import.meta.url))) !==
+      digest(await NodeFSP.readFile(new URL("./native-block-observer.mjs", import.meta.url))) !==
         proof.witness.observerSha256
     )
       return false;
     const evidence = JSON.parse(bytes),
-      killed = JSON.parse(await ownedEvidence(join(directory, "kill-lifecycle.json"), directory));
+      killed = JSON.parse(await ownedEvidence(NodePath.join(directory, "kill-lifecycle.json"), directory));
     const released = JSON.parse(
-      await ownedEvidence(join(directory, "release-lifecycle.json"), directory),
+      await ownedEvidence(NodePath.join(directory, "release-lifecycle.json"), directory),
     );
     if (
       evidence.schema !== "jones.native-block-witness/v1" ||
@@ -138,18 +138,18 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       return false;
     for (const name of ["fff", "ffi"]) {
       const path = proof.binaryPaths[name],
-        stat = await lstat(path);
+        stat = await NodeFSP.lstat(path);
       if (
         !stat.isFile() ||
         stat.isSymbolicLink() ||
         stat.size > 128 * 1024 * 1024 ||
         !evidence.raw.maps.split("\n").some((line) => line.endsWith(" " + path)) ||
-        digest(await readFile(path)) !== proof.binaryDigests[name]
+        digest(await NodeFSP.readFile(path)) !== proof.binaryDigests[name]
       )
         return false;
     }
     const beforeBytes = await ownedEvidence(
-      join(directory, "kill-prenative-witness.json"),
+      NodePath.join(directory, "kill-prenative-witness.json"),
       directory,
     );
     const before = JSON.parse(beforeBytes);
@@ -166,7 +166,7 @@ export async function verifyNativeBlockArtifacts(receipt, expected, directory) {
       )
     )
       return false;
-    const negativeBytes = await ownedEvidence(join(directory, "release-witness.json"), directory);
+    const negativeBytes = await ownedEvidence(NodePath.join(directory, "release-witness.json"), directory);
     const negative = JSON.parse(negativeBytes);
     const negativeParsed = parseLinuxWitness(
       negative.raw,

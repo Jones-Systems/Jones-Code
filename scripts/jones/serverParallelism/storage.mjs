@@ -1,7 +1,7 @@
-import { statfs } from "node:fs/promises";
-import { resolve } from "node:path";
-const directory = resolve(process.argv[2] ?? ".");
-const value = await statfs(directory, { bigint: true }),
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+const directory = NodePath.resolve(process.argv[2] ?? ".");
+const value = await NodeFSP.statfs(directory, { bigint: true }),
   available = value.bavail * value.bsize;
 const required = 40n * 1024n ** 3n;
 process.stdout.write(

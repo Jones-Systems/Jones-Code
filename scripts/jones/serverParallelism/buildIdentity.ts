@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Build-time plugin, before the application runtime exists.
-import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { resolve, relative } from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import type { Plugin } from "vite-plus";
 
 // Same length as the final hex digest to preserve generated source-map columns.
@@ -19,10 +19,10 @@ export function serverComputeBuildIdentity(
   return {
     name: "jones-server-compute-build-identity",
     async generateBundle(_output, bundle) {
-      const hash = createHash("sha256");
+      const hash = NodeCrypto.createHash("sha256");
       const add = (name: string, bytes: string | Uint8Array) => {
         hash.update(
-          JSON.stringify([name, createHash("sha256").update(bytes).digest("hex")]) + "\n",
+          JSON.stringify([name, NodeCrypto.createHash("sha256").update(bytes).digest("hex")]) + "\n",
         );
       };
       add("options", JSON.stringify(options));
@@ -36,11 +36,11 @@ export function serverComputeBuildIdentity(
         "apps/server/vite.config.ts",
         "patches/@ff-labs__fff-node@0.11.0.patch",
       ]) {
-        add(file, await readFile(resolve(root, file)));
+        add(file, await NodeFSP.readFile(NodePath.resolve(root, file)));
       }
       for (const id of [...this.getModuleIds()].sort()) {
         const info = this.getModuleInfo(id);
-        if (info) add(relative(root, id), info.code ?? "");
+        if (info) add(NodePath.relative(root, id), info.code ?? "");
       }
       for (const name of Object.keys(bundle).sort()) {
         const item = bundle[name]!;

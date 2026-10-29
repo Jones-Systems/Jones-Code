@@ -1,8 +1,8 @@
 // Positive handshake enforces heap selection, FD3 guardian and same-build native
 // load in ProcessSlot itself. No substitute server entry or native implementation.
-import { mkdtemp, realpath, mkdir, writeFile, readFile, rm, readdir } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, isAbsolute } from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 import { ComputeSupervisor } from "../../../apps/server/src/jones/serverCompute/supervisor.ts";
 import {
   ProcessSlot,
@@ -12,9 +12,9 @@ import { GenerationJournal } from "../../../apps/server/src/jones/serverCompute/
 import { minimalWorkerEnvironment } from "../../../apps/server/src/jones/serverCompute/workerCommand.ts";
 import { qualificationDecision } from "./qualificationResult.mjs";
 const [manifestPath, output, profile] = process.argv.slice(2);
-if (!isAbsolute(output ?? "") || !["laptop", "vps"].includes(profile))
+if (!NodePath.isAbsolute(output ?? "") || !["laptop", "vps"].includes(profile))
   throw new Error("packaging-smoke.mjs <manifest> <absolute output> <laptop|vps>");
-const manifest = JSON.parse(await readFile(manifestPath, "utf8")),
+const manifest = JSON.parse(await NodeFSP.readFile(manifestPath, "utf8")),
   count = profile === "vps" ? 3 : 2;
 const command = {
   ...manifest,
@@ -24,8 +24,8 @@ const command = {
     manifest.runtimeForm === "electron",
   ),
 };
-const scratch = await realpath(await mkdtemp(join(tmpdir(), "jones-sp-package-")));
-const journalPath = join(scratch, "journal"),
+const scratch = await NodeFSP.realpath(await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-package-")));
+const journalPath = NodePath.join(scratch, "journal"),
   journal = await GenerationJournal.acquire(journalPath, count);
 let cancelNext = false,
   cancellationDispatched = false,
@@ -70,10 +70,10 @@ let report;
 try {
   const handles = [];
   for (let index = 0; index < count; index++) {
-    const cwd = join(scratch, `workspace-${index}`);
-    await mkdir(cwd);
+    const cwd = NodePath.join(scratch, `workspace-${index}`);
+    await NodeFSP.mkdir(cwd);
     for (let file = 0; file < 128; file++)
-      await writeFile(join(cwd, `file-${file}.txt`), "needle Ελληνικά\n".repeat(256));
+      await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), "needle Ελληνικά\n".repeat(256));
     handles.push(supervisor.register({ cwd, variant: "content" }));
   }
   await Promise.all(handles.map((handle) => supervisor.ensure(handle)));
@@ -107,7 +107,7 @@ try {
   }
   await supervisor.shutdown();
   cleanupProved = true;
-  const remaining = await readdir(journalPath);
+  const remaining = await NodeFSP.readdir(journalPath);
   report = {
     predicates: {
       sameBuildNativeHandshake: started >= count,
@@ -141,7 +141,7 @@ try {
   process.removeListener("SIGTERM", stop);
   const predicates = { ...report.predicates, cleanupProved };
   const decision = qualificationDecision(predicates);
-  await writeFile(
+  await NodeFSP.writeFile(
     output,
     JSON.stringify(
       {
@@ -161,6 +161,6 @@ try {
     ) + "\n",
     { flag: "wx", mode: 0o600 },
   );
-  if (cleanupProved) await rm(scratch, { recursive: true });
+  if (cleanupProved) await NodeFSP.rm(scratch, { recursive: true });
   if (!decision.passed) process.exitCode = 1;
 }

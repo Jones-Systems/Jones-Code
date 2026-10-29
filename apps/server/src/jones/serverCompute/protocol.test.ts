@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off -- Synthetic Node process, pipe and clock fixtures exercise the actual ownership boundary.
-import { PassThrough, Readable } from "node:stream";
+import * as NodeStream from "node:stream";
 import { expect, it } from "vite-plus/test";
 import {
   decodeBootstrap,
@@ -170,14 +170,15 @@ it("strictly validates chunk batches and successful completion metadata", () => 
 });
 
 it("decodes fragmented length headers/payloads without joining job results", async () => {
-  const pipe = new PassThrough(),
+  const pipe = new NodeStream.PassThrough(),
     bytes: Buffer[] = [];
   pipe.on("data", (data: Buffer) => bytes.push(data));
   await writeFrame(pipe, request, LIMITS.requestBytes);
   const encoded = Buffer.concat(bytes);
   const parts = Array.from({ length: encoded.length }, (_, i) => encoded.subarray(i, i + 1));
   const values = [];
-  for await (const value of frames(Readable.from(parts), LIMITS.requestBytes)) values.push(value);
+  for await (const value of frames(NodeStream.Readable.from(parts), LIMITS.requestBytes))
+    values.push(value);
   expect(values).toEqual([request]);
   pipe.destroy();
 });
@@ -186,7 +187,7 @@ it("rejects oversize headers before payload allocation and rejects incomplete/in
   const header = Buffer.alloc(4);
   header.writeUInt32BE(LIMITS.requestBytes + 1);
   const collect = async (bytes: Buffer) => {
-    for await (const _value of frames(Readable.from([bytes]), LIMITS.requestBytes)) {
+    for await (const _value of frames(NodeStream.Readable.from([bytes]), LIMITS.requestBytes)) {
     }
   };
   await expect(collect(header)).rejects.toMatchObject({ reason: "oversize" });

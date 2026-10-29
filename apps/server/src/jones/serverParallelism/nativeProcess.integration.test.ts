@@ -1,12 +1,12 @@
 // oxlint-disable t3code/no-real-time-wait-in-tests -- Bounded OS absence probes after captured parent loss are cleanup evidence; application milestones use typed receipts.
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off -- Real captured process/FD3 qualification, only with an explicit admitted command manifest.
-import { spawn } from "node:child_process";
-import { mkdtemp, realpath, readFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { createInterface } from "node:readline";
-import { setTimeout as pause } from "node:timers/promises";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeReadline from "node:readline";
+import * as NodeTimersPromises from "node:timers/promises";
 import { expect, it } from "vite-plus/test";
 import { runNativeQualification } from "./nativeQualification.ts";
 import { minimalWorkerEnvironment } from "../serverCompute/workerCommand.ts";
@@ -17,13 +17,15 @@ import { ProcessSlot } from "../serverCompute/processSlot.ts";
 const manifestPath = process.env.JONES_SP_COMMAND_MANIFEST;
 const parentLossCount = process.env.JONES_SP_PROFILE === "vps" ? 3 : 2;
 // Missing packaging inputs are an explicit skip/unknown, never passing evidence.
-const native = manifestPath ? it : it.skip;
+const native = it.skipIf(!manifestPath);
 for (const count of [2, 3] as const)
   native(
     `real native ${count}-way combined load and whole-cohort retirement`,
     async () => {
-      const manifest = JSON.parse(await readFile(manifestPath!, "utf8"));
-      const scratch = await realpath(await mkdtemp(join(tmpdir(), "jones-sp-native-test-")));
+      const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
+      const scratch = await NodeFSP.realpath(
+        await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-native-test-")),
+      );
       let retired = false;
       try {
         const report = await runNativeQualification({
@@ -31,7 +33,7 @@ for (const count of [2, 3] as const)
           onShutdown: () => {
             retired = true;
           },
-          directory: join(scratch, "fixture"),
+          directory: NodePath.join(scratch, "fixture"),
           command: {
             ...manifest,
             env: minimalWorkerEnvironment(
@@ -53,7 +55,7 @@ for (const count of [2, 3] as const)
           report.churnWindows.every((window) => Object.keys(window.failures).length === 0),
         ).toBe(true);
       } finally {
-        if (retired) await rm(scratch, { recursive: true });
+        if (retired) await NodeFSP.rm(scratch, { recursive: true });
       }
     },
     600_000,
@@ -62,14 +64,16 @@ for (const count of [2, 3] as const)
 native(
   "guardian retires productive native children after captured parent SIGKILL",
   async () => {
-    const scratch = await realpath(await mkdtemp(join(tmpdir(), "jones-sp-parent-loss-")));
-    const fixture = fileURLToPath(
+    const scratch = await NodeFSP.realpath(
+      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-sp-parent-loss-")),
+    );
+    const fixture = NodeURL.fileURLToPath(
       new URL(
         "../../../../../scripts/jones/serverParallelism/parent-loss-fixture.mjs",
         import.meta.url,
       ),
     );
-    const parent = spawn(
+    const parent = NodeChildProcess.spawn(
       process.execPath,
       [fixture, manifestPath!, scratch, String(parentLossCount)],
       {
@@ -81,7 +85,7 @@ native(
       parent.once("exit", () => resolve());
       parent.once("error", reject);
     });
-    const lines = createInterface({ input: parent.stdout! });
+    const lines = NodeReadline.createInterface({ input: parent.stdout! });
     let children: number[] = [],
       proved = false;
     parent.stderr!.resume();
@@ -104,11 +108,14 @@ native(
       await exited;
       // Restart admission uses the same bounded OS absence predicate, never kills
       // journal-selected PIDs. Observation cadence supplies no cleanup evidence.
+      // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Real captured-process absence has an OS deadline; TestClock cannot advance child retirement.
       const deadline = performance.now() + 5_000;
-      while (performance.now() < deadline && !children.every(proveAbsent)) await pause(20);
+      // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- This bounded cleanup probe measures OS process retirement, not application latency.
+      while (performance.now() < deadline && !children.every(proveAbsent))
+        await NodeTimersPromises.setTimeout(20);
       proved = children.every(proveAbsent);
       expect(proved).toBe(true);
-      const manifest = JSON.parse(await readFile(manifestPath!, "utf8"));
+      const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
       const command = {
         ...manifest,
         env: minimalWorkerEnvironment(
@@ -119,7 +126,7 @@ native(
       };
       proved = false;
       const journal = await GenerationJournal.acquire(
-        join(scratch, "parent-loss", "journal"),
+        NodePath.join(scratch, "parent-loss", "journal"),
         parentLossCount,
       );
       const replacement = new ComputeSupervisor({
@@ -131,7 +138,7 @@ native(
       proved = false;
       try {
         const handle = replacement.register({
-          cwd: join(scratch, "parent-loss", "workspace-0"),
+          cwd: NodePath.join(scratch, "parent-loss", "workspace-0"),
           variant: "paths",
         });
         await replacement.ensure(handle);
@@ -148,7 +155,7 @@ native(
         parent.kill("SIGKILL");
         await exited;
       }
-      if (proved) await rm(scratch, { recursive: true });
+      if (proved) await NodeFSP.rm(scratch, { recursive: true });
     }
   },
   180_000,
@@ -158,7 +165,7 @@ for (const invalid of ["bootstrap", "missing-fd3", "wrong-build"] as const)
   native(
     `private dispatch fails closed for ${invalid}`,
     async () => {
-      const manifest = JSON.parse(await readFile(manifestPath!, "utf8"));
+      const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
       const boot =
         invalid === "bootstrap"
           ? {}
@@ -173,7 +180,7 @@ for (const invalid of ["bootstrap", "missing-fd3", "wrong-build"] as const)
               slotId: 0,
               slotGeneration: 1,
             };
-      const child = spawn(manifest.file, [...manifest.args, JSON.stringify(boot)], {
+      const child = NodeChildProcess.spawn(manifest.file, [...manifest.args, JSON.stringify(boot)], {
         stdio:
           invalid === "wrong-build" ? ["pipe", "pipe", "pipe", "pipe"] : ["pipe", "pipe", "pipe"],
         env: minimalWorkerEnvironment(
@@ -212,12 +219,12 @@ for (const invalid of ["bootstrap", "missing-fd3", "wrong-build"] as const)
   );
 
 const blockReceiptPath = process.env.JONES_SP_NATIVE_BLOCK_RECEIPT;
-const nativeReceipt = manifestPath && blockReceiptPath ? it : it.skip;
+const nativeReceipt = it.skipIf(!manifestPath || !blockReceiptPath);
 nativeReceipt(
   "guardian native barrier receipts retain the OS witness and same-journal replacement",
   async () => {
-    const receipt = JSON.parse(await readFile(blockReceiptPath!, "utf8"));
-    const manifest = JSON.parse(await readFile(manifestPath!, "utf8"));
+    const receipt = JSON.parse(await NodeFSP.readFile(blockReceiptPath!, "utf8"));
+    const manifest = JSON.parse(await NodeFSP.readFile(manifestPath!, "utf8"));
     // The separate CI barrier command produces this receipt; a successful test subprocess is insufficient.
     expect(receipt.proof.phase).toBe("fff-create/log-init/fifo-open");
     expect(receipt.proof.subject.build).toBe(manifest.build);

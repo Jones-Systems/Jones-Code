@@ -1,16 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off -- Synthetic Node process, pipe and clock fixtures exercise the actual ownership boundary.
-import { spawn, type ChildProcess } from "node:child_process";
-import type { Duplex } from "node:stream";
-import { EventEmitter, once } from "node:events";
-import { runInNewContext } from "node:vm";
+import * as NodeChildProcess from "node:child_process";
+import type * as NodeStream from "node:stream";
+import * as NodeEvents from "node:events";
+import * as NodeVM from "node:vm";
 import { afterEach, expect, it } from "vite-plus/test";
 import { guardianSource } from "./guardian.ts";
 import { controls, writeControl, type Bootstrap } from "./protocol.ts";
-const owned: ChildProcess[] = [];
+const owned: NodeChildProcess.ChildProcess[] = [];
 afterEach(async () => {
   for (const child of owned.splice(0))
     if (child.exitCode === null && child.signalCode === null) {
-      const exited = once(child, "exit");
+      const exited = NodeEvents.once(child, "exit");
       child.kill("SIGKILL");
       await exited;
     }
@@ -28,19 +28,23 @@ const boot = JSON.parse(process.argv[1]);
 new Worker(process.argv[2], { eval: true, workerData: boot });
 Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);`;
 const start = () => {
-  const child = spawn(process.execPath, ["-e", blocked, JSON.stringify(boot), guardianSource], {
-    stdio: ["ignore", "ignore", "pipe", "pipe"],
-    env: {},
-  });
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    ["-e", blocked, JSON.stringify(boot), guardianSource],
+    {
+      stdio: ["ignore", "ignore", "pipe", "pipe"],
+      env: {},
+    },
+  );
   owned.push(child);
-  const pipe = child.stdio[3] as Duplex;
+  const pipe = child.stdio[3] as NodeStream.Duplex;
   return { child, pipe, messages: controls(pipe)[Symbol.asyncIterator]() };
 };
 
 it("observes lifetime EOF independently while the child main thread is synchronously blocked", async () => {
   const { child, pipe, messages } = start();
   expect((await messages.next()).value).toMatchObject({ type: "ready", pid: child.pid });
-  const exited = once(child, "exit");
+  const exited = NodeEvents.once(child, "exit");
   pipe.destroy();
   expect((await exited)[1]).toBe("SIGKILL");
 });
@@ -52,7 +56,9 @@ it("arms a hard deadline on the independent guardian and self-kills only its own
   expect((await messages.next()).value?.type).toBe("go");
   await writeControl(pipe, { ...boot, type: "loaded" });
   expect((await messages.next()).value?.type).toBe("loaded");
-  const exited = once(child, "exit");
+  const exited = NodeEvents.once(child, "exit");
+  // The blocked OS child uses its own real clock; a parent fake clock cannot drive this hard deadline.
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- This is an absolute cross-process deadline, not an elapsed-time assertion.
   await writeControl(pipe, { ...boot, type: "arm", requestId: 1, deadline: Date.now() + 100 });
   expect((await messages.next()).value?.type).toBe("armed");
   expect((await exited)[1]).toBe("SIGKILL");
@@ -61,7 +67,7 @@ it("arms a hard deadline on the independent guardian and self-kills only its own
 it("fails closed on a malformed lifetime command without accepting a PID/signal target", async () => {
   const { child, pipe, messages } = start();
   await messages.next();
-  const exited = once(child, "exit");
+  const exited = NodeEvents.once(child, "exit");
   await writeControl(pipe, { ...boot, type: "terminate", pid: process.pid, signal: "SIGTERM" });
   expect((await exited)[1]).toBe("SIGKILL");
 });
@@ -69,12 +75,16 @@ it("fails closed on a malformed lifetime command without accepting a PID/signal 
 it("survives no missing guardian FD route: native work cannot outlive failed guardian initialization", async () => {
   // The fixture main mirrors the production error handler, while remaining blocked in synchronous work.
   // Failed initialization self-kills in the independent thread before main-loop callbacks are needed.
-  const child = spawn(process.execPath, ["-e", blocked, JSON.stringify(boot), guardianSource], {
-    stdio: ["ignore", "ignore", "ignore"],
-    env: {},
-  });
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    ["-e", blocked, JSON.stringify(boot), guardianSource],
+    {
+      stdio: ["ignore", "ignore", "ignore"],
+      env: {},
+    },
+  );
   owned.push(child);
-  expect((await once(child, "exit"))[1]).toBe("SIGKILL");
+  expect((await NodeEvents.once(child, "exit"))[1]).toBe("SIGKILL");
 });
 
 /** Only the OS pipe, process and clock are synthetic; execute the actual embedded guardian state machine. */
@@ -82,14 +92,14 @@ function clockedGuardian() {
   const kills: Array<{ pid: number; signal: string }> = [],
     messages: Array<Record<string, unknown>> = [];
   const outbound: Array<Record<string, unknown>> = [];
-  class Pipe extends EventEmitter {
+  class Pipe extends NodeEvents.EventEmitter {
     write(line: string, done: (error?: Error) => void) {
       messages.push(JSON.parse(line));
       done();
       return true;
     }
   }
-  class ParentPort extends EventEmitter {
+  class ParentPort extends NodeEvents.EventEmitter {
     postMessage(value: Record<string, unknown>): void {
       outbound.push(value);
     }
@@ -101,15 +111,13 @@ function clockedGuardian() {
   let now = 0,
     rss = 0,
     id = 0;
-  runInNewContext(guardianSource, {
+  NodeVM.runInNewContext(guardianSource, {
     require: (name: string) => {
       if (name === "node:worker_threads") return { workerData: boot, parentPort };
       if (name === "node:net")
         return {
-          Socket: class {
-            constructor() {
-              return pipe;
-            }
+          Socket: function () {
+            return pipe;
           },
         };
       throw new Error("Unexpected guardian dependency");

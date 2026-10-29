@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 
 // Match currentBuildIdentity's SEA entry-file framing, including the newline.
 export function executableIdentity(bytes) {
-  const sha256 = createHash("sha256").update(bytes).digest("hex");
-  return createHash("sha256")
+  const sha256 = NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+  return NodeCrypto.createHash("sha256")
     .update(JSON.stringify({ path: "entry", sha256 }) + "\n")
     .digest("hex");
 }

@@ -1,19 +1,20 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { constants } from "node:fs";
-import { open, readFile, writeFile, lstat, realpath } from "node:fs/promises";
-import { basename, join } from "node:path";
-import { createHash } from "node:crypto";
-import { setTimeout as pause } from "node:timers/promises";
+import * as HostProcess from "../../../packages/shared/src/HostProcess.ts";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeUtil from "node:util";
+import * as NodeFS from "node:fs";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeTimersPromises from "node:timers/promises";
 import { parseLinuxSyscall, parseLinuxWitness, parseMacSample } from "./native-block-proof.mjs";
-const execute = promisify(execFile);
-const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
+const execute = NodeUtil.promisify(NodeChildProcess.execFile);
+const digest = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
 export const parserSha256 = digest(
-  await readFile(new URL("./native-block-proof.mjs", import.meta.url)),
+  await NodeFSP.readFile(new URL("./native-block-proof.mjs", import.meta.url)),
 );
-export const observerSha256 = digest(await readFile(new URL(import.meta.url)));
+export const observerSha256 = digest(await NodeFSP.readFile(new URL(import.meta.url)));
 async function boundedRead(path, limit) {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
   try {
     return await readBoundedEvidence(file, limit);
   } finally {
@@ -38,7 +39,7 @@ export async function readBoundedEvidence(file, limit) {
 }
 const identity = (stat) => ({ device: stat.dev, inode: stat.ino, mode: stat.mode & 0o777 });
 export async function prepareNativeBlockFifos(directory, pid) {
-  const stat = await lstat(directory);
+  const stat = await NodeFSP.lstat(directory);
   if (
     !Number.isSafeInteger(pid) ||
     pid <= 0 ||
@@ -46,17 +47,17 @@ export async function prepareNativeBlockFifos(directory, pid) {
     stat.isSymbolicLink() ||
     stat.uid !== process.getuid?.() ||
     (stat.mode & 0o777) !== 0o700 ||
-    (await realpath(directory)) !== directory
+    (await NodeFSP.realpath(directory)) !== directory
   )
     throw new Error("Unowned FIFO directory");
   const second = Math.floor(Date.now() / 1000);
   const paths = Array.from({ length: 20 }, (_, i) =>
-    join(directory, `native-block+${second - 2 + i}+${pid}.log`),
+    NodePath.join(directory, `native-block+${second - 2 + i}+${pid}.log`),
   );
   await execute("mkfifo", ["-m", "600", ...paths], { timeout: 2000, maxBuffer: 16_384 });
   const table = [];
   for (const path of paths) {
-    const fifo = await lstat(path);
+    const fifo = await NodeFSP.lstat(path);
     if (!fifo.isFIFO() || fifo.uid !== process.getuid?.() || (fifo.mode & 0o777) !== 0o600)
       throw new Error("Not a private FIFO");
     table.push({ path, ...identity(fifo) });
@@ -67,7 +68,7 @@ export async function nativeBlockFifosUnchanged(table) {
   if (!Array.isArray(table) || table.length !== 20) return false;
   try {
     for (const item of table) {
-      const stat = await lstat(item.path);
+      const stat = await NodeFSP.lstat(item.path);
       if (
         !stat.isFIFO() ||
         stat.uid !== process.getuid?.() ||
@@ -104,18 +105,18 @@ function linuxImages(maps) {
         .filter(Boolean),
     ),
   ];
-  const fff = paths.filter((path) => /^libfff(?:_c)?\.so$/.test(basename(path)));
-  const ffi = paths.filter((path) => /ffi[_-]rs.*\.node$/.test(basename(path)));
+  const fff = paths.filter((path) => /^libfff(?:_c)?\.so$/.test(NodePath.basename(path)));
+  const ffi = paths.filter((path) => /ffi[_-]rs.*\.node$/.test(NodePath.basename(path)));
   if (fff.length !== 1 || ffi.length !== 1) throw new Error("Unattributed loaded native images");
   return { fff: fff[0], ffi: ffi[0] };
 }
 async function imageHashes(paths) {
   const result = {};
   for (const [name, path] of Object.entries(paths)) {
-    const stat = await lstat(path);
+    const stat = await NodeFSP.lstat(path);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > 128 * 1024 * 1024)
       throw new Error("Unhashable loaded image");
-    result[name] = digest(await readFile(path));
+    result[name] = digest(await NodeFSP.readFile(path));
   }
   return result;
 }
@@ -132,7 +133,7 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       !(await nativeBlockFifosUnchanged(table))
     )
       throw new Error("Missing captured synthetic binding");
-    if (process.platform === "linux" && process.arch === "x64") {
+    if (HostProcess.Platform.defaultValue() === "linux" && HostProcess.Architecture.defaultValue() === "x64") {
       const base = `/proc/${subject.pid}`,
         task = `${base}/task/${subject.pid}`;
       const stat = processStat(await boundedRead(`${base}/stat`, 4096));
@@ -148,10 +149,10 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
         const syscallBefore = await boundedRead(`${task}/syscall`, 1024);
         const syscall = parseLinuxSyscall(syscallBefore);
         if (!syscall) {
-          await pause(25);
+          await NodeTimersPromises.setTimeout(25);
           continue;
         }
-        const memory = await open(`${base}/mem`, constants.O_RDONLY);
+        const memory = await NodeFSP.open(`${base}/mem`, NodeFS.constants.O_RDONLY);
         let pathname;
         try {
           const bytes = Buffer.alloc(4097);
@@ -186,12 +187,12 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
           binaryPaths = linuxImages(raw.maps);
           break;
         }
-        await pause(25);
+        await NodeTimersPromises.setTimeout(25);
       }
       if (!proof) throw new Error("No exact main-TID blocked FIFO syscall witness");
-    } else if (process.platform === "darwin") {
+    } else if (HostProcess.Platform.defaultValue() === "darwin") {
       // sample is bounded and its exit is awaited: no kill proof while sampling has threads suspended.
-      await writeFile(artifact + ".sample", "", { flag: "wx", mode: 0o600 });
+      await NodeFSP.writeFile(artifact + ".sample", "", { flag: "wx", mode: 0o600 });
       await execute(
         "/usr/bin/sample",
         [String(subject.pid), "1", "1", "-file", artifact + ".sample"],
@@ -202,7 +203,7 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       raw = {
         sample,
         sampleArtifact: artifact + ".sample",
-        sampleSha256: digest(await readFile(artifact + ".sample")),
+        sampleSha256: digest(await NodeFSP.readFile(artifact + ".sample")),
         samplerFinished: true,
         parsed: stack ?? null,
       };
@@ -211,8 +212,8 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
         .split("\n")
         .map((line) => /\s(\/[^\n]+)$/.exec(line)?.[1])
         .filter(Boolean);
-      const fff = paths.filter((path) => /^libfff(?:_c)?\.dylib$/.test(basename(path)));
-      const ffi = paths.filter((path) => /ffi[_-]rs.*\.node$/.test(basename(path)));
+      const fff = paths.filter((path) => /^libfff(?:_c)?\.dylib$/.test(NodePath.basename(path)));
+      const ffi = paths.filter((path) => /ffi[_-]rs.*\.node$/.test(NodePath.basename(path)));
       if (fff.length === 1 && ffi.length === 1) {
         binaryPaths = { fff: fff[0], ffi: ffi[0] };
         binaryDigests = await imageHashes(binaryPaths);
@@ -242,7 +243,7 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       observerSha256,
     };
     const bytes = JSON.stringify(evidence, null, 2) + "\n";
-    await writeFile(artifact, bytes, { flag: "wx", mode: 0o600 });
+    await NodeFSP.writeFile(artifact, bytes, { flag: "wx", mode: 0o600 });
     return {
       outcome: true,
       ...proof,
@@ -250,7 +251,7 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       binaryPaths,
       binaryDigests,
       witness: {
-        method: process.platform === "linux" ? "linux-syscall-path" : "macos-native-stack",
+        method: HostProcess.Platform.defaultValue() === "linux" ? "linux-syscall-path" : "macos-native-stack",
         artifact,
         sha256: digest(bytes),
         parserSha256,
@@ -276,7 +277,7 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
         null,
         2,
       ) + "\n";
-    await writeFile(artifact, bytes, { flag: "wx", mode: 0o600 });
+    await NodeFSP.writeFile(artifact, bytes, { flag: "wx", mode: 0o600 });
     return {
       outcome: "unknown",
       reason,
@@ -285,7 +286,7 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
       binaryPaths,
       binaryDigests,
       witness: {
-        method: process.platform === "linux" ? "linux-syscall-path" : "macos-native-stack",
+        method: HostProcess.Platform.defaultValue() === "linux" ? "linux-syscall-path" : "macos-native-stack",
         artifact,
         sha256: digest(bytes),
         parserSha256,
@@ -299,5 +300,5 @@ export async function witnessNativeBlock({ subject, capturedParentPid, table, ar
 export async function releaseNativeBlockFifo(table, path) {
   if (!table.some((item) => item.path === path) || !(await nativeBlockFifosUnchanged(table)))
     throw new Error("Cannot release an unproved FIFO");
-  return open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  return NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NONBLOCK | NodeFS.constants.O_NOFOLLOW);
 }

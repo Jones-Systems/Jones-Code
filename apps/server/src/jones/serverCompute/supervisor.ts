@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off cryptoRandomUUID:off preferSchemaOverJson:off -- Imperative bounded supervisor owns Node callbacks and immutable input snapshots; Effect owns its scope.
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import type {
   LogicalFinderHandle,
   FinderToken,
@@ -168,7 +168,7 @@ export class ComputeSupervisor {
     let entry = this.keys.get(id);
     if (!entry) {
       entry = {
-        id: randomUUID(),
+        id: NodeCrypto.randomUUID(),
         key: Object.freeze({ ...key }),
         handles: new Set(),
         pending: 0,
@@ -177,7 +177,10 @@ export class ComputeSupervisor {
       };
       this.keys.set(id, entry);
     }
-    const handle: LogicalFinderHandle = Object.freeze({ handleId: randomUUID(), key: entry.key });
+    const handle: LogicalFinderHandle = Object.freeze({
+      handleId: NodeCrypto.randomUUID(),
+      key: entry.key,
+    });
     entry.handles.add(handle.handleId);
     this.handles.set(handle.handleId, { handle, key: entry });
     this.counts();
@@ -454,7 +457,7 @@ export class ComputeSupervisor {
     if (this.stopped || this.blocked !== undefined || this.pumping) return;
     this.pumping = true;
     try {
-      for (const job of [...this.queue])
+      for (const job of this.queue.slice())
         if (performance.now() >= job.deadline) {
           this.settle(job, undefined, computeFailure("queue-timeout"));
           this.removeQueued(job);
@@ -576,7 +579,7 @@ export class ComputeSupervisor {
       authorityId: this.options.journal.claim.authorityId,
       slotId: slot.id,
       slotGeneration: slot.generation,
-      nonce: randomUUID(),
+      nonce: NodeCrypto.randomUUID(),
     };
     slot.boot = boot;
     try {
@@ -812,7 +815,7 @@ export class ComputeSupervisor {
     this.invalidate(slot, cause);
   }
   private invalidate(slot: Slot, cause: unknown): void {
-    for (const job of [...this.queue])
+    for (const job of this.queue.slice())
       if (this.bound(job, slot)) {
         this.settle(job, undefined, cause);
         this.removeQueued(job);
@@ -979,7 +982,7 @@ export class ComputeSupervisor {
       }
     };
     const deadline = performance.now() + LIMITS.destroyMs;
-    await grace(Promise.allSettled([...this.tasks]), LIMITS.destroyMs);
+    await grace(Promise.allSettled(this.tasks), LIMITS.destroyMs);
     // Shutdown shares the same one-transition budget. If foreground/native work did not drain,
     // skip optional scope closes and contain it through the captured-child retirement path below.
     if (!this.management && this.tasks.size === 0) {
