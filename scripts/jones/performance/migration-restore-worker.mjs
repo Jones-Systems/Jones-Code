@@ -68,6 +68,10 @@ function checkSource(source, current) {
   return current ? assertCurrentDatabaseSource(source) : assertQualificationDatabaseSource(source);
 }
 
+export async function probeMigrationRestoreImports(source, current) {
+  return Object.keys(await loadModules(source, current));
+}
+
 async function loadModules(source, current) {
   checkSource(source, current);
   const require = NodeModule.createRequire(

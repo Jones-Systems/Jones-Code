@@ -62,3 +62,7 @@ export function withQualificationFixture<A>(
     readonly closedProof?: SyntheticCloseProof;
   }
 >;
+
+export function probeHistoricalFixtureImports(
+  source: QualificationDatabaseSource,
+): Promise<readonly string[]>;

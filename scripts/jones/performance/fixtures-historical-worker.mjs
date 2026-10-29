@@ -210,6 +210,11 @@ function checkedOptions(options, checkSource = checkedSource) {
   return { ...options, databaseSource, recipe: freeze(recipe), policy };
 }
 
+export async function probeHistoricalFixtureImports(source) {
+  checkedQualificationSource(source);
+  return Object.keys(await loadSource(source));
+}
+
 async function loadSource(source) {
   const root = source.worktreePath;
   const require = NodeModule.createRequire(NodePath.join(root, "apps/server/package.json"));
