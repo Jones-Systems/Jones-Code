@@ -15,6 +15,7 @@ import {
 } from "./guard.mjs";
 
 import { assertQualificationDatabaseSource, assertSyntheticDatabaseSource } from "./sources.mjs";
+import { drainHistoricalImports } from "./historical-resolution.mjs";
 import { qualificationSqliteApi } from "./qualification-adapters.mjs";
 
 const requestLimit = 49 * 1024;
@@ -210,7 +211,12 @@ function checkedOptions(options, checkSource = checkedSource) {
   return { ...options, databaseSource, recipe: freeze(recipe), policy };
 }
 
-async function loadSource(source) {
+export async function probeHistoricalFixtureImports(source, options) {
+  checkedQualificationSource(source);
+  return Object.keys(await loadSource(source, options));
+}
+
+async function loadSource(source, { resolutionGuard, importState } = {}) {
   const root = source.worktreePath;
   const require = NodeModule.createRequire(NodePath.join(root, "apps/server/package.json"));
   const dependencies = {
@@ -252,16 +258,23 @@ async function loadSource(source) {
     files.NativePreparation = "apps/server/src/orchestration/NativeCreationPreparation.ts";
   }
   return Object.fromEntries(
-    await Promise.all([
-      ...Object.entries(dependencies).map(async ([key, specifier]) => [
-        key,
-        await import(NodeURL.pathToFileURL(require.resolve(specifier)).href),
-      ]),
-      ...Object.entries(files).map(async ([key, relative]) => [
-        key,
-        await import(NodeURL.pathToFileURL(NodePath.join(root, relative)).href),
-      ]),
-    ]),
+    await drainHistoricalImports(
+      [
+        ...Object.entries(dependencies).map(([key, specifier]) => async () => [
+          key,
+          await import(
+            resolutionGuard
+              ? resolutionGuard.dependencyURL(source.worktreePath, specifier, import.meta.url)
+              : NodeURL.pathToFileURL(require.resolve(specifier)).href
+          ),
+        ]),
+        ...Object.entries(files).map(([key, relative]) => async () => [
+          key,
+          await import(NodeURL.pathToFileURL(NodePath.join(root, relative)).href),
+        ]),
+      ],
+      importState,
+    ),
   );
 }
 
@@ -1325,7 +1338,9 @@ async function produceCheckedFixture(options, use) {
   let runtime;
   let permit;
   try {
+    result.closeKnown = false;
     const modules = await loadSource(options.databaseSource);
+    result.closeKnown = true;
     const paths = await modules.Effect.runPromise(
       modules.Config.deriveServerPaths(root, undefined).pipe(
         modules.Effect.provide(modules.NodeServices.layer),
