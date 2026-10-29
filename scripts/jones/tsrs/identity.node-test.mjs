@@ -508,7 +508,7 @@ NodeTest.test(
     const contexts = [
       {
         name: "root",
-        parent: NodePath.join(repository, ".t3/test-scratch/tsrs-overrides"),
+        parent: repository,
         config: NodePath.join(repository, "tsconfig.base.json"),
         provider: false,
       },
@@ -543,7 +543,7 @@ NodeTest.test(
         const root = await NodeFSP.mkdtemp(
           NodePath.join(
             context.parent,
-            context.name === "provider-sibling" ? "provider-testing-sibling-" : ".jones-override-",
+            context.name === "provider-sibling" ? "provider-testing-sibling-" : "jones-override-",
           ),
         );
         roots.add(root);
@@ -600,22 +600,13 @@ NodeTest.test(
         } finally {
           jobs.delete(job);
         }
+        t.diagnostic(JSON.stringify({ context: context.name, childClosed: true, ...result }));
         NodeAssert.equal(result.code, 2, result.stdout);
         const diagnostics = result.stdout.replaceAll("\\", "/");
         const diagnosticLines = diagnostics.split("\n");
         const fnSuggestions = diagnosticLines.filter((line) => line.includes("TS377047"));
-        NodeAssert.equal(
-          fnSuggestions.length,
-          context.provider ? 0 : suggestions.length,
-          diagnostics,
-        );
         for (const file of files) {
           const lines = diagnosticLines.filter((line) => line.includes(`${file}(`));
-          NodeAssert.equal(
-            lines.some((line) => line.includes("TS377047")),
-            !context.provider && suggestions.includes(file),
-            `${context.name}/${file}: ${diagnostics}`,
-          );
           NodeAssert.ok(
             lines.some((line) => line.includes("error TS377017")),
             `${context.name}/${file}: raw error lost: ${diagnostics}`,
@@ -633,6 +624,19 @@ NodeTest.test(
             .every((line) => /TS377017|TS377067/.test(line)),
           diagnostics,
         );
+        NodeAssert.equal(
+          fnSuggestions.length,
+          context.provider ? 0 : suggestions.length,
+          diagnostics,
+        );
+        for (const file of files) {
+          const lines = diagnosticLines.filter((line) => line.includes(`${file}(`));
+          NodeAssert.equal(
+            lines.some((line) => line.includes("TS377047")),
+            !context.provider && suggestions.includes(file),
+            `${context.name}/${file}: ${diagnostics}`,
+          );
+        }
       });
   },
 );
