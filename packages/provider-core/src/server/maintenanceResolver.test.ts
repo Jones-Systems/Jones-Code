@@ -100,11 +100,19 @@ const noSpawn = ChildProcessSpawner.make(() =>
 );
 
 function stdoutSpawner(
-  onSpawn: (command: string, args: ReadonlyArray<string>, env: NodeJS.ProcessEnv | undefined) => string,
+  onSpawn: (
+    command: string,
+    args: ReadonlyArray<string>,
+    env: NodeJS.ProcessEnv | undefined,
+  ) => string,
   exitCodeOf: (args: ReadonlyArray<string>) => number = () => 0,
 ) {
   return ChildProcessSpawner.make((command) => {
-    const { command: executable, args, options } = command as unknown as {
+    const {
+      command: executable,
+      args,
+      options,
+    } = command as unknown as {
       readonly command: string;
       readonly args: ReadonlyArray<string>;
       readonly options: { readonly env?: NodeJS.ProcessEnv };
@@ -681,7 +689,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           packageToolUpdate,
           { binaryPath: link, env },
         ).pipe(
-          Effect.provideService(HostProcess.Environment, { PATH: NodePath.join(tempDir, "ambient") }),
+          Effect.provideService(HostProcess.Environment, {
+            PATH: NodePath.join(tempDir, "ambient"),
+          }),
           Effect.provideService(
             ChildProcessSpawner.ChildProcessSpawner,
             stdoutSpawner(
@@ -723,7 +733,9 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
           latestVersion: fixture.expected,
         });
         expect(probes).toEqual(
-          fixture.expected === "1.0.0" ? ["--version", "outdated", "ls"] : ["--version", "outdated"],
+          fixture.expected === "1.0.0"
+            ? ["--version", "outdated", "ls"]
+            : ["--version", "outdated"],
         );
       }).pipe(Effect.scoped),
     { skip: !symlinksSupported || windowsHost },
@@ -957,33 +969,39 @@ it.layer(NodeServices.layer)("providerMaintenance", (it) => {
     expect(windows.update?.command).toBe("& 'C:\\Program Files\\Tool\\tool.exe' update");
   });
 
-  it.effect.skipIf(windowsHost)("preserves instance environment with native updater overrides", () =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-native-env-" });
-      const nativePath = NodePath.join(tempDir, ".local", "bin", "native-package-tool");
-      writeExecutable(nativePath);
-      const resolver = makePackageManagedProviderMaintenanceResolver({
-        provider: driver("nativePackageTool"),
-        npmPackageName: "@example/native-package-tool",
-        nativeUpdate: {
-          args: ["update"],
-          isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
-          env: { CODEX_HOME: NodePath.join(tempDir, "shared-codex-home") },
-        },
-      });
+  it.effect.skipIf(windowsHost)(
+    "preserves instance environment with native updater overrides",
+    () =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const tempDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-native-env-" });
+        const nativePath = NodePath.join(tempDir, ".local", "bin", "native-package-tool");
+        writeExecutable(nativePath);
+        const resolver = makePackageManagedProviderMaintenanceResolver({
+          provider: driver("nativePackageTool"),
+          npmPackageName: "@example/native-package-tool",
+          nativeUpdate: {
+            args: ["update"],
+            isCommandPath: isNativeTestCommandPath("/.local/bin/native-package-tool"),
+            env: { CODEX_HOME: NodePath.join(tempDir, "shared-codex-home") },
+          },
+        });
 
-      const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(resolver, {
-        binaryPath: nativePath,
-        env: { PATH: "", CODEX_HOME: NodePath.join(tempDir, "instance-codex-home"), HOME: tempDir },
-      }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
+        const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(resolver, {
+          binaryPath: nativePath,
+          env: {
+            PATH: "",
+            CODEX_HOME: NodePath.join(tempDir, "instance-codex-home"),
+            HOME: tempDir,
+          },
+        }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn));
 
-      expect(capabilities.update?.env).toEqual({
-        PATH: "",
-        CODEX_HOME: NodePath.join(tempDir, "shared-codex-home"),
-        HOME: tempDir,
-      });
-    }).pipe(Effect.scoped),
+        expect(capabilities.update?.env).toEqual({
+          PATH: "",
+          CODEX_HOME: NodePath.join(tempDir, "shared-codex-home"),
+          HOME: tempDir,
+        });
+      }).pipe(Effect.scoped),
   );
 
   it("recognizes Homebrew kegs and casks from the real executable path", () => {

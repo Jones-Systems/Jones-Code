@@ -989,72 +989,74 @@ describe("providerMaintenanceRunner", () => {
     );
   });
 
-  it.effect("resolves Windows updater shims with the same effective environment as the child", () => {
-    const instanceEnv = {
-      PATH: "C:\\instance-a\\.bun\\bin",
-      PATHEXT: ".EXE;.CMD",
-      HOME: "C:\\instance-a",
-      BUN_INSTALL: "C:\\instance-a\\.bun",
-    };
-    const ambientEnv = {
-      PATH: "C:\\instance-b\\.bun\\bin",
-      PATHEXT: ".BAT",
-      HOME: "C:\\instance-b",
-      AMBIENT_ONLY: "inherited",
-    };
-    const resolutionEnvironments: Array<NodeJS.ProcessEnv> = [];
-    const children: Array<{
-      readonly command: string;
-      readonly env: NodeJS.ProcessEnv | undefined;
-      readonly extendEnv: boolean | undefined;
-    }> = [];
-    return Effect.gen(function* () {
-      const services = yield* Effect.context<ProviderMaintenanceResolverServices>();
-      const { registry } = yield* makeRegistry(baseProvider);
-      const updater = yield* makeTestRunner({
-        ...registry,
-        getProviderMaintenanceCapabilitiesForInstance: () =>
-          resolvePackageManagedProviderMaintenance(
-            { provider: CODEX_DRIVER, npmPackageName: "@openai/codex", nativeUpdate: null },
-            {
-              binaryPath: "codex",
-              resolvedCommandPath: `${instanceEnv.PATH}\\codex.exe`,
-              realCommandPath: `${instanceEnv.PATH}\\codex.exe`,
-              env: instanceEnv,
-              platform: "win32",
-            },
-          ).pipe(Effect.provideContext(services)),
-      });
-      yield* updater.updateProvider(CODEX_DRIVER);
-      assert.deepStrictEqual(resolutionEnvironments, [{ ...ambientEnv, ...instanceEnv }]);
-      assert.strictEqual(children.length, 1);
-      const child = children[0]!;
-      assert.include(child.command, "C:\\instance-a\\.bun\\bin\\bun.cmd");
-      assert.notInclude(child.command, "instance-b");
-      assert.deepStrictEqual(child.env, instanceEnv);
-      assert.strictEqual(child.extendEnv, true);
-      assert.deepStrictEqual({ ...ambientEnv, ...child.env }, resolutionEnvironments[0]);
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          Layer.succeed(HostProcess.Platform, "win32"),
-          Layer.succeed(HostProcess.Environment, ambientEnv),
-          Layer.succeed(SpawnExecutableResolution, (command, platform, env) => {
-            assert.strictEqual(command, "bun");
-            assert.strictEqual(platform, "win32");
-            resolutionEnvironments.push(env);
-            return `${env.PATH}\\bun.cmd`;
-          }),
-          layerLatestVersionHttpClient("0.0.0"),
-          layerMockSpawner((command, _args, options) => {
-            children.push({ command, env: options.env, extendEnv: options.extendEnv });
-            return { stdout: "updated" };
-          }),
+  it.effect(
+    "resolves Windows updater shims with the same effective environment as the child",
+    () => {
+      const instanceEnv = {
+        PATH: "C:\\instance-a\\.bun\\bin",
+        PATHEXT: ".EXE;.CMD",
+        HOME: "C:\\instance-a",
+        BUN_INSTALL: "C:\\instance-a\\.bun",
+      };
+      const ambientEnv = {
+        PATH: "C:\\instance-b\\.bun\\bin",
+        PATHEXT: ".BAT",
+        HOME: "C:\\instance-b",
+        AMBIENT_ONLY: "inherited",
+      };
+      const resolutionEnvironments: Array<NodeJS.ProcessEnv> = [];
+      const children: Array<{
+        readonly command: string;
+        readonly env: NodeJS.ProcessEnv | undefined;
+        readonly extendEnv: boolean | undefined;
+      }> = [];
+      return Effect.gen(function* () {
+        const services = yield* Effect.context<ProviderMaintenanceResolverServices>();
+        const { registry } = yield* makeRegistry(baseProvider);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            resolvePackageManagedProviderMaintenance(
+              { provider: CODEX_DRIVER, npmPackageName: "@openai/codex", nativeUpdate: null },
+              {
+                binaryPath: "codex",
+                resolvedCommandPath: `${instanceEnv.PATH}\\codex.exe`,
+                realCommandPath: `${instanceEnv.PATH}\\codex.exe`,
+                env: instanceEnv,
+                platform: "win32",
+              },
+            ).pipe(Effect.provideContext(services)),
+        });
+        yield* updater.updateProvider(CODEX_DRIVER);
+        assert.deepStrictEqual(resolutionEnvironments, [{ ...ambientEnv, ...instanceEnv }]);
+        assert.strictEqual(children.length, 1);
+        const child = children[0]!;
+        assert.include(child.command, "C:\\instance-a\\.bun\\bin\\bun.cmd");
+        assert.notInclude(child.command, "instance-b");
+        assert.deepStrictEqual(child.env, instanceEnv);
+        assert.strictEqual(child.extendEnv, true);
+        assert.deepStrictEqual({ ...ambientEnv, ...child.env }, resolutionEnvironments[0]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(HostProcess.Platform, "win32"),
+            Layer.succeed(HostProcess.Environment, ambientEnv),
+            Layer.succeed(SpawnExecutableResolution, (command, platform, env) => {
+              assert.strictEqual(command, "bun");
+              assert.strictEqual(platform, "win32");
+              resolutionEnvironments.push(env);
+              return `${env.PATH}\\bun.cmd`;
+            }),
+            layerLatestVersionHttpClient("0.0.0"),
+            layerMockSpawner((command, _args, options) => {
+              children.push({ command, env: options.env, extendEnv: options.extendEnv });
+              return { stdout: "updated" };
+            }),
+          ).pipe(Layer.provideMerge(NodeServices.layer)),
         ),
-      ),
-      Effect.provide(NodeServices.layer),
-    );
-  });
+      );
+    },
+  );
 
   it.effect("reports unchanged when the binary is present but its version is unreadable", () => {
     return Effect.gen(function* () {
