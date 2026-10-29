@@ -3,6 +3,7 @@ import { AsyncResult } from "effect/reactivity";
 import {
   EnvironmentId,
   NodeId,
+  ProviderSessionId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
@@ -61,7 +62,10 @@ function Questions({
           nativeRequestRef: null,
           kind: "user_input",
           status: "pending",
-          responseCapability: { type: capability },
+          responseCapability:
+            capability === "live"
+              ? { type: "live", providerSessionId: ProviderSessionId.make("synthetic-provider") }
+              : { type: "message" },
           createdAt: projection.updatedAt,
           resolvedAt: null,
         },
