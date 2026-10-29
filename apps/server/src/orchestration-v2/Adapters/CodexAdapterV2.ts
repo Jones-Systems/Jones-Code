@@ -10341,6 +10341,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 () =>
                   currentProducer === producer &&
                   producer.active &&
+                  !startup.isUncertain(producer) &&
                   producer.bindings.size === 1 &&
                   producer.bindings.get(binding.nativeThreadId)?.id === providerThread.id,
               );
