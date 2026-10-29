@@ -1112,7 +1112,7 @@ it("jumps freely with native sibling buttons, expands the current collapsed ques
   );
 });
 
-it("keeps choice plus multiline note until Clear choice and sends with Enter", async () => {
+it("clears the selected choice by clicking it again and preserves multiline text", async () => {
   await using _fixture = await setupTest();
   using _timers = fakeTimers();
   await act(async () => root.rerender(<Harness capability="message" />));
@@ -1122,13 +1122,16 @@ it("keeps choice plus multiline note until Clear choice and sends with Enter", a
   await act(() => vi.advanceTimersByTime(500));
   expect(output("answer")).toBe("null");
   await typeAnswer("First line\nSecond line");
-  expect(container.textContent).toContain("Note (optional): sent with your choice");
+  expect(container.textContent).not.toContain("Note (optional): sent with your choice");
+  expect(container.textContent).not.toContain("Clear choice");
   expect(answerField().value).toBe("First line\nSecond line");
   expect(container.textContent).not.toContain("Sends:");
   expect(container.querySelector('[role="status"]')).toBeNull();
   expect((await key({ shiftKey: true })).defaultPrevented).toBe(false);
   expect(output("answer")).toBe("null");
-  await act(() => button("Clear choice").click());
+  await act(() =>
+    container.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')!.click(),
+  );
   expect(answerField().value).toBe("First line\nSecond line");
   expect(container.querySelector('button[aria-pressed="true"]')).toBeNull();
   expect((await key({})).defaultPrevented).toBe(true);
