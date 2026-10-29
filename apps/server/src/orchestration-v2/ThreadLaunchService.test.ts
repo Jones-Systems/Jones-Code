@@ -604,7 +604,7 @@ it.effect.each([
         if (finish === "failure") {
           yield* Deferred.succeed(complete, undefined);
           const producerExit = yield* Fiber.await(producer!);
-        assert.isTrue(Exit.isSuccess(producerExit));
+          assert.isTrue(Exit.isSuccess(producerExit));
           const tracker = yield* WorktreeSetupTracker.WorktreeSetupTracker;
           assert.equal(
             (yield* tracker.get(launched.threadId))?.stages.find(
@@ -706,7 +706,7 @@ it.effect.each(["interrupt", "complete"])(
         else {
           yield* Deferred.succeed(complete, undefined);
           const producerExit = yield* Fiber.await(producer!);
-        assert.isTrue(Exit.isSuccess(producerExit));
+          assert.isTrue(Exit.isSuccess(producerExit));
         }
         assert.isEmpty(harness.removeWorktree.mock.calls);
         assert.equal(
