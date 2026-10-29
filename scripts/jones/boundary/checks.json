@@ -2,6 +2,30 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-pull-request-check-observation",
+      "tests": [
+        "packages/contracts/src/jones/pullRequestCheckObservation.test.ts",
+        "packages/source-control-github/src/jones/pullRequestCheckObservation.test.ts",
+        "packages/source-control-github/src/jones/pullRequestCheckExpectations.test.ts",
+        "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts",
+        "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
+        "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts",
+        "apps/server/src/pullRequest/PullRequestService.test.ts",
+        "apps/server/src/orchestration-v2/pullRequestWatch.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "commands": [
+        "cd packages/source-control-github && vp test run --config ../../vite.config.ts src/jones/pullRequestCheckObservation.test.ts src/jones/pullRequestCheckExpectations.test.ts src/server/GitHubPullRequestApi.test.ts src/server/GitHubPullRequestProvider.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd apps/server && vp test run src/jones/pullRequestWatch/checkObservation.test.ts src/orchestration-v2/pullRequestWatch.test.ts src/orchestration-v2/runtimeLayer.test.ts src/pullRequest/PullRequestService.test.ts --maxWorkers=1 --no-file-parallelism",
+        "cd packages/contracts && vp test run --config ../../vite.config.ts src/jones/pullRequestCheckObservation.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck:native",
+        "vp run --filter @t3tools/source-control-core typecheck:native",
+        "vp run --filter @t3tools/source-control-github typecheck:native",
+        "vp run --filter t3 typecheck:native",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-anonymous-checkout",
       "tests": ["scripts/jones/ci/anonymous-checkout.node-test.mjs"],
       "commands": [
