@@ -4,6 +4,21 @@ import { userEvent } from "vite-plus/test/browser";
 import { EnvironmentId } from "@t3tools/contracts";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import { JonesBuildStatus } from "./JonesBuildStatus";
+import type { ExactSourceHost, ExactSourceTarget } from "./ExactSourceUpdateAction";
+import { page } from "vite-plus/test/browser";
+import { AsyncResult } from "effect/reactivity";
+
+const alternativeHost = vi.hoisted(() => ({ value: undefined as ExactSourceHost | undefined }));
+vi.mock("./ProductionExactSourceUpdateAction", async () => {
+  const { ExactSourceUpdateAction } = await import("./ExactSourceUpdateAction");
+  return {
+    ProductionExactSourceUpdateAction: (target: ExactSourceTarget) => {
+      if (alternativeHost.value === undefined)
+        throw new Error("Missing synthetic alternative host");
+      return <ExactSourceUpdateAction {...target} host={alternativeHost.value} />;
+    },
+  };
+});
 
 const environmentId = EnvironmentId.make("synthetic-host");
 const installedSha = "d994dd4".padEnd(40, "1");
@@ -63,6 +78,71 @@ const precedes = (first: Node, second: Node) =>
   (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 
 describe("Jones build status", () => {
+  it("shows retained and alternative builds at narrow width and replaces only after exact confirmation", async () => {
+    const retained = {
+      ...available,
+      environmentId: EnvironmentId.make("generic-connections-test"),
+      phase: "staged" as const,
+      stagedHandle: "retained",
+      capability: { ...available.capability, exactSource: true, replaceStaged: true },
+      migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+      alternativeCandidate: {
+        checkedAt: "2026-10-29T00:00:00Z",
+        expiresAt: "2099-01-01T00:00:00Z",
+        provenance: { ...available.provenance!, sourceSha: "f".repeat(40), artifactId: 3 },
+      },
+    };
+    const confirm = vi.fn(async () => true);
+    const run = vi.fn(async () =>
+      AsyncResult.success({ ...retained, provenance: retained.alternativeCandidate.provenance }),
+    );
+    const snapshot = {
+      observation: { state: retained, freshness: "fresh" as const },
+      canOperate: true,
+    };
+    alternativeHost.value = { snapshot, readLatest: () => snapshot, confirm, run };
+    await page.viewport(360, 800);
+    try {
+      await using screen = await renderStatus({
+        state: retained,
+        environmentId: retained.environmentId,
+      });
+      expect(screen.container.textContent).toContain("Downloaded0368cbb");
+      expect(screen.container.textContent).toContain("Alternativefffffff");
+      expect(screen.container.scrollWidth).toBeLessThanOrEqual(360);
+      await act(async () => buttonNamed(screen.container, "Details").click());
+      expect(screen.container.textContent).toContain(
+        "Downloaded migrations1 upstream, 1 Jones pending",
+      );
+      expect(screen.container.textContent).toContain(
+        "Alternative migrationsChecked after download",
+      );
+      await act(async () => buttonNamed(screen.container, "Replace download").click());
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("0368cbb"));
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining("fffffff"));
+      await expect.poll(() => run.mock.calls.length).toBe(1);
+      await expect.poll(() => screen.container.textContent).toContain("replacement requested");
+      expect(screen.container.scrollWidth).toBeLessThanOrEqual(360);
+      expect(run.mock.calls[0]).toEqual([
+        {
+          action: "downloadExact",
+          input: {
+            targetSource: "f".repeat(40),
+            replace: expect.objectContaining({
+              stagedHandle: "retained",
+              sourceSha: offeredSha,
+              alternative: retained.alternativeCandidate,
+            }),
+          },
+        },
+      ]);
+      expect(screen.onRequest).not.toHaveBeenCalled();
+    } finally {
+      alternativeHost.value = undefined;
+      await page.viewport(1280, 800);
+    }
+  });
+
   const failed: JonesUpdateState = {
     ...available,
     phase: "error",

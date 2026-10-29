@@ -1,3 +1,5 @@
+import { undoSettleThread } from "../../jones/settlementRestore/runtime";
+import { settlementRestoreMenuItems } from "../../jones/settlementRestore/menu";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
 import { useWorkspaceTabs } from "../workspace/WorkspaceTabsContext";
@@ -571,6 +573,23 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     lastVisitedAt: props.selectedThread.lastVisitedAt,
     latestRunCompletedAt: props.selectedThread.latestRun?.completedAt ?? null,
   });
+  const restoreMenuItems = settlementRestoreMenuItems({
+    settled,
+    canOperate: props.canOperateThread,
+    capabilities: props.serverConfig?.environment.capabilities,
+  });
+  const runUndoSettle = async () => {
+    if (statusPending || !props.canOperateThread) return;
+    const request = { threadKey: selectedThreadKey };
+    setStatusRequest(request);
+    try {
+      await undoSettleThread({ environmentId: props.environmentId, id: props.selectedThread.id });
+    } catch (cause) {
+      setStatusRequest((current) => (current === request ? null : current));
+      throw cause;
+    }
+    setStatusRequest((current) => (current === request ? null : current));
+  };
   const runStatusAction = async (action: "stop" | "wake" | "unsettle" | "dismiss") => {
     if (statusPending || !props.canOperateThread) return;
     const request = { threadKey: selectedThreadKey };
@@ -696,7 +715,14 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
           : settled
             ? "Settled"
             : "Woke from snooze";
-      const actionLabel = snoozed ? "Wake now" : settled ? "Un-settle" : "Dismiss";
+      const restoreAvailable = settled && restoreMenuItems.length > 0;
+      const actionLabel = snoozed
+        ? "Wake now"
+        : restoreAvailable
+          ? "Actions"
+          : settled
+            ? "Un-settle"
+            : "Dismiss";
       return {
         kind: "lifecycle",
         state,
@@ -711,7 +737,21 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
             : actionLabel,
           accessibilityLabel: actionLabel,
           disabled: !props.canOperateThread || statusPending,
-          onPress: () => void runStatusAction(snoozed ? "wake" : settled ? "unsettle" : "dismiss"),
+          onPress: () => {
+            if (restoreAvailable) {
+              Dialog.alert(
+                "Settled thread",
+                "Undo settle restores the position saved by the server.",
+                [
+                  { text: "Cancel", style: "cancel" },
+                  { text: "Undo settle", onPress: () => void runUndoSettle() },
+                  { text: "Un-settle", onPress: () => void runStatusAction("unsettle") },
+                ],
+              );
+              return;
+            }
+            void runStatusAction(snoozed ? "wake" : settled ? "unsettle" : "dismiss");
+          },
         },
       };
     }

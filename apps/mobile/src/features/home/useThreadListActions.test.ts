@@ -32,6 +32,8 @@ const state = vi.hoisted(() => ({
   afterRequest: undefined as (() => void) | undefined,
 }));
 
+vi.mock("../../lib/uuid", () => ({ uuidv4: () => "test-restore-id" }));
+
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useRef: (current: unknown) => ({ current }),
@@ -201,6 +203,15 @@ afterEach(() => {
 });
 
 describe("thread list operation permissions", () => {
+  it("exposes the same app-lifetime persistent undo action across hook remounts without falling back to Un-settle", async () => {
+    const first = useThreadListActions().undoSettleThread;
+    const remounted = useThreadListActions().undoSettleThread;
+    expect(remounted).toBe(first);
+    expect(await first(makeThread())).toBe(false);
+    expect(state.requests).toEqual([]);
+    expect(state.alerts.at(-1)?.title).toBe("Could not undo settle");
+  });
+
   it.each(mutationCases)(
     "%s rejects a retained callback after its environment loses permission",
     async (handler) => {

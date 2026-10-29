@@ -2,6 +2,19 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-word-ci-trace",
+      "tests": [
+        "apps/web/src/jones/wordCiTrace.test.ts",
+        "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx"
+      ],
+      "commands": [
+        "cd apps/web && vp test run --project unit src/jones/wordCiTrace.test.ts",
+        "cd apps/web && vp test run --project browser src/components/files/AttachmentFilePreview.browser.test.tsx",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
       "id": "jones-pull-request-check-observation",
       "tests": [
         "packages/contracts/src/jones/pullRequestCheckObservation.test.ts",
@@ -901,13 +914,18 @@
         "packages/client-runtime/src/jones/settlementRestore/commands.test.ts",
         "apps/web/src/jones/settlementRestore/settlementRestore.test.ts",
         "apps/web/src/jones/settlementRestore/threadMenu.test.ts",
-        "apps/web/src/hooks/useThreadActionMenu.test.ts"
+        "apps/web/src/hooks/useThreadActionMenu.test.ts",
+        "apps/mobile/src/jones/settlementRestore/runtime.test.ts",
+        "apps/mobile/src/jones/settlementRestore/wiring.test.ts",
+        "apps/mobile/src/features/home/useThreadListActions.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/jones/settlementRestore/ apps/web/src/jones/settlementRestore/ apps/web/src/hooks/useThreadActionMenu.test.ts apps/web/src/hooks/useThreadActions.undo.test.ts --maxWorkers=1",
         "vp run --filter @t3tools/client-runtime typecheck",
         "vp run --filter @t3tools/web typecheck",
-        "node scripts/jones/check-boundary.ts --strict"
+        "node scripts/jones/check-boundary.ts --strict",
+        "vp test run apps/mobile/src/jones/settlementRestore/ apps/mobile/src/features/home/useThreadListActions.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/mobile typecheck"
       ]
     },
     {
@@ -4331,6 +4349,33 @@
       ],
       "commands": [
         "node --test --test-concurrency=1 scripts/jones/updates/packaged-recovery-fixture.node-test.mjs scripts/jones/updates/packaged-recovery-launcher.node-test.mjs scripts/jones/updates/packaged-recovery-preload.node-test.mjs",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-desktop-push-compatibility",
+      "tests": ["scripts/jones/ci/desktop-push-compatibility.node-test.mjs"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/desktop-push-compatibility.node-test.mjs",
+        "vp lint --threads=1 scripts/jones/ci/desktop-push-compatibility.node-test.mjs",
+        "vp fmt --check --threads=1 .github/workflows/artifact-desktop-mac.yml scripts/jones/ci/desktop-push-compatibility.node-test.mjs scripts/jones/ci/fixtures/pre590/consumer.json scripts/jones/boundary/fragments/desktop-push-compatibility.json",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-alternative-download",
+      "tests": [
+        "packages/contracts/src/jones/jonesUpdates.compatibility.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx",
+        "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
+        "apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/stagedSelection.test.ts packages/contracts/src/jones/jonesUpdates.compatibility.test.ts packages/contracts/src/jones/jonesUpdates.buildTime.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/jones/updates/actionJournal.test.ts packages/client-runtime/src/jones/updates/executor.test.ts packages/client-runtime/src/jones/updates/targetStatus.test.ts apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "node scripts/jones/check-boundary.ts --strict"
       ]
     }
