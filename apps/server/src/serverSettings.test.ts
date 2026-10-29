@@ -60,6 +60,21 @@ const layerServerSettingsWithSecrets = () =>
     ),
   );
 
+const layerExplicitSelectionSettings = (
+  mode: "production" | "test",
+): Layer.Layer<
+  ServerSettingsModule.ServerSettingsService | ServerConfig.ServerConfig,
+  | Layer.Error<ReturnType<typeof layerServerSettings>>
+  | Layer.Error<ReturnType<typeof ServerSettingsModule.layerTest>>,
+  Layer.Services<ReturnType<typeof layerServerSettings>>
+> =>
+  mode === "production"
+    ? layerServerSettings()
+    : Layer.mergeAll(
+        ServerSettingsModule.layerTest(),
+        Layer.fresh(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-selection-test-" })),
+      );
+
 const layerFailingSecretStore = (cause: ServerSecretStore.SecretStoreError) =>
   Layer.succeed(
     ServerSecretStore.ServerSecretStore,
@@ -94,6 +109,106 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect.each(
+    (["production", "test"] as const).flatMap((mode) =>
+      (["missing", "disabled", "unsupported"] as const).map((target) => ({ mode, target })),
+    ),
+  )(
+    "refuses explicit text-generation substitution for $target in $mode settings",
+    ({ mode, target }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const writerId = ProviderInstanceId.make("writer_a");
+          const requestedId = ProviderInstanceId.make("foreign_b");
+          const selection = { instanceId: writerId, model: "writer-model" };
+          yield* service.updateSettings({
+            autoResumeLimitedThreads: false,
+            providerInstances: {
+              [writerId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+              ...(target === "missing"
+                ? {}
+                : {
+                    [requestedId]: {
+                      driver: ProviderDriverKind.make(
+                        target === "unsupported" ? "acpRegistry" : "codex",
+                      ),
+                      enabled: target !== "disabled",
+                      config:
+                        target === "unsupported"
+                          ? { agentId: "foreign", distribution: "auto" }
+                          : {},
+                    },
+                  }),
+            },
+            textGenerationModelSelection: selection,
+          });
+          const fs = mode === "production" ? yield* FileSystem.FileSystem : undefined;
+          const config = mode === "production" ? yield* ServerConfig.ServerConfig : undefined;
+          const before = fs && config ? yield* fs.readFileString(config.settingsPath) : undefined;
+          const result = yield* service
+            .updateSettings({
+              autoResumeLimitedThreads: true,
+              textGenerationModelSelection: { instanceId: requestedId, model: "requested-model" },
+            })
+            .pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure") {
+            assert.equal(result.failure.operation, "normalize");
+            assert.equal(result.failure.providerInstanceId, requestedId);
+          }
+          const after = yield* service.getSettings;
+          assert.deepEqual(after.textGenerationModelSelection, selection);
+          assert.isFalse(after.autoResumeLimitedThreads);
+          if (fs && config) assert.equal(yield* fs.readFileString(config.settingsPath), before);
+        }),
+      ).pipe(Effect.provide(layerExplicitSelectionSettings(mode))),
+  );
+
+  it.effect.each(["production", "test"] as const)(
+    "validates atomic provider mutations before publication in %s settings",
+    (mode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const writerId = ProviderInstanceId.make("writer_a");
+          const requestedId = ProviderInstanceId.make("foreign_b");
+          const selection = { instanceId: writerId, model: "writer-model" };
+          yield* service.updateSettings({
+            providerInstances: {
+              [writerId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+            },
+            textGenerationModelSelection: selection,
+          });
+          const mutation = {
+            operation: "create" as const,
+            instanceId: requestedId,
+            instance: { driver: ProviderDriverKind.make("codex"), enabled: false, config: {} },
+          };
+          const refused = yield* service
+            .updateProviderInstance(mutation, {
+              textGenerationModelSelection: { instanceId: requestedId, model: "new-model" },
+            })
+            .pipe(Effect.result);
+          assert.equal(refused._tag, "Failure");
+          assert.isUndefined((yield* service.getSettings).providerInstances[requestedId]);
+          assert.deepEqual((yield* service.getSettings).textGenerationModelSelection, selection);
+          const accepted = yield* service.updateProviderInstance(
+            { ...mutation, instance: { ...mutation.instance, enabled: true } },
+            { textGenerationModelSelection: { instanceId: requestedId, model: "new-model" } },
+          );
+          assert.deepEqual(accepted.textGenerationModelSelection, {
+            instanceId: requestedId,
+            model: "new-model",
+          });
+          const optionsOnly = yield* service.updateSettings({
+            textGenerationModelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+          });
+          assert.equal(optionsOnly.textGenerationModelSelection.instanceId, requestedId);
+        }),
+      ).pipe(Effect.provide(layerExplicitSelectionSettings(mode))),
+  );
+
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;

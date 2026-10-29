@@ -2,6 +2,13 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-anonymous-checkout",
+      "tests": ["scripts/jones/ci/anonymous-checkout.node-test.mjs"],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/ci/anonymous-checkout.node-test.mjs"
+      ]
+    },
+    {
       "id": "native-stack-projection-order",
       "tests": [
         "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts",

@@ -103,10 +103,20 @@ NodeTest.test(
                 const chunks=[];let size=0;
                 for await(const chunk of request){size+=chunk.length;if(size>4096)throw new Error("fixture input bound");chunks.push(chunk)}
                 const body=JSON.parse(Buffer.concat(chunks).toString("utf8"));
-                await new Promise((resolve,reject)=>{
+                const reply=await new Promise((resolve,reject)=>{
                   pending.set(body.requestId,{resolve,reject});
                   process.send({type:"reconcile-failed-update",operationId:body.operationId,requestId:body.requestId},error=>{if(error)reject(error)});
                 });
+                if(reply.result==="refused"){
+                  response.end(JSON.stringify({
+                    source:"jones-actions",channel:"jones-main",phase:"blocked",
+                    message:"Reconciliation refused: "+reply.reason+".",
+                    capability:{check:false,download:false,install:false,reason:"bootstrap-required"},
+                    childVersion:context.childVersion,launcherVersion:context.launcherVersion,
+                    launcherSettlement:"supported",launcherRefresh:"none",settlement:"none",
+                    updateId:body.operationId,settlementRefusal:reply.reason,
+                  }));return;
+                }
               }else if(request.method!=="GET" || request.url!=="/api/jones-updates"){
                 response.writeHead(404);response.end("{}");return
               }
@@ -139,7 +149,7 @@ NodeTest.test(
           const active=path.join(home,"runtime","versions",state.activeVersion,"t3");
           const child=spawn(active,["serve"],{
             env:{...process.env,T3CODE_HOME:home,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
-              protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",updateSettlementProtocol:1,
+              protocol:4,childVersion:state.activeVersion,launcherVersion:qualified.receipt.version,updateSettlementProtocol:1,
               update:state.update,
             })},stdio:["inherit","inherit","inherit","ipc"],
           });
@@ -334,6 +344,8 @@ NodeTest.test(
             active: { payloadDirectory, receipt: receipt(true) },
             candidate: { payloadDirectory, receipt: receipt(false) },
             operationId: "12345678-1234-4234-8234-123456789abc",
+            kind: "legacy-failed",
+            legacyVariant: "restore-pending",
           });
           const token = "synthetic-fixture-only-token";
           const calls = [];
@@ -358,6 +370,34 @@ NodeTest.test(
               body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined,
             });
             response.setHeader("content-type", "application/json");
+            if (mode.startsWith("refusal")) {
+              const value = {
+                source: "jones-actions",
+                channel: "jones-main",
+                phase: "blocked",
+                message: "Reconciliation refused: restore-pending.",
+                capability: {
+                  check: false,
+                  download: false,
+                  install: false,
+                  reason: "bootstrap-required",
+                },
+                childVersion: prepared.state.activeVersion,
+                launcherVersion: prepared.inputs.candidate.receipt.version,
+                launcherSettlement: "supported",
+                launcherRefresh: "none",
+                settlement: "none",
+                updateId: prepared.operationId,
+                settlementRefusal: "restore-pending",
+              };
+              if (mode === "refusal-child") value.childVersion = "foreign";
+              if (mode === "refusal-operation") value.updateId = "foreign";
+              if (mode === "refusal-reason") value.settlementRefusal = "insufficient-evidence";
+              if (mode === "refusal-capability") value.capability.install = true;
+              if (mode === "refusal-status") response.writeHead(409);
+              response.end(JSON.stringify(value));
+              return;
+            }
             if (mode === "redirect") {
               response.writeHead(302, {
                 location: "http://127.0.0.1:" + server.address().port + "/must-not-follow",
@@ -466,6 +506,27 @@ NodeTest.test(
               ],
             );
             NodeAssert.ok(calls.every((call) => call.authorization === "Bearer " + token));
+            mode = "refusal";
+            const refused = await client.reconcile(requestId, "restore-pending");
+            NodeAssert.equal(refused.settlementRefusal, "restore-pending");
+            NodeAssert.equal(refused.childVersion, prepared.state.activeVersion);
+            await NodeAssert.rejects(client.reconcile(requestId), /HTTP exchange failed/);
+            NodeAssert.throws(
+              () => client.reconcile(requestId, "insufficient-evidence"),
+              /expected fixture reconciliation refusal/,
+            );
+            for (mode of [
+              "refusal-child",
+              "refusal-operation",
+              "refusal-reason",
+              "refusal-capability",
+              "refusal-status",
+            ])
+              await NodeAssert.rejects(
+                client.reconcile(requestId, "restore-pending"),
+                /HTTP exchange failed/,
+              );
+            mode = "ok";
             const freshId = "42345678-1234-4234-8234-123456789abc";
             const initialInstall = await client.installOperation();
             NodeAssert.equal(initialInstall.operationId, prepared.operationId);

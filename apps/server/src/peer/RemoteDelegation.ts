@@ -606,6 +606,12 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
+    if (waited.threadId !== remote.threadId)
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message:
+          "The remote wait returned a mismatched task thread; reconciliation remains pending.",
+      });
     if (
       waited.remoteObservation === undefined &&
       (waited.timedOut ||
@@ -642,6 +648,12 @@ const make = Effect.gen(function* () {
         message: "The remote task's run could not be attributed; reconciliation remains pending.",
       });
     if (!isTerminal(waited.status)) return false;
+    if (waited.resultRun !== undefined && !isTerminal(waited.resultRun.status))
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message:
+          "The remote wait selected an unfinished result run; reconciliation remains pending.",
+      });
     const resultRun = waited.resultRun ?? {
       runId: remote.runId ?? waited.runId,
       status: waited.status,
