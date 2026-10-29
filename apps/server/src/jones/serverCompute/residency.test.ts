@@ -475,6 +475,9 @@ it("fails fault-bound jobs once during drain without replay while genuinely unbo
   old.exit.resolve();
   await old.journalStarted.promise;
   await f.waitForCounts((value) => value.chargedAllocations === 4);
+  const beforeDrain = performance.now();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(performance.now()).toBe(beforeDrain);
   expect(f.children).toHaveLength(2); // Fault cooldown, not a free allocation or an eager replay.
   await vi.advanceTimersByTimeAsync(1000);
   await Promise.all([overflow, future]);
@@ -618,6 +621,7 @@ it("reserves freed capacity for the oldest surviving absent key ahead of post-cu
 });
 
 it("finishes already-started retirement without a speculative replacement after all pressure cancels", async () => {
+  fakeClock();
   const f = fixture();
   await f.fill();
   const old = f.children[0]!;
@@ -632,6 +636,9 @@ it("finishes already-started retirement without a speculative replacement after 
   old.exit.resolve();
   await old.journalStarted.promise;
   await f.waitForCounts((value) => value.chargedAllocations === 4);
+  const beforeDrain = performance.now();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(performance.now()).toBe(beforeDrain);
   expect(f.children).toHaveLength(2);
   expect(f.counts().chargedAllocations).toBe(4);
 });

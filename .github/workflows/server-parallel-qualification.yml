@@ -2,6 +2,12 @@ name: Server parallel qualification
 
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Bounded source evidence first; full matrix after prerequisite review
+        type: choice
+        options: [source-evidence, full]
+        default: source-evidence
   pull_request:
     paths:
       - .github/workflows/server-parallel-qualification.yml
@@ -65,6 +71,7 @@ jobs:
       # One serial qualification lane per OS shares setup and all build outputs.
       T3CODE_DEV_SEED: "0"
       VP_NODE_VERSION: "26.12.1"
+      JONES_SP_SCOPE: ${{ github.event.inputs.scope || 'source-evidence' }}
     steps:
       - name: Checkout exact public source without vendored gitlinks
         env:
@@ -114,17 +121,22 @@ jobs:
               - --filter=@t3tools/desktop...
 
       - name: Setup archive resource-monitor toolchain
+        if: env.JONES_SP_SCOPE == 'full'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: ${{ matrix.rust_target }}
 
       - name: Ensure pinned Electron Node runtime
+        if: env.JONES_SP_SCOPE == 'full'
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Focused qualification regressions and control/checkpoint invariants
         run: >-
           vp test run --maxWorkers=1
           apps/server/src/jones/serverParallelism/resourceSamples.test.ts
+          apps/server/src/jones/serverParallelism/qualificationRetention.test.ts
+          apps/server/src/jones/serverParallelism/nativeGenerationEvidence.test.ts
+          apps/server/src/jones/serverParallelism/combinedQualification.integration.test.ts
           apps/server/src/jones/serverParallelism/nativeThreadBudget.test.ts
           apps/server/src/jones/serverParallelism/controlProgress.integration.test.ts
           apps/server/src/jones/serverParallelism/shellCapture.integration.test.ts
@@ -143,6 +155,7 @@ jobs:
 
       - name: Build one bundle and actual installed SEA layout
         id: build
+        if: env.JONES_SP_SCOPE == 'full'
         env:
           RUST_TARGET: ${{ matrix.rust_target }}
           RESOURCE_KEY: ${{ matrix.resource_key }}
@@ -170,12 +183,12 @@ jobs:
           mkdir "$TMPDIR/installed"
           tar -xzf "${archives[0]}" -C "$TMPDIR/installed"
 
-      - name: Qualify every real command form and both profiles serially
+      - name: Measure selected qualification scope serially
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: |
           set -euo pipefail
           mkdir -p "$TMPDIR/installed"
-          node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed"
+          node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed" "$JONES_SP_SCOPE"
 
       - name: Preserve original outcomes, manifests, build identities and missing evidence
         if: ${{ always() && steps.scratch.outputs.owned == 'true' && steps.scratch.outputs.reports != '' && steps.scratch.outputs.scratch != '' }}

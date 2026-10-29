@@ -9,7 +9,8 @@ import * as NodeModule from "node:module";
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import { qualificationDecision, nativeBlockMatrixDecision } from "./qualificationResult.mjs";
-const [output, installedRoot] = process.argv.slice(2);
+const [output, installedRoot, scope = "full"] = process.argv.slice(2);
+if (!["full", "source-evidence"].includes(scope)) throw new Error("Unknown qualification scope");
 if (!NodePath.isAbsolute(output ?? "") || !NodePath.isAbsolute(installedRoot ?? ""))
   throw new Error("ci-run.mjs <absolute reports directory> <absolute extracted archive directory>");
 await NodeFSP.mkdir(output, { recursive: true, mode: 0o700 });
@@ -145,6 +146,7 @@ try {
     "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
     "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
     "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
+    "scripts/jones/serverParallelism/snapshotDecision.node-test.mjs",
     "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
   ]);
   const sourceManifest = NodePath.join(output, "source-command.json");
@@ -166,7 +168,7 @@ try {
     roots.length === 1
       ? NodePath.join(installedRoot, roots[0], "t3")
       : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
-  for (const [form, executable, entry] of [
+  for (const [form, executable, entry] of scope === "full" ? [
     ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
     [
       "electron",
@@ -174,7 +176,7 @@ try {
       NodePath.join(root, "apps/server/dist/bin.mjs"),
     ],
     ["sea", sea, "-"],
-  ]) {
+  ] : []) {
     const path = NodePath.join(output, `${form}-command.json`);
     await node(`manifest-${form}`, [
       "scripts/jones/serverParallelism/artifact-command.mjs",
@@ -257,6 +259,25 @@ try {
         profile,
       ]);
       await report(`packaging-${form}-${profile}`, smoke);
+      if (scope === "source-evidence") {
+        const dispatch = await run(
+          `dispatch-${form}-${profile}`,
+          "vp",
+          [
+            "test",
+            "run",
+            "apps/server/src/jones/serverParallelism/nativeProcess.integration.test.ts",
+            "--maxWorkers=1",
+            "--testNamePattern=private dispatch",
+          ],
+          { JONES_SP_COMMAND_MANIFEST: path, JONES_SP_PROFILE: profile },
+        );
+        predicates[`dispatch-${form}-${profile}`] = dispatch;
+        requireRetirement(
+          dispatch === true && results.at(-1)?.capturedExit === true,
+          `dispatch-${form}-${profile}`,
+        );
+      }
       const native = NodePath.join(output, `native-${form}-${profile}.json`);
       await node(`native-${form}-${profile}`, [
         "scripts/jones/serverParallelism/qualify.mjs",
@@ -266,6 +287,9 @@ try {
         baseline,
       ]);
       await report(`native-${form}-${profile}`, native);
+      // This bounded diagnosis stops before unrelated packaging/fault cohorts.
+      // Full qualification remains explicitly unknown until the complete matrix runs.
+      if (scope === "source-evidence") continue;
       let manifestExists = true;
       try {
         await NodeFSP.readFile(path);
@@ -364,6 +388,7 @@ try {
     results.length > 0 && results.every((result) => result.outcome === "passed");
   predicates.completed = !cancelled && !admissionClosed;
   predicates.nativeExecutionAtParentLoss ??= "unknown";
+  predicates.fullMatrix = scope === "full" ? blockExpected.length === 8 : "unknown";
   const lifecycleReports = reports.filter((value) =>
     /^(baseline|native|packaging)-/.test(value.name),
   );
@@ -396,6 +421,11 @@ try {
         ...decision,
         source,
         sourceTree,
+        scope,
+        scopedCleanupProved:
+          !admissionClosed &&
+          lifecycleReports.length === (scope === "source-evidence" ? 6 : 18) &&
+          lifecycleReports.every((value) => value.cleanupProved === true),
         inputs,
         node: process.versions,
         platform: HostProcess.Platform.defaultValue(),

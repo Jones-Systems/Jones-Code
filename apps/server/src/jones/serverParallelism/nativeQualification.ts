@@ -6,11 +6,17 @@ import * as NodePerfHooks from "node:perf_hooks";
 import * as NodeTimersPromises from "node:timers/promises";
 import { ComputeSupervisor } from "../serverCompute/supervisor.ts";
 import { GenerationJournal } from "../serverCompute/journal.ts";
+import {
+  qualificationRetentionComplete,
+  qualificationStream,
+  qualificationWorkload,
+} from "./qualificationRetention.ts";
+import { NativeGenerationEvidence, type EvidenceGeneration } from "./nativeGenerationEvidence.ts";
 import { isKey } from "../serverCompute/protocol.ts";
 import { ProcessSlot, withComputeChildOperations } from "../serverCompute/processSlot.ts";
 import type { ComputeChild } from "../serverCompute/processSlot.ts";
 import { isComputeFailure } from "../serverCompute/failure.ts";
-import { evaluateNativeThreadBudget, type ThreadBudgetGeneration } from "./nativeThreadBudget.ts";
+import { evaluateNativeThreadBudget } from "./nativeThreadBudget.ts";
 import type { WorkerCommand } from "../serverCompute/workerCommand.ts";
 import type { LogicalFinderHandle } from "./computeContract.ts";
 import type { ComputeObservation } from "./observations.ts";
@@ -20,7 +26,6 @@ import {
   resourcePredicates,
   sampleMacPerformanceCores,
   sampleNativePools,
-  type NativePoolObservation,
   type ProcessResourceSample,
 } from "./resourceSamples.ts";
 import {
@@ -55,54 +60,38 @@ export interface NativeQualificationOptions {
  */
 export async function runNativeQualification(options: NativeQualificationOptions) {
   const { count, directory, command } = options;
-  const windows = options.windows ?? 3,
-    acquisitions = options.acquisitionsPerWindow ?? 500;
-  const files = options.filesPerKey ?? 512;
-  if (
-    ![windows, acquisitions, files].every(Number.isSafeInteger) ||
-    ![2, 3].includes(count) ||
-    windows < 3 ||
-    windows > 5 ||
-    acquisitions < 500 ||
-    acquisitions > 2_000 ||
-    files < 128 ||
-    files > 2_048
-  )
-    throw new Error("Qualification workload outside bounded representative envelope");
+  // Admission precedes fixture creation, journal acquisition and every external collector.
+  const workload = qualificationWorkload(options);
+  const { windows, acquisitions, files } = workload;
   await NodeFSP.mkdir(directory, { recursive: false, mode: 0o700 });
-  const observations: ComputeObservation[] = [];
-  const observe = (event: ComputeObservation) => {
-    if (observations.length < 100_000) observations.push(event);
-    else observationLimitReached = true;
-  };
+  const observationStream = qualificationStream<ComputeObservation>(workload.capacities.observations);
+  const observations = observationStream.rows;
+  const observe = (event: ComputeObservation) => observationStream.append(event);
   const captured = new Map<number, ComputeChild>();
-  type Generation = { -readonly [K in keyof ThreadBudgetGeneration]: ThreadBudgetGeneration[K] } & {
-    nativePools: NativePoolObservation[];
-    hasGrep: boolean;
-    poolPhases: string[];
-    faulted: boolean;
-  };
-  const generations: Generation[] = [];
+  const generations: EvidenceGeneration[] = [];
+  const keyNeedles = new Map<string, string>();
   const macPerformanceCores = await sampleMacPerformanceCores();
   const active = new Map<number, number>();
   const keySlots = new Map<string, number>();
   const keyIdentity = (cwd: string, variant: string) => JSON.stringify([cwd, variant]);
-  const resources: {
+  type ResourceRow = {
     at: number;
     finishedAt: number;
     phase: string;
     sample: ProcessResourceSample;
     active: number[];
     generations: { pid: number; bootstrap: ComputeChild["bootstrap"] }[];
-  }[] = [];
-  const executions: { pid: number; phase: string; start: number; end: number }[] = [];
-  let stopped = false,
-    samplerFailure = false,
-    observationLimitReached = false;
+  };
+  const resourceStream = qualificationStream<ResourceRow>(workload.capacities.resources);
+  const resources = resourceStream.rows;
+  const executionStream = qualificationStream<{ pid: number; phase: string; start: number; end: number }>(workload.capacities.executions);
+  const executions = executionStream.rows;
+  let stopped = false, samplerFailure = false;
   let productiveOverlapSamples = 0,
     rotations = 0,
     coldReopens = 0;
   let phase = "fixture";
+  const measurementStarted = performance.now();
   const parentCpuStart = process.cpuUsage(),
     mainThreadCpuStart = process.threadCpuUsage();
   const requestMs: number[] = [];
@@ -131,12 +120,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
     },
     observe,
     start: async (boot, register, onExit) => {
-      const record: Generation = {
+      const record: EvidenceGeneration = {
         bootstrap: Object.freeze({ ...boot }),
         startedAt: performance.now(),
         nativePools: [],
-        hasGrep: false,
-        poolPhases: [],
+        basisGrepAttempted: false,
+        poolReads: [],
         faulted: false,
       };
       generations.push(record);
@@ -150,7 +139,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
             await register(pid);
           },
           (cause) => {
-            record.faulted = true; // A fault invalidates observation; it is not captured exit proof.
+            // ProcessSlot also notifies on an intentionally requested exit.
+            // Only a prior independent fault invalidates historical evidence;
+            // retirement itself closes new reads and still needs captured exit.
+            if (record.retirementStartedAt === undefined) record.faulted = true;
             onExit(cause);
           },
           observe,
@@ -183,11 +175,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
         request: async (request, signal, observeTiming) => {
           if (request.operation === "open") {
             coldReopens++;
-            if (isKey(request.input))
-              keySlots.set(
-                keyIdentity(request.input.cwd, request.input.variant),
-                request.token.slotId,
-              );
+            if (isKey(request.input)) {
+              keySlots.set(keyIdentity(request.input.cwd, request.input.variant), request.token.slotId);
+              const key = /^workspace-([0-9]+)$/.exec(NodePath.basename(request.input.cwd));
+              if (key && NodePath.dirname(request.input.cwd) === directory)
+                keyNeedles.set(request.token.keyId, `needle-${key[1]} alpha beta`);
+            }
           }
           const data = !["open", "close", "status"].includes(request.operation);
           if (data) active.set(child.pid, (active.get(child.pid) ?? 0) + 1);
@@ -201,17 +194,15 @@ export async function runNativeQualification(options: NativeQualificationOptions
                 timing.delivery &&
                 timing.worker.executionOutcome === "ok"
               ) {
-                if (executions.length < 100_000)
-                  executions.push({
-                    pid: child.pid,
-                    phase,
-                    start: timing.worker.executionStartedMs + timing.delivery.offsetUpperMs,
-                    end: timing.worker.executionCompletedMs + timing.delivery.offsetLowerMs,
-                  });
-                else observationLimitReached = true;
+                executionStream.append({
+                  pid: child.pid,
+                  phase,
+                  start: timing.worker.executionStartedMs + timing.delivery.offsetUpperMs,
+                  end: timing.worker.executionCompletedMs + timing.delivery.offsetLowerMs,
+                });
               }
             });
-            if (request.operation === "searchContents") record.hasGrep = true;
+            generationEvidence.completed(record, request, result, keyNeedles.get(request.token.keyId));
             return result;
           } finally {
             if (data) {
@@ -221,6 +212,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           }
         },
         retire: async () => {
+          record.retirementStartedAt = performance.now();
           await child.retire();
           record.exitCapturedAt = performance.now();
           active.delete(child.pid);
@@ -235,83 +227,84 @@ export async function runNativeQualification(options: NativeQualificationOptions
   const abort = () => controller.abort();
   options.signal?.addEventListener("abort", abort, { once: true });
   if (options.signal?.aborted) controller.abort();
-  const deadline = setTimeout(abort, 10 * 60_000);
+  const deadline = setTimeout(abort, workload.workloadMs);
+  const samplingController = new AbortController();
+  let previous: ResourceRow | undefined;
+  let resourceTail = Promise.resolve();
+  const sampleResources = () => {
+    const work = resourceTail.then(collectResources);
+    resourceTail = work;
+    return work;
+  };
+  const generationEvidence = new NativeGenerationEvidence({
+    captured,
+    now: () => performance.now(),
+    pools: sampleNativePools,
+    resources: sampleResources,
+    method: HostProcess.Platform.defaultValue() === "linux" ? "linux-proc-task-comm" : "macos-sample",
+    signal: controller.signal,
+  });
+  const phaseCheckpoint = async () => {
+    for (const record of generations.filter((item) => item.exitCapturedAt === undefined))
+      await generationEvidence.checkpoint(record, phase);
+    await sampleResources();
+  };
+  async function collectResources() {
+    const before = new Set([...active].filter(([, jobs]) => jobs > 0).map(([pid]) => pid));
+    const subjects = generations.filter(
+      (record) => record.pid !== undefined && record.exitCapturedAt === undefined,
+    );
+    const bindings = subjects.map((record) => ({
+      pid: record.pid!,
+      bootstrap: record.bootstrap,
+    }));
+    const requested = [process.pid, ...bindings.map((record) => record.pid)],
+      at = performance.now(),
+      sampledPhase = phase;
+    let sample: ProcessResourceSample;
+    try {
+      sample = await (options.sample ?? sampleProcesses)(requested);
+    } catch {
+      sample = processResourceSample(requested, [], ["sampler-threw"]);
+    }
+    if (
+      sample.status !== "complete" ||
+      sample.requestedPids.length !== requested.length ||
+      requested.some((pid) => !sample.requestedPids.includes(pid))
+    )
+      samplerFailure = true;
+    const stillActive = [...before].filter((pid) => (active.get(pid) ?? 0) > 0);
+    resourceStream.append({
+      at,
+      finishedAt: performance.now(),
+      phase: sampledPhase,
+      sample,
+      active: stillActive,
+      generations: bindings,
+    });
+    // A live receipt is only a parent-loss trigger. Final productive acceptance
+    // additionally requires worker execution intervals and positive CPU deltas.
+    if (
+      sample.status === "complete" &&
+      previous?.sample.status === "complete" &&
+      stillActive.length === count &&
+      stillActive.every((pid) => {
+        const old = previous!.sample.processes.find((row) => row.pid === pid),
+          now = sample.processes.find((row) => row.pid === pid);
+        return old && now && now.cpuMs > old.cpuMs;
+      })
+    )
+      options.onProductiveOverlap?.(stillActive);
+    previous = resources.at(-1);
+  }
   const sampler = (async () => {
-    let previous: (typeof resources)[number] | undefined;
     while (!stopped) {
-      const before = new Set([...active].filter(([, jobs]) => jobs > 0).map(([pid]) => pid));
-      const subjects = generations.filter(
-        (record) => record.pid !== undefined && record.exitCapturedAt === undefined,
-      );
-      const bindings = subjects.map((record) => ({
-        pid: record.pid!,
-        bootstrap: record.bootstrap,
-      }));
-      const requested = [process.pid, ...bindings.map((record) => record.pid)],
-        at = performance.now(),
-        sampledPhase = phase;
-      let sample: ProcessResourceSample;
-      try {
-        sample = await (options.sample ?? sampleProcesses)(requested);
-      } catch {
-        sample = processResourceSample(requested, [], ["sampler-threw"]);
-      }
-      if (
-        sample.status !== "complete" ||
-        sample.requestedPids.length !== requested.length ||
-        requested.some((pid) => !sample.requestedPids.includes(pid))
-      )
-        samplerFailure = true;
-      const stillActive = [...before].filter((pid) => (active.get(pid) ?? 0) > 0);
-      if (resources.length < 60_000)
-        resources.push({
-          at,
-          finishedAt: performance.now(),
-          phase: sampledPhase,
-          sample,
-          active: stillActive,
-          generations: bindings,
-        });
-      else observationLimitReached = true;
-      // A live receipt is only a parent-loss trigger. Final productive acceptance
-      // additionally requires worker execution intervals and positive CPU deltas.
-      if (
-        sample.status === "complete" &&
-        previous?.sample.status === "complete" &&
-        stillActive.length === count &&
-        stillActive.every((pid) => {
-          const old = previous!.sample.processes.find((row) => row.pid === pid),
-            now = sample.processes.find((row) => row.pid === pid);
-          return old && now && now.cpuMs > old.cpuMs;
-        })
-      )
-        options.onProductiveOverlap?.(stillActive);
-      previous = resources.at(-1);
-      // Lazy native pools are observed only after actual grep. Metadata itself is no pool basis.
-      for (const record of subjects.filter(
-        (item) => item.hasGrep && !item.poolPhases.includes(sampledPhase),
-      )) {
-        record.poolPhases.push(sampledPhase);
-        const evidence = await sampleNativePools(record.pid!);
-        if (
-          !record.faulted &&
-          record.exitCapturedAt === undefined &&
-          captured.get(record.pid!)?.bootstrap.nonce === record.bootstrap.nonce &&
-          captured.get(record.pid!)?.bootstrap.slotGeneration === record.bootstrap.slotGeneration
-        ) {
-          record.nativePools.push(evidence);
-        } else
-          record.nativePools.push({
-            ...evidence,
-            status: "unavailable",
-            error: "generation-changed-during-observation",
-          });
-      }
+      await sampleResources();
       // Measurement cadence only. Progress assertions use jobs/CPU and captured exit, never this delay.
-      await NodeTimersPromises.setTimeout(10, undefined, { signal: controller.signal }).catch(
+      await NodeTimersPromises.setTimeout(10, undefined, { signal: samplingController.signal }).catch(
         () => {},
       );
-      if (controller.signal.aborted) return;
+      if (samplingController.signal.aborted) return;
     }
   })();
   let shutdownProved = false;
@@ -326,6 +319,13 @@ export async function runNativeQualification(options: NativeQualificationOptions
         await NodeFSP.writeFile(NodePath.join(cwd, `file-${file}.txt`), content);
       keys.push(supervisor.register({ cwd, variant: key % 2 === 0 ? "paths" : "content" }));
     }
+    const qualifyGeneration = (handle: LogicalFinderHandle) => generationEvidence.qualify(handle, phase, async () => {
+      const result = await supervisor.run(handle, "searchContents", {
+        query: "needle", limit: 32, caseSensitive: true, wholeWord: false, useRegex: false,
+      }, controller.signal);
+      if (result.matches.length === 0) throw new Error("Generation basis grep did no useful work");
+      generationEvidence.confirmPositive(handle);
+    });
     const request = async (handle: LogicalFinderHandle) => {
       if (controller.signal.aborted) throw new Error("Qualification deadline");
       if (handle.key.variant === "content") {
@@ -337,6 +337,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
         );
         if (result.matches.length === 0)
           throw new Error("Native content search did no useful work");
+        generationEvidence.confirmPositive(handle);
         // Full absent-match traversal prevents a first-file hit from being the
         // only productive sample; this uses the existing native grep algorithm.
         const absent = await supervisor.run(
@@ -362,6 +363,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
         );
         if (result.entries.length === 0) throw new Error("Native path search did no useful work");
       }
+      await qualifyGeneration(handle);
     };
     phase = "cold-all-resident";
     for (const handle of keys.slice(0, 4 * count))
@@ -376,7 +378,10 @@ export async function runNativeQualification(options: NativeQualificationOptions
     );
     if (cohorts.some((cohort) => cohort.length !== 4))
       throw new Error("Incomplete native process cohort mapping");
+    // Include path-only initial cohorts before warm-idle without changing the workload keys.
+    for (const cohort of cohorts) await qualifyGeneration(cohort[0]!);
     phase = "warm-idle";
+    await phaseCheckpoint();
     await NodeTimersPromises.setTimeout(3_000, undefined, { signal: controller.signal });
     const windowsResult = [];
     const steadyRotationStart = rotations;
@@ -386,6 +391,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
       loop.enable();
       const observationStart = observations.length;
       try {
+        await phaseCheckpoint();
         const result = await combinedReaderWriterWindow(
           NodePath.join(directory, `combined-${window}.sqlite`),
           count,
@@ -401,6 +407,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
           },
           () => observations.slice(observationStart),
         );
+        await phaseCheckpoint();
         windowsResult.push({
           ...result,
           loop: { p99: loop.percentile(99) / 1e6, max: loop.max / 1e6 },
@@ -411,16 +418,19 @@ export async function runNativeQualification(options: NativeQualificationOptions
     }
     const steadyRotations = rotations - steadyRotationStart;
     phase = "serialized-negative-control";
+    await phaseCheckpoint();
     const serializedExecutionStart = executions.length;
     for (let round = 0; round < acquisitions; round++)
       for (const cohort of cohorts) await request(cohort[round % 4]!);
     const serializedExecutions = executions.slice(serializedExecutionStart);
+    await phaseCheckpoint();
     const churnWindows = [];
-    for (const workingSet of [4 * count + 1, 8 * count]) {
+    for (const workingSet of workload.churnSets) {
       phase = `churn-${workingSet}`;
       const started = performance.now(),
         beforeRotations = rotations,
         beforeReopens = coldReopens;
+      await phaseCheckpoint();
       const latency: number[] = [],
         failures: Record<string, number> = {};
       for (let round = 0; round < 3; round++) {
@@ -452,6 +462,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
         // Hot sibling traffic through surviving cached facades after rotation.
         for (const hot of keys.slice(0, count)) await request(hot);
       }
+      await phaseCheckpoint();
       churnWindows.push({
         workingSet,
         durationMs: performance.now() - started,
@@ -462,15 +473,32 @@ export async function runNativeQualification(options: NativeQualificationOptions
       });
     }
     phase = "churn-settling";
+    await phaseCheckpoint();
     await NodeTimersPromises.setTimeout(3_000, undefined, { signal: controller.signal });
+    await phaseCheckpoint();
     phase = "shutdown";
+    await phaseCheckpoint();
+    await generationEvidence.stopAndDrain();
     await supervisor.shutdown();
     shutdownProved = true;
     options.onShutdown?.();
+    await sampleResources();
     stopped = true;
-    controller.abort();
+    samplingController.abort();
     await sampler;
+    await resourceTail;
     monitor.disable();
+    const retention = {
+      workload,
+      elapsedMs: performance.now() - measurementStarted,
+      observations: observationStream.report(),
+      executions: executionStream.report(),
+      resources: resourceStream.report(),
+    };
+    const retentionComplete = qualificationRetentionComplete(retention);
+    const generationEvidenceComplete = generations.length >= count && generations.every((record) =>
+      record.grep !== undefined && !record.faulted && record.poolReads.length > 0 &&
+      record.poolReads.every((read) => read.observation.status === "complete"));
     const resourceResult = resourcePredicates(
       resources.map((row) => row.sample),
       process.pid,
@@ -587,7 +615,7 @@ export async function runNativeQualification(options: NativeQualificationOptions
       generations,
       samples: resources,
       lifecycleBounds,
-      observationComplete: !samplerFailure && !observationLimitReached,
+      observationComplete: !samplerFailure && retentionComplete && generationEvidenceComplete,
     });
     const churnThroughput =
       options.baselineChurn?.length === 2
@@ -613,6 +641,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
       queues,
       request: percentiles(requestMs),
       resources,
+      retention,
+      generationEvidence: generations.map((record) => ({
+        pid: record.pid, bootstrap: record.bootstrap, grep: record.grep ?? null,
+        retirementStartedAt: record.retirementStartedAt ?? null,
+        basisGrepAttempted: record.basisGrepAttempted, basisGrepFailure: record.basisGrepFailure ?? null, poolReads: record.poolReads,
+      })),
       productiveOverlapSamples,
       executions,
       resourceCoverage,
@@ -643,11 +677,12 @@ export async function runNativeQualification(options: NativeQualificationOptions
           churnWindows.length === 2 &&
           churnWindows.every((window) => Object.keys(window.failures).length === 0),
         resourcesComplete:
-          resourceResult.resourcesComplete && !samplerFailure && !observationLimitReached,
+          resourceResult.resourcesComplete && !samplerFailure && retentionComplete,
         observationComplete:
-          !observationLimitReached &&
+          retentionComplete && generationEvidenceComplete &&
           windowsResult.every((window) => !window.observationLimitReached),
         // Resource ceilings and throughput regression need exact-host interpretation against baseline.
+        generationEvidenceComplete,
         aggregateResourceBudget: threadBudget.predicate,
         childRssWithinBudget,
         churnThroughput,
@@ -672,14 +707,24 @@ export async function runNativeQualification(options: NativeQualificationOptions
     };
   } finally {
     clearTimeout(deadline);
-    stopped = true;
     controller.abort();
-    await sampler;
-    monitor.disable();
     options.signal?.removeEventListener("abort", abort);
-    if (!shutdownProved) {
-      await supervisor.shutdown();
-      options.onShutdown?.();
+    try {
+      // The OS pool collectors are independently bounded. Drain already admitted
+      // reads before normal teardown, including the final generation's receipt.
+      await generationEvidence.stopAndDrain();
+      if (!shutdownProved) {
+        await supervisor.shutdown();
+        options.onShutdown?.();
+      }
+    } finally {
+      // Keep sampling throughout teardown. An uncertain retirement throws and
+      // cannot produce a successful complete report.
+      stopped = true;
+      samplingController.abort();
+      await sampler;
+      await resourceTail;
+      monitor.disable();
     }
     // Fixture removal is the invoking harness owner's duty after reading the report.
     // Uncertain retirement must preserve the journal and fixture for reconciliation.

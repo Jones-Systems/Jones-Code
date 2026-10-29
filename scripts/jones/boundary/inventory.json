@@ -2439,7 +2439,14 @@
     "scripts/jones/serverParallelism/qualificationResult.mjs": "jones-owned",
     "scripts/jones/serverParallelism/qualificationResult.node-test.mjs": "jones-owned",
     "scripts/jones/serverParallelism/storage.mjs": "jones-owned",
-    "apps/server/src/cli/project.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/cli/project.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/serverParallelism/snapshotDecision.mjs": "jones-owned",
+    "apps/server/src/jones/serverParallelism/qualificationRetention.test.ts": "jones-owned",
+    "apps/server/src/jones/serverParallelism/nativeGenerationEvidence.test.ts": "jones-owned",
+    "apps/server/src/jones/serverParallelism/combinedQualification.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/serverParallelism/qualificationRetention.ts": "jones-owned",
+    "apps/server/src/jones/serverParallelism/nativeGenerationEvidence.ts": "jones-owned",
+    "scripts/jones/serverParallelism/snapshotDecision.node-test.mjs": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
