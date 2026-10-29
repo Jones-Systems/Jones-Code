@@ -103,6 +103,7 @@ import {
   legacyNeverInvokedWorkspaceFailure,
 } from "./LegacyBootstrap.ts";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
 import { TerminalManager } from "../terminal/Manager.ts";
 import { makeDispatchGuard, DispatchGuardRejected } from "./DispatchGuard.ts";
 import {
@@ -1192,6 +1193,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const commandReceipts = yield* CommandReceiptStoreV2;
   const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
   const sql = yield* SqlClient.SqlClient;
+  const idleWorktreeAdmission = IdleWorktreeAdmission.makeIdleWorktreeAdmission(sql);
   const automaticTitles = yield* AutomaticTitles.make;
   const settlementRestores = makeSettlementRestoreStore(sql, makeJonesTablePresence(sql));
   const dependencies = makeDependencyStore(sql, makeJonesTablePresence(sql));
@@ -14615,6 +14617,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } satisfies OrchestratorV2DispatchResult;
     }
 
+    // Accepted receipt replay precedes this temporary fence. Refusal must not persist a rejected receipt.
+    if (command.type === "message.dispatch") {
+      const hold = yield* idleWorktreeAdmission
+        .read(command.threadId)
+        .pipe(mapDispatchError(command));
+      if (hold !== null && hold.phase !== "ready")
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: new IdleWorktreeAdmission.IdleWorktreeAdmissionError({
+            threadId: command.threadId,
+            reason: hold.phase === "unresolved" ? "unresolved" : "preparing",
+          }),
+        });
+    }
+
     const linkedMessage = yield* IncomingLinkedMessage;
     const incomingTarget =
       command.type === "message.dispatch" && linkedMessage
@@ -14896,6 +14914,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           threadId: commandThreadId(command),
           commandType: command.type,
           acceptedAt,
+          idleWorktreeAdmission: yield* IdleWorktreeAdmission.LaunchIntent,
           ordinaryCheckoutCommand: command,
           taskContinuation: yield* TaskContinuationCommit,
           resultRequest: yield* DependencyCommit,

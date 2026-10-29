@@ -423,14 +423,19 @@ export function usePendingThreadRequests(input: {
   };
 
   const onSelectActivePendingUserInputOption = (questionId: string, optionValue: string) => {
-    if (!activePendingUserInput) {
+    if (!activePendingUserInput || activePendingIsResponding) return;
+    const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
+    if (
+      !question ||
+      !question.options.some((option) => (option.value ?? option.label) === optionValue)
+    )
       return;
-    }
+    const currentAnswers = usePendingUserInputAnswers.getState()[activePendingRequestKey] ?? {};
     // Live-provider choices replace text; preserve that displaced text in the thread draft.
     const notes =
       supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) &&
       !activePendingUserInput.questions.find((question) => question.id === questionId)?.multiSelect;
-    const displacedAnswer = notes ? undefined : activePendingAnswerDrafts[questionId]?.customAnswer;
+    const displacedAnswer = notes ? undefined : currentAnswers[questionId]?.customAnswer;
     const currentPrompt =
       useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
     const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
@@ -454,28 +459,42 @@ export function usePendingThreadRequests(input: {
         );
       }
     }
-    setPendingUserInputAnswersByRequestId((existing) => {
-      const question =
-        (activePendingProgress?.activeQuestion?.id === questionId
-          ? activePendingProgress.activeQuestion
-          : undefined) ?? activePendingUserInput.questions.find((entry) => entry.id === questionId);
-      if (!question) {
-        return existing;
-      }
-
-      return {
-        ...existing,
-        [activePendingRequestKey]: {
-          ...existing[activePendingRequestKey],
-          [questionId]: togglePendingUserInputOptionSelection(
-            question,
-            existing[activePendingRequestKey]?.[questionId],
-            optionValue,
-            { notes },
-          ),
-        },
-      };
+    // A single choice is a submission gesture, including retrying the same choice.
+    const draft = togglePendingUserInputOptionSelection(
+      question,
+      question.multiSelect
+        ? currentAnswers[questionId]
+        : { ...currentAnswers[questionId], selectedOptionValues: [] },
+      optionValue,
+      { notes },
+    );
+    const nextAnswers = { ...currentAnswers, [questionId]: draft };
+    setPendingUserInputAnswersByRequestId((existing) => ({
+      ...existing,
+      [activePendingRequestKey]: nextAnswers,
+    }));
+    if (question.multiSelect) return;
+    // Keep attachment readiness from the rendered drafts and use the newly selected answer.
+    const drafts = Object.fromEntries(
+      activePendingUserInput.questions.map((entry) => [
+        entry.id,
+        { ...activePendingDraftAnswers[entry.id], ...nextAnswers[entry.id] },
+      ]),
+    );
+    const answers = buildPendingUserInputAnswers(activePendingUserInput.questions, drafts, {
+      notes,
     });
+    if (answers) {
+      void onRespondToUserInput(activePendingUserInput.requestId, answers);
+    } else {
+      const progress = derivePendingUserInputProgress(
+        activePendingUserInput.questions,
+        drafts,
+        activePendingQuestionIndex,
+        { notes },
+      );
+      setActivePendingUserInputQuestionIndex(progress.firstUnansweredIndex);
+    }
   };
   const onSelectActivePendingUserInputOptionStable = useStableCallback(
     onSelectActivePendingUserInputOption,

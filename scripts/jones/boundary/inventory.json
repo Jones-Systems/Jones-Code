@@ -7,6 +7,18 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/IdleWorktreeAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/IdleWorktreeAdmission.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexStartup.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexStartup.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts": "jones-owned",
+    "packages/provider-core/src/server/maintenanceResolver.ts": "accepted-shared",
+    "packages/provider-core/src/server/maintenanceResolver.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/CodexInstallation.ts": "accepted-shared",
+    "apps/server/src/provider/CodexInstallation.test.ts": "jones-tests-in-upstream",
     "scripts/jones/ci/anonymous-checkout.sh": "jones-owned",
     "scripts/jones/ci/anonymous-checkout.node-test.mjs": "jones-owned",
     "scripts/jones/boundary/fragments/anonymous-checkout.json": "jones-owned",
@@ -2458,7 +2470,21 @@
     "apps/server/src/jones/serverParallelism/diagnosticObservation.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/diagnosticObservation.test.ts": "jones-owned",
     "scripts/jones/serverParallelism/observer-diagnostic.mjs": "jones-owned",
-    "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs": "jones-owned"
+    "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs": "jones-owned",
+    "apps/web/src/jones/questionAnswer/QuickResponseSubmission.browser.test.tsx": "jones-owned",
+    "packages/contracts/src/jones/pullRequestCheckObservation.ts": "jones-owned",
+    "packages/contracts/src/jones/pullRequestCheckObservation.test.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckObservation.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckObservation.test.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckExpectations.ts": "jones-owned",
+    "packages/source-control-github/src/jones/pullRequestCheckExpectations.test.ts": "jones-owned",
+    "apps/server/src/jones/pullRequestWatch/checkObservation.ts": "jones-owned",
+    "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/pull-request-check-observation.json": "jones-owned",
+    "packages/source-control-core/src/server/PullRequestProvider.ts": "accepted-shared",
+    "packages/source-control-github/src/server/gitHubConditionalChecks.ts": "accepted-shared",
+    "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts": "jones-tests-in-upstream",
+    "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2553,6 +2579,30 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexStartup.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexStartup.ts"
+    },
     {
       "from": "apps/server/src/cloud/bootService.test.ts",
       "to": "apps/server/src/jones/cloud/launcherPointer.ts"

@@ -55,7 +55,7 @@ export interface PendingUserInputCardProps {
     requestId: RuntimeRequestId,
     question: ThreadUserInputQuestion,
     value: string,
-  ) => void;
+  ) => number | undefined;
   readonly onChangeCustomAnswer: (
     requestId: RuntimeRequestId,
     questionId: string,
@@ -298,13 +298,14 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         "min-h-12 w-full rounded-2xl border px-3.5 py-3",
                         selected ? "border-primary bg-primary/10" : "border-border bg-input",
                       )}
-                      onPress={() =>
-                        props.onSelectOption(
+                      onPress={() => {
+                        const nextIndex = props.onSelectOption(
                           props.pendingUserInput.requestId,
                           question,
                           optionValue,
-                        )
-                      }
+                        );
+                        if (nextIndex !== undefined) selectQuestion(nextIndex);
+                      }}
                     >
                       <View className="min-w-0 flex-1 gap-0.5">
                         <Text

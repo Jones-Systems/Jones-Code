@@ -139,6 +139,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   useEffect(() => {
     if (!activeQuestion || responseDisabled || isCollapsed || backgroundThread) return;
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.repeat || event.isComposing) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {

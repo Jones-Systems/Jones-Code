@@ -60,6 +60,75 @@ const detail = (overrides: Partial<Detail> = {}): Detail => ({
   ...overrides,
 });
 
+const observed = (
+  checks: ReadonlyArray<PullRequestCheck>,
+  overrides: Partial<{
+    enumerationComplete: boolean;
+    workflowState: "complete" | "pending" | "unknown";
+    requiredSetKnown: boolean;
+    requiredState: "unknown" | "missing" | "pending" | "failure" | "success";
+    requiredChecks: ReadonlyArray<string>;
+  }> = {},
+) => ({
+  ...detail({ checks }),
+  jonesCheckObservation: {
+    headSha: "aaaaaaaaaa",
+    enumerationComplete: true,
+    workflowState: "complete" as const,
+    requiredSetKnown: false,
+    requiredState: "unknown" as const,
+    requiredChecks: [] as ReadonlyArray<string>,
+    ...overrides,
+  },
+});
+
+it("does not announce visible required successes while the bound aggregator is missing", () => {
+  const current = observed([{ ...check("classifier", "success"), required: true }], {
+    workflowState: "pending",
+    requiredSetKnown: true,
+    requiredState: "missing",
+    requiredChecks: ["Check"],
+  });
+  const report = evaluatePullRequestWatch(watch(), current, []);
+  assert.notInclude(
+    report.changes.map((change) => change.kind),
+    "checks-passed",
+  );
+});
+
+it("preserves success history across an incomplete observation", () => {
+  const green = observed([check("advisory", "success")]);
+  const first = evaluatePullRequestWatch(watch(), green, []);
+  const partial = evaluatePullRequestWatch(
+    first.next,
+    observed([check("unseen workflow", "pending")], {
+      enumerationComplete: false,
+      workflowState: "unknown",
+    }),
+    [],
+  );
+  const repeated = evaluatePullRequestWatch(partial.next, green, []);
+  assert.notInclude(
+    repeated.changes.map((change) => change.kind),
+    "checks-passed",
+  );
+});
+
+it("keeps omitted failures deduplicated during partial enumeration", () => {
+  const failed = observed([check("test", "failure")], { enumerationComplete: false });
+  const first = evaluatePullRequestWatch(watch(), failed, []);
+  const partial = evaluatePullRequestWatch(
+    first.next,
+    observed([check("other", "pending")], { enumerationComplete: false }),
+    [],
+  );
+  const repeated = evaluatePullRequestWatch(partial.next, failed, []);
+  assert.notInclude(
+    repeated.changes.map((change) => change.kind),
+    "checks-failed",
+  );
+});
+
 const remark = (
   login: string,
   createdAt: string,

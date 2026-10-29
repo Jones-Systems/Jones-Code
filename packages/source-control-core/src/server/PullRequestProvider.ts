@@ -9,6 +9,7 @@ import type {
   PullRequestCapabilities,
   PullRequestChecksState,
   PullRequestCheck,
+  PullRequestCheckObservation,
   PullRequestChecks,
   PullRequestComment,
   PullRequestFileViewed,
@@ -189,6 +190,7 @@ export interface ProviderChangeRequestDetail extends ProviderChangeRequest {
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestActor>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
+  readonly jonesCheckObservation?: PullRequestCheckObservation | undefined;
   readonly mergeCapabilities: PullRequestMergeCapabilities;
   readonly viewerPermissions: PullRequestViewerPermissions;
   readonly baseComparison?: PullRequestBaseComparison;
@@ -345,7 +347,10 @@ export interface PullRequestProviderApi {
 
   readonly getChangeRequestChecks?: (
     input: ProviderRepositoryRef & { readonly number: number },
-  ) => Effect.Effect<Pick<PullRequestChecks, "state" | "checks">, PullRequestProviderError>;
+  ) => Effect.Effect<
+    Pick<PullRequestChecks, "state" | "checks" | "jonesCheckObservation">,
+    PullRequestProviderError
+  >;
 
   readonly getChangeRequest: (
     input: ProviderRepositoryRef & { readonly number: number },

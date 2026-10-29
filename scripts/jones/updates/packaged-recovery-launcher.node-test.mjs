@@ -178,7 +178,8 @@ NodeTest.test(
               if(!existing){
                 const evaluated=await evaluateLegacyUpdateSettlement({
                   baseDir:home,operationId:message.operationId,current:state.update,
-                  active:{activeVersion:state.activeVersion,activeSourceSha:qualified.binding.activeSourceSha},
+                  active:{activeVersion:state.activeVersion,activeSourceSha:JSON.parse(
+                    await fs.readFile(path.join(home,"runtime","versions",state.activeVersion,".jones-runtime-receipt.json"),"utf8")).sourceSha},
                 });
                 if(evaluated.result==="refused"){
                   result="refused";reason=evaluated.reason;
@@ -814,6 +815,7 @@ NodeTest.test(
         { archivedOutcome: false },
         { archivedOutcome: true },
         { archivedOutcome: true, legacyVariant: "restore-pending" },
+        { archivedOutcome: true, legacyVariant: "active-changed" },
       ]) {
         await t.test(
           "runs the real HTTP/IPC transport control with archivedOutcome=" +
@@ -881,17 +883,31 @@ NodeTest.test(
               NodeAssert.equal(result.settlement, null);
               NodeAssert.deepEqual(result.refusal, {
                 variant: legacyVariant,
-                reason: "restore-pending",
+                reason: legacyVariant,
                 heldEvidenceUnchanged: true,
               });
               NodeAssert.ok(
-                result.observation.replies.every((reply) => reply.reason === "restore-pending"),
+                result.observation.replies.every((reply) => reply.reason === legacyVariant),
               );
               await NodeAssert.rejects(
                 preparePackagedReconciliationObservation({ prepared, requestIds: fixedIds }),
                 /occupied|EEXIST/,
               );
             } else NodeAssert.equal(result.settlement.basis, "legacy-reconciled");
+            if (legacyVariant === "active-changed") {
+              NodeAssert.equal(
+                result.activeReceiptDrift.launcherPid,
+                result.observation.replies[0].launcherPid,
+              );
+              NodeAssert.equal(
+                result.activeReceiptDrift.childPid,
+                result.observation.replies[0].childPid,
+              );
+              NodeAssert.notEqual(
+                result.activeReceiptDrift.originalSha256,
+                result.activeReceiptDrift.changedSha256,
+              );
+            } else NodeAssert.equal(result.activeReceiptDrift, undefined);
             NodeAssert.equal(result.state.update.id, prepared.operationId);
             NodeAssert.equal(result.state.update.status, "failed");
             NodeAssert.ok(!JSON.stringify(result).includes(input.token));
@@ -1033,10 +1049,11 @@ NodeTest.test(
         const child=spawn(active,["serve"],{env:{...process.env,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
           protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",startupGateProtocol:1,
         })},stdio:["inherit","inherit","inherit","ipc"]});
-        let dispatching=false,ending=false;
+        let dispatching=false,ending=false,postWriteCleanupPending=false;
         const stopChild=()=>new Promise(resolve=>{if(child.exitCode!==null||child.signalCode!==null){resolve();return}
           child.once("close",resolve);child.kill("SIGTERM")});
-        process.once("SIGTERM",()=>{ending=true;stopChild()});
+        process.once("SIGTERM",()=>{if(postWriteCleanupPending){console.error("stopped during native post-write completion");process.exitCode=1}
+          ending=true;stopChild()});
         child.on("message",m=>{
           if(m.type!=="request-update")return;
           dispatching=true;
@@ -1066,7 +1083,15 @@ NodeTest.test(
               process.exitCode=1;return;
             }
             if(!wasFailed)throw Error("expected injected first-attempt fault");
+            const terminalBackup=path.join(home,"runtime","db-backup",m.operationId);
+            await fs.mkdir(terminalBackup,{recursive:true,mode:0o700});
+            await write(path.join(terminalBackup,"paired-binding.json"),{transactionId:m.operationId,qualified});
+            await fs.writeFile(path.join(terminalBackup,"database"),"synthetic retained backup",{mode:0o600});
+            postWriteCleanupPending=true;
             state.activeVersion=m.targetVersion;state.update={...pending,status:"committed"};await write(statePath,state);
+            await new Promise(resolve=>setImmediate(resolve));
+            await fs.unlink(path.join(terminalBackup,"database"));postWriteCleanupPending=false;
+            const cleanupDir=await fs.open(terminalBackup,"r");try{await cleanupDir.sync()}finally{await cleanupDir.close()}
           })().catch(e=>{console.error(e.stack);process.exitCode=1;ending=true;stopChild()});
         });
         child.once("error",e=>{console.error(e.message);process.exitCode=1});
