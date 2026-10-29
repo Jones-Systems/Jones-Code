@@ -10,8 +10,10 @@ import {
   type PendingUserInputDraftAnswer,
 } from "../../pendingUserInput";
 
+type MonitorQuestion = typeof ThreadMonitorQuestion.Type;
+
 export function monitorInputDraft(
-  question: Pick<ThreadMonitorQuestion, "options" | "multiSelect">,
+  question: Pick<MonitorQuestion, "options" | "multiSelect">,
   answer: string | ReadonlyArray<string> | undefined,
   notes: boolean,
 ): { selected: ReadonlyArray<string>; custom: string } {
@@ -29,7 +31,7 @@ export function monitorInputDraft(
 }
 
 export function monitorInputChoice(
-  question: ThreadMonitorQuestion,
+  question: MonitorQuestion,
   answer: string | ReadonlyArray<string> | undefined,
   value: string,
   notes: boolean,
