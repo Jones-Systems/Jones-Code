@@ -6,8 +6,12 @@ on:
       scope:
         description: Bounded source evidence first; full matrix after prerequisite review
         type: choice
-        options: [source-evidence, full]
+        options: [source-evidence, full, observer-diagnostic, observer-control]
         default: source-evidence
+      observer_full_artifact:
+        description: Inspected full diagnostic artifact name; required only for the one optional control
+        type: string
+        default: ""
   pull_request:
     paths:
       - .github/workflows/server-parallel-qualification.yml
@@ -45,25 +49,16 @@ jobs:
   qualify:
     name: Server parallel (${{ matrix.os }})
     if: github.repository == 'Jones-Systems/Jones-Code'
+    permissions:
+      contents: read
+      actions: read
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
       max-parallel: 2
       matrix:
-        include:
-          - os: linux
-            runner: ubuntu-24.04
-            rust_target: x86_64-unknown-linux-gnu
-            resource_key: linux-x64
-            archive_platform: linux
-            arch: x64
-          - os: macos
-            runner: macos-15
-            rust_target: aarch64-apple-darwin
-            resource_key: darwin-arm64
-            archive_platform: mac
-            arch: arm64
+        include: ${{ fromJSON((github.event.inputs.scope == 'observer-diagnostic' || github.event.inputs.scope == 'observer-control') && '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"}]' || '[{"os":"linux","runner":"ubuntu-24.04","rust_target":"x86_64-unknown-linux-gnu","resource_key":"linux-x64","archive_platform":"linux","arch":"x64"},{"os":"macos","runner":"macos-15","rust_target":"aarch64-apple-darwin","resource_key":"darwin-arm64","archive_platform":"mac","arch":"arm64"}]') }}
     defaults:
       run:
         shell: bash
@@ -133,6 +128,7 @@ jobs:
       - name: Focused qualification regressions and control/checkpoint invariants
         run: >-
           vp test run --maxWorkers=1
+          apps/server/src/jones/serverParallelism/diagnosticObservation.test.ts
           apps/server/src/jones/serverParallelism/resourceSamples.test.ts
           apps/server/src/jones/serverParallelism/qualificationRetention.test.ts
           apps/server/src/jones/serverParallelism/nativeGenerationEvidence.test.ts
@@ -183,12 +179,32 @@ jobs:
           mkdir "$TMPDIR/installed"
           tar -xzf "${archives[0]}" -C "$TMPDIR/installed"
 
+      - name: Fetch the separately inspected full diagnostic for one optional control
+        if: env.JONES_SP_SCOPE == 'observer-control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FULL_ARTIFACT: ${{ github.event.inputs.observer_full_artifact }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
+          [[ "$FULL_ARTIFACT" =~ ^server-parallel-linux-([0-9]+)-([0-9]+)$ ]]
+          full_run="${BASH_REMATCH[1]}"
+          test "$full_run" != "$GITHUB_RUN_ID"
+          mkdir "$TMPDIR/observer-prior"
+          gh run download "$full_run" --repo "$GITHUB_REPOSITORY" --name "$FULL_ARTIFACT" --dir "$TMPDIR/observer-prior"
+          test -f "$TMPDIR/observer-prior/observer-full.json"
+          test -f "$TMPDIR/observer-prior/baseline-laptop.json"
+
       - name: Measure selected qualification scope serially
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: |
           set -euo pipefail
           mkdir -p "$TMPDIR/installed"
-          node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed" "$JONES_SP_SCOPE"
+          if [[ "$JONES_SP_SCOPE" == observer-control ]]; then
+            node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed" "$JONES_SP_SCOPE" "$TMPDIR/observer-prior"
+          else
+            node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed" "$JONES_SP_SCOPE"
+          fi
 
       - name: Preserve original outcomes, manifests, build identities and missing evidence
         if: ${{ always() && steps.scratch.outputs.owned == 'true' && steps.scratch.outputs.reports != '' && steps.scratch.outputs.scratch != '' }}

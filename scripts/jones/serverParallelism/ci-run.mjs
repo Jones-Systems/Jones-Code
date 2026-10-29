@@ -9,8 +9,10 @@ import * as NodeModule from "node:module";
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
 import { qualificationDecision, nativeBlockMatrixDecision } from "./qualificationResult.mjs";
-const [output, installedRoot, scope = "full"] = process.argv.slice(2);
-if (!["full", "source-evidence"].includes(scope)) throw new Error("Unknown qualification scope");
+const [output, installedRoot, scope = "full", priorDirectory] = process.argv.slice(2);
+const diagnosticScope = ["observer-diagnostic", "observer-control"].includes(scope);
+if (diagnosticScope && (HostProcess.Platform.defaultValue() !== "linux" || process.env.GITHUB_EVENT_NAME !== "workflow_dispatch" || (scope === "observer-control" && !NodePath.isAbsolute(priorDirectory ?? "")))) throw new Error("Manual Linux diagnostic route requires its bound inputs");
+if (!["full", "source-evidence", "observer-diagnostic", "observer-control"].includes(scope)) throw new Error("Unknown qualification scope");
 if (!NodePath.isAbsolute(output ?? "") || !NodePath.isAbsolute(installedRoot ?? ""))
   throw new Error("ci-run.mjs <absolute reports directory> <absolute extracted archive directory>");
 await NodeFSP.mkdir(output, { recursive: true, mode: 0o700 });
@@ -34,6 +36,7 @@ const blockReceipts = [],
 const results = [],
   reports = [],
   predicates = {};
+let diagnosticComplete = false;
 let active,
   cancelled = false,
   admissionClosed = false;
@@ -135,61 +138,7 @@ async function report(name, path) {
       name,
     );
 }
-try {
-  await NodeFSP.writeFile(
-    NodePath.join(output, "source-build.patch"),
-    NodeChildProcess.execFileSync("git", ["diff", "--binary"], { cwd: root }),
-  );
-  await node("deterministic", [
-    "--test",
-    "--test-concurrency=1",
-    "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
-    "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
-    "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
-    "scripts/jones/serverParallelism/snapshotDecision.node-test.mjs",
-    "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
-  ]);
-  const sourceManifest = NodePath.join(output, "source-command.json");
-  await node("manifest-source", [
-    "scripts/jones/serverParallelism/source-command.mjs",
-    NodePath.join(root, "apps/server/src/bin.ts"),
-    sourceManifest,
-  ]);
-  const manifests = [{ form: "source", path: sourceManifest }];
-  const requireDesktop = NodeModule.createRequire(NodePath.join(root, "apps/desktop/package.json"));
-  let electron;
-  try {
-    electron = requireDesktop("electron");
-  } catch {
-    /* The attempted manifest below records missing runtime as a failure. */
-  }
-  const roots = await NodeFSP.readdir(installedRoot).catch(() => []);
-  const sea =
-    roots.length === 1
-      ? NodePath.join(installedRoot, roots[0], "t3")
-      : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
-  for (const [form, executable, entry] of scope === "full"
-    ? [
-        ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
-        [
-          "electron",
-          electron ?? NodePath.join(output, "MISSING-ELECTRON"),
-          NodePath.join(root, "apps/server/dist/bin.mjs"),
-        ],
-        ["sea", sea, "-"],
-      ]
-    : []) {
-    const path = NodePath.join(output, `${form}-command.json`);
-    await node(`manifest-${form}`, [
-      "scripts/jones/serverParallelism/artifact-command.mjs",
-      form,
-      executable,
-      entry,
-      path,
-    ]);
-    manifests.push({ form, path });
-  }
-  for (const profile of ["laptop", "vps"]) {
+async function runBaseline(profile) {
     const baseline = NodePath.join(output, `baseline-${profile}.json`);
     await node(`baseline-${profile}`, [
       "scripts/jones/serverParallelism/baseline.mjs",
@@ -252,6 +201,94 @@ try {
       });
     }
     await report(`baseline-${profile}`, baseline);
+    return baseline;
+}
+
+try {
+  await NodeFSP.writeFile(
+    NodePath.join(output, "source-build.patch"),
+    NodeChildProcess.execFileSync("git", ["diff", "--binary"], { cwd: root }),
+  );
+  await node("deterministic", [
+    "--test",
+    "--test-concurrency=1",
+    "scripts/jones/serverParallelism/buildIdentity.node-test.mjs",
+    "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
+    "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
+    "scripts/jones/serverParallelism/snapshotDecision.node-test.mjs",
+    "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
+    "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs",
+  ]);
+  const sourceManifest = NodePath.join(output, "source-command.json");
+  await node("manifest-source", [
+    "scripts/jones/serverParallelism/source-command.mjs",
+    NodePath.join(root, "apps/server/src/bin.ts"),
+    sourceManifest,
+  ]);
+  const manifests = [{ form: "source", path: sourceManifest }];
+  const requireDesktop = NodeModule.createRequire(NodePath.join(root, "apps/desktop/package.json"));
+  let electron;
+  try {
+    electron = requireDesktop("electron");
+  } catch {
+    /* The attempted manifest below records missing runtime as a failure. */
+  }
+  const roots = await NodeFSP.readdir(installedRoot).catch(() => []);
+  const sea =
+    roots.length === 1
+      ? NodePath.join(installedRoot, roots[0], "t3")
+      : NodePath.join(installedRoot, "MISSING-INSTALLED-LAYOUT");
+  for (const [form, executable, entry] of scope === "full"
+    ? [
+        ["bundle", process.execPath, NodePath.join(root, "apps/server/dist/bin.mjs")],
+        [
+          "electron",
+          electron ?? NodePath.join(output, "MISSING-ELECTRON"),
+          NodePath.join(root, "apps/server/dist/bin.mjs"),
+        ],
+        ["sea", sea, "-"],
+      ]
+    : []) {
+    const path = NodePath.join(output, `${form}-command.json`);
+    await node(`manifest-${form}`, [
+      "scripts/jones/serverParallelism/artifact-command.mjs",
+      form,
+      executable,
+      entry,
+      path,
+    ]);
+    manifests.push({ form, path });
+  }
+  if (diagnosticScope) {
+    const mode = scope === "observer-control" ? "cpu-stat-only" : "full";
+    let baseline;
+    let prior;
+    if (mode === "full") baseline = await runBaseline("laptop");
+    else {
+      baseline = NodePath.join(output, "baseline-laptop.json");
+      prior = NodePath.join(priorDirectory, "observer-full.json");
+      const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
+      const value = JSON.parse(await NodeFSP.readFile(prior, "utf8"));
+      if (value.mode !== "full" || value.source !== source || value.sourceTree !== sourceTree || !(await verifyDiagnosticArtifacts(value, prior)))
+        throw new Error("Control requires an intact same-source full diagnostic");
+      await NodeFSP.writeFile(baseline, await NodeFSP.readFile(NodePath.join(priorDirectory, "baseline-laptop.json")), { flag: "wx", mode: 0o600 });
+    }
+    const name = mode === "full" ? "observer-full" : "observer-cpu-stat-only";
+    const diagnosticOutput = NodePath.join(output, `${name}.json`);
+    const succeeded = await node(name, [
+      "scripts/jones/serverParallelism/observer-diagnostic.mjs", sourceManifest, diagnosticOutput, baseline, mode,
+      ...(prior ? [prior] : []),
+    ]);
+    let value;
+    try { value = JSON.parse(await NodeFSP.readFile(diagnosticOutput, "utf8")); }
+    catch { /* Missing evidence remains incomplete and closes native admission. */ }
+    const { verifyDiagnosticArtifacts } = await import("./observer-diagnostic.mjs");
+    diagnosticComplete = succeeded && value?.source === source && value?.sourceTree === sourceTree && value?.mode === mode && await verifyDiagnosticArtifacts(value, diagnosticOutput);
+    reports.push({ name, path: diagnosticOutput, eligible: false, outcome: value?.outcome ?? "unknown", cleanupProved: value?.cleanupProved ?? null });
+    requireRetirement(value?.cleanupProved === true && results.at(-1)?.capturedExit === true, name);
+  } else {
+  for (const profile of ["laptop", "vps"]) {
+    const baseline = await runBaseline(profile);
     for (const { form, path } of manifests) {
       const smoke = NodePath.join(output, `packaging-${form}-${profile}.json`);
       await node(`packaging-${form}-${profile}`, [
@@ -382,10 +419,22 @@ try {
     NodePath.join(output, "native-block-matrix.json"),
     JSON.stringify(nativeBlock, null, 2) + "\n",
   );
+  }
 } finally {
   clearTimeout(deadline);
   process.removeListener("SIGINT", stop);
   process.removeListener("SIGTERM", stop);
+  if (diagnosticScope) {
+    const cleanupProved = !admissionClosed && reports.length > 0 && reports.every((value) => value.cleanupProved === true) && results.filter((value) => value.name.startsWith("observer-")).length === 1 && results.filter((value) => value.name.startsWith("observer-")).every((value) => value.capturedExit === true);
+    const complete = diagnosticComplete && cleanupProved && !cancelled && results.every((value) => value.outcome === "passed");
+    await NodeFSP.writeFile(NodePath.join(output, "qualification.json"), JSON.stringify({
+      schema: "jones.server-parallelism.observer-diagnostic-ci/v1", eligible: false, passed: false,
+      outcome: complete ? "recorded" : "incomplete", complete, source, sourceTree, scope,
+      predicates: { cleanupProved }, results, reports,
+      interpretation: "Bounded manual diagnostic only. Official predicates are separate in the diagnostic receipt and cannot qualify normal fan-in.",
+    }, null, 2) + "\n");
+    if (!complete) process.exitCode = 1;
+  } else {
   predicates.commandsSucceeded =
     results.length > 0 && results.every((result) => result.outcome === "passed");
   predicates.completed = !cancelled && !admissionClosed;
@@ -445,4 +494,5 @@ try {
     ) + "\n",
   );
   if (!decision.passed) process.exitCode = 1;
+  }
 }

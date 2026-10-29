@@ -2622,7 +2622,9 @@
         "apps/server/src/jones/serverParallelism/combinedQualification.integration.test.ts",
         "apps/server/src/cli/project.test.ts",
         "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
-        "apps/server/src/serverRuntimeStartup.test.ts"
+        "apps/server/src/serverRuntimeStartup.test.ts",
+        "apps/server/src/jones/serverParallelism/diagnosticObservation.test.ts",
+        "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs"
       ],
       "scope": "One writer/provider/event authority; explicit 2/3-reader admission and one shared 2/3-child workspace compute layer. Whole-generation charged residency, hidden same-build dispatch, scoped maintenance reads and transactional shell-dependency capture. Native/process/benchmark harnesses require qualified execution; authored tests alone are not passing evidence. Existing shared domain tests retain real native algorithms through a test-only service adapter; actual process isolation is covered separately. The existing MCP integration harness retains its completion-offer barrier correction because its real toolkit scenarios reset results independently of queued wake notifications; assertions retain exact delivery counts."
     },
