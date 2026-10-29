@@ -5,6 +5,7 @@ import * as NodeSqlite from "node:sqlite";
 
 import { SERVER_EXIT_CODE_STATE_DIR_OWNED } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -178,6 +179,11 @@ const olderBootServiceHome = Effect.fn("olderBootServiceHome")(
   Effect.orElseSucceed(() => undefined),
 );
 
+/** Original live server-owner lock; absent outside the acquired server scope. */
+export const ServerOwnershipLifetime = Context.Reference<
+  { readonly assertCurrent: () => void } | undefined
+>("t3/serverOwnership/Lifetime", { defaultValue: () => undefined });
+
 /**
  * Hold an exclusive lock on the state directory until the scope closes. The
  * lock is an exclusive transaction on `server-owner.sqlite`, which never holds
@@ -192,7 +198,8 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
   const ownerId = yield* crypto
     .randomUUIDv4()
     .pipe(Effect.mapError((cause) => new ServerOwnershipError({ stateDir, cause })));
-  yield* Effect.acquireRelease(
+  let active = true;
+  const lock = yield* Effect.acquireRelease(
     Effect.try({
       try: () => {
         NodeFS.mkdirSync(stateDir, { recursive: true });
@@ -211,14 +218,20 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
           : new ServerOwnershipError({ stateDir, cause }),
     }),
     (db) =>
-      readPersistedServerRuntimeState(statePath).pipe(
-        Effect.flatMap((state) =>
-          Option.isSome(state) && state.value.ownerId === ownerId
-            ? clearPersistedServerRuntimeState(statePath)
-            : Effect.void,
+      Effect.sync(() => {
+        active = false;
+      }).pipe(
+        Effect.andThen(
+          readPersistedServerRuntimeState(statePath).pipe(
+            Effect.flatMap((state) =>
+              Option.isSome(state) && state.value.ownerId === ownerId
+                ? clearPersistedServerRuntimeState(statePath)
+                : Effect.void,
+            ),
+            Effect.ignore({ log: true }),
+            Effect.ensuring(Effect.sync(() => db.close())),
+          ),
         ),
-        Effect.ignore({ log: true }),
-        Effect.ensuring(Effect.sync(() => db.close())),
       ),
   );
 
@@ -237,7 +250,15 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
     return yield* new OlderBootServiceError({ baseDir: olderServiceHome });
   }
 
+  const lifetime = Object.freeze({
+    assertCurrent(this: { readonly assertCurrent: () => void }) {
+      if (this !== lifetime || !active || !lock.isOpen || !lock.isTransaction) {
+        throw new ServerOwnershipError({ stateDir, cause: "Original server ownership has ended." });
+      }
+    },
+  });
   return {
+    lifetime,
     publish: (state: PersistedServerRuntimeState) =>
       persistServerRuntimeState({ path: statePath, state: { ...state, ownerId } }),
   };

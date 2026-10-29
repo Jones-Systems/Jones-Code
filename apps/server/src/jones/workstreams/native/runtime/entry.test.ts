@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Fresh synthetic databases are retained under task-owned evidence; cleanup belongs to root.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import * as Wire from "@t3tools/contracts";
@@ -46,7 +47,7 @@ import * as SourceSetup from "./sourceSetup.ts";
 import * as SourceEnrollment from "./sourceEnrollment.ts";
 import * as SourceRecords from "../store/sourceEnrollmentStore.ts";
 import { NativeProviderEnrollmentError } from "../../nativeProvider/enrollment.ts";
-import { enrollmentRequest } from "../../enrollment/testFixtures.ts";
+import { enrollmentRequest as originalEnrollmentRequest } from "../../enrollment/testFixtures.ts";
 import { makeProviderFixture } from "../../nativeProvider/testFixtures.ts";
 import { makeWorkstreamsNativeProvider } from "../../nativeProvider/service.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
@@ -77,6 +78,42 @@ import {
   workstreamResponseHeadersLayer,
 } from "../../../../workstreams/http.ts";
 
+import * as Context from "effect/Context";
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Current from "./currentAuthority.ts";
+import * as Ownership from "../../../../serverOwnership.ts";
+import * as ProcessRunner from "../../../../processRunner.ts";
+import { ServiceLauncherHostProcess } from "../../../../cloud/serviceLauncherClient.ts";
+import {
+  SERVICE_LAUNCHER_CONTEXT_ENV,
+  SERVICE_LAUNCHER_PROTOCOL,
+} from "../../../../cloud/serviceProtocol.ts";
+import {
+  qualifiedPayloadDigest,
+  QUALIFIED_RUNTIME_RECEIPT,
+} from "../../../cloud/qualifiedRuntime.ts";
+import { initializeNativeStoreAuthority } from "../../../../environment/nativeStoreAuthorityPersistence.ts";
+import * as Updates from "../../../updates/UpdateAdmissionFence.ts";
+
+vi.mock("../../../../../package.json", () => ({
+  default: {
+    version: "0.0.0-preview.20261002.100",
+    jonesSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    },
+  },
+}));
+
+const enrollmentRequest = {
+  ...originalEnrollmentRequest,
+  context: {
+    ...originalEnrollmentRequest.context,
+    authority_namespace: "t3-native:12345678-1234-4234-8234-123456789abc",
+  },
+};
+
 const decodeHomeReadResult = Schema.decodeUnknownEffect(WorkstreamsHomeReadResult);
 const decodeNativePlacement = Schema.decodeUnknownEffect(
   NativePlacement.WorkstreamsNativePlacementResult,
@@ -97,10 +134,12 @@ const principal = {
   scopes: new Set([Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope]),
 };
 const fresh = () => {
-  const parent = NodePath.resolve("node_modules/.cache/nw-startup-fixtures");
+  const parent = NodePath.join(NodeOS.tmpdir(), "nw-native-entry");
   NodeFS.mkdirSync(parent, { recursive: true });
   const home = NodeFS.mkdtempSync(NodePath.join(parent, "entry-")),
-    database = NodePath.join(home, "statev2.sqlite");
+    database = NodePath.join(home, "userdata", "statev2.sqlite");
+  NodeFS.chmodSync(home, 0o700);
+  NodeFS.mkdirSync(NodePath.dirname(database), { mode: 0o700 });
   return {
     home,
     database,
@@ -115,6 +154,100 @@ const fresh = () => {
     ),
   };
 };
+
+const prepareEntryOwner = Effect.fn("NativeEntryFixture.prepareOwner")(function* (
+  f: ReturnType<typeof fresh>,
+) {
+  const version = "0.0.0-preview.20261002.100";
+  const release = NodePath.join(f.home, "runtime", "versions", version);
+  const authorityDir = NodePath.join(f.home, "native-store-authority");
+  for (const directory of [release, authorityDir]) {
+    NodeFS.mkdirSync(directory, { recursive: true, mode: 0o700 });
+  }
+  NodeFS.chmodSync(f.database, 0o600);
+  NodeFS.writeFileSync(
+    NodePath.join(f.home, "userdata", "environment-id"),
+    enrollmentRequest.context.source_instance_id + "\n",
+    { mode: 0o600 },
+  );
+  NodeFS.writeFileSync(
+    NodePath.join(f.home, "runtime", "service-state.json"),
+    JSON.stringify({ protocol: SERVICE_LAUNCHER_PROTOCOL, activeVersion: version }),
+    { mode: 0o600 },
+  );
+  NodeFS.writeFileSync(
+    NodePath.join(authorityDir, "native-store-authority-v1.json"),
+    JSON.stringify({
+      record_version: "t3-native-store-authority/1.0.0",
+      environment_id: enrollmentRequest.context.source_instance_id,
+      authority_namespace: enrollmentRequest.context.authority_namespace,
+      store_generation: enrollmentRequest.context.store_generation,
+      state: "active",
+      transition_id: null,
+    }),
+    { mode: 0o600 },
+  );
+  initializeNativeStoreAuthority(authorityDir, enrollmentRequest.context.source_instance_id);
+  NodeFS.writeFileSync(NodePath.join(release, "t3"), "synthetic entry executable", { mode: 0o700 });
+  NodeFS.writeFileSync(
+    NodePath.join(release, QUALIFIED_RUNTIME_RECEIPT),
+    JSON.stringify({
+      protocol: 1,
+      repository: "Jones-Systems/Jones-Code",
+      channel: "jones-main",
+      version,
+      sourceSha: "a".repeat(40),
+      sourceTree: "b".repeat(40),
+      installedSourceSha: "c".repeat(40),
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 102,
+      workflow: ".github/workflows/artifact-cli-linux.yml",
+      artifactDigest: "sha256:" + "d".repeat(64),
+      archiveSha256: "e".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+      payloadSha256: yield* Effect.promise(() =>
+        qualifiedPayloadDigest(release, "linux", ".github/workflows/artifact-cli-linux.yml"),
+      ),
+    }),
+    { mode: 0o600 },
+  );
+  const config = Context.get(
+    yield* Layer.build(Config.layerTest(f.home, f.home)),
+    Config.ServerConfig,
+  );
+  expect(config.dbPath).toBe(f.database);
+  const ownership = yield* Ownership.acquireServerOwnership(config.serverRuntimeStatePath).pipe(
+    Effect.provide(ProcessRunner.layer),
+  );
+  // Installed metadata and launcher transport are synthetic; the ownership lease, authority
+  // reader, selected SQLite client and private CurrentAuthority proof are production services.
+  const host = ServiceLauncherHostProcess.of({
+    connected: true,
+    send: () => {
+      throw new Error("No update handoff is permitted by this entry fixture");
+    },
+    on: () => undefined,
+    off: () => undefined,
+  });
+  return Current.layer.pipe(
+    Layer.provide(Layer.succeed(Config.ServerConfig, config)),
+    Layer.provide(Layer.succeed(Ownership.ServerOwnershipLifetime, ownership.lifetime)),
+    Layer.provide(Updates.layer),
+    Layer.provide(Layer.succeed(ServiceLauncherHostProcess, host)),
+    Layer.provide(
+      Layer.succeed(HostProcess.Environment, {
+        [SERVICE_LAUNCHER_CONTEXT_ENV]: JSON.stringify({
+          protocol: SERVICE_LAUNCHER_PROTOCOL,
+          childVersion: version,
+        }),
+      }),
+    ),
+    Layer.provide(ProcessRunner.layer),
+  );
+});
+
 const seed = (
   f: ReturnType<typeof fresh>,
   rollupPorts?: Parameters<typeof Startup.homeServicesLayer>[1],
@@ -167,8 +300,14 @@ const seed = (
       client,
     });
     const provider = makeProviderFixture();
+    const currentOwner = yield* prepareEntryOwner(f);
     const authority: Authority.NativeStoreAuthority["Service"] = {
       ...provider.ports.authority,
+      readCurrent: Effect.succeed({
+        environmentId: enrollmentRequest.context.source_instance_id,
+        authorityNamespace: enrollmentRequest.context.authority_namespace,
+        storeGeneration: enrollmentRequest.context.store_generation,
+      }),
       trustProvider: {
         readTrustSnapshot: () => ({
           readiness: "ready",
@@ -222,8 +361,8 @@ const seed = (
       Effect.provideService(SourceEnrollment.SourceSetupOwner, { verifyUnchanged: Effect.void }),
     );
     const runtime: Runtime.NativeWorkstreamsRuntime["Service"] = {
-      provider: provider.provider(),
-      providerV2: makeWorkstreamsNativeProvider(provider.ports, "v2"),
+      provider: makeWorkstreamsNativeProvider({ ...provider.ports, authority }),
+      providerV2: makeWorkstreamsNativeProvider({ ...provider.ports, authority }, "v2"),
       enrollments: {
         getBySessionId: (id) =>
           nativeSources
@@ -255,6 +394,7 @@ const seed = (
     ).pipe(
       Layer.provide(Layer.succeed(SourceEnrollment.NativeSourceEnrollments, nativeSources)),
       Layer.provide(Layer.succeed(Runtime.NativeWorkstreamsRuntime, runtime)),
+      Layer.provideMerge(currentOwner),
       Layer.provide(Layer.succeed(Authority.NativeStoreAuthority, authority)),
       Layer.provide(Layer.succeed(Placements.PlacementTrust, authority.trustProvider)),
       Layer.provide(Layer.succeed(AuthSessions.AuthSessionRepository, sessions)),
@@ -396,7 +536,7 @@ it.effect(
             .pipe(Effect.result))._tag,
         ).toBe("Failure");
       }).pipe(Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -546,7 +686,7 @@ it.effect(
         expect(cp).not.toHaveBeenCalled();
         expect(egress).not.toHaveBeenCalled();
       }).pipe(Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -593,7 +733,7 @@ it.effect(
       yield* TestClock.adjust(90_000);
       expect(yield* worker.sweep()).toBeNull();
       expect(calls).toBe(2);
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -879,6 +1019,7 @@ it.effect(
         let id = 0;
         const rpc = (method: string, params: unknown) =>
           Effect.gen(function* () {
+            const requestId = ++id;
             const response = yield* Effect.promise(() =>
               app.handler(
                 new Request("http://synthetic/mcp", {
@@ -891,7 +1032,7 @@ it.effect(
                     [Mcp.MODE_LIMIT_HEADER]: "approval-required/plan",
                     ...(sessionId ? { "mcp-session-id": sessionId } : {}),
                   },
-                  body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, params }),
+                  body: JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }),
                 }),
               ),
             );
@@ -902,7 +1043,8 @@ it.effect(
               ? text
                   .split("\n")
                   .filter((l) => l.startsWith("data:"))
-                  .map((l) => JSON.parse(l.slice(5)))[0]
+                  .map((l) => JSON.parse(l.slice(5)))
+                  .find((message) => message.id === requestId)
               : JSON.parse(text);
             return { response, payload };
           });
@@ -923,6 +1065,8 @@ it.effect(
           name: "jones_workstreams_home_read_result",
           arguments: arguments_,
         });
+        expect(read.payload.error, JSON.stringify(read.payload)).toBeUndefined();
+        expect(read.payload.result, JSON.stringify(read.payload)).toBeDefined();
         expect(read.payload.result?.isError, JSON.stringify(read.payload)).not.toBe(true);
         const decodedRead = yield* decodeHomeReadResult(
           read.payload.result.structuredContent ?? JSON.parse(read.payload.result.content[0].text),
@@ -973,6 +1117,6 @@ it.effect(
         expect(refused.status).toBe(401);
         expect(yield* Effect.promise(() => refused.text())).not.toContain(name);
       }).pipe(Effect.provide(prepared.services.pipe(Layer.provideMerge(peerAuthentication))));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );

@@ -10,6 +10,7 @@ import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Option from "effect/Option";
 import * as Recorded from "../runtime/recordedCaller.ts";
+import * as Supplied from "../forwarding/suppliedEvidence.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -448,6 +449,32 @@ const make = Effect.gen(function* () {
               acceptedAt,
             ),
           );
+          // Home forwarding installs a private, exact-child supplied verification scope.
+          // Complete it through the pure decider in this enclosing home transaction;
+          // it never becomes a provider callback, local caller or recoverable outbox effect.
+          if (result.state === "external") {
+            const supplied = yield* Effect.serviceOption(Supplied.AtomicSuppliedVerification);
+            if (Option.isSome(supplied)) {
+              const externalResult = yield* supplied.value.resolve(result.intent, body);
+              const completed = yield* attempt(() =>
+                Decider.completeNativeExternalIntent(
+                  state,
+                  result.intent,
+                  ids,
+                  externalResult,
+                  acceptedAt,
+                ),
+              );
+              yield* persist(before, completed.state, true);
+              yield* receipts.save(
+                scope,
+                { receipt: completed.receipt, request_body: body, origin: "native" },
+                completed.state.registry_version,
+              );
+              for (const event of auditEvents(completed.state)) yield* history.append(scope, event);
+              return { receipt: completed.receipt, intent: null };
+            }
+          }
           yield* persist(before, state);
           if (result.state === "external") {
             const receipt = state.receipts.get(command.command_id)!;

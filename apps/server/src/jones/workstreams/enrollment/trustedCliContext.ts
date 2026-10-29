@@ -551,3 +551,21 @@ export const makeTrustedNativeEnrollmentRuntimeContext = Effect.fn(
     ),
   };
 });
+
+/** Full selected-runtime qualification without retaining an application SQL reservation. */
+export const makeTrustedNativeEnrollmentSelectedContext = Effect.fn(
+  "makeTrustedNativeEnrollmentSelectedContext",
+)(function* (
+  location: NativeEnrollmentCliLocation,
+  owner?: JonesNativeWriterAdmission & {
+    readonly refresh: Effect.Effect<void, NativeStoreAuthorityPersistenceError>;
+  },
+) {
+  if (owner)
+    yield* owner.refresh.pipe(
+      Effect.mapError(() => new NativeEnrollmentCliContextError({ code: "context_changed" })),
+    );
+  return yield* owner
+    ? makeTrustedNativeEnrollmentDesktopContext(location, "apply", owner, true)
+    : makeTrustedNativeEnrollmentContext(location, "apply", capture, Effect.void, true);
+});

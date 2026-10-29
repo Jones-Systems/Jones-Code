@@ -217,6 +217,12 @@ it.effect(
       const desktop = DesktopOwner.DesktopNativeOwner.of({
         available: false,
         binding: undefined,
+        prepareCurrent: Effect.fail(
+          new NativeStoreAuthorityPersistenceError(
+            "source_unavailable",
+            "This fixture supplies no prepared owner capability.",
+          ),
+        ),
         assertCurrent: () => {
           throw new Error("unqualified");
         },

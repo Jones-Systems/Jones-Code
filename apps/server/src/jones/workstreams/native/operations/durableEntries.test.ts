@@ -2,6 +2,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as Callers from "../runtime/recordedCaller.ts";
+import * as Preparation from "../runtime/recordedCallerPreparation.ts";
 import * as Recovery from "../runtime/recovery.ts";
 import * as Source from "../providers/localAttestation.ts";
 import { AuthOrchestrationReadScope, AuthOrchestrationOperateScope } from "@t3tools/contracts";
@@ -57,9 +58,34 @@ const initialize = Effect.gen(function* () {
   const bindings = yield* BindingStore.BindingStore;
   yield* bindings.bind({ ...destination, state: "active" }, null);
 });
-const persistence = (filename: string, keys = secrets(), cp?: CP) =>
+// Synthetic caller ports isolate these storage/recovery unit cases; production preparation
+// is exercised separately by recordedCallerPreparation.test.ts.
+const unitCallers = (origin: Callers.RecordedCallerV1["origin"]) =>
+  Layer.unwrap(
+    Effect.map(Effect.serviceOption(Callers.RecordedCallers), (existing) =>
+      Option.isSome(existing)
+        ? Layer.succeed(Callers.RecordedCallers, existing.value)
+        : callerFixture(origin).layer,
+    ),
+  );
+const unitPreparation = Layer.effect(
+  Preparation.RecordedCallerPreparation,
+  Effect.map(Callers.RecordedCallers, (fallback) => ({
+    withPrepared: (use) =>
+      Effect.gen(function* () {
+        const current = yield* Effect.serviceOption(Callers.RecordedCallers);
+        return yield* use(Option.isSome(current) ? current.value : fallback);
+      }),
+  })),
+);
+const persistence = (
+  filename: string,
+  keys = secrets(),
+  cp?: CP,
+  origin: Callers.RecordedCallerV1["origin"] = request.origin,
+) =>
   Layer.mergeAll(
-    DurableEntries.layer,
+    DurableEntries.layer.pipe(Layer.provide(unitPreparation)),
     HomeExecutor.layer.pipe(
       Layer.provide(
         Layer.succeed(HomeExecutor.HomeTransport, {
@@ -92,7 +118,11 @@ const persistence = (filename: string, keys = secrets(), cp?: CP) =>
         }),
       ),
     ),
-  ).pipe(Layer.provideMerge(testLayer({ filename, keys })), Layer.provideMerge(NodeCrypto.layer));
+  ).pipe(
+    Layer.provideMerge(unitCallers(origin)),
+    Layer.provideMerge(testLayer({ filename, keys })),
+    Layer.provideMerge(NodeCrypto.layer),
+  );
 const serviceLayer = (
   cp: CP,
   filename: string,
@@ -101,6 +131,7 @@ const serviceLayer = (
   saving?: (
     checkpoint: DurableEntries.Checkpoint,
   ) => Effect.Effect<void, DurableEntries.DurableEntryError>,
+  origin: Callers.RecordedCallerV1["origin"] = request.origin,
 ) =>
   Operations.layer.pipe(
     Layer.provide(
@@ -132,7 +163,7 @@ const serviceLayer = (
         }),
       ),
     ),
-    Layer.provideMerge(persistence(filename, secrets(), cp)),
+    Layer.provideMerge(persistence(filename, secrets(), cp, origin)),
   );
 const withFile = <A, E, R>(run: (filename: string) => Effect.Effect<A, E, R>) =>
   Effect.scoped(
@@ -185,7 +216,11 @@ it.effect(
             expect(row!.request_envelope).not.toContain("queue-retained-sentinel");
             expect(row!.result_envelope).not.toContain('"workstream_id":"target"');
             return result;
-          }).pipe(Effect.provide(serviceLayer(cp, filename))),
+          }).pipe(
+            Effect.provide(
+              serviceLayer(cp, filename, undefined, undefined, undefined, queued.origin),
+            ),
+          ),
         );
         const writes = cp.state.writes.length;
         cp.state.beforeSend = undefined;
@@ -205,7 +240,11 @@ it.effect(
               ),
             );
             expect(yield* store.open()).toEqual([]);
-          }).pipe(Effect.provide(serviceLayer(cp, filename))),
+          }).pipe(
+            Effect.provide(
+              serviceLayer(cp, filename, undefined, undefined, undefined, queued.origin),
+            ),
+          ),
         );
       }),
     ),
@@ -315,7 +354,10 @@ it.effect(
           Effect.sync(() => {
             cp.state.beforeRead = () => {
               cp.state.version++;
-              cp.state.beforeRead = undefined;
+              // Return this lookup's captured witness; fence the later exact-replay preflight.
+              cp.state.beforeRead = () => {
+                cp.state.offline = true;
+              };
             };
           }).pipe(Effect.andThen(Effect.fail(offline())));
         cp.state.onSleep = () => Deferred.succeed(waiting, undefined).pipe(Effect.asVoid);
@@ -428,7 +470,7 @@ it.effect("missing local keys fail closed and never dispatch or create replaceme
   ),
 );
 
-const callerFixture = (origin = request.origin) => {
+const callerFixture = (origin: Callers.RecordedCallerV1["origin"] = request.origin) => {
   const record: Callers.RecordedCallerV1 = {
     version: 1,
     origin,
@@ -1225,7 +1267,11 @@ it.effect.each(["accept", "save", "no-seal-save"] as const)(
             });
         }).pipe(
           Effect.provide(
-            DurableEntries.layer.pipe(Layer.provideMerge(testLayer({ secrets: provider }))),
+            DurableEntries.layer.pipe(
+              Layer.provide(unitPreparation),
+              Layer.provideMerge(unitCallers(request.origin)),
+              Layer.provideMerge(testLayer({ secrets: provider })),
+            ),
           ),
         );
       }),
@@ -1273,5 +1319,13 @@ it.effect(
         _tag: "Failure",
         failure: { code: "thread_operation_in_progress" },
       });
-    }).pipe(Effect.provide(DurableEntries.layer.pipe(Layer.provideMerge(testLayer())))),
+    }).pipe(
+      Effect.provide(
+        DurableEntries.layer.pipe(
+          Layer.provide(unitPreparation),
+          Layer.provideMerge(unitCallers(request.origin)),
+          Layer.provideMerge(testLayer()),
+        ),
+      ),
+    ),
 );

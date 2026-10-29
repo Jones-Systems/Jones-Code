@@ -2,6 +2,9 @@ import * as NativePeerMcpAuthentication from "../jones/workstreams/native/runtim
 import * as NativeReadMcp from "../jones/mcp/workstreams/nativeReads.ts";
 import * as NativeBindMcp from "../jones/mcp/workstreams/nativeBinds.ts";
 import * as NativeSetupMcp from "../jones/mcp/workstreams/nativeSetups.ts";
+import * as NativeForwardMcp from "../jones/mcp/workstreams/nativeForwards.ts";
+import * as NativeHomeForward from "../jones/workstreams/native/forwarding/homeForwardPort.ts";
+import * as NativeSourceReadmission from "../jones/workstreams/native/forwarding/sourceReadmissionPort.ts";
 import * as NativePeerSetup from "../jones/workstreams/native/runtime/peerSetup.ts";
 import * as NativeHomeBind from "../jones/workstreams/native/runtime/homeBind.ts";
 import * as NativeReadProtocol from "../jones/workstreams/native/forwarding/homeReadProtocol.ts";
@@ -1217,6 +1220,26 @@ export const layerNativeHomeBindToolkit = Layer.unwrap(
   ),
 );
 
+export const layerNativeHomeForwardToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeHomeForward.HomeTools), (home) =>
+    Option.isNone(home)
+      ? Layer.empty
+      : toolkitRegistration(NativeForwardMcp.homeToolkit, NativeForwardMcp.homeHandlers).pipe(
+          Layer.provide(Layer.succeed(NativeHomeForward.HomeTools, home.value)),
+        ),
+  ),
+);
+
+export const layerNativeSourceReadmissionToolkit = Layer.unwrap(
+  Effect.map(Effect.serviceOption(NativeSourceReadmission.SourceReadmission), (source) =>
+    Option.isNone(source)
+      ? Layer.empty
+      : toolkitRegistration(NativeForwardMcp.sourceToolkit, NativeForwardMcp.sourceHandlers).pipe(
+          Layer.provide(Layer.succeed(NativeSourceReadmission.SourceReadmission, source.value)),
+        ),
+  ),
+);
+
 const layerNativePeerSetupToolkit = Layer.unwrap(
   Effect.map(Effect.serviceOption(NativePeerSetup.PeerSetup), (setup) =>
     Option.isNone(setup)
@@ -1228,6 +1251,8 @@ const layerNativePeerSetupToolkit = Layer.unwrap(
 );
 
 export const layer = Layer.mergeAll(
+  layerNativeHomeForwardToolkit,
+  layerNativeSourceReadmissionToolkit,
   layerNativePeerSetupToolkit,
   layerNativeHomeBindToolkit,
   layerNativeHomeReadToolkit,

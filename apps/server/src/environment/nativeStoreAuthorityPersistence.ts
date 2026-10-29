@@ -58,7 +58,29 @@ const REQUIRED_STATE_KEYS = [
   "state",
   "transition_id",
 ] as const;
-const WRITER_LOCKS = new Set<string>();
+interface RetainedAuthorityReader {
+  readonly database: NodeSqlite.DatabaseSync;
+  readonly state: NativeStoreAuthorityState;
+  uses: number;
+}
+// Multiple bundles/import URLs must share ownership before opening any SQLite handle.
+const registryKey = Symbol.for("jones.native-authority-lock-uses.v1");
+type AuthorityLockRegistry = {
+  readonly readers: Map<string, RetainedAuthorityReader>;
+  readonly writers: Set<string>;
+};
+const globalRegistry = globalThis as unknown as {
+  [key: symbol]: AuthorityLockRegistry | undefined;
+};
+const lockRegistry = (globalRegistry[registryKey] ??= { readers: new Map(), writers: new Set() });
+const AUTHORITY_READERS = lockRegistry.readers;
+const WRITER_LOCKS = lockRegistry.writers;
+
+export interface NativeAuthorityReadUse {
+  readonly state: NativeStoreAuthorityState;
+  readonly assertHeld: () => void;
+  readonly release: () => void;
+}
 
 export const nativeStoreAuthorityPaths = (authorityStateDir: string) => ({
   authorityStateDir,
@@ -461,13 +483,15 @@ const verifyPrivateFileIfPresent = (path: string): void => {
 const withWriterLock = <A>(authorityStateDir: string, operation: () => A): A => {
   const paths = nativeStoreAuthorityPaths(authorityStateDir);
   verifyAuthorityDirectory(authorityStateDir);
-  if (WRITER_LOCKS.has(authorityStateDir)) {
+  const canonicalDirectory = NodeFS.realpathSync(authorityStateDir);
+  // Refuse before opening another handle: closing it could discard retained POSIX locks.
+  if (AUTHORITY_READERS.has(canonicalDirectory) || WRITER_LOCKS.has(canonicalDirectory)) {
     throw persistenceError("source_unavailable", "Native authority writer is already active.");
   }
   let lockFd: number | undefined;
   let database: NodeSqlite.DatabaseSync | undefined;
   let transactionOpen = false;
-  WRITER_LOCKS.add(authorityStateDir);
+  WRITER_LOCKS.add(canonicalDirectory);
   try {
     // Legacy sentinels have no owner identity. Neither age nor a new lock format
     // proves their writer is gone, so they require explicit offline recovery.
@@ -522,9 +546,97 @@ const withWriterLock = <A>(authorityStateDir: string, operation: () => A): A => 
         }
       }
     } finally {
-      WRITER_LOCKS.delete(authorityStateDir);
+      WRITER_LOCKS.delete(canonicalDirectory);
     }
   }
+};
+
+/**
+ * Excludes supported authority mutations for one invocation. This does not promise
+ * instantaneous detection of same-UID/root tampering that bypasses these owners.
+ * No raw descriptor for the SQLite inode may be opened/closed while this use is held.
+ */
+export const acquireExistingNativeAuthorityReadUse = (
+  authorityStateDir: string,
+): NativeAuthorityReadUse => {
+  verifyAuthorityDirectory(authorityStateDir, false);
+  const canonicalDirectory = NodeFS.realpathSync(authorityStateDir);
+  if (WRITER_LOCKS.has(canonicalDirectory))
+    throw persistenceError("source_unavailable", "Native authority writer is active.");
+  let held = AUTHORITY_READERS.get(canonicalDirectory);
+  if (held === undefined) {
+    const paths = nativeStoreAuthorityPaths(canonicalDirectory);
+    try {
+      NodeFS.lstatSync(paths.lockPath);
+      throw persistenceError("source_unavailable", "Legacy native authority ownership is unknown.");
+    } catch (cause) {
+      if (!isErrno(cause, "ENOENT")) throw cause;
+    }
+    const before = verifyRegularPrivateFile(paths.lockDatabasePath, "missing");
+    if (before.nlink !== 1) throw persistenceError("corrupt", "Native authority lock has aliases.");
+    for (const suffix of ["-journal", "-wal", "-shm"])
+      verifyPrivateFileIfPresent(`${paths.lockDatabasePath}${suffix}`);
+    let database: NodeSqlite.DatabaseSync | undefined;
+    try {
+      database = new NodeSqlite.DatabaseSync(paths.lockDatabasePath, { readOnly: true });
+      if (database.prepare("PRAGMA journal_mode").get()?.journal_mode !== "delete")
+        throw persistenceError("corrupt", "Native authority lock requires rollback journal mode.");
+      database.exec("PRAGMA busy_timeout = 0; PRAGMA query_only = ON; BEGIN");
+      // BEGIN is deferred. A real schema pager read, including an empty schema,
+      // acquires SQLite SHARED exclusion against the existing BEGIN EXCLUSIVE writer.
+      const schema = database.prepare("SELECT name FROM sqlite_schema").all();
+      if (schema.length !== 0)
+        throw persistenceError("corrupt", "Native authority lock schema is incompatible.");
+      const after = verifyRegularPrivateFile(paths.lockDatabasePath, "missing");
+      if (before.dev !== after.dev || before.ino !== after.ino)
+        throw persistenceError("source_unavailable", "Native authority lock changed.");
+      const state = Object.freeze(readStateUnlocked(canonicalDirectory, false));
+      if (state.state !== "active" || state.transition_id !== null)
+        throw persistenceError("fenced", "Native authority is not active.");
+      held = { database, state, uses: 0 };
+      AUTHORITY_READERS.set(canonicalDirectory, held);
+    } catch (cause) {
+      if (database !== undefined) database.close();
+      throw cause instanceof NativeStoreAuthorityPersistenceError
+        ? cause
+        : persistenceError(
+            "source_unavailable",
+            "Native authority read exclusion is unavailable.",
+            cause,
+          );
+    }
+  }
+  const retained = held;
+  if (!retained.database.isOpen || !retained.database.isTransaction)
+    throw persistenceError("source_unavailable", "Native authority read exclusion was lost.");
+  retained.uses++;
+  let active = true;
+  return Object.freeze({
+    state: retained.state,
+    assertHeld: () => {
+      if (
+        !active ||
+        AUTHORITY_READERS.get(canonicalDirectory) !== retained ||
+        retained.uses < 1 ||
+        !retained.database.isOpen ||
+        !retained.database.isTransaction
+      )
+        throw persistenceError("fenced", "Native authority read use expired.");
+    },
+    release: () => {
+      if (!active) return;
+      active = false;
+      retained.uses--;
+      if (retained.uses !== 0) return;
+      // Retain the registry entry if closing fails; another handle is unsafe then.
+      try {
+        if (retained.database.isTransaction) retained.database.exec("ROLLBACK");
+      } finally {
+        retained.database.close();
+      }
+      AUTHORITY_READERS.delete(canonicalDirectory);
+    },
+  });
 };
 
 export const readNativeStoreAuthorityState = (

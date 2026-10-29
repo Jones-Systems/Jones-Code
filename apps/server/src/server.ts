@@ -67,6 +67,8 @@ import {
   workstreamNativeAuthorityLayerLive,
   workstreamResponseHeadersLayer,
 } from "./workstreams/http.ts";
+import * as WorkstreamRecordedAdmission from "./jones/workstreams/native/runtime/admission.ts";
+import * as WorkstreamCurrentAuthority from "./jones/workstreams/native/runtime/currentAuthority.ts";
 import * as NativeWorkstreams from "./jones/workstreams/runtimeIntegration/native.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as NodePtyAdapter from "./terminal/NodePtyAdapter.ts";
@@ -759,8 +761,7 @@ const layerRuntimeDependencies = NativeWorkstreams.nativeWorkstreamsRuntimeLayer
   Layer.provideMerge(RemoteOpenTargets.layer),
   Layer.provideMerge(DirectEndpoints.layer),
   Layer.provideMerge(ServerLifecycleEvents.layer),
-  // Jones: one fence shared by the event sink and the update installer.
-  Layer.provideMerge(UpdateAdmissionFence.layer),
+  // Jones: the acquired application supplies one fence to all consumers.
   Layer.provide(NetService.layer),
 );
 
@@ -852,6 +853,8 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(layerWorkstreamPeerAuthentication),
   )
   .pipe(
+    Layer.provideMerge(WorkstreamRecordedAdmission.recordedThreadLookupLayer),
+    Layer.provideMerge(WorkstreamCurrentAuthority.layer),
     // Same layer identity as the gateway's, so the config descriptor reads the same authority.
     Layer.provide(workstreamNativeAuthorityLayerLive),
     Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
@@ -888,7 +891,12 @@ const layerMakeServer = Layer.unwrap(
     const tailscaleParked = yield* Deferred.make<void>();
     const cloudLinkParked = yield* Deferred.make<void>();
     const routesReady = yield* Deferred.make<void>();
-    const layerLauncher = ServiceLauncherClient.layer;
+    const updateAdmission = yield* UpdateAdmissionFence.make;
+    const layerUpdateAdmission = Layer.succeed(
+      UpdateAdmissionFence.UpdateAdmissionFence,
+      updateAdmission,
+    );
+    const layerLauncher = ServiceLauncherClient.layer.pipe(Layer.provide(layerUpdateAdmission));
 
     yield* fixPath({ shellEnvironmentPrepared: config.shellEnvironmentPrepared });
 
@@ -1208,6 +1216,8 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
+      Layer.provide(layerUpdateAdmission),
+      Layer.provide(Layer.succeed(ServerOwnership.ServerOwnershipLifetime, ownership.lifetime)),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),

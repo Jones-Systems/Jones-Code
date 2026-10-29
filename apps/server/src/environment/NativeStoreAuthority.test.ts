@@ -19,6 +19,7 @@ import {
 } from "../cloud/serviceProtocol.ts";
 import * as ServerEnvironment from "./ServerEnvironment.ts";
 import {
+  NativeStoreAuthorityPersistenceError,
   fenceNativeStoreAuthority,
   initializeNativeStoreAuthority,
 } from "./nativeStoreAuthorityPersistence.ts";
@@ -208,6 +209,12 @@ it.effect("keeps desktop enrollment explicit and preserves the tuple across owne
           },
           assertCurrent,
           refresh: Effect.sync(assertCurrent),
+          prepareCurrent: Effect.fail(
+            new NativeStoreAuthorityPersistenceError(
+              "source_unavailable",
+              "This fixture supplies no prepared owner capability.",
+            ),
+          ),
         }),
       );
       const authority = yield* NativeStoreAuthority.make().pipe(Effect.provide(layer));

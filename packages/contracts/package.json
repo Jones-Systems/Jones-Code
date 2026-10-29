@@ -138,6 +138,14 @@
     "./jones/workstreamsMemberEnrollment": {
       "types": "./src/jones/workstreamsMemberEnrollment.ts",
       "import": "./src/jones/workstreamsMemberEnrollment.ts"
+    },
+    "./jones/workstreamsForwardQualification": {
+      "types": "./src/jones/workstreamsForwardQualification.ts",
+      "import": "./src/jones/workstreamsForwardQualification.ts"
+    },
+    "./jones/workstreamsRetainedSourceEffect": {
+      "types": "./src/jones/workstreamsRetainedSourceEffect.ts",
+      "import": "./src/jones/workstreamsRetainedSourceEffect.ts"
     }
   },
   "scripts": {

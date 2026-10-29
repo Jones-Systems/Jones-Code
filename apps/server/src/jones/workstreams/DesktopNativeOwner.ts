@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import packageJson from "../../../package.json" with { type: "json" };
 import {
   holdJonesNativeWriterFence,
+  prepareJonesNativeWriterUse,
   type JonesNativeWriterAdmission,
 } from "@t3tools/shared/jones/nativeWriterFence";
 import {
@@ -31,6 +32,13 @@ export const DesktopNativeOwner = Context.Reference<{
   readonly binding: JonesNativeWriterAdmission["binding"] | undefined;
   readonly assertCurrent: () => void;
   readonly refresh: Effect.Effect<void, NativeStoreAuthorityPersistenceError>;
+  readonly prepareCurrent: Effect.Effect<
+    {
+      readonly binding: JonesNativeWriterAdmission["binding"];
+      readonly assertCurrent: () => void;
+    },
+    NativeStoreAuthorityPersistenceError
+  >;
 }>("jones/workstreams/DesktopNativeOwner", {
   defaultValue: () => ({
     available: false,
@@ -39,6 +47,7 @@ export const DesktopNativeOwner = Context.Reference<{
       throw unavailable();
     },
     refresh: Effect.fail(unavailable()),
+    prepareCurrent: Effect.fail(unavailable()),
   }),
 });
 
@@ -59,6 +68,7 @@ export function openDesktopNativeOwnerChannel(
   const output = new NodeNet.Socket({ fd: outputFd, readable: false, writable: true });
   const parentPid = expectedParentPid;
   let live = true;
+  let epoch = 0;
   let runId: string | undefined;
   let sequence = 0;
   let lastReply = 0;
@@ -83,6 +93,7 @@ export function openDesktopNativeOwnerChannel(
   const close = () => {
     if (!live) return;
     live = false;
+    epoch++;
     lastReply = 0;
     if (deadline !== undefined) clearTimeout(deadline);
     if (heartbeat !== undefined) clearInterval(heartbeat);
@@ -104,6 +115,7 @@ export function openDesktopNativeOwnerChannel(
     lastReply = 0;
     if (!suspended) {
       suspended = true;
+      epoch++;
       transition("suspended");
     }
     pending.expired = true;
@@ -206,6 +218,35 @@ export function openDesktopNativeOwnerChannel(
   return {
     close,
     refresh,
+    prepareCurrent: () => {
+      if (
+        !live ||
+        suspended ||
+        runId === undefined ||
+        lastReply === 0 ||
+        performance.now() - lastReply > 3000
+      )
+        throw unavailable();
+      const capturedEpoch = epoch;
+      const capturedRun = runId;
+      const expiresAt = lastReply + 3000;
+      let invalid = false;
+      return Object.freeze({
+        assertCurrent: () => {
+          if (
+            invalid ||
+            !live ||
+            suspended ||
+            epoch !== capturedEpoch ||
+            runId !== capturedRun ||
+            performance.now() >= expiresAt
+          ) {
+            invalid = true;
+            throw unavailable();
+          }
+        },
+      });
+    },
     get suspended() {
       return live && suspended;
     },
@@ -330,6 +371,31 @@ export function openDesktopNativeOwnerSession(input: {
       channel.assertCurrent();
     },
     refresh,
+    prepareCurrent: async () => {
+      await refresh();
+      if (!live || channel === undefined || admission === undefined) throw unavailable();
+      const originalChannel = channel;
+      const originalAdmission = admission;
+      const writerUse = prepareJonesNativeWriterUse(originalAdmission);
+      const channelUse = originalChannel.prepareCurrent();
+      let invalid = false;
+      return Object.freeze({
+        binding: originalAdmission.binding,
+        assertCurrent: () => {
+          if (invalid || !live || channel !== originalChannel || admission !== originalAdmission) {
+            invalid = true;
+            throw unavailable();
+          }
+          try {
+            channelUse.assertCurrent();
+            writerUse.assertCurrent();
+          } catch (cause) {
+            invalid = true;
+            throw cause;
+          }
+        },
+      });
+    },
     close,
   };
 }
@@ -348,6 +414,7 @@ const make = Effect.gen(function* () {
         throw unavailable();
       },
       refresh: Effect.fail(unavailable()),
+      prepareCurrent: Effect.fail(unavailable()),
     });
   const session = yield* Effect.acquireRelease(
     Effect.try({
@@ -377,6 +444,7 @@ const make = Effect.gen(function* () {
     },
     assertCurrent: session.assertCurrent,
     refresh,
+    prepareCurrent: Effect.tryPromise({ try: session.prepareCurrent, catch: () => unavailable() }),
   });
 });
 

@@ -144,6 +144,26 @@ describe("server ownership", () => {
     port: 3773,
   });
 
+  it.effect("retains only the original ownership lifetime and expires it on scope exit", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fs.makeTempDirectory({ prefix: "nw-owner-lifetime-" });
+      const lifetime = yield* Effect.scoped(
+        Effect.gen(function* () {
+          const owner = yield* ServerOwnership.acquireServerOwnership(
+            path.join(root, "server-runtime.json"),
+          );
+          owner.lifetime.assertCurrent();
+          const copied = { ...owner.lifetime };
+          assert.throws(() => copied.assertCurrent());
+          return owner.lifetime;
+        }),
+      );
+      assert.throws(() => lifetime.assertCurrent());
+    }).pipe(Effect.provide(layerOwnership)),
+  );
+
   it.effect("lets only one of two racing starts own a state directory", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

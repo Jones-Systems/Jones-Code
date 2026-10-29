@@ -253,11 +253,54 @@ import * as Registration from "../../registrationContext/service.ts";
 import { WORKSTREAM_OPERATIONS_CONTRACT } from "@t3tools/contracts/jones/workstreamOperations";
 import * as DateTime from "effect/DateTime";
 import * as Recorded from "./recordedCaller.ts";
+import * as RecordedPreparation from "./recordedCallerPreparation.ts";
 import * as NativeRecovery from "./recovery.ts";
 import * as NativeRollupWorker from "./rollupWorker.ts";
 import * as NativeEffects from "../registry/effectRunner.ts";
 import * as NativeSourceEnrollments from "./sourceEnrollment.ts";
 import { NativeHome as Home } from "../mode/authorityMode.ts";
+
+/** Lookup-only adapter; setup/reservation authority is deliberately not exposed. */
+export const recordedSourceEnrollmentLayer = (
+  source: Pick<
+    NativeSourceEnrollments.NativeSourceEnrollments["Service"],
+    "getValidatedBySessionId"
+  >,
+) =>
+  Layer.succeed(NativeAdmission.RecordedSourceEnrollment, {
+    lookup: Effect.fn("NativeRecovery.validatedSourceEnrollment")(function* (sessionId: string) {
+      const found = yield* source
+        .getValidatedBySessionId(sessionId)
+        .pipe(Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" })));
+      if (Option.isNone(found)) return null;
+      const proof = found.value,
+        request = proof.request,
+        context = request.enrollment.context,
+        expected = request.expected,
+        session = request.enrollment.session;
+      return {
+        source: {
+          environment_id: context.source_instance_id,
+          authority_namespace: context.authority_namespace,
+          store_generation: context.store_generation,
+          binding_version: proof.receipt.source_binding_version,
+          enrollment_id: request.enrollment.enrollment_id,
+          enrollment_session_id: session.session_id,
+        },
+        destination: {
+          registry_instance_id: expected.registry_instance_id,
+          owner_id: expected.owner_id,
+          home_environment_id: expected.home_environment_id,
+          home_generation: expected.home_generation,
+          principal_id: context.principal_id,
+          binding_version: expected.singleton_binding_version,
+        },
+        issued_at: Date.parse(session.issued_at),
+        expires_at: Date.parse(session.expires_at),
+        active: true,
+      };
+    }),
+  });
 
 /** One home, SQL resource and operations instance. Authorization remains request-local. */
 export const homeServicesLayer = (
@@ -277,44 +320,14 @@ export const homeServicesLayer = (
   const admission = NativeAdmission.layer.pipe(
     Layer.provideMerge(NativeIntegration.nativeSessionLayer),
   );
-  const enrolledSource = Layer.effect(
-    NativeAdmission.RecordedSourceEnrollment,
-    Effect.map(Effect.serviceOption(NativeSourceEnrollments.NativeSourceEnrollments), (source) => ({
-      lookup: Effect.fn("NativeRecovery.validatedSourceEnrollment")(function* (sessionId: string) {
-        if (Option.isNone(source))
-          return yield* new Recorded.RecordedCallerFence({ code: "unavailable" });
-        const found = yield* source.value
-          .getValidatedBySessionId(sessionId)
-          .pipe(Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "not_granted" })));
-        if (Option.isNone(found)) return null;
-        const proof = found.value,
-          request = proof.request,
-          context = request.enrollment.context,
-          expected = request.expected,
-          session = request.enrollment.session;
-        return {
-          source: {
-            environment_id: context.source_instance_id,
-            authority_namespace: context.authority_namespace,
-            store_generation: context.store_generation,
-            binding_version: proof.receipt.source_binding_version,
-            enrollment_id: request.enrollment.enrollment_id,
-            enrollment_session_id: session.session_id,
-          },
-          destination: {
-            registry_instance_id: expected.registry_instance_id,
-            owner_id: expected.owner_id,
-            home_environment_id: expected.home_environment_id,
-            home_generation: expected.home_generation,
-            principal_id: context.principal_id,
-            binding_version: expected.singleton_binding_version,
-          },
-          issued_at: Date.parse(session.issued_at),
-          expires_at: Date.parse(session.expires_at),
-          active: true,
-        };
-      }),
-    })),
+  const enrolledSource = Layer.unwrap(
+    Effect.map(Effect.serviceOption(NativeSourceEnrollments.NativeSourceEnrollments), (source) =>
+      Option.isSome(source)
+        ? recordedSourceEnrollmentLayer(source.value)
+        : Layer.succeed(NativeAdmission.RecordedSourceEnrollment, {
+            lookup: () => Effect.fail(new Recorded.RecordedCallerFence({ code: "unavailable" })),
+          }),
+    ),
   );
   const recording = Recorded.layer.pipe(
     Layer.provideMerge(
@@ -331,6 +344,14 @@ export const homeServicesLayer = (
     Layer.provideMerge(NativeEntry.referenceSourcesLayer.pipe(Layer.provideMerge(source))),
     Layer.provideMerge(GitHub.unconfiguredLayer),
   );
+  const durable = DurableEntries.layer.pipe(
+    Layer.provideMerge(
+      RecordedPreparation.layer.pipe(
+        Layer.provideMerge(NativeIntegration.nativeSessionLayer),
+        Layer.provideMerge(NativeIntegration.nativePersistenceLayer),
+      ),
+    ),
+  );
   const entry = NativeEntry.layer.pipe(
     Layer.provideMerge(
       NativeIntegration.nativeHomeRuntimeLayer.pipe(
@@ -346,12 +367,12 @@ export const homeServicesLayer = (
     ),
     Layer.provide(NativeAdmission.callerBoundaryLayer),
     Layer.provideMerge(recording),
-    Layer.provideMerge(DurableEntries.layer),
+    Layer.provideMerge(durable),
     Layer.provideMerge(NativeIntegration.nativePersistenceLayer),
   );
   const execution = NativeEntry.executionLayer.pipe(
     Layer.provideMerge(HomeExecutor.layer.pipe(Layer.provide(NativeEntry.homeTransportLayer))),
-    Layer.provideMerge(DurableEntries.layer),
+    Layer.provideMerge(durable),
   );
   const operations = NativeEntry.operationsLayer.pipe(
     Layer.provide(

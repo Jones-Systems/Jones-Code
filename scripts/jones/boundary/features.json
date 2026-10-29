@@ -2363,6 +2363,8 @@
     {
       "id": "workstreams-native-write-foundation",
       "tests": [
+        "packages/contracts/src/jones/workstreamsForwardQualification.test.ts",
+        "packages/contracts/src/jones/workstreamsRetainedSourceEffect.test.ts",
         "packages/contracts/src/jones/workstreamsForwarding.test.ts",
         "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
@@ -2370,6 +2372,28 @@
         "apps/server/src/jones/workstreams/native/store/operationStore.test.ts"
       ],
       "scope": "Separately versioned negotiated native forwarding/readmission codecs, original member write caller capture/readmission, genuine source-owned M association and encrypted exact member intent. Historical home/read codecs remain unchanged. No mounted forwarding, current home grant, absence-based redispatch, external dispatch, linked-write home transaction proof or composed runtime qualification is claimed."
+    },
+    {
+      "id": "workstreams-native-home-forwarding",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/peerWriteAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/suppliedEvidence.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/forwardedHomeOperation.test.ts",
+        "apps/server/src/jones/workstreams/native/store/forwardReceiptStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts"
+      ],
+      "scope": "Private receiving-session admission, atomic deterministic home command/operation/appearance execution, exact encrypted parent replay and migration130; genuine receiving/source authority, raw PEER recovery and endpoint mounting remain separate gates."
+    },
+    {
+      "id": "workstreams-native-source-forwarding",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/homeClient.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts"
+      ],
+      "scope": "Source-owned durable forwarding of commands, operations and appearance with exact retained bytes/original caller/pinned destination and conservative lookup-only uncertainty. Genuine targets/evidence, shared locks, preloaded keys, accepted-crash treatment, receiving/source authority and mounting remain separate gates."
     },
     {
       "id": "workstreams-native-peer-setup",
@@ -2383,6 +2407,11 @@
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "scope": "Authenticated owner-qualified peer setup with exact retained bytes, genuine home/member bind producers, guarded separate HTTP owner endpoint, CLI and fixed MCP setup tools. Synthetic packaged owner fixtures remain distinct from physical runtime adoption."
+    },
+    {
+      "id": "workstreams-native-forwarding-mcp",
+      "tests": ["apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts"],
+      "scope": "Conditional fixed home forward/readback and closed V2|V3 source readmission MCP adapters. Domain producers retain genuine authentication/currentness and ledger authority; absent producers register no tools. These transport fixtures do not qualify mounted member startup or physical peers."
     }
   ]
 }

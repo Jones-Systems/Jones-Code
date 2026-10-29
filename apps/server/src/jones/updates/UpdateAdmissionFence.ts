@@ -8,6 +8,8 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
+import * as SqlClient from "effect/sql/SqlClient";
 import { PROCESS_BOUND_EFFECT_TYPES } from "../../orchestration-v2/EffectOutbox.ts";
 import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
 
@@ -63,6 +65,16 @@ export interface AdmissionTicket {
    */
   readonly settle: (decide: Effect.Effect<void>) => Effect.Effect<void>;
 }
+
+export interface NativeAdmissionUse {
+  readonly checkCurrent: Effect.Effect<void, UpdateAdmissionRefused>;
+  readonly invalidated: Effect.Effect<void>;
+}
+// Only fencedInstall binds a ticket for its qualified low-level handoff.
+const LauncherTicket = Context.Reference<{ ticket?: AdmissionTicket } | undefined>(
+  "jones/updates/UpdateAdmissionFence/LauncherTicket",
+  { defaultValue: () => undefined },
+);
 
 type FenceState =
   | { readonly phase: "open" }
@@ -131,6 +143,11 @@ export class UpdateAdmissionFence extends Context.Service<
     readonly raise: (
       mode: AdmissionFenceMode,
     ) => Effect.Effect<AdmissionTicket, UpdateAdmissionBusy>;
+    readonly nativeUse: Effect.Effect<NativeAdmissionUse, UpdateAdmissionRefused, Scope.Scope>;
+    readonly withLauncherHandoff: <A, E, R>(
+      handoff: Effect.Effect<A, E, R>,
+      isKnownRejection: (error: E) => boolean,
+    ) => Effect.Effect<A, E | UpdateAdmissionBusy, R>;
   }
 >()("t3/jones/updates/UpdateAdmissionFence") {}
 
@@ -141,6 +158,59 @@ export const make = Effect.gen(function* () {
   const reopenedSignal = yield* Ref.make(Deferred.makeUnsafe<void>());
   const sinks = yield* Ref.make(0);
   let tickets = 0;
+  let nativeEpoch = 0;
+  const uses = new Set<{ epoch: number; invalidated: Deferred.Deferred<void> }>();
+  let nativeDrained = Deferred.makeUnsafe<void>();
+  const ownedTickets = new WeakSet<AdmissionTicket>();
+  const invalidateNative = () => {
+    nativeEpoch++;
+    for (const use of uses) Deferred.doneUnsafe(use.invalidated, Effect.void);
+  };
+  const awaitNativeDrain = Effect.suspend(() =>
+    uses.size === 0 ? Effect.void : Deferred.await(nativeDrained),
+  );
+  const nativeUse = Effect.acquireRelease(
+    Ref.modify(
+      state,
+      (
+        current,
+      ): readonly [
+        Option.Option<{ epoch: number; invalidated: Deferred.Deferred<void> }>,
+        FenceState,
+      ] => {
+        if (current.phase !== "open") return [Option.none(), current];
+        if (uses.size === 0) nativeDrained = Deferred.makeUnsafe<void>();
+        const use = { epoch: nativeEpoch, invalidated: Deferred.makeUnsafe<void>() };
+        uses.add(use);
+        return [Option.some(use), current];
+      },
+    ).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () => Effect.fail(new UpdateAdmissionRefused({ phase: "installing" })),
+          onSome: Effect.succeed,
+        }),
+      ),
+    ),
+    (use) =>
+      Effect.sync(() => {
+        Deferred.doneUnsafe(use.invalidated, Effect.void);
+        uses.delete(use);
+        if (uses.size === 0) Deferred.doneUnsafe(nativeDrained, Effect.void);
+      }),
+  ).pipe(
+    Effect.map((use) => ({
+      invalidated: Deferred.await(use.invalidated),
+      checkCurrent: Ref.get(state).pipe(
+        Effect.flatMap((current) =>
+          current.phase === "open" && uses.has(use) && use.epoch === nativeEpoch
+            ? Effect.void
+            : Effect.fail(new UpdateAdmissionRefused({ phase: "installing" })),
+        ),
+      ),
+    })),
+  );
+
   const refused = (current: FenceState): Option.Option<UpdateAdmissionRefused["phase"]> =>
     current.phase === "accepted"
       ? Option.some("accepted" as const)
@@ -183,25 +253,39 @@ export const make = Effect.gen(function* () {
     const ticket = ++tickets;
     const raised = yield* Ref.modify(state, (current) =>
       current.phase === "open"
-        ? ([true, { phase: "raised", ticket, mode, tripped: false, refused: false }] as const)
+        ? (invalidateNative(),
+          [true, { phase: "raised", ticket, mode, tripped: false, refused: false }] as const)
         : ([false, current] as const),
     );
     if (!raised) return yield* new UpdateAdmissionBusy();
     const holds = (current: FenceState) => current.phase !== "open" && current.ticket === ticket;
-    return {
-      handOff: Ref.modify(state, (current): readonly [boolean, FenceState] =>
-        !holds(current) || current.phase !== "raised"
-          ? [holds(current), current]
-          : current.tripped
-            ? [false, current]
-            : [true, { phase: "handing-off", ticket, refused: current.refused }],
-      ),
+    const result: AdmissionTicket = {
+      handOff: Effect.gen(function* () {
+        const client = yield* Effect.serviceOption(SqlClient.SqlClient);
+        if (
+          Option.isSome(client) &&
+          Option.isSome(yield* Effect.serviceOption(client.value.transactionService))
+        )
+          return false;
+        const ready = yield* Ref.modify(state, (current): readonly [boolean, FenceState] =>
+          !holds(current) || current.phase !== "raised"
+            ? [holds(current), current]
+            : current.tripped
+              ? [false, current]
+              : [true, { phase: "handing-off", ticket, refused: current.refused }],
+        );
+        if (!ready) return false;
+        yield* awaitNativeDrain;
+        return yield* Ref.get(state).pipe(
+          Effect.map((current) => holds(current) && current.phase === "handing-off"),
+        );
+      }),
       accept: Ref.update(state, (current): FenceState =>
         holds(current) ? { phase: "accepted", ticket } : current,
       ),
       release: Ref.modify(state, (current): readonly [Option.Option<boolean>, FenceState] =>
         holds(current) && (current.phase === "raised" || current.phase === "handing-off")
-          ? [Option.some(current.refused), { phase: "open" }]
+          ? (invalidateNative(), [Option.some(current.refused), { phase: "open" }])
           : [Option.none(), current],
       ).pipe(
         Effect.flatMap(
@@ -212,14 +296,64 @@ export const make = Effect.gen(function* () {
         ),
       ),
       settle: (decide) => Effect.forkIn(decide, scope).pipe(Effect.asVoid),
-    } satisfies AdmissionTicket;
+    };
+    ownedTickets.add(result);
+    return result;
   });
+  const withLauncherHandoff: UpdateAdmissionFence["Service"]["withLauncherHandoff"] = (
+    handoff,
+    isKnownRejection,
+  ) =>
+    Effect.suspend(() => {
+      let held: AdmissionTicket | undefined;
+      let ownsTicket = false;
+      let attempted = false;
+      return Effect.gen(function* () {
+        const client = yield* Effect.serviceOption(SqlClient.SqlClient);
+        if (
+          Option.isSome(client) &&
+          Option.isSome(yield* Effect.serviceOption(client.value.transactionService))
+        )
+          return yield* new UpdateAdmissionBusy();
+        const bound = yield* LauncherTicket;
+        if (bound?.ticket !== undefined) {
+          if (!ownedTickets.has(bound.ticket)) return yield* new UpdateAdmissionBusy();
+          held = bound.ticket;
+        } else {
+          held = yield* raise("manual");
+          ownsTicket = true;
+        }
+        const ticket = held;
+        if (!(yield* ticket.handOff)) return yield* new UpdateAdmissionBusy();
+        attempted = true;
+        return yield* handoff.pipe(
+          Effect.tap(() => ticket.accept),
+          Effect.onExit((exit) => {
+            if (Exit.isSuccess(exit)) return Effect.void;
+            const knownRejection =
+              exit.cause.reasons.length > 0 &&
+              exit.cause.reasons.every(
+                (reason) => Cause.isFailReason(reason) && isKnownRejection(reason.error),
+              );
+            return knownRejection && ownsTicket ? ticket.release.pipe(Effect.asVoid) : Effect.void;
+          }),
+        );
+      }).pipe(
+        Effect.onExit((exit) =>
+          ownsTicket && held !== undefined && !attempted && Exit.isFailure(exit)
+            ? held.release.pipe(Effect.asVoid)
+            : Effect.void,
+        ),
+      );
+    });
   return UpdateAdmissionFence.of({
     admit,
     awaitAdmission,
     attach: Ref.update(sinks, (count) => count + 1),
     attached: Ref.get(sinks).pipe(Effect.map((count) => count > 0)),
     raise,
+    nativeUse,
+    withLauncherHandoff,
   });
 });
 
@@ -291,6 +425,7 @@ export const fencedInstall = <A>(options: {
 }): Effect.Effect<A, ServerSelfUpdateError> =>
   Effect.suspend(() => {
     let ticket: AdmissionTicket | undefined;
+    const launcherBinding: { ticket?: AdmissionTicket } = {};
     let handedOff = false;
     let accepted = false;
     const onPrepared = Effect.fn("UpdateAdmissionFence.onPrepared")(function* (
@@ -303,6 +438,7 @@ export const fencedInstall = <A>(options: {
         .pipe(
           Effect.mapError((cause) => new ServerSelfUpdateError({ reason: cause.message, cause })),
         );
+      launcherBinding.ticket = ticket;
       const reason = options.finalCheck === undefined ? undefined : yield* options.finalCheck;
       if (reason !== undefined) return yield* withdrawn(reason);
       yield* capture;
@@ -315,6 +451,7 @@ export const fencedInstall = <A>(options: {
       return ticket?.accept ?? Effect.void;
     });
     return options.install({ onPrepared, onAccepted }).pipe(
+      Effect.provideService(LauncherTicket, launcherBinding),
       Effect.onExit((exit) =>
         Effect.suspend(() => {
           const held = ticket;

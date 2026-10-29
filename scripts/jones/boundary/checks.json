@@ -3699,6 +3699,8 @@
     {
       "id": "jones-workstreams-native-write-foundation",
       "tests": [
+        "packages/contracts/src/jones/workstreamsForwardQualification.test.ts",
+        "packages/contracts/src/jones/workstreamsRetainedSourceEffect.test.ts",
         "packages/contracts/src/jones/workstreamsForwarding.test.ts",
         "packages/contracts/src/jones/workstreamsForwardReadmission.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts",
@@ -3706,8 +3708,39 @@
         "apps/server/src/jones/workstreams/native/store/operationStore.test.ts"
       ],
       "commands": [
+        "vp test run packages/contracts/src/jones/workstreamsForwardQualification.test.ts packages/contracts/src/jones/workstreamsRetainedSourceEffect.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/contracts/src/jones/workstreamsForwarding.test.ts packages/contracts/src/jones/workstreamsForwardReadmission.test.ts apps/server/src/jones/workstreams/native/runtime/memberRecordedCaller.test.ts apps/server/src/jones/workstreams/native/runtime/memberAdmission.test.ts apps/server/src/jones/workstreams/native/store/operationStore.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstreams-native-home-forwarding",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/peerWriteAdmission.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/suppliedEvidence.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/forwardedHomeOperation.test.ts",
+        "apps/server/src/jones/workstreams/native/store/forwardReceiptStore.test.ts",
+        "apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workstreams/native/forwarding/peerWriteAdmission.test.ts apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts apps/server/src/jones/workstreams/native/forwarding/suppliedEvidence.test.ts apps/server/src/jones/workstreams/native/operations/forwardedHomeOperation.test.ts apps/server/src/jones/workstreams/native/store/forwardReceiptStore.test.ts apps/server/src/jones/persistence/Migrations/130_JonesWorkstreamsForwardReceipts.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstreams-native-source-forwarding",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/homeClient.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/workstreams/native/forwarding/homeClient.test.ts apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
@@ -3725,6 +3758,15 @@
       ],
       "commands": [
         "vp test run apps/server/src/jones/workstreams/native/runtime/setupOwner.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetup.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetupRequestFile.test.ts apps/server/src/jones/workstreams/native/runtime/peerSetupCli.test.ts apps/server/src/jones/mcp/workstreams/nativeSetups.test.ts packages/contracts/src/jones/workstreamsPeerSetup.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
+    },
+    {
+      "id": "jones-workstreams-native-forwarding-mcp",
+      "tests": ["apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts"],
+      "commands": [
+        "vp test run --project t3 apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]

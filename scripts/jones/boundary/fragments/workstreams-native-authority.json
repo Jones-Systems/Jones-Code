@@ -14,7 +14,7 @@
     "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.tsx",
     "docs/operations/workstreams-rollups.md"
   ],
-  "hookPaths": ["apps/server/src/httpCors.ts"],
+  "hookPaths": ["apps/server/src/httpCors.ts", "apps/server/src/serverOwnership.ts"],
   "tombstones": [],
   "allowedImports": [
     {
@@ -36,6 +36,34 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/workstreams/native/integration.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceLauncherClient.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/serviceLauncherClient.test.ts",
+      "to": "apps/server/src/jones/updates/UpdateAdmissionFence.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/admission.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/currentAuthority.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/mcp/workstreams/nativeForwards.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/homeForwardPort.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/sourceReadmissionPort.ts"
     }
   ]
 }

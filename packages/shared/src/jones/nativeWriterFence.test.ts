@@ -61,8 +61,10 @@ async function fixture(body: (root: string, input: Record<string, unknown>) => P
       },
     });
   } finally {
-    await NodeFSP.rm(temporary, { recursive: true, force: true });
-    await expect(NodeFSP.lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    if (process.env.NW_AUTHORITY_PREPARATION_EVIDENCE_DIR === undefined) {
+      await NodeFSP.rm(temporary, { recursive: true, force: true });
+      await expect(NodeFSP.lstat(temporary)).rejects.toMatchObject({ code: "ENOENT" });
+    }
   }
 }
 
@@ -481,6 +483,30 @@ it("one retained desktop owner excludes a competing admitted desktop and survive
     if (contender.status === 0 || !contender.stderr.includes('locked')) throw new Error('competing desktop acquired owner exclusion');
     owner.assertCurrent();
   `,
+    );
+    expect(result.status, result.stderr).toBe(0);
+  }));
+
+it("prepared native writer use retains real leases without re-reading files or reopening SQLite", async () =>
+  fixture(async (_root, input) => {
+    const result = run(
+      input,
+      `
+      const fs = await import("node:fs");
+      const cp = await import("node:child_process");
+      const admission = module.holdJonesNativeWriterFence(input);
+      const use = module.prepareJonesNativeWriterUse(admission);
+      try { module.prepareJonesNativeWriterUse({ ...admission }); throw new Error("copy admitted"); }
+      catch (error) { if (error.message === "copy admitted") throw error; }
+      const paths = module.nativeWriterLeasePaths(input.home, input.profile);
+      // This Promise-free checker must not inspect manifests, journals or path identities.
+      const original = fs.default.lstatSync;
+      fs.default.lstatSync = () => { throw new Error("filesystem accessed by checker"); };
+      try { use.assertCurrent(); use.assertCurrent(); }
+      finally { fs.default.lstatSync = original; }
+      for (const lease of paths)
+        cp.execFileSync("python3", ["-c", ${JSON.stringify(inspectLock)}, lease.path, "held"]);
+    `,
     );
     expect(result.status, result.stderr).toBe(0);
   }));

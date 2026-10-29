@@ -25,6 +25,7 @@ import {
   type ServiceLauncherParentMessage,
 } from "./serviceProtocol.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
+import * as UpdateAdmission from "../jones/updates/UpdateAdmissionFence.ts";
 
 // Frozen parent decoder from PR239 d3e6f8e843a0477542380a4ec0d9ae02a1084053.
 // Its grant validator remains shared and unchanged; retain this body to prove additive wire compatibility.
@@ -201,11 +202,19 @@ class FakeLauncherProcess {
   }
 }
 
-const makeClient = (host: FakeLauncherProcess, currentVersion: string) =>
-  ServiceLauncherClient.make({ currentVersion }).pipe(
-    Effect.provideService(ServiceLauncherClient.ServiceLauncherHostProcess, host),
-    Effect.provideService(HostProcess.Environment, host.env),
-  );
+const makeClient = (
+  host: FakeLauncherProcess,
+  currentVersion: string,
+  suppliedFence?: UpdateAdmission.UpdateAdmissionFence["Service"],
+) =>
+  Effect.gen(function* () {
+    const fence = suppliedFence ?? (yield* UpdateAdmission.make);
+    return yield* ServiceLauncherClient.make({ currentVersion }).pipe(
+      Effect.provideService(UpdateAdmission.UpdateAdmissionFence, fence),
+      Effect.provideService(ServiceLauncherClient.ServiceLauncherHostProcess, host),
+      Effect.provideService(HostProcess.Environment, host.env),
+    );
+  });
 
 it.effect("reports launcher and child versions separately without inferring missing metadata", () =>
   Effect.gen(function* () {
@@ -983,4 +992,55 @@ it.effect(
           ?.updateOutcomeProtocol,
       ).toBeUndefined();
     }),
+);
+
+it.effect("drains the actual shared native-use scope before sending a direct handoff", () =>
+  Effect.gen(function* () {
+    const fence = yield* UpdateAdmission.make;
+    const host = new FakeLauncherProcess({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+    });
+    const client = yield* makeClient(host, "1.0.0", fence);
+    const entered = Promise.withResolvers<Effect.Effect<void>>();
+    const release = Promise.withResolvers<void>();
+    const native = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const use = yield* fence.nativeUse;
+        entered.resolve(use.invalidated);
+        yield* Effect.promise(() => release.promise);
+      }),
+    ).pipe(Effect.forkChild);
+    const invalidated = yield* Effect.promise(() => entered.promise);
+    const request = yield* client
+      .requestUpdate({ targetVersion: "2.0.0", dbPath: "/fixture/state.sqlite" })
+      .pipe(Effect.forkChild);
+    yield* invalidated;
+    expect(host.sent).toEqual([]);
+    release.resolve();
+    yield* Fiber.join(native);
+    yield* Effect.promise(() => host.sentSignal.promise);
+    host.emit({ type: "update-accepted", updateId: "direct-shared" });
+    expect(yield* Fiber.join(request)).toBe("direct-shared");
+    const refused = yield* Effect.scoped(fence.nativeUse).pipe(Effect.result);
+    expect(refused._tag).toBe("Failure");
+  }),
+);
+
+it.effect("reopens the same fence only after a definitive launcher rejection", () =>
+  Effect.gen(function* () {
+    const fence = yield* UpdateAdmission.make;
+    const host = new FakeLauncherProcess({
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+    });
+    const client = yield* makeClient(host, "1.0.0", fence);
+    const request = yield* client
+      .requestUpdate({ targetVersion: "2.0.0", dbPath: "/fixture/state.sqlite" })
+      .pipe(Effect.result, Effect.forkChild);
+    yield* Effect.promise(() => host.sentSignal.promise);
+    host.emit({ type: "update-rejected", reason: "declined fixture" });
+    expect((yield* Fiber.join(request))._tag).toBe("Failure");
+    yield* Effect.scoped(fence.nativeUse);
+  }),
 );

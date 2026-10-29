@@ -22,6 +22,7 @@ import * as Wire from "@t3tools/contracts";
 import { WorkstreamsNativePlacementResult } from "@t3tools/contracts/jones/workstreamsNativePlacement";
 import * as NativeRuntimeEntry from "../runtime/entry.ts";
 import * as Recorded from "../runtime/recordedCaller.ts";
+import * as Preparation from "../runtime/recordedCallerPreparation.ts";
 import * as NativeAdmission from "../runtime/admission.ts";
 import {
   WORKSTREAMS_LEGACY_RECEIPTS_CONTRACT,
@@ -732,6 +733,12 @@ const withOperations = Effect.fn("S1.withOperations")(function* <A, E, R>(
   run: (service: Operations.WorkstreamOperations["Service"]) => Effect.Effect<A, E, R>,
 ) {
   const registration = (yield* Registration.Registration).forCaller(caller);
+  const recorded = yield* Recorded.RecordedCallers;
+  // This conformance harness supplies its declared synthetic caller port. Genuine
+  // owner/enrollment preparation is qualified by recordedCallerPreparation.test.ts.
+  const preparation = Layer.succeed(Preparation.RecordedCallerPreparation, {
+    withPrepared: (use) => use(recorded),
+  });
   return yield* Effect.gen(function* () {
     const entries = yield* Durable.DurableEntries,
       executor = yield* HomeExecutor.HomeExecutor;
@@ -742,7 +749,12 @@ const withOperations = Effect.fn("S1.withOperations")(function* <A, E, R>(
         Operations.layer.pipe(
           Layer.provide(
             Layer.succeed(Ports, {
-              native: { mode: "native", entries, executor: h.guardExecutor(executor) },
+              native: {
+                mode: "native",
+                callers: recorded,
+                entries,
+                executor: h.guardExecutor(executor),
+              },
               environmentId: home.home_environment_id,
               registryId: home.registry_instance_id,
               activation: { state: "enabled", missing_keys: [] },
@@ -760,6 +772,7 @@ const withOperations = Effect.fn("S1.withOperations")(function* <A, E, R>(
   }).pipe(
     Effect.provide(
       Layer.mergeAll(Durable.layer, HomeExecutor.layer).pipe(
+        Layer.provide(preparation),
         Layer.provide(Layer.succeed(HomeExecutor.HomeTransport, h.homeTransport)),
         Layer.provideMerge(EffectNodeCrypto.layer),
       ),
@@ -1105,6 +1118,7 @@ it.effect(
             Layer.provide(workstreamHttpApiLayer),
             Layer.provide(Layer.succeed(Gateway.WorkstreamGateway, h.gateway)),
             Layer.provide(dynamicEntry),
+            Layer.provide(Layer.succeed(Recorded.RecordedCallers, recordedCallers)),
             Layer.provide(
               Layer.succeed(LegacyRegistration.WorkstreamsRegistrationContext, registration),
             ),

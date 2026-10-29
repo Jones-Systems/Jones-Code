@@ -252,6 +252,35 @@ export interface JonesNativeWriterAdmission {
 }
 
 const admittedWriters = new WeakSet<JonesNativeWriterAdmission>();
+const admissionLeases = new WeakMap<
+  JonesNativeWriterAdmission,
+  ReadonlyArray<{ path: string; lease: Lease }>
+>();
+
+/** Full qualification at capture; the returned checker inspects original retained handles only. */
+export function prepareJonesNativeWriterUse(admission: JonesNativeWriterAdmission): {
+  readonly assertCurrent: () => void;
+} {
+  if (!admittedWriters.has(admission))
+    throw new Error("Native writer use requires original admission.");
+  admission.assertCurrent();
+  const captured = admissionLeases.get(admission);
+  if (captured === undefined || captured.length !== 2)
+    throw new Error("Native writer use has no retained leases.");
+  let invalid = false;
+  return Object.freeze({
+    assertCurrent: () => {
+      if (invalid) throw new Error("Native writer use expired.");
+      for (const { path, lease } of captured) {
+        if (leases.get(path) !== lease || !lease.database.isOpen || !lease.database.isTransaction) {
+          invalid = true;
+          throw new Error("Native writer use lost its retained lease.");
+        }
+      }
+    },
+  });
+}
+
 const desktopOwners = (registry[Symbol.for("jones.desktop-owner-leases.v1")] ??= new Map());
 
 /** Retains one desktop owner independently of the shared application-writer leases. */
@@ -418,6 +447,14 @@ export function holdJonesNativeWriterFence(input: {
         throw new Error("Native writer admission changed.");
     },
   });
+  admissionLeases.set(
+    admission,
+    nativeWriterLeasePaths(home, profile).map(({ path }) => {
+      const lease = leases.get(path);
+      if (lease === undefined) throw new Error("Native writer admission lost its retained lease.");
+      return { path, lease };
+    }),
+  );
   admittedWriters.add(admission);
   return admission;
 }
