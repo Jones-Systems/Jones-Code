@@ -159,7 +159,7 @@ function sampleCopyConcurrency(cap: number) {
             return;
           }
           // Host CPU times are advisory, not cgroup-local usage. The baseline is already running.
-          const idleCores = (1 - busy / total) * after.length;
+          const idleCores = (idle * after.length) / total;
           resolve(Math.min(cap, Math.max(1, 1 + Math.floor(idleCores))));
         } catch {
           resolve(cap);
