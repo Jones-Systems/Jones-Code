@@ -2616,6 +2616,10 @@
         "scripts/jones/serverParallelism/commandIdentity.node-test.mjs",
         "scripts/jones/serverParallelism/qualificationResult.node-test.mjs",
         "scripts/jones/serverParallelism/native-block-proof.node-test.mjs",
+        "scripts/jones/serverParallelism/snapshotDecision.node-test.mjs",
+        "apps/server/src/jones/serverParallelism/qualificationRetention.test.ts",
+        "apps/server/src/jones/serverParallelism/nativeGenerationEvidence.test.ts",
+        "apps/server/src/jones/serverParallelism/combinedQualification.integration.test.ts",
         "apps/server/src/cli/project.test.ts",
         "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
         "apps/server/src/serverRuntimeStartup.test.ts"

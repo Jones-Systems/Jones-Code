@@ -1,6 +1,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { measureSnapshotPipeline } from "../../../apps/server/src/jones/serverParallelism/snapshotQualification.ts";
+import { snapshotDecision } from "./snapshotDecision.mjs";
 const [output, count = "2000"] = process.argv.slice(2);
 if (!output || !NodePath.isAbsolute(output))
   throw new Error("snapshot.mjs <absolute report.json> [thread-count]");
@@ -11,29 +12,7 @@ if (process.versions.node !== required) throw new Error(`Node ${required} requir
 let report;
 try {
   const measurement = await measureSnapshotPipeline(Number(count));
-  const complete =
-    measurement.samples.length === 3 &&
-    measurement.samples.every((sample) =>
-      [
-        sample.captureMs,
-        sample.decodeMs,
-        sample.schemaProjectionMs,
-        sample.encodeMs,
-        sample.loopMaxMs,
-      ].every(Number.isFinite),
-    );
-  const trigger =
-    measurement.contiguousEncodeTrigger || measurement.decodeProjectionAttributionRequired;
-  const loopTarget =
-    complete &&
-    measurement.samples.every((sample) => sample.loopMaxMs <= 100 && sample.loopP99Ms <= 50);
-  const activationDecision = !complete
-    ? "unknown"
-    : trigger
-      ? "activate"
-      : loopTarget
-        ? "not-activated"
-        : "unknown";
+  const activationDecision = snapshotDecision(measurement);
   report = {
     ...measurement,
     activationDecision,

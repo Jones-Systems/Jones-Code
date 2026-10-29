@@ -366,6 +366,15 @@ No baseline means writer/throughput regression acceptance remains unknown. A fai
 retirement retains its exact scratch/journal for owner reconciliation; successful
 retirement permits the invoking harness to remove its own fixture.
 
+The advisory `Server parallel qualification` workflow defaults to bounded
+`source-evidence`: one unchanged baseline and one real source run for each
+profile, including churn and shutdown. It also runs matching-build and
+wrong-build dispatch checks. These reports cannot qualify the full matrix.
+After reviewing those prerequisites, select `scope: full` on the workflow's
+manual dispatch to exercise source, bundle, Electron and SEA on both platforms.
+Missing or failed cells remain explicit; a narrower diagnostic scope never
+substitutes for full performance qualification.
+
 Set `JONES_SP_COMMAND_MANIFEST` to the qualified manifest when running
 `nativeProcess.integration.test.ts`; absent manifests produce explicit skips.
 Run the native file separately for each of the four runtime forms. Its parent-loss
