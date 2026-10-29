@@ -1033,10 +1033,11 @@ NodeTest.test(
         const child=spawn(active,["serve"],{env:{...process.env,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
           protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",startupGateProtocol:1,
         })},stdio:["inherit","inherit","inherit","ipc"]});
-        let dispatching=false,ending=false;
+        let dispatching=false,ending=false,postWriteCleanupPending=false;
         const stopChild=()=>new Promise(resolve=>{if(child.exitCode!==null||child.signalCode!==null){resolve();return}
           child.once("close",resolve);child.kill("SIGTERM")});
-        process.once("SIGTERM",()=>{ending=true;stopChild()});
+        process.once("SIGTERM",()=>{if(postWriteCleanupPending){console.error("stopped during native post-write completion");process.exitCode=1}
+          ending=true;stopChild()});
         child.on("message",m=>{
           if(m.type!=="request-update")return;
           dispatching=true;
@@ -1066,7 +1067,15 @@ NodeTest.test(
               process.exitCode=1;return;
             }
             if(!wasFailed)throw Error("expected injected first-attempt fault");
+            const terminalBackup=path.join(home,"runtime","db-backup",m.operationId);
+            await fs.mkdir(terminalBackup,{recursive:true,mode:0o700});
+            await write(path.join(terminalBackup,"paired-binding.json"),{transactionId:m.operationId,qualified});
+            await fs.writeFile(path.join(terminalBackup,"database"),"synthetic retained backup",{mode:0o600});
+            postWriteCleanupPending=true;
             state.activeVersion=m.targetVersion;state.update={...pending,status:"committed"};await write(statePath,state);
+            await new Promise(resolve=>setImmediate(resolve));
+            await fs.unlink(path.join(terminalBackup,"database"));postWriteCleanupPending=false;
+            const cleanupDir=await fs.open(terminalBackup,"r");try{await cleanupDir.sync()}finally{await cleanupDir.close()}
           })().catch(e=>{console.error(e.stack);process.exitCode=1;ending=true;stopChild()});
         });
         child.once("error",e=>{console.error(e.message);process.exitCode=1});
