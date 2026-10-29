@@ -8,6 +8,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { runNativeFixtureCommand } from "./native-fixture-support.mjs";
+import { legacyRefusalCases } from "./packaged-recovery-fixture.mjs";
 
 const preload = NodeURL.fileURLToPath(new URL("./packaged-recovery-preload.cjs", import.meta.url));
 const fail = (message) => {
@@ -524,6 +525,10 @@ export async function createPackagedRecoveryHttpClient({
   const operationId = prepared.operationId;
   const stagedHandle = prepared.staged.stagedHandle;
   const binding = structuredClone(prepared.staged.binding);
+  const currentVersion =
+    prepared.legacyVariant === "active-changed"
+      ? prepared.state.activeVersion
+      : binding.activeVersion;
   const runtimePath = NodePath.join(baseDir, "userdata", "server-runtime.json");
   const capabilityPath = NodePath.join(baseDir, "runtime", "jones-launcher-capability.json");
   const boundRuntime = async () => {
@@ -643,7 +648,7 @@ export async function createPackagedRecoveryHttpClient({
           "error",
         ].includes(value.phase) ||
         value.environmentId !== binding.environmentId ||
-        value.currentVersion !== binding.activeVersion ||
+        value.currentVersion !== currentVersion ||
         value.capability === null ||
         typeof value.capability !== "object" ||
         !["check", "download", "install"].every((key) => typeof value.capability[key] === "boolean")
@@ -670,13 +675,18 @@ export async function createPackagedRecoveryHttpClient({
       endpoint("/api/jones-updates/install", {
         stagedHandle,
         environmentId: binding.environmentId,
-        currentVersion: binding.activeVersion,
+        currentVersion,
       }),
   });
 }
 
 export async function preparePackagedReconciliationObservation({ prepared, requestIds, signal }) {
   signal?.throwIfAborted();
+  prepared = structuredClone(prepared);
+  requestIds = Array.isArray(requestIds) ? [...requestIds] : requestIds;
+  const refusalReason = Object.hasOwn(legacyRefusalCases, prepared.legacyVariant)
+    ? legacyRefusalCases[prepared.legacyVariant]
+    : undefined;
   const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
   const { root, baseDir, launcher, operationId } = structuredClone(prepared);
   if (
@@ -724,13 +734,19 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
     executable: launcher.executable,
     identity: launcher.identity,
   });
-  const childVersion = prepared.staged.binding.activeVersion;
-  if (childVersion !== prepared.inputs.active.receipt.version)
-    fail("observer child version differs");
+  const childVersion =
+    prepared.legacyVariant === "active-changed"
+      ? prepared.state.activeVersion
+      : prepared.staged.binding.activeVersion;
+  const childInput =
+    childVersion === prepared.inputs.active.receipt.version
+      ? prepared.inputs.active
+      : prepared.inputs.candidate;
+  if (childVersion !== childInput.receipt.version) fail("observer child version differs");
   const childExecutable = NodePath.join(baseDir, "runtime", "versions", childVersion, "t3");
   if (
     (await NodeFSP.realpath(childExecutable)) !== childExecutable ||
-    (await digest(childExecutable)) !== prepared.inputs.active.executableSha256
+    (await digest(childExecutable)) !== childInput.executableSha256
   )
     fail("observer active payload differs");
   const childIdentity = await executableIdentity(childExecutable);
@@ -761,74 +777,81 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
   } finally {
     await parent.close();
   }
+  const read = async ({ launcherPid, childPid }, expectedRefusal) => {
+    signal?.throwIfAborted();
+    if (
+      ![launcherPid, childPid].every((pid) => Number.isSafeInteger(pid) && pid > 0) ||
+      launcherPid === childPid
+    )
+      fail("distinct captured observer processes required");
+    const current = await NodeFSP.lstat(root);
+    if (
+      (await NodeFSP.realpath(root)) !== root ||
+      current.dev !== allocation.dev ||
+      current.ino !== allocation.ino ||
+      current.uid !== allocation.uid ||
+      (current.mode & 0o077) !== 0
+    )
+      fail("reconciliation fixture changed");
+    const stat = await NodeFSP.lstat(directory);
+    if (
+      (await NodeFSP.realpath(directory)) !== directory ||
+      !stat.isDirectory() ||
+      stat.uid !== process.getuid() ||
+      (stat.mode & 0o077) !== 0
+    )
+      fail("unsafe observer directory");
+    NodeAssert.deepEqual(
+      (await NodeFSP.readdir(directory)).sort(),
+      ["ready.json", ...ids.flatMap((id) => [id + ".request.json", id + ".reply.json"])].sort(),
+      "incomplete or unexpected observer records",
+    );
+    NodeAssert.deepEqual((await boundedRecord(NodePath.join(directory, "ready.json"))).value, {
+      protocol: 1,
+      fixtureId,
+      operationId,
+      requestIds: ids,
+      launcherPid,
+    });
+    const replies = [];
+    for (const [index, requestId] of ids.entries()) {
+      const common = { protocol: 1, fixtureId, operationId, requestId, launcherPid, childPid };
+      NodeAssert.deepEqual(
+        (await boundedRecord(NodePath.join(directory, requestId + ".request.json"))).value,
+        { ...common, phase: "request" },
+      );
+      const reply = (await boundedRecord(NodePath.join(directory, requestId + ".reply.json")))
+        .value;
+      NodeAssert.deepEqual(reply, {
+        ...common,
+        phase: "reply",
+        ...(expectedRefusal === undefined
+          ? { result: index === 0 ? "settled" : "already-settled" }
+          : { result: "refused", reason: expectedRefusal }),
+        sendCallbackCompleted: true,
+      });
+      replies.push(reply);
+    }
+    NodeAssert.deepEqual(await executableIdentity(launcher.executable), launcher.identity);
+    NodeAssert.deepEqual(await executableIdentity(childExecutable), childIdentity);
+    return {
+      schema: "jones.packaged-reconciliation-observation/v1",
+      operationId,
+      replies,
+      packagedRecoveryMatrixPassed: false,
+      processIdentityScope: "captured-child-handle-only",
+      externalDescendantSettlementRequired: true,
+    };
+  };
   return Object.freeze({
     environment: Object.freeze({
       NODE_OPTIONS: "--require " + JSON.stringify(preload),
       JONES_PACKAGED_RECOVERY_OBSERVER: planPath,
     }),
-    readPair: async ({ launcherPid, childPid }) => {
-      signal?.throwIfAborted();
-      if (
-        ![launcherPid, childPid].every((pid) => Number.isSafeInteger(pid) && pid > 0) ||
-        launcherPid === childPid
-      )
-        fail("distinct captured observer processes required");
-      const current = await NodeFSP.lstat(root);
-      if (
-        (await NodeFSP.realpath(root)) !== root ||
-        current.dev !== allocation.dev ||
-        current.ino !== allocation.ino ||
-        current.uid !== allocation.uid ||
-        (current.mode & 0o077) !== 0
-      )
-        fail("reconciliation fixture changed");
-      const stat = await NodeFSP.lstat(directory);
-      if (
-        (await NodeFSP.realpath(directory)) !== directory ||
-        !stat.isDirectory() ||
-        stat.uid !== process.getuid() ||
-        (stat.mode & 0o077) !== 0
-      )
-        fail("unsafe observer directory");
-      NodeAssert.deepEqual(
-        (await NodeFSP.readdir(directory)).sort(),
-        ["ready.json", ...ids.flatMap((id) => [id + ".request.json", id + ".reply.json"])].sort(),
-        "incomplete or unexpected observer records",
-      );
-      NodeAssert.deepEqual((await boundedRecord(NodePath.join(directory, "ready.json"))).value, {
-        protocol: 1,
-        fixtureId,
-        operationId,
-        requestIds: ids,
-        launcherPid,
-      });
-      const replies = [];
-      for (const [index, requestId] of ids.entries()) {
-        const common = { protocol: 1, fixtureId, operationId, requestId, launcherPid, childPid };
-        NodeAssert.deepEqual(
-          (await boundedRecord(NodePath.join(directory, requestId + ".request.json"))).value,
-          { ...common, phase: "request" },
-        );
-        const reply = (await boundedRecord(NodePath.join(directory, requestId + ".reply.json")))
-          .value;
-        NodeAssert.deepEqual(reply, {
-          ...common,
-          phase: "reply",
-          result: index === 0 ? "settled" : "already-settled",
-          sendCallbackCompleted: true,
-        });
-        replies.push(reply);
-      }
-      NodeAssert.deepEqual(await executableIdentity(launcher.executable), launcher.identity);
-      NodeAssert.deepEqual(await executableIdentity(childExecutable), childIdentity);
-      return {
-        schema: "jones.packaged-reconciliation-observation/v1",
-        operationId,
-        replies,
-        packagedRecoveryMatrixPassed: false,
-        processIdentityScope: "captured-child-handle-only",
-        externalDescendantSettlementRequired: true,
-      };
+    readPair: (captured) => read(captured, undefined),
+    readRefusalPair: (captured) => {
+      if (refusalReason === undefined) fail("named legacy refusal fixture required");
+      return read(captured, refusalReason);
     },
   });
 }
@@ -842,10 +865,14 @@ export async function exercisePackagedLegacyReconciliation({
   signal?.throwIfAborted();
   prepared = structuredClone(prepared);
   requestIds = Array.isArray(requestIds) ? [...requestIds] : requestIds;
+  const refusalReason = Object.hasOwn(legacyRefusalCases, prepared.legacyVariant)
+    ? legacyRefusalCases[prepared.legacyVariant]
+    : undefined;
   if (
     prepared.kind !== "legacy-failed" ||
     prepared.state.update?.status !== "failed" ||
-    prepared.state.update.reason !== "launcher-restarted" ||
+    (prepared.legacyVariant !== undefined && refusalReason === undefined) ||
+    (refusalReason === undefined && prepared.state.update.reason !== "launcher-restarted") ||
     typeof token !== "string" ||
     !/^[\x21-\x7e]{16,8192}$/.test(token)
   )
@@ -893,6 +920,35 @@ export async function exercisePackagedLegacyReconciliation({
     }
   };
   NodeAssert.equal(marker(), "before");
+  const backupDirectory = NodePath.join(baseDir, "runtime", "db-backup", operationId);
+  const snapshotHeld = async () => {
+    const entries = [];
+    const visit = async (filename, depth) => {
+      if (depth > 4 || entries.length >= 128) fail("held recovery evidence exceeded bound");
+      let stat;
+      try {
+        stat = await NodeFSP.lstat(filename);
+      } catch (cause) {
+        if (cause.code === "ENOENT" && filename === backupDirectory) return;
+        throw cause;
+      }
+      if (stat.isSymbolicLink() || (!stat.isFile() && !stat.isDirectory()))
+        fail("regular held recovery evidence required");
+      entries.push({
+        path: NodePath.relative(backupDirectory, filename),
+        dev: stat.dev,
+        ino: stat.ino,
+        mode: stat.mode,
+        sha256: stat.isFile() ? await digest(filename) : null,
+      });
+      if (stat.isDirectory())
+        for (const name of (await NodeFSP.readdir(filename)).sort())
+          await visit(NodePath.join(filename, name), depth + 1);
+    };
+    await visit(backupDirectory, 0);
+    return entries;
+  };
+  const heldBefore = refusalReason === undefined ? undefined : await snapshotHeld();
   let stage = "runtime";
   let firstSettlement;
   let firstOutcome;
@@ -917,12 +973,19 @@ export async function exercisePackagedLegacyReconciliation({
     NodeAssert.deepEqual((await boundedRecord(reservationPath)).bytes, reservation.bytes);
     const state = (await boundedRecord(NodePath.join(baseDir, "runtime", "service-state.json")))
       .value;
-    NodeAssert.equal(state.activeVersion, prepared.staged.binding.activeVersion);
+    NodeAssert.equal(state.activeVersion, prepared.state.activeVersion);
     NodeAssert.deepEqual(state.update, prepared.state.update);
     const database = await NodeFSP.lstat(prepared.staged.binding.dbPath);
     NodeAssert.equal(database.dev, databaseBefore.dev);
     NodeAssert.equal(database.ino, databaseBefore.ino);
     NodeAssert.equal(marker(), "before");
+    if (refusalReason !== undefined) {
+      NodeAssert.deepEqual(await snapshotHeld(), heldBefore);
+      await NodeAssert.rejects(NodeFSP.lstat(settlementPath), { code: "ENOENT" });
+      if (originalOutcome)
+        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
+      else await NodeAssert.rejects(NodeFSP.lstat(outcomePath), { code: "ENOENT" });
+    }
     return state;
   };
   let client;
@@ -982,36 +1045,44 @@ export async function exercisePackagedLegacyReconciliation({
         requestId: ids[0],
         phase: "reply",
         ...captured,
-        result: "settled",
+        ...(refusalReason === undefined
+          ? { result: "settled" }
+          : { result: "refused", reason: refusalReason }),
         sendCallbackCompleted: true,
       });
-      firstSettlement = await boundedRecord(settlementPath);
-      firstOutcome = await boundedRecord(outcomePath);
-      NodeAssert.deepEqual(firstOutcome.value, {
-        schema: 1,
-        operationId,
-        binding: reservation.value.binding,
-        status: "failed",
-      });
-      if (originalOutcome) NodeAssert.deepEqual(firstOutcome.bytes, originalOutcome.bytes);
-      const receipt = firstSettlement.value;
-      NodeAssert.equal(receipt.schema, 1);
-      NodeAssert.equal(receipt.operationId, operationId);
-      NodeAssert.equal(receipt.status, "failed");
-      NodeAssert.equal(receipt.settlement, "no-effect");
-      NodeAssert.equal(receipt.basis, "legacy-reconciled");
-      const sha = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
-      NodeAssert.equal(receipt.reservationSha256, sha(reservation.bytes));
-      NodeAssert.equal(receipt.outcomeSha256, sha(firstOutcome.bytes));
-      NodeAssert.equal(receipt.evidence.candidateStarted, false);
-      NodeAssert.equal(receipt.evidence.restorePending, false);
-      NodeAssert.equal(
-        receipt.evidence.recoveryPayload,
-        prepared.recoveryPayload ? "removed" : "absent",
-      );
-      await intact();
-      stage = "second-reply";
-      await client.reconcile(ids[1]);
+      if (refusalReason !== undefined) {
+        await intact();
+        stage = "second-reply";
+        await client.reconcile(ids[1]);
+      } else {
+        firstSettlement = await boundedRecord(settlementPath);
+        firstOutcome = await boundedRecord(outcomePath);
+        NodeAssert.deepEqual(firstOutcome.value, {
+          schema: 1,
+          operationId,
+          binding: reservation.value.binding,
+          status: "failed",
+        });
+        if (originalOutcome) NodeAssert.deepEqual(firstOutcome.bytes, originalOutcome.bytes);
+        const receipt = firstSettlement.value;
+        NodeAssert.equal(receipt.schema, 1);
+        NodeAssert.equal(receipt.operationId, operationId);
+        NodeAssert.equal(receipt.status, "failed");
+        NodeAssert.equal(receipt.settlement, "no-effect");
+        NodeAssert.equal(receipt.basis, "legacy-reconciled");
+        const sha = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+        NodeAssert.equal(receipt.reservationSha256, sha(reservation.bytes));
+        NodeAssert.equal(receipt.outcomeSha256, sha(firstOutcome.bytes));
+        NodeAssert.equal(receipt.evidence.candidateStarted, false);
+        NodeAssert.equal(receipt.evidence.restorePending, false);
+        NodeAssert.equal(
+          receipt.evidence.recoveryPayload,
+          prepared.recoveryPayload ? "removed" : "absent",
+        );
+        await intact();
+        stage = "second-reply";
+        await client.reconcile(ids[1]);
+      }
     }
     if (stage === "second-reply") {
       try {
@@ -1020,14 +1091,16 @@ export async function exercisePackagedLegacyReconciliation({
         if (cause.code === "ENOENT") return;
         throw cause;
       }
-      pair = await observation.readPair(captured);
-      NodeAssert.deepEqual((await boundedRecord(settlementPath)).bytes, firstSettlement.bytes);
-      NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, firstOutcome.bytes);
+      if (refusalReason !== undefined) pair = await observation.readRefusalPair(captured);
+      else {
+        pair = await observation.readPair(captured);
+        NodeAssert.deepEqual((await boundedRecord(settlementPath)).bytes, firstSettlement.bytes);
+        NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, firstOutcome.bytes);
+        await NodeAssert.rejects(NodeFSP.lstat(NodePath.join(backupDirectory, "database")), {
+          code: "ENOENT",
+        });
+      }
       await intact();
-      await NodeAssert.rejects(
-        NodeFSP.lstat(NodePath.join(baseDir, "runtime", "db-backup", operationId, "database")),
-        { code: "ENOENT" },
-      );
       stage = "complete";
       stop();
     }
@@ -1093,7 +1166,16 @@ export async function exercisePackagedLegacyReconciliation({
       command,
       observation: pair,
       state,
-      settlement: firstSettlement.value,
+      settlement: firstSettlement?.value ?? null,
+      ...(refusalReason === undefined
+        ? {}
+        : {
+            refusal: {
+              variant: prepared.legacyVariant,
+              reason: refusalReason,
+              heldEvidenceUnchanged: true,
+            },
+          }),
       assertionsPassed: true,
       packagedRecoveryMatrixPassed: false,
       processIdentityScope: "captured-child-handle-only",
