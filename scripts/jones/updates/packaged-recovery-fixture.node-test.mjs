@@ -7,6 +7,7 @@ import * as NodeTest from "node:test";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { seedPackagedRecoveryFixture, legacyRefusalCases } from "./packaged-recovery-fixture.mjs";
+import { restoreStagedSelection } from "../../../apps/server/src/jones/updates/stagedSelection.ts";
 import { preparePackagedInstallObservation } from "./packaged-recovery-launcher.mjs";
 import {
   qualifiedPayloadDigest,
@@ -560,6 +561,10 @@ NodeTest.test(
         prepared.staged.stagedHandle,
       );
       NodeAssert.deepEqual(verified, prepared.staged);
+      NodeAssert.deepEqual(
+        await restoreStagedSelection(prepared.baseDir, input.active.receipt.version),
+        prepared.staged,
+      );
       const observer = await preparePackagedInstallObservation({ prepared });
       NodeAssert.equal(typeof observer.readAcceptance, "function");
       const plan = JSON.parse(

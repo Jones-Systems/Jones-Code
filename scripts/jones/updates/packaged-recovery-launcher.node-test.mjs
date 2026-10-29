@@ -16,6 +16,7 @@ import {
   createPackagedRecoveryHttpClient,
   preparePackagedReconciliationObservation,
   exercisePackagedLegacyReconciliation,
+  exercisePackagedAcceptedFailure,
 } from "./packaged-recovery-launcher.mjs";
 
 NodeTest.test(
@@ -351,6 +352,28 @@ NodeTest.test(
               response.end("null");
               return;
             }
+            if (request.url === "/api/jones-updates/operations/start") {
+              const input = calls.at(-1).body;
+              const receipt = {
+                ...input,
+                protocol: 1,
+                phase: "accepted",
+                acceptedAt: "2026-10-28T00:00:00Z",
+                updatedAt: "2026-10-28T00:00:00Z",
+              };
+              if (mode === "op-foreign")
+                receipt.operationId = "42345678-1234-4234-8234-123456789abc";
+              if (mode === "op-source") receipt.expectedInstalledSource = "f".repeat(40);
+              if (mode === "op-stage")
+                receipt.action = { ...receipt.action, stagedHandle: "other-stage" };
+              if (mode === "op-update") receipt.updateId = "other-operation";
+              if (mode === "op-phase") receipt.phase = "imaginary";
+              if (mode === "op-time") receipt.updatedAt = "not-a-time";
+              if (mode === "op-message") receipt.message = "x".repeat(1025);
+              if (mode === "op-extra") receipt.unrelated = "not-returned-in-projection";
+              response.end(JSON.stringify(mode === "op-state" ? snapshot : receipt));
+              return;
+            }
             response.end(JSON.stringify(snapshot));
           });
           let listening = false;
@@ -409,6 +432,55 @@ NodeTest.test(
               ],
             );
             NodeAssert.ok(calls.every((call) => call.authorization === "Bearer " + token));
+            const freshId = "42345678-1234-4234-8234-123456789abc";
+            const initialInstall = await client.installOperation();
+            NodeAssert.equal(initialInstall.operationId, prepared.operationId);
+            NodeAssert.equal(initialInstall.phase, "accepted");
+            NodeAssert.deepEqual(calls.at(-1).body, {
+              operationId: prepared.operationId,
+              environmentId: prepared.staged.binding.environmentId,
+              expectedInstalledSource: prepared.staged.binding.activeSourceSha,
+              action: {
+                kind: "install",
+                stagedHandle: prepared.staged.stagedHandle,
+                currentVersion: prepared.staged.binding.activeVersion,
+                targetSource: prepared.staged.receipt.sourceSha,
+              },
+            });
+            const freshInstall = await client.installOperation(freshId);
+            NodeAssert.equal(freshInstall.operationId, freshId);
+            NodeAssert.deepEqual(freshInstall.action, initialInstall.action);
+            for (const invalid of [
+              "op-foreign",
+              "op-source",
+              "op-stage",
+              "op-update",
+              "op-phase",
+              "op-time",
+              "op-message",
+              "op-state",
+            ]) {
+              mode = invalid;
+              const count = calls.length;
+              await NodeAssert.rejects(
+                client.installOperation(),
+                (error) =>
+                  error.message === "Packaged recovery HTTP exchange failed." &&
+                  error.unknownEffect === true &&
+                  !String(error).includes(token),
+              );
+              NodeAssert.equal(calls.length, count + 1, "operation exchange was retried");
+            }
+            mode = "op-extra";
+            NodeAssert.equal((await client.installOperation()).unrelated, undefined);
+            const count = calls.length;
+            NodeAssert.throws(
+              () => client.installOperation("invalid"),
+              /fixed Install operation ID/,
+            );
+            NodeAssert.equal(calls.length, count, "invalid ID was sent");
+            mode = "ok";
+
             const selected = {
               operationId: prepared.operationId,
               stagedHandle: prepared.staged.stagedHandle,
@@ -737,6 +809,236 @@ NodeTest.test(
       if (failure?.preserveScratch === true) {
         failure.scratchRoot = parent;
       } else {
+        await NodeFSP.rm(parent, { recursive: true });
+        await NodeAssert.rejects(NodeFSP.lstat(parent), { code: "ENOENT" });
+      }
+    }
+  },
+);
+
+NodeTest.test(
+  "drives accepted failure, durable restart settlement and a fresh Install through captured HTTP/IPC",
+  {
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone fixture binds its actual host without loading application services.
+    skip: process.platform === "linux" ? false : "Packaged Linux control requires Linux",
+    timeout: 60000,
+  },
+  async (t) => {
+    const parent = await NodeFSP.realpath(
+      await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-packaged-accepted-test-")),
+    );
+    await NodeFSP.chmod(parent, 0o700);
+    let failure;
+    try {
+      const payload = NodePath.join(parent, "payload");
+      await NodeFSP.mkdir(NodePath.join(payload, "client"), { recursive: true, mode: 0o700 });
+      await NodeFSP.writeFile(
+        NodePath.join(payload, "client", "index.html"),
+        "synthetic accepted-failure control",
+        { mode: 0o600 },
+      );
+      const executable = NodePath.join(payload, "t3"),
+        main = NodePath.join(parent, "accepted.cjs");
+      const ledger = NodeURL.fileURLToPath(
+        new URL("../../../apps/server/src/jones/updates/launcherOperation.ts", import.meta.url),
+      );
+      const runtime = NodeURL.fileURLToPath(
+        new URL("../../../apps/server/src/jones/cloud/qualifiedRuntime.ts", import.meta.url),
+      );
+      const ownership = NodeURL.fileURLToPath(
+        new URL("../../../apps/server/src/jones/cloud/stoppedServerOwnership.ts", import.meta.url),
+      );
+      await NodeFSP.writeFile(
+        main,
+        `
+      const fs=require("node:fs/promises"),path=require("node:path"),{spawn}=require("node:child_process");
+      const load=require("node:module").createRequire(process.execPath);
+      (async()=>{
+        const home=process.env.T3CODE_HOME,statePath=path.join(home,"runtime","service-state.json");
+        const write=async(file,value)=>{const tmp=file+".synthetic.tmp";const h=await fs.open(tmp,"w",0o600);
+          try{await h.writeFile(JSON.stringify(value));await h.sync()}finally{await h.close()}
+          await fs.rename(tmp,file);const d=await fs.open(path.dirname(file),"r");try{await d.sync()}finally{await d.close()}};
+        if(process.argv.includes("serve")){
+          const context=JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
+          const http=require("node:http"),pending=new Map();
+          process.on("message",m=>{if(m.type==="update-accepted"){
+            const resolve=pending.get(m.updateId);if(resolve){pending.delete(m.updateId);resolve()}}});
+          const server=http.createServer(async(req,res)=>{
+            res.setHeader("content-type","application/json");
+            if(req.headers.authorization!=="Bearer synthetic-accepted-fixture-token"){res.writeHead(401);res.end("{}");return}
+            try{
+              if(req.method!=="POST"||req.url!=="/api/jones-updates/operations/start"){res.writeHead(404);res.end("{}");return}
+              let size=0,chunks=[];for await(const b of req){size+=b.length;if(size>4096)throw Error("fixture input bound");chunks.push(b)}
+              const input=JSON.parse(Buffer.concat(chunks).toString("utf8")),id=input.operationId;
+              const state=JSON.parse(await fs.readFile(statePath,"utf8"));
+              const refused=state.update?.id===id && state.update.status==="failed";
+              if(!refused)await new Promise((resolve,reject)=>{
+                pending.set(id,resolve);process.send({type:"request-update",operationId:id,targetVersion:"0.0.0-preview.20261002.101.1",
+                  dbPath:path.join(home,"userdata","statev2.sqlite"),stagedHandle:input.action.stagedHandle},e=>{if(e)reject(e)});
+              });
+              res.end(JSON.stringify({...input,protocol:1,phase:refused?"blocked":"accepted",
+                updatedAt:new Date().toISOString(),...(refused?{}:{acceptedAt:new Date().toISOString()})}));
+            }catch(e){res.writeHead(500);res.end("{}");console.error(e.message)}
+          });
+          await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const port=server.address().port;
+          await write(path.join(home,"userdata","server-runtime.json"),{version:1,pid:process.pid,host:"127.0.0.1",port,
+            origin:"http://127.0.0.1:"+port,startedAt:new Date().toISOString(),serviceManaged:true});
+          process.once("SIGTERM",()=>server.close(()=>{if(process.connected)process.disconnect()}));
+          return;
+        }
+        let state=JSON.parse(await fs.readFile(statePath,"utf8"));
+        const ledger=load(${JSON.stringify(ledger)}),runtime=load(${JSON.stringify(runtime)}),
+          {withStoppedServerOwnership}=load(${JSON.stringify(ownership)});
+        if(state.update?.status==="pending"){
+          const old=state.update,id=old.id;
+          const digests=await ledger.writeFailedUpdateOperation(home,old);
+          const cause=await ledger.readUpdateOperationCause(home,id);
+          await ledger.publishUpdateOperationSettlement(home,{
+            schema:1,operationId:id,status:"failed",settlement:"no-effect",basis:"launcher-recorded",...digests,
+            evidence:{phaseAtFailure:"accepted",nativeReason:"launcher-restarted",candidateStarted:false,
+              activeVersion:old.fromVersion,activeSourceSha:old.qualified.binding.activeSourceSha,
+              recoveryPayload:"absent",restorePending:false,cause:cause.message||cause.code,
+              writerLauncherVersion:"1.0.0",recordedAt:new Date().toISOString()},
+          });
+          state.update={id,fromVersion:old.fromVersion,targetVersion:old.targetVersion,qualified:old.qualified,
+            status:"failed",reason:"launcher-restarted"};
+          await write(statePath,state);
+        }
+        const active=path.join(home,"runtime","versions",state.activeVersion,"t3");
+        const child=spawn(active,["serve"],{env:{...process.env,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
+          protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",startupGateProtocol:1,
+        })},stdio:["inherit","inherit","inherit","ipc"]});
+        let dispatching=false,ending=false;
+        const stopChild=()=>new Promise(resolve=>{if(child.exitCode!==null||child.signalCode!==null){resolve();return}
+          child.once("close",resolve);child.kill("SIGTERM")});
+        process.once("SIGTERM",()=>{ending=true;stopChild()});
+        child.on("message",m=>{
+          if(m.type!=="request-update")return;
+          dispatching=true;
+          (async()=>{
+            const qualified=await runtime.verifyStagedQualifiedRuntime(home,state.activeVersion,m.stagedHandle);
+            await ledger.assertNoUnreconciledUpdateOperations(home);
+            await ledger.reserveUpdateOperation(home,m.operationId,ledger.operationBinding(qualified));
+            const pending={id:m.operationId,fromVersion:state.activeVersion,targetVersion:m.targetVersion,
+              dbPath:m.dbPath,qualified,status:"pending",phase:"accepted"};
+            const wasFailed=state.update?.status==="failed";
+            state.update=pending;await write(statePath,state);
+            await new Promise((resolve,reject)=>child.send({type:"update-accepted",updateId:m.operationId},e=>e?reject(e):resolve()));
+            await new Promise(resolve=>setTimeout(resolve,100));
+            ending=true;await stopChild();
+            let step="reverify";
+            try{
+              await runtime.verifyStagedQualifiedRuntime(home,state.activeVersion,m.stagedHandle);
+              step="ownership";
+              await withStoppedServerOwnership(home,async()=>{
+                step="backup";const dir=path.join(home,"runtime","db-backup",m.operationId+".staging");
+                await fs.mkdir(dir,{recursive:true,mode:0o700});
+                await fs.rmdir(dir);
+              });
+            }catch(e){
+              await ledger.writeUpdateOperationCause(home,{schema:1,operationId:m.operationId,step,
+                code:typeof e.code==="string"?e.code:"qualified-"+step+"-failed",message:e.message});
+              process.exitCode=1;return;
+            }
+            if(!wasFailed)throw Error("expected injected first-attempt fault");
+            state.activeVersion=m.targetVersion;state.update={...pending,status:"committed"};await write(statePath,state);
+          })().catch(e=>{console.error(e.stack);process.exitCode=1;ending=true;stopChild()});
+        });
+        child.once("error",e=>{console.error(e.message);process.exitCode=1});
+        child.once("close",()=>{if(!dispatching&&!ending)process.exitCode=1});
+        await write(path.join(home,"runtime","jones-launcher-capability.json"),{
+          launcherPid:process.pid,childPid:child.pid,startupGateProtocol:1,
+        });
+      })().catch(e=>{console.error(e.stack);process.exitCode=1});
+    `,
+        { mode: 0o600 },
+      );
+      const config = NodePath.join(parent, "sea.json");
+      await NodeFSP.writeFile(
+        config,
+        JSON.stringify({
+          main,
+          output: executable,
+          useCodeCache: false,
+          disableExperimentalSEAWarning: true,
+        }),
+        { mode: 0o600 },
+      );
+      const built = NodeChildProcess.spawnSync(process.execPath, ["--build-sea", config], {
+        cwd: parent,
+        env: { PATH: "/usr/bin:/bin", HOME: parent, TMPDIR: parent },
+        encoding: "utf8",
+        timeout: 30000,
+        maxBuffer: 128 * 1024,
+      });
+      NodeAssert.equal(built.error, undefined);
+      NodeAssert.equal(built.status, 0, built.stderr);
+      NodeAssert.equal(built.signal, null);
+      await NodeFSP.chmod(executable, 0o700);
+      const payloadSha256 = await qualifiedPayloadDigest(payload);
+      const receipt = (active) => ({
+        protocol: 1,
+        repository: "Jones-Systems/Jones-Code",
+        channel: "jones-main",
+        version: active ? "0.0.0-preview.20261002.100" : "0.0.0-preview.20261002.101.1",
+        sourceSha: (active ? "c" : "a").repeat(40),
+        sourceTree: "b".repeat(40),
+        installedSourceSha: (active ? "f" : "c").repeat(40),
+        runId: active ? 100 : 101,
+        runAttempt: 1,
+        artifactId: active ? 200 : 201,
+        workflow: ".github/workflows/artifact-cli-linux.yml",
+        artifactDigest: "sha256:" + "d".repeat(64),
+        archiveSha256: "e".repeat(64),
+        platform: "linux",
+        // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone fixture binds its actual host without loading application services.
+        architecture: process.arch,
+        payloadSha256,
+      });
+      for (const step of ["reverify", "backup", "ownership"]) {
+        let caseFailure;
+        await t.test(
+          step + " settles the failed ID then commits a distinct fresh Install",
+          async () => {
+            try {
+              const root = NodePath.join(parent, "jones-packaged-recovery-" + step);
+              await NodeFSP.mkdir(root, { mode: 0o700 });
+              const prepared = await seedPackagedRecoveryFixture({
+                root,
+                active: { payloadDirectory: payload, receipt: receipt(true) },
+                candidate: { payloadDirectory: payload, receipt: receipt(false) },
+                kind: "staged",
+                recoveryPayload: false,
+                operationId: "12345678-1234-4234-8234-123456789abc",
+              });
+              const result = await exercisePackagedAcceptedFailure({
+                prepared,
+                step,
+                freshOperationId: "42345678-1234-4234-8234-123456789abc",
+                token: "synthetic-accepted-fixture-token",
+              });
+              NodeAssert.equal(result.assertionsPassed, true);
+              NodeAssert.equal(result.step, step);
+              NodeAssert.equal(result.packagedRecoveryMatrixPassed, false);
+              NodeAssert.equal(result.externalDescendantSettlementRequired, true);
+              NodeAssert.equal(result.committed.update.id, result.freshOperationId);
+              NodeAssert.equal(result.settlement.basis, "launcher-recorded");
+              NodeAssert.equal(result.acceptance.receipt.sendCallbackCompleted, true);
+              await NodeFSP.rm(root, { recursive: true });
+              await NodeAssert.rejects(NodeFSP.lstat(root), { code: "ENOENT" });
+            } catch (error) {
+              caseFailure = error;
+              throw error;
+            }
+          },
+        );
+        if (caseFailure) throw caseFailure;
+      }
+    } catch (error) {
+      failure = error;
+      throw error;
+    } finally {
+      if (!failure?.preserveScratch) {
         await NodeFSP.rm(parent, { recursive: true });
         await NodeAssert.rejects(NodeFSP.lstat(parent), { code: "ENOENT" });
       }
