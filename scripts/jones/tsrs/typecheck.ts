@@ -41,6 +41,10 @@ export async function launchVerified(
   installed: Identity.Installed,
   signal: AbortSignal,
   launch: (compiler: Identity.Installed, spawned: () => Promise<void>) => Promise<number>,
+  hooks: {
+    readonly contended?: () => void | Promise<void>;
+    readonly acquired?: () => void | Promise<void>;
+  } = {},
 ): Promise<number> {
   const deadline = (await Effect.runPromise(Clock.currentTimeMillis)) + 10000;
   let lock: Awaited<ReturnType<typeof acquireLock>>;
@@ -50,6 +54,7 @@ export async function launchVerified(
       lock = await acquireLock(installed);
       break;
     } catch (error) {
+      await hooks.contended?.();
       if ((await Effect.runPromise(Clock.currentTimeMillis)) >= deadline) throw error;
       // Parallel launchers may observe an in-progress lock write or reclamation.
       // Retrying never admits a compiler without acquiring and verifying again.
@@ -63,6 +68,7 @@ export async function launchVerified(
     await lock.release();
   };
   try {
+    await hooks.acquired?.();
     if (signal.aborted) throw new Error("Command cancelled before verification.");
     const compiler = await Identity.verified(installed);
     // Native spawn completion pins the executable inode. Release before waiting

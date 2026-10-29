@@ -270,6 +270,7 @@ export async function patch(
   root: string,
   mode: "patch" | "verify" | "restore",
   signal: AbortSignal,
+  hooks: { readonly spawningRecorded?: () => void | Promise<void> } = {},
 ): Promise<number> {
   const target = Identity.hostTarget();
   if (!target) {
@@ -319,6 +320,7 @@ export async function patch(
       if (!bundled) throw new Error("Official patcher was not resolved.");
       await lock.update({ phase: "spawning" });
       release = false;
+      await hooks.spawningRecorded?.();
       const code = await runChild({
         executable: HostProcess.ExecutablePath.defaultValue(),
         args: [bundled.cli, "patch", "--no-typescript", "--tsrs"],

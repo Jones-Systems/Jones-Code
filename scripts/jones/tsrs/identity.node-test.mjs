@@ -6,7 +6,7 @@ import { runProcess } from "../incremental-typecheck/incrementalTypecheck.ts";
 import * as NodeTest from "node:test";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as Identity from "./identity.ts";
-import { acquireLock, processIdentity, restorePristine, runChild } from "./patch.ts";
+import { acquireLock, processIdentity, restorePristine, runChild, patch } from "./patch.ts";
 import { admit, launchVerified } from "./typecheck.ts";
 
 const repository = NodePath.resolve(import.meta.dirname, "../../..");
@@ -492,3 +492,120 @@ NodeTest.test(
     NodeAssert.match(positive.stdout, /local or cached success requires authoritative/);
   },
 );
+
+for (const [signalName, exitCode] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+]) {
+  NodeTest.test(`before-spawn cancellation proves no child and ${exitCode}`, async (t) => {
+    const { installed } = await patchedFixture(t);
+    const controller = new AbortController();
+    controller.abort(signalName);
+    let spawned = false;
+    await NodeAssert.rejects(
+      runChild({
+        executable: process.execPath,
+        args: ["-e", "process.exit(99)"],
+        cwd: installed.root,
+        signal: controller.signal,
+        spawned: async () => {
+          spawned = true;
+        },
+      }),
+      (error) => error.exitCode === exitCode && error.childState === "not-spawned",
+    );
+    NodeAssert.equal(spawned, false);
+  });
+
+  for (const stage of ["before", "contention", "acquired"])
+    NodeTest.test(
+      `mutation-lock cancellation ${signalName} at ${stage} preserves ownership`,
+      async (t) => {
+        const { installed } = await patchedFixture(t);
+        const lockPath = NodePath.join(installed.root, "node_modules/.cache/jones/tsrs/patch.lock");
+        const controller = new AbortController();
+        const foreign = stage === "contention" ? await acquireLock(installed) : undefined;
+        const before = foreign ? await NodeFSP.readFile(lockPath) : undefined;
+        let launched = false;
+        if (stage === "before") controller.abort(signalName);
+        try {
+          await NodeAssert.rejects(
+            launchVerified(
+              installed,
+              controller.signal,
+              async () => {
+                launched = true;
+                return 0;
+              },
+              {
+                [stage === "contention" ? "contended" : "acquired"]: () =>
+                  controller.abort(signalName),
+              },
+            ),
+            (error) => error.exitCode === exitCode,
+          );
+          NodeAssert.equal(launched, false);
+          if (foreign) NodeAssert.deepEqual(await NodeFSP.readFile(lockPath), before);
+          else await NodeAssert.rejects(NodeFSP.stat(lockPath), { code: "ENOENT" });
+        } finally {
+          await foreign?.release();
+        }
+      },
+    );
+
+  NodeTest.test(
+    `patch cancellation ${signalName} after spawning record releases only its known unspawned lock`,
+    async (t) => {
+      const { installed } = await fixture(t);
+      const wrapper = NodePath.join(installed.root, "node_modules/tsrs/package.json");
+      const manifest = NodePath.join(NodePath.dirname(installed.executable), "package.json");
+      await NodeFSP.mkdir(NodePath.dirname(wrapper), { recursive: true });
+      await NodeFSP.writeFile(
+        wrapper,
+        JSON.stringify({ name: "tsrs", version: Identity.TSRS_VERSION }),
+      );
+      await NodeFSP.writeFile(
+        manifest,
+        JSON.stringify({ name: `@tsrs/${installed.target}`, version: Identity.TSRS_VERSION }),
+      );
+      const binding = NodePath.join(
+        NodePath.dirname(wrapper),
+        "node_modules/@tsrs",
+        installed.target,
+      );
+      await NodeFSP.mkdir(NodePath.dirname(binding), { recursive: true });
+      await NodeFSP.symlink(NodePath.dirname(manifest), binding, "dir");
+      const original = await Identity.image(installed.executable);
+      const controller = new AbortController();
+      let barrier = false;
+      const error = await patch(installed.root, "patch", controller.signal, {
+        spawningRecorded: async () => {
+          const lock = JSON.parse(
+            await NodeFSP.readFile(
+              NodePath.join(installed.root, "node_modules/.cache/jones/tsrs/patch.lock"),
+              "utf8",
+            ),
+          );
+          NodeAssert.equal(lock.phase, "spawning");
+          NodeAssert.equal(lock.child, undefined);
+          barrier = true;
+          controller.abort(signalName);
+        },
+      }).then(
+        () => undefined,
+        (error) => error,
+      );
+      NodeAssert.equal(barrier, true);
+      NodeAssert.deepEqual(await Identity.image(installed.executable), original);
+      NodeAssert.equal((await Identity.classify(installed)).name, "S0");
+      await NodeAssert.rejects(
+        NodeFSP.stat(NodePath.join(installed.root, "node_modules/.cache/jones/tsrs/patch.lock")),
+        { code: "ENOENT" },
+      );
+      const next = await acquireLock(installed);
+      await next.release();
+      NodeAssert.equal(error.exitCode, exitCode);
+      NodeAssert.equal(error.childState, "not-spawned");
+    },
+  );
+}
