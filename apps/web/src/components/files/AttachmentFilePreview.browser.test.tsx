@@ -1881,122 +1881,136 @@ it("keeps spreadsheet dates on their calendar day west of UTC", async () => {
   }
 });
 
-it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (pages) => {
-  const workerTrace: unknown[] = [];
-  const record = (entry: unknown) => {
-    workerTrace.push(entry);
-    if (workerTrace.length > 48) workerTrace.shift();
-  };
-  const NativeWorker = Worker;
-  using _workers = stubGlobal(
-    "Worker",
-    class extends NativeWorker {
-      constructor(url: string | URL, options?: WorkerOptions) {
-        super(url, options);
-        const name = String(url).split("/").pop();
-        record({ worker: name, event: "started" });
-        this.addEventListener("message", (event) => {
-          const data = event.data;
-          record({
-            worker: name,
-            event: "reply",
-            type: data?.type,
-            phase: data?.phase,
-            elapsedMs: data?.elapsedMs,
-            id: data?.id,
-            ok: data?.ok,
-            pages: data?.value?.pages?.length,
-            loading: data?.value?.loading,
+it.each([60, 100])(
+  "renders all %i pages of a table-heavy Word report",
+  async (pages) => {
+    const workerTrace: unknown[] = [];
+    const record = (entry: unknown) => {
+      workerTrace.push(entry);
+      if (workerTrace.length > 48) workerTrace.shift();
+    };
+    const NativeWorker = Worker;
+    using _workers = stubGlobal(
+      "Worker",
+      class extends NativeWorker {
+        constructor(url: string | URL, options?: WorkerOptions) {
+          super(url, options);
+          const name = String(url).split("/").pop();
+          record({ worker: name, event: "started" });
+          this.addEventListener("message", (event) => {
+            const data = event.data;
+            record({
+              worker: name,
+              event: "reply",
+              type: data?.type,
+              phase: data?.phase,
+              elapsedMs: data?.elapsedMs,
+              id: data?.id,
+              ok: data?.ok,
+              pages: data?.value?.pages?.length,
+              loading: data?.value?.loading,
+            });
           });
-        });
-        this.addEventListener("error", (event) =>
-          record({ worker: name, event: "error", message: event.message }),
-        );
-      }
-      override postMessage(
-        message: unknown,
-        options: Transferable[] | StructuredSerializeOptions = [],
-      ) {
-        const data = message as {
-          method?: string;
-          type?: string;
-          id?: number;
-          input?: { bytes: ArrayBuffer };
-        };
-        if (data.method === "open" && data.input)
-          message = { ...data, input: { ...data.input, traceOpen: true } };
-        record({ event: "request", method: data.method, type: data.type, id: data.id });
-        if (Array.isArray(options)) super.postMessage(message, options);
-        else super.postMessage(message, options);
-      }
-    },
-  );
-  const { default: JSZip } = await import("jszip");
-  const archive = new JSZip();
-  const paragraph = (text: string) =>
-    `<w:p><w:pPr><w:spacing w:after="120"/><w:jc w:val="left"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Calibri"/><w:sz w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
-  archive.file(
-    "word/document.xml",
-    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${Array.from({ length: pages }, (_, page) => paragraph(`page ${page + 1}`) + `<w:tbl>${Array.from({ length: 10 }, () => `<w:tr>${Array.from({ length: 5 }, () => `<w:tc><w:tcPr><w:tcW w:w="1800"/></w:tcPr>${paragraph("report entry")}</w:tc>`).join("")}</w:tr>`).join("")}</w:tbl>`).join("")}</w:body></w:document>`,
-  );
-  archive.file(
-    "_rels/.rels",
-    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
-  );
-  archive.file(
-    "[Content_Types].xml",
-    '<Types><Default Extension="png" ContentType="image/png"/></Types>',
-  );
-  // Binary media must not consume the document's markup budget.
-  archive.file("word/media/image.png", new Uint8Array(2_500_000));
-  const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
-  await using screen = await render(
-    <div style={{ display: "flex", height: 400, width: 600 }}>
-      <AttachmentFilePreview
-        name="report.docx"
-        mimeType="application/octet-stream"
-        file={file}
-        sizeBytes={file.size}
-      />
-    </div>,
-  );
-  await vi.waitFor(
-    () =>
-      expect(
-        screen.container.textContent,
-        JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
-      ).toMatch(/\d+ pages/),
-    {
-      timeout: 10_000,
-    },
-  );
-  expect(screen.container.textContent).not.toContain("Preview limited");
-  expect(screen.container.querySelector('[role="alert"]')).toBeNull();
-  const scroll = screen.container.querySelector<HTMLElement>("[data-office-pages]")!;
-  const pageCount = Number(/(\d+) pages/.exec(screen.container.textContent!)![1]);
-  // Layout publishes its count before OfficePages finishes mounting placeholder batches.
-  await vi.waitFor(() => {
-    const placeholders = scroll.querySelectorAll<HTMLElement>('[role="group"]');
-    expect(placeholders, officePreviewState(screen)).toHaveLength(pageCount);
-    expect(placeholders[pageCount - 1]!.getBoundingClientRect().height).toBeGreaterThan(0);
-  });
-  expect(scroll.clientHeight).toBeGreaterThan(0);
-  expect(scroll.clientHeight).toBeLessThan(scroll.scrollHeight);
-  const finalPages = scroll.querySelectorAll<HTMLElement>('[role="group"]');
-  // The final report label may precede a table that continues onto the last layout page.
-  await act(() =>
-    scroll.scrollTo({ top: finalPages[pageCount - 1]!.offsetTop - scroll.clientHeight / 2 }),
-  );
-  await vi.waitFor(
-    () =>
-      expect(screen.container.textContent, officePreviewState(screen)).toContain("page " + pages),
-    {
-      timeout: 3_000,
-    },
-  );
-  await act(() => scroll.scrollTo({ top: scroll.scrollHeight }));
-  expect(scroll.scrollTop + scroll.clientHeight).toBeGreaterThanOrEqual(scroll.scrollHeight - 1);
-});
+          this.addEventListener("error", (event) =>
+            record({ worker: name, event: "error", message: event.message }),
+          );
+        }
+        override postMessage(
+          message: unknown,
+          options: Transferable[] | StructuredSerializeOptions = [],
+        ) {
+          const data = message as {
+            method?: string;
+            type?: string;
+            id?: number;
+            input?: { bytes: ArrayBuffer };
+          };
+          if (data.method === "open" && data.input)
+            message = { ...data, input: { ...data.input, traceOpen: true } };
+          record({ event: "request", method: data.method, type: data.type, id: data.id });
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        }
+      },
+    );
+    const { default: JSZip } = await import("jszip");
+    const archive = new JSZip();
+    const paragraph = (text: string) =>
+      `<w:p><w:pPr><w:spacing w:after="120"/><w:jc w:val="left"/></w:pPr><w:r><w:rPr><w:rFonts w:ascii="Calibri"/><w:sz w:val="22"/></w:rPr><w:t>${text}</w:t></w:r></w:p>`;
+    archive.file(
+      "word/document.xml",
+      `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${Array.from({ length: pages }, (_, page) => paragraph(`page ${page + 1}`) + `<w:tbl>${Array.from({ length: 10 }, () => `<w:tr>${Array.from({ length: 5 }, () => `<w:tc><w:tcPr><w:tcW w:w="1800"/></w:tcPr>${paragraph("report entry")}</w:tc>`).join("")}</w:tr>`).join("")}</w:tbl>`).join("")}</w:body></w:document>`,
+    );
+    archive.file(
+      "_rels/.rels",
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+    );
+    archive.file(
+      "[Content_Types].xml",
+      '<Types><Default Extension="png" ContentType="image/png"/></Types>',
+    );
+    // Binary media must not consume the document's markup budget.
+    archive.file("word/media/image.png", new Uint8Array(2_500_000));
+    const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
+    await using screen = await render(
+      <div style={{ display: "flex", height: 400, width: 600 }}>
+        <AttachmentFilePreview
+          name="report.docx"
+          mimeType="application/octet-stream"
+          file={file}
+          sizeBytes={file.size}
+        />
+      </div>,
+    );
+    // Opening loads the engine and fonts before pagination can begin. Give each
+    // stage its own bound so startup does not consume pagination's deadline.
+    await vi.waitFor(
+      () =>
+        expect(
+          screen.container.querySelector("[data-office-pages]"),
+          JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
+        ).not.toBeNull(),
+      { timeout: 10_000 },
+    );
+    await vi.waitFor(
+      () =>
+        expect(
+          screen.container.textContent,
+          JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
+        ).toMatch(/\d+ pages/),
+      {
+        timeout: 10_000,
+      },
+    );
+    expect(screen.container.textContent).not.toContain("Preview limited");
+    expect(screen.container.querySelector('[role="alert"]')).toBeNull();
+    const scroll = screen.container.querySelector<HTMLElement>("[data-office-pages]")!;
+    const pageCount = Number(/(\d+) pages/.exec(screen.container.textContent!)![1]);
+    // Layout publishes its count before OfficePages finishes mounting placeholder batches.
+    await vi.waitFor(() => {
+      const placeholders = scroll.querySelectorAll<HTMLElement>('[role="group"]');
+      expect(placeholders, officePreviewState(screen)).toHaveLength(pageCount);
+      expect(placeholders[pageCount - 1]!.getBoundingClientRect().height).toBeGreaterThan(0);
+    });
+    expect(scroll.clientHeight).toBeGreaterThan(0);
+    expect(scroll.clientHeight).toBeLessThan(scroll.scrollHeight);
+    const finalPages = scroll.querySelectorAll<HTMLElement>('[role="group"]');
+    // The final report label may precede a table that continues onto the last layout page.
+    await act(() =>
+      scroll.scrollTo({ top: finalPages[pageCount - 1]!.offsetTop - scroll.clientHeight / 2 }),
+    );
+    await vi.waitFor(
+      () =>
+        expect(screen.container.textContent, officePreviewState(screen)).toContain("page " + pages),
+      {
+        timeout: 3_000,
+      },
+    );
+    await act(() => scroll.scrollTo({ top: scroll.scrollHeight }));
+    expect(scroll.scrollTop + scroll.clientHeight).toBeGreaterThanOrEqual(scroll.scrollHeight - 1);
+  },
+  30_000,
+);
 
 describe("standalone Mermaid previews", () => {
   it.each([
