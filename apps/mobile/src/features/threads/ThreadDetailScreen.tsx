@@ -584,9 +584,11 @@ function ThreadDetailBody(props: ThreadDetailScreenProps) {
     setStatusRequest(request);
     try {
       await undoSettleThread({ environmentId: props.environmentId, id: props.selectedThread.id });
-    } finally {
+    } catch (cause) {
       setStatusRequest((current) => (current === request ? null : current));
+      throw cause;
     }
+    setStatusRequest((current) => (current === request ? null : current));
   };
   const runStatusAction = async (action: "stop" | "wake" | "unsettle" | "dismiss") => {
     if (statusPending || !props.canOperateThread) return;
