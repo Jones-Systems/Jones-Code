@@ -1,15 +1,8 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "anonymous-checkout",
-  "jonesOwnedPaths": [
-    "scripts/jones/ci/anonymous-checkout.sh",
-    "scripts/jones/ci/anonymous-checkout.node-test.mjs"
-  ],
-  "hookPaths": [
-    ".github/workflows/ci.yml",
-    ".github/workflows/jones-update-qualification.yml",
-    ".github/workflows/native-enrollment-candidate.yml"
-  ],
+  "jonesOwnedPaths": [],
+  "hookPaths": [],
   "tombstones": [],
   "allowedImports": []
 }
