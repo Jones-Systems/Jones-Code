@@ -29,7 +29,6 @@ export function QuestionAnswerFooter({
   isResponding,
   capabilities,
   onChangeCustomAnswer,
-  onToggleOption,
   onPrevious,
   onAdvance,
 }: {
@@ -40,7 +39,6 @@ export function QuestionAnswerFooter({
   isResponding: boolean;
   capabilities: QuestionAnswerAttachmentCapabilities;
   onChangeCustomAnswer: (questionId: string, value: string) => void;
-  onToggleOption: (questionId: string, optionValue: string) => void;
   onPrevious: () => void;
   onAdvance: () => void;
 }) {
@@ -121,27 +119,8 @@ export function QuestionAnswerFooter({
         }}
         className="ms-5 space-y-2 pb-2"
       >
-        {state.showField &&
-        (state.fieldLabel || (!state.notes && progress.activeQuestion?.options.length)) ? (
-          <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-            <span>
-              {state.fieldLabel}
-              {!state.notes && progress.activeQuestion?.options.length
-                ? "Typing replaces your choice"
-                : ""}
-            </span>
-            {state.notes && state.hasChoice ? (
-              <Button
-                type="button"
-                variant="ghost"
-                size="xs"
-                disabled={state.fieldDisabled}
-                onClick={() => onToggleOption(questionId, progress.selectedOptionValues[0]!)}
-              >
-                Clear choice
-              </Button>
-            ) : null}
-          </div>
+        {state.showField && !state.notes && progress.activeQuestion?.options.length ? (
+          <p className="text-xs text-muted-foreground">Typing replaces your choice</p>
         ) : null}
         <div className="flex items-end gap-2">
           {state.showField ? (

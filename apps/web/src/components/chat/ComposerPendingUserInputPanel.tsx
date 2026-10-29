@@ -291,7 +291,6 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
           isResponding={isResponding}
           capabilities={attachmentCapabilities}
           onChangeCustomAnswer={onChangeCustomAnswer}
-          onToggleOption={onToggleOption}
           onPrevious={onPrevious}
           onAdvance={onAdvance}
         />
