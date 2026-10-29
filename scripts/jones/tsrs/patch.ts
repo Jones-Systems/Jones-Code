@@ -193,6 +193,21 @@ export interface ChildOptions {
   spawned?: (pid: number) => Promise<void>;
 }
 
+export function cancellationExitCode(signal: AbortSignal): 130 | 143 {
+  return signal.reason === "SIGINT" ? 130 : 143;
+}
+
+export class CommandCancelled extends Error {
+  readonly exitCode: 130 | 143;
+  readonly childState: "not-spawned" | "closed";
+
+  constructor(signal: AbortSignal, childState: "not-spawned" | "closed" = "not-spawned") {
+    super("Command cancelled before completion.");
+    this.exitCode = cancellationExitCode(signal);
+    this.childState = childState;
+  }
+}
+
 // Scope closure happens only after exit observation; lock callers can preserve
 // unknown spawn/exit states instead of racing a still-running patcher.
 export async function runChild(options: ChildOptions): Promise<number> {
@@ -202,7 +217,7 @@ export async function runChild(options: ChildOptions): Promise<number> {
   let observed = false;
   let child: ChildProcessSpawner.ChildProcessHandle | undefined;
   try {
-    if (options.signal.aborted) throw new Error("Command cancelled before spawn.");
+    if (options.signal.aborted) throw new CommandCancelled(options.signal);
     child = await Effect.runPromise(
       Effect.flatMap(ChildProcessSpawner.ChildProcessSpawner, (spawner) =>
         spawner.spawn(
@@ -239,11 +254,12 @@ export async function runChild(options: ChildOptions): Promise<number> {
       stop();
       await Effect.runPromiseExit(child.exitCode);
       observed = true;
+      if (error instanceof CommandCancelled) throw new CommandCancelled(options.signal, "closed");
       throw error;
     }
     const outcome = await Effect.runPromiseExit(child.exitCode);
     observed = true;
-    if (options.signal.aborted) return options.signal.reason === "SIGINT" ? 130 : 143;
+    if (options.signal.aborted) return cancellationExitCode(options.signal);
     if (Exit.isFailure(outcome))
       throw new Error(`Child ${child.pid} exited by signal or failed: ${String(outcome.cause)}`);
     return outcome.value;
@@ -310,7 +326,7 @@ export async function patch(
       throw new Error(
         `TSRS ${state.name}: ${state.reason}; reinstall the exact private @tsrs platform entry. No file was changed.`,
       );
-    if (signal.aborted) return 143;
+    if (signal.aborted) throw new CommandCancelled(signal);
     if (mode === "restore") {
       await restorePristine(installed);
       return 0;
@@ -337,7 +353,7 @@ export async function patch(
         process.stderr.write(
           `[tsrs] patch stopped (${code}), state ${after.name}; next invocation may recover after confirmed exit.\n`,
         );
-        return code || 1;
+        return signal.aborted ? cancellationExitCode(signal) : code || 1;
       }
     }
     await Identity.verified(installed);
@@ -345,6 +361,13 @@ export async function patch(
       `[tsrs] official Effect build verified: ${target} ${Identity.EFFECT_VERSION}\n`,
     );
     return 0;
+  } catch (error) {
+    if (!release && error instanceof CommandCancelled && error.childState === "not-spawned") {
+      // The child boundary proves no spawn was attempted; unknown spawn failures retain the lock.
+      await lock.update({ phase: "exited" });
+      release = true;
+    }
+    throw error;
   } finally {
     if (release) await lock.release();
   }
@@ -371,6 +394,9 @@ export async function main(argv: string[]): Promise<number> {
       mode,
       controller.signal,
     );
+  } catch (error) {
+    if (error instanceof CommandCancelled) return error.exitCode;
+    throw error;
   } finally {
     process.removeListener("SIGINT", interrupt);
     process.removeListener("SIGTERM", terminate);

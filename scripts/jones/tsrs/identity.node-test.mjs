@@ -6,7 +6,14 @@ import { runProcess } from "../incremental-typecheck/incrementalTypecheck.ts";
 import * as NodeTest from "node:test";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as Identity from "./identity.ts";
-import { acquireLock, processIdentity, restorePristine, runChild, patch } from "./patch.ts";
+import {
+  acquireLock,
+  processIdentity,
+  restorePristine,
+  runChild,
+  patch,
+  CommandCancelled,
+} from "./patch.ts";
 import { admit, launchVerified } from "./typecheck.ts";
 
 const repository = NodePath.resolve(import.meta.dirname, "../../..");
@@ -609,3 +616,25 @@ for (const [signalName, exitCode] of [
     },
   );
 }
+
+NodeTest.test("post-spawn cancellation cannot claim unspawned evidence", async (t) => {
+  const { installed } = await patchedFixture(t);
+  const controller = new AbortController();
+  let pid;
+  await NodeAssert.rejects(
+    runChild({
+      executable: process.execPath,
+      args: ["-e", "setInterval(() => {}, 1000)"],
+      cwd: installed.root,
+      signal: controller.signal,
+      spawned: async (captured) => {
+        pid = captured;
+        controller.abort("SIGINT");
+        throw new CommandCancelled(controller.signal);
+      },
+    }),
+    (error) => error.exitCode === 130 && error.childState === "closed",
+  );
+  NodeAssert.ok(Number.isInteger(pid));
+  NodeAssert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+});
