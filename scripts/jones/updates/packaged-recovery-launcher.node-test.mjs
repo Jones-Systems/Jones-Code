@@ -178,7 +178,8 @@ NodeTest.test(
               if(!existing){
                 const evaluated=await evaluateLegacyUpdateSettlement({
                   baseDir:home,operationId:message.operationId,current:state.update,
-                  active:{activeVersion:state.activeVersion,activeSourceSha:qualified.binding.activeSourceSha},
+                  active:{activeVersion:state.activeVersion,activeSourceSha:JSON.parse(
+                    await fs.readFile(path.join(home,"runtime","versions",state.activeVersion,".jones-runtime-receipt.json"),"utf8")).sourceSha},
                 });
                 if(evaluated.result==="refused"){
                   result="refused";reason=evaluated.reason;
@@ -814,6 +815,7 @@ NodeTest.test(
         { archivedOutcome: false },
         { archivedOutcome: true },
         { archivedOutcome: true, legacyVariant: "restore-pending" },
+        { archivedOutcome: true, legacyVariant: "active-changed" },
       ]) {
         await t.test(
           "runs the real HTTP/IPC transport control with archivedOutcome=" +
@@ -881,17 +883,31 @@ NodeTest.test(
               NodeAssert.equal(result.settlement, null);
               NodeAssert.deepEqual(result.refusal, {
                 variant: legacyVariant,
-                reason: "restore-pending",
+                reason: legacyVariant,
                 heldEvidenceUnchanged: true,
               });
               NodeAssert.ok(
-                result.observation.replies.every((reply) => reply.reason === "restore-pending"),
+                result.observation.replies.every((reply) => reply.reason === legacyVariant),
               );
               await NodeAssert.rejects(
                 preparePackagedReconciliationObservation({ prepared, requestIds: fixedIds }),
                 /occupied|EEXIST/,
               );
             } else NodeAssert.equal(result.settlement.basis, "legacy-reconciled");
+            if (legacyVariant === "active-changed") {
+              NodeAssert.equal(
+                result.activeReceiptDrift.launcherPid,
+                result.observation.replies[0].launcherPid,
+              );
+              NodeAssert.equal(
+                result.activeReceiptDrift.childPid,
+                result.observation.replies[0].childPid,
+              );
+              NodeAssert.notEqual(
+                result.activeReceiptDrift.originalSha256,
+                result.activeReceiptDrift.changedSha256,
+              );
+            } else NodeAssert.equal(result.activeReceiptDrift, undefined);
             NodeAssert.equal(result.state.update.id, prepared.operationId);
             NodeAssert.equal(result.state.update.status, "failed");
             NodeAssert.ok(!JSON.stringify(result).includes(input.token));
