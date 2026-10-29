@@ -403,3 +403,245 @@ function install(filename) {
   };
   syncBuiltinESMExports();
 }
+
+const observerPath = process.env.JONES_PACKAGED_RECOVERY_OBSERVER;
+if (observerPath !== undefined) {
+  delete process.env.JONES_PACKAGED_RECOVERY_OBSERVER;
+  installObserver(observerPath);
+}
+
+function installObserver(filename) {
+  // oxlint-disable-next-line t3code/no-global-process-runtime -- This standalone fixture observes its actual Linux child without loading application services.
+  ensure(process.platform === "linux", "Linux observer required");
+  ensure(
+    path.isAbsolute(filename) && path.basename(filename) === "observer-plan.json",
+    "invalid observer plan path",
+  );
+  const root = path.dirname(filename);
+  const rootStat = fs.lstatSync(root);
+  ensure(
+    fs.realpathSync(root) === root &&
+      path.basename(root).startsWith("jones-packaged-recovery-") &&
+      rootStat.isDirectory() &&
+      rootStat.uid === process.getuid() &&
+      (rootStat.mode & 0o077) === 0,
+    "private physical observer fixture required",
+  );
+  const plan = privateJson(filename);
+  const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
+  ensure(
+    exactKeys(plan, [
+      "protocol",
+      "fixtureId",
+      "executable",
+      "identity",
+      "operationId",
+      "requestIds",
+      "childExecutable",
+      "childIdentity",
+      "childVersion",
+    ]) &&
+      plan.protocol === 1 &&
+      /^[a-f0-9]{32}$/.test(plan.fixtureId) &&
+      uuid.test(plan.operationId) &&
+      Array.isArray(plan.requestIds) &&
+      plan.requestIds.length === 2 &&
+      plan.requestIds.every((id) => typeof id === "string" && uuid.test(id)) &&
+      new Set(plan.requestIds).size === 2 &&
+      typeof plan.childVersion === "string" &&
+      plan.childVersion.length > 0 &&
+      plan.childVersion.length <= 256,
+    "invalid observer bindings",
+  );
+  const executable = fs.realpathSync(process.execPath);
+  const home = path.join(root, "home");
+  ensure(
+    process.env.T3CODE_HOME === home &&
+      fs.realpathSync(home) === home &&
+      plan.executable === executable &&
+      sameIdentity(plan.identity, identity(executable)) &&
+      sameIdentity(plan.identity, identity("/proc/self/exe")),
+    "observer executable or home differs",
+  );
+  ensure(
+    typeof plan.childExecutable === "string" &&
+      path.isAbsolute(plan.childExecutable) &&
+      fs.realpathSync(plan.childExecutable) === plan.childExecutable &&
+      sameIdentity(plan.childIdentity, identity(plan.childExecutable)),
+    "observer child identity differs",
+  );
+  const owner = privateJson(path.join(root, "fixture-owner.json"));
+  ensure(
+    exactKeys(owner, ["protocol", "purpose", "fixtureId", "executable", "identity"]) &&
+      owner.protocol === 1 &&
+      owner.purpose === "jones-packaged-recovery" &&
+      owner.fixtureId === plan.fixtureId &&
+      owner.executable === executable &&
+      sameIdentity(owner.identity, plan.identity),
+    "observer ownership differs",
+  );
+  const directory = path.join(root, "ipc-observations");
+  fs.mkdirSync(directory, { mode: 0o700 });
+  const allocation = fs.lstatSync(directory);
+  function record(name, value) {
+    const stat = fs.lstatSync(directory);
+    ensure(
+      fs.realpathSync(root) === root &&
+        fs.realpathSync(directory) === directory &&
+        stat.dev === allocation.dev &&
+        stat.ino === allocation.ino &&
+        stat.isDirectory() &&
+        stat.uid === process.getuid() &&
+        (stat.mode & 0o077) === 0,
+      "observer allocation differs",
+    );
+    const target = path.join(directory, name + ".json");
+    const bytes = JSON.stringify(value) + "\n";
+    ensure(Buffer.byteLength(bytes) <= 2048, "observer projection exceeded bound");
+    let fd;
+    try {
+      fd = fs.openSync(
+        target,
+        fs.constants.O_WRONLY |
+          fs.constants.O_CREAT |
+          fs.constants.O_EXCL |
+          fs.constants.O_NOFOLLOW,
+        0o600,
+      );
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      ensure(
+        JSON.stringify(privateJson(target)) === JSON.stringify(value),
+        "observer receipt collision",
+      );
+      return;
+    }
+    try {
+      fs.writeFileSync(fd, bytes);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    const parent = fs.openSync(
+      directory,
+      fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW,
+    );
+    try {
+      fs.fsyncSync(parent);
+    } finally {
+      fs.closeSync(parent);
+    }
+  }
+  const childProcess = require("node:child_process");
+  const originalSpawn = childProcess.spawn;
+  let captured = false;
+  childProcess.spawn = function (command, args, options) {
+    const contextText = options?.env?.T3_SERVICE_LAUNCHER_CONTEXT;
+    if (typeof contextText !== "string" || options.env.T3CODE_HOME !== home)
+      return Reflect.apply(originalSpawn, this, arguments);
+    ensure(contextText.length <= 8192, "observer context exceeded bound");
+    const context = JSON.parse(contextText);
+    if (
+      context.protocol !== 4 ||
+      context.childVersion !== plan.childVersion ||
+      context.update !== undefined
+    )
+      return Reflect.apply(originalSpawn, this, arguments);
+    ensure(
+      !captured &&
+        typeof command === "string" &&
+        fs.realpathSync(command) === plan.childExecutable &&
+        sameIdentity(plan.childIdentity, identity(command)) &&
+        Array.isArray(args) &&
+        args.length === 1 &&
+        args[0] === "serve" &&
+        Array.isArray(options.stdio) &&
+        options.stdio.join(",") === "inherit,inherit,inherit,ipc",
+      "observer active child launch differs",
+    );
+    const child = Reflect.apply(originalSpawn, this, arguments);
+    captured = true;
+    const seen = new Set();
+    const projection = (requestId, phase, extra = {}) => ({
+      protocol: 1,
+      fixtureId: plan.fixtureId,
+      operationId: plan.operationId,
+      requestId,
+      phase,
+      launcherPid: process.pid,
+      childPid: child.pid,
+      ...extra,
+    });
+    child.on("message", (message) => {
+      if (
+        message?.type !== "reconcile-failed-update" ||
+        message.operationId !== plan.operationId ||
+        !plan.requestIds.includes(message.requestId)
+      )
+        return;
+      ensure(
+        exactKeys(message, ["type", "operationId", "requestId"]) &&
+          Number.isSafeInteger(child.pid) &&
+          child.pid > 0,
+        "observer request differs",
+      );
+      record(message.requestId + ".request", projection(message.requestId, "request"));
+      seen.add(message.requestId);
+    });
+    const originalSend = child.send;
+    child.send = function (message, ...rest) {
+      if (
+        message?.type !== "update-reconciled" ||
+        message.operationId !== plan.operationId ||
+        !plan.requestIds.includes(message.requestId)
+      )
+        return Reflect.apply(originalSend, this, [message, ...rest]);
+      const refused = message.result === "refused";
+      ensure(
+        seen.has(message.requestId) &&
+          exactKeys(message, [
+            "type",
+            "operationId",
+            "requestId",
+            "result",
+            ...(refused ? ["reason"] : []),
+          ]) &&
+          ["settled", "already-settled", "refused"].includes(message.result) &&
+          (!refused ||
+            [
+              "not-failed",
+              "not-found",
+              "insufficient-evidence",
+              "restore-pending",
+              "active-changed",
+              "trial-evidence-present",
+              "retired-evidence-mismatch",
+              "settlement-write-failed",
+            ].includes(message.reason)),
+        "observer reply differs",
+      );
+      const callback = rest.at(-1);
+      if (typeof callback === "function") {
+        const receipt = projection(message.requestId, "reply", {
+          result: message.result,
+          ...(refused ? { reason: message.reason } : {}),
+          sendCallbackCompleted: true,
+        });
+        rest[rest.length - 1] = function (error) {
+          if (error == null) record(message.requestId + ".reply", receipt);
+          return Reflect.apply(callback, this, arguments);
+        };
+      }
+      return Reflect.apply(originalSend, this, [message, ...rest]);
+    };
+    return child;
+  };
+  syncBuiltinESMExports();
+  record("ready", {
+    protocol: 1,
+    fixtureId: plan.fixtureId,
+    operationId: plan.operationId,
+    requestIds: plan.requestIds,
+    launcherPid: process.pid,
+  });
+}

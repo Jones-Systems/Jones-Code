@@ -14,6 +14,7 @@ import {
   exercisePackagedSettlementRestart,
   settlementRestartPhases,
   createPackagedRecoveryHttpClient,
+  preparePackagedReconciliationObservation,
 } from "./packaged-recovery-launcher.mjs";
 
 NodeTest.test(
@@ -409,6 +410,122 @@ NodeTest.test(
               NodeAssert.equal(server.listening, false);
             }
           }
+          await NodeFSP.rm(caseRoot, { recursive: true });
+          await NodeAssert.rejects(NodeFSP.lstat(caseRoot), { code: "ENOENT" });
+        },
+      );
+
+      await t.test(
+        "prepares an immutable observer plan and refuses incomplete or foreign IPC receipts",
+        async () => {
+          const caseRoot = NodePath.join(parent, "jones-packaged-recovery-observer");
+          await NodeFSP.mkdir(caseRoot, { mode: 0o700 });
+          const prepared = await seedPackagedRecoveryFixture({
+            root: caseRoot,
+            active: { payloadDirectory, receipt: receipt(true) },
+            candidate: { payloadDirectory, receipt: receipt(false) },
+            operationId: "12345678-1234-4234-8234-123456789abc",
+            kind: "legacy-failed",
+            recoveryPayload: false,
+            archivedOutcome: true,
+          });
+          const ids = [
+            "22345678-1234-4234-8234-123456789abc",
+            "32345678-1234-4234-8234-123456789abc",
+          ];
+          await NodeAssert.rejects(
+            preparePackagedReconciliationObservation({ prepared, requestIds: [ids[0], ids[0]] }),
+            /two distinct request IDs/,
+          );
+          const observation = await preparePackagedReconciliationObservation({
+            prepared,
+            requestIds: ids,
+          });
+          const planPath = NodePath.join(caseRoot, "observer-plan.json");
+          const planBytes = await NodeFSP.readFile(planPath);
+          const plan = JSON.parse(planBytes);
+          NodeAssert.equal(plan.operationId, prepared.operationId);
+          NodeAssert.equal(
+            plan.childExecutable,
+            NodePath.join(
+              prepared.baseDir,
+              "runtime",
+              "versions",
+              prepared.staged.binding.activeVersion,
+              "t3",
+            ),
+          );
+          NodeAssert.equal(observation.environment.JONES_PACKAGED_RECOVERY_OBSERVER, planPath);
+          NodeAssert.match(observation.environment.NODE_OPTIONS, /--require /);
+          await NodeAssert.rejects(
+            preparePackagedReconciliationObservation({ prepared, requestIds: ids }),
+            { code: "EEXIST" },
+          );
+          NodeAssert.deepEqual(await NodeFSP.readFile(planPath), planBytes);
+          const directory = NodePath.join(caseRoot, "ipc-observations");
+          await NodeFSP.mkdir(directory, { mode: 0o700 });
+          const write = (name, value) =>
+            NodeFSP.writeFile(NodePath.join(directory, name + ".json"), JSON.stringify(value), {
+              mode: 0o600,
+            });
+          const captured = { launcherPid: process.ppid, childPid: process.pid };
+          await NodeAssert.rejects(observation.readPair(captured), /incomplete or unexpected/);
+          await write("ready", {
+            protocol: 1,
+            fixtureId: prepared.fixtureId,
+            operationId: prepared.operationId,
+            requestIds: [...ids],
+            launcherPid: captured.launcherPid,
+          });
+          for (const [index, requestId] of ids.entries()) {
+            const common = {
+              protocol: 1,
+              fixtureId: prepared.fixtureId,
+              operationId: prepared.operationId,
+              requestId,
+              ...captured,
+            };
+            await write(requestId + ".request", { ...common, phase: "request" });
+            await write(requestId + ".reply", {
+              ...common,
+              phase: "reply",
+              result: index === 0 ? "settled" : "already-settled",
+              sendCallbackCompleted: true,
+            });
+          }
+          ids[0] = "42345678-1234-4234-8234-123456789abc";
+          const boundOperation = prepared.operationId;
+          prepared.operationId = ids[0];
+          const pair = await observation.readPair(captured);
+          NodeAssert.equal(pair.operationId, boundOperation);
+          NodeAssert.deepEqual(
+            pair.replies.map((reply) => reply.result),
+            ["settled", "already-settled"],
+          );
+          NodeAssert.equal(pair.packagedRecoveryMatrixPassed, false);
+          const secondPath = NodePath.join(directory, plan.requestIds[1] + ".reply.json");
+          const originalReply = await NodeFSP.readFile(secondPath);
+          const bad = JSON.parse(originalReply);
+          for (const mutation of [
+            { result: "settled" },
+            { operationId: ids[0] },
+            { childPid: captured.childPid + 1 },
+            { sendCallbackCompleted: false },
+            { extra: "unrelated" },
+          ]) {
+            await NodeFSP.writeFile(secondPath, JSON.stringify({ ...bad, ...mutation }), {
+              mode: 0o600,
+            });
+            await NodeAssert.rejects(observation.readPair(captured), { name: "AssertionError" });
+          }
+          await NodeFSP.writeFile(secondPath, originalReply, { mode: 0o600 });
+          await NodeFSP.chmod(directory, 0o777);
+          await NodeAssert.rejects(observation.readPair(captured), /unsafe observer directory/);
+          await NodeFSP.chmod(directory, 0o700);
+          await NodeAssert.rejects(
+            observation.readPair({ ...captured, launcherPid: captured.childPid }),
+            /distinct captured/,
+          );
           await NodeFSP.rm(caseRoot, { recursive: true });
           await NodeAssert.rejects(NodeFSP.lstat(caseRoot), { code: "ENOENT" });
         },
