@@ -2717,6 +2717,18 @@
       "id": "desktop-push-compatibility",
       "tests": ["scripts/jones/ci/desktop-push-compatibility.node-test.mjs"],
       "scope": "Ongoing genuine main-push desktop artifact publication for retained pre-590 push-only consumers. Frozen e85e058eb7435cab22ba4486c263067755dd098f consumer executes actual discovery, same-source CI, authenticated archive staging and event/source agreement; event-isolated concurrency preserves push publication. Each artifact retains seven-day expiry; no installed adoption or perpetual availability claim."
+    },
+    {
+      "id": "alternative-download",
+      "tests": [
+        "packages/contracts/src/jones/jonesUpdates.compatibility.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx",
+        "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
+        "apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx"
+      ],
+      "scope": "Generic qualified alternative alongside an immutable retained download, bound confirmed native replacement only. Laptop matching credited to640, Install separate, no native protocol or admission changes."
     }
   ]
 }

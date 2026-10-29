@@ -4341,6 +4341,23 @@
         "vp fmt --check --threads=1 .github/workflows/artifact-desktop-mac.yml scripts/jones/ci/desktop-push-compatibility.node-test.mjs scripts/jones/ci/fixtures/pre590/consumer.json scripts/jones/boundary/fragments/desktop-push-compatibility.json",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-alternative-download",
+      "tests": [
+        "packages/contracts/src/jones/jonesUpdates.compatibility.test.ts",
+        "apps/server/src/jones/updates/JonesUpdater.test.ts",
+        "packages/client-runtime/src/jones/updates/jonesUpdates.test.ts",
+        "apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx",
+        "apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx",
+        "apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx",
+        "apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/updates/JonesUpdater.test.ts apps/server/src/jones/updates/stagedSelection.test.ts packages/contracts/src/jones/jonesUpdates.compatibility.test.ts packages/contracts/src/jones/jonesUpdates.buildTime.test.ts packages/client-runtime/src/jones/updates/jonesUpdates.test.ts packages/client-runtime/src/jones/updates/actionJournal.test.ts packages/client-runtime/src/jones/updates/executor.test.ts packages/client-runtime/src/jones/updates/targetStatus.test.ts apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/jones/updates/JonesBuildStatus.browser.test.tsx apps/web/src/jones/updates/ExactSourceUpdateAction.browser.test.tsx apps/web/src/jones/updates/clientUpdateBanner.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }
