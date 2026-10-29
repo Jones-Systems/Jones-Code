@@ -9,6 +9,11 @@
       "scope": "The existing MCP projection harness verifies the reported seven-layer GitHub membership, stale saved layer lists, appended top and every native position. Runtime ordering stays in the shared upstream resolver; a test in the existing harness exercises the actual list_thread_pull_requests interface without duplicating it."
     },
     {
+      "id": "jones-triage-bindings",
+      "tests": ["apps/server/src/cli/triagePrompt.test.ts"],
+      "scope": "The existing CLI prompt owner and canonical playbook bind Jones source, build attribution and issue destinations while retaining t3 command names. Private diagnostics require bounded permission and uploads require explicit approval. The existing upstream harness checks emitted prompts, context and canonical playbook equality; a direct text repair avoids a parallel prompt implementation."
+    },
+    {
       "id": "project-favicon-search-demand",
       "tests": ["apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx"],
       "scope": "Mount the existing favicon picker only while open and editable. The accepted-shared boolean gate in apps/web/src/components/settings/ProjectSettingsPanel.tsx needs no extraction: a separate module would duplicate upstream UI machinery. The Jones-owned browser test imports the actual panel and apps/web/test/render.tsx registry/router harness; the actual dialog, components/files/projectFilesQueryState.ts, state/queries.ts and state/query.ts remain real through the lazy synthetic search atom. Both filesystem-read and project-edit grants are present. Covers closed cold/stale demand, server/cwd targeting, typing/image selection, close/reopen and edit-permission loss/recovery; server/query/dialog behavior is unchanged."
