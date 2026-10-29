@@ -29,6 +29,7 @@ export const UserResponseQuestionInput = Schema.Struct({
 export const UserResponseRequestInput = Schema.Struct({
   instruction: Schema.optional(nonblank(1500)),
   choices: Schema.optional(Schema.Array(TrimmedNonEmptyString).check(Schema.isMaxLength(4))),
+  defaultDone: Schema.optional(Schema.Boolean),
   questions: Schema.optional(
     Schema.Array(UserResponseQuestionInput).check(Schema.isMinLength(1), Schema.isMaxLength(5)),
   ),
@@ -37,7 +38,8 @@ export const UserResponseRequestInput = Schema.Struct({
   Schema.makeFilter(
     (input) =>
       (input.instruction !== undefined) !== (input.questions !== undefined) &&
-      (input.questions === undefined || input.choices === undefined),
+      (input.questions === undefined ||
+        (input.choices === undefined && input.defaultDone === undefined)),
   ),
 );
 export type UserResponseRequestInput = typeof UserResponseRequestInput.Type;

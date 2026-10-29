@@ -2450,7 +2450,8 @@
     "apps/server/src/jones/serverParallelism/diagnosticObservation.ts": "jones-owned",
     "apps/server/src/jones/serverParallelism/diagnosticObservation.test.ts": "jones-owned",
     "scripts/jones/serverParallelism/observer-diagnostic.mjs": "jones-owned",
-    "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs": "jones-owned"
+    "scripts/jones/serverParallelism/observer-diagnostic.node-test.mjs": "jones-owned",
+    "apps/web/src/jones/questionAnswer/QuickResponseSubmission.browser.test.tsx": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

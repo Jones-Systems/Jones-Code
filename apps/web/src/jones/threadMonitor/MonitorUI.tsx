@@ -1063,8 +1063,11 @@ function RequestControls({
     const answer = answers[question.id];
     return typeof answer === "string" ? true : Array.isArray(answer) && answer.length > 0;
   });
-  const edit = (id: string, answer: string | ReadonlyArray<string>) =>
-    store.edit({ ...draft, revision: draft.revision + 1, answers: { ...answers, [id]: answer } });
+  const edit = (id: string, answer: string | ReadonlyArray<string>) => {
+    const next = { ...draft, revision: draft.revision + 1, answers: { ...answers, [id]: answer } };
+    store.edit(next);
+    return next;
+  };
   return (
     <section className="request" data-status="input">
       <div className="request-label">Awaiting input</div>
@@ -1087,8 +1090,8 @@ function RequestControls({
                     name={`${request.requestId}:${question.id}`}
                     checked={selected.includes(option.value)}
                     disabled={!!reason || !request.availability.available}
-                    onChange={() =>
-                      edit(
+                    onChange={() => {
+                      const next = edit(
                         question.id,
                         question.multiSelect
                           ? selected.includes(option.value)
@@ -1100,8 +1103,27 @@ function RequestControls({
                                 option.value,
                               ]
                           : option.value,
+                      );
+                      if (
+                        !question.multiSelect &&
+                        !reason &&
+                        request.availability.available &&
+                        request.questions.every((entry) => {
+                          const answer = next.answers[entry.id];
+                          return (
+                            typeof answer === "string" ||
+                            (Array.isArray(answer) && answer.length > 0)
+                          );
+                        })
                       )
-                    }
+                        dispatch({
+                          ...idFor(row),
+                          type: "respondToUserInput",
+                          requestId: request.requestId,
+                          answers: next.answers,
+                          draftRevision: next.revision,
+                        });
+                    }}
                   />
                   <span>
                     {option.label}

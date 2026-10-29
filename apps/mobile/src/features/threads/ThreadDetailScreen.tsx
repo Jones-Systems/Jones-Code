@@ -299,7 +299,7 @@ export interface ThreadDetailScreenProps {
     requestId: RuntimeRequestId,
     question: ThreadUserInputQuestion,
     value: string,
-  ) => void;
+  ) => number | undefined;
   readonly onChangeUserInputCustomAnswer: (
     requestId: RuntimeRequestId,
     questionId: string,

@@ -416,6 +416,49 @@ describe("real monitor renderer interactions", () => {
     expect(sends).toHaveLength(1);
     expect(sends[0]).toMatchObject({ type: "send", threadId: "done", text: "composed reply" });
   });
+  it("submits standard single-choice input rows immediately after the final answer", async () => {
+    const { store, intents, rows, container } = setup();
+    await using screen = await render(<MonitorUI store={store} />, { container, router: false });
+    await expand(container);
+    await act(() => {
+      store.select(rows[0]!);
+      store.receive({
+        type: "detail",
+        detail: {
+          ...refOf(rows[0]!),
+          selectionId: store.selection!.selectionId,
+          revision: 1,
+          entries: [],
+          plan: null,
+          unavailableReason: null,
+          request: {
+            kind: "user_input",
+            requestId: RuntimeRequestId.make("quick-input"),
+            availability: { available: true, reason: null },
+            questions: ["one", "two"].map((id) => ({
+              id,
+              header: id,
+              question: `Confirm ${id}`,
+              allowCustomAnswer: true,
+              multiSelect: false,
+              options: [{ label: `Done ${id}`, value: id }],
+            })),
+          },
+        },
+      });
+    });
+    await screen.getByRole("radio", { name: "Done one" }).click();
+    expect(intents.filter((intent) => intent.type === "respondToUserInput")).toHaveLength(0);
+    await screen.getByRole("radio", { name: "Done two" }).click();
+    expect(intents.filter((intent) => intent.type === "respondToUserInput")).toMatchObject([
+      {
+        requestId: "quick-input",
+        answers: { one: "one", two: "two" },
+        draftRevision: 2,
+      },
+    ]);
+  });
+
   it("renders actual offered decisions/questions and purges visible private content on retirement", async () => {
     using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
     const { store, intents, rows, container } = setup();
