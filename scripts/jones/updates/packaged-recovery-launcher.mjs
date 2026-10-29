@@ -832,3 +832,281 @@ export async function preparePackagedReconciliationObservation({ prepared, reque
     },
   });
 }
+
+export async function exercisePackagedLegacyReconciliation({
+  prepared,
+  requestIds,
+  token,
+  signal,
+}) {
+  signal?.throwIfAborted();
+  prepared = structuredClone(prepared);
+  requestIds = Array.isArray(requestIds) ? [...requestIds] : requestIds;
+  if (
+    prepared.kind !== "legacy-failed" ||
+    prepared.state.update?.status !== "failed" ||
+    prepared.state.update.reason !== "launcher-restarted" ||
+    typeof token !== "string" ||
+    !/^[\x21-\x7e]{16,8192}$/.test(token)
+  )
+    fail("legacy failed fixture and explicit in-memory bearer required");
+  const observation = await preparePackagedReconciliationObservation({
+    prepared,
+    requestIds,
+    signal,
+  });
+  const ids = [...requestIds];
+  const { root, baseDir, operationId, launcher } = prepared;
+  const operationDirectory = NodePath.join(baseDir, "runtime", "jones-update-operations");
+  const reservationPath = NodePath.join(operationDirectory, operationId + ".json");
+  const outcomePath = NodePath.join(operationDirectory, operationId + ".outcome.json");
+  const settlementPath = NodePath.join(
+    baseDir,
+    "runtime",
+    "jones-update-settlements",
+    operationId + ".json",
+  );
+  const reservation = await boundedRecord(reservationPath);
+  let originalOutcome;
+  try {
+    originalOutcome = await boundedRecord(outcomePath);
+  } catch (cause) {
+    if (cause.code !== "ENOENT") throw cause;
+  }
+  if (prepared.archivedOutcome !== (originalOutcome !== undefined))
+    fail("legacy outcome presence differs");
+  try {
+    await NodeFSP.lstat(settlementPath);
+    fail("legacy operation is already settled");
+  } catch (cause) {
+    if (cause.code !== "ENOENT") throw cause;
+  }
+  const databaseBefore = await NodeFSP.lstat(prepared.staged.binding.dbPath);
+  const marker = () => {
+    const database = new NodeSqlite.DatabaseSync(prepared.staged.binding.dbPath, {
+      readOnly: true,
+    });
+    try {
+      return database.prepare("SELECT value FROM fixture_marker").get().value;
+    } finally {
+      database.close();
+    }
+  };
+  NodeAssert.equal(marker(), "before");
+  let stage = "runtime";
+  let firstSettlement;
+  let firstOutcome;
+  let pair;
+  let captured;
+  let failure;
+  let work = Promise.resolve();
+  let child;
+  const watches = [];
+  const cancellation = new AbortController();
+  const controlSignal =
+    signal === undefined ? cancellation.signal : AbortSignal.any([signal, cancellation.signal]);
+  const stop = () => {
+    for (const watcher of watches) watcher.close();
+    if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+  };
+  const failControl = (cause) => {
+    failure ??= cause;
+    stop();
+  };
+  const intact = async () => {
+    NodeAssert.deepEqual((await boundedRecord(reservationPath)).bytes, reservation.bytes);
+    const state = (await boundedRecord(NodePath.join(baseDir, "runtime", "service-state.json")))
+      .value;
+    NodeAssert.equal(state.activeVersion, prepared.staged.binding.activeVersion);
+    NodeAssert.deepEqual(state.update, prepared.state.update);
+    const database = await NodeFSP.lstat(prepared.staged.binding.dbPath);
+    NodeAssert.equal(database.dev, databaseBefore.dev);
+    NodeAssert.equal(database.ino, databaseBefore.ino);
+    NodeAssert.equal(marker(), "before");
+    return state;
+  };
+  let client;
+  const inspect = async () => {
+    if (failure || stage === "complete" || !child) return;
+    if (stage === "runtime") {
+      let runtime;
+      let capability;
+      try {
+        runtime = (await boundedRecord(NodePath.join(baseDir, "userdata", "server-runtime.json")))
+          .value;
+        capability = (
+          await boundedRecord(NodePath.join(baseDir, "runtime", "jones-launcher-capability.json"))
+        ).value;
+      } catch (cause) {
+        if (cause.code === "ENOENT") return;
+        throw cause;
+      }
+      if (
+        capability.launcherPid !== child.pid ||
+        capability.childPid !== runtime.pid ||
+        capability.updateSettlementProtocol !== 1
+      )
+        fail("reconciliation capability differs from the captured launcher");
+      captured = { launcherPid: child.pid, childPid: runtime.pid };
+      client = await createPackagedRecoveryHttpClient({
+        prepared,
+        ...captured,
+        token,
+        signal: controlSignal,
+      });
+      await intact();
+      await client.state();
+      const directory = NodePath.join(root, "ipc-observations");
+      if ((await NodeFSP.realpath(directory)) !== directory)
+        fail("physical IPC observation directory required");
+      const watcher = NodeFS.watch(directory, { persistent: false }, () => enqueue());
+      watches.push(watcher);
+      watcher.once("error", failControl);
+      stage = "first-reply";
+      await client.reconcile(ids[0]);
+    }
+    if (stage === "first-reply") {
+      let reply;
+      try {
+        reply = (
+          await boundedRecord(NodePath.join(root, "ipc-observations", ids[0] + ".reply.json"))
+        ).value;
+      } catch (cause) {
+        if (cause.code === "ENOENT") return;
+        throw cause;
+      }
+      NodeAssert.deepEqual(reply, {
+        protocol: 1,
+        fixtureId: prepared.fixtureId,
+        operationId,
+        requestId: ids[0],
+        phase: "reply",
+        ...captured,
+        result: "settled",
+        sendCallbackCompleted: true,
+      });
+      firstSettlement = await boundedRecord(settlementPath);
+      firstOutcome = await boundedRecord(outcomePath);
+      NodeAssert.deepEqual(firstOutcome.value, {
+        schema: 1,
+        operationId,
+        binding: reservation.value.binding,
+        status: "failed",
+      });
+      if (originalOutcome) NodeAssert.deepEqual(firstOutcome.bytes, originalOutcome.bytes);
+      const receipt = firstSettlement.value;
+      NodeAssert.equal(receipt.schema, 1);
+      NodeAssert.equal(receipt.operationId, operationId);
+      NodeAssert.equal(receipt.status, "failed");
+      NodeAssert.equal(receipt.settlement, "no-effect");
+      NodeAssert.equal(receipt.basis, "legacy-reconciled");
+      const sha = (bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex");
+      NodeAssert.equal(receipt.reservationSha256, sha(reservation.bytes));
+      NodeAssert.equal(receipt.outcomeSha256, sha(firstOutcome.bytes));
+      NodeAssert.equal(receipt.evidence.candidateStarted, false);
+      NodeAssert.equal(receipt.evidence.restorePending, false);
+      NodeAssert.equal(
+        receipt.evidence.recoveryPayload,
+        prepared.recoveryPayload ? "removed" : "absent",
+      );
+      await intact();
+      stage = "second-reply";
+      await client.reconcile(ids[1]);
+    }
+    if (stage === "second-reply") {
+      try {
+        await boundedRecord(NodePath.join(root, "ipc-observations", ids[1] + ".reply.json"));
+      } catch (cause) {
+        if (cause.code === "ENOENT") return;
+        throw cause;
+      }
+      pair = await observation.readPair(captured);
+      NodeAssert.deepEqual((await boundedRecord(settlementPath)).bytes, firstSettlement.bytes);
+      NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, firstOutcome.bytes);
+      await intact();
+      await NodeAssert.rejects(
+        NodeFSP.lstat(NodePath.join(baseDir, "runtime", "db-backup", operationId, "database")),
+        { code: "ENOENT" },
+      );
+      stage = "complete";
+      stop();
+    }
+  };
+  const enqueue = () => {
+    work = work.then(inspect).catch(failControl);
+  };
+  let command;
+  try {
+    command = await runNativeFixtureCommand(launcher.executable, ["__service-launcher"], root, {
+      signal,
+      spawn: (file, argv, options) => {
+        child = NodeChildProcess.spawn(file, argv, {
+          ...options,
+          env: {
+            ...options.env,
+            ...observation.environment,
+            T3CODE_HOME: baseDir,
+            T3CODE_HOST: "127.0.0.1",
+            T3CODE_PORT: "0",
+            T3CODE_NO_BROWSER: "true",
+            T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD: "false",
+          },
+        });
+        for (const directory of [
+          NodePath.join(baseDir, "runtime"),
+          NodePath.join(baseDir, "userdata"),
+        ]) {
+          const watcher = NodeFS.watch(directory, { persistent: false }, (_event, name) => {
+            if (
+              name === null ||
+              ["server-runtime.json", "jones-launcher-capability.json"].includes(String(name))
+            )
+              enqueue();
+          });
+          watches.push(watcher);
+          watcher.once("error", failControl);
+        }
+        child.once("close", () => {
+          for (const watcher of watches) watcher.close();
+          cancellation.abort(new Error("Captured reconciliation launcher closed."));
+        });
+        child.once("error", failControl);
+        enqueue();
+        return child;
+      },
+    });
+    await work;
+    if (failure) throw failure;
+    if (
+      stage !== "complete" ||
+      !(
+        (command.code === 0 && command.stoppedBy === null) ||
+        (command.code === null && command.stoppedBy === "SIGTERM")
+      )
+    )
+      fail("legacy reconciliation did not finish before launcher exit");
+    const state = await intact();
+    const result = {
+      schema: "jones.packaged-legacy-reconciliation/v1",
+      operationId,
+      archivedOutcome: prepared.archivedOutcome,
+      command,
+      observation: pair,
+      state,
+      settlement: firstSettlement.value,
+      assertionsPassed: true,
+      packagedRecoveryMatrixPassed: false,
+      processIdentityScope: "captured-child-handle-only",
+      externalDescendantSettlementRequired: true,
+    };
+    await writePrivate(NodePath.join(root, "legacy-reconciliation-result.json"), result);
+    return result;
+  } catch (cause) {
+    if (child) cause.preserveScratch = true;
+    throw cause;
+  } finally {
+    for (const watcher of watches) watcher.close();
+    cancellation.abort(new Error("Reconciliation control finished."));
+    await work;
+  }
+}
