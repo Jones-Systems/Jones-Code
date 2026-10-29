@@ -1770,6 +1770,7 @@
     "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs": "jones-owned",
     "apps/server/src/jones/threadConfiguration/testkit.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/executionSelection.ts": "jones-owned",
+    "apps/server/src/jones/threadConfiguration/SharedSessionWorkspace.test.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/prepareExecutionSession.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts": "jones-owned",
     "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts": "jones-owned",

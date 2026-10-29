@@ -1771,6 +1771,7 @@
     {
       "id": "thread-self-configuration",
       "tests": [
+        "apps/server/src/jones/threadConfiguration/SharedSessionWorkspace.test.ts",
         "apps/server/src/jones/threadConfiguration/CodexSelfConfiguration.integration.test.ts",
         "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
         "apps/server/src/mcp/McpToolAccess.race.test.ts",
