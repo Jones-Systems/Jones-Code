@@ -191,7 +191,7 @@
     },
     {
       "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
-      "sourceSha256": "57e9141ffdb99d758a1ea2a4ddeb47c13c31d67216b1f261f7b4cb639ed8ac77",
+      "sourceSha256": "d7fa81c1a12e76a6547f1717261b6f6dd4628252462d57c0c75aa9e90f0f46a0",
       "expression": "\"../../../node_modules/@betteroffice/fonts/assets/Carlito-Regular.ttf?url\"",
       "reason": "Upstream document-rendering fixture loads a real installed external font through a relative node_modules URL. Dependency asset bytes are outside the source boundary; exact test and manifest/catalog hashes bind this unsupported loader, not generated or runtime verification.",
       "anchors": [
