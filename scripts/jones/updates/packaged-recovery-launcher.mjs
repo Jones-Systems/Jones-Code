@@ -1600,6 +1600,7 @@ export async function exercisePackagedAcceptedFailure({
       complete = false;
     let work = Promise.resolve();
     const watches = [];
+    const watchedBackups = new Set();
     const cancellation = new AbortController();
     const controlSignal = signal
       ? AbortSignal.any([signal, cancellation.signal])
@@ -1614,6 +1615,30 @@ export async function exercisePackagedAcceptedFailure({
     };
     const inspect = async () => {
       if (failure || complete || !child) return;
+      for (const directory of [
+        NodePath.join(baseDir, "runtime", "db-backup"),
+        NodePath.join(baseDir, "runtime", "db-backup", freshOperationId),
+      ]) {
+        if (watchedBackups.has(directory)) continue;
+        let identity;
+        try {
+          identity = await NodeFSP.lstat(directory);
+        } catch (error) {
+          if (error.code === "ENOENT") continue;
+          throw error;
+        }
+        if (
+          !identity.isDirectory() ||
+          identity.uid !== process.getuid() ||
+          (identity.mode & 0o022) !== 0 ||
+          (await NodeFSP.realpath(directory)) !== directory
+        )
+          fail("private native backup directory required");
+        const watcher = NodeFS.watch(directory, { persistent: false }, () => enqueue());
+        watches.push(watcher);
+        watchedBackups.add(directory);
+        watcher.once("error", failed);
+      }
       if (!ready) {
         let runtime, capability;
         try {
@@ -1700,6 +1725,17 @@ export async function exercisePackagedAcceptedFailure({
         NodeAssert.equal(state.activeVersion, staged.receipt.version);
         NodeAssert.equal(state.update.fromVersion, staged.binding.activeVersion);
         NodeAssert.equal(state.update.targetVersion, staged.receipt.version);
+        const freshBackup = NodePath.join(baseDir, "runtime", "db-backup", freshOperationId);
+        NodeAssert.deepEqual(
+          (await boundedRecord(NodePath.join(freshBackup, "paired-binding.json"))).value,
+          { transactionId: freshOperationId, qualified: staged },
+        );
+        try {
+          await NodeFSP.lstat(NodePath.join(freshBackup, "database"));
+          return;
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
         NodeAssert.deepEqual((await boundedRecord(reservedPath)).bytes, originalReservation.bytes);
         NodeAssert.deepEqual((await boundedRecord(outcomePath)).bytes, originalOutcome.bytes);
         NodeAssert.deepEqual((await boundedRecord(settlementPath)).bytes, originalSettlement.bytes);
