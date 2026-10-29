@@ -7,6 +7,8 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/provider/CodexInstallation.ts": "accepted-shared",
+    "apps/server/src/provider/CodexInstallation.test.ts": "jones-tests-in-upstream",
     "apps/web/src/components/settings/ProjectSettingsPanel.tsx": "accepted-shared",
     "apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx": "jones-owned",
     "scripts/jones/boundary/fragments/project-favicon-search-demand.json": "jones-owned",
