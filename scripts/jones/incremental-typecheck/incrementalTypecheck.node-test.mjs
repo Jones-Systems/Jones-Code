@@ -5,6 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as CompilerIdentity from "../tsrs/identity.ts";
+import { launchVerified } from "../tsrs/typecheck.ts";
 import * as NodePath from "node:path";
 import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeTest from "node:test";
@@ -1246,3 +1247,42 @@ NodeTest.test("v2 retained checking never reads or removes legacy v1 entries", a
     payload("new-native-check"),
   );
 });
+
+for (const [signalName, exitCode] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+])
+  for (const priorStatus of [0, 3]) {
+    NodeTest.test(
+      `CLI mutation-lock cancellation ${signalName} overrides prior status ${priorStatus}`,
+      async (t) => {
+        const f = fixture(t);
+        let checked = 0;
+        const code = await runCli(
+          f.root,
+          ["--all"],
+          compilerSeam(f, async (command) => {
+            checked++;
+            if (command.cwd === f.projects[0].directory) {
+              write(nativePath(command), payload());
+              return { code: priorStatus, stdout: "" };
+            }
+            const controller = new AbortController();
+            controller.abort(signalName);
+            process.emit(signalName);
+            return launchVerified(f.compiler, controller.signal, async () => {
+              throw new Error("Cancelled compiler must not launch");
+            });
+          }),
+        );
+        NodeAssert.equal(code, exitCode);
+        NodeAssert.equal(checked, 2);
+        const cancelled = cachePaths(f.root, f.projects[1]);
+        NodeAssert.deepEqual(NodeFS.readdirSync(cancelled.directory), []);
+        NodeAssert.equal(
+          NodeFS.existsSync(NodePath.join(f.root, "node_modules/.cache/jones/tsrs/patch.lock")),
+          false,
+        );
+      },
+    );
+  }

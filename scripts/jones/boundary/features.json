@@ -4,6 +4,21 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "pull-request-check-observation",
+      "tests": [
+        "packages/contracts/src/jones/pullRequestCheckObservation.test.ts",
+        "packages/source-control-github/src/jones/pullRequestCheckObservation.test.ts",
+        "packages/source-control-github/src/jones/pullRequestCheckExpectations.test.ts",
+        "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts",
+        "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts",
+        "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts",
+        "apps/server/src/pullRequest/PullRequestService.test.ts",
+        "apps/server/src/orchestration-v2/pullRequestWatch.test.ts",
+        "apps/server/src/orchestration-v2/runtimeLayer.test.ts"
+      ],
+      "scope": "Jones-owned same-head REST observation and completion classification distinguish complete enumeration from required-set knowledge. The exact existing Jones-Code github.com/main CI Check policy is bound explicitly; all other targets retain unknown gate completeness. Shared API/provider/service/cache hooks preserve optional metadata and the reactor only extends its existing inFlight predicate. Existing API, provider, service and runtime harnesses prove real composition and persistent watch dedupe; extracting those harness tests would duplicate upstream fixtures. No retry, sweep, connection, merge policy, DB, workflow, dependency or installed-runtime changes."
+    },
+    {
       "id": "anonymous-checkout",
       "tests": ["scripts/jones/ci/anonymous-checkout.node-test.mjs"],
       "scope": "Twenty-two public-source checkout bootstraps are byte-bound to the canonical anonymous Git helper. Exact event merge commits and explicit Preview heads retain depth, full branch/tag history, sparse selection and classifier inputs. Empty-workspace/ref/repository guards precede Git; global/system/injected config, prompts and helpers are disabled. Synthetic unmapped gitlinks remain in the tested index on success and injected fetch/checkout failures; metadata-only assertions prove no checkout credential state, no retries or fallback, preserved native failure status and unchanged source. Separate API credentials and existing workflow triggers are unchanged."
@@ -1164,6 +1179,7 @@
     {
       "id": "provider-update-trust",
       "tests": [
+        "apps/server/src/provider/CodexInstallation.test.ts",
         "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
         "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
         "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts",
@@ -1175,7 +1191,7 @@
         "apps/web/src/jones/updates/providerUpdateController.test.ts",
         "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx"
       ],
-      "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code."
+      "scope": "Per-instance update targeting is separate from driver summaries. Every supported connected instance is selected without command-string installation guesses. Shared web hooks retain the existing integration harness for dispatch and completion tests. Server success requires selected-instance version evidence; serial best-effort sibling health refresh uses each instance own capabilities without copying maintenance state. The runner plumbing remains a small shared edit to avoid duplicating registry and Effect lifecycle code. Local Codex detection caches successful probes while allowing unchanged installations to recover from transient probe failures. Its small accepted-shared cache fix and tests retain the existing installation harness instead of duplicating it. Shared maintenance actions retain the instance environment used for ownership resolution, including native override precedence, runner command selection and pnpm candidate-cache provenance. The small accepted-shared resolver changes retain existing synthetic resolver and runner harnesses."
     },
     {
       "id": "startup-access-logging",
@@ -1353,6 +1369,7 @@
     {
       "id": "delegated-task-workspace",
       "tests": [
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
         "packages/contracts/src/jones/delegatedTaskWorkspace.test.ts",
         "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
@@ -1366,7 +1383,7 @@
         "packages/contracts/src/jones/orchestrationCompatibility.test.ts",
         "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts"
       ],
-      "scope": "delegate_task accepts an optional workspaceStrategy (new worktree from a named base/branch, or an existing project worktree), exclusive with legacy isolation, so delegated children, including same-provider Claude sessions, keep app-owned subagent lineage, task_status, task_cancel and completion wake instead of being launched as unlinked top-level threads. Existing-worktree admission matches t3_thread_launch; named bases use ThreadLaunchService.checkWorktreeBase; accepted retries replay without re-validation. An optional projectId selects another registered project: it requires workspaceStrategy, validates the base or worktree and provider enablement against the target project, keeps parent mode clamps, and is carried on delegated_task.request (optional, so earlier commands decode unchanged) so the decider rejects missing workspace or missing/deleted target projects before any event and binds the child thread to the target project with lineage to the parent. Same-project commands are unchanged; thread.created.record keeps its same-project rule. App-owned delegated existing-worktree preparation, identified by subagent lineage plus the parent's app_owned task record, observes setup completion without publishing setup-tracker snapshots: synchronous setup holds provider release, while async setup releases the provider and remains cancellable. Stop (task_cancel) closes its setup terminal without removing the checkout, including cancellation after async release; top-level existing-worktree launches are unchanged. No persisted-event schema change, migration, keepalive change or retroactive relinking. Injected orchestration instructions and delegate_task/create_threads/orchestrator_capabilities/t3_thread_launch descriptions reserve top-level launches for user-requested standalone conversations."
+      "scope": "delegate_task accepts an optional workspaceStrategy (new worktree from a named base/branch, or an existing project worktree), exclusive with legacy isolation, so delegated children, including same-provider Claude sessions, keep app-owned subagent lineage, task_status, task_cancel and completion wake instead of being launched as unlinked top-level threads. Existing-worktree admission matches t3_thread_launch; named bases use ThreadLaunchService.checkWorktreeBase; accepted retries replay without re-validation. An optional projectId selects another registered project: it requires workspaceStrategy, validates the base or worktree and provider enablement against the target project, keeps parent mode clamps, and is carried on delegated_task.request (optional, so earlier commands decode unchanged) so the decider rejects missing workspace or missing/deleted target projects before any event and binds the child thread to the target project with lineage to the parent. Same-project commands are unchanged; thread.created.record keeps its same-project rule. App-owned delegated existing-worktree preparation, identified by subagent lineage plus the parent's app_owned task record, observes setup completion without publishing setup-tracker snapshots: synchronous setup holds provider release, while async setup releases the provider and remains cancellable. Stop (task_cancel) closes its setup terminal without removing the checkout, including cancellation after async release; top-level existing-worktree launches are unchanged. No persisted-event schema change, migration, keepalive change or retroactive relinking. Injected orchestration instructions and delegate_task/create_threads/orchestrator_capabilities/t3_thread_launch descriptions reserve top-level launches for user-requested standalone conversations. New first-message dispatch on a replayed create_threads result independently enforces current runtime and interaction ceilings under the target lock; accepted first-message receipts retain replay behavior."
     },
     {
       "id": "scheduled-wake-coalescing",
@@ -1395,6 +1412,9 @@
     {
       "id": "client-launch",
       "tests": [
+        "apps/server/src/jones/orchestration/IdleWorktreeAdmission.test.ts",
+        "apps/server/src/jones/orchestration/IdleWorktreeAdmission.integration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts",
         "packages/contracts/src/jones/clientLaunch.test.ts",
         "apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
@@ -1420,7 +1440,7 @@
         "apps/server/src/jones/persistence/Migrations.test.ts",
         "packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts"
       ],
-      "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Cross-host launch propagates the authoritative linked origin through keyed and unkeyed paths; the existing project-handler harness covers integration and keeps its upstream assertions."
+      "scope": "Keyed top-level launch, authoritative lookup and explicit fence; immutable Jones claims and bound-run preparation truth. Upstream fixture edits add only typed services, migration 112 and the preparation accessor; existing assertions remain intact. Cross-host launch propagates the authoritative linked origin through keyed and unkeyed paths; the existing project-handler harness covers integration and keeps its upstream assertions. Idle new-worktree launches preserve the optional initial message and hold new sends with sparse Jones metadata until workspace preparation is ready. Hold acceptance is atomic with thread creation; accepted receipts replay, unknown preparation remains fenced, and readiness relinquishes automatic checkout cleanup ownership. Shared launch and orchestration edits are narrow transaction and admission hooks."
     },
     {
       "id": "request-economy",
@@ -2667,6 +2687,8 @@
     {
       "id": "provider-writer-retirement",
       "tests": [
+        "apps/server/src/jones/provider/codex/CodexStartup.test.ts",
+        "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts",
         "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
         "apps/server/src/jones/provider/codex/CodexRetirement.test.ts",
         "apps/server/src/jones/orchestration/LateSteer.test.ts",
@@ -2680,7 +2702,7 @@
         "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
-      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes."
+      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes. Codex startup uses an injectable caller deadline while exact-producer response observers retain uncertain native outcomes. New admissions are fenced before permit release, existing bound sessions retain events and controls, and unknown load outcomes cannot retry or fall back to a fresh conversation. The sixty-second default is a conservative design assumption, with no added healthy-path RPC."
     },
     {
       "id": "packaged-recovery-harness",

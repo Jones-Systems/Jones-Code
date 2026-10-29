@@ -222,18 +222,9 @@ export async function seedPackagedRecoveryFixture({
           status: "failed",
           reason: "launcher-restarted",
         };
-  let activeVersion = previous.receipt.version;
+  const activeVersion = previous.receipt.version;
   if (legacyVariant === "archived-without-reason") delete update.reason;
   if (legacyVariant === "other-failed-reason") update.reason = "verification-failed";
-  if (legacyVariant === "active-changed") {
-    await enrollQualifiedRuntime({
-      baseDir,
-      host,
-      artifact: artifact(next),
-      validate: async () => {},
-    });
-    activeVersion = next.receipt.version;
-  }
   if (["restore-pending", "trial-evidence"].includes(legacyVariant)) {
     await privateJson(
       NodePath.join(

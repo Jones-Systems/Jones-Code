@@ -36,6 +36,7 @@ import { forkParked } from "../serverActivation.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import { evaluatePullRequestWatch, pullRequestWatchMessage } from "./pullRequestWatch.ts";
+import { observationInFlight } from "../jones/pullRequestWatch/checkObservation.ts";
 
 /** Checks take minutes; faster sweeps waste the account's shared host quota. */
 const SWEEP_MINUTES = 2;
@@ -523,6 +524,7 @@ export const make = Effect.gen(function* () {
           : last.at,
       fingerprint: group.fingerprint,
       inFlight:
+        observationInFlight(detail.jonesCheckObservation) ||
         detail.mergeability === "unknown" ||
         detail.checks.some((check) => check.status === "pending"),
       remarksComplete: plan.activity ? remarks !== null : (last?.remarksComplete ?? false),
