@@ -3,6 +3,19 @@ import * as Receipts from "../store/receiptStore.ts";
 import * as NativeRegistry from "../registry/service.ts";
 const decodeReceiptJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Wire.WorkstreamReceipt));
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+
+vi.mock("../../../../../package.json", () => ({
+  default: {
+    version: "0.0.0-preview.20261002.100",
+    jonesSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    },
+  },
+}));
+
 import {
   Effect,
   Wire,
@@ -78,7 +91,7 @@ it.effect(
         expect((yield* h.gateway.readMetadata()).items).toHaveLength(2);
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 import * as Schema from "effect/Schema";
@@ -104,7 +117,7 @@ it.effect("mounted HTTP preserves the stale registry version conflict discrimina
       expect(response.status).toBe(409);
       expect(yield* json(response)).toMatchObject({ message: "version_conflict" });
     }).pipe(app, Effect.provide(prepared.services));
-  }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.scoped, Effect.provide(f.layer));
 });
 
 it.effect(
@@ -164,7 +177,7 @@ it.effect(
         ).toBe(400);
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -194,7 +207,7 @@ it.effect(
         expect(yield* Effect.promise(() => replay.text())).toBe(bytes);
         expect((yield* h.gateway.readMetadata()).items).toHaveLength(1);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -233,7 +246,7 @@ it.effect("mounted HTTP pending receipt polling keeps 202 without executing prov
       expect(prepared.provider.calls).toHaveLength(0);
       expect(response.status).toBe(202);
     }).pipe(app, Effect.provide(prepared.services));
-  }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.scoped, Effect.provide(f.layer));
 });
 
 it.effect(
@@ -268,7 +281,7 @@ it.effect(
         expect(yield* (yield* Store.RegistryStore).context(scope)).toEqual(before);
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -314,7 +327,7 @@ it.effect("mounted invalid provider identity refuses before persistence or provi
       expect(yield* store.list(scope, "references")).toHaveLength(0);
       expect(prepared.provider.calls).toHaveLength(0);
     }).pipe(app, Effect.provide(prepared.services));
-  }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.scoped, Effect.provide(f.layer));
 });
 
 it.effect.each(["pending", "unresolved"] as const)(
@@ -392,7 +405,7 @@ it.effect.each(["pending", "unresolved"] as const)(
         }
         expect(prepared.provider.calls).toHaveLength(1);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -445,7 +458,7 @@ it.effect.each(["POST", "GET"] as const)(
         ).toEqual(terminal);
         expect(prepared.provider.calls).toHaveLength(1);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -489,7 +502,7 @@ it.effect("mounted cursor cannot cross authenticated native owner homes or route
         expect(prepared.provider.calls).toHaveLength(0);
         return page.nextCursor!;
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   return Effect.gen(function* () {
     const cursor = yield* ownerPage(first, "owner:cursor-alpha");
     yield* ownerPage(second, "owner:cursor-beta", cursor);
@@ -558,7 +571,7 @@ it.effect(
         expect(yield* (yield* Store.RegistryStore).context(scope)).toEqual(before);
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -597,7 +610,7 @@ it.effect("mounted replay never replaces original accepted noncanonical request 
       expect((yield* h.gateway.readMetadata()).items).toHaveLength(1);
       expect(prepared.provider.calls).toHaveLength(0);
     }).pipe(app, Effect.provide(prepared.services));
-  }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.scoped, Effect.provide(f.layer));
 });
 
 it.effect.each([
@@ -666,7 +679,7 @@ it.effect.each([
         expect(yield* Effect.promise(() => terminalPost.text())).toBe(terminalBytes);
         expect(prepared.provider.calls).toHaveLength(1);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -702,7 +715,7 @@ it.effect(
         expect((yield* h.gateway.readMetadata()).items).toHaveLength(1);
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -742,5 +755,5 @@ it.effect.each([
       expect((yield* h.gateway.readMetadata()).items).toHaveLength(0);
       expect(prepared.provider.calls).toHaveLength(0);
     }).pipe(app, Effect.provide(prepared.services));
-  }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.scoped, Effect.provide(f.layer));
 });

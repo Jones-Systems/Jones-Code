@@ -5,6 +5,19 @@ import * as NodeFS from "node:fs";
 import * as NodeCrypto from "node:crypto";
 import { caseCoverage, semanticCatalogue } from "./caseCoverage.ts";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+
+vi.mock("../../../../../package.json", () => ({
+  default: {
+    version: "0.0.0-preview.20261002.100",
+    jonesSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    },
+  },
+}));
+
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   Effect,
@@ -29,7 +42,7 @@ const run = <A, E, R>(body: Effect.Effect<A, E, R>) => {
   return Effect.gen(function* () {
     const prepared = yield* seed(f);
     return yield* body.pipe(app, Effect.provide(prepared.services));
-  }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.scoped, Effect.provide(f.layer));
 };
 const rejected = (receipt: Wire.WorkstreamReceipt, code: string) => {
   expect(receipt.state).toBe("rejected");
@@ -231,7 +244,7 @@ it.effect(
           ),
         ).toHaveLength(1);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 

@@ -1,6 +1,19 @@
 import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
+
+vi.mock("../../../../../package.json", () => ({
+  default: {
+    version: "0.0.0-preview.20261002.100",
+    jonesSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    },
+  },
+}));
+
 import * as Stream from "effect/Stream";
+import * as CurrentAuthority from "../runtime/currentAuthority.ts";
 import * as ControlPlane from "../../../../workstreams/ControlPlaneWorkstreamTransport.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../../mcp/McpToolAccess.ts";
@@ -68,6 +81,9 @@ it.effect(
         unavailable: () => prepared.services,
       }).pipe(Layer.provide(Layer.succeed(Startup.Startup, prepared.selection)));
       yield* Effect.gen(function* () {
+        yield* (yield* CurrentAuthority.CurrentAuthority).withPrepared(
+          CurrentAuthority.checkPreparedAuthority,
+        );
         const h = yield* harness;
         yield* app(h.create("CP-denied raw"));
         const operations = yield* Operations.WorkstreamOperations;
@@ -134,6 +150,6 @@ it.effect(
         expect(fetch).not.toHaveBeenCalled();
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(Effect.provide(selected));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );

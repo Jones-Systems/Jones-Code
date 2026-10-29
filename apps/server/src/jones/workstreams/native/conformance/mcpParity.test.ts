@@ -1,4 +1,17 @@
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+
+vi.mock("../../../../../package.json", () => ({
+  default: {
+    version: "0.0.0-preview.20261002.100",
+    jonesSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    },
+  },
+}));
+
 import * as Stream from "effect/Stream";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../../mcp/McpToolAccess.ts";
@@ -101,7 +114,7 @@ it.effect(
         Effect.provideService(Mcp.McpInvocationContext, invocation),
         Effect.provide(Layer.merge(threads, prepared.services)),
       );
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -144,5 +157,5 @@ it.effect("real CLI dispatcher reaches native operation service and reads retain
       }),
       Effect.provide(prepared.services),
     );
-  }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.scoped, Effect.provide(f.layer));
 });

@@ -2185,7 +2185,8 @@
     "apps/server/src/jones/mcp/workstreams/nativeBinds.ts": "jones-owned",
     "apps/server/src/jones/mcp/workstreams/nativeBinds.test.ts": "jones-owned",
     "apps/server/src/serverOwnership.ts": "hook",
-    "apps/server/src/serverRuntimeState.test.ts": "accepted-shared"
+    "apps/server/src/serverRuntimeState.test.ts": "accepted-shared",
+    "apps/server/src/jones/workstreams/native/runtime/currentAuthority.testkit.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1,6 +1,19 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Synthetic SQLite fixtures stay under the task cache for the root cleanup owner.
+// @effect-diagnostics nodeBuiltinImport:off -- Synthetic SQLite fixtures stay under the task-owned temporary directory for the root cleanup owner.
 import * as NodeFS from "node:fs";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
+
+vi.mock("../../../../../package.json", () => ({
+  default: {
+    version: "0.0.0-preview.20261002.100",
+    jonesSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "b".repeat(40),
+    },
+  },
+}));
+
 import * as Recovery from "../runtime/recovery.ts";
 import * as NativeRegistry from "../registry/service.ts";
 import * as Effects from "../store/effectStore.ts";
@@ -63,7 +76,7 @@ it.effect(
             },
           });
         }).pipe(app, Effect.provide(prepared.services));
-      }).pipe(Effect.provide(f.layer));
+      }).pipe(Effect.scoped, Effect.provide(f.layer));
       yield* Effect.gen(function* () {
         const prepared = yield* seed(f, false);
         yield* TestClock.adjust(25 * 60 * 60 * 1000);
@@ -95,7 +108,7 @@ it.effect(
           if (conflict._tag === "Failure")
             expect(conflict.failure).toMatchObject({ code: "operation_id_conflict" });
         }).pipe(app, Effect.provide(prepared.services));
-      }).pipe(Effect.provide(f.layer));
+      }).pipe(Effect.scoped, Effect.provide(f.layer));
       const sentinel = Buffer.from("Synthetic durable-ingress-create-0001");
       for (const suffix of ["", "-wal"])
         if (NodeFS.existsSync(f.database + suffix))
@@ -151,7 +164,7 @@ it.effect(
         );
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -191,7 +204,7 @@ it.effect(
             auth: { session_id: principal.sessionId },
           });
         }).pipe(app, Effect.provide(prepared.services));
-      }).pipe(Effect.provide(f.layer));
+      }).pipe(Effect.scoped, Effect.provide(f.layer));
       yield* Effect.gen(function* () {
         const prepared = yield* seed(f, false);
         yield* Effect.gen(function* () {
@@ -209,7 +222,7 @@ it.effect(
           ).toBe("attested");
           expect(prepared.provider.calls).toHaveLength(0);
         }).pipe(app, Effect.provide(prepared.services));
-      }).pipe(Effect.provide(f.layer));
+      }).pipe(Effect.scoped, Effect.provide(f.layer));
     }),
 );
 
@@ -232,7 +245,7 @@ it.effect(
         expect(yield* (yield* OperationStore.OperationStore).read(request.operation_id)).toBeNull();
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -283,7 +296,7 @@ it.effect.each([
         expect(yield* store.list(scope, "records")).toHaveLength(0);
         expect(prepared.provider.calls).toHaveLength(0);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );
 
@@ -332,6 +345,6 @@ it.effect.each(["committed", "denied"] as const)(
         });
         expect(prepared.provider.calls).toHaveLength(1);
       }).pipe(app, Effect.provide(prepared.services));
-    }).pipe(Effect.provide(f.layer));
+    }).pipe(Effect.scoped, Effect.provide(f.layer));
   },
 );

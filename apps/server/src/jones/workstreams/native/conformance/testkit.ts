@@ -3,6 +3,7 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 // @effect-diagnostics nodeBuiltinImport:off -- Fresh synthetic databases are retained under task-owned evidence; cleanup belongs to root.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
 
 import * as Wire from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
@@ -28,6 +29,9 @@ import * as Operations from "../../operations/service.ts";
 import * as OperationStore from "../store/operationStore.ts";
 import * as Startup from "../runtime/startup.ts";
 import * as Entry from "../runtime/entry.ts";
+import * as Admission from "../runtime/admission.ts";
+import { RecordedCallerFence } from "../runtime/recordedCaller.ts";
+import * as CurrentAuthorityFixture from "../runtime/currentAuthority.testkit.ts";
 import * as RegistrationContext from "../../registrationContext/service.ts";
 import * as Runtime from "../../runtimeIntegration/native.ts";
 import * as Placements from "../registry/placements.ts";
@@ -48,7 +52,7 @@ import * as SourceSetup from "../runtime/sourceSetup.ts";
 import * as SourceEnrollment from "../runtime/sourceEnrollment.ts";
 import * as SourceRecords from "../store/sourceEnrollmentStore.ts";
 import { NativeProviderEnrollmentError } from "../../nativeProvider/enrollment.ts";
-import { enrollmentRequest } from "../../enrollment/testFixtures.ts";
+import { enrollmentRequest as originalEnrollmentRequest } from "../../enrollment/testFixtures.ts";
 import { makeProviderFixture } from "../../nativeProvider/testFixtures.ts";
 import {
   makeWorkstreamsNativeProvider,
@@ -59,6 +63,14 @@ import {
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
 } from "../../../../workstreams/http.ts";
+
+const enrollmentRequest = {
+  ...originalEnrollmentRequest,
+  context: {
+    ...originalEnrollmentRequest.context,
+    authority_namespace: "t3-native:12345678-1234-4234-8234-123456789abc",
+  },
+};
 
 export const registry = {
   ...Fixture.scope,
@@ -74,10 +86,12 @@ export const principal = {
   scopes: new Set([Wire.AuthOrchestrationReadScope, Wire.AuthOrchestrationOperateScope]),
 };
 export const fresh = () => {
-  const parent = NodePath.resolve("node_modules/.cache/nw-s1-ingress-fixtures");
+  const parent = NodePath.join(NodeOS.tmpdir(), "nw-s1-ingress-fixtures");
   NodeFS.mkdirSync(parent, { recursive: true });
   const home = NodeFS.mkdtempSync(NodePath.join(parent, "entry-")),
-    database = NodePath.join(home, "statev2.sqlite");
+    database = NodePath.join(home, "userdata", "statev2.sqlite");
+  NodeFS.chmodSync(home, 0o700);
+  NodeFS.mkdirSync(NodePath.dirname(database), { mode: 0o700 });
   return {
     home,
     database,
@@ -164,12 +178,21 @@ export const seed = Effect.fn("NativeIngress.seed")(function* (
       client,
     });
   const provider = makeProviderFixture();
+  const currentOwner = yield* CurrentAuthorityFixture.prepare({
+    ...f,
+    context: selectedEnrollment.context,
+  });
   const sql = yield* SqlClient.SqlClient;
   const attempts = yield* NativeAttempts.NativeProviderAttempts.pipe(
     Effect.provide(NativeAttempts.NativeProviderAttemptsLive),
   );
   const authority: Authority.NativeStoreAuthority["Service"] = {
     ...provider.ports.authority,
+    readCurrent: Effect.succeed({
+      environmentId: selectedEnrollment.context.source_instance_id,
+      authorityNamespace: selectedEnrollment.context.authority_namespace,
+      storeGeneration: selectedEnrollment.context.store_generation,
+    }),
     trustProvider: {
       readTrustSnapshot: () => ({
         readiness: "ready",
@@ -224,10 +247,11 @@ export const seed = Effect.fn("NativeIngress.seed")(function* (
       Effect.provideService(SourceEnrollment.SourceSetupOwner, { verifyUnchanged: Effect.void }),
     );
   const runtime: Runtime.NativeWorkstreamsRuntime["Service"] = {
-    provider: provider.provider(),
+    provider: makeWorkstreamsNativeProvider({ ...provider.ports, authority }),
     providerV2: makeWorkstreamsNativeProvider(
       {
         ...provider.ports,
+        authority,
         attempts,
         engine: {
           dispatch: Effect.fn("NativeIngress.syntheticDispatch")(function* (
@@ -295,6 +319,14 @@ export const seed = Effect.fn("NativeIngress.seed")(function* (
   });
   if (selection.home === null) return yield* Effect.die(selection.problem);
   const services = Startup.homeServicesLayer({ ...selection, home: selection.home }).pipe(
+    Layer.provideMerge(currentOwner),
+    Layer.provide(
+      Layer.succeed(Admission.RecordedThreadLookup, {
+        getThreadShell: (id) =>
+          Effect.succeed(id === "thread-synthetic" ? liveThreadShell(id) : null),
+        getThreadRecords: () => Effect.fail(new RecordedCallerFence({ code: "not_granted" })),
+      }),
+    ),
     Layer.provide(Layer.succeed(SourceEnrollment.NativeSourceEnrollments, nativeSources)),
     Layer.provide(Layer.succeed(Runtime.NativeWorkstreamsRuntime, runtime)),
     Layer.provide(Layer.succeed(Authority.NativeStoreAuthority, authority)),
