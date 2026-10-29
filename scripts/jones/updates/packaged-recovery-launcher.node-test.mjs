@@ -76,6 +76,9 @@ NodeTest.test(
             environmentId:await fs.readFile(path.join(home,"userdata","environment-id"),"utf8"),
             currentVersion:context.childVersion,capability:{check:true,download:true,install:true},
           });
+          const requestedPort=Number(process.env.T3CODE_PORT);
+          if(!Number.isInteger(requestedPort)||requestedPort<1||requestedPort>65535)
+            throw new Error("Packaged server requires a port from 1 to 65535.");
           const server=http.createServer(async(request,response)=>{
             response.setHeader("content-type","application/json");
             if(request.headers.authorization!=="Bearer synthetic-legacy-fixture-token"){
@@ -110,7 +113,7 @@ NodeTest.test(
               response.end(JSON.stringify(await snapshot()));
             }catch(error){response.writeHead(500);response.end("{}");console.error(error.message)}
           });
-          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve)});
+          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(requestedPort,"127.0.0.1",resolve)});
           const runtime=path.join(home,"userdata","server-runtime.json");
           const port=server.address().port;
           await fs.writeFile(runtime+".synthetic.tmp",JSON.stringify({
@@ -916,6 +919,9 @@ NodeTest.test(
           const http=require("node:http"),pending=new Map();
           process.on("message",m=>{if(m.type==="update-accepted"){
             const resolve=pending.get(m.updateId);if(resolve){pending.delete(m.updateId);resolve()}}});
+          const requestedPort=Number(process.env.T3CODE_PORT);
+          if(!Number.isInteger(requestedPort)||requestedPort<1||requestedPort>65535)
+            throw new Error("Packaged server requires a port from 1 to 65535.");
           const server=http.createServer(async(req,res)=>{
             res.setHeader("content-type","application/json");
             if(req.headers.authorization!=="Bearer synthetic-accepted-fixture-token"){res.writeHead(401);res.end("{}");return}
@@ -933,7 +939,7 @@ NodeTest.test(
                 updatedAt:new Date().toISOString(),...(refused?{}:{acceptedAt:new Date().toISOString()})}));
             }catch(e){res.writeHead(500);res.end("{}");console.error(e.message)}
           });
-          await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const port=server.address().port;
+          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(requestedPort,"127.0.0.1",resolve)});const port=server.address().port;
           await write(path.join(home,"userdata","server-runtime.json"),{version:1,pid:process.pid,host:"127.0.0.1",port,
             origin:"http://127.0.0.1:"+port,startedAt:new Date().toISOString(),serviceManaged:true});
           process.once("SIGTERM",()=>server.close(()=>{if(process.connected)process.disconnect()}));
