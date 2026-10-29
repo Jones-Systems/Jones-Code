@@ -500,6 +500,154 @@ NodeTest.test(
   },
 );
 
+NodeTest.test(
+  "native inherited Effect overrides preserve directory, suffix and error controls",
+  async (t) => {
+    const compiler = await Identity.verified(
+      await Identity.resolveInstalled(repository, Identity.hostTarget()),
+    );
+    const require = NodeModule.createRequire(NodePath.join(repository, "scripts/package.json"));
+    const effect = NodePath.dirname(require.resolve("effect/package.json"));
+    const alternatives = ["test", "tests", "testkit", "testing", "fixtures", "integration"];
+    const suffixes = ["test.ts", "test.tsx", "spec.ts", "spec.tsx", "testkit.ts", "testkit.tsx"];
+    const source =
+      'import * as Effect from "effect/Effect";\nexport const preview = () => Effect.gen(function*() {\n  return yield* Effect.succeed(1);\n});\n';
+    const contexts = [
+      {
+        name: "root",
+        parent: repository,
+        config: NodePath.join(repository, "tsconfig.base.json"),
+        provider: false,
+      },
+      {
+        name: "scripts",
+        parent: NodePath.join(repository, "scripts"),
+        config: NodePath.join(repository, "scripts/tsconfig.json"),
+        provider: false,
+      },
+      {
+        name: "oxlint",
+        parent: NodePath.join(repository, "oxlint-plugin-t3code"),
+        config: NodePath.join(repository, "oxlint-plugin-t3code/tsconfig.json"),
+        provider: false,
+      },
+      {
+        name: "provider-testing",
+        parent: NodePath.join(repository, "packages/provider-testing"),
+        config: NodePath.join(repository, "packages/provider-testing/tsconfig.json"),
+        provider: true,
+      },
+      {
+        name: "provider-sibling",
+        parent: NodePath.join(repository, "packages"),
+        config: NodePath.join(repository, "tsconfig.base.json"),
+        provider: false,
+      },
+    ];
+    for (const context of contexts)
+      await t.test(context.name, async (t) => {
+        await NodeFSP.mkdir(context.parent, { recursive: true });
+        const root = await NodeFSP.mkdtemp(
+          NodePath.join(
+            context.parent,
+            context.name === "provider-sibling" ? "provider-testing-sibling-" : "jones-override-",
+          ),
+        );
+        roots.add(root);
+        t.after(async () => {
+          await NodeFSP.rm(root, { recursive: true, force: true });
+          roots.delete(root);
+          await NodeAssert.rejects(NodeFSP.stat(root), { code: "ENOENT" });
+        });
+        await NodeFSP.writeFile(NodePath.join(root, "package.json"), '{"type":"module"}');
+        await NodeFSP.mkdir(NodePath.join(root, "node_modules"));
+        // Expose only this checkout's own dependency, as in the native build-info fixtures.
+        await NodeFSP.symlink(effect, NodePath.join(root, "node_modules/effect"), "dir");
+        const suggestions = ["src/ordinary.ts", "src/sibling-test/a.ts"];
+        const suppressed = [
+          ...alternatives.map((name) => `src/${name}/a.ts`),
+          ...suffixes.map((suffix) => `src/suffix.${suffix}`),
+        ];
+        const files = [...suggestions, ...suppressed];
+        for (const file of files) {
+          await NodeFSP.mkdir(NodePath.dirname(NodePath.join(root, file)), { recursive: true });
+          await NodeFSP.writeFile(NodePath.join(root, file), source);
+        }
+        await NodeFSP.writeFile(
+          NodePath.join(root, "required.ts"),
+          'import * as Effect from "effect/Effect";\nexport const required = Effect.sync(() => Date.now());\n',
+        );
+        await NodeFSP.writeFile(
+          NodePath.join(root, "tsconfig.json"),
+          JSON.stringify({
+            extends: context.config,
+            compilerOptions: { types: [], composite: false, incremental: false, noEmit: true },
+            files: [...files, "required.ts"],
+            include: [],
+          }),
+        );
+        const job = runProcess({
+          executable: compiler.executable,
+          args: [
+            "--project",
+            NodePath.join(root, "tsconfig.json"),
+            "--noEmit",
+            "--pretty",
+            "false",
+            ...Identity.CHECKER_OPTIONS,
+          ],
+          cwd: root,
+          signal: stopping.signal,
+          capture: true,
+        });
+        jobs.add(job);
+        let result;
+        try {
+          result = await job;
+        } finally {
+          jobs.delete(job);
+        }
+        t.diagnostic(JSON.stringify({ context: context.name, childClosed: true, ...result }));
+        NodeAssert.equal(result.code, 2, result.stdout);
+        const diagnostics = result.stdout.replaceAll("\\", "/");
+        const diagnosticLines = diagnostics.split("\n");
+        const fnSuggestions = diagnosticLines.filter((line) => line.includes("TS377047"));
+        for (const file of files) {
+          const lines = diagnosticLines.filter((line) => line.includes(`${file}(`));
+          NodeAssert.ok(
+            lines.some((line) => line.includes("error TS377017")),
+            `${context.name}/${file}: raw error lost: ${diagnostics}`,
+          );
+        }
+        NodeAssert.ok(
+          diagnosticLines.some(
+            (line) => line.includes("required.ts(") && line.includes("error TS377067"),
+          ),
+          diagnostics,
+        );
+        NodeAssert.ok(
+          diagnosticLines
+            .filter((line) => /error TS\d+/.test(line))
+            .every((line) => /TS377017|TS377067/.test(line)),
+          diagnostics,
+        );
+        NodeAssert.equal(
+          fnSuggestions.length,
+          context.provider ? 0 : suggestions.length,
+          diagnostics,
+        );
+        for (const file of files) {
+          const lines = diagnosticLines.filter((line) => line.includes(`${file}(`));
+          NodeAssert.equal(
+            lines.some((line) => line.includes("TS377047")),
+            !context.provider && suggestions.includes(file),
+            `${context.name}/${file}: ${diagnostics}`,
+          );
+        }
+      });
+  },
+);
+
 for (const [signalName, exitCode] of [
   ["SIGINT", 130],
   ["SIGTERM", 143],

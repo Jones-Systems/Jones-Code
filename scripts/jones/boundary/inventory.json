@@ -2484,7 +2484,8 @@
     "packages/source-control-core/src/server/PullRequestProvider.ts": "accepted-shared",
     "packages/source-control-github/src/server/gitHubConditionalChecks.ts": "accepted-shared",
     "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts": "jones-tests-in-upstream",
-    "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts": "jones-tests-in-upstream"
+    "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts": "jones-tests-in-upstream",
+    "tsconfig.base.json": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
