@@ -99,7 +99,10 @@ const runProviderMaintenanceCommandWithSpawner = Effect.fn("ProviderMaintenanceR
     const collectCommandResult = Effect.fn("ProviderMaintenanceRunner.collectCommandResult")(
       function* () {
         // Windows batch shims require shell dispatch through resolveSpawnCommand.
-        const resolved = yield* resolveSpawnCommand(input.command, input.args);
+        const resolved = yield* resolveSpawnCommand(input.command, input.args, {
+          ...(input.env ? { env: input.env } : {}),
+          extendEnv: true,
+        });
         const child = yield* input.spawner
           .spawn(
             ChildProcess.make(resolved.command, resolved.args, {

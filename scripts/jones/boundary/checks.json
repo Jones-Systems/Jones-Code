@@ -1985,6 +1985,7 @@
     {
       "id": "jones-provider-update-trust",
       "tests": [
+        "apps/server/src/provider/CodexInstallation.test.ts",
         "packages/client-runtime/src/jones/providerUpdates/index.test.ts",
         "apps/server/src/jones/provider/providerUpdateVerification.test.ts",
         "apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts",
@@ -1997,7 +1998,7 @@
         "apps/web/src/jones/updates/ProviderUpdateNotice.browser.test.tsx"
       ],
       "commands": [
-        "vp test run packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
+        "vp test run apps/server/src/provider/CodexInstallation.test.ts packages/client-runtime/src/jones/providerUpdates/index.test.ts apps/server/src/jones/provider/providerUpdateVerification.test.ts apps/web/src/components/ProviderUpdateLaunchNotification.logic.test.ts apps/web/src/jones/updates/ProviderUpdateEnvironmentRows.test.tsx apps/server/src/provider/providerMaintenanceRunner.test.ts packages/provider-core/src/server/maintenanceResolver.test.ts apps/web/src/components/sidebar/updateEverything.logic.test.ts apps/mobile/src/features/settings/environment-maintenance.test.ts",
         "vp test run apps/web/src/jones/updates/providerUpdateController.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts --project browser src/jones/updates/ProviderUpdateNotice.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/client-runtime typecheck",
@@ -2295,6 +2296,7 @@
     {
       "id": "jones-delegated-task-workspace",
       "tests": [
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
         "packages/contracts/src/jones/delegatedTaskWorkspace.test.ts",
         "apps/server/src/jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.test.ts",
         "packages/contracts/src/orchestratorMcp.test.ts",
@@ -2397,6 +2399,9 @@
     {
       "id": "hq-jones-client-launch",
       "tests": [
+        "apps/server/src/jones/orchestration/IdleWorktreeAdmission.test.ts",
+        "apps/server/src/jones/orchestration/IdleWorktreeAdmission.integration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts",
         "packages/contracts/src/jones/clientLaunch.test.ts",
         "apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
@@ -2423,6 +2428,7 @@
         "packages/client-runtime/src/jones/toolSummaryCompatibility.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/orchestration/IdleWorktreeAdmission.test.ts apps/server/src/jones/orchestration/IdleWorktreeAdmission.integration.test.ts apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts apps/server/src/jones/updates/migrationPlan.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/contracts/src/jones/clientLaunch.test.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts packages/contracts/src/orchestratorMcp.test.ts apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts apps/server/src/mcp/McpToolAccess.test.ts apps/server/src/mcp/McpToolAccess.race.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts apps/server/src/mcp/toolkits/core.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp lint apps/server/src/ws.ts packages/contracts/src/jones/clientLaunch.ts packages/contracts/src/jones/clientLaunch.test.ts packages/contracts/src/index.ts packages/contracts/src/orchestratorMcp.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.ts apps/server/src/jones/persistence/Migrations/112_JonesClientLaunchRequests.test.ts apps/server/src/jones/persistence/JonesMigrations.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.ts apps/server/src/jones/orchestration/ThreadLaunchService.jones.test.ts apps/server/src/mcp/toolkits/project/tools.ts apps/server/src/mcp/toolkits/project/handlers.ts apps/server/src/mcp/McpToolAccess.ts apps/server/src/jones/persistence/UpstreamIsolation.test.ts apps/server/src/mcp/toolkits/project/handlers.test.ts apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts apps/server/src/orchestration-v2/ThreadLaunchService.test.ts apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts packages/shared/src/t3McpToolPresentation.ts packages/shared/src/t3McpToolPresentation.test.ts packages/client-runtime/src/t3ToolSummary.ts packages/client-runtime/src/t3ToolSummary.test.ts apps/server/scripts/jones/currentFixtures.test.ts apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts apps/server/src/jones/persistence/Migrations.test.ts",
         "vp run --filter @t3tools/contracts --filter t3 --concurrency-limit 1 typecheck",
@@ -4289,6 +4295,8 @@
     {
       "id": "jones-provider-writer-retirement",
       "tests": [
+        "apps/server/src/jones/provider/codex/CodexStartup.test.ts",
+        "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts",
         "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
         "apps/server/src/jones/provider/codex/CodexRetirement.test.ts",
         "apps/server/src/jones/orchestration/LateSteer.test.ts",
@@ -4303,6 +4311,7 @@
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
       "commands": [
+        "vp test run apps/server/src/jones/provider/codex/CodexStartup.test.ts apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/providerRetirement/RetirementLedger.test.ts apps/server/src/jones/provider/codex/CodexRetirement.test.ts apps/server/src/jones/orchestration/LateSteer.test.ts apps/server/src/jones/threadConfiguration/prepareExecutionSession.test.ts apps/server/src/orchestration-v2/ProviderSessionManager.test.ts apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts apps/server/src/orchestration-v2/EffectWorker.test.ts apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp run --filter t3 typecheck",
         "vp run --filter @t3tools/provider-core typecheck",

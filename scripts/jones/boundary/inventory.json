@@ -7,6 +7,18 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/IdleWorktreeAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/IdleWorktreeAdmission.integration.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexStartup.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexStartup.test.ts": "jones-owned",
+    "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts": "jones-owned",
+    "packages/provider-core/src/server/maintenanceResolver.ts": "accepted-shared",
+    "packages/provider-core/src/server/maintenanceResolver.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/CodexInstallation.ts": "accepted-shared",
+    "apps/server/src/provider/CodexInstallation.test.ts": "jones-tests-in-upstream",
     "scripts/jones/ci/anonymous-checkout.sh": "jones-owned",
     "scripts/jones/ci/anonymous-checkout.node-test.mjs": "jones-owned",
     "scripts/jones/boundary/fragments/anonymous-checkout.json": "jones-owned",
@@ -2566,6 +2578,30 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexStartup.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexStartup.ts"
+    },
     {
       "from": "apps/server/src/cloud/bootService.test.ts",
       "to": "apps/server/src/jones/cloud/launcherPointer.ts"
