@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "scripts/jones/ci/anonymous-checkout.sh": "jones-owned",
+    "scripts/jones/ci/anonymous-checkout.node-test.mjs": "jones-owned",
+    "scripts/jones/boundary/fragments/anonymous-checkout.json": "jones-owned",
     "apps/server/src/mcp/toolkits/pullRequests/handlers.test.ts": "jones-tests-in-upstream",
     ".github/triage/PLAYBOOK.md": "accepted-shared",
     "apps/server/src/cli/triagePrompt.ts": "accepted-shared",
@@ -190,6 +193,7 @@
     "apps/server/src/ServerSettingsPersistence.ts": "accepted-shared",
     "apps/server/src/ServerSettingsPersistence.test.ts": "jones-owned",
     "apps/server/src/serverSettings.ts": "accepted-shared",
+    "apps/server/src/serverSettings.test.ts": "jones-tests-in-upstream",
     "scripts/jones/boundary/fragments/desktop-stage-attempts.json": "jones-owned",
     "scripts/jones/boundary/fragments/desktop-background-preparation.json": "jones-owned",
     ".agents/skills/capture-ui-evidence/SKILL.md": "policy",
