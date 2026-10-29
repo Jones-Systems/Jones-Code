@@ -1721,9 +1721,10 @@
         "apps/server/src/jones/workstreams/runtimeIntegration/multiEnvironment.test.ts",
         "apps/server/src/workstreams/http.test.ts",
         "apps/server/src/jones/workstreams/registrationContext/service.test.ts",
-        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts"
+        "apps/server/src/jones/workstreams/runtimeIntegration/native.test.ts",
+        "apps/server/src/jones/workstreams/runtimeIntegration/sourceRenewal.test.ts"
       ],
-      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior."
+      "scope": "Test-only ephemeral loopback control plane wraps the existing synthetic registry. Two real environment HTTP stacks use production signed transport, gateway and registration qualification with pinned canonical registry identity and injected synthetic authentication, build stamp and native authority. Covers source-qualified identity collisions, assignment receipt lookup and stale-replay refusal, move/remove and mismatch diagnostics. Does not establish production registry verification, native database, browser drag/pinning, or physical fleet behavior. Selected-source renewal additionally joins two isolated real SQLite enrollment/auth repositories, native reservation and credential publication/readback, strict-v1 build qualification and signed loopback registration/membership preservation. Build ports, descriptor adoption and registry business state remain synthetic; compatible v2 observation is separate from renewal, expiry and revocation."
     },
     {
       "id": "native-enrollment-runtime",
