@@ -1,4 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off globalTimers:off globalDate:off -- Captured child callbacks and independent deadline/control transport require Node primitives.
+import type {
+  DiagnosticEvent,
+  DiagnosticSink,
+} from "../serverParallelism/diagnosticObservation.ts";
 import * as NodeChildProcess from "node:child_process";
 import type * as NodeStream from "node:stream";
 import { computeFailure, ComputeFailure } from "./failure.ts";
@@ -121,12 +125,38 @@ export class ProcessSlot implements ComputeChild {
   readonly bootstrap: Bootstrap;
   private readonly onExit: (cause: unknown) => void;
   private readonly observe: (event: ComputeObservation) => void;
+  private readonly diagnostic: DiagnosticSink | undefined;
+  private trace(
+    event: Extract<DiagnosticEvent, { kind: "lifecycle" }>["event"],
+    request?: Request,
+    timing?: ComputeRequestTiming,
+  ): void {
+    if (!this.diagnostic) return;
+    observeSafely(this.diagnostic)({
+      kind: "lifecycle",
+      event,
+      atMs: performance.now(),
+      phase: "process-slot",
+      pid: this.pid,
+      bootstrap: this.bootstrap,
+      ...(request
+        ? {
+            requestId: request.requestId,
+            operation: request.operation,
+            token: Object.freeze({ ...request.token }),
+          }
+        : {}),
+      ...(timing ? { timing } : {}),
+    });
+  }
   private constructor(
     child: NodeChildProcess.ChildProcess,
     bootstrap: Bootstrap,
     onExit: (cause: unknown) => void,
     observe?: (event: ComputeObservation) => void,
+    diagnostic?: DiagnosticSink,
   ) {
+    this.diagnostic = diagnostic;
     this.child = child;
     this.bootstrap = Object.freeze({ ...bootstrap });
     this.onExit = onExit;
@@ -163,6 +193,7 @@ export class ProcessSlot implements ComputeChild {
     onExit: (cause: unknown) => void,
     observe?: (event: ComputeObservation) => void,
     capture?: (child: ComputeChild) => void,
+    diagnostic?: DiagnosticSink,
   ): Promise<ProcessSlot> {
     const child = NodeChildProcess.spawn(
       command.file,
@@ -173,6 +204,35 @@ export class ProcessSlot implements ComputeChild {
         windowsHide: true,
       },
     );
+    if (diagnostic) {
+      const emit = observeSafely(diagnostic);
+      const identity = {
+        pid: child.pid,
+        bootstrap: Object.freeze({ ...bootstrap }),
+        phase: "process-slot",
+      };
+      emit({ ...identity, kind: "lifecycle", event: "spawn", atMs: performance.now() });
+      child.once("exit", (code, signal) =>
+        emit({
+          ...identity,
+          kind: "lifecycle",
+          event: "captured-exit",
+          atMs: performance.now(),
+          code,
+          signal,
+        }),
+      );
+      child.once("close", (code, signal) =>
+        emit({
+          ...identity,
+          kind: "lifecycle",
+          event: "captured-close",
+          atMs: performance.now(),
+          code,
+          signal,
+        }),
+      );
+    }
     if (!child.pid) {
       // Observe spawn errors without leaking an unhandled event. Reservation remains unresolved.
       child.once("error", () => {});
@@ -180,7 +240,7 @@ export class ProcessSlot implements ComputeChild {
     }
     let slot: ProcessSlot;
     try {
-      slot = new ProcessSlot(child, bootstrap, onExit, observe);
+      slot = new ProcessSlot(child, bootstrap, onExit, observe, diagnostic);
     } catch (cause) {
       // Even an unsupported stdio route retains and reaps the exact spawned handle.
       const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
@@ -197,6 +257,7 @@ export class ProcessSlot implements ComputeChild {
       capture?.(slot); // Qualification can bind starting PIDs before readiness; no admission authority.
       await slot.wait("ready");
       await register(slot.pid); // durable before GO; startup guardian timer covers a lost registration.
+      slot.trace("register-complete");
       await slot.command("go");
       await slot.wait("nativeReady");
       await slot.command("loaded");
@@ -291,9 +352,11 @@ export class ProcessSlot implements ComputeChild {
       if (msg.type === "ready") {
         if (!keys(msg, [...base, "type", "pid"]) || msg.pid !== this.pid)
           throw computeFailure("protocol");
+        this.trace("ready");
         this.acknowledge("ready");
       } else if (["go", "loaded"].includes(msg.type)) {
         if (!keys(msg, [...base, "type"])) throw computeFailure("protocol");
+        this.trace(msg.type === "go" ? "go" : "loaded");
         this.acknowledge(msg.type);
       } else if (msg.type === "nativeReady") {
         if (
@@ -312,6 +375,7 @@ export class ProcessSlot implements ComputeChild {
           availableParallelism: msg.availableParallelism as number,
           parallelismSource: "node:os.availableParallelism",
         });
+        this.trace("nativeReady");
         this.acknowledge("nativeReady");
       } else if (msg.type === "armed" || msg.type === "disarmed") {
         if (
@@ -319,6 +383,7 @@ export class ProcessSlot implements ComputeChild {
           msg.requestId !== this.pending?.request.requestId
         )
           throw computeFailure("protocol");
+        if (msg.type === "disarmed") this.trace("disarm", this.pending?.request);
         this.acknowledge(`${msg.type}:${msg.requestId}`);
       } else if (msg.type === "resources") {
         if (
@@ -366,6 +431,16 @@ export class ProcessSlot implements ComputeChild {
       else {
         pending.receivedMs = performance.now();
         if (reply.timing) pending.timing = reply.timing;
+        this.trace(
+          "terminal-receive",
+          pending.request,
+          reply.timing
+            ? {
+                worker: { ...reply.timing },
+                delivery: estimateReplyDelivery(reply.timing, pending.receivedMs),
+              }
+            : undefined,
+        );
       }
       // Acknowledged only after strict schema/token validation and bounded assembly.
       await this.send("credit", { requestId: reply.requestId });
@@ -411,6 +486,7 @@ export class ProcessSlot implements ComputeChild {
       signal?.addEventListener("abort", cancel, { once: true });
       const sentMs = performance.now();
       this.pending.sentMs = sentMs;
+      this.trace("parent-send", request);
       await writeFrame(
         this.input,
         { ...request, clock: { parentSentMs: sentMs } },
@@ -443,6 +519,7 @@ export class ProcessSlot implements ComputeChild {
       const pending = this.pending;
       signal?.removeEventListener("abort", cancel);
       this.pending = undefined;
+      this.trace("settle", request);
       // Runs after terminal handling/disarm or failure, never in place of actual request settlement.
       observeSafely(observeTiming)({
         ...(pending?.timing
@@ -458,6 +535,7 @@ export class ProcessSlot implements ComputeChild {
     }
   }
   async retire(): Promise<void> {
+    this.trace("terminate-request");
     // Do not infer exit from signal-send success or child.killed. Wait for this captured child's event.
     if (!this.exitObserved) {
       try {

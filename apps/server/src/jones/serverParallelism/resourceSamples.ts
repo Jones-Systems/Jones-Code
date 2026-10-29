@@ -5,6 +5,50 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeUtil from "node:util";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import {
+  diagnosticError,
+  type DiagnosticIdentity,
+  type DiagnosticSink,
+  type ResourceStage,
+} from "./diagnosticObservation.ts";
+import { observeSafely } from "./observations.ts";
+
+export interface ResourceDiagnostics {
+  readonly sink: DiagnosticSink;
+  readonly readId: number;
+  readonly phase: string;
+  readonly identities?: ReadonlyMap<number, DiagnosticIdentity>;
+  readonly trackPending?: (pending: Promise<unknown>) => void;
+}
+function resourceEmitter(diagnostic: ResourceDiagnostics | undefined, pid?: number) {
+  const sink = observeSafely(diagnostic?.sink);
+  return (
+    stage: ResourceStage,
+    edge: "begin" | "end" | "error",
+    detail: {
+      attempted?: number;
+      completed?: number;
+      errors?: number;
+      errno?: string;
+      raw?: string;
+      startTimeTicks?: string | undefined;
+      clockTicks?: number;
+    } = {},
+  ) => {
+    if (diagnostic)
+      sink({
+        kind: "resource",
+        atMs: performance.now(),
+        phase: diagnostic.phase,
+        readId: diagnostic.readId,
+        ...(pid === undefined ? {} : { pid, ...diagnostic.identities?.get(pid) }),
+        stage,
+        edge,
+        ...detail,
+      });
+  };
+}
+const statStart = (text: string) => text.slice(text.lastIndexOf(")") + 2).split(" ")[19];
 const execute = NodeUtil.promisify(NodeChildProcess.execFile);
 let clockTicks: Promise<number> | undefined;
 export interface NativePoolObservation {
@@ -213,7 +257,10 @@ export function resourcePredicates(
 }
 
 /** Per-PID failures stay in the result so later successful samples cannot erase them. */
-export async function sampleProcesses(pids: readonly number[]): Promise<ProcessResourceSample> {
+export async function sampleProcesses(
+  pids: readonly number[],
+  diagnostic?: ResourceDiagnostics,
+): Promise<ProcessResourceSample> {
   if (!pids.every((pid) => Number.isSafeInteger(pid) && pid > 0))
     throw new Error("Invalid captured PID");
   if (pids.length === 0) return processResourceSample(pids, []);
@@ -221,31 +268,83 @@ export async function sampleProcesses(pids: readonly number[]): Promise<ProcessR
     errors: string[] = [];
   try {
     if (HostProcess.Platform.defaultValue() === "linux") {
+      const clockEvent = resourceEmitter(diagnostic);
+      clockEvent("clock-ticks", "begin", { attempted: 1 });
       const hz = await (clockTicks ??= execute("getconf", ["CLK_TCK"], { timeout: 2_000 }).then(
         (result) => Number(result.stdout.trim()),
       ));
       if (!Number.isFinite(hz) || hz <= 0) throw new Error("Unavailable OS clock frequency");
+      clockEvent("clock-ticks", "end", { attempted: 1, completed: 1, errors: 0, clockTicks: hz });
       for (const pid of pids) {
+        const emit = resourceEmitter(diagnostic, pid);
+        const counts = { attempted: 0, completed: 0, errors: 0 };
+        const read = <T>(stage: ResourceStage, run: () => Promise<T>): Promise<T> => {
+          if (!diagnostic) return run();
+          counts.attempted++;
+          emit(stage, "begin", { attempted: 1 });
+          const pending = run().then(
+            (value) => {
+              counts.completed++;
+              emit(stage, "end", {
+                attempted: 1,
+                completed: 1,
+                errors: 0,
+                ...(stage === "stat" && typeof value === "string"
+                  ? { startTimeTicks: statStart(value), clockTicks: hz, raw: value.slice(0, 2_048) }
+                  : {}),
+              });
+              return value;
+            },
+            (cause) => {
+              counts.errors++;
+              emit(stage, "error", {
+                attempted: 1,
+                completed: 0,
+                errors: 1,
+                ...diagnosticError(cause),
+              });
+              throw cause;
+            },
+          );
+          observeSafely(diagnostic.trackPending)(pending);
+          return pending;
+        };
+        emit("pid", "begin");
         try {
           const [text, status, tasks, descriptors] = await Promise.all([
-            NodeFSP.readFile(`/proc/${pid}/stat`, "utf8"),
-            NodeFSP.readFile(`/proc/${pid}/status`, "utf8"),
-            NodeFSP.readdir(`/proc/${pid}/task`),
-            NodeFSP.readdir(`/proc/${pid}/fd`),
+            read("stat", () => NodeFSP.readFile(`/proc/${pid}/stat`, "utf8")),
+            read("status", () => NodeFSP.readFile(`/proc/${pid}/status`, "utf8")),
+            read("task", () => NodeFSP.readdir(`/proc/${pid}/task`)),
+            read("fd", () => NodeFSP.readdir(`/proc/${pid}/fd`)),
           ]);
           const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
           let inotifyDescriptors = 0,
             inotifyWatches = 0,
             watchesKnown = true;
+          let completed = 0,
+            errors = 0;
+          emit("fdinfo", "begin", { attempted: descriptors.length });
           for (const descriptor of descriptors) {
+            counts.attempted++;
             try {
               const info = await NodeFSP.readFile(`/proc/${pid}/fdinfo/${descriptor}`, "utf8");
+              completed++;
+              counts.completed++;
               if (info.includes("inotify")) inotifyDescriptors++;
               inotifyWatches += [...info.matchAll(/^inotify wd:/gm)].length;
-            } catch {
+            } catch (cause) {
+              errors++;
+              counts.errors++;
+              emit("fdinfo", "error", {
+                attempted: 1,
+                completed: 0,
+                errors: 1,
+                ...diagnosticError(cause),
+              });
               watchesKnown = false;
             }
           }
+          emit("fdinfo", "end", { attempted: descriptors.length, completed, errors });
           const rss = /^VmRSS:\s+(\d+)/m.exec(status)?.[1];
           rows.push({
             pid,
@@ -254,8 +353,11 @@ export async function sampleProcesses(pids: readonly number[]): Promise<ProcessR
             threads: tasks.length,
             ...(watchesKnown ? { inotifyDescriptors, inotifyWatches } : {}),
           });
-        } catch {
+        } catch (cause) {
+          emit("pid", "error", { ...counts, ...diagnosticError(cause) });
           errors.push(`pid:${pid}:unavailable`);
+        } finally {
+          emit("pid", "end", counts);
         }
       }
     } else if (HostProcess.Platform.defaultValue() === "darwin") {
@@ -281,8 +383,90 @@ export async function sampleProcesses(pids: readonly number[]): Promise<ProcessR
         });
       }
     } else errors.push("unsupported-platform");
-  } catch {
+  } catch (cause) {
+    resourceEmitter(diagnostic)("clock-ticks", "error", { errors: 1, ...diagnosticError(cause) });
     errors.push("collector-unavailable");
   }
   return processResourceSample(pids, rows, errors);
+}
+
+export interface CpuStatReceipt {
+  readonly mode: "cpu-stat-only";
+  readonly eligible: false;
+  readonly requestedPids: readonly number[];
+  readonly processes: readonly {
+    readonly pid: number;
+    readonly cpuMs: number;
+    readonly startTimeTicks: string;
+    readonly clockTicks: number;
+  }[];
+  readonly missingPids: readonly number[];
+  readonly errors: readonly string[];
+  readonly unavailable: readonly ["rssBytes", "threads", "inotifyDescriptors", "inotifyWatches"];
+}
+
+/** CPU-only evidence has its own shape; it cannot masquerade as a resource qualification. */
+export async function sampleCpuStats(
+  pids: readonly number[],
+  diagnostic?: ResourceDiagnostics,
+): Promise<CpuStatReceipt> {
+  if (!pids.every((pid) => Number.isSafeInteger(pid) && pid > 0))
+    throw new Error("Invalid captured PID");
+  const processes: CpuStatReceipt["processes"][number][] = [],
+    errors: string[] = [];
+  const clockEvent = resourceEmitter(diagnostic);
+  try {
+    if (HostProcess.Platform.defaultValue() !== "linux")
+      throw new Error("CPU-stat diagnostic requires Linux");
+    clockEvent("clock-ticks", "begin", { attempted: 1 });
+    const hz = await (clockTicks ??= execute("getconf", ["CLK_TCK"], { timeout: 2_000 }).then(
+      (result) => Number(result.stdout.trim()),
+    ));
+    if (!Number.isFinite(hz) || hz <= 0) throw new Error("Unavailable OS clock frequency");
+    clockEvent("clock-ticks", "end", { attempted: 1, completed: 1, errors: 0, clockTicks: hz });
+    for (const pid of pids) {
+      const emit = resourceEmitter(diagnostic, pid);
+      emit("pid", "begin");
+      emit("stat", "begin", { attempted: 1 });
+      try {
+        const text = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
+        const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+        const startTimeTicks = statStart(text),
+          cpuMs = ((Number(fields[11]) + Number(fields[12])) * 1000) / hz;
+        emit("stat", "end", {
+          attempted: 1,
+          completed: 1,
+          errors: 0,
+          startTimeTicks,
+          clockTicks: hz,
+          raw: text.slice(0, 2_048),
+        });
+        if (
+          !startTimeTicks ||
+          !/^[0-9]+$/.test(startTimeTicks) ||
+          !Number.isFinite(cpuMs) ||
+          cpuMs < 0
+        )
+          throw new Error("Malformed CPU stat");
+        processes.push({ pid, cpuMs, startTimeTicks, clockTicks: hz });
+      } catch (cause) {
+        emit("stat", "error", { errors: 1, ...diagnosticError(cause) });
+        errors.push(`pid:${pid}:unavailable`);
+      } finally {
+        emit("pid", "end");
+      }
+    }
+  } catch (cause) {
+    clockEvent("clock-ticks", "error", { errors: 1, ...diagnosticError(cause) });
+    errors.push("collector-unavailable");
+  }
+  return {
+    mode: "cpu-stat-only",
+    eligible: false,
+    requestedPids: [...pids],
+    processes,
+    missingPids: pids.filter((pid) => processes.filter((row) => row.pid === pid).length !== 1),
+    errors,
+    unavailable: ["rssBytes", "threads", "inotifyDescriptors", "inotifyWatches"],
+  };
 }
