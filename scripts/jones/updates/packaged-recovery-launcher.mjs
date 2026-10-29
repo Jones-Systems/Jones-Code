@@ -694,10 +694,53 @@ export async function createPackagedRecoveryHttpClient({
   };
   return Object.freeze({
     state: () => endpoint("/api/jones-updates"),
-    reconcile: (requestId) => {
+    reconcile: (requestId, expectedRefusal) => {
       if (!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(requestId))
         fail("fixed reconciliation request ID required");
-      return endpoint("/api/jones-updates/reconcile", { operationId, requestId });
+      if (
+        expectedRefusal !== undefined &&
+        (!Object.hasOwn(legacyRefusalCases, prepared.legacyVariant) ||
+          legacyRefusalCases[prepared.legacyVariant] !== expectedRefusal)
+      )
+        fail("expected fixture reconciliation refusal required");
+      const projectRefusal =
+        expectedRefusal === undefined
+          ? undefined
+          : (value) => {
+              const expected = {
+                source: "jones-actions",
+                channel: "jones-main",
+                phase: "blocked",
+                message: "Reconciliation refused: " + expectedRefusal + ".",
+                capability: {
+                  check: false,
+                  download: false,
+                  install: false,
+                  reason: "bootstrap-required",
+                },
+                childVersion: currentVersion,
+                launcherVersion: prepared.inputs.candidate.receipt.version,
+                launcherSettlement: "supported",
+                launcherRefresh: "none",
+                settlement: "none",
+                updateId: operationId,
+                settlementRefusal: expectedRefusal,
+              };
+              if (
+                value === null ||
+                typeof value !== "object" ||
+                (value.environmentId !== undefined &&
+                  value.environmentId !== binding.environmentId) ||
+                (value.currentVersion !== undefined && value.currentVersion !== currentVersion)
+              )
+                fail("reconciliation refusal identity differs");
+              const projected = Object.fromEntries(
+                Object.keys(expected).map((key) => [key, value[key]]),
+              );
+              NodeAssert.deepEqual(projected, expected, "reconciliation refusal differs");
+              return projected;
+            };
+      return endpoint("/api/jones-updates/reconcile", { operationId, requestId }, projectRefusal);
     },
     installOperation: (selectedId = operationId) => {
       if (
@@ -1257,7 +1300,7 @@ export async function exercisePackagedLegacyReconciliation({
       watcher.once("error", failControl);
       if (installOperationId === undefined) {
         stage = "first-reply";
-        await client.reconcile(ids[0]);
+        await client.reconcile(ids[0], refusalReason);
       } else {
         stage = "install-refusal";
         installReceipt = await client.installOperation(installOperationId);
@@ -1309,7 +1352,7 @@ export async function exercisePackagedLegacyReconciliation({
       );
       await client.state();
       stage = "first-reply";
-      await client.reconcile(ids[0]);
+      await client.reconcile(ids[0], refusalReason);
     }
     if (stage === "first-reply") {
       let reply;
@@ -1336,7 +1379,7 @@ export async function exercisePackagedLegacyReconciliation({
       if (refusalReason !== undefined) {
         await intact();
         stage = "second-reply";
-        await client.reconcile(ids[1]);
+        await client.reconcile(ids[1], refusalReason);
       } else {
         firstSettlement = await boundedRecord(settlementPath);
         firstOutcome = await boundedRecord(outcomePath);
@@ -1364,7 +1407,7 @@ export async function exercisePackagedLegacyReconciliation({
         );
         await intact();
         stage = "second-reply";
-        await client.reconcile(ids[1]);
+        await client.reconcile(ids[1], refusalReason);
       }
     }
     if (stage === "second-reply") {
