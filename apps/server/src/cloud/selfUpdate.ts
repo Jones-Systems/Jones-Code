@@ -99,6 +99,7 @@ export class ServerSelfUpdate extends Context.Service<
       reportStep?: (
         step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
       ) => Effect.Effect<void>,
+      onPreparationRefused?: () => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -132,6 +133,7 @@ const timedQualifiedStep = Effect.fn("ServerSelfUpdate.timedQualifiedStep")(func
 export function runQualifiedInstallPhases<A, B, R, R2>(input: {
   readonly prepare: Effect.Effect<A, ServerSelfUpdateError, R>;
   readonly handoff: (prepared: A) => Effect.Effect<B, ServerSelfUpdateError, R2>;
+  readonly onPreparationRefused?: () => Effect.Effect<void>;
 }): Effect.Effect<B, ServerSelfUpdateError, R | R2> {
   return Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
@@ -148,7 +150,7 @@ export function runQualifiedInstallPhases<A, B, R, R2>(input: {
               ),
           }),
         ),
-      );
+      ).pipe(Effect.onError(() => input.onPreparationRefused?.() ?? Effect.void));
       return yield* input.handoff(prepared);
     }),
   );
@@ -286,6 +288,7 @@ export const withRunningThreadContinuation = Effect.fn(
             reportStep?: (
               step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
             ) => Effect.Effect<void>,
+            onPreparationRefused?: () => Effect.Effect<void>,
           ) => {
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
@@ -320,6 +323,7 @@ export const withRunningThreadContinuation = Effect.fn(
                       }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
                     onPrepared,
                     reportStep,
+                    onPreparationRefused,
                   );
                 }),
                 () => continuationThreadIds,
@@ -642,8 +646,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     onHandoffAccepted = () => Effect.void,
     onPrepared = () => Effect.void,
     reportStep = () => Effect.void,
+    onPreparationRefused = () => Effect.void,
   ) =>
     runQualifiedInstallPhases({
+      onPreparationRefused,
       prepare: Effect.gen(function* () {
         yield* reportStep("verifying");
         const staged = yield* timedQualifiedStep(
