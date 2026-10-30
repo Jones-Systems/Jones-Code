@@ -64,6 +64,7 @@ export interface JonesUpdaterHost {
   readonly install: (
     request: JonesUpdaterInstallInput,
     reportStep?: (step: "marking" | "verifying" | "preflight" | "capturing" | "handoff") => void,
+    onPreparationRefused?: () => void,
   ) => Promise<void | {
     readonly updateId?: string;
     readonly migrationPlan?: JonesUpdateState["migrationPlan"];
@@ -134,7 +135,7 @@ export type JonesUpdaterInstallInput = JonesUpdateInstallInput & {
   readonly operationId?: string;
   readonly targetSource?: string;
   readonly expectedInstalledSource?: string;
-  /** Private callback, invoked only before calling the host's install adapter. */
+  /** Private callback, invoked only with positive proof that launcher dispatch never began. */
   readonly onBeforeDispatchRefusal?: (proof: JonesInstallBeforeDispatchRefusal) => void;
   readonly recovery?: { readonly policy: JonesRecoveryPolicy; readonly preflightId: string };
   /** Who asked: a person on this host, or a fleet operation. Defaults to manual. */
@@ -1005,7 +1006,7 @@ export class JonesUpdater {
   }
 
   async install(input: JonesUpdaterInstallInput): Promise<JonesUpdateState> {
-    const refused = (state: JonesUpdateState) => {
+    const proveRefusal = () => {
       if (
         input.operationId !== undefined &&
         input.targetSource !== undefined &&
@@ -1020,6 +1021,9 @@ export class JonesUpdater {
           environmentId: input.environmentId,
           currentVersion: input.currentVersion,
         });
+    };
+    const refused = (state: JonesUpdateState) => {
+      proveRefusal();
       return state;
     };
     while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
@@ -1074,10 +1078,14 @@ export class JonesUpdater {
     const heartbeat = setInterval(publishElapsed, 15_000);
     try {
       const { onBeforeDispatchRefusal: _refusal, ...hostInput } = input;
-      const accepted = await this.host.install(hostInput, (step) => {
-        currentMessage = messages[step];
-        publishElapsed();
-      });
+      const accepted = await this.host.install(
+        hostInput,
+        (step) => {
+          currentMessage = messages[step];
+          publishElapsed();
+        },
+        proveRefusal,
+      );
       return this.publish({
         phase: "installing",
         ...(accepted?.updateId === undefined ? {} : { updateId: accepted.updateId }),

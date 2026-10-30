@@ -1582,3 +1582,36 @@ it("reports a typed exact refusal only before invoking the install adapter", asy
   expect(native).toHaveBeenCalledOnce();
   expect(proof).not.toHaveBeenCalled();
 });
+
+it("emits the exact bound refusal when its host proves preparation stopped before dispatch", async () => {
+  const f = fixture({
+    install: async (_request, _step, onPreparationRefused) => {
+      onPreparationRefused?.();
+      throw new Error("Qualified runtime payload changed.");
+    },
+  });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
+  expect((await f.updater.install(request)).message).toContain(
+    "Qualified runtime payload changed.",
+  );
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    stagedHandle: request.stagedHandle,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
+  });
+});
