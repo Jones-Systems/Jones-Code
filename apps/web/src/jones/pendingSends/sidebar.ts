@@ -1,6 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { usePendingSends } from "./hooks";
-import type { PendingSend } from "./store";
+import { useSyncExternalStore } from "react";
+import { pendingSends, type PendingSend } from "./store";
 
 export function overlayPendingThread(
   thread: EnvironmentThreadShell,
@@ -41,9 +41,86 @@ export function mergePendingSidebarThreads(
   }
   return [...byKey.values()].map((thread) => overlayPendingThread(thread, entries));
 }
+interface PendingThreadSnapshot {
+  readonly base: EnvironmentThreadShell;
+  readonly createdAt: string | undefined;
+  readonly value: EnvironmentThreadShell;
+}
+
+function projectPendingThread(
+  base: EnvironmentThreadShell,
+  entry: PendingSend | undefined,
+  previous: PendingThreadSnapshot | undefined,
+): PendingThreadSnapshot {
+  const createdAt = entry?.message.createdAt;
+  if (previous?.base === base && previous.createdAt === createdAt) return previous;
+  return {
+    base,
+    createdAt,
+    value: overlayPendingThread(base, entry ? [entry] : []),
+  };
+}
+
+function createThreadSnapshot(thread: EnvironmentThreadShell) {
+  let entries: readonly PendingSend[] | undefined;
+  let snapshot = projectPendingThread(thread, undefined, undefined);
+  return () => {
+    const next = pendingSends.getSnapshot();
+    if (entries !== next) {
+      const entry = next.findLast(
+        (entry) =>
+          entry.environmentId === thread.environmentId &&
+          entry.threadId === thread.id &&
+          entry.working,
+      );
+      snapshot = projectPendingThread(thread, entry, snapshot);
+      entries = next;
+    }
+    return snapshot.value;
+  };
+}
+
+function createSidebarSnapshot(threads: readonly EnvironmentThreadShell[]) {
+  let entries: readonly PendingSend[] | undefined;
+  let rows = new Map<string, PendingThreadSnapshot>();
+  let snapshot: EnvironmentThreadShell[] = [];
+  return () => {
+    const next = pendingSends.getSnapshot();
+    if (entries === next) return snapshot;
+    const byKey = new Map(
+      threads.map((thread) => [JSON.stringify([thread.environmentId, thread.id]), thread]),
+    );
+    const working = new Map<string, PendingSend>();
+    for (const entry of next) {
+      const key = JSON.stringify([entry.environmentId, entry.threadId]);
+      if (entry.sidebarThread && !byKey.has(key)) byKey.set(key, entry.sidebarThread);
+      // Overwrite in store order: the last working entry wins, even at equal timestamps.
+      if (entry.working) working.set(key, entry);
+    }
+    const nextRows = new Map<string, PendingThreadSnapshot>();
+    const values: EnvironmentThreadShell[] = [];
+    for (const [key, thread] of byKey) {
+      const row = projectPendingThread(thread, working.get(key), rows.get(key));
+      nextRows.set(key, row);
+      values.push(row.value);
+    }
+    if (
+      values.length !== snapshot.length ||
+      values.some((thread, index) => thread !== snapshot[index])
+    ) {
+      snapshot = values;
+    }
+    rows = nextRows;
+    entries = next;
+    return snapshot;
+  };
+}
+
 export function usePendingSidebarThreads(threads: readonly EnvironmentThreadShell[]) {
-  return mergePendingSidebarThreads(threads, usePendingSends());
+  const getSnapshot = createSidebarSnapshot(threads);
+  return useSyncExternalStore(pendingSends.subscribe, getSnapshot);
 }
 export function usePendingSidebarThread(thread: EnvironmentThreadShell) {
-  return overlayPendingThread(thread, usePendingSends());
+  const getSnapshot = createThreadSnapshot(thread);
+  return useSyncExternalStore(pendingSends.subscribe, getSnapshot);
 }

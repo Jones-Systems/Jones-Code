@@ -4110,6 +4110,7 @@
         "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
         "apps/web/src/jones/pendingSends/send.test.ts",
         "apps/web/src/jones/pendingSends/sidebar.test.ts",
+        "apps/web/src/jones/pendingSends/sidebar.browser.test.tsx",
         "apps/web/src/jones/pendingSends/store.test.ts",
         "apps/web/src/jones/pendingSends/app.browser.test.tsx",
         "packages/client-runtime/src/operations/commands.test.ts",
@@ -4118,7 +4119,7 @@
       "commands": [
         "vp test run packages/client-runtime/src/operations/commands.test.ts packages/client-runtime/src/state/threadCommands.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/send.test.ts src/jones/pendingSends/sidebar.test.ts src/jones/pendingSends/store.test.ts --project unit --maxWorkers=1 --no-file-parallelism",
-        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/PendingSendStatus.browser.test.tsx src/jones/pendingSends/app.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
+        "vp test run --root apps/web --config vite.config.ts src/jones/pendingSends/PendingSendStatus.browser.test.tsx src/jones/pendingSends/app.browser.test.tsx src/jones/pendingSends/sidebar.browser.test.tsx --project browser --maxWorkers=1 --no-file-parallelism",
         "vp run --filter @t3tools/web typecheck",
         "vp lint apps/web/src/jones/pendingSends apps/web/src/components/ThreadRouteView.tsx apps/web/src/components/ChatView.tsx apps/web/src/components/ChatView.logic.ts apps/web/src/components/Sidebar.tsx apps/web/src/components/LegacySidebar.tsx apps/web/src/components/chat/QueuedRunsControl.tsx apps/web/src/components/chat/TimelineUserMessageRow.tsx apps/web/src/components/chat/chatViewSend.ts apps/web/src/components/chat/useAttachmentPreviewHandoff.ts apps/web/src/components/chat/useComposerSend.ts apps/web/src/components/chat/useComposerResume.ts apps/web/src/components/chat/useMultipleModelSend.ts apps/web/src/components/chat/useProposedPlanSend.ts apps/web/src/components/chat/useThreadLifecycle.tsx apps/web/src/components/sidebar/SidebarDraftBlock.tsx apps/web/src/components/sidebar/SidebarThreadRow.tsx apps/web/src/routes/__root.tsx apps/web/test/fakeEnvironment.ts",
         "node scripts/jones/check-boundary.ts --strict"
