@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
+import * as Schema from "effect/Schema";
 import {
   DESKTOP_THREAD_MONITOR_PROTOCOL,
   decodeThreadMonitorFrame,
   THREAD_MONITOR_LIMITS,
+  ThreadMonitorActionResult,
 } from "./desktopThreadMonitor.ts";
 const wrap = (payload: unknown) => ({ schemaVersion: DESKTOP_THREAD_MONITOR_PROTOCOL, payload });
 const ref = {
@@ -14,6 +16,32 @@ const ref = {
 const action = { ...ref, actionId: "action-1", commandId: "command-1" };
 
 describe("desktop monitor IPC boundary", () => {
+  it("keeps legacy results decodable and bounds the opt-in Restore identity extension", () => {
+    const legacy = { ...action, type: "actionResult", status: "unknown", reason: null };
+    const { restoreIdentity: _, ...legacyFields } = ThreadMonitorActionResult.fields;
+    const legacyDecode = Schema.decodeUnknownSync(Schema.Struct(legacyFields), {
+      onExcessProperty: "error",
+    });
+    expect(legacyDecode(legacy)).toEqual(legacy);
+    expect(decodeThreadMonitorFrame(wrap(legacy)).payload).toEqual(legacy);
+    const extended = {
+      ...legacy,
+      restoreIdentity: { type: "restore", settleCommandId: "settle-1" },
+    };
+    expect(decodeThreadMonitorFrame(wrap(extended)).payload).toEqual(extended);
+    expect(() => legacyDecode(extended)).toThrow();
+    for (const restoreIdentity of [
+      { type: "send", settleCommandId: "settle-1" },
+      { type: "restore" },
+      { type: "restore", settleCommandId: "settle-1", text: "private" },
+    ])
+      expect(() => decodeThreadMonitorFrame(wrap({ ...legacy, restoreIdentity }))).toThrow();
+    for (const payload of [
+      { type: "requestSnapshot" },
+      { type: "requestSnapshot", restoreIdentityReplay: { publisherGeneration: "generation-1" } },
+    ])
+      expect(decodeThreadMonitorFrame(wrap(payload)).payload).toEqual(payload);
+  });
   it("accepts genuine scoped actions without accepting arbitrary commands", () => {
     for (const payload of [
       { ...action, type: "send", messageId: "message-1", draftRevision: 0, text: "hello" },
