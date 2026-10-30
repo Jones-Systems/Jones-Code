@@ -2491,7 +2491,10 @@
     "packages/source-control-github/src/server/gitHubConditionalChecks.ts": "accepted-shared",
     "packages/source-control-github/src/server/GitHubPullRequestApi.test.ts": "jones-tests-in-upstream",
     "packages/source-control-github/src/server/GitHubPullRequestProvider.test.ts": "jones-tests-in-upstream",
-    "tsconfig.base.json": "hook"
+    "tsconfig.base.json": "hook",
+    "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/testing/sourceRenewalWorker.mjs": "jones-owned",
+    "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

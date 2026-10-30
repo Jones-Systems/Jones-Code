@@ -3,6 +3,14 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import { expect, it } from "@effect/vitest";
+import { beforeAll, afterAll } from "vite-plus/test";
+import {
+  artifactBuilds,
+  prepareSourceRenewalArtifacts,
+  openArtifactStore,
+  rejectMismatchedConsumer,
+  type SourceRenewalArtifacts,
+} from "../testing/sourceRenewalArtifacts.ts";
 import {
   AuthSessionId,
   T3WorkstreamListResult,
@@ -46,13 +54,33 @@ import {
 } from "../testing/loopbackControlPlane.ts";
 
 const now = "2026-01-01T00:00:00.000Z";
-const buildA = {
-  repository: "Jones-Systems/Jones-Code" as const,
-  sha: "a".repeat(40),
-  tree: "b".repeat(40),
-};
-const buildB = { ...buildA, sha: "c".repeat(40), tree: "d".repeat(40) };
-const nextBuildA = { ...buildA, sha: "e".repeat(40), tree: "f".repeat(40) };
+const artifactMode = process.env.JONES_SOURCE_RENEWAL_ARTIFACTS;
+if (artifactMode !== undefined && artifactMode !== "1")
+  throw new Error("Invalid source-renewal artifact mode");
+let artifacts: SourceRenewalArtifacts | undefined;
+beforeAll(async () => {
+  if (artifactMode === "1") artifacts = await prepareSourceRenewalArtifacts();
+});
+afterAll(async () => {
+  await artifacts?.close();
+});
+
+const buildA =
+  artifactMode === "1"
+    ? artifactBuilds.old
+    : {
+        repository: "Jones-Systems/Jones-Code" as const,
+        sha: "a".repeat(40),
+        tree: "b".repeat(40),
+      };
+const buildB =
+  artifactMode === "1"
+    ? artifactBuilds.next
+    : { ...buildA, sha: "c".repeat(40), tree: "d".repeat(40) };
+const nextBuildA =
+  artifactMode === "1"
+    ? artifactBuilds.next
+    : { ...buildA, sha: "e".repeat(40), tree: "f".repeat(40) };
 const credentialBytes = (token: string) =>
   JSON.stringify({ authorization_header: `Bearer ${token}` });
 // Keep synthetic receipts visible even when the Effect test logger suppresses successful runs.
@@ -62,11 +90,13 @@ const record = (event: string, data: unknown) =>
   });
 
 const harness = Effect.gen(function* () {
+  artifacts?.assertActive();
   const parent = NodePath.resolve(import.meta.dirname, "../../../../node_modules");
   const root = yield* Effect.acquireRelease(
     Effect.promise(() => NodeFSP.mkdtemp(NodePath.join(parent, ".source-renewal-"))),
     (root) =>
       Effect.promise(async () => {
+        artifacts?.assertRemoval();
         await NodeFSP.rm(root, { recursive: true });
         await expect(NodeFSP.stat(root)).rejects.toMatchObject({ code: "ENOENT" });
       }).pipe(Effect.tap(() => record("source-renewal root absent", root))),
@@ -95,11 +125,24 @@ const harness = Effect.gen(function* () {
     pid: process.pid,
     registry: control.origin,
   });
+  const stores = new Map<string, Effect.Success<ReturnType<typeof openArtifactStore>>>();
   return {
     root,
     control,
+    store: (id: string, build: typeof buildA) =>
+      artifacts
+        ? openArtifactStore(artifacts, root, id, build).pipe(
+            Effect.tap((store) =>
+              Effect.sync(() => {
+                stores.set(id, store);
+              }),
+            ),
+          )
+        : sourceStore(root, id, build),
     environment: (id: string, build: typeof buildA) =>
-      listener(() => startEnvironment(control, id, build)),
+      artifacts
+        ? stores.get(id)!.environment(control)
+        : listener(() => startEnvironment(control, id, build)),
   };
 });
 
@@ -109,7 +152,11 @@ const sourceStore = Effect.fn("SourceRenewalTest.sourceStore")(function* (
   initialBuild: typeof buildA,
 ) {
   const context = yield* Layer.build(
-    NodeSqliteClient.layer({ filename: NodePath.join(root, `${sourceId}.sqlite`) }),
+    NodeSqliteClient.layer({
+      filename: NodePath.join(root, `${sourceId}.sqlite`),
+      readerWorker: false,
+      checkpointWorker: false,
+    }),
   );
   yield* runMigrations({ toMigrationInclusive: 54 }).pipe(Effect.provide(context));
   yield* migration.pipe(Effect.provide(context));
@@ -188,18 +235,21 @@ const sourceStore = Effect.fn("SourceRenewalTest.sourceStore")(function* (
     materialize,
     provider,
     providerV2,
-    request,
+    request: (suffix: string) => Effect.succeed(request(suffix)),
     credential,
     binding,
     rows,
-    changeBuild: (build: typeof buildA) => {
-      boundBuild = build;
-    },
+    changeBuild: (build: typeof buildA) =>
+      Effect.sync(() => {
+        boundBuild = build;
+      }),
   };
 });
 
 const qualifiedDescriptor = Effect.fn("SourceRenewalTest.qualifiedDescriptor")(function* (
-  store: Effect.Success<ReturnType<typeof sourceStore>>,
+  store: Pick<Effect.Success<ReturnType<typeof sourceStore>>, "binding"> & {
+    readonly provider: Pick<Effect.Success<ReturnType<typeof sourceStore>>["provider"], "context">;
+  },
   request: NativeEnrollmentRequest,
 ) {
   const response = yield* store.provider.context(yield* store.binding(request));
@@ -238,10 +288,10 @@ it.effect(
     Effect.gen(function* () {
       yield* TestClock.setTime(Date.parse(now));
       const f = yield* harness;
-      const a = yield* sourceStore(f.root, "source-a", buildA);
-      const b = yield* sourceStore(f.root, "source-b", buildB);
-      const oldA = a.request("old");
-      const oldB = b.request("old");
+      const a = yield* f.store("source-a", buildA);
+      const b = yield* f.store("source-b", buildB);
+      const oldA = yield* a.request("old");
+      const oldB = yield* b.request("old");
       for (const [store, request] of [
         [a, oldA],
         [b, oldB],
@@ -317,7 +367,8 @@ it.effect(
       const descriptorB = { ...sources[1]! };
       const bindingB = yield* b.binding(oldB);
 
-      a.changeBuild(nextBuildA);
+      const bIdentity = "identity" in b ? b.identity() : null;
+      yield* a.changeBuild(nextBuildA);
       const oldBindingA = yield* a.binding(oldA);
       expect(oldBindingA.build).toEqual(buildA);
       expect(yield* a.provider.context(oldBindingA)).toMatchObject({
@@ -343,8 +394,14 @@ it.effect(
       ).toEqual(memberships);
       expect(yield* a.rows).toEqual(historicalA);
       expect(yield* b.rows).toEqual(historicalB);
+      expect(yield* a.credential(oldA).observe()).toEqual(oldCredentialA);
+      expect(yield* b.credential(oldB).observe()).toEqual(oldCredentialB);
+      expect(f.control.authority).toEqual(authority);
+      expect((yield* read(upgraded.origin, "", T3WorkstreamListResult)).binding).toEqual(
+        registryBinding,
+      );
 
-      const renewal = a.request("renewed");
+      const renewal = yield* a.request("renewed");
       const renewalWriter = a.credential(renewal);
       let reserves = 0;
       let publications = 0;
@@ -438,6 +495,7 @@ it.effect(
       const adopted = yield* qualifiedDescriptor(a, renewal);
       expect(adopted.build).toEqual(nextBuildA);
       expect(sources[1]).toEqual(descriptorB);
+      if ("identity" in b) expect(b.identity()).toEqual(bIdentity);
       expect(yield* b.binding(oldB)).toEqual(bindingB);
       expect(
         yield* read(
@@ -502,7 +560,11 @@ it.effect("releases its exact synthetic roots and listeners on failure and cance
     const failure = new Error("deliberate source-renewal fixture failure");
     expect(
       yield* Effect.gen(function* () {
-        yield* harness;
+        const f = yield* harness;
+        if (artifacts) {
+          yield* f.store("source-a", buildA);
+          yield* f.environment("source-a", buildA);
+        }
         return yield* Effect.fail(failure);
       }).pipe(Effect.scoped, Effect.flip),
     ).toBe(failure);
@@ -510,6 +572,10 @@ it.effect("releases its exact synthetic roots and listeners on failure and cance
     let cancelled: { root: string; origin: string } | undefined;
     const fiber = yield* Effect.gen(function* () {
       const f = yield* harness;
+      if (artifacts) {
+        yield* f.store("source-a", buildA);
+        yield* f.environment("source-a", buildA);
+      }
       cancelled = { root: f.root, origin: f.control.origin };
       yield* Deferred.succeed(acquired, undefined);
       return yield* Effect.never;
@@ -525,3 +591,12 @@ it.effect("releases its exact synthetic roots and listeners on failure and cance
     });
   }),
 );
+
+if (artifactMode === "1")
+  it.effect("refuses a mismatched artifact consumer before opening a database", () =>
+    Effect.gen(function* () {
+      expect(artifacts).toBeDefined();
+      const f = yield* harness;
+      yield* rejectMismatchedConsumer(artifacts!, f.root);
+    }).pipe(Effect.scoped),
+  );
