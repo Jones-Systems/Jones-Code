@@ -5,8 +5,14 @@ import * as NodePath from "node:path";
 import * as NodeCrypto from "node:crypto";
 import { describe, it, expect, vi } from "vite-plus/test";
 import { EnvironmentId, type JonesUpdateState } from "@t3tools/contracts";
-import type { JonesOperationStartInput } from "@t3tools/contracts/jones/jonesOperations";
-import type { JonesActionsCandidate } from "@t3tools/shared/jones/jonesActions";
+import type {
+  JonesOperationReceipt,
+  JonesOperationStartInput,
+} from "@t3tools/contracts/jones/jonesOperations";
+import type {
+  JonesActionsCandidate,
+  JonesActionsCheckResult,
+} from "@t3tools/shared/jones/jonesActions";
 import { JonesUpdater, type JonesPreparedStage } from "../JonesUpdater.ts";
 import type { OperationReconciliation } from "../launcherOperation.ts";
 import {
@@ -92,6 +98,19 @@ async function make(base: string, recoveryEnabled: boolean) {
   let prepareCalls = 0;
   let checkBarrier: Promise<void> | undefined;
   let publicationBarrier: Promise<void> | undefined;
+  const checkEntered = deferred<void>();
+  const admissionReserved = deferred<void>();
+  const prepareStarted = deferred<void>();
+  const receipts = new Map<string, JonesOperationReceipt>();
+  const receiptWaiters = new Set<{
+    phase: JonesOperationReceipt["phase"];
+    resolve: (receipt: JonesOperationReceipt) => void;
+  }>();
+  const check = vi.fn(async (): Promise<JonesActionsCheckResult> => {
+    checkEntered.resolve();
+    await checkBarrier;
+    return { state: "available", candidate };
+  });
   const updater = new JonesUpdater(
     {
       initialState: {
@@ -116,6 +135,17 @@ async function make(base: string, recoveryEnabled: boolean) {
       },
       platform: "linux",
       architecture: "x64",
+      stateChanged: (state) => {
+        const r = state.operation;
+        if (r === undefined) return;
+        receipts.set(r.operationId, r);
+        for (const waiter of receiptWaiters) {
+          if (r.operationId === input.operationId && r.phase === waiter.phase) {
+            receiptWaiters.delete(waiter);
+            waiter.resolve(r);
+          }
+        }
+      },
       installedSource: async () => input.expectedInstalledSource,
       prepare: async (_candidate, options) => {
         prepareCalls++;
@@ -128,6 +158,7 @@ async function make(base: string, recoveryEnabled: boolean) {
           return j;
         });
         options.onStarted?.(settled);
+        prepareStarted.resolve();
         const abort = () => outcome.reject(options.signal.reason);
         options.signal.addEventListener("abort", abort, { once: true });
         try {
@@ -143,13 +174,14 @@ async function make(base: string, recoveryEnabled: boolean) {
       },
       install: async () => {},
     },
-    {
-      check: async () => {
-        await checkBarrier;
-        return { state: "available", candidate };
-      },
-    },
+    { check },
   );
+  const reserve = updater.reserveCheckAdmission.bind(updater);
+  vi.spyOn(updater, "reserveCheckAdmission").mockImplementation(() => {
+    const reservation = reserve();
+    admissionReserved.resolve();
+    return reservation;
+  });
   const ledger = createOperationLedger(base);
   let native: OperationReconciliation = { state: "absent", operationId: input.operationId };
   const install = vi.fn(
@@ -172,12 +204,13 @@ async function make(base: string, recoveryEnabled: boolean) {
       clone: { status: "proved" },
     }),
   });
+  const refreshPolicy = vi.fn(async () => {});
   const operations = createTargetOperations({
     key: base,
     ledger,
     updater,
     preparation,
-    refreshPolicy: async () => {},
+    refreshPolicy,
     install,
     reconcileNative: async () => native,
     onFailure: () => {},
@@ -193,6 +226,17 @@ async function make(base: string, recoveryEnabled: boolean) {
     updater,
     install,
     receipt,
+    check,
+    checkEntered: checkEntered.promise,
+    admissionReserved: admissionReserved.promise,
+    prepareStarted: prepareStarted.promise,
+    refreshPolicy,
+    receiptAt: (phase: JonesOperationReceipt["phase"]) => {
+      const current = receipts.get(input.operationId);
+      return current?.phase === phase
+        ? Promise.resolve(current)
+        : new Promise<JonesOperationReceipt>((resolve) => receiptWaiters.add({ phase, resolve }));
+    },
     recovery,
     expireRecovery: () => {
       recoveryTime += 300_000;
@@ -228,6 +272,183 @@ async function make(base: string, recoveryEnabled: boolean) {
   };
 }
 describe("target operations", () => {
+  it.each(["download", "download-exact"] as const)(
+    "joins an in-flight check before accepting %s and replays concurrent IDs with one preparation",
+    async (kind) =>
+      fixture(async (f) => {
+        const request: JonesOperationStartInput = {
+          ...input,
+          action:
+            kind === "download"
+              ? { kind, artifactId: candidate.artifactId, sourceSha: candidate.source }
+              : input.action,
+        };
+        const check = deferred<void>();
+        f.blockCheck(check.promise);
+        const background = f.updater.check();
+        await f.checkEntered;
+        const started = f.operations.start(request);
+        await f.admissionReserved;
+        const duplicate = f.operations.start(request);
+        expect(await f.receipt()).toBeNull();
+        expect(f.refreshPolicy).not.toHaveBeenCalled();
+        expect(f.prepareCalls()).toBe(0);
+        check.resolve();
+        await background;
+        expect(await started).toMatchObject({ phase: "accepted", operationId: input.operationId });
+        expect((await duplicate).operationId).toBe(input.operationId);
+        await f.prepareStarted;
+        expect(f.prepareCalls()).toBe(1);
+        expect(f.check).toHaveBeenCalledTimes(kind === "download" ? 1 : 2);
+        f.finish("completed");
+        await f.receiptAt("completed");
+        expect((await f.operations.start(request)).phase).toBe("completed");
+        expect(f.prepareCalls()).toBe(1);
+      }),
+  );
+
+  it("keeps background checks out throughout asynchronous policy refresh and ledger acceptance", async () =>
+    fixture(async (f) => {
+      const policyEntered = deferred<void>();
+      const policy = deferred<void>();
+      const ledgerEntered = deferred<void>();
+      const ledger = deferred<void>();
+      f.refreshPolicy.mockImplementation(async () => {
+        policyEntered.resolve();
+        await policy.promise;
+      });
+      const accept = f.ledger.accept.bind(f.ledger);
+      vi.spyOn(f.ledger, "accept").mockImplementation(async (request) => {
+        ledgerEntered.resolve();
+        await ledger.promise;
+        return accept(request);
+      });
+      const started = f.operations.start(input);
+      await policyEntered.promise;
+      await f.updater.check();
+      expect(f.check).not.toHaveBeenCalled();
+      policy.resolve();
+      await ledgerEntered.promise;
+      await f.updater.check();
+      expect(f.check).not.toHaveBeenCalled();
+      ledger.resolve();
+      expect((await started).phase).toBe("accepted");
+      await f.prepareStarted;
+      expect(f.check).toHaveBeenCalledOnce();
+      f.finish("completed");
+      await f.receiptAt("completed");
+    }));
+
+  it("allows a pending admission to be fenced while the background check is still in flight", async () =>
+    fixture(async (f) => {
+      const check = deferred<void>();
+      f.blockCheck(check.promise);
+      const background = f.updater.check();
+      await f.checkEntered;
+      const started = f.operations.start(input);
+      await f.admissionReserved;
+      expect((await f.operations.fence(input)).phase).toBe("fenced");
+      check.resolve();
+      await background;
+      const fenced = await started;
+      expect(fenced.phase).toBe("fenced");
+      expect(fenced.acceptedAt).toBeUndefined();
+      expect(f.prepareCalls()).toBe(0);
+      expect(f.refreshPolicy).not.toHaveBeenCalled();
+      await f.updater.check();
+      expect(f.check).toHaveBeenCalledTimes(2);
+    }));
+
+  it.each([
+    ["environment", "stale-binding"],
+    ["installed source", "stale-binding"],
+    ["operations", "unsupported"],
+    ["download", "unsupported"],
+    ["check", "unsupported"],
+    ["exact source", "unsupported"],
+    ["artifact", "stale-binding"],
+    ["stage", "another-stage"],
+    ["policy", "follower-policy"],
+  ])("revalidates %s after joining the check and refreshing policy", async (changed, code) =>
+    fixture(async (f) => {
+      const check = deferred<void>();
+      f.blockCheck(check.promise);
+      const background = f.updater.check();
+      await f.checkEntered;
+      const request: JonesOperationStartInput =
+        changed === "artifact"
+          ? {
+              ...input,
+              action: {
+                kind: "download",
+                artifactId: candidate.artifactId,
+                sourceSha: candidate.source,
+              },
+            }
+          : input;
+      const started = f.operations.start(request);
+      await f.admissionReserved;
+      f.refreshPolicy.mockImplementation(async () => {
+        if (changed === "policy") {
+          f.updater.setPolicy({
+            role: "follower",
+            leaderSource: "f".repeat(40),
+            leaderTree: "e".repeat(40),
+          });
+          return;
+        }
+        const snapshot = f.updater.snapshot.bind(f.updater);
+        const state = snapshot();
+        const { operations: _operations, ...withoutOperations } = state.capability;
+        const patch: Partial<JonesUpdateState> =
+          changed === "environment"
+            ? { environmentId: EnvironmentId.make("another-host") }
+            : changed === "installed source"
+              ? { installedSource: { ...state.installedSource!, sha: "f".repeat(40) } }
+              : changed === "stage"
+                ? {
+                    stagedHandle: "another-stage",
+                    provenance: { ...state.provenance!, sourceSha: "f".repeat(40) },
+                  }
+                : changed === "artifact"
+                  ? { provenance: { ...state.provenance!, artifactId: candidate.artifactId + 1 } }
+                  : {
+                      capability: {
+                        ...(changed === "operations" ? withoutOperations : state.capability),
+                        ...(changed === "download" ? { download: false } : {}),
+                        ...(changed === "check" ? { check: false } : {}),
+                        ...(changed === "exact source" ? { exactSource: false } : {}),
+                      },
+                    };
+        vi.spyOn(f.updater, "snapshot").mockImplementation(() => ({ ...snapshot(), ...patch }));
+      });
+      check.resolve();
+      await background;
+      const refused = await started;
+      expect(refused).toMatchObject({ phase: "refused", code });
+      expect(refused.acceptedAt).toBeUndefined();
+      expect(f.prepareCalls()).toBe(0);
+      expect((await f.operations.start(request)).code).toBe(code);
+      expect(f.refreshPolicy).toHaveBeenCalledOnce();
+    }),
+  );
+
+  it.each(["held", "preparing", "installing"] as const)(
+    "does not join discovery or accept a request while %s admission is held",
+    async (phase) =>
+      fixture(async (f) => {
+        if (phase === "held") f.updater.setHeldJobs(["unreleased-job"]);
+        else {
+          const snapshot = f.updater.snapshot.bind(f.updater);
+          vi.spyOn(f.updater, "snapshot").mockImplementation(() => ({ ...snapshot(), phase }));
+        }
+        expect(await f.operations.start(input)).toMatchObject({ phase: "refused", code: "busy" });
+        expect(f.updater.reserveCheckAdmission).not.toHaveBeenCalled();
+        expect(f.check).not.toHaveBeenCalled();
+        expect(f.prepareCalls()).toBe(0);
+      }),
+  );
+
   it("returns durable acceptance and replays the same ID without another preparation", async () =>
     fixture(async (f) => {
       expect((await f.operations.start(input)).phase).toBe("accepted");

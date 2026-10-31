@@ -73,6 +73,16 @@ export function createTargetOperations(options: {
     publish(await ledger.transition(id, f));
   const patch = (id: string, fields: Partial<JonesOperationReceipt>) =>
     change(id, (old) => ({ ...old, ...fields }));
+  const refuse = async (input: JonesOperationStartInput, code: string) =>
+    publish(
+      (
+        await ledger.refuse(
+          input,
+          code,
+          "This request did not start; refresh the host's exact update state before choosing another action.",
+        )
+      ).receipt,
+    );
   const finishStop = (
     r: JonesOperationReceipt,
     phase: JonesOperationReceipt["phase"],
@@ -359,92 +369,111 @@ export function createTargetOperations(options: {
       }
     });
   return {
-    start: (input: JonesOperationStartInput) =>
-      gate(async () => {
+    start: async (input: JonesOperationStartInput) => {
+      const admission = await gate(async () => {
         const old = await ledger.read(input.operationId);
         if (old !== null) {
           updater.recordOperation(old);
-          return (await ledger.accept(input)).receipt;
+          return { kind: "receipt" as const, receipt: (await ledger.accept(input)).receipt };
         }
-        await options.refreshPolicy();
-        const s = updater.snapshot();
-        const a = input.action;
-        let code: string | undefined;
-        if (s.capability.operations !== 1) code = "unsupported";
-        else if (
-          input.environmentId !== s.environmentId ||
-          input.expectedInstalledSource !== s.installedSource?.sha
-        )
-          code = "stale-binding";
-        else if (targetOf(input) === s.installedSource?.sha) code = "already-installed";
-        else if (a.kind === "download-exact" && s.capability.exactSource !== true)
-          code = "unsupported";
-        else if (a.kind === "install" && !bindingMatches(operationReceipt(input, "accepted"), s))
-          code = "stale-binding";
-        else if (
-          a.kind === "download" &&
-          (s.provenance?.artifactId !== a.artifactId || s.provenance.sourceSha !== a.sourceSha)
-        )
-          code = "stale-binding";
-        else if (
-          a.kind !== "install" &&
-          s.stagedHandle !== undefined &&
-          s.provenance?.sourceSha !== targetOf(input)
-        )
-          code = "another-stage";
-        else if (
-          followerTargetRefusal(
-            s.policy,
-            targetOf(input),
-            s.provenance?.sourceSha === targetOf(input) ? s.provenance.sourceTree : undefined,
-          ) !== undefined
-        )
-          code = "follower-policy";
-        else if (
+        if (
           active.size > 0 ||
           recoveryFailed ||
           updater.admissionHeld() ||
-          ["preparing", "installing"].includes(s.phase)
+          ["preparing", "installing"].includes(updater.snapshot().phase)
         )
-          code = "busy";
-        else if (a.kind === "install" && a.recovery !== undefined)
-          code =
-            options.recovery === undefined || s.capability.recoveryPolicy !== 1
-              ? "recovery-unsupported"
-              : options.recovery.validate(a.recovery, {
-                  environmentId: input.environmentId,
-                  stagedHandle: a.stagedHandle,
-                  currentVersion: a.currentVersion,
-                  expectedInstalledSource: input.expectedInstalledSource,
-                });
-        if (code !== undefined)
-          return publish(
-            (
-              await ledger.refuse(
-                input,
-                code,
-                "This request did not start; refresh the host's exact update state before choosing another action.",
-              )
-            ).receipt,
-          );
-        const accepted = await ledger.accept(input);
-        if (accepted.created && accepted.receipt.phase === "accepted") {
-          const controller = new AbortController();
-          active.set(input.operationId, controller);
-          // Acceptance is the response; the durable dispatch continues independently of HTTP lifetime.
-          void execute(input, controller)
-            .catch(async () => {
-              const r = await ledger.read(input.operationId);
-              if (r !== null && !terminal(r)) {
-                if (r.action.kind === "install") await reconcileInstall(r);
-                else await held(r);
-              }
-            })
-            .catch(options.onFailure)
-            .finally(() => active.delete(input.operationId));
-        }
-        return publish(accepted.receipt);
-      }),
+          return { kind: "receipt" as const, receipt: await refuse(input, "busy") };
+        return { kind: "reservation" as const, reservation: updater.reserveCheckAdmission() };
+      });
+      if (admission.kind === "receipt") return admission.receipt;
+      try {
+        // Do not hold the receipt gate while joining discovery: a lost send can still be fenced.
+        await admission.reservation.ready;
+        return await gate(async () => {
+          const old = await ledger.read(input.operationId);
+          if (old !== null) {
+            updater.recordOperation(old);
+            return (await ledger.accept(input)).receipt;
+          }
+          await options.refreshPolicy();
+          const s = updater.snapshot();
+          const a = input.action;
+          let code: string | undefined;
+          if (s.capability.operations !== 1) code = "unsupported";
+          else if (
+            input.environmentId !== s.environmentId ||
+            input.expectedInstalledSource !== s.installedSource?.sha
+          )
+            code = "stale-binding";
+          else if (targetOf(input) === s.installedSource?.sha) code = "already-installed";
+          else if (a.kind === "install" ? !s.capability.install : !s.capability.download)
+            code = "unsupported";
+          else if (
+            a.kind === "download-exact" &&
+            (s.capability.exactSource !== true || !s.capability.check)
+          )
+            code = "unsupported";
+          else if (a.kind === "install" && !bindingMatches(operationReceipt(input, "accepted"), s))
+            code = "stale-binding";
+          else if (
+            a.kind === "download" &&
+            (s.provenance?.artifactId !== a.artifactId || s.provenance.sourceSha !== a.sourceSha)
+          )
+            code = "stale-binding";
+          else if (
+            a.kind !== "install" &&
+            s.stagedHandle !== undefined &&
+            s.provenance?.sourceSha !== targetOf(input)
+          )
+            code = "another-stage";
+          else if (
+            followerTargetRefusal(
+              s.policy,
+              targetOf(input),
+              s.provenance?.sourceSha === targetOf(input) ? s.provenance.sourceTree : undefined,
+            ) !== undefined
+          )
+            code = "follower-policy";
+          else if (
+            active.size > 0 ||
+            recoveryFailed ||
+            updater.admissionHeld() ||
+            ["preparing", "installing"].includes(s.phase)
+          )
+            code = "busy";
+          else if (a.kind === "install" && a.recovery !== undefined)
+            code =
+              options.recovery === undefined || s.capability.recoveryPolicy !== 1
+                ? "recovery-unsupported"
+                : options.recovery.validate(a.recovery, {
+                    environmentId: input.environmentId,
+                    stagedHandle: a.stagedHandle,
+                    currentVersion: a.currentVersion,
+                    expectedInstalledSource: input.expectedInstalledSource,
+                  });
+          if (code !== undefined) return refuse(input, code);
+          const accepted = await ledger.accept(input);
+          if (accepted.created && accepted.receipt.phase === "accepted") {
+            const controller = new AbortController();
+            active.set(input.operationId, controller);
+            // Acceptance is the response; the durable dispatch continues independently of HTTP lifetime.
+            void execute(input, controller)
+              .catch(async () => {
+                const r = await ledger.read(input.operationId);
+                if (r !== null && !terminal(r)) {
+                  if (r.action.kind === "install") await reconcileInstall(r);
+                  else await held(r);
+                }
+              })
+              .catch(options.onFailure)
+              .finally(() => active.delete(input.operationId));
+          }
+          return publish(accepted.receipt);
+        });
+      } finally {
+        admission.reservation.release();
+      }
+    },
     stop: (input: JonesOperationStopInput) =>
       gate(async () => {
         if (input.environmentId !== updater.snapshot().environmentId)
