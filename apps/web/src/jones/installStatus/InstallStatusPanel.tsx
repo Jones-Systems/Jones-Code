@@ -257,7 +257,7 @@ export function InstallStatusPanel({
                   disabled={pending.has("laptop:download")}
                   onClick={() => action("laptop", "download")}
                 >
-                  Download on Laptop
+                  {view.laptop?.downloadLabel}
                 </Button>
               ) : null}
               {availableLaptop?.install ? (
@@ -508,7 +508,7 @@ export function InstallStatusPanel({
                               size="micro"
                               onClick={() => action(environmentId, "download")}
                             >
-                              Download on {label}
+                              {row.downloadLabel}
                             </Button>
                           ) : null}
                           {row?.actions.install ? (

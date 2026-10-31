@@ -2,6 +2,7 @@ import { applyThemePalette } from "../../themePalette";
 import { describe, expect } from "vite-plus/test";
 import { it } from "vite-plus/test";
 import type { DesktopUpdateState } from "@t3tools/contracts";
+import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import { act, render, type Screen } from "../../../test/render";
 import "../../index.css";
 import { InstallStatusPanel } from "./InstallStatusPanel";
@@ -55,7 +56,7 @@ function initialDesktop(): DesktopUpdateState {
     },
   };
 }
-async function setup() {
+async function setup(options: { refuseFirstDownload?: boolean } = {}) {
   let desktop = initialDesktop();
   const updates = new Set<(value: DesktopUpdateState) => void>();
   const calls: { action: string; input?: unknown }[] = [];
@@ -79,7 +80,50 @@ async function setup() {
       };
     },
   };
-  const controller = startInstallPlanController(fixture.services(bridge), fixture.store);
+  const services = fixture.services(bridge);
+  let refused: JonesOperationReceipt | undefined;
+  let readObserved!: () => void;
+  const receiptRead = new Promise<void>((resolve) => (readObserved = resolve));
+  const controller = startInstallPlanController(
+    {
+      ...services,
+      operation: async (id, command) => {
+        if (
+          options.refuseFirstDownload &&
+          refused === undefined &&
+          command.action === "operationStart" &&
+          command.input.action.kind !== "install"
+        ) {
+          calls.push({
+            action: "fixture-host-operationStart",
+            input: { environmentId: id, input: command.input },
+          });
+          refused = {
+            protocol: 1,
+            ...command.input,
+            phase: "refused",
+            code: "busy",
+            message: "This request did not start.",
+            updatedAt: new Date(services.now()).toISOString(),
+          };
+          return refused;
+        }
+        const result = await services.operation(id, command);
+        if (command.action === "operationRead" && "receipts" in result) {
+          readObserved();
+          return {
+            receipts: result.receipts.map((entry) =>
+              refused !== undefined && entry.operationId === refused.operationId
+                ? { ...entry, receipt: refused }
+                : entry,
+            ),
+          };
+        }
+        return result;
+      },
+    },
+    fixture.store,
+  );
   fixture.store.open();
   const screen = await render(
     <div className="flex h-[640px] w-80 flex-col bg-sidebar text-sidebar-foreground" data-shell>
@@ -112,6 +156,7 @@ async function setup() {
     screen,
     calls,
     controller,
+    receiptRead,
     desktop: () => desktop,
     publish,
     async stageLaptop() {
@@ -158,6 +203,52 @@ const click = async (screen: Screen, name: string) => {
 // These use real browser interactions and the real pure model/runner against scripted receipts.
 // They cannot qualify native installs, host worker exit, Electron IPC or publication.
 describe("Install status receipt fixture", () => {
+  it("keeps a busy refusal historical, checks it read-only, and retries only on an explicit new action", async () => {
+    await using world = await setup({ refuseFirstDownload: true });
+    const { screen, fixture, calls } = world;
+    const receiptAt = (phase: JonesOperationReceipt["phase"]) => {
+      const matches = () =>
+        fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase === phase;
+      if (matches()) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        const unsubscribe = fixture.onInstallPlan(() => {
+          if (matches()) {
+            unsubscribe();
+            resolve();
+          }
+        });
+      });
+    };
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    await act(() => receiptAt("refused"));
+    await click(screen, "Mini update details");
+    expect(screen.container.textContent).toContain("Download request did not start");
+    expect(screen.container.textContent).toContain("Retry download");
+    const original = fixture.snapshot().current!.devices[0]!.operations.at(-1)!;
+    expect(original.receipt?.acceptedAt).toBeUndefined();
+    const sent = () => calls.filter((call) => call.action === "fixture-host-operationStart");
+    expect(sent()).toHaveLength(1);
+    await click(screen, "Check again");
+    await act(() => world.receiptRead);
+    expect(calls.filter((call) => call.action === "fixture-host-operationRead")).toHaveLength(1);
+    expect(sent()).toHaveLength(1);
+    expect(fixture.snapshot().current!.devices[0]!.operations).toHaveLength(1);
+    await click(screen, "Retry download");
+    await act(() => receiptAt("running"));
+    const operations = fixture.snapshot().current!.devices[0]!.operations;
+    expect(operations).toHaveLength(2);
+    expect(operations[0]!.receipt).toEqual(original.receipt);
+    expect(operations[1]!.operationId).not.toBe(original.operationId);
+    expect(sent()).toHaveLength(2);
+    await act(() => fixture.settleHost("Mini", "staged"));
+  });
+
   it("reviews an already staged Laptop build without requesting another download", async () => {
     await using world = await setup();
     await world.stageLaptop();
