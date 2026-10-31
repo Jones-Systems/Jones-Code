@@ -1,0 +1,28 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "pull-request-check-observation",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/pullRequestWatch/checkObservation.ts",
+    "apps/server/src/jones/pullRequestWatch/checkObservation.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/pullRequest.ts",
+      "to": "packages/contracts/src/jones/pullRequestCheckObservation.ts"
+    },
+    {
+      "from": "packages/source-control-github/src/server/GitHubPullRequestApi.ts",
+      "to": "packages/source-control-github/src/jones/pullRequestCheckObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/pullRequestWatch.ts",
+      "to": "apps/server/src/jones/pullRequestWatch/checkObservation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/PullRequestWatchReactor.ts",
+      "to": "apps/server/src/jones/pullRequestWatch/checkObservation.ts"
+    }
+  ]
+}

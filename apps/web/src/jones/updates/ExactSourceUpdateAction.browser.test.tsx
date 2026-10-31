@@ -194,6 +194,50 @@ const click = async (name: string) => {
 const status = () => container.querySelector('[role="status"]')?.textContent ?? null;
 
 describe("exact-source action", () => {
+  it("uses the generic offer resolver and refuses offer or handle changes after confirmation", async () => {
+    await using _fixture = await setupFixture1();
+    const offer = {
+      provenance: build(target),
+      checkedAt: "2026-10-29T00:00:00Z",
+      expiresAt: "2099-01-01T00:00:00Z",
+    };
+    const retained = hostState({
+      phase: "staged",
+      stagedHandle: "old-handle",
+      capability: {
+        check: true,
+        download: true,
+        install: true,
+        exactSource: true,
+        replaceStaged: true,
+      },
+      alternativeCandidate: offer,
+    });
+    const world = createHost(retained);
+    world.handlers.dialog = async () => {
+      await world.set({
+        ...retained,
+        alternativeCandidate: { ...offer, provenance: build(target, 99) },
+      });
+      return true;
+    };
+    await mount(world, {
+      alternative: offer,
+      buttonLabel: "Replace download",
+      allowInstall: false,
+    });
+    await click("Replace download");
+    expect(world.requests).toEqual([]);
+    expect(status()).toContain("changed while this was pending");
+    await world.set(retained);
+    world.handlers.dialog = async () => {
+      await world.set({ ...retained, stagedHandle: "another-client" });
+      return true;
+    };
+    await click("Replace download");
+    expect(world.requests).toEqual([]);
+  });
+
   it("downloads by source, then installs only after a confirmation bound to the staged handle", async () => {
     await using _fixture = await setupFixture1();
     const world = createHost(hostState());

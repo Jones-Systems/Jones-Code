@@ -1,8 +1,9 @@
 import DocumentPages, { sanitizeDocumentHtml } from "./DocumentPages";
 import { act, render, stubGlobal, type Screen } from "../../../test/render";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
-import { page, userEvent } from "vite-plus/test/browser";
+import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
+import { commands, page, userEvent } from "vite-plus/test/browser";
+import type { WordWorkerEvidence } from "~/jones/wordCiTrace";
 import "~/index.css";
 
 const { refresh, assetUrlState } = vi.hoisted(() => ({
@@ -1973,27 +1974,64 @@ it("keeps spreadsheet dates on their calendar day west of UTC", async () => {
 });
 
 it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (pages) => {
+  const capture: WordWorkerEvidence = { marks: [], disposed: false, capped: false };
+  if (pages === 100) {
+    onTestFinished(async (context) => {
+      Object.assign(context.task.meta, {
+        jonesWordCiTrace: await commands.wordCiTrace("finish", capture),
+      });
+    });
+    await commands.wordCiTrace("start");
+  }
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only clock origin; does not control pass/fail or waits.
+  const testStartedAt = performance.now();
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only timestamps correlate browser and worker events; assertions and timeouts remain unchanged.
+  const mainElapsedMs = () => Math.round(performance.now() - testStartedAt);
   const workerTrace: unknown[] = [];
-  const record = (entry: unknown) => {
-    workerTrace.push(entry);
-    if (workerTrace.length > 48) workerTrace.shift();
+  const record = (entry: Record<string, unknown>) => {
+    workerTrace.push({ mainElapsedMs: mainElapsedMs(), ...entry });
+    if (workerTrace.length > 128) workerTrace.shift();
   };
+  using _trace = {
+    [Symbol.dispose]() {
+      capture.disposed = true;
+      console.info("Word CI timing", JSON.stringify({ pages, workerTrace }));
+    },
+  };
+  record({ event: "fixture-start" });
+  const workerNames = new WeakMap<Worker, string>();
+  let workerCount = 0;
   const NativeWorker = Worker;
   using _workers = stubGlobal(
     "Worker",
     class extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options);
-        const name = String(url).split("/").pop();
+        const name = String(++workerCount) + ":" + String(url).split("/").pop();
+        workerNames.set(this, name);
         record({ worker: name, event: "started" });
         this.addEventListener("message", (event) => {
           const data = event.data;
+          if (pages === 100 && data?.type === "jones-word-open-phase") {
+            if (capture.marks.length < 128) {
+              capture.marks.push({
+                worker: name,
+                traceId: data.traceId,
+                mark: data.mark,
+                phase: data.phase,
+              });
+            } else capture.capped = true;
+          }
           record({
             worker: name,
             event: "reply",
             type: data?.type,
             phase: data?.phase,
-            elapsedMs: data?.elapsedMs,
+            traceId: data?.traceId,
+            phaseId: data?.phaseId,
+            mark: data?.mark,
+            workerPerformanceNowMs: data?.elapsedMs,
+            openElapsedMs: data?.openElapsedMs,
             id: data?.id,
             ok: data?.ok,
             pages: data?.value?.pages?.length,
@@ -2003,6 +2041,13 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         this.addEventListener("error", (event) =>
           record({ worker: name, event: "error", message: event.message }),
         );
+        this.addEventListener("messageerror", () =>
+          record({ worker: name, event: "messageerror" }),
+        );
+      }
+      override terminate() {
+        record({ worker: workerNames.get(this), event: "terminated" });
+        super.terminate();
       }
       override postMessage(
         message: unknown,
@@ -2016,7 +2061,13 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         };
         if (data.method === "open" && data.input)
           message = { ...data, input: { ...data.input, traceOpen: true } };
-        record({ event: "request", method: data.method, type: data.type, id: data.id });
+        record({
+          worker: workerNames.get(this),
+          event: "request",
+          method: data.method,
+          type: data.type,
+          id: data.id,
+        });
         if (Array.isArray(options)) super.postMessage(message, options);
         else super.postMessage(message, options);
       }
@@ -2041,6 +2092,8 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
   // Binary media must not consume the document's markup budget.
   archive.file("word/media/image.png", new Uint8Array(2_500_000));
   const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
+  record({ event: "fixture-ready", bytes: file.size });
+  record({ event: "render-start" });
   await using screen = await render(
     <div style={{ display: "flex", height: 400, width: 600 }}>
       <AttachmentFilePreview
@@ -2051,16 +2104,25 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
       />
     </div>,
   );
+  record({ event: "render-ready" });
+  const prefixDeadlineMainElapsedMs = mainElapsedMs() + 10_000;
+  record({ event: "prefix-wait-start", deadlineMainElapsedMs: prefixDeadlineMainElapsedMs });
   // Wait for the visible prefix before awaiting full pagination, so engine and
   // font startup belong to opening. The project timeout still caps the whole test.
   await vi.waitFor(
     () =>
       expect(
         screen.container.querySelector("[data-office-pages]"),
-        JSON.stringify({ viewer: officePreviewState(screen), workerTrace }),
+        JSON.stringify({
+          viewer: officePreviewState(screen),
+          mainElapsedMs: mainElapsedMs(),
+          prefixDeadlineMainElapsedMs,
+          workerTrace,
+        }),
       ).not.toBeNull(),
     { timeout: 10_000 },
   );
+  record({ event: "visible-prefix-observed" });
   await vi.waitFor(
     () =>
       expect(

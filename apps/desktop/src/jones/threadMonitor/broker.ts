@@ -60,6 +60,7 @@ interface Correlation {
   readonly type: ThreadMonitorAction["type"];
   readonly draftRevision: number | undefined;
   readonly messageId: string | undefined;
+  readonly settleCommandId: string | undefined;
   cancel: (() => void) | undefined;
   terminal: boolean;
   terminalStatus: "accepted" | "rejected" | "unavailable" | null;
@@ -81,6 +82,7 @@ export class ThreadMonitorBroker {
   private detailRevision = -1;
   private readonly invalidations = new Map<string, PendingInvalidation>();
   private peerReady = false;
+  private restoreIdentityReplay = false;
   private requestingSnapshot = false;
   private replayAllowed = false;
   private viewStateRevision = -1;
@@ -130,6 +132,7 @@ export class ThreadMonitorBroker {
     this.actions.clear();
     this.finishInvalidations();
     this.peerReady = false;
+    this.restoreIdentityReplay = false;
     this.requestingSnapshot = false;
     this.replayAllowed = false;
     this.viewStateRevision = -1;
@@ -137,6 +140,7 @@ export class ThreadMonitorBroker {
 
   peerLost(): void {
     this.peerReady = false;
+    this.restoreIdentityReplay = false;
     // Destruction is the fail-closed alternative to acknowledging a purge.
     this.finishInvalidations();
   }
@@ -151,6 +155,7 @@ export class ThreadMonitorBroker {
 
   ready(): void {
     this.peerReady = true;
+    this.restoreIdentityReplay = false;
     this.discardAssembly();
     this.synchronized = false;
     this.replayAllowed = true;
@@ -226,6 +231,16 @@ export class ThreadMonitorBroker {
           correlation.commandId !== frame.commandId
         )
           return;
+        if (
+          frame.restoreIdentity !== undefined &&
+          (correlation.type !== "restore" ||
+            correlation.settleCommandId !== frame.restoreIdentity.settleCommandId)
+        )
+          throw new Error("Restore result identity mismatch");
+        if (frame.restoreIdentity !== undefined && !this.restoreIdentityReplay) {
+          const { restoreIdentity: _, ...legacy } = frame;
+          frame = legacy;
+        }
         if (correlation.terminal) {
           if (frame.status === correlation.terminalStatus && this.peerReady) this.ports.peer(frame);
           return;
@@ -421,6 +436,14 @@ export class ThreadMonitorBroker {
     if (intent.type === "setExpanded" || intent.type === "hide")
       throw new Error("Native visibility intent must be handled by the host");
     if (intent.type === "requestSnapshot" || intent.type === "requestMore") {
+      if (
+        intent.type === "requestSnapshot" &&
+        intent.restoreIdentityReplay !== undefined &&
+        intent.restoreIdentityReplay.publisherGeneration !== this.generation
+      )
+        throw new Error("Stale restore replay request");
+      if (intent.type === "requestSnapshot" && intent.restoreIdentityReplay !== undefined)
+        this.restoreIdentityReplay = true;
       this.ports.publisher(intent);
       return;
     }
@@ -538,6 +561,7 @@ export class ThreadMonitorBroker {
         type: intent.type,
         draftRevision: "draftRevision" in intent ? intent.draftRevision : undefined,
         messageId: "messageId" in intent ? intent.messageId : undefined,
+        settleCommandId: intent.type === "restore" ? intent.settleCommandId : undefined,
         terminal: false,
         terminalStatus: null,
         unknown: false,

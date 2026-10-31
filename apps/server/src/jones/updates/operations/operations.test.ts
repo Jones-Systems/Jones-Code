@@ -13,7 +13,7 @@ import type {
   JonesActionsCandidate,
   JonesActionsCheckResult,
 } from "@t3tools/shared/jones/jonesActions";
-import { JonesUpdater, type JonesPreparedStage } from "../JonesUpdater.ts";
+import { JonesUpdater, type JonesPreparedStage, type JonesUpdaterHost } from "../JonesUpdater.ts";
 import type { OperationReconciliation } from "../launcherOperation.ts";
 import {
   makePreparationSupervisor,
@@ -65,15 +65,20 @@ const candidate: JonesActionsCandidate = {
 async function fixture(
   run: (f: Awaited<ReturnType<typeof make>>) => Promise<void>,
   recoveryEnabled = false,
+  hostInstall?: JonesUpdaterHost["install"],
 ) {
   const base = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-target-operation-"));
   try {
-    await run(await make(base, recoveryEnabled));
+    await run(await make(base, recoveryEnabled, hostInstall));
   } finally {
     await NodeFSP.rm(base, { recursive: true, force: true });
   }
 }
-async function make(base: string, recoveryEnabled: boolean) {
+async function make(
+  base: string,
+  recoveryEnabled: boolean,
+  hostInstall?: JonesUpdaterHost["install"],
+) {
   const joins = new Map<string, PreparationJoin | "running">();
   let removedJobIds: string[] = [];
   const preparation: PreparationSupervisor = {
@@ -172,7 +177,7 @@ async function make(base: string, recoveryEnabled: boolean) {
           options.signal.removeEventListener("abort", abort);
         }
       },
-      install: async () => {},
+      install: hostInstall ?? (async () => {}),
     },
     { check },
   );
@@ -1004,3 +1009,58 @@ it("refuses an expired reviewed recovery binding before native dispatch and reco
     await f.operations.start(normal);
     expect(f.install).toHaveBeenCalledOnce();
   }, true));
+
+it.each(["prepare", "handoff"] as const)(
+  "keeps a host %s failure terminal only with positive before-dispatch proof",
+  async (phase) =>
+    fixture(
+      async (f) => {
+        await f.operations.start(input);
+        await vi.waitFor(() => expect(f.prepareCalls()).toBe(1));
+        f.finish("completed");
+        await vi.waitFor(async () => expect((await f.receipt())?.phase).toBe("completed"));
+        f.install.mockImplementation((request) => f.updater.install(request));
+        const request: JonesOperationStartInput = {
+          ...input,
+          operationId: NodeCrypto.randomUUID(),
+          action: {
+            kind: "install",
+            stagedHandle: "stage",
+            currentVersion: f.updater.snapshot().currentVersion!,
+            targetSource: candidate.source,
+          },
+        };
+        await f.operations.start(request);
+        await vi.waitFor(async () =>
+          expect(await f.ledger.read(request.operationId)).toMatchObject(
+            phase === "prepare"
+              ? { phase: "refused", code: "install-refused" }
+              : { phase: "running", code: "launcher-unconfirmed" },
+          ),
+        );
+        expect(f.updater.admissionHeld()).toBe(phase === "handoff");
+        await f.operations.start(request);
+        expect(f.install).toHaveBeenCalledOnce();
+        const next = { ...request, operationId: NodeCrypto.randomUUID() };
+        const receipt = await f.operations.start(next);
+        if (phase === "prepare") {
+          expect(receipt.code).not.toBe("busy");
+          await vi.waitFor(async () =>
+            expect(await f.ledger.read(next.operationId)).toMatchObject({
+              phase: "refused",
+              code: "install-refused",
+            }),
+          );
+          expect(f.install).toHaveBeenCalledTimes(2);
+        } else {
+          expect(receipt.code).toBe("busy");
+          expect(f.install).toHaveBeenCalledOnce();
+        }
+      },
+      false,
+      async (_request, _step, onPreparationRefused) => {
+        if (phase === "prepare") onPreparationRefused?.();
+        throw new Error("Synthetic install boundary failure.");
+      },
+    ),
+);

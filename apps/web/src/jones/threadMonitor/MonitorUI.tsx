@@ -1,5 +1,7 @@
 /* eslint-disable shadcn/no-unknown-classes -- This isolated native peer uses the dedicated monitor.css stylesheet instead of Tailwind utilities. */
 import { randomUUID } from "../../lib/utils";
+import { formatUserResponseChoiceWithNote } from "@t3tools/contracts/jones/userResponseRequest";
+import { monitorInputChoice, monitorInputDraft } from "./answers";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
   useLayoutEffect,
@@ -1063,18 +1065,39 @@ function RequestControls({
     const answer = answers[question.id];
     return typeof answer === "string" ? true : Array.isArray(answer) && answer.length > 0;
   });
-  const edit = (id: string, answer: string | ReadonlyArray<string>) =>
-    store.edit({ ...draft, revision: draft.revision + 1, answers: { ...answers, [id]: answer } });
+  const edit = (id: string, answer: string | ReadonlyArray<string>) => {
+    const next = { ...draft, revision: draft.revision + 1, answers: { ...answers, [id]: answer } };
+    store.edit(next);
+    return next;
+  };
   return (
     <section className="request" data-status="input">
       <div className="request-label">Awaiting input</div>
       {request.questions.map((question) => {
         const answer = answers[question.id];
-        const selected = typeof answer === "string" ? [answer] : (answer ?? []);
-        const custom =
-          typeof answer === "string" && !question.options.some((option) => option.value === answer)
-            ? answer
-            : "";
+        // This peer has no response-mode metadata. When free text is offered, keep it
+        // in the submitted answer rather than losing it on an immediate choice.
+        const notes = question.allowCustomAnswer && !question.multiSelect;
+        const { selected, custom } = monitorInputDraft(question, answer, notes);
+        const choose = (value: string) => {
+          const next = edit(question.id, monitorInputChoice(question, answer, value, notes));
+          if (
+            !question.multiSelect &&
+            !reason &&
+            request.availability.available &&
+            request.questions.every((entry) => {
+              const answer = next.answers[entry.id];
+              return typeof answer === "string" || (Array.isArray(answer) && answer.length > 0);
+            })
+          )
+            dispatch({
+              ...idFor(row),
+              type: "respondToUserInput",
+              requestId: request.requestId,
+              answers: next.answers,
+              draftRevision: next.revision,
+            });
+        };
         return (
           <fieldset key={`${request.requestId}:${question.id}`}>
             <legend>{question.header}</legend>
@@ -1087,21 +1110,12 @@ function RequestControls({
                     name={`${request.requestId}:${question.id}`}
                     checked={selected.includes(option.value)}
                     disabled={!!reason || !request.availability.available}
-                    onChange={() =>
-                      edit(
-                        question.id,
-                        question.multiSelect
-                          ? selected.includes(option.value)
-                            ? selected.filter((value) => value !== option.value)
-                            : [
-                                ...selected.filter((value) =>
-                                  question.options.some((option) => option.value === value),
-                                ),
-                                option.value,
-                              ]
-                          : option.value,
-                      )
-                    }
+                    onChange={() => {
+                      if (question.multiSelect) choose(option.value);
+                    }}
+                    onClick={() => {
+                      if (!question.multiSelect) choose(option.value);
+                    }}
                   />
                   <span>
                     {option.label}
@@ -1116,7 +1130,14 @@ function RequestControls({
                 aria-label={`Custom answer: ${question.header}`}
                 value={custom}
                 disabled={!!reason || !request.availability.available}
-                onChange={(event) => edit(question.id, event.target.value)}
+                onChange={(event) =>
+                  edit(
+                    question.id,
+                    notes && !question.multiSelect && selected[0] !== undefined
+                      ? formatUserResponseChoiceWithNote(selected[0], event.target.value)
+                      : event.target.value,
+                  )
+                }
                 placeholder="Your answer…"
               />
             ) : null}

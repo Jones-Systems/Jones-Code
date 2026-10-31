@@ -357,7 +357,7 @@ type ControlPlane = Awaited<ReturnType<typeof startLoopbackControlPlane>>;
 export async function startEnvironment(
   control: ControlPlane,
   environmentId: string,
-  stamp: typeof build | null = build,
+  stamp: typeof build | null | "embedded" = build,
 ) {
   const configured = makeControlPlaneWorkstreamTransport(control.activation);
   const gateway = await Effect.runPromise(
@@ -372,7 +372,7 @@ export async function startEnvironment(
         storeGeneration: 1,
       }),
     },
-    build: Effect.succeed(Option.fromNullishOr(stamp)),
+    ...(stamp === "embedded" ? {} : { build: Effect.succeed(Option.fromNullishOr(stamp)) }),
   });
   const app = HttpRouter.toWebHandler(
     HttpApiBuilder.layer(WorkstreamTestApi).pipe(
@@ -389,18 +389,30 @@ export async function startEnvironment(
   );
   try {
     const listener = await startLoopbackHandler((request) => app.handler(request));
+    let completion: Promise<void> | undefined;
     return {
       ...listener,
-      close: async () => {
-        try {
-          await listener.close();
-        } finally {
-          await app.dispose();
-        }
-      },
+      close: () =>
+        (completion ??= (async () => {
+          const results = await Promise.allSettled([
+            Promise.resolve().then(() => listener.close()),
+            Promise.resolve().then(() => app.dispose()),
+          ]);
+          const errors = results
+            .filter((result) => result.status === "rejected")
+            .map((result) => result.reason);
+          if (errors.length)
+            throw new AggregateError(errors, "Environment cleanup failed", { cause: errors[0] });
+        })()),
     };
   } catch (error) {
-    await app.dispose();
+    try {
+      await app.dispose();
+    } catch (cleanup) {
+      process.stderr.write(
+        `${JSON.stringify({ event: "environment cleanup failed", primary: String(error), cleanup: String(cleanup) })}\n`,
+      );
+    }
     throw error;
   }
 }

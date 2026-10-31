@@ -994,3 +994,73 @@ NodeTest.test(
     }
   },
 );
+
+for (const [signalName, exitCode] of [
+  ["SIGINT", 130],
+  ["SIGTERM", 143],
+]) {
+  NodeTest.test(
+    `build-info cancellation ${signalName} preserves typed status before child launch`,
+    async (t) => {
+      const f = await nativeFixture(t);
+      const controller = new AbortController();
+      const output = NodePath.join(f.directory, "tsconfig.tsbuildinfo");
+      let launched = false;
+      await NodeAssert.rejects(
+        runWithBuildInfo({
+          root: f.root,
+          cwd: f.directory,
+          args: ["--noEmit"],
+          compiler: f.compiler,
+          signal: controller.signal,
+          run: async () => {
+            controller.abort(signalName);
+            return launchVerified(f.compiler, controller.signal, async () => {
+              launched = true;
+              return 0;
+            });
+          },
+        }),
+        (error) => error.exitCode === exitCode,
+      );
+      NodeAssert.equal(launched, false);
+      await NodeAssert.rejects(NodeFSP.stat(output), { code: "ENOENT" });
+      const namespace = statePaths(f.root, f.directory, output).namespace;
+      NodeAssert.equal(
+        (await NodeFSP.readdir(namespace)).some((name) =>
+          /run\.json$|\.tmp$|\.lock$|\.entry\.json$/.test(name),
+        ),
+        false,
+      );
+    },
+  );
+
+  NodeTest.test(
+    `build-info cancellation ${signalName} supersedes a completed diagnostic status without caching`,
+    async (t) => {
+      const f = await nativeFixture(t);
+      const controller = new AbortController();
+      const code = await runWithBuildInfo({
+        root: f.root,
+        cwd: f.directory,
+        args: ["--noEmit"],
+        compiler: f.compiler,
+        signal: controller.signal,
+        run: async () => {
+          controller.abort(signalName);
+          return 3;
+        },
+      });
+      NodeAssert.equal(code, exitCode);
+      const output = NodePath.join(f.directory, "tsconfig.tsbuildinfo");
+      await NodeAssert.rejects(NodeFSP.stat(output), { code: "ENOENT" });
+      const namespace = statePaths(f.root, f.directory, output).namespace;
+      NodeAssert.equal(
+        (await NodeFSP.readdir(namespace)).some((name) =>
+          /run\.json$|\.tmp$|\.lock$|\.entry\.json$/.test(name),
+        ),
+        false,
+      );
+    },
+  );
+}

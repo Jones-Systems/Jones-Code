@@ -1,4 +1,6 @@
+// @effect-diagnostics globalDate:off - Offer expiry is a client refusal only; the server requalifies before native retirement.
 import { jonesBuildLabels } from "@t3tools/shared/jones/buildTime";
+import { sameJonesUpdateAlternative } from "@t3tools/contracts/jones/jonesUpdates";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
   JonesUpdateProvenance,
@@ -7,6 +9,7 @@ import type {
   JonesUpdateExactInput,
   JonesUpdateInstallInput,
   JonesUpdateReconcileInput,
+  JonesUpdateAlternative,
 } from "@t3tools/contracts/jones/jonesUpdates";
 import type {
   JonesOperationStartInput,
@@ -485,6 +488,18 @@ export function jonesCandidatePresentation(state: JonesUpdateState) {
   };
 }
 
+/** A generic offer never inherits the retained download's payload or migration metadata. */
+export function jonesAlternativePresentation(state: JonesUpdateState) {
+  const offer = state.stagedHandle === undefined ? undefined : state.alternativeCandidate;
+  if (offer === undefined) return undefined;
+  return {
+    label: "Alternative" as const,
+    version: offer.provenance.version,
+    buildStartedAt: offer.provenance.buildStartedAt,
+    sourceSha: offer.provenance.sourceSha,
+  };
+}
+
 export type JonesSourceComparison = "matches" | "different" | "unavailable";
 
 const FULL_SOURCE_COMMIT = /^[a-f0-9]{40}$/;
@@ -519,6 +534,20 @@ export type JonesExactSourceStep =
     }
   | { readonly kind: "download"; readonly input: JonesUpdateDownloadInput }
   | { readonly kind: "install"; readonly input: JonesUpdateInstallInput };
+
+export function sameJonesReplacementStep(left: JonesExactSourceStep, right: JonesExactSourceStep) {
+  return (
+    left.kind === "replace-exact" &&
+    right.kind === "replace-exact" &&
+    left.targetSource === right.targetSource &&
+    left.replace.stagedHandle === right.replace.stagedHandle &&
+    left.replace.sourceSha === right.replace.sourceSha &&
+    left.replace.environmentId === right.replace.environmentId &&
+    left.replace.currentVersion === right.replace.currentVersion &&
+    left.replace.expectedInstalledSource === right.replace.expectedInstalledSource &&
+    sameJonesUpdateAlternative(left.replace.alternative, right.replace.alternative)
+  );
+}
 
 export type JonesExactSourceUnavailable =
   | "invalid-target"
@@ -564,6 +593,85 @@ const unavailable = (
   reason: JonesExactSourceUnavailable,
   message: string,
 ): JonesExactSourceDecision => ({ status: "unavailable", reason, message });
+
+/** Resolve a Check offer independently of verified installed laptop-source selection. */
+export function resolveJonesAlternativeAction(input: {
+  readonly environmentId: EnvironmentId;
+  readonly observation: JonesUpdateObservation;
+  readonly canOperate: boolean;
+  readonly alternative?: JonesUpdateAlternative | undefined;
+}): JonesExactSourceDecision {
+  const { observation, environmentId } = input;
+  const state = observation.state;
+  if (observation.freshness !== "fresh" || state === null)
+    return unavailable("waiting", "Waiting for this host's current update status.");
+  if (!input.canOperate)
+    return unavailable("no-permission", "Your session on this host cannot change updates.");
+  if (jonesUpdatePresentation(state).busy)
+    return unavailable("busy", "An update operation is already in progress.");
+  const operation = state.operation;
+  if (
+    operation !== undefined &&
+    (operation.code === "launcher-unconfirmed" ||
+      ["accepted", "running", "stop-requested", "adopting", "handed-off", "held"].includes(
+        operation.phase,
+      ))
+  )
+    return unavailable("reconciling", "Read the exact operation outcome before any new work.");
+  if (state.policy !== undefined)
+    return unavailable(
+      "follows-laptop",
+      "This host follows its laptop. Use its installed-source selection.",
+    );
+  const offer = state.alternativeCandidate;
+  if (
+    offer === undefined ||
+    (input.alternative !== undefined && !sameJonesUpdateAlternative(input.alternative, offer)) ||
+    !Number.isFinite(Date.parse(offer.expiresAt)) ||
+    Date.parse(offer.expiresAt) <= Date.now()
+  )
+    return unavailable(
+      "unavailable",
+      "The qualified alternative changed or expired. Check again; the download was retained.",
+    );
+  if (
+    !state.capability.download ||
+    state.capability.exactSource !== true ||
+    state.capability.replaceStaged !== true
+  )
+    return unavailable("unsupported", "This host cannot safely replace that download.");
+  if (
+    state.environmentId !== environmentId ||
+    state.currentVersion === undefined ||
+    state.installedSource === undefined ||
+    !FULL_SOURCE_COMMIT.test(state.installedSource.sha) ||
+    state.stagedHandle === undefined ||
+    state.provenance === undefined ||
+    !FULL_SOURCE_COMMIT.test(state.provenance.sourceSha) ||
+    !FULL_SOURCE_COMMIT.test(offer.provenance.sourceSha) ||
+    state.provenance.sourceSha === offer.provenance.sourceSha ||
+    state.installedSource.sha === offer.provenance.sourceSha
+  )
+    return unavailable(
+      "unavailable",
+      "The host or downloaded build changed. Check again before replacing it.",
+    );
+  return {
+    status: "ready",
+    step: {
+      kind: "replace-exact",
+      targetSource: offer.provenance.sourceSha,
+      replace: {
+        stagedHandle: state.stagedHandle,
+        sourceSha: state.provenance.sourceSha,
+        environmentId,
+        currentVersion: state.currentVersion,
+        expectedInstalledSource: state.installedSource.sha,
+        alternative: offer,
+      },
+    },
+  };
+}
 
 function capabilityRefusal(state: JonesUpdateState, what: "download" | "install") {
   return state.capability.reason === "bootstrap-required"

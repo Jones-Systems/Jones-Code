@@ -15,6 +15,22 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
+    },
+    {
       "from": "apps/server/src/ws.ts",
       "to": "apps/server/src/environment/NativeStoreAuthority.ts"
     },

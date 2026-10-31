@@ -2825,6 +2825,120 @@ it.layer(layerTest)("RuntimeLayer.layer lifecycle", (it) => {
     }),
   );
 
+  it.effect("rereads missing required-gate observations and wakes once when Check appears", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("runtime-pr-watch-observation");
+      const projectId = ProjectId.make("pr-watch-observation-project");
+      yield* seedProject({
+        projectId,
+        title: "Observation",
+        workspaceRoot: "/workspace/observation",
+        defaultModelSelection: null,
+        createdAt: "2026-10-01T00:00:00.000Z",
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("observation-create"),
+        threadId,
+        projectId,
+        title: "Observation",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make("observation-start"),
+        threadId,
+        host: "github.com",
+        repository: "Jones-Systems/Jones-Code",
+        number: 610,
+        watching: true,
+        link: { url: "https://github.com/Jones-Systems/Jones-Code/pull/610", source: "agent" },
+      });
+      let complete = false;
+      let reads = 0;
+      const reactor = yield* PullRequestWatchReactor.make.pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.mock(PullRequestService.PullRequestService)({
+              detail: (input) =>
+                Effect.sync(() => {
+                  assert.isFalse(input.allowStale);
+                  reads++;
+                  return {
+                    ...watchedPullRequestDetail({
+                      projectId,
+                      number: 610,
+                      at: "2026-10-02T12:00:00.000Z",
+                    }),
+                    mergeability: "mergeable" as const,
+                    headSha: "abc1234def",
+                    checks: complete
+                      ? [
+                          {
+                            name: "Check",
+                            status: "success" as const,
+                            description: null,
+                            url: null,
+                            required: false,
+                          },
+                        ]
+                      : [],
+                    jonesCheckObservation: {
+                      headSha: "abc1234def",
+                      enumerationComplete: true,
+                      workflowState: complete ? ("complete" as const) : ("pending" as const),
+                      requiredSetKnown: true,
+                      requiredState: complete ? ("success" as const) : ("missing" as const),
+                      requiredChecks: ["Check"],
+                    },
+                  };
+                }),
+              activity: () =>
+                Effect.succeed({
+                  comments: [],
+                  commentCount: 0,
+                  commentsTruncated: false,
+                  reviewThreads: [],
+                  commits: [],
+                }),
+            }),
+          ),
+        ),
+      );
+      const summaries = Effect.map(
+        orchestrator.getThreadRecords(threadId, ["messages"]),
+        ({ messages }) => messages.flatMap((message) => message.notification?.summary ?? []),
+      );
+      yield* reactor.sweep;
+      assert.deepEqual(yield* summaries, []);
+      complete = true;
+      yield* TestClock.adjust("2 minutes");
+      yield* reactor.sweep;
+      assert.equal(reads, 2);
+      assert.deepEqual(yield* summaries, ["#610: checks passed"]);
+      yield* TestClock.adjust("2 minutes");
+      yield* reactor.sweep;
+      assert.deepEqual(yield* summaries, ["#610: checks passed"]);
+      yield* orchestrator.dispatch({
+        type: "thread.pull-request.watch",
+        commandId: CommandId.make("observation-stop"),
+        threadId,
+        host: "github.com",
+        repository: "Jones-Systems/Jones-Code",
+        number: 610,
+        watching: false,
+      });
+    }),
+  );
+
   it.effect("wakes once for a state it reported, across a restart and a new watch", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
