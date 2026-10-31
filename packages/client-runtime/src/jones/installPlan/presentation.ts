@@ -82,8 +82,7 @@ export function installPlanPresentation(
     const latest = device.operations.at(-1);
     const lastDownload = device.operations.filter((o) => o.step === "download").at(-1);
     const retryDownload =
-      latest?.step === "download" &&
-      ["failed", "refused"].includes(latest.receipt?.phase ?? "");
+      latest?.step === "download" && ["failed", "refused"].includes(latest.receipt?.phase ?? "");
     let text = copy[phase];
     if (latest?.step === "download" && latest.receipt?.phase === "refused")
       text = "Download request did not start";

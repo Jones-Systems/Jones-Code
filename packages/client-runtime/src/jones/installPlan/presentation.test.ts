@@ -92,11 +92,7 @@ it.each(["refused", "failed"] as const)(
       capability: { check: true, download: true, install: true, exactSource: true, operations: 1 },
       operation: receipt,
     };
-    const observe = (
-      value = live,
-      freshness: "fresh" | "stale" = "fresh",
-      canOperate = true,
-    ) =>
+    const observe = (value = live, freshness: "fresh" | "stale" = "fresh", canOperate = true) =>
       installPlanPresentation(state, {
         now: Date.parse(now),
         devices: new Map([[host, { observation: { state: value, freshness }, canOperate }]]),
