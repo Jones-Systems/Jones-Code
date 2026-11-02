@@ -2435,6 +2435,11 @@
         "apps/server/src/jones/workstreams/native/runtime/recordedCaller.test.ts"
       ],
       "scope": "Separately tagged encrypted PEER intent, authoritative command/parent association and invocation-scoped real owner/original native-session checks. Historical HOME wrapper and recovery remain intact; no fabricated MCP invocation, replacement-session selection or stored-grant authority. Initial PEER dispatch, provider lookup/completion, selected runtime mounting and physical acceptance remain separate gates."
+    },
+    {
+      "id": "workstreams-native-peer-effect-source",
+      "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts"],
+      "scope": "Private authoritative origin/original receiving-session proof with fresh exact V3 source readmission, opaque captured home-to-source generation and fixed retained-source attest/settle_lookup. Real peer transport and bounded SQL links exercise synthetic remote replies; no dispatch, generic relay, fallback or absence-to-retry authority. Raw completion/acceptance and mounted application remain separate gates."
     }
   ]
 }

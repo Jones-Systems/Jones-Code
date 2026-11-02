@@ -38,6 +38,33 @@ const decodeReceipt = Schema.decodeUnknownEffect(
     request_body: Schema.String,
   }),
 );
+// These persisted cache bytes participate in the original reservation digest even though they grant no authority.
+const StoredObservation = Schema.Struct({
+  ...Wire.WorkstreamPrObservation.fields,
+  observation_cache: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        schema_version: Schema.Literal(1),
+        owner_id: Schema.String,
+        native_reference_id: Schema.String,
+        source_instance_id: Schema.String,
+        provider: Schema.String,
+        locator: Wire.WorkstreamPrLocator,
+        server_generation: Schema.Int,
+        authority_namespace: Schema.String,
+        store_generation: Schema.Int,
+        observation_version: Schema.Int,
+        etag: Schema.String,
+        representation: Schema.Struct({
+          state: Schema.Literals(["open", "closed", "merged"]),
+          draft: Schema.Boolean,
+          observed_at: Wire.WorkstreamPrObservation.fields.attempted_at,
+          provider_updated_at: Schema.NullOr(Wire.WorkstreamPrObservation.fields.attempted_at),
+        }),
+      }),
+    ),
+  ),
+});
 const decodeIntent = Schema.decodeUnknownEffect(
   Schema.Struct({
     kind: Schema.Literals(["verify_reference", "native_t3_settlement", "refresh_linked_pr"]),
@@ -62,8 +89,7 @@ const decodeIntent = Schema.decodeUnknownEffect(
       state: Schema.Literals(["active", "revoked"]),
     }),
     membership: Schema.NullOr(Wire.MembershipEpisode),
-    // Cache hints do not confer authority. A recovered peer refresh may fetch a fresh representation.
-    previous_observation: Schema.NullOr(Wire.WorkstreamPrObservation),
+    previous_observation: Schema.NullOr(StoredObservation),
   }),
 );
 interface ReservationRow {
