@@ -28,6 +28,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
@@ -2001,13 +2002,30 @@ describe("OrchestratorMcpService provider resolution", () => {
                     : childProjection,
                 ),
               ),
-            getCommandReceipt: (commandId) => Ref.get(accepted).pipe(Effect.flatMap((isAccepted) =>
-              isAccepted ? Effect.map(DateTime.now, (acceptedAt) => Option.some({
-                commandId, threadId: parentThreadId, commandType: "delegated_task.request",
-                acceptedAt, resultSequence: 1, status: "accepted" as const, error: null,
-              })) : Effect.succeedNone,
-            )),
-            getThreadShell: () => Effect.succeed({ ...childProjection.thread, projectId, deletedAt: null } as OrchestrationV2ThreadShell),
+            getCommandReceipt: (commandId) =>
+              Ref.get(accepted).pipe(
+                Effect.flatMap((isAccepted) =>
+                  isAccepted
+                    ? Effect.map(DateTime.now, (acceptedAt) =>
+                        Option.some({
+                          commandId,
+                          threadId: parentThreadId,
+                          commandType: "delegated_task.request",
+                          acceptedAt,
+                          resultSequence: 1,
+                          status: "accepted" as const,
+                          error: null,
+                        }),
+                      )
+                    : Effect.succeedNone,
+                ),
+              ),
+            getThreadShell: () =>
+              Effect.succeed({
+                ...childProjection.thread,
+                projectId,
+                deletedAt: null,
+              } as OrchestrationV2ThreadShell),
             getProjectThreadRecords: () => Effect.succeed(childProjection),
             isProviderInstanceEnabledForProject: () =>
               Ref.get(everyCandidateDisabled).pipe(Effect.map((disabled) => !disabled)),
@@ -2038,12 +2056,20 @@ describe("OrchestratorMcpService provider resolution", () => {
                     {
                       sequence: 1,
                       commandId: command.commandId,
-                      event: { type: "thread.created", threadId: childThreadId, payload: {
-                        ...childProjection.thread, projectId,
-                        modelSelection: { instanceId: task.providerInstanceId, model: task.model },
-                        lineage: { parentThreadId, relationshipToParent: "subagent" },
-                        forkedFrom: { type: "node", nodeId: task.id },
-                      } },
+                      event: {
+                        type: "thread.created",
+                        threadId: childThreadId,
+                        payload: {
+                          ...childProjection.thread,
+                          projectId,
+                          modelSelection: {
+                            instanceId: task.providerInstanceId,
+                            model: task.model,
+                          },
+                          lineage: { parentThreadId, relationshipToParent: "subagent" },
+                          forkedFrom: { type: "node", nodeId: task.id },
+                        },
+                      },
                     },
                   ],
                 } as never),

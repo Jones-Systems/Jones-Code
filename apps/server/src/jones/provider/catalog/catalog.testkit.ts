@@ -11,6 +11,7 @@ import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -45,10 +46,13 @@ export const providerSnapshot = (
 
 export const configuration = (
   ...entries: ReadonlyArray<readonly [ProviderInstanceId, string]>
-): ProviderInstanceConfigMap => Object.fromEntries(entries.map(([id, generation]) => [
-  id,
-  { driver: driverKind, enabled: true, config: { generation } },
-]));
+): ProviderInstanceConfigMap =>
+  Object.fromEntries(
+    entries.map(([id, generation]) => [
+      id,
+      { driver: driverKind, enabled: true, config: { generation } },
+    ]),
+  );
 
 export const makeGate = Effect.fn("CatalogTest.makeGate")(function* () {
   const started = yield* Deferred.make<void>();
@@ -87,76 +91,101 @@ export const makeCatalogHarness = Effect.fn("CatalogTest.makeHarness")(function*
     metadata: { displayName: "Synthetic OpenCode" },
     configSchema: Schema.Struct({ generation: Schema.String }),
     defaultConfig: () => ({ generation: "original" }),
-    create: (input) => Effect.gen(function* () {
-      const changes = yield* PubSub.unbounded<ServerProvider>();
-      yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
-      const source: CatalogTestSource = {
-        provider: providerSnapshot(input.instanceId, input.config.generation),
-        changes,
-        initialRead: () => Effect.succeed(source.provider),
-        refreshRead: () => Effect.succeed(source.provider),
-        maintenance: () => Effect.void,
-        retirement: Effect.void,
-        stream: Stream.fromPubSub(changes),
-        instance: {
-          instanceId: input.instanceId,
-          driverKind,
-          continuationIdentity: { driverKind, continuationKey: input.instanceId },
-          displayName: undefined,
-          enabled: true,
-          snapshot: {
-            getSnapshot: Effect.suspend(() => source.initialRead()),
-            refresh: Effect.suspend(() => source.refreshRead()),
-            streamChanges: Stream.unwrap(Effect.sync(() => source.stream)),
-            resolveMaintenance: () => Effect.suspend(() => source.maintenance()).pipe(Effect.as(
-              makeManualOnlyProviderMaintenanceCapabilities({ provider: driverKind, packageName: null }),
-            )),
-            applyUsageLimits: () => Effect.void,
+    create: (input) =>
+      Effect.gen(function* () {
+        const changes = yield* PubSub.unbounded<ServerProvider>();
+        yield* Effect.addFinalizer(() => PubSub.shutdown(changes));
+        const source: CatalogTestSource = {
+          provider: providerSnapshot(input.instanceId, input.config.generation),
+          changes,
+          initialRead: () => Effect.succeed(source.provider),
+          refreshRead: () => Effect.succeed(source.provider),
+          maintenance: () => Effect.void,
+          retirement: Effect.void,
+          stream: Stream.fromPubSub(changes),
+          instance: {
+            instanceId: input.instanceId,
+            driverKind,
+            continuationIdentity: { driverKind, continuationKey: input.instanceId },
+            displayName: undefined,
+            enabled: true,
+            snapshot: {
+              getSnapshot: Effect.suspend(() => source.initialRead()),
+              refresh: Effect.suspend(() => source.refreshRead()),
+              streamChanges: Stream.unwrap(Effect.sync(() => source.stream)),
+              resolveMaintenance: () =>
+                Effect.suspend(() => source.maintenance()).pipe(
+                  Effect.as(
+                    makeManualOnlyProviderMaintenanceCapabilities({
+                      provider: driverKind,
+                      packageName: null,
+                    }),
+                  ),
+                ),
+              applyUsageLimits: () => Effect.void,
+            },
+            orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
+            textGeneration: {} as ProviderInstance["textGeneration"],
           },
-          orchestrationAdapter: {} as ProviderInstance["orchestrationAdapter"],
-          textGeneration: {} as ProviderInstance["textGeneration"],
-        },
-      };
-      options?.configureSource?.(source, input.config.generation);
-      sources.set(`${input.instanceId}:${input.config.generation}`, source);
-      yield* Effect.addFinalizer(() => source.retirement);
-      return source.instance;
-    }),
+        };
+        options?.configureSource?.(source, input.config.generation);
+        sources.set(`${input.instanceId}:${input.config.generation}`, source);
+        yield* Effect.addFinalizer(() => source.retirement);
+        return source.instance;
+      }),
   };
-  const entries: ReadonlyArray<readonly [ProviderInstanceId, string]> =
-    options?.entries ?? [[instanceA, "original"]];
+  const entries: ReadonlyArray<readonly [ProviderInstanceId, string]> = options?.entries ?? [
+    [instanceA, "original"],
+  ];
   const instances = yield* ProviderInstanceRegistry.makeProviderInstanceRegistry({
     drivers: [driver],
     configMap: configuration(...entries),
   });
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const services = yield* Layer.build(ProviderRegistry.layer.pipe(
-    Layer.provideMerge(Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, instances.registry)),
-    Layer.provideMerge(Layer.succeed(ModelManifest.ModelManifest, {
-      current: Effect.suspend(() => {
-        const enrichment = controls.enrichment;
-        delete controls.enrichment;
-        return enrichment ?? Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST);
-      }),
-      // Hold the unrelated background fetch; the service scope owns its interruption.
-      refresh: Effect.never,
-      forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
-      refreshInBackground: Effect.void,
-    })),
-    Layer.provideMerge(Layer.mock(ProviderLatestVersions.ProviderLatestVersions)({
-      invalidate: () => Effect.void,
-    })),
-    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "jones-catalog-publication-" })),
-    Layer.provide(Layer.succeed(FileSystem.FileSystem, {
-      ...fs,
-      rename: (from, to) => Effect.suspend(() => controls.beforeRename?.(from, to) ?? Effect.void)
-        .pipe(Effect.andThen(fs.rename(from, to))),
-      remove: (path, removeOptions) => fs.remove(path, removeOptions).pipe(
-        Effect.andThen(Effect.suspend(() => controls.afterRemove?.(path) ?? Effect.void)),
+  const services = yield* Layer.build(
+    ProviderRegistry.layer.pipe(
+      Layer.provideMerge(
+        Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, instances.registry),
       ),
-    })),
-  ));
+      Layer.provideMerge(
+        Layer.succeed(ModelManifest.ModelManifest, {
+          current: Effect.suspend(() => {
+            const enrichment = controls.enrichment;
+            delete controls.enrichment;
+            return enrichment ?? Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST);
+          }),
+          // Hold the unrelated background fetch; the service scope owns its interruption.
+          refresh: Effect.never,
+          forceRefresh: Effect.succeed(ModelManifest.BUNDLED_MODEL_MANIFEST),
+          refreshInBackground: Effect.void,
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.mock(ProviderLatestVersions.ProviderLatestVersions)({
+          invalidate: () => Effect.void,
+        }),
+      ),
+      Layer.provideMerge(
+        ServerConfig.layerTest(process.cwd(), { prefix: "jones-catalog-publication-" }),
+      ),
+      Layer.provide(
+        Layer.succeed(FileSystem.FileSystem, {
+          ...fs,
+          rename: (from, to) =>
+            Effect.suspend(() => controls.beforeRename?.(from, to) ?? Effect.void).pipe(
+              Effect.andThen(fs.rename(from, to)),
+            ),
+          remove: (path, removeOptions) =>
+            fs
+              .remove(path, removeOptions)
+              .pipe(
+                Effect.andThen(Effect.suspend(() => controls.afterRemove?.(path) ?? Effect.void)),
+              ),
+        }),
+      ),
+    ),
+  );
   const registry = Context.get(services, ProviderRegistry.ProviderRegistry);
   const config = Context.get(services, ServerConfig.ServerConfig);
   return {
@@ -176,4 +205,12 @@ export const makeCatalogHarness = Effect.fn("CatalogTest.makeHarness")(function*
 export const nextCatalog = (
   registry: ProviderRegistry.ProviderRegistry["Service"],
   predicate: (providers: ReadonlyArray<ServerProvider>) => boolean,
-) => Stream.toPull(registry.streamChanges.pipe(Stream.filter(predicate)));
+) =>
+  registry.streamChanges.pipe(
+    Stream.filter(predicate),
+    Stream.take(1),
+    Stream.runDrain,
+    // A pull alone subscribes lazily and can miss a synchronous removal publication.
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.map((fiber) => Fiber.join(fiber)),
+  );

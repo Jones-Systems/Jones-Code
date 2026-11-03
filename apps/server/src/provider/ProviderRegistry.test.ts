@@ -916,7 +916,7 @@ it.layer(
               {
                 getInstance: (id) =>
                   Effect.succeed(id === instance.instanceId ? instance : undefined),
-                getCatalogSource: (id) => id === instance.instanceId ? instance : undefined,
+                getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
                 listUnavailable: Effect.succeed([]),
                 streamChanges: Stream.empty,
@@ -1047,7 +1047,7 @@ it.layer(
             {
               getInstance: (id) =>
                 Effect.succeed(id === instance.instanceId ? instance : undefined),
-              getCatalogSource: (id) => id === instance.instanceId ? instance : undefined,
+              getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1343,7 +1343,7 @@ it.layer(
             {
               getInstance: (requestedId) =>
                 Effect.succeed(requestedId === instanceId ? instance : undefined),
-              getCatalogSource: (id) => id === instanceId ? instance : undefined,
+              getCatalogSource: (id) => (id === instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1439,7 +1439,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
-            getCatalogSource: (id) => id === instanceId ? instance : undefined,
+            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -1665,7 +1665,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === cursorInstanceId ? instance : undefined),
-            getCatalogSource: (id) => id === cursorInstanceId ? instance : undefined,
+            getCatalogSource: (id) => (id === cursorInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -1794,7 +1794,7 @@ it.layer(
             {
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === openCodeInstanceId ? instance : undefined),
-              getCatalogSource: (id) => id === openCodeInstanceId ? instance : undefined,
+              getCatalogSource: (id) => (id === openCodeInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1898,7 +1898,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
-            getCatalogSource: (id) => id === codexInstanceId ? instance : undefined,
+            getCatalogSource: (id) => (id === codexInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2004,7 +2004,8 @@ it.layer(
         const layerInstanceRegistry = Layer.succeed(
           ProviderInstanceRegistry.ProviderInstanceRegistry,
           {
-            getCatalogSource: (id) => Ref.getUnsafe(instancesRef).find((instance) => instance.instanceId === id),
+            getCatalogSource: (id) =>
+              Ref.getUnsafe(instancesRef).find((instance) => instance.instanceId === id),
             getInstance: (instanceId) =>
               Ref.get(instancesRef).pipe(
                 Effect.map((instances) =>

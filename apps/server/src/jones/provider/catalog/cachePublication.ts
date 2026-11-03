@@ -34,25 +34,29 @@ export const makeCatalogCachePublication = () => {
   };
 };
 
-export const withCurrentCatalogCacheWrite = Effect.fn("CatalogCache.withCurrentWrite")(
-  function* <A, E, R>(write: Effect.Effect<A, E, R>, isCurrent: () => boolean) {
-    const fs = yield* FileSystem.FileSystem;
-    return yield* write.pipe(
-      Effect.provideService(FileSystem.FileSystem, {
-        ...fs,
-        rename: (fromPath, toPath) =>
-          Effect.suspend(() => {
-            if (!isCurrent()) return Effect.void;
-            // The caller holds the instance's cache lane through rename and stale-write removal.
-            return fs.rename(fromPath, toPath).pipe(
+export const withCurrentCatalogCacheWrite = Effect.fn("CatalogCache.withCurrentWrite")(function* <
+  A,
+  E,
+  R,
+>(write: Effect.Effect<A, E, R>, isCurrent: () => boolean) {
+  const fs = yield* FileSystem.FileSystem;
+  return yield* write.pipe(
+    Effect.provideService(FileSystem.FileSystem, {
+      ...fs,
+      rename: (fromPath, toPath) =>
+        Effect.suspend(() => {
+          if (!isCurrent()) return Effect.void;
+          // The caller holds the instance's cache lane through rename and stale-write removal.
+          return fs
+            .rename(fromPath, toPath)
+            .pipe(
               Effect.andThen(
                 Effect.suspend(() =>
                   isCurrent() ? Effect.void : fs.remove(toPath, { force: true }),
                 ),
               ),
             );
-          }),
-      }),
-    );
-  },
-);
+        }),
+    }),
+  );
+});

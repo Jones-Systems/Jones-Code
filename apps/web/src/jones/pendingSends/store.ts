@@ -74,7 +74,8 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
     if (
       !entry ||
       (entry.delivery === "accepted" && !entry.onAccepted && !entry.retry && !entry.onRejected)
-    ) return;
+    )
+      return;
     const callback = entry.onAccepted;
     update(entryKey, (entry) => ({
       ...entry,
@@ -85,7 +86,10 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
     }));
     callback?.();
   };
-  const finish = (entryKey: string, outcome: boolean | CommandDeliveryStatus | DeliveryEvidence) => {
+  const finish = (
+    entryKey: string,
+    outcome: boolean | CommandDeliveryStatus | DeliveryEvidence,
+  ) => {
     const evidence = typeof outcome === "object" ? outcome : undefined;
     update(entryKey, (entry) => {
       // Creation is durable independently of its first message and of later lost replies.
@@ -95,17 +99,18 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
         entry.deliveryEvidence?.kind === "launch" &&
         entry.deliveryEvidence.creation.status === "accepted"
           ? { ...evidence, creation: entry.deliveryEvidence.creation }
-          : evidence ?? entry.deliveryEvidence;
+          : (evidence ?? entry.deliveryEvidence);
       const status: CommandDeliveryStatus =
         typeof outcome === "object"
           ? threadTurnDeliveryStatus(deliveryEvidence ?? outcome)
           : typeof outcome === "boolean"
-            ? outcome ? "accepted" : "unknown"
+            ? outcome
+              ? "accepted"
+              : "unknown"
             : outcome;
       const accepted = entry.delivery === "accepted" || status === "accepted";
-      const rejected = !accepted && (
-        status === "rejected" || entry.delivery === "failed" || !entry.issued
-      );
+      const rejected =
+        !accepted && (status === "rejected" || entry.delivery === "failed" || !entry.issued);
       return {
         ...entry,
         deliveryEvidence,
@@ -183,8 +188,7 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
     finish,
     failBeforeDispatch(environmentId: EnvironmentId, threadId: ThreadId, messageId: MessageId) {
       const entry = get(environmentId, threadId, messageId);
-      if (entry && !entry.issued && entry.delivery !== "accepted")
-        finish(entry.key, "rejected");
+      if (entry && !entry.issued && entry.delivery !== "accepted") finish(entry.key, "rejected");
     },
     whenAccepted(
       environmentId: EnvironmentId,
@@ -195,12 +199,16 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
       const entry = get(environmentId, threadId, messageId);
       if (!entry) return;
       if (entry.delivery === "accepted") callback();
-      else update(entry.key, (entry) => ({
-        ...entry,
-        onAccepted: entry.onAccepted
-          ? () => { entry.onAccepted?.(); callback(); }
-          : callback,
-      }));
+      else
+        update(entry.key, (entry) => ({
+          ...entry,
+          onAccepted: entry.onAccepted
+            ? () => {
+                entry.onAccepted?.();
+                callback();
+              }
+            : callback,
+        }));
     },
     whenRejected(
       environmentId: EnvironmentId,

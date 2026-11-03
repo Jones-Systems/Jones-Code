@@ -19,16 +19,20 @@ const state = vi.hoisted(() => ({
   grantedEnvironments: new Set<string>(),
   draftText: "Keep this draft separate",
   cleanups: [] as Array<() => void>,
-  prepareTurn: vi.fn<
-    (request: { environmentId: EnvironmentId; input: StartThreadTurnInput }) => Promise<
-      AsyncResult.AsyncResult<PreparedThreadTurn, Error>
-    >
-  >(),
-  dispatch: vi.fn<
-    (request: { environmentId: EnvironmentId; input: PreparedThreadTurn }) => Promise<
-      AsyncResult.AsyncResult<void, Error>
-    >
-  >(),
+  prepareTurn:
+    vi.fn<
+      (request: {
+        environmentId: EnvironmentId;
+        input: StartThreadTurnInput;
+      }) => Promise<AsyncResult.AsyncResult<PreparedThreadTurn, Error>>
+    >(),
+  dispatch:
+    vi.fn<
+      (request: {
+        environmentId: EnvironmentId;
+        input: PreparedThreadTurn;
+      }) => Promise<AsyncResult.AsyncResult<void, Error>>
+    >(),
   metadata: vi.fn(),
   runtime: vi.fn(),
   interaction: vi.fn(),
@@ -313,7 +317,10 @@ describe("queued PR checkout", () => {
           commandId: queued.commandId,
           threadId: queued.threadId,
           projectId: queued.creation!.projectId,
-          initialMessage: expect.objectContaining({ messageId: queued.messageId, text: queued.text }),
+          initialMessage: expect.objectContaining({
+            messageId: queued.messageId,
+            text: queued.text,
+          }),
           workspaceStrategy: {
             type: "existing_worktree",
             branch: "pr-123",
@@ -323,7 +330,8 @@ describe("queued PR checkout", () => {
       }),
     });
     const prepared = await state.prepareTurn.mock.results[0]?.value;
-    if (!prepared || !AsyncResult.isSuccess(prepared)) throw new Error("Expected prepared PR launch");
+    if (!prepared || !AsyncResult.isSuccess(prepared))
+      throw new Error("Expected prepared PR launch");
     expect(dispatched?.input).toBe(prepared.value);
     expect(Object.isFrozen(dispatched?.input.payload)).toBe(true);
     expect(remaining()).toEqual([]);

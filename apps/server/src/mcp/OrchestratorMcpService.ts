@@ -146,7 +146,12 @@ import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { composeAgentMessage } from "../jones/mcp/agentMessageHeader.ts";
 import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
-import { acceptedReplay, recordedCreation, recordedDelegation, recordedMessage } from "../jones/mcp/acceptedReplay.ts";
+import {
+  acceptedReplay,
+  recordedCreation,
+  recordedDelegation,
+  recordedMessage,
+} from "../jones/mcp/acceptedReplay.ts";
 import * as PeerForwarding from "../peer/PeerForwarding.ts";
 import * as RemoteDelegation from "../peer/RemoteDelegation.ts";
 
@@ -1289,11 +1294,10 @@ const make = Effect.gen(function* () {
         ...healthyCandidates.filter((candidate) => candidate !== inheritedCandidate),
       ];
       for (const candidate of orderedCandidates) {
-        const enabledForProject =
-          yield* threadManagement.isProviderInstanceEnabledForProject({
-            projectId: input.projectId ?? input.parent.thread.projectId,
-            instanceId: candidate.instanceId,
-          });
+        const enabledForProject = yield* threadManagement.isProviderInstanceEnabledForProject({
+          projectId: input.projectId ?? input.parent.thread.projectId,
+          instanceId: candidate.instanceId,
+        });
         if (enabledForProject) {
           instanceId = candidate.instanceId;
           break;
@@ -2366,10 +2370,14 @@ const make = Effect.gen(function* () {
         parentNodeId: parentRun.rootNodeId,
         task: input.task,
         modelSelection: parent.thread.modelSelection,
-        runtimeMode: input.runtimeMode === undefined || input.runtimeMode === "inherit"
-          ? parent.thread.runtimeMode : input.runtimeMode,
-        interactionMode: input.interactionMode === undefined || input.interactionMode === "inherit"
-          ? parent.thread.interactionMode : input.interactionMode,
+        runtimeMode:
+          input.runtimeMode === undefined || input.runtimeMode === "inherit"
+            ? parent.thread.runtimeMode
+            : input.runtimeMode,
+        interactionMode:
+          input.interactionMode === undefined || input.interactionMode === "inherit"
+            ? parent.thread.interactionMode
+            : input.interactionMode,
         createdBy: "agent",
         creationSource: "mcp",
       });
@@ -2823,11 +2831,13 @@ const make = Effect.gen(function* () {
                   : { linkOrigin: parent.thread.linkOrigin }),
               };
               let creation = yield* acceptedReplay(threadManagement, createCommand);
-              let freshAdmission: {
-                readonly target: ResolvedTarget;
-                readonly runtimeMode: RuntimeMode;
-                readonly interactionMode: ProviderInteractionMode;
-              } | undefined;
+              let freshAdmission:
+                | {
+                    readonly target: ResolvedTarget;
+                    readonly runtimeMode: RuntimeMode;
+                    readonly interactionMode: ProviderInteractionMode;
+                  }
+                | undefined;
               if (creation === undefined) {
                 const target = yield* resolveTargetRechecking({
                   parent,
@@ -2853,22 +2863,35 @@ const make = Effect.gen(function* () {
                       launchCommandId: commandId,
                       actor: { type: "thread", threadId: scope.thread.threadId },
                     })
-                    .pipe(Effect.mapError(() => failure("orchestration_error", "Unable to record the launch link.")));
-                creation = yield* threadManagement.dispatch({
-                  ...createCommand,
-                  modelSelection: target.modelSelection,
-                  runtimeMode,
-                  interactionMode,
-                }).pipe(Effect.mapError((error) => failure(
-                  "orchestration_error",
-                  `Unable to create thread ${index + 1}: ${errorMessage(error)}`,
-                )));
+                    .pipe(
+                      Effect.mapError(() =>
+                        failure("orchestration_error", "Unable to record the launch link."),
+                      ),
+                    );
+                creation = yield* threadManagement
+                  .dispatch({
+                    ...createCommand,
+                    modelSelection: target.modelSelection,
+                    runtimeMode,
+                    interactionMode,
+                  })
+                  .pipe(
+                    Effect.mapError((error) =>
+                      failure(
+                        "orchestration_error",
+                        `Unable to create thread ${index + 1}: ${errorMessage(error)}`,
+                      ),
+                    ),
+                  );
               }
               // The create key owns this recorded binding, even if the child or
               // parent's saved defaults have changed since its acceptance.
               const binding = yield* recordedCreation(creation, threadId);
               if (binding.projectId !== parent.thread.projectId)
-                return yield* failure("orchestration_error", "The recorded creation belongs to another project.");
+                return yield* failure(
+                  "orchestration_error",
+                  "The recorded creation belongs to another project.",
+                );
               yield* loadTargetThread(threadId);
               const resolvedModelSelection = binding.modelSelection;
               const messageId = stableMessageId({ scope, requestKey: key, index });
@@ -2877,7 +2900,12 @@ const make = Effect.gen(function* () {
                   type: "message.dispatch" as const,
                   createdBy: "agent" as const,
                   creationSource: "mcp" as const,
-                  commandId: stableCommandId({ scope, requestKey: key, operation: "dispatch-thread", index }),
+                  commandId: stableCommandId({
+                    scope,
+                    requestKey: key,
+                    operation: "dispatch-thread",
+                    index,
+                  }),
                   threadId,
                   senderThreadId: scope.thread.threadId,
                   messageId,
@@ -2893,38 +2921,85 @@ const make = Effect.gen(function* () {
                   // Creation alone is no authority for a new first message.
                   // Validate its original binding against today's catalog and
                   // intersect request/caller ceilings at the locked dispatch.
-                  const admitted = freshAdmission !== undefined &&
-                    modelSelectionsEqual(freshAdmission.target.modelSelection, resolvedModelSelection)
-                    ? freshAdmission : undefined;
-                  const target = admitted?.target ?? (yield* resolveTargetRechecking({
-                    parent: { thread: { ...parent.thread, modelSelection: resolvedModelSelection } },
-                    target: {
-                      providerInstanceId: resolvedModelSelection.instanceId,
-                      model: resolvedModelSelection.model,
-                      ...(resolvedModelSelection.options === undefined ? {} : { options: resolvedModelSelection.options }),
-                    },
-                    providers: yield* loadProviders,
-                  }));
-                  const runtimeMode = admitted?.runtimeMode ?? (yield* resolveRuntimeMode(parent.thread.runtimeMode, request.runtimeMode, target));
-                  const interactionMode = admitted?.interactionMode ?? (yield* resolveInteractionMode(parent.thread.interactionMode, request.interactionMode));
-                  const refused = inheritedDispatchLimit?.refused ?? (yield* Ref.make<DispatchModeRefusal | undefined>(undefined));
+                  const admitted =
+                    freshAdmission !== undefined &&
+                    modelSelectionsEqual(
+                      freshAdmission.target.modelSelection,
+                      resolvedModelSelection,
+                    )
+                      ? freshAdmission
+                      : undefined;
+                  const target =
+                    admitted?.target ??
+                    (yield* resolveTargetRechecking({
+                      parent: {
+                        thread: { ...parent.thread, modelSelection: resolvedModelSelection },
+                      },
+                      target: {
+                        providerInstanceId: resolvedModelSelection.instanceId,
+                        model: resolvedModelSelection.model,
+                        ...(resolvedModelSelection.options === undefined
+                          ? {}
+                          : { options: resolvedModelSelection.options }),
+                      },
+                      providers: yield* loadProviders,
+                    }));
+                  const runtimeMode =
+                    admitted?.runtimeMode ??
+                    (yield* resolveRuntimeMode(
+                      parent.thread.runtimeMode,
+                      request.runtimeMode,
+                      target,
+                    ));
+                  const interactionMode =
+                    admitted?.interactionMode ??
+                    (yield* resolveInteractionMode(
+                      parent.thread.interactionMode,
+                      request.interactionMode,
+                    ));
+                  const refused =
+                    inheritedDispatchLimit?.refused ??
+                    (yield* Ref.make<DispatchModeRefusal | undefined>(undefined));
                   yield* threadManagement.dispatch(messageCommand).pipe(
                     Effect.provideService(DispatchModeLimit, {
-                      runtimeMode: inheritedDispatchLimit !== undefined && runtimeModeRank(inheritedDispatchLimit.runtimeMode) < runtimeModeRank(runtimeMode)
-                        ? inheritedDispatchLimit.runtimeMode : runtimeMode,
-                      interactionMode: inheritedDispatchLimit !== undefined && interactionModeRank(inheritedDispatchLimit.interactionMode) < interactionModeRank(interactionMode)
-                        ? inheritedDispatchLimit.interactionMode : interactionMode,
+                      runtimeMode:
+                        inheritedDispatchLimit !== undefined &&
+                        runtimeModeRank(inheritedDispatchLimit.runtimeMode) <
+                          runtimeModeRank(runtimeMode)
+                          ? inheritedDispatchLimit.runtimeMode
+                          : runtimeMode,
+                      interactionMode:
+                        inheritedDispatchLimit !== undefined &&
+                        interactionModeRank(inheritedDispatchLimit.interactionMode) <
+                          interactionModeRank(interactionMode)
+                          ? inheritedDispatchLimit.interactionMode
+                          : interactionMode,
                       refused,
                     }),
-                    Effect.catch((error) => Effect.flatMap(Ref.get(refused), (refusal) => Effect.fail(
-                      refusal === undefined ? error : failure(
-                        refusal.mode === "runtime" ? "runtime_mode_escalation_denied" : "interaction_mode_escalation_denied",
-                        `Thread ${refusal.threadId} runs in ${refusal.runtimeMode}/${refusal.interactionMode} mode, above the modes allowed for this request.`,
+                    Effect.catch((error) =>
+                      Effect.flatMap(Ref.get(refused), (refusal) =>
+                        Effect.fail(
+                          refusal === undefined
+                            ? error
+                            : failure(
+                                refusal.mode === "runtime"
+                                  ? "runtime_mode_escalation_denied"
+                                  : "interaction_mode_escalation_denied",
+                                `Thread ${refusal.threadId} runs in ${refusal.runtimeMode}/${refusal.interactionMode} mode, above the modes allowed for this request.`,
+                              ),
+                        ),
                       ),
-                    ))),
-                    Effect.mapError((error) => error._tag === "OrchestratorMcpFailure" ? error
-                      : error._tag === "ThreadManagementProviderInstanceDisabledError" ? threadManagementFailure(error)
-                      : failure("orchestration_error", `Unable to start thread ${index + 1}: ${errorMessage(error)}`)),
+                    ),
+                    Effect.mapError((error) =>
+                      error._tag === "OrchestratorMcpFailure"
+                        ? error
+                        : error._tag === "ThreadManagementProviderInstanceDisabledError"
+                          ? threadManagementFailure(error)
+                          : failure(
+                              "orchestration_error",
+                              `Unable to start thread ${index + 1}: ${errorMessage(error)}`,
+                            ),
+                    ),
                   );
                 }
               }

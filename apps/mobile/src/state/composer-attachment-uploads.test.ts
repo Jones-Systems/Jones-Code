@@ -309,8 +309,9 @@ it.each(["decode", "write"] as const)(
     const message = queuedMessage();
     expect(message.attachments[0]?.uploadedAttachmentId).toBe("pending-1");
     await enqueueThreadOutboxMessage(message);
-    const queued =
-      appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)[draftKey]?.[0];
+    const queued = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)[
+      draftKey
+    ]?.[0];
     expect(queued).toEqual(message);
     if (!queued) throw new Error("Expected the durable queued upload");
     const prepared = await prepareQueuedMessageAttachments(queued, true);

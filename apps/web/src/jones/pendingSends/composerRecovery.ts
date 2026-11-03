@@ -1,4 +1,8 @@
-import { useComposerDraftStore, type ComposerThreadDraftState, type ComposerThreadTarget } from "../../composerDraftStore";
+import {
+  useComposerDraftStore,
+  type ComposerThreadDraftState,
+  type ComposerThreadTarget,
+} from "../../composerDraftStore";
 import {
   clearSubmittedComposer,
   restoreFailedComposerSend,
@@ -14,7 +18,9 @@ export function createPendingComposerRecovery(
       if (restored) return;
       const owner = readOwner();
       if (owner && restoreFailedComposerSend(owner)) {
-        restored = { draft: useComposerDraftStore.getState().getComposerDraft(owner.composerDraftTarget) };
+        restored = {
+          draft: useComposerDraftStore.getState().getComposerDraft(owner.composerDraftTarget),
+        };
       }
     },
     accepted() {
@@ -52,7 +58,15 @@ export function createPendingPromptRecovery(target: ComposerThreadTarget, prompt
     composerImagesRef: { current: [] },
     composerFilesRef: { current: [] },
     composerTerminalContextsRef: { current: [] },
-    snapshot: { prompt, images: [], files: [], terminalContexts: [], previewAnnotations: [], reviewComments: [], threadContexts: [] },
+    snapshot: {
+      prompt,
+      images: [],
+      files: [],
+      terminalContexts: [],
+      previewAnnotations: [],
+      reviewComments: [],
+      threadContexts: [],
+    },
     resetCursor: () => {},
   }));
 }

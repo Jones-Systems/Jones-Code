@@ -35,15 +35,14 @@ const PreparedThreadTurnValue = PreparedThreadTurnSource.pipe(
 
 // Reuse the existing prepared-operation owner. Decoding never prepares again,
 // consults capabilities/catalogs, generates IDs, uploads, or captures a session.
-export const PreparedThreadTurnJson = Schema.toCodecJson(
-  PreparedThreadTurnValue.pipe(
-    Schema.decodeTo(
-      Schema.toType(PreparedThreadTurnValue),
-      SchemaTransformation.transform({
-        decode: (prepared) => freezePreparedTurnRequest(prepared),
-        encode: (prepared) => prepared,
-      }),
-    ),
+// Derive JSON before freezing; a structural target would rebuild mutable values.
+export const PreparedThreadTurnJson = Schema.toCodecJson(PreparedThreadTurnValue).pipe(
+  Schema.decodeTo(
+    Schema.declare<PreparedThreadTurn>(Schema.is(PreparedThreadTurnValue)),
+    SchemaTransformation.transform<PreparedThreadTurn, PreparedThreadTurn>({
+      decode: (prepared) => freezePreparedTurnRequest(prepared),
+      encode: (prepared) => prepared,
+    }),
   ),
 );
 

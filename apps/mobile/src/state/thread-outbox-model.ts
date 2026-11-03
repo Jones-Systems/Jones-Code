@@ -25,7 +25,7 @@ import {
 import * as Schema from "effect/Schema";
 
 import { resolveQueuedModelSelection } from "../jones/threadConfiguration/modelSelection";
-import { QueuedThreadIssuance, queuedThreadTurnMatches } from "../jones/threadConfiguration/outboxDelivery";
+import { QueuedThreadIssuance, queuedThreadTurnMatches } from "../jones/threadConfiguration/outboxDeliveryContract";
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftComposerAttachment } from "../lib/composerImages";
@@ -141,7 +141,10 @@ export function encodeQueuedThreadMessage(message: QueuedThreadMessage): unknown
 
 export function decodeQueuedThreadMessage(value: unknown): QueuedThreadMessage {
   const { schemaVersion: _, ...message } = decodeStoredQueuedThreadMessage(value);
-  if (message.issuance?.state === "issued" && !queuedThreadTurnMatches(message, message.issuance.prepared)) {
+  if (
+    message.issuance?.state === "issued" &&
+    !queuedThreadTurnMatches(message, message.issuance.prepared)
+  ) {
     throw new Error("Queued message does not match its issued request.");
   }
   return message;

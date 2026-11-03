@@ -1,4 +1,7 @@
-import { captureExplicitComposerModelPick, consumeSubmittedModelPick } from "../jones/threadConfiguration/modelSelection";
+import {
+  captureExplicitComposerModelPick,
+  consumeSubmittedModelPick,
+} from "../jones/threadConfiguration/modelSelection";
 import {
   decodeImportedHistoryCorrelation,
   encodeImportedHistoryCorrelation,
@@ -1455,9 +1458,11 @@ export function updateComposerDraftSettings(
   const draft = captureComposerModelSelectionSnapshot(draftKey, {
     ...normalizeDraft(appAtomRegistry.get(composerDraftsAtom)[draftKey]),
     ...settings,
-    ...(settings.modelSelection === undefined ? {} : {
-      modelSelection: captureExplicitComposerModelPick(settings.modelSelection),
-    }),
+    ...(settings.modelSelection === undefined
+      ? {}
+      : {
+          modelSelection: captureExplicitComposerModelPick(settings.modelSelection),
+        }),
   });
   updateComposerDrafts((current) => withComposerDraft(current, draftKey, draft));
   return draft;

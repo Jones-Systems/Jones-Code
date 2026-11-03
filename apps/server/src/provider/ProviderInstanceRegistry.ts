@@ -185,8 +185,9 @@ const makeReconcile = <R>(input: {
       }
       const retiredIds = new Set([...removedIds, ...replacedIds]);
       // Withdraw publication authority before a finalizer can await an old source's work.
-      yield* Ref.update(state.entries, (entries) =>
-        new Map([...entries].filter(([id]) => !retiredIds.has(id))),
+      yield* Ref.update(
+        state.entries,
+        (entries) => new Map([...entries].filter(([id]) => !retiredIds.has(id))),
       );
       for (const id of retiredIds) {
         const live = previousEntries.get(id);

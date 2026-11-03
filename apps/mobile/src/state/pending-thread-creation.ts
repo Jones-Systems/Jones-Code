@@ -11,7 +11,10 @@ import { deriveThreadTitleFromPrompt } from "../lib/projectThreadStartTurn";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { appAtomRegistry } from "./atom-registry";
 import type { QueuedThreadMessage } from "./thread-outbox-model";
-import { queuedThreadDeliveryStatus, queuedThreadProvenTarget } from "../jones/threadConfiguration/outboxDelivery";
+import {
+  queuedThreadDeliveryStatus,
+  queuedThreadProvenTarget,
+} from "../jones/threadConfiguration/outboxDelivery";
 
 export type PendingThreadCreationOutcome =
   | { readonly kind: "delivered"; readonly message: QueuedThreadMessage }
@@ -41,8 +44,11 @@ export function resolvePendingThreadCreation(input: {
     return null;
   }
   // A committed shell with a refused first message is an ordinary existing-thread draft.
-  if (queuedThreadProvenTarget(creation.message) !== undefined &&
-    queuedThreadDeliveryStatus(creation.message) === "rejected") return null;
+  if (
+    queuedThreadProvenTarget(creation.message) !== undefined &&
+    queuedThreadDeliveryStatus(creation.message) === "rejected"
+  )
+    return null;
   if (creation.outcome?.kind === "failed") return creation;
   const detail = input.detail;
   const latestRun = detail?.runs?.at(-1);
@@ -76,8 +82,12 @@ export const pendingThreadCreationOutcomesAtom = Atom.make<
 export function recordPendingThreadCreationOutcome(outcome: PendingThreadCreationOutcome): void {
   const key = scopedThreadKey(outcome.message.environmentId, outcome.message.threadId);
   const previous = appAtomRegistry.get(pendingThreadCreationOutcomesAtom)[key];
-  if (outcome.kind === "failed" && previous?.kind === "delivered" &&
-    previous.message.commandId === outcome.message.commandId) return;
+  if (
+    outcome.kind === "failed" &&
+    previous?.kind === "delivered" &&
+    previous.message.commandId === outcome.message.commandId
+  )
+    return;
   appAtomRegistry.set(pendingThreadCreationOutcomesAtom, {
     ...appAtomRegistry.get(pendingThreadCreationOutcomesAtom),
     [key]: outcome,

@@ -55,11 +55,11 @@ describe("optional command delivery evidence", () => {
 
   it("discards malformed or future optional evidence while retaining the original error", () => {
     for (const deliveryEvidence of [null, "rejected", { status: "rejected" }, { kind: "future" }]) {
-      const dispatch = Schema.decodeUnknownSync(dispatchCodec)({
+      const dispatch = Schema.decodeSync(dispatchCodec)({
         ...dispatchError,
         deliveryEvidence,
       });
-      const launch = Schema.decodeUnknownSync(launchCodec)({ ...launchError, deliveryEvidence });
+      const launch = Schema.decodeSync(launchCodec)({ ...launchError, deliveryEvidence });
       expect(dispatch.deliveryEvidence).toBeUndefined();
       expect(dispatch.message).toBe(dispatchError.message);
       expect(launch.deliveryEvidence).toBeUndefined();

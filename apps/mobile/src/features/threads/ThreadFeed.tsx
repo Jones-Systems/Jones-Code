@@ -1,4 +1,5 @@
 import { Button } from "../../components/ui/Button";
+import { canRestoreQueuedThreadMessage } from "../../jones/threadConfiguration/outboxDelivery";
 import * as Dialog from "../../components/ui/Dialog";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { useWorkspaceSettledContentWidth } from "../layout/workspace-content-width";
@@ -1703,6 +1704,7 @@ function renderFeedEntry(
               entry.pendingMessage &&
               !entry.acknowledged &&
               !entry.pendingMessage.creation &&
+              canRestoreQueuedThreadMessage(entry.pendingMessage) &&
               entry.pendingMessage.messageId !== props.dispatchingMessageId ? (
                 <Pressable
                   accessibilityRole="button"
@@ -1710,7 +1712,8 @@ function renderFeedEntry(
                   hitSlop={8}
                   className="size-7 items-center justify-center"
                   onPress={() => {
-                    if (entry.pendingMessage && props.onEditPendingMessage) {
+                    if (entry.pendingMessage && props.onEditPendingMessage &&
+                      canRestoreQueuedThreadMessage(entry.pendingMessage)) {
                       props.onEditPendingMessage(entry.pendingMessage);
                     }
                   }}

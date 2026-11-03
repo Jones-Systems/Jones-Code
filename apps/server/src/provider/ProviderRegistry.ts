@@ -471,18 +471,20 @@ export const layer = Layer.effect(
         instanceId: key,
       }).pipe(Effect.provideService(Path.Path, path));
       const { workspaceSnapshots: _workspaceSnapshots, ...machineProvider } = provider;
-      yield* publication.run(
-        writeProviderStatusCache({
-          filePath,
-          provider: machineProvider,
-          isCurrent: publication.isCurrent,
-        }),
-      ).pipe(
-        Effect.provideService(FileSystem.FileSystem, fileSystem),
-        Effect.provideService(Path.Path, path),
-        Effect.tapError(Effect.logError),
-        Effect.ignore,
-      );
+      yield* publication
+        .run(
+          writeProviderStatusCache({
+            filePath,
+            provider: machineProvider,
+            isCurrent: publication.isCurrent,
+          }),
+        )
+        .pipe(
+          Effect.provideService(FileSystem.FileSystem, fileSystem),
+          Effect.provideService(Path.Path, path),
+          Effect.tapError(Effect.logError),
+          Effect.ignore,
+        );
     });
 
     const applyProviderUpdateState = (provider: ServerProvider): ServerProvider => {
@@ -530,13 +532,14 @@ export const layer = Layer.effect(
             );
           }
 
-          const providers = nextProviders.length > 0 && updatedKeys.size === 0
-            ? previousProviders
-            : orderProviderSnapshots(
-                [...mergedProviders.values()].map((provider) =>
-                  classifyCompatibility(provider, manifest),
-                ),
-              );
+          const providers =
+            nextProviders.length > 0 && updatedKeys.size === 0
+              ? previousProviders
+              : orderProviderSnapshots(
+                  [...mergedProviders.values()].map((provider) =>
+                    classifyCompatibility(provider, manifest),
+                  ),
+                );
           const publications =
             options?.persist === false ||
             (!options?.persistUnchanged && !haveProvidersChanged(previousProviders, providers))
@@ -617,7 +620,9 @@ export const layer = Layer.effect(
         return yield* updateProviders((providers) =>
           providers.map((provider) => {
             if (provider.instanceId !== input.instanceId) return provider;
-            const updateState = Ref.getUnsafe(maintenanceActionStatesRef).get(input.instanceId)?.update;
+            const updateState = Ref.getUnsafe(maintenanceActionStatesRef).get(
+              input.instanceId,
+            )?.update;
             const { updateState: _previousUpdateState, ...withoutUpdateState } = provider;
             return updateState ? { ...provider, updateState } : withoutUpdateState;
           }),
@@ -628,7 +633,9 @@ export const layer = Layer.effect(
     const refreshOneSource = Effect.fn("refreshOneSource")(function* (
       providerSource: InstanceSnapshotSource,
     ) {
-      if (instanceRegistry.getCatalogSource(providerSource.instanceId) !== providerSource.instance) {
+      if (
+        instanceRegistry.getCatalogSource(providerSource.instanceId) !== providerSource.instance
+      ) {
         return yield* Ref.get(providersRef);
       }
       return yield* providerSource.refresh.pipe(
@@ -738,7 +745,11 @@ export const layer = Layer.effect(
             ? providers
             : providers.map((candidate) =>
                 candidate.instanceId === instanceId
-                  ? { ...candidate, status: "error", message: "Provider refresh failed after update." }
+                  ? {
+                      ...candidate,
+                      status: "error",
+                      message: "Provider refresh failed after update.",
+                    }
                   : candidate,
               ),
         );
@@ -767,10 +778,11 @@ export const layer = Layer.effect(
       );
       return yield* Effect.sync(() =>
         Ref.getUnsafe(providersRef).filter((candidate) =>
-          instances.some((instance) =>
-            instance.instanceId === candidate.instanceId &&
-            !failedInstances.has(instance.instanceId) &&
-            instanceRegistry.getCatalogSource(instance.instanceId) === instance,
+          instances.some(
+            (instance) =>
+              instance.instanceId === candidate.instanceId &&
+              !failedInstances.has(instance.instanceId) &&
+              instanceRegistry.getCatalogSource(instance.instanceId) === instance,
           ),
         ),
       );
@@ -810,23 +822,26 @@ export const layer = Layer.effect(
         cacheDir: config.providerStatusCacheDir,
         instanceId,
       }).pipe(Effect.provideService(Path.Path, path));
-      yield* publication.run(fileSystem.remove(filePath, { force: true })).pipe(
-        Effect.tapError(Effect.logError),
-        Effect.ignore,
-      );
+      yield* publication
+        .run(fileSystem.remove(filePath, { force: true }))
+        .pipe(Effect.tapError(Effect.logError), Effect.ignore);
     });
 
     const syncLiveSources = Effect.fn("ProviderRegistry.syncLiveSources")(function* (
       waitForInitial: boolean,
     ) {
-      const { newlyAdded, unavailableProviders, invalidations } = yield* syncSemaphore.withPermits(1)(
+      const { newlyAdded, unavailableProviders, invalidations } = yield* syncSemaphore.withPermits(
+        1,
+      )(
         Effect.gen(function* () {
           const instances = yield* instanceRegistry.listInstances;
           const unavailableProviders = yield* instanceRegistry.listUnavailable;
           const previousSubs = yield* Ref.get(liveSubsRef);
           const nextByInstance = new Map(
             [...previousSubs.values(), ...instances]
-              .filter((instance) => instanceRegistry.getCatalogSource(instance.instanceId) === instance)
+              .filter(
+                (instance) => instanceRegistry.getCatalogSource(instance.instanceId) === instance,
+              )
               .map((instance) => [instance.instanceId, instance] as const),
           );
           const newlyAdded = [...nextByInstance.values()].filter(
@@ -840,10 +855,12 @@ export const layer = Layer.effect(
               nextSource !== undefined &&
               nextSource !== nextByInstance.get(id) &&
               !unavailableProviders.some((provider) => provider === nextSource)
-            ) continue;
-            invalidations.set(id, claimCachePublication(id, () =>
-              instanceRegistry.getCatalogSource(id) === nextSource,
-            ));
+            )
+              continue;
+            invalidations.set(
+              id,
+              claimCachePublication(id, () => instanceRegistry.getCatalogSource(id) === nextSource),
+            );
           }
 
           // Install subscription ownership before any initial read or cache work can await.
@@ -859,18 +876,26 @@ export const layer = Layer.effect(
           }
           yield* updateProviders((providers) =>
             providers
-              .filter((provider) => instanceRegistry.getCatalogSource(provider.instanceId) !== undefined)
+              .filter(
+                (provider) => instanceRegistry.getCatalogSource(provider.instanceId) !== undefined,
+              )
               .map((provider) => {
                 if (
                   !invalidations.has(provider.instanceId) ||
-                  instanceRegistry.getCatalogSource(provider.instanceId) !== nextByInstance.get(provider.instanceId)
-                ) return provider;
+                  instanceRegistry.getCatalogSource(provider.instanceId) !==
+                    nextByInstance.get(provider.instanceId)
+                )
+                  return provider;
                 const { workspaceSnapshots: _workspaceSnapshots, ...machineSnapshot } = provider;
                 return machineSnapshot;
               }),
           );
-          yield* Ref.update(maintenanceActionStatesRef, (previous) =>
-            new Map([...previous].filter(([id]) => instanceRegistry.getCatalogSource(id) !== undefined)),
+          yield* Ref.update(
+            maintenanceActionStatesRef,
+            (previous) =>
+              new Map(
+                [...previous].filter(([id]) => instanceRegistry.getCatalogSource(id) !== undefined),
+              ),
           );
           return { newlyAdded, unavailableProviders, invalidations };
         }),
@@ -878,31 +903,40 @@ export const layer = Layer.effect(
 
       const initialReads = Effect.forEach(
         newlyAdded,
-        (instance) => Effect.gen(function* () {
-          const invalidation = invalidations.get(instance.instanceId);
-          if (invalidation) yield* clearProviderCache(instance.instanceId, invalidation);
-          if (instanceRegistry.getCatalogSource(instance.instanceId) !== instance) return;
-          const source = buildSnapshotSource(instance);
-          const provider = yield* source.getSnapshot;
-          yield* correlateSnapshotWithSource(source, provider).pipe(
-            Effect.flatMap((snapshot) => syncProvider(instance, snapshot, {
-              persistUnchanged: invalidation !== undefined,
-            })),
-          );
-        }).pipe(Effect.ignoreCause({ log: true })),
+        (instance) =>
+          Effect.gen(function* () {
+            const invalidation = invalidations.get(instance.instanceId);
+            if (invalidation) yield* clearProviderCache(instance.instanceId, invalidation);
+            if (instanceRegistry.getCatalogSource(instance.instanceId) !== instance) return;
+            const source = buildSnapshotSource(instance);
+            const provider = yield* source.getSnapshot;
+            yield* correlateSnapshotWithSource(source, provider).pipe(
+              Effect.flatMap((snapshot) =>
+                syncProvider(instance, snapshot, {
+                  persistUnchanged: invalidation !== undefined,
+                }),
+              ),
+            );
+          }).pipe(Effect.ignoreCause({ log: true })),
         { concurrency: "unbounded", discard: true },
       );
       const cleanupRemoved = Effect.forEach(
-        [...invalidations].filter(([id]) => !newlyAdded.some((instance) => instance.instanceId === id)),
+        [...invalidations].filter(
+          ([id]) => !newlyAdded.some((instance) => instance.instanceId === id),
+        ),
         ([id, publication]) => clearProviderCache(id, publication),
         { concurrency: "unbounded", discard: true },
       );
       yield* upsertProviders(unavailableProviders, {
         persist: false,
         replace: true,
-        isCurrent: (provider) => instanceRegistry.getCatalogSource(provider.instanceId) === provider,
+        isCurrent: (provider) =>
+          instanceRegistry.getCatalogSource(provider.instanceId) === provider,
       });
-      const work = Effect.all([initialReads, cleanupRemoved], { concurrency: "unbounded", discard: true });
+      const work = Effect.all([initialReads, cleanupRemoved], {
+        concurrency: "unbounded",
+        discard: true,
+      });
       if (waitForInitial) yield* work;
       else yield* work.pipe(Effect.forkIn(serviceScope));
     });
@@ -922,10 +956,12 @@ export const layer = Layer.effect(
 
     yield* upsertProviders(fallbackProviders, {
       publish: false,
-      isCurrent: (provider) => bootInstances.some(
-        (instance) => instance.instanceId === provider.instanceId &&
-          instanceRegistry.getCatalogSource(instance.instanceId) === instance,
-      ),
+      isCurrent: (provider) =>
+        bootInstances.some(
+          (instance) =>
+            instance.instanceId === provider.instanceId &&
+            instanceRegistry.getCatalogSource(instance.instanceId) === instance,
+        ),
     });
     const instanceChanges = yield* instanceRegistry.subscribeChanges;
     yield* syncLiveSources(true);

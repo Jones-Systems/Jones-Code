@@ -93,10 +93,12 @@ describe("request-bound delivery facts", () => {
       { creation: { status: "accepted", threadId: "other" } },
     ]) {
       expect(
-        threadTurnDeliveryStatus(readLaunchDeliveryEvidence(
-          { deliveryEvidence: { ...acceptedCreation, ...patch } },
-          request,
-        )),
+        threadTurnDeliveryStatus(
+          readLaunchDeliveryEvidence(
+            { deliveryEvidence: { ...acceptedCreation, ...patch } },
+            request,
+          ),
+        ),
       ).toBe("unknown");
     }
     const foreignMessage = readLaunchDeliveryEvidence(
@@ -156,10 +158,8 @@ describe("request-bound delivery facts", () => {
       }
     }
     expect(
-      readDispatchDeliveryEvidence(
-        { _tag: "OrchestrationV2DispatchCommandError" },
-        dispatch,
-      ).status,
+      readDispatchDeliveryEvidence({ _tag: "OrchestrationV2DispatchCommandError" }, dispatch)
+        .status,
     ).toBe("unknown");
   });
 });

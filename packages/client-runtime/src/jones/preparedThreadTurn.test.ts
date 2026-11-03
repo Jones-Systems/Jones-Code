@@ -15,6 +15,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
 
 import {
@@ -31,7 +32,11 @@ import {
 import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type * as RpcSession from "../rpc/session.ts";
 import { v2Projection, v2ThreadId } from "../state/orchestrationV2TestFixtures.ts";
-import { decodePreparedThreadTurn, encodePreparedThreadTurn } from "./preparedThreadTurn.ts";
+import {
+  PreparedThreadTurnJson,
+  decodePreparedThreadTurn,
+  encodePreparedThreadTurn,
+} from "./preparedThreadTurn.ts";
 
 const target = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("prepared-envelope"),
@@ -47,6 +52,18 @@ const layerTestCrypto = Layer.succeed(
     digest: (_algorithm, data) => Effect.succeed(data),
   }),
 );
+
+const StoredPreparedTurn = Schema.Struct({
+  issuance: Schema.optionalKey(
+    Schema.Struct({ state: Schema.Literal("issued"), prepared: PreparedThreadTurnJson }),
+  ),
+});
+
+function expectDeeplyFrozen(value: unknown): void {
+  if (value === null || typeof value !== "object") return;
+  expect(Object.isFrozen(value)).toBe(true);
+  for (const child of Object.values(value)) expectDeeplyFrozen(child);
+}
 
 describe("durable prepared turn envelope", () => {
   it.effect.each([false, true])(
@@ -189,6 +206,15 @@ describe("durable prepared turn envelope", () => {
         expect(restored.method).toBe(prepared.method);
         expect(restored.payload).toEqual(originalPayload);
         expect(Object.isFrozen(restored.payload)).toBe(true);
+        expectDeeplyFrozen(restored);
+        const persistedIssuance = JSON.stringify(
+          Schema.encodeSync(StoredPreparedTurn)({ issuance: { state: "issued", prepared } }),
+        );
+        const storedIssuance: unknown = JSON.parse(persistedIssuance);
+        const nested = Schema.decodeUnknownSync(StoredPreparedTurn)(storedIssuance);
+        expect(nested.issuance?.prepared).toEqual(restored);
+        expectDeeplyFrozen(nested.issuance?.prepared);
+        expect(JSON.stringify(Schema.encodeSync(StoredPreparedTurn)(nested))).toBe(persistedIssuance);
         if (restored.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
           expect(restored.payload.workspaceStrategy).toEqual({
             type: "worktree",

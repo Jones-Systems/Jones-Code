@@ -41,7 +41,8 @@ export async function sendPendingTurn<A, P, D>(args: {
   };
   const send = async () => {
     const entry = store.get(environmentId, input.threadId, input.message.messageId);
-    if (!entry || entry.inFlight || entry.delivery === "accepted" || entry.delivery === "failed") return;
+    if (!entry || entry.inFlight || entry.delivery === "accepted" || entry.delivery === "failed")
+      return;
     store.issuing(key);
     const result = await args.dispatch(prepared.value);
     finish(result);

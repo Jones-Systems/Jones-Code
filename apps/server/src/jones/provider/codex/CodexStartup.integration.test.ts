@@ -297,9 +297,12 @@ it.effect(
       const observed = yield* Deferred.make<void>();
       const healthyAwaiting = yield* Deferred.make<void>();
       const healthyRelease = yield* Deferred.make<void>();
+      const releaseClosure = yield* Deferred.make<void>();
+      const observedClosure = yield* Deferred.make<void>();
       yield* Effect.addFinalizer(() =>
         Deferred.succeed(release, undefined).pipe(
           Effect.andThen(Deferred.succeed(healthyRelease, undefined)),
+          Effect.andThen(Deferred.succeed(releaseClosure, undefined)),
         ),
       );
       const boundNativeId = "startup-bound-control";
@@ -328,51 +331,60 @@ it.effect(
             type: "expect_outbound",
             frame: { id: 4, method: "thread/unsubscribe", params: { threadId: boundNativeId } },
           },
-          { type: "emit_inbound", frame: { id: 4, result: {} } },
-        ],
-      });
-      const healthyTranscript = yield* CodexTestkit.CodexOrchestratorReplayHarness.decodeTranscript({
-        provider: "codex",
-        protocol: "codex.app-server",
-        version: "0.144.0",
-        scenario: "startup-composition-healthy",
-        entries: [
-          ...replayInitialize(home),
-          ...replayEnsure(2, healthyNativeId, cwd, home, "healthy-thread"),
-          {
-            type: "expect_outbound",
-            frame: {
-              id: 3,
-              method: "turn/start",
-              params: {
-                threadId: healthyNativeId,
-                input: [{ type: "text", text: "independent healthy turn" }],
-                cwd,
-                model: "gpt-5.4",
-                approvalPolicy: "never",
-                approvalsReviewer: "user",
-                sandboxPolicy: { type: "dangerFullAccess" },
-                summary: "detailed",
-                collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
-              },
-            },
-          },
-          { type: "emit_inbound", frame: { id: 3, result: { turn: healthyTurn } } },
+          { type: "emit_inbound", frame: { id: 4, result: { status: "unsubscribed" } } },
           {
             type: "emit_inbound",
-            label: "healthy-turn-started",
-            frame: {
-              method: "turn/started",
-              params: { threadId: healthyNativeId, turn: healthyTurn },
-            },
+            label: "bound-thread-closed",
+            frame: { method: "thread/closed", params: { threadId: boundNativeId } },
           },
         ],
       });
+      const healthyTranscript = yield* CodexTestkit.CodexOrchestratorReplayHarness.decodeTranscript(
+        {
+          provider: "codex",
+          protocol: "codex.app-server",
+          version: "0.144.0",
+          scenario: "startup-composition-healthy",
+          entries: [
+            ...replayInitialize(home),
+            ...replayEnsure(2, healthyNativeId, cwd, home, "healthy-thread"),
+            {
+              type: "expect_outbound",
+              frame: {
+                id: 3,
+                method: "turn/start",
+                params: {
+                  threadId: healthyNativeId,
+                  input: [{ type: "text", text: "independent healthy turn" }],
+                  cwd,
+                  model: "gpt-5.4",
+                  approvalPolicy: "never",
+                  approvalsReviewer: "user",
+                  sandboxPolicy: { type: "dangerFullAccess" },
+                  summary: "detailed",
+                  collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                },
+              },
+            },
+            { type: "emit_inbound", frame: { id: 3, result: { turn: healthyTurn } } },
+            {
+              type: "emit_inbound",
+              label: "healthy-turn-started",
+              frame: {
+                method: "turn/started",
+                params: { threadId: healthyNativeId, turn: healthyTurn },
+              },
+            },
+          ],
+        },
+      );
       const silentReplay = yield* Replay.makeReplayDriver(silentTranscript, {
         beforeEmitInbound: (entry) =>
           entry.label === "withheld-startup"
             ? Deferred.succeed(awaiting, undefined).pipe(Effect.andThen(Deferred.await(release)))
-            : Effect.void,
+            : entry.label === "bound-thread-closed"
+              ? Deferred.await(releaseClosure)
+              : Effect.void,
       });
       const healthyReplay = yield* Replay.makeReplayDriver(healthyTranscript, {
         beforeEmitInbound: (entry) =>
@@ -427,6 +439,16 @@ it.effect(
                       ),
                       Effect.map((client): CodexClient.CodexAppServerClient["Service"] => ({
                         ...client,
+                        handleServerNotification: (method, handler) =>
+                          client.handleServerNotification(method, (payload) =>
+                            handler(payload).pipe(
+                              Effect.tap(() =>
+                                method === "thread/closed"
+                                  ? Deferred.succeed(observedClosure, undefined)
+                                  : Effect.void,
+                              ),
+                            ),
+                          ),
                         request: (method, params) =>
                           Effect.sync(() => requests.push(method)).pipe(
                             Effect.andThen(client.request(method, params)),
@@ -471,7 +493,9 @@ it.effect(
         registry,
         {
           serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, config),
-          databaseLayer: Sqlite.layerFromPath(config.dbPath).pipe(Layer.provide(NodeServices.layer)),
+          databaseLayer: Sqlite.layerFromPath(config.dbPath).pipe(
+            Layer.provide(NodeServices.layer),
+          ),
         },
       );
       const services = Layer.mergeAll(
@@ -546,7 +570,9 @@ it.effect(
         assert.equal(run.status, "starting");
         assert.equal(run.activeAttemptId, attempt.id);
         const admittedEffects = yield* outbox.listByCommandId(command.commandId);
-        const starts = admittedEffects.filter((effect) => effect.request.type === "provider-turn.start");
+        const starts = admittedEffects.filter(
+          (effect) => effect.request.type === "provider-turn.start",
+        );
         assert.lengthOf(starts, 1);
         const claimed = Option.getOrThrow(yield* outbox.get(starts[0]!.id));
         assert.equal(claimed.status, "running");
@@ -635,11 +661,18 @@ it.effect(
         yield* Deferred.succeed(release, undefined);
         yield* Deferred.await(observed);
         const refused = yield* session
-          .ensureThread({ threadId: failedThreadId, modelSelection: selection, runtimePolicy: policy })
+          .ensureThread({
+            threadId: failedThreadId,
+            modelSelection: selection,
+            runtimePolicy: policy,
+          })
           .pipe(Effect.flip);
         assert.isTrue(hasUnknownRuntimeBinding(refused));
         assert.isDefined(session.unloadThread);
         yield* session.unloadThread!({ providerThread: bound });
+        assert.isFalse(yield* Deferred.isDone(observedClosure));
+        yield* Deferred.succeed(releaseClosure, undefined);
+        yield* Deferred.await(observedClosure);
         yield* orchestrator.dispatch(command);
         const after = yield* orchestrator.getThreadProjection(failedThreadId);
         assert.deepEqual(after.runs, failed.runs);

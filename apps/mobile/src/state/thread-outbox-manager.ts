@@ -105,11 +105,10 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
   };
 
   const enqueue = (message: QueuedThreadMessage): Promise<void> => {
-    const previous = currentMessages().find((candidate) => candidate.messageId === message.messageId);
-    message = preserveQueuedThreadIssuance(
-      previous,
-      message,
+    const previous = currentMessages().find(
+      (candidate) => candidate.messageId === message.messageId,
     );
+    message = preserveQueuedThreadIssuance(previous, message);
     bumpRevision(message.messageId);
     setMessages([
       ...currentMessages().filter((candidate) => candidate.messageId !== message.messageId),
@@ -120,10 +119,15 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
         await options.storage.write(message);
       } catch (cause) {
         // Rollback by reference: a retry with the same id may already own a newer optimistic entry.
-        setMessages(currentMessages().flatMap((candidate) =>
-          candidate !== message ? [candidate] : previous === undefined ? [] : [previous],
-        ));
-        if (previous !== undefined && currentMessages().some((candidate) => candidate === previous)) {
+        setMessages(
+          currentMessages().flatMap((candidate) =>
+            candidate !== message ? [candidate] : previous === undefined ? [] : [previous],
+          ),
+        );
+        if (
+          previous !== undefined &&
+          currentMessages().some((candidate) => candidate === previous)
+        ) {
           try {
             await options.storage.write(previous);
           } catch {}

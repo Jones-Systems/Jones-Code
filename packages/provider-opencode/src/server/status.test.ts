@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import * as Tracer from "effect/Tracer";
+import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { beforeEach } from "vite-plus/test";
@@ -21,6 +22,7 @@ import * as OpenCodeServerOwner from "./OpenCodeServerOwner.ts";
 import {
   checkOpenCodeProviderStatus,
   loadOpenCode2Workspace,
+  makeOpenCode2ModelLoader,
   type OpenCode2Model,
   type OpenCode2Workspace,
 } from "./status.ts";
@@ -34,6 +36,33 @@ import {
 const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 const DEFAULT_VERSION_STDOUT = "opencode 1.14.19\n";
+
+it.effect("a cached model fallback is incomplete when discovery times out without fresh progress", () =>
+  Effect.gen(function* () {
+    const firstRead = yield* Deferred.make<void>();
+    const blockedRead = yield* Deferred.make<void>();
+    let blocked = false;
+    const models: ReadonlyArray<OpenCode2Model> = [
+      { providerID: "openai", id: "fixture", name: "Fixture", variants: [{ id: "high" }] },
+    ];
+    const load = yield* makeOpenCode2ModelLoader(
+      Effect.suspend(() =>
+        blocked
+          ? Deferred.succeed(blockedRead, undefined).pipe(Effect.andThen(Effect.never))
+          : Deferred.succeed(firstRead, undefined).pipe(Effect.as(models)),
+      ),
+    );
+    const warming = yield* load.pipe(Effect.forkChild);
+    yield* Deferred.await(firstRead);
+    yield* TestClock.adjust(250);
+    NodeAssert.deepEqual(yield* Fiber.join(warming), { models, complete: true });
+    blocked = true;
+    const reading = yield* load.pipe(Effect.forkChild);
+    yield* Deferred.await(blockedRead);
+    yield* TestClock.adjust(5_000);
+    NodeAssert.deepEqual(yield* Fiber.join(reading), { models, complete: false });
+  }),
+);
 
 it.effect("reads Go limits with the instance's XDG credentials and preserves reset times", () =>
   Effect.gen(function* () {
@@ -456,7 +485,12 @@ const checkProvider = Effect.fn("checkProvider")(function* (
         Effect.provideService(HttpClient.HttpClient, server),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, OpenCodeRuntimeTestDouble),
       );
-      return yield* checkOpenCodeProviderStatus(settings, cwd, probe, openCode2Models).pipe(
+      return yield* checkOpenCodeProviderStatus(
+        settings,
+        cwd,
+        probe,
+        openCode2Models.pipe(Effect.map((models) => ({ models, complete: true }))),
+      ).pipe(
         Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
       );
     }),
@@ -711,7 +745,7 @@ it.layer(layerTest)("checkOpenCodeProviderStatus", (it) => {
                 ),
                 Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, OpenCodeRuntimeTestDouble),
               ),
-              Effect.succeed([]),
+              Effect.succeed({ models: [], complete: true }),
             ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, owner));
 
             NodeAssert.equal(snapshot.version, "1.14.19");

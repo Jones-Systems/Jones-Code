@@ -4,7 +4,10 @@ import {
   recordedLaunchClaim,
   recordedLaunchMessage,
 } from "../jones/orchestration/deliveryEvidence.ts";
-import { initialMessageCommandId, type LaunchDeliveryEvidence } from "@t3tools/contracts/jones/deliveryEvidence";
+import {
+  initialMessageCommandId,
+  type LaunchDeliveryEvidence,
+} from "@t3tools/contracts/jones/deliveryEvidence";
 import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Path from "effect/Path";
@@ -265,7 +268,10 @@ export class ThreadLaunchService extends Context.Service<
       ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
     readonly getDeliveryEvidence: (
-      input: Pick<ThreadLaunchInput, "commandId" | "projectId" | "threadId" | "reuseExistingThread" | "initialMessage">,
+      input: Pick<
+        ThreadLaunchInput,
+        "commandId" | "projectId" | "threadId" | "reuseExistingThread" | "initialMessage"
+      >,
     ) => Effect.Effect<LaunchDeliveryEvidence>;
     /** Check before creation for early errors; launch otherwise accepts and reports base failures inside the thread. */
     readonly checkWorktreeBase: (
@@ -2381,69 +2387,117 @@ const make = Effect.gen(function* () {
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (request) {
       // Resolve the durable claim before mutable project, folder, or provider admission.
-      const priorLaunchReceipt = request.legacyBootstrap === undefined
-        ? yield* readReceipt(request, request.commandId)
-        : undefined;
-      const launchEvents = priorLaunchReceipt !== undefined && Option.isSome(priorLaunchReceipt) && priorLaunchReceipt.value.status === "accepted"
-        ? yield* eventSink.readByCommandId({ commandId: request.commandId }).pipe(
-            Stream.runCollect,
-            Effect.mapError(mapError(request, "read-receipt", request.threadId)),
-          )
-        : [];
-      const recordedClaim = priorLaunchReceipt !== undefined && Option.isSome(priorLaunchReceipt)
-        ? recordedLaunchClaim(request, priorLaunchReceipt.value, launchEvents)
-        : undefined;
-      if (priorLaunchReceipt !== undefined && Option.isSome(priorLaunchReceipt) && recordedClaim === undefined)
-        return yield* mapError(request, "read-receipt", request.threadId)(
-          "The launch command has no matching accepted immutable claim; preserve its original identity.",
+      const priorLaunchReceipt =
+        request.legacyBootstrap === undefined
+          ? yield* readReceipt(request, request.commandId)
+          : undefined;
+      const launchEvents =
+        priorLaunchReceipt !== undefined &&
+        Option.isSome(priorLaunchReceipt) &&
+        priorLaunchReceipt.value.status === "accepted"
+          ? yield* eventSink
+              .readByCommandId({ commandId: request.commandId })
+              .pipe(
+                Stream.runCollect,
+                Effect.mapError(mapError(request, "read-receipt", request.threadId)),
+              )
+          : [];
+      const recordedClaim =
+        priorLaunchReceipt !== undefined && Option.isSome(priorLaunchReceipt)
+          ? recordedLaunchClaim(request, priorLaunchReceipt.value, launchEvents)
+          : undefined;
+      if (
+        priorLaunchReceipt !== undefined &&
+        Option.isSome(priorLaunchReceipt) &&
+        recordedClaim === undefined
+      )
+        return yield* mapError(
+          request,
+          request.reuseExistingThread === true ? "update-thread" : "create-thread",
+          request.threadId,
+        )(
+          "The launch command cannot be replayed without its matching accepted immutable claim; preserve its original identity.",
         );
-      const replayMessageReceipt = recordedClaim !== undefined && request.initialMessage !== undefined
-        ? yield* readReceipt(request, initialMessageCommandId(request.commandId))
-        : undefined;
-      const replayMessageEvents = replayMessageReceipt !== undefined && Option.isSome(replayMessageReceipt) &&
+      const replayMessageReceipt =
+        recordedClaim !== undefined && request.initialMessage !== undefined
+          ? yield* readReceipt(request, initialMessageCommandId(request.commandId))
+          : undefined;
+      const replayMessageEvents =
+        replayMessageReceipt !== undefined &&
+        Option.isSome(replayMessageReceipt) &&
         replayMessageReceipt.value.status === "accepted"
-        ? yield* eventSink.readByCommandId({ commandId: initialMessageCommandId(request.commandId) }).pipe(
-            Stream.runCollect,
-            Effect.mapError(mapError(request, "read-receipt", recordedClaim?.id)),
-          )
-        : undefined;
-      const recordedInitialMessage = recordedClaim !== undefined && replayMessageReceipt !== undefined &&
+          ? yield* eventSink
+              .readByCommandId({ commandId: initialMessageCommandId(request.commandId) })
+              .pipe(
+                Stream.runCollect,
+                Effect.mapError(mapError(request, "read-receipt", recordedClaim?.id)),
+              )
+          : undefined;
+      const recordedInitialMessage =
+        recordedClaim !== undefined &&
+        replayMessageReceipt !== undefined &&
         Option.isSome(replayMessageReceipt)
-        ? recordedLaunchMessage(request, replayMessageReceipt.value, replayMessageEvents ?? [], recordedClaim.id)
-        : undefined;
-      if (replayMessageReceipt !== undefined && Option.isSome(replayMessageReceipt) && recordedInitialMessage === undefined) {
+          ? recordedLaunchMessage(
+              request,
+              replayMessageReceipt.value,
+              replayMessageEvents ?? [],
+              recordedClaim.id,
+            )
+          : undefined;
+      if (
+        replayMessageReceipt !== undefined &&
+        Option.isSome(replayMessageReceipt) &&
+        recordedInitialMessage === undefined
+      ) {
         const receipt = replayMessageReceipt.value;
-        return yield* mapError(request, "dispatch-message", recordedClaim?.id)(
-          receipt.status === "rejected" && receipt.commandId === initialMessageCommandId(request.commandId) &&
-            receipt.commandType === "message.dispatch" && receipt.threadId === recordedClaim?.id
+        return yield* mapError(
+          request,
+          "dispatch-message",
+          recordedClaim?.id,
+        )(
+          receipt.status === "rejected" &&
+            receipt.commandId === initialMessageCommandId(request.commandId) &&
+            receipt.commandType === "message.dispatch" &&
+            receipt.threadId === recordedClaim?.id
             ? new Orchestrator.OrchestratorCommandPreviouslyRejectedError({
-                commandId: receipt.commandId, commandType: receipt.commandType,
+                commandId: receipt.commandId,
+                commandType: receipt.commandType,
                 detail: receipt.error ?? "Previously rejected.",
               })
             : "The initial message has no matching accepted immutable receipt; preserve its original identity.",
         );
       }
-      const needsFreshAdmission = recordedClaim === undefined ||
+      const needsFreshAdmission =
+        recordedClaim === undefined ||
         (request.initialMessage !== undefined && recordedInitialMessage === undefined);
       // Scratch has no Git repository. Normalize before folder allocation so
       // durable preparation and retries use the thread's own Scratch folder.
       const input: ThreadLaunchInput =
         recordedClaim !== undefined
-          ? { ...request, modelSelection: recordedClaim.modelSelection,
-              runtimeMode: recordedClaim.runtimeMode, interactionMode: recordedClaim.interactionMode,
-              workspaceStrategy: recordedInitialMessage?.run.workspacePreparation ??
-                (recordedClaim.worktreePath === null ? request.workspaceStrategy : {
-                  type: "existing_worktree", worktreePath: recordedClaim.worktreePath,
-                  ...(recordedClaim.branch === null ? {} : { branch: recordedClaim.branch }),
-                }),
-              ...(recordedInitialMessage?.run.workspaceRunSetupScript === undefined ? {} : {
-                runSetupScript: recordedInitialMessage.run.workspaceRunSetupScript,
-              }),
+          ? {
+              ...request,
+              modelSelection: recordedClaim.modelSelection,
+              runtimeMode: recordedClaim.runtimeMode,
+              interactionMode: recordedClaim.interactionMode,
+              workspaceStrategy:
+                recordedInitialMessage?.run.workspacePreparation ??
+                (recordedClaim.worktreePath === null
+                  ? request.workspaceStrategy
+                  : {
+                      type: "existing_worktree",
+                      worktreePath: recordedClaim.worktreePath,
+                      ...(recordedClaim.branch === null ? {} : { branch: recordedClaim.branch }),
+                    }),
+              ...(recordedInitialMessage?.run.workspaceRunSetupScript === undefined
+                ? {}
+                : {
+                    runSetupScript: recordedInitialMessage.run.workspaceRunSetupScript,
+                  }),
             }
           : request.workspaceStrategy.type === "worktree" &&
-        (yield* managedFolders.isScratchProject(request.projectId))
-          ? { ...request, workspaceStrategy: { type: "root" } }
-          : request;
+              (yield* managedFolders.isScratchProject(request.projectId))
+            ? { ...request, workspaceStrategy: { type: "root" } }
+            : request;
       if (input.preparationReleaseCommandId !== undefined || input.legacyBootstrap !== undefined) {
         const policy = input.legacyBootstrap;
         if (
@@ -2461,19 +2515,22 @@ const make = Effect.gen(function* () {
             input.threadId,
           )("Legacy launch does not match its immutable preparation policy.");
       }
-      if (needsFreshAdmission) yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
-        type: "thread.create",
-        projectId: input.projectId,
-      }).pipe(Effect.mapError(mapError(input, "resolve-project")));
-      const project = !needsFreshAdmission ? { id: input.projectId } : yield* projects.getById(input.projectId).pipe(
-        Effect.mapError(mapError(input, "resolve-project")),
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.fail(mapError(input, "resolve-project")("Project not found.")),
-            onSome: Effect.succeed,
-          }),
-        ),
-      );
+      if (needsFreshAdmission)
+        yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
+          type: "thread.create",
+          projectId: input.projectId,
+        }).pipe(Effect.mapError(mapError(input, "resolve-project")));
+      const project = !needsFreshAdmission
+        ? { id: input.projectId }
+        : yield* projects.getById(input.projectId).pipe(
+            Effect.mapError(mapError(input, "resolve-project")),
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.fail(mapError(input, "resolve-project")("Project not found.")),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
       if (input.reuseExistingThread === true && input.threadId === undefined) {
         return yield* mapError(
           input,
@@ -2486,12 +2543,15 @@ const make = Effect.gen(function* () {
           Effect.mapError(mapError(input, "create-thread", input.threadId)),
         );
       const launchReceipt = priorLaunchReceipt ?? (yield* readReceipt(input, input.commandId));
-      if (needsFreshAdmission) yield* threads.assertProviderInstanceEnabled({
-        projectId: input.projectId,
-        commandId: recordedClaim !== undefined && input.initialMessage !== undefined
-          ? initialMessageCommandId(input.commandId) : input.commandId,
-        instanceId: input.modelSelection.instanceId,
-      });
+      if (needsFreshAdmission)
+        yield* threads.assertProviderInstanceEnabled({
+          projectId: input.projectId,
+          commandId:
+            recordedClaim !== undefined && input.initialMessage !== undefined
+              ? initialMessageCommandId(input.commandId)
+              : input.commandId,
+          instanceId: input.modelSelection.instanceId,
+        });
       return yield* Effect.gen(function* () {
         // Recover ids from accepted launch receipts before allocating; retries have no client id and new ids collide with receipts.
         const reusableLaunchReceipt =
@@ -2604,18 +2664,23 @@ const make = Effect.gen(function* () {
                   ? {}
                   : { legacyBootstrap: input.legacyBootstrap }),
               });
-        const claimed = Option.isSome(launchReceipt) && recordedClaim !== undefined
-          ? { sequence: launchReceipt.value.resultSequence, storedEvents: launchEvents, replayed: true }
-          : yield* claimDispatch.pipe(
-          Effect.provideService(IdleWorktreeAdmission.LaunchIntent, idleIntent),
-          Effect.mapError(
-            mapError(
-              input,
-              input.reuseExistingThread === true ? "update-thread" : "create-thread",
-              candidateThreadId,
-            ),
-          ),
-        );
+        const claimed =
+          Option.isSome(launchReceipt) && recordedClaim !== undefined
+            ? {
+                sequence: launchReceipt.value.resultSequence,
+                storedEvents: launchEvents,
+                replayed: true,
+              }
+            : yield* claimDispatch.pipe(
+                Effect.provideService(IdleWorktreeAdmission.LaunchIntent, idleIntent),
+                Effect.mapError(
+                  mapError(
+                    input,
+                    input.reuseExistingThread === true ? "update-thread" : "create-thread",
+                    candidateThreadId,
+                  ),
+                ),
+              );
         const threadId =
           claimed.storedEvents.find((stored) => stored.event.type.startsWith("thread."))?.event
             .threadId ?? candidateThreadId;
@@ -2644,23 +2709,37 @@ const make = Effect.gen(function* () {
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
           const messageCommandId = initialMessageCommandId(input.commandId);
-          const messageReceipt = replayMessageReceipt ?? (yield* readReceipt(input, messageCommandId));
-          const messageEvents = replayMessageEvents ?? (Option.isSome(messageReceipt) && messageReceipt.value.status === "accepted"
-            ? yield* eventSink.readByCommandId({ commandId: messageCommandId }).pipe(
-                Stream.runCollect,
-                Effect.mapError(mapError(input, "read-receipt", threadId)),
-              )
-            : []);
-          const recordedMessage = recordedInitialMessage ?? (Option.isSome(messageReceipt)
-            ? recordedLaunchMessage(input, messageReceipt.value, messageEvents, threadId)
-            : undefined);
+          const messageReceipt =
+            replayMessageReceipt ?? (yield* readReceipt(input, messageCommandId));
+          const messageEvents =
+            replayMessageEvents ??
+            (Option.isSome(messageReceipt) && messageReceipt.value.status === "accepted"
+              ? yield* eventSink
+                  .readByCommandId({ commandId: messageCommandId })
+                  .pipe(
+                    Stream.runCollect,
+                    Effect.mapError(mapError(input, "read-receipt", threadId)),
+                  )
+              : []);
+          const recordedMessage =
+            recordedInitialMessage ??
+            (Option.isSome(messageReceipt)
+              ? recordedLaunchMessage(input, messageReceipt.value, messageEvents, threadId)
+              : undefined);
           if (Option.isSome(messageReceipt) && recordedMessage === undefined) {
             const receipt = messageReceipt.value;
-            return yield* mapError(input, "dispatch-message", threadId)(
-              receipt.status === "rejected" && receipt.commandId === messageCommandId &&
-                receipt.commandType === "message.dispatch" && receipt.threadId === threadId
+            return yield* mapError(
+              input,
+              "dispatch-message",
+              threadId,
+            )(
+              receipt.status === "rejected" &&
+                receipt.commandId === messageCommandId &&
+                receipt.commandType === "message.dispatch" &&
+                receipt.threadId === threadId
                 ? new Orchestrator.OrchestratorCommandPreviouslyRejectedError({
-                    commandId: receipt.commandId, commandType: receipt.commandType,
+                    commandId: receipt.commandId,
+                    commandType: receipt.commandType,
                     detail: receipt.error ?? "Previously rejected.",
                   })
                 : "The initial message has no matching accepted immutable receipt; preserve its original identity.",
@@ -2668,78 +2747,86 @@ const make = Effect.gen(function* () {
           }
           messageWasAlreadyAccepted = recordedMessage !== undefined;
           const messageId =
-            recordedMessage?.message.id ?? input.initialMessage.messageId ??
+            recordedMessage?.message.id ??
+            input.initialMessage.messageId ??
             (yield* ids.allocate
               .message({ threadId, ordinal: 1 })
               .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId))));
           const inheritedDispatchLimit = yield* DispatchModeLimit;
-          const dispatched = Option.isSome(messageReceipt) && recordedMessage !== undefined
-            ? { sequence: messageReceipt.value.resultSequence, storedEvents: messageEvents, replayed: true }
-            : yield* threads
-            .dispatch({
-              type: "message.dispatch",
-              commandId: messageCommandId,
-              threadId,
-              messageId,
-              text: input.initialMessage.text,
-              ...(input.initialMessage.scheduledTaskId === undefined
-                ? {}
-                : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
-              ...(input.initialMessage.senderThreadId === undefined
-                ? {}
-                : { senderThreadId: input.initialMessage.senderThreadId }),
-              attachments: input.initialMessage.attachments,
-              ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
-              ...(input.initialMessage.titleSeed === undefined
-                ? input.generateTitle === true
-                  ? { titleSeed: input.title }
-                  : {}
-                : { titleSeed: input.initialMessage.titleSeed }),
-              ...(input.initialMessage.sourcePlanRef === undefined
-                ? {}
-                : { sourcePlanRef: input.initialMessage.sourcePlanRef }),
-              modelSelection: input.modelSelection,
-              dispatchMode:
-                idleRecord !== null
-                  ? { type: "start_immediately" }
-                  : {
-                      type: "defer_start",
-                      workspaceStrategy,
-                      ...(input.runSetupScript === undefined
-                        ? {}
-                        : { runSetupScript: input.runSetupScript }),
-                    },
-              createdBy: input.createdBy,
-              creationSource: input.creationSource,
-              ...(input.legacyBootstrap === undefined
-                ? {}
-                : { legacyBootstrap: input.legacyBootstrap }),
-            })
-            .pipe(
-              // Replay or concurrent launch can select a thread with broader modes than an agent requested.
-              // The orchestrator refuses under the thread lock; preserve the stricter caller limit and refusal signal.
-              // The user's own clients launch into their own drafts using those drafts' modes.
-              input.createdBy === "agent"
-                ? Effect.provideService(DispatchModeLimit, {
-                    runtimeMode:
-                      inheritedDispatchLimit !== undefined &&
-                      exceededDispatchModeLimit(inheritedDispatchLimit, {
-                        runtimeMode: input.runtimeMode,
-                        interactionMode: inheritedDispatchLimit.interactionMode,
-                      }) === "runtime"
-                        ? inheritedDispatchLimit.runtimeMode
-                        : input.runtimeMode,
-                    interactionMode:
-                      inheritedDispatchLimit?.interactionMode === "plan"
-                        ? "plan"
-                        : input.interactionMode,
-                    ...(inheritedDispatchLimit?.refused === undefined
+          const dispatched =
+            Option.isSome(messageReceipt) && recordedMessage !== undefined
+              ? {
+                  sequence: messageReceipt.value.resultSequence,
+                  storedEvents: messageEvents,
+                  replayed: true,
+                }
+              : yield* threads
+                  .dispatch({
+                    type: "message.dispatch",
+                    commandId: messageCommandId,
+                    threadId,
+                    messageId,
+                    text: input.initialMessage.text,
+                    ...(input.initialMessage.scheduledTaskId === undefined
                       ? {}
-                      : { refused: inheritedDispatchLimit.refused }),
+                      : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
+                    ...(input.initialMessage.senderThreadId === undefined
+                      ? {}
+                      : { senderThreadId: input.initialMessage.senderThreadId }),
+                    attachments: input.initialMessage.attachments,
+                    ...(input.initialMessage.context
+                      ? { context: input.initialMessage.context }
+                      : {}),
+                    ...(input.initialMessage.titleSeed === undefined
+                      ? input.generateTitle === true
+                        ? { titleSeed: input.title }
+                        : {}
+                      : { titleSeed: input.initialMessage.titleSeed }),
+                    ...(input.initialMessage.sourcePlanRef === undefined
+                      ? {}
+                      : { sourcePlanRef: input.initialMessage.sourcePlanRef }),
+                    modelSelection: input.modelSelection,
+                    dispatchMode:
+                      idleRecord !== null
+                        ? { type: "start_immediately" }
+                        : {
+                            type: "defer_start",
+                            workspaceStrategy,
+                            ...(input.runSetupScript === undefined
+                              ? {}
+                              : { runSetupScript: input.runSetupScript }),
+                          },
+                    createdBy: input.createdBy,
+                    creationSource: input.creationSource,
+                    ...(input.legacyBootstrap === undefined
+                      ? {}
+                      : { legacyBootstrap: input.legacyBootstrap }),
                   })
-                : (effect) => effect,
-              Effect.mapError(mapError(input, "dispatch-message", threadId)),
-            );
+                  .pipe(
+                    // The accepted creation's modes do not widen a fresh message's requested ceiling.
+                    // The orchestrator refuses under the thread lock; preserve the stricter caller limit and refusal signal.
+                    // The user's own clients launch into their own drafts using those drafts' modes.
+                    input.createdBy === "agent"
+                      ? Effect.provideService(DispatchModeLimit, {
+                          runtimeMode:
+                            inheritedDispatchLimit !== undefined &&
+                            exceededDispatchModeLimit(inheritedDispatchLimit, {
+                              runtimeMode: request.runtimeMode,
+                              interactionMode: inheritedDispatchLimit.interactionMode,
+                            }) === "runtime"
+                              ? inheritedDispatchLimit.runtimeMode
+                              : request.runtimeMode,
+                          interactionMode:
+                            inheritedDispatchLimit?.interactionMode === "plan"
+                              ? "plan"
+                              : request.interactionMode,
+                          ...(inheritedDispatchLimit?.refused === undefined
+                            ? {}
+                            : { refused: inheritedDispatchLimit.refused }),
+                        })
+                      : (effect) => effect,
+                    Effect.mapError(mapError(input, "dispatch-message", threadId)),
+                  );
           // A concurrent retry can read no receipt and still replay the dispatch.
           messageWasAlreadyAccepted ||= dispatched.replayed === true;
           const runCreated = dispatched.storedEvents.find(

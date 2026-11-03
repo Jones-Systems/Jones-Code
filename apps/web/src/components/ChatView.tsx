@@ -1,7 +1,10 @@
 import { useAttachmentPreviewHandoff } from "./chat/useAttachmentPreviewHandoff";
 import { usePendingMessages, usePendingSends } from "../jones/pendingSends/hooks";
 import { usePendingTurn } from "../jones/pendingSends/usePendingTurn";
-import { provenPendingThread } from "../jones/pendingSends/newThread";
+import {
+  canSendAfterInitialMessageRejection,
+  provenPendingThread,
+} from "../jones/pendingSends/newThread";
 import { requiredComposerProvider } from "../jones/threadConfiguration/composerSelection";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
@@ -490,14 +493,15 @@ export default function ChatView(props: ChatViewProps) {
   const fallbackDetailRef = serverThreadShell === null ? routeThreadDetailRef : null;
   const fallbackUpdatedAt = useThreadUpdatedAt(fallbackDetailRef);
   const fallbackLastVisitedAt = useThreadLastVisitedAt(fallbackDetailRef);
-  const serverThread = (
-    serverThreadShell !== null || serverProjection === null || fallbackUpdatedAt === null
+  const serverThread =
+    (serverThreadShell !== null || serverProjection === null || fallbackUpdatedAt === null
       ? serverThreadShell
       : presentThreadShellFromProjection(environmentId, threadId, serverProjection, {
           updatedAt: fallbackUpdatedAt,
           lastVisitedAt: fallbackLastVisitedAt,
-        })
-  ) ?? provenPendingThread(pendingSendEntries, environmentId, threadId) ?? null;
+        })) ??
+    provenPendingThread(pendingSendEntries, environmentId, threadId) ??
+    null;
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
@@ -521,6 +525,10 @@ export default function ChatView(props: ChatViewProps) {
     status: threadStatus,
   });
   const threadDetailLoading = threadSyncPhase === "loading";
+  const sendBlockedByThreadDetail =
+    threadDetailLoading &&
+    (serverThreadShell !== null ||
+      !canSendAfterInitialMessageRejection(pendingSendEntries, environmentId, threadId));
   const activeProviderThread = serverProjection?.providerThreads.find(
     (thread) => thread.id === serverProjection.thread.activeProviderThreadId,
   );
@@ -2802,7 +2810,7 @@ export default function ChatView(props: ChatViewProps) {
     queuedRunEdit,
     isConnecting,
     isRevertingCheckpoint,
-    threadDetailLoading,
+    threadDetailLoading: sendBlockedByThreadDetail,
     activeEnvironmentUnavailable,
     isSendBusy,
     sendQueuesBehindSetup,
@@ -3501,7 +3509,7 @@ export default function ChatView(props: ChatViewProps) {
                                       ? "Rewinding conversation"
                                       : feedbackUploading
                                         ? "Sending feedback"
-                                        : threadDetailLoading
+                                        : sendBlockedByThreadDetail
                                           ? "Messages loading"
                                           : worktreeSetupBlocksSend
                                             ? "Preparing worktree"

@@ -1,5 +1,8 @@
 import type { QueuedThreadMessage } from "./thread-outbox-model";
-import { canRestoreQueuedThreadMessage, queuedThreadProvenTarget } from "../jones/threadConfiguration/outboxDelivery";
+import {
+  canRestoreQueuedThreadMessage,
+  queuedThreadProvenTarget,
+} from "../jones/threadConfiguration/outboxDelivery";
 import { scopedThreadKey } from "../lib/scopedEntities";
 import { restoredNewTaskDraftKey } from "./new-task-draft-key";
 import {
@@ -14,7 +17,8 @@ import {
 } from "./use-composer-drafts";
 
 export async function recoverFailedThreadDraft(message: QueuedThreadMessage): Promise<void> {
-  const canRecover = () => canRestoreQueuedThreadMessage(message) && queuedThreadProvenTarget(message) === undefined;
+  const canRecover = () =>
+    canRestoreQueuedThreadMessage(message) && queuedThreadProvenTarget(message) === undefined;
   if (!canRecover()) return;
   const sourceKey = scopedThreadKey(message.environmentId, message.threadId);
   const targetKey = restoredNewTaskDraftKey(message.messageId);
@@ -23,11 +27,19 @@ export async function recoverFailedThreadDraft(message: QueuedThreadMessage): Pr
   const target = getComposerDraftSnapshot(targetKey);
   let merged: ComposerDraft = target;
   try {
-    await mergeComposerDraftContent(targetKey, {
-      text: source.text,
-      context: source.context,
-      attachments: [],
-    }, { onMerged: (draft) => { merged = draft; } });
+    await mergeComposerDraftContent(
+      targetKey,
+      {
+        text: source.text,
+        context: source.context,
+        attachments: [],
+      },
+      {
+        onMerged: (draft) => {
+          merged = draft;
+        },
+      },
+    );
     if (!canRecover()) {
       await undoComposerDraftMerge(targetKey, target, merged);
       return;

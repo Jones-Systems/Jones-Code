@@ -2,28 +2,17 @@ import {
   readPreparedThreadTurnDeliveryEvidence,
   threadTurnDeliveryStatus,
 } from "@t3tools/client-runtime/jones/deliveryEvidence";
-import { PreparedThreadTurnJson } from "@t3tools/client-runtime/jones/preparedThreadTurn";
 import type { PreparedThreadTurn } from "@t3tools/client-runtime/operations";
 import { ORCHESTRATION_V2_WS_METHODS } from "@t3tools/contracts";
 import {
-  DispatchDeliveryEvidence,
-  LaunchDeliveryEvidence,
   initialMessageCommandId,
+  type DispatchDeliveryEvidence,
+  type LaunchDeliveryEvidence,
 } from "@t3tools/contracts/jones/deliveryEvidence";
-import * as Schema from "effect/Schema";
 
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
+import { queuedThreadTurnMatches } from "./outboxDeliveryContract";
 
-export const QueuedThreadIssuance = Schema.Union([
-  Schema.Struct({ state: Schema.Literal("unissued") }),
-  Schema.Struct({
-    state: Schema.Literal("issued"),
-    prepared: PreparedThreadTurnJson,
-    contentKey: Schema.String,
-    evidence: Schema.optional(Schema.Union([DispatchDeliveryEvidence, LaunchDeliveryEvidence])),
-  }),
-]);
-export type QueuedThreadIssuance = typeof QueuedThreadIssuance.Type;
 type DeliveryEvidence = DispatchDeliveryEvidence | LaunchDeliveryEvidence;
 
 // Acceptance fences recovery immediately, even while its durable write is pending or failing.
@@ -34,22 +23,13 @@ function contentKey(message: QueuedThreadMessage): string {
   const { issuance: _, ...content } = message;
   return JSON.stringify(content, (_key, value: unknown) =>
     typeof value === "object" && value !== null && !Array.isArray(value)
-      ? Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+      ? Object.fromEntries(
+          Object.entries(value).sort(([left], [right]) =>
+            left < right ? -1 : left > right ? 1 : 0,
+          ),
+        )
       : value,
   );
-}
-
-export function queuedThreadTurnMatches(
-  message: QueuedThreadMessage,
-  prepared: PreparedThreadTurn,
-): boolean {
-  const payload = prepared.payload;
-  return payload.commandId === message.commandId &&
-    payload.threadId === message.threadId &&
-    (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread
-      ? prepared.payload.projectId === message.creation?.projectId &&
-        prepared.payload.initialMessage?.messageId === message.messageId
-      : prepared.payload.messageId === message.messageId);
 }
 
 export function withIssuedQueuedThreadTurn(
@@ -62,7 +42,10 @@ export function withIssuedQueuedThreadTurn(
   return { ...message, issuance: { state: "issued", prepared, contentKey: contentKey(message) } };
 }
 
-function mergeEvidence(previous: DeliveryEvidence | undefined, next: DeliveryEvidence): DeliveryEvidence {
+function mergeEvidence(
+  previous: DeliveryEvidence | undefined,
+  next: DeliveryEvidence,
+): DeliveryEvidence {
   if (previous === undefined || previous.kind !== next.kind) return next;
   if (previous.kind === "dispatch" && next.kind === "dispatch") {
     return previous.status === "accepted" || next.status === "unknown" ? previous : next;
@@ -70,21 +53,31 @@ function mergeEvidence(previous: DeliveryEvidence | undefined, next: DeliveryEvi
   if (previous.kind === "launch" && next.kind === "launch") {
     return {
       ...next,
-      creation: previous.creation.status === "accepted" || next.creation.status === "unknown"
-        ? previous.creation : next.creation,
-      initialMessage: previous.initialMessage.status === "accepted" || next.initialMessage.status === "unknown"
-        ? previous.initialMessage : next.initialMessage,
+      creation:
+        previous.creation.status === "accepted" || next.creation.status === "unknown"
+          ? previous.creation
+          : next.creation,
+      initialMessage:
+        previous.initialMessage.status === "accepted" || next.initialMessage.status === "unknown"
+          ? previous.initialMessage
+          : next.initialMessage,
     };
   }
   return next;
 }
 
-export function queuedThreadDeliveryEvidence(message: QueuedThreadMessage): DeliveryEvidence | undefined {
+export function queuedThreadDeliveryEvidence(
+  message: QueuedThreadMessage,
+): DeliveryEvidence | undefined {
   const issuance = message.issuance;
   if (issuance?.state !== "issued") return undefined;
-  const stored = issuance.evidence === undefined ? undefined : readPreparedThreadTurnDeliveryEvidence(
-    { deliveryEvidence: issuance.evidence }, issuance.prepared,
-  );
+  const stored =
+    issuance.evidence === undefined
+      ? undefined
+      : readPreparedThreadTurnDeliveryEvidence(
+          { deliveryEvidence: issuance.evidence },
+          issuance.prepared,
+        );
   const observed = observations.get(issuance.prepared);
   return observed === undefined ? stored : mergeEvidence(stored, observed);
 }
@@ -95,7 +88,10 @@ export function observeQueuedThreadDelivery(
 ): QueuedThreadMessage {
   const issuance = message.issuance;
   if (issuance?.state !== "issued") throw new Error("Missing issued request.");
-  const matched = readPreparedThreadTurnDeliveryEvidence({ deliveryEvidence: evidence }, issuance.prepared);
+  const matched = readPreparedThreadTurnDeliveryEvidence(
+    { deliveryEvidence: evidence },
+    issuance.prepared,
+  );
   const merged = mergeEvidence(queuedThreadDeliveryEvidence(message), matched);
   observations.set(issuance.prepared, merged);
   return { ...message, issuance: { ...issuance, evidence: merged } };
@@ -105,23 +101,25 @@ export function acceptedQueuedThreadDelivery(message: QueuedThreadMessage): Deli
   const issuance = message.issuance;
   if (issuance?.state !== "issued") throw new Error("Missing issued request.");
   const prepared = issuance.prepared;
-  return prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread ? {
-    kind: "launch",
-    commandId: prepared.payload.commandId,
-    projectId: prepared.payload.projectId,
-    creation: { status: "accepted", threadId: prepared.payload.threadId },
-    initialMessage: {
-      status: "accepted",
-      commandId: initialMessageCommandId(prepared.payload.commandId),
-      messageId: prepared.payload.initialMessage.messageId,
-    },
-  } : {
-    kind: "dispatch",
-    commandId: prepared.payload.commandId,
-    commandType: prepared.payload.type,
-    threadId: prepared.payload.threadId,
-    status: "accepted",
-  };
+  return prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread
+    ? {
+        kind: "launch",
+        commandId: prepared.payload.commandId,
+        projectId: prepared.payload.projectId,
+        creation: { status: "accepted", threadId: prepared.payload.threadId },
+        initialMessage: {
+          status: "accepted",
+          commandId: initialMessageCommandId(prepared.payload.commandId),
+          messageId: prepared.payload.initialMessage.messageId,
+        },
+      }
+    : {
+        kind: "dispatch",
+        commandId: prepared.payload.commandId,
+        commandType: prepared.payload.type,
+        threadId: prepared.payload.threadId,
+        status: "accepted",
+      };
 }
 
 export function queuedThreadDeliveryStatus(message: QueuedThreadMessage) {
@@ -130,17 +128,22 @@ export function queuedThreadDeliveryStatus(message: QueuedThreadMessage) {
 }
 
 export function canRestoreQueuedThreadMessage(message: QueuedThreadMessage): boolean {
-  return message.issuance?.state === "unissued" || queuedThreadDeliveryStatus(message) === "rejected";
+  return (
+    message.issuance?.state === "unissued" || queuedThreadDeliveryStatus(message) === "rejected"
+  );
 }
 
 export function queuedThreadProvenTarget(message: QueuedThreadMessage) {
   const evidence = queuedThreadDeliveryEvidence(message);
   return evidence?.kind === "launch" && evidence.creation.status === "accepted"
-    ? evidence.creation.threadId : undefined;
+    ? evidence.creation.threadId
+    : undefined;
 }
 
 export function queuedThreadContentChanged(message: QueuedThreadMessage): boolean {
-  return message.issuance?.state === "issued" && message.issuance.contentKey !== contentKey(message);
+  return (
+    message.issuance?.state === "issued" && message.issuance.contentKey !== contentKey(message)
+  );
 }
 
 // Pending-task editors predate issuance metadata. They may save new content, but cannot
@@ -165,12 +168,19 @@ export function preserveQueuedThreadIssuance(
     threadId: previous.threadId,
     messageId: previous.messageId,
     commandId: previous.commandId,
-    ...(previous.creation === undefined ? {} : {
-      creation: { ...(next.creation ?? previous.creation), projectId: previous.creation.projectId },
-    }),
+    ...(previous.creation === undefined
+      ? {}
+      : {
+          creation: {
+            ...(next.creation ?? previous.creation),
+            projectId: previous.creation.projectId,
+          },
+        }),
     issuance: previous.issuance,
   };
-  return nextEvidence === undefined ? retained : observeQueuedThreadDelivery(retained, nextEvidence);
+  return nextEvidence === undefined
+    ? retained
+    : observeQueuedThreadDelivery(retained, nextEvidence);
 }
 
 export function queuedThreadRecoveryCreation(message: QueuedThreadMessage) {
@@ -226,14 +236,17 @@ export async function deliverQueuedThreadTurn(input: {
   // restore an accepted request, even if persistence is temporarily unavailable.
   observeQueuedThreadDelivery(message, evidence);
   const current = queue.current().find((candidate) => candidate.messageId === message.messageId);
-  if (current?.issuance?.state !== "issued" || current.issuance.prepared !== issuance.prepared) return null;
+  if (current?.issuance?.state !== "issued" || current.issuance.prepared !== issuance.prepared)
+    return null;
   const updated = observeQueuedThreadDelivery(current, evidence);
   if (!(await queue.update(updated, queue.revisionOf(current.messageId)))) return null;
   const persisted = queue.current().find((candidate) => candidate.messageId === current.messageId);
-  return persisted === undefined ? null : {
-    message: persisted,
-    revision: queue.revisionOf(persisted.messageId),
-    status: queuedThreadDeliveryStatus(persisted),
-    ...(error === undefined ? {} : { error }),
-  };
+  return persisted === undefined
+    ? null
+    : {
+        message: persisted,
+        revision: queue.revisionOf(persisted.messageId),
+        status: queuedThreadDeliveryStatus(persisted),
+        ...(error === undefined ? {} : { error }),
+      };
 }

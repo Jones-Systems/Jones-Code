@@ -190,7 +190,9 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
       acknowledgeComposerSelection(composerDraftTarget, submittedDraft);
       onAccepted?.();
     });
-    pendingSends.whenRejected(environmentId, threadIdForSend, messageIdForSend, () => onRejected?.());
+    pendingSends.whenRejected(environmentId, threadIdForSend, messageIdForSend, () =>
+      onRejected?.(),
+    );
     const followUpResult = await dispatchPlanFollowUp({
       persistSettings: () =>
         persistThreadSettingsForNextTurn({
@@ -246,7 +248,8 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
     }
     sendInFlightRef.current = false;
     resetLocalDispatch();
-    return pendingSends.get(environmentId, threadIdForSend, messageIdForSend)?.delivery === "uncertain"
+    return pendingSends.get(environmentId, threadIdForSend, messageIdForSend)?.delivery ===
+      "uncertain"
       ? null
       : false;
   };
@@ -362,7 +365,8 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
       pendingSends.confirmThreadCreation(environmentId, nextThreadId, messageId);
     }
     const recovery = createPendingPromptRecovery(
-      scopeThreadRef(environmentId, nextThreadId), outgoingImplementationPrompt,
+      scopeThreadRef(environmentId, nextThreadId),
+      outgoingImplementationPrompt,
     );
     let accepted = false;
     if (createResult._tag === "Success") {

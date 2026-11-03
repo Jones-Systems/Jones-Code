@@ -592,7 +592,7 @@ export function resolveComposerProviderSelection(input: {
           (entry) =>
             entry.instanceId === input.requiredInstanceId && entry.enabled && entry.isAvailable,
         )
-      : input.candidateInstanceIds
+      : (input.candidateInstanceIds
           .map((candidate) =>
             compatibleEntries.find(
               (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
@@ -603,13 +603,13 @@ export function resolveComposerProviderSelection(input: {
           compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
           undefined,
         ) ??
-        resolveSelectableProviderInstanceEntry(compatibleEntries, undefined);
+        resolveSelectableProviderInstanceEntry(compatibleEntries, undefined));
   const unavailableProviderInstanceId = selectedProviderEntry
     ? undefined
-    : input.requiredInstanceId ??
+    : (input.requiredInstanceId ??
       (input.lockedProvider
         ? (input.lockedInstanceId ?? requestedInstanceId)
-        : requestedInstanceId);
+        : requestedInstanceId));
   return {
     selectedProviderEntry,
     requestedDriverKind,

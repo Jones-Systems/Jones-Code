@@ -454,12 +454,26 @@ describe("Jones MCP provider compatibility", () => {
         NodeServices.layer,
         ServerSettings.layerTest(),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          getCommandReceipt: (commandId) => accepted
-            ? Effect.map(DateTime.now, (acceptedAt) => Option.some({
-                commandId, threadId: parentThreadId, commandType: "delegated_task.request",
-                acceptedAt, resultSequence: 1, status: "accepted" as const, error: null,
-              })) : Effect.succeedNone,
-          getThreadShell: () => Effect.succeed({ ...childProjection.thread, projectId, deletedAt: null } as OrchestrationV2ThreadShell),
+          getCommandReceipt: (commandId) =>
+            accepted
+              ? Effect.map(DateTime.now, (acceptedAt) =>
+                  Option.some({
+                    commandId,
+                    threadId: parentThreadId,
+                    commandType: "delegated_task.request",
+                    acceptedAt,
+                    resultSequence: 1,
+                    status: "accepted" as const,
+                    error: null,
+                  }),
+                )
+              : Effect.succeedNone,
+          getThreadShell: () =>
+            Effect.succeed({
+              ...childProjection.thread,
+              projectId,
+              deletedAt: null,
+            } as OrchestrationV2ThreadShell),
           getProjectThreadRecords: () => Effect.succeed(childProjection),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parent() : childProjection),
@@ -478,12 +492,17 @@ describe("Jones MCP provider compatibility", () => {
                   {
                     sequence: 1,
                     commandId: command.commandId,
-                    event: { type: "thread.created", threadId: childThreadId, payload: {
-                      ...childProjection.thread, projectId,
-                      modelSelection: { instanceId: task.providerInstanceId, model: task.model },
-                      lineage: { parentThreadId, relationshipToParent: "subagent" },
-                      forkedFrom: { type: "node", nodeId: task.id },
-                    } },
+                    event: {
+                      type: "thread.created",
+                      threadId: childThreadId,
+                      payload: {
+                        ...childProjection.thread,
+                        projectId,
+                        modelSelection: { instanceId: task.providerInstanceId, model: task.model },
+                        lineage: { parentThreadId, relationshipToParent: "subagent" },
+                        forkedFrom: { type: "node", nodeId: task.id },
+                      },
+                    },
                   },
                 ],
               } as never;

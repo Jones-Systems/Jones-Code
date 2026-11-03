@@ -22,7 +22,10 @@ const invalidReplay = () =>
 
 /** Read errors and rejected receipts never authorize a fresh admission. */
 export const acceptedReplay = Effect.fn("jones.mcp.acceptedReplay")(function* (
-  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getCommandReceipt" | "dispatch">,
+  threads: Pick<
+    ThreadManagement.ThreadManagementService["Service"],
+    "getCommandReceipt" | "dispatch"
+  >,
   command: ReplayCommand,
 ) {
   const receipt = yield* threads
@@ -73,10 +76,11 @@ export const recordedDelegation = Effect.fn("jones.mcp.recordedDelegation")(func
   result: Orchestrator.OrchestratorV2DispatchResult,
   parentThreadId: ThreadId,
 ) {
-  const event = result.storedEvents.find((stored) =>
-    stored.event.type === "subagent.updated" &&
-    stored.event.threadId === parentThreadId &&
-    stored.event.payload.origin === "app_owned",
+  const event = result.storedEvents.find(
+    (stored) =>
+      stored.event.type === "subagent.updated" &&
+      stored.event.threadId === parentThreadId &&
+      stored.event.payload.origin === "app_owned",
   )?.event;
   if (
     event?.type !== "subagent.updated" ||
@@ -106,10 +110,14 @@ export const recordedMessage = Effect.fn("jones.mcp.recordedMessage")(function* 
   messageId: MessageId,
   senderThreadId: ThreadId,
 ) {
-  if (!result.storedEvents.some((stored) =>
-    stored.event.type === "message.updated" &&
-    stored.event.threadId === threadId &&
-    stored.event.payload.id === messageId &&
-    stored.event.payload.senderThreadId === senderThreadId,
-  )) return yield* invalidReplay();
+  if (
+    !result.storedEvents.some(
+      (stored) =>
+        stored.event.type === "message.updated" &&
+        stored.event.threadId === threadId &&
+        stored.event.payload.id === messageId &&
+        stored.event.payload.senderThreadId === senderThreadId,
+    )
+  )
+    return yield* invalidReplay();
 });

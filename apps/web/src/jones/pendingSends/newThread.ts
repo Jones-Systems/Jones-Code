@@ -10,13 +10,34 @@ export function provenPendingThread(
 ): EnvironmentThreadShell | undefined {
   return entries.find(
     (entry) =>
-      entry.environmentId === environmentId && entry.threadId === threadId &&
-      (entry.creationAccepted === true || (
+      entry.environmentId === environmentId &&
+      entry.threadId === threadId &&
+      (entry.creationAccepted === true ||
+        (entry.deliveryEvidence?.kind === "launch" &&
+          entry.deliveryEvidence.creation.status === "accepted" &&
+          entry.deliveryEvidence.creation.threadId === threadId)),
+  )?.sidebarThread;
+}
+
+export function canSendAfterInitialMessageRejection(
+  entries: readonly PendingSend[],
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): boolean {
+  const targetEntries = entries.filter(
+    (entry) => entry.environmentId === environmentId && entry.threadId === threadId,
+  );
+  // The store retains a confirmed rejection through later unknown replies. A newer
+  // unsettled send must still wait for its own evidence before another identity is sent.
+  return (
+    targetEntries.every((entry) => entry.delivery === "failed") &&
+    targetEntries.some(
+      (entry) =>
         entry.deliveryEvidence?.kind === "launch" &&
         entry.deliveryEvidence.creation.status === "accepted" &&
-        entry.deliveryEvidence.creation.threadId === threadId
-      )),
-  )?.sidebarThread;
+        entry.deliveryEvidence.creation.threadId === threadId,
+    )
+  );
 }
 
 export function pendingNewThread(
