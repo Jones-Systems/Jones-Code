@@ -54,7 +54,7 @@ import {
 import { createModelSelection } from "@t3tools/shared/model";
 import { type SetStateAction, useLayoutEffect, useRef } from "react";
 import { flushSync } from "react-dom";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import {
   isAtomCommandInterrupted,
   settlePromise,
@@ -70,7 +70,7 @@ import { type ChatMessage } from "../../types";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { randomUUID, newMessageId, newThreadId } from "~/lib/utils";
 import { useNewThreadHandler } from "../../hooks/useHandleNewThread";
-import { buildThreadRouteParams } from "../../threadRoutes";
+import { buildThreadRouteParams, isThreadRoutePathname } from "../../threadRoutes";
 import {
   beginBackgroundDraftSubmissionByRef,
   clearBackgroundDraftSubmissionByRef,
@@ -330,6 +330,7 @@ export function useComposerSend(input: ComposerSendInput) {
   } = input;
   const handleNewThread = useNewThreadHandler();
   const navigate = useNavigate();
+  const router = useRouter();
   const clientSettingsHydrated = useClientSettingsHydrated();
   const planModeEnabled = useEnvironmentSettings(environmentId, selectPlanModeEnabled);
   const startThreadTurn = usePendingTurn();
@@ -1328,26 +1329,75 @@ export function useComposerSend(input: ComposerSendInput) {
         restoreFailedDraftThread(draftId, draftThread, threadIdForSend);
         clearBackgroundDraftSubmissionByRef(scopeThreadRef(environmentId, threadIdForSend));
       }
+      const draftInForeground =
+        !backgroundDraftOpened && currentRouteThreadKeyRef.current === routeThreadKey;
+      const recoverInForeground = draftInForeground && isCurrentComposerSend();
       composerRecovery.rejected();
       if (
         isLocalDraftThread &&
         entry.deliveryEvidence?.kind === "launch" &&
         entry.deliveryEvidence.creation.status === "accepted"
       ) {
+        if (draftInForeground && !recoverInForeground) return;
         const provenThreadRef = scopeThreadRef(
           environmentId,
           entry.deliveryEvidence.creation.threadId,
         );
-        const drafts = useComposerDraftStore.getState();
-        const destination = drafts.draftsByThreadKey[scopedThreadKey(provenThreadRef)];
-        if (!destination || destination === drafts.getComposerDraft(composerDraftTarget)) {
-          finalizePromotedDraftThreadByRef(provenThreadRef);
-        }
-        if (isCurrentComposerSend() && currentRouteThreadKeyRef.current === routeThreadKey) {
+        const draftSession = draftId
+          ? useComposerDraftStore.getState().getDraftSession(draftId)
+          : null;
+        const finalizeRecoveredDraft = () => {
+          const drafts = useComposerDraftStore.getState();
+          const destination = drafts.draftsByThreadKey[scopedThreadKey(provenThreadRef)];
+          if (destination && destination !== drafts.getComposerDraft(composerDraftTarget)) return;
+          if (recoverInForeground) {
+            if (!draftId || !draftSession || drafts.getDraftSession(draftId) !== draftSession)
+              return;
+            drafts.markDraftThreadPromoting(draftId, provenThreadRef);
+            drafts.finalizePromotedDraftThread(draftId);
+            clearBackgroundDraftSubmissionByRef(provenThreadRef);
+          } else {
+            finalizePromotedDraftThreadByRef(provenThreadRef);
+          }
+        };
+        if (recoverInForeground) {
+          // Keep the draft route renderable until the proven thread takes over. Navigation
+          // can resolve before React settles; component ownership refs can clear on takeover.
           void navigate({
             to: "/$environmentId/$threadId",
             params: buildThreadRouteParams(provenThreadRef),
-          });
+          }).then(
+            () => {
+              const { location, resolvedLocation, status } = router.state;
+              if (
+                router.latestLocation !== location ||
+                !isThreadRoutePathname(location.pathname, provenThreadRef)
+              )
+                return;
+              const finalizeAfterTakeover = () => {
+                const { matches } = router.state;
+                if (
+                  router.latestLocation === location &&
+                  router.state.location === location &&
+                  matches.at(-1)?.routeId === "/_chat/$environmentId/$threadId" &&
+                  matches.every((match) => match.status === "success")
+                ) {
+                  finalizeRecoveredDraft();
+                }
+              };
+              if (status === "idle") {
+                if (resolvedLocation === location) finalizeAfterTakeover();
+              } else {
+                const unsubscribe = router.subscribe("onResolved", ({ toLocation }) => {
+                  unsubscribe();
+                  if (toLocation === location) finalizeAfterTakeover();
+                });
+              }
+            },
+            () => undefined,
+          );
+        } else {
+          finalizeRecoveredDraft();
         }
       }
     });

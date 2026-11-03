@@ -24,47 +24,46 @@ const versionOf = (providers: ReadonlyArray<ServerProvider>, id = instanceA) =>
   providers.find((provider) => provider.instanceId === id)?.version;
 
 describe("catalog publication ownership (Audit 4.4 / R4)", () => {
-  for (const replacement of [false, true]) {
-    it.effect(
-      `revokes a source before awaiting ${replacement ? "replacement" : "removal"} retirement`,
-      () =>
-        Effect.gen(function* () {
-          const harness = yield* makeCatalogHarness();
-          const retiring = yield* makeGate();
-          const refresh = yield* makeGate();
-          const source = harness.source();
-          source.retirement = retiring.hold;
-          source.refreshRead = () =>
-            refresh.hold.pipe(Effect.as(providerSnapshot(instanceA, "retired")));
-          const stale = yield* harness.registry.refreshInstance(instanceA).pipe(Effect.forkScoped);
-          yield* Deferred.await(refresh.started);
-          const changed = yield* nextCatalog(harness.registry, (providers) =>
-            replacement
-              ? versionOf(providers) === "replacement"
-              : versionOf(providers) === undefined,
-          );
-          const reconcile = yield* harness
-            .reconcile(replacement ? configuration([instanceA, "replacement"]) : configuration())
-            .pipe(Effect.forkScoped);
-          yield* Effect.addFinalizer(() => retiring.release);
-          yield* Deferred.await(retiring.started);
-          assert.isUndefined(harness.instances.getCatalogSource(instanceA));
-          yield* refresh.release;
-          assert.equal(versionOf(yield* Fiber.join(stale)), "original");
-          assert.equal(
-            (yield* readProviderStatusCache(harness.cachePath(instanceA)))?.version,
-            "original",
-          );
-          yield* retiring.release;
-          yield* Fiber.join(reconcile);
-          yield* changed;
-          assert.equal(
-            versionOf(yield* harness.registry.getProviders),
-            replacement ? "replacement" : undefined,
-          );
-        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-    );
-  }
+  it.effect.each([
+    { replacement: false, label: "removal" },
+    { replacement: true, label: "replacement" },
+  ])("revokes a source before awaiting $label retirement", ({ replacement }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeCatalogHarness();
+      const retiring = yield* makeGate();
+      const refresh = yield* makeGate();
+      const source = harness.source();
+      source.retirement = retiring.hold;
+      source.refreshRead = () =>
+        refresh.hold.pipe(Effect.as(providerSnapshot(instanceA, "retired")));
+      const stale = yield* harness.registry.refreshInstance(instanceA).pipe(Effect.forkScoped);
+      yield* Deferred.await(refresh.started);
+      const changed = yield* nextCatalog(harness.registry, (providers) =>
+        replacement
+          ? versionOf(providers) === "replacement"
+          : versionOf(providers) === undefined,
+      );
+      const reconcile = yield* harness
+        .reconcile(replacement ? configuration([instanceA, "replacement"]) : configuration())
+        .pipe(Effect.forkScoped);
+      yield* Effect.addFinalizer(() => retiring.release);
+      yield* Deferred.await(retiring.started);
+      assert.isUndefined(harness.instances.getCatalogSource(instanceA));
+      yield* refresh.release;
+      assert.equal(versionOf(yield* Fiber.join(stale)), "original");
+      assert.equal(
+        (yield* readProviderStatusCache(harness.cachePath(instanceA)))?.version,
+        "original",
+      );
+      yield* retiring.release;
+      yield* Fiber.join(reconcile);
+      yield* changed;
+      assert.equal(
+        versionOf(yield* harness.registry.getProviders),
+        replacement ? "replacement" : undefined,
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 
   it.effect("rechecks the exact source after awaited manifest enrichment", () =>
     Effect.gen(function* () {
@@ -185,38 +184,37 @@ describe("catalog publication ownership (Audit 4.4 / R4)", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  for (const failure of [false, true]) {
-    it.effect(
-      `post-update ${failure ? "failure" : "success"} belongs to the captured instance`,
-      () =>
-        Effect.gen(function* () {
-          const harness = yield* makeCatalogHarness();
-          const update = yield* makeGate();
-          const original = harness.source();
-          if (failure)
-            original.maintenance = () =>
-              update.hold.pipe(Effect.andThen(Effect.die("old maintenance failed")));
-          else
-            original.refreshRead = () =>
-              update.hold.pipe(Effect.as(providerSnapshot(instanceA, "old-update")));
-          const stale = yield* harness.registry
-            .refreshAfterUpdate(driverKind, instanceA)
-            .pipe(Effect.forkScoped);
-          yield* Deferred.await(update.started);
-          const changed = yield* nextCatalog(
-            harness.registry,
-            (providers) => versionOf(providers) === "replacement",
-          );
-          yield* harness.reconcile(configuration([instanceA, "replacement"]));
-          yield* changed;
-          yield* update.release;
-          assert.deepStrictEqual(yield* Fiber.join(stale), []);
-          const providers = yield* harness.registry.getProviders;
-          assert.equal(versionOf(providers), "replacement");
-          assert.equal(providers[0]?.status, "ready");
-        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-    );
-  }
+  it.effect.each([
+    { failure: false, label: "success" },
+    { failure: true, label: "failure" },
+  ])("post-update $label belongs to the captured instance", ({ failure }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeCatalogHarness();
+      const update = yield* makeGate();
+      const original = harness.source();
+      if (failure)
+        original.maintenance = () =>
+          update.hold.pipe(Effect.andThen(Effect.die("old maintenance failed")));
+      else
+        original.refreshRead = () =>
+          update.hold.pipe(Effect.as(providerSnapshot(instanceA, "old-update")));
+      const stale = yield* harness.registry
+        .refreshAfterUpdate(driverKind, instanceA)
+        .pipe(Effect.forkScoped);
+      yield* Deferred.await(update.started);
+      const changed = yield* nextCatalog(
+        harness.registry,
+        (providers) => versionOf(providers) === "replacement",
+      );
+      yield* harness.reconcile(configuration([instanceA, "replacement"]));
+      yield* changed;
+      yield* update.release;
+      assert.deepStrictEqual(yield* Fiber.join(stale), []);
+      const providers = yield* harness.registry.getProviders;
+      assert.equal(versionOf(providers), "replacement");
+      assert.equal(providers[0]?.status, "ready");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 
   it.effect(
     "independent B completes while A persists, and A returns and emits the current aggregate",
@@ -260,48 +258,47 @@ describe("catalog publication ownership (Audit 4.4 / R4)", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  for (const replacement of [false, true]) {
-    it.effect(
-      `fences a rename already in flight across ${replacement ? "replacement" : "removal"}`,
-      () =>
-        Effect.gen(function* () {
-          const harness = yield* makeCatalogHarness();
-          const rename = yield* makeGate();
-          const removed = yield* Deferred.make<void>();
-          harness.controls.afterRemove = (path) =>
-            path === harness.cachePath(instanceA)
-              ? Deferred.succeed(removed, undefined).pipe(Effect.asVoid)
-              : Effect.void;
-          harness.controls.beforeRename = (_, to) => {
-            if (to !== harness.cachePath(instanceA)) return Effect.void;
-            delete harness.controls.beforeRename;
-            return rename.hold;
-          };
-          harness.source().provider = providerSnapshot(instanceA, "retired-write");
-          const stale = yield* harness.registry.refreshInstance(instanceA).pipe(Effect.forkScoped);
-          yield* Effect.addFinalizer(() => rename.release);
-          yield* Deferred.await(rename.started);
-          const changed = yield* nextCatalog(harness.registry, (providers) =>
-            replacement
-              ? versionOf(providers) === "replacement"
-              : versionOf(providers) === undefined,
-          );
-          yield* harness.reconcile(
-            replacement ? configuration([instanceA, "replacement"]) : configuration(),
-          );
-          yield* rename.release;
-          yield* Fiber.join(stale);
-          yield* changed;
-          if (!replacement) yield* Deferred.await(removed);
-          assert.equal(
-            (yield* readProviderStatusCache(harness.cachePath(instanceA)))?.version,
-            replacement ? "replacement" : undefined,
-          );
-          assert.equal(
-            versionOf(yield* harness.registry.getProviders),
-            replacement ? "replacement" : undefined,
-          );
-        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-    );
-  }
+  it.effect.each([
+    { replacement: false, label: "removal" },
+    { replacement: true, label: "replacement" },
+  ])("fences a rename already in flight across $label", ({ replacement }) =>
+    Effect.gen(function* () {
+      const harness = yield* makeCatalogHarness();
+      const rename = yield* makeGate();
+      const removed = yield* Deferred.make<void>();
+      harness.controls.afterRemove = (path) =>
+        path === harness.cachePath(instanceA)
+          ? Deferred.succeed(removed, undefined).pipe(Effect.asVoid)
+          : Effect.void;
+      harness.controls.beforeRename = (_, to) => {
+        if (to !== harness.cachePath(instanceA)) return Effect.void;
+        delete harness.controls.beforeRename;
+        return rename.hold;
+      };
+      harness.source().provider = providerSnapshot(instanceA, "retired-write");
+      const stale = yield* harness.registry.refreshInstance(instanceA).pipe(Effect.forkScoped);
+      yield* Effect.addFinalizer(() => rename.release);
+      yield* Deferred.await(rename.started);
+      const changed = yield* nextCatalog(harness.registry, (providers) =>
+        replacement
+          ? versionOf(providers) === "replacement"
+          : versionOf(providers) === undefined,
+      );
+      yield* harness.reconcile(
+        replacement ? configuration([instanceA, "replacement"]) : configuration(),
+      );
+      yield* rename.release;
+      yield* Fiber.join(stale);
+      yield* changed;
+      if (!replacement) yield* Deferred.await(removed);
+      assert.equal(
+        (yield* readProviderStatusCache(harness.cachePath(instanceA)))?.version,
+        replacement ? "replacement" : undefined,
+      );
+      assert.equal(
+        versionOf(yield* harness.registry.getProviders),
+        replacement ? "replacement" : undefined,
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

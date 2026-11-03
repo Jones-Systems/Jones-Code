@@ -229,3 +229,138 @@ it.each([false, true])(
     ).toHaveLength(launch ? 1 : 0);
   },
 );
+
+it.each(["failed", "superseded"] as const)(
+  "retains the recovered launch draft when proven-target navigation is %s",
+  async (outcome) => {
+    using _pendingCleanup = {
+      [Symbol.dispose]: () => {
+        for (const entry of pendingSends.getSnapshot()) pendingSends.dismiss(entry.key);
+      },
+    };
+    const previous = useComposerDraftStore.getState();
+    using _draftCleanup = {
+      [Symbol.dispose]: () => useComposerDraftStore.setState(previous, true),
+    };
+    using _environment = installFakeEnvironment([threadWithHistory("recovery-navigation", 1)]);
+    using delivery = deferFakeSends();
+    __setClientSettingsForTests({
+      ...DEFAULT_CLIENT_SETTINGS,
+      onboardingCompletedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const draftId = DraftId.make(`recovery-navigation-${outcome}`);
+    const targetId = ThreadId.make(`recovery-navigation-target-${outcome}`);
+    const targetRef = scopeThreadRef(ENVIRONMENT_ID, targetId);
+    useComposerDraftStore.getState().setLogicalProjectDraftThreadId(
+      `recovery-navigation-${outcome}`,
+      scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID),
+      draftId,
+      {
+        threadId: targetId,
+        envMode: "local",
+        environmentSelection: "manual",
+        runtimeMode: "full-access",
+        interactionMode: "default",
+      },
+    );
+    useComposerDraftStore.getState().setModelSelection(draftId, {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-5.4",
+    });
+    await page.viewport(1400, 900);
+    const router = getRouter(
+      createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }),
+    );
+    await router.load();
+    const container = document.createElement("div");
+    container.style.cssText = "height: 900px; width: 1400px;";
+    document.body.append(container);
+    const root = createRoot(container);
+    using _rootCleanup = {
+      [Symbol.dispose]: () => {
+        root.unmount();
+        container.remove();
+      },
+    };
+    root.render(<AppRoot router={router} />);
+    await expect.element(page.getByTestId("composer-editor")).toBeVisible();
+    await userEvent.click(page.getByTestId("composer-editor"));
+    await userEvent.type(page.getByTestId("composer-editor"), "Keep the rejected draft");
+    await userEvent.keyboard("{Enter}");
+    await vi.waitFor(() => expect(delivery.requests).toHaveLength(1));
+    const original = delivery.requests[0]!;
+    expect(original.method).toBe("orchestration.launchThread");
+    let resolveNavigation!: () => void;
+    let rejectNavigation!: (error: Error) => void;
+    const navigationResult = new Promise<void>((resolve, reject) => {
+      resolveNavigation = resolve;
+      rejectNavigation = reject;
+    });
+    // Hold only the recovery navigation at the router boundary; later user navigation is real.
+    using navigation = vi.spyOn(router, "navigate").mockReturnValueOnce(navigationResult);
+    using _navigationCleanup = {
+      [Symbol.dispose]: () => {
+        if (navigation.mock.calls.length > 0) {
+          rejectNavigation(new Error("Disposed recovery navigation"));
+        }
+      },
+    };
+    original.reject();
+    await vi.waitFor(() =>
+      expect(navigation).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: "/$environmentId/$threadId",
+          params: { environmentId: ENVIRONMENT_ID, threadId: targetId },
+        }),
+      ),
+    );
+    await expect.element(page.getByText("Couldn't send", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByTestId("composer-editor"))
+      .toHaveTextContent("Keep the rejected draft");
+    expect(router.state.location.pathname).toBe(`/draft/${draftId}`);
+    const recoveredSession = useComposerDraftStore.getState().getDraftSession(draftId);
+    expect(recoveredSession).not.toBeNull();
+
+    let newerDraftPath: string | undefined;
+    if (outcome === "failed") {
+      rejectNavigation(new Error("Synthetic navigation failure"));
+      await expect(navigationResult).rejects.toThrow("Synthetic navigation failure");
+    } else {
+      await userEvent.click(page.getByRole("button", { name: "New thread", exact: true }));
+      await vi.waitFor(() => {
+        expect(router.state.location.pathname).toMatch(/^\/draft\//);
+        expect(router.state.location.pathname).not.toBe(`/draft/${draftId}`);
+      });
+      newerDraftPath = router.state.location.pathname;
+      await expect
+        .element(page.getByTestId("composer-editor"))
+        .not.toHaveTextContent("Keep the rejected draft");
+      await userEvent.click(page.getByTestId("composer-editor"));
+      await userEvent.type(page.getByTestId("composer-editor"), "Newer composer stays mine");
+      resolveNavigation();
+      await navigationResult;
+    }
+
+    expect(useComposerDraftStore.getState().getDraftSession(draftId)).toBe(recoveredSession);
+    expect(useComposerDraftStore.getState().getComposerDraft(draftId)?.prompt).toBe(
+      "Keep the rejected draft",
+    );
+    expect(router.state.location.pathname).toBe(newerDraftPath ?? `/draft/${draftId}`);
+    await expect
+      .element(page.getByTestId("composer-editor"))
+      .toHaveTextContent(
+        outcome === "failed" ? "Keep the rejected draft" : "Newer composer stays mine",
+      );
+    expect(readThreadShell(targetRef)).toBeNull();
+    expect(delivery.requests).toHaveLength(1);
+    expect(pendingSends.getSnapshot()).toEqual([
+      expect.objectContaining({
+        threadId: targetId,
+        delivery: "failed",
+        working: false,
+        retry: undefined,
+      }),
+    ]);
+  },
+);

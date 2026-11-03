@@ -1,5 +1,9 @@
 import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
 import {
+  EMPTY_SHELL_STATE,
+  type EnvironmentShellState,
+} from "@t3tools/client-runtime/state/shell";
+import {
   ChatAttachmentId,
   CommandId,
   EnvironmentId,
@@ -119,6 +123,7 @@ vi.mock("../../state/thread-outbox", async () => {
 });
 
 import { appAtomRegistry } from "../../state/atom-registry";
+import { makeThreadShellFixture } from "../../test-fixtures";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import * as drafts from "../../state/use-composer-drafts";
 import {
@@ -545,18 +550,37 @@ describe("mobile evidence-aware editable recovery", () => {
       const saved = { ...pick, model: "concurrent-saved-B" };
       drafts.updateComposerDraftSettings(key, { modelSelection: pick });
       const submitted = drafts.getComposerDraftSnapshot(key).modelSelection;
+      const shell = makeThreadShellFixture({
+        environmentId: message.environmentId,
+        id: message.threadId,
+        projectId: message.creation!.projectId,
+        title: "Recovery",
+        providerInstanceId: pick.instanceId,
+        modelSelection: pick,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      });
       const releaseReconciliation = drafts.subscribeComposerDraftModelReconciliation({
         registry: appAtomRegistry,
         threadRefsAtom: Atom.make([
           { environmentId: message.environmentId, threadId: message.threadId },
         ]),
-        threadShellAtom: () => Atom.make({ modelSelection: pick } as never),
+        threadShellAtom: () => Atom.make(shell),
         shellStateAtom: () =>
           Atom.make(
-            AsyncResult.success({
+            AsyncResult.success<EnvironmentShellState>({
+              ...EMPTY_SHELL_STATE,
               status: "live",
-              snapshot: Option.some({ threads: [{ id: message.threadId, modelSelection: pick }] }),
-            } as never),
+              snapshot: Option.some({
+                schemaVersion: 1,
+                snapshotSequence: 0,
+                projects: [],
+                threads: [shell.source],
+                archivedThreads: [],
+              }),
+            }),
           ),
       });
       try {

@@ -571,12 +571,33 @@ const waitRun = (threadId: ThreadId, runId: RunId, status: string) =>
 const finishStart = (threadId: ThreadId, runId: RunId) =>
   Effect.gen(function* () {
     const outbox = yield* Outbox.EffectOutboxV2;
+    const threads = yield* Threads.ThreadManagementService;
     const starts = (yield* outbox.listByThreadId(threadId)).filter(
       (effect) => effect.request.type === "provider-turn.start" && effect.request.runId === runId,
     );
     assert.lengthOf(starts, 1);
     yield* outbox.awaitCompletion(starts.map((effect) => effect.id));
     assert.equal(Option.getOrThrow(yield* outbox.get(starts[0]!.id)).status, "succeeded");
+    const run = (yield* threads.getThreadProjection(threadId)).runs.find(
+      (candidate) => candidate.id === runId,
+    )!;
+    assert.equal(run.status, "running");
+    assert.isNotNull(run.activeAttemptId);
+    assert.isNotNull(run.providerThreadId);
+    return yield* threads
+      .streamStoredEventsFrom({ threadId, eventType: "provider-turn.updated" })
+      .pipe(
+        Stream.filterMap(({ event }) =>
+          event.type === "provider-turn.updated" &&
+          event.payload.runAttemptId === run.activeAttemptId &&
+          event.payload.providerThreadId === run.providerThreadId &&
+          event.payload.status === "running"
+            ? Option.some(event.payload)
+            : Option.none(),
+        ),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+      );
   });
 
 it.effect(
@@ -695,7 +716,8 @@ it.effect(
             (run) => run.userMessageId === third.messageId,
           )!;
           yield* waitRun(threadId, thirdRun.id, "running");
-          yield* finishStart(threadId, thirdRun.id);
+          const thirdTurn = yield* finishStart(threadId, thirdRun.id);
+          assert.equal(thirdTurn.nativeTurnRef?.nativeId, "delivery-turn-3");
           const acceptedReceipt = Option.getOrThrow(
             yield* receipts.getByCommandId(third.commandId),
           );
@@ -731,7 +753,14 @@ it.effect(
             (effect) => effect.request.type === "provider-turn.interrupt",
           );
           assert.lengthOf(interrupts, 1);
+          assert.include(interrupts[0]!.request, {
+            providerThreadId: thirdTurn.providerThreadId,
+            providerTurnId: thirdTurn.id,
+          });
           yield* outbox.awaitCompletion(interrupts.map((effect) => effect.id));
+          const completedInterrupt = Option.getOrThrow(yield* outbox.get(interrupts[0]!.id));
+          assert.equal(completedInterrupt.status, "succeeded");
+          assert.equal(completedInterrupt.attemptCount, 1);
           const final = yield* threads.getThreadProjection(threadId);
           assert.lengthOf((yield* threads.getShellSnapshot()).threads, 1);
           assert.lengthOf(
@@ -764,6 +793,14 @@ it.effect(
           assert.lengthOf(
             f.requests.filter((request) => request.method === "turn/interrupt"),
             1,
+          );
+          assert.deepEqual(
+            f.requests.find((request) => request.method === "turn/interrupt"),
+            {
+              instanceId: instanceB,
+              method: "turn/interrupt",
+              params: { threadId: nativeId, turnId: "delivery-turn-3" },
+            },
           );
         }).pipe(
           Effect.ensuring(

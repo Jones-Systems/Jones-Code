@@ -1,3 +1,4 @@
+import { it as effectIt } from "@effect/vitest";
 import {
   AVAILABLE_CONNECTION_STATE,
   EnvironmentSupervisor,
@@ -22,9 +23,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { initialMessageCommandId } from "@t3tools/contracts/jones/deliveryEvidence";
-import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SubscriptionRef from "effect/SubscriptionRef";
@@ -42,6 +41,7 @@ import {
   expoThreadOutboxStorage,
   type ThreadOutboxStorage,
 } from "../../state/thread-outbox-storage";
+import { makePromisePorts } from "../settlementRestore/promisePorts.testkit";
 import {
   acceptedQueuedThreadDelivery,
   canRestoreQueuedThreadMessage,
@@ -231,106 +231,105 @@ function queue(storage: ThreadOutboxStorage = expoThreadOutboxStorage) {
   return { ...manager, current };
 }
 
-async function dispatcher(send: (method: string, payload: unknown) => Promise<unknown>) {
-  const client = {
-    [ORCHESTRATION_V2_WS_METHODS.launchThread]: (payload: unknown) =>
-      Effect.tryPromise({
-        try: () => send(ORCHESTRATION_V2_WS_METHODS.launchThread, payload),
-        catch: (error) => error,
-      }),
-    [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (payload: unknown) =>
-      Effect.tryPromise({
-        try: () => send(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, payload),
-        catch: (error) => error,
-      }),
-  } as unknown as WsRpcProtocolClient;
-  const session: RpcSession = {
-    client,
-    initialConfig: Effect.die("Replay must not read capabilities or catalog"),
-    subscribeServerConfig: (input) => client.subscribeServerConfig(input),
-    ready: Effect.void,
-    probe: Effect.void,
-    closed: Effect.never,
-  };
-  const supervisor = await Effect.runPromise(
-    Effect.gen(function* () {
-      return EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: new PrimaryConnectionTarget({
-          environmentId: EnvironmentId.make("c3-environment"),
-          label: "Synthetic C3",
-          httpBaseUrl: "https://c3.example.test",
-          wsBaseUrl: "wss://c3.example.test",
+function dispatcher(send: (method: string, payload: unknown) => Promise<unknown>) {
+  return Effect.gen(function* () {
+    const client = {
+      [ORCHESTRATION_V2_WS_METHODS.launchThread]: (payload: unknown) =>
+        Effect.tryPromise({
+          try: () => send(ORCHESTRATION_V2_WS_METHODS.launchThread, payload),
+          catch: (error) => error,
         }),
-        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
-        session: yield* SubscriptionRef.make(Option.some(session)),
-        prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
-        connect: Effect.void,
-        disconnect: Effect.void,
-        retryNow: Effect.void,
-      });
-    }),
-  );
-  return async (prepared: PreparedThreadTurn) => {
-    const result = await Effect.runPromiseExit(
-      dispatchPreparedThreadTurn(prepared).pipe(
-        Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
-      ),
-    );
-    if (Exit.isFailure(result)) throw Cause.squash(result.cause);
-    return result.value;
-  };
+      [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (payload: unknown) =>
+        Effect.tryPromise({
+          try: () => send(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, payload),
+          catch: (error) => error,
+        }),
+    } as unknown as WsRpcProtocolClient;
+    const session: RpcSession = {
+      client,
+      initialConfig: Effect.die("Replay must not read capabilities or catalog"),
+      subscribeServerConfig: (input) => client.subscribeServerConfig(input),
+      ready: Effect.void,
+      probe: Effect.void,
+      closed: Effect.never,
+    };
+    const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
+      target: new PrimaryConnectionTarget({
+        environmentId: EnvironmentId.make("c3-environment"),
+        label: "Synthetic C3",
+        httpBaseUrl: "https://c3.example.test",
+        wsBaseUrl: "wss://c3.example.test",
+      }),
+      state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+      session: yield* SubscriptionRef.make(Option.some(session)),
+      prepared: yield* SubscriptionRef.make(Option.none<PreparedConnection>()),
+      connect: Effect.void,
+      disconnect: Effect.void,
+      retryNow: Effect.void,
+    });
+    const run = yield* makePromisePorts();
+    return (prepared: PreparedThreadTurn) =>
+      run(
+        dispatchPreparedThreadTurn(prepared).pipe(
+          Effect.provideService(EnvironmentSupervisor.EnvironmentSupervisor, supervisor),
+        ),
+      );
+  });
 }
 
 describe("mobile durable request delivery", () => {
-  it.each([true, false])(
+  effectIt.effect.each([true, false])(
     "restarts after a lost response and dispatches the exact persisted envelope (launch: %s)",
-    async (launch) => {
-      const original = message(launch);
-      const prepared = preparedFor(original);
-      const first = queue();
-      await first.enqueue(original);
-      const observed: unknown[] = [];
-      const send = await dispatcher(async (method, payload) => {
-        observed.push({ method, payload: structuredClone(payload) });
-        const saved = (await expoThreadOutboxStorage.load()).messages[0]!;
-        expect(saved.issuance?.state).toBe("issued");
-        if (observed.length === 1) throw new Error("Response lost after synthetic receipt commit");
-        return { sequence: 1, threadId: original.threadId };
-      });
-      expect(
-        (
-          await deliverQueuedThreadTurn({
-            message: original,
-            prepared,
-            revision: first.revisionOf(original.messageId),
-            queue: first,
-            canDispatch: () => true,
-            dispatch: send,
-          })
-        )?.status,
-      ).toBe("unknown");
-      const restarted = queue();
-      expect(await restarted.load()).toBe(true);
-      const loaded = restarted.current()[0]!;
-      expect(queuedThreadContentChanged(loaded)).toBe(false);
-      if (loaded.issuance?.state !== "issued") throw new Error("Lost issued envelope");
-      expect(Object.isFrozen(loaded.issuance.prepared.payload)).toBe(true);
-      expect(
-        (
-          await deliverQueuedThreadTurn({
-            message: loaded,
-            revision: restarted.revisionOf(loaded.messageId),
-            queue: restarted,
-            canDispatch: () => true,
-            dispatch: send,
-          })
-        )?.status,
-      ).toBe("accepted");
-      expect(observed).toEqual([
-        { method: prepared.method, payload: prepared.payload },
-        { method: prepared.method, payload: prepared.payload },
-      ]);
-    },
+    (launch) =>
+      Effect.gen(function* () {
+        const original = message(launch);
+        const prepared = preparedFor(original);
+        const first = queue();
+        yield* Effect.promise(() => first.enqueue(original));
+        const observed: unknown[] = [];
+        const send = yield* dispatcher(async (method, payload) => {
+          observed.push({ method, payload: structuredClone(payload) });
+          const saved = (await expoThreadOutboxStorage.load()).messages[0]!;
+          expect(saved.issuance?.state).toBe("issued");
+          if (observed.length === 1) throw new Error("Response lost after synthetic receipt commit");
+          return { sequence: 1, threadId: original.threadId };
+        });
+        yield* Effect.promise(async () => {
+          expect(
+            (
+              await deliverQueuedThreadTurn({
+                message: original,
+                prepared,
+                revision: first.revisionOf(original.messageId),
+                queue: first,
+                canDispatch: () => true,
+                dispatch: send,
+              })
+            )?.status,
+          ).toBe("unknown");
+          const restarted = queue();
+          expect(await restarted.load()).toBe(true);
+          const loaded = restarted.current()[0]!;
+          expect(queuedThreadContentChanged(loaded)).toBe(false);
+          if (loaded.issuance?.state !== "issued") throw new Error("Lost issued envelope");
+          expect(Object.isFrozen(loaded.issuance.prepared.payload)).toBe(true);
+          expect(
+            (
+              await deliverQueuedThreadTurn({
+                message: loaded,
+                revision: restarted.revisionOf(loaded.messageId),
+                queue: restarted,
+                canDispatch: () => true,
+                dispatch: send,
+              })
+            )?.status,
+          ).toBe("accepted");
+          expect(observed).toEqual([
+            { method: prepared.method, payload: prepared.payload },
+            { method: prepared.method, payload: prepared.payload },
+          ]);
+        });
+      }),
   );
 
   it("does not issue an RPC when issuance persistence fails and retains the original durable queue", async () => {

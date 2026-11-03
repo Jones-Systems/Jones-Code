@@ -13,6 +13,7 @@ import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { createMemoryHistory } from "@tanstack/react-router";
 import type * as Context from "effect/Context";
 import { AsyncResult } from "effect/reactivity";
+import { useEffect } from "react";
 // oxlint-disable-next-line t3code/require-disposable-render -- Boot subscriptions can hold async act open; _rootCleanup owns this synchronous mount and unmount.
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -204,7 +205,7 @@ it.each(cases)(
     let submitStandalone!: ReturnType<typeof useThreadLifecycle>["sendStandaloneCommand"];
     function Probe() {
       const [, setMessages] = usePendingMessages(ENVIRONMENT_ID, fixture.id);
-      submitPlan = usePlanFollowUpSend({
+      const plan = usePlanFollowUpSend({
         environmentId: ENVIRONMENT_ID,
         routeThreadKey,
         activeThread: thread,
@@ -224,7 +225,7 @@ it.each(cases)(
         anchorNewTurn: vi.fn(),
         persistThreadSettingsForNextTurn: persistSettings,
       });
-      submitNewPlan = useImplementPlanInNewThread({
+      const newPlan = useImplementPlanInNewThread({
         environmentId: ENVIRONMENT_ID,
         routeThreadKey,
         activeThread: thread,
@@ -248,7 +249,7 @@ it.each(cases)(
         activeEnvironmentUnavailable: false,
         defaultRuntimeMode: "full-access",
       });
-      submitStandalone = useThreadLifecycle({
+      const standalone = useThreadLifecycle({
         environmentId: ENVIRONMENT_ID,
         routeThreadKey,
         currentRouteThreadKeyRef: { current: routeThreadKey },
@@ -282,6 +283,11 @@ it.each(cases)(
         scrollToEnd: vi.fn(),
         persistThreadSettingsForNextTurn: persistSettings,
       }).sendStandaloneCommand;
+      useEffect(() => {
+        submitPlan = plan;
+        submitNewPlan = newPlan;
+        submitStandalone = standalone;
+      }, [plan, newPlan, standalone]);
       return null;
     }
     await using _probe = await render(

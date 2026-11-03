@@ -1,9 +1,8 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ServerConfig, ProviderInstanceId } from "@t3tools/contracts";
+import { ProviderInstanceId, type ServerConfig } from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { createMemoryHistory } from "@tanstack/react-router";
 import type * as Context from "effect/Context";
-import * as Schema from "effect/Schema";
 // oxlint-disable-next-line t3code/require-disposable-render -- Boot subscriptions can hold async act open; _rootCleanup owns this synchronous mount and unmount.
 import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vite-plus/test";
@@ -25,18 +24,18 @@ import {
 import { pendingSends } from "../pendingSends/store";
 
 function disabledSavedProvider(config: ServerConfig): ServerConfig {
-  const codex = { ...config.providers[0]!, continuationGroupKey: "synthetic-shared" };
-  return Schema.decodeUnknownSync(ServerConfig)({
+  const codex = { ...config.providers[0]!, continuation: { groupKey: "synthetic-shared" } };
+  return {
     ...config,
-    providers: [codex, { ...codex, instanceId: "codex-replacement" }],
+    providers: [codex, { ...codex, instanceId: ProviderInstanceId.make("codex-replacement") }],
     settings: {
       ...config.settings,
       providerInstances: {
-        codex: { driver: "codex", enabled: false },
-        "codex-replacement": { driver: "codex", enabled: true },
+        codex: { driver: codex.driver, enabled: false },
+        "codex-replacement": { driver: codex.driver, enabled: true },
       },
     },
-  });
+  };
 }
 
 vi.mock("../../../../../packages/client-runtime/src/connection/driver.ts", async (original) => {
