@@ -2543,9 +2543,12 @@
       "id": "workstreams-native-client-http",
       "tests": [
         "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
+        "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
+        "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
+        "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx"
       ],
-      "scope": "Shared authenticated closed native read and exact-byte JSONL export consumers. Existing cookie/Bearer/DPoP credential renewal remains the sole HTTP auth owner; no native-to-legacy fallback or transport retry is added. Export checks current counts before and after complete original-byte/trailer verification. Genuine mounted member HTTP composition is synthetic source evidence. Application reader lifetimes, platform views and capability advertisement remain separate integration gates."
+      "scope": "Shared authenticated closed native read/export and application-owned read lifetimes. Web detail/reference and mobile appearance use the original prepared connection/session/generation and independently authenticated public-list binding; replacement/disposal cancels pending work and withholds late results. Snapshot-scoped exports are callable from both application controllers. Existing cookie/Bearer/DPoP renewal remains the sole owner. Placement-v2 local trust, explicit export UI and capability advertisement remain separately gated."
     }
   ]
 }

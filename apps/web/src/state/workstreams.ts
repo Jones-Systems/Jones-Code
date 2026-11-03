@@ -1,4 +1,7 @@
 import { useWorkstreamOperations } from "../jones/workstreams/useWorkstreamOperations";
+import { useNativeWorkstreamReads } from "../jones/workstreams/useNativeWorkstreamReads";
+import { nativeReadRequest, NativeReadError } from "@t3tools/client-runtime/state/workstreams";
+import type { EnvironmentNativeCompletedExport } from "@t3tools/client-runtime/jones/workstreams/native-http";
 import type { RetainedOperation } from "@t3tools/client-runtime/jones/workstreams/operations";
 import type {
   T3PlacementResult,
@@ -346,6 +349,10 @@ export async function loadCompleteWorkstreamDetail(
 }
 
 export interface WorkstreamListView {
+  readonly exportNative?: (options?: {
+    readonly signal?: AbortSignal;
+    readonly pageSize?: number;
+  }) => Promise<EnvironmentNativeCompletedExport>;
   readonly nativeRead?:
     | import("@t3tools/contracts/jones/workstreamsNativeRead").WorkstreamsNativeReadEnvelope
     | null;
@@ -729,6 +736,13 @@ export function useWorkstreams(
   });
   const operations = useWorkstreamOperations({ data, primaryEnvironmentId, refresh });
   const nativeCapability = operations.capability;
+  const usesNativeReads =
+    isNativeWorkstreams(nativeCapability) &&
+    nativeCapability?.reads.includes("workstreams-read/1.0.0");
+  const nativeReads = useNativeWorkstreamReads(
+    usesNativeReads ? primaryEnvironmentId : null,
+    data?.binding ?? null,
+  );
   const nativeBlock = nativeWorkstreamsBlock(nativeCapability);
   const nativeHidden =
     nativeCapability?.mode === "transition-fenced" || nativeCapability?.mode === "disabled";
@@ -1416,6 +1430,65 @@ export function useWorkstreams(
   ) => {
     try {
       requireNativeWorkstreamsAvailable(nativeBlock);
+      if (usesNativeReads) {
+        if (!nativeReads)
+          throw new NativeReadError("scope_changed", "Refresh native Workstreams access.");
+        const page = { workstream_id: workstreamId };
+        const [detail, memberships, declarations, edges, history, references] = await Promise.all([
+          nativeReads.complete(
+            nativeReadRequest({ route: "workstream", params: page }),
+            options.signal,
+          ),
+          nativeReads.complete(
+            nativeReadRequest({ route: "memberships", params: page }),
+            options.signal,
+          ),
+          nativeReads.complete(
+            nativeReadRequest({ route: "declarations", params: page }),
+            options.signal,
+          ),
+          nativeReads.complete(nativeReadRequest({ route: "edges", params: page }), options.signal),
+          nativeReads.complete(
+            nativeReadRequest({ route: "history", params: page }),
+            options.signal,
+          ),
+          nativeReads.complete(
+            nativeReadRequest({ route: "references", params: {} }),
+            options.signal,
+          ),
+        ]);
+        return await loadCompleteWorkstreamDetail(
+          {
+            detail: async () => detail.pages[0]!.value,
+            memberships: async () => ({
+              ...memberships.pages[0]!.value,
+              items: [...memberships.items],
+              next_cursor: null,
+            }),
+            declarations: async () => ({
+              ...declarations.pages[0]!.value,
+              items: [...declarations.items],
+              next_cursor: null,
+            }),
+            edges: async () => ({
+              ...edges.pages[0]!.value,
+              items: [...edges.items],
+              next_cursor: null,
+            }),
+            history: async () => ({
+              ...history.pages[0]!.value,
+              items: [...history.items],
+              next_cursor: null,
+            }),
+            references: async () => ({
+              ...references.pages[0]!.value,
+              items: [...references.items],
+              next_cursor: null,
+            }),
+          },
+          options,
+        );
+      }
       const load = <A, E>(run: (client: PrimaryClient) => Effect.Effect<A, E>) =>
         request(run, options.signal);
       return await loadCompleteWorkstreamDetail(
@@ -1477,6 +1550,20 @@ export function useWorkstreams(
   ) => {
     try {
       requireNativeWorkstreamsAvailable(nativeBlock);
+      if (usesNativeReads) {
+        if (!nativeReads)
+          throw new NativeReadError("scope_changed", "Refresh native Workstreams access.");
+        const result = await nativeReads.read(
+          nativeReadRequest({
+            route: "reference",
+            params: { native_reference_id: nativeReferenceId },
+          }),
+          options.signal,
+        );
+        if (result.route !== "reference")
+          throw new NativeReadError("invalid_response", "Native reference route changed.");
+        return result.value;
+      }
       return await request(
         (client) => client.workstreams.reference({ headers: {}, params: { nativeReferenceId } }),
         options.signal,
@@ -1626,6 +1713,13 @@ export function useWorkstreams(
 
   return {
     nativeCapability,
+    ...(nativeReads
+      ? {
+          exportNative: (
+            options: { readonly signal?: AbortSignal; readonly pageSize?: number } = {},
+          ) => nativeReads.export(options.signal, options.pageSize),
+        }
+      : {}),
     operationEntries: operations.entries,
     operationsError: operations.error,
     supportsOperations: operations.supports,

@@ -3625,7 +3625,10 @@
         "apps/server/src/jones/workstreams/native/forwarding/peerReadAdmission.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/peerMcpAuthentication.test.ts",
         "apps/server/src/jones/workstreams/native/forwarding/peerHomeReadClient.test.ts",
-        "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts"
+        "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
+        "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
+        "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
+        "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/state/workstreams/nativeRead.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts --maxWorkers=1 --no-file-parallelism",

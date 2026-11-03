@@ -543,9 +543,17 @@
       "types": "./src/jones/activity/reportLanes.ts",
       "default": "./src/jones/activity/reportLanes.ts"
     },
+    "./jones/workstreams/native-lifetime": {
+      "types": "./src/jones/workstreams/nativeLifetime.ts",
+      "default": "./src/jones/workstreams/nativeLifetime.ts"
+    },
     "./jones/workstreams/native-http": {
       "types": "./src/jones/workstreams/nativeHttp.ts",
       "default": "./src/jones/workstreams/nativeHttp.ts"
+    },
+    "./jones/workstreams/native-lifetime-testing": {
+      "types": "./src/jones/workstreams/nativeLifetime.testkit.ts",
+      "default": "./src/jones/workstreams/nativeLifetime.testkit.ts"
     }
   },
   "scripts": {

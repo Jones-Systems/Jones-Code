@@ -14,7 +14,13 @@
     "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.tsx",
     "docs/operations/workstreams-rollups.md",
     "packages/client-runtime/src/jones/workstreams/nativeHttp.ts",
-    "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts"
+    "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
+    "packages/client-runtime/src/jones/workstreams/nativeLifetime.ts",
+    "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
+    "apps/web/src/jones/workstreams/useNativeWorkstreamReads.ts",
+    "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
+    "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx",
+    "packages/client-runtime/src/jones/workstreams/nativeLifetime.testkit.ts"
   ],
   "hookPaths": ["apps/server/src/httpCors.ts", "apps/server/src/serverOwnership.ts"],
   "tombstones": [],
