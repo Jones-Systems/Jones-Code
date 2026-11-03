@@ -30,6 +30,12 @@ const state = vi.hoisted(() => ({
   toast: vi.fn(),
   navigate: vi.fn(),
   copy: vi.fn(),
+  desktop: false,
+}));
+vi.mock(import("../../env"), () => ({
+  get isElectron() {
+    return state.desktop;
+  },
 }));
 vi.mock(import("./state"), async () => {
   const { Atom, AsyncResult } = await import("effect/reactivity");
@@ -174,6 +180,7 @@ function setup() {
   state.command.mockReset();
   state.toast.mockClear();
   state.navigate.mockClear();
+  state.desktop = false;
   state.copy.mockReset().mockResolvedValue(true);
   state.environments = [
     env("origin", "Laptop"),
@@ -215,12 +222,7 @@ function Group(props: {
       {expanded ? (
         <ul>
           {props.rows.map((entry) => (
-            <LinkedThreadRow
-              key={entry.key}
-              entry={entry}
-              view={props.view}
-              subjectEnvironmentId={props.subject.environmentId}
-            />
+            <LinkedThreadRow key={entry.key} entry={entry} view={props.view} />
           ))}
         </ul>
       ) : null}
@@ -597,3 +599,49 @@ it("retains a delegated row when a fork and continuation target the same endpoin
   expect(entries[0]?.lineage).toEqual([task]);
   expect(entries[0]?.labels).toEqual(["Delegated task", "Continued in", "Fork"]);
 });
+
+it.each([
+  [origin, "receiver", "Live receiver", "VPS"],
+  [receiver, "origin", "Origin title", "Laptop"],
+] as const)(
+  "uses the desktop machine rather than the subject for continuation locations (%j)",
+  async (subject, destination, title, label) => {
+    using fixture = setup();
+    state.desktop = true;
+    state.environments = state.environments.map((environment) => ({
+      ...environment,
+      entry: {
+        target: {
+          _tag:
+            environment.environmentId === destination
+              ? "PrimaryConnectionTarget"
+              : "RelayConnectionTarget",
+        },
+      },
+    })) as EnvironmentPresentation[];
+    seed(subject.environmentId, [link()]);
+    await using screen = await render(
+      <RegistryContext value={fixture.registry}>
+        <Probe subject={subject} />
+      </RegistryContext>,
+      { router: false },
+    );
+    await act(() => button(screen.container, "Linked threads").click());
+    expect(button(screen.container, `Open ${title}`).textContent).not.toContain(`on ${label}`);
+    await act(() => button(screen.container, `Open ${title}`).click());
+    expect(state.navigate).toHaveBeenLastCalledWith({
+      to: "/$environmentId/$threadId",
+      params: { environmentId: destination, threadId: "equal-id" },
+    });
+    state.environments = state.environments.map((environment) => ({
+      ...environment,
+      entry: { target: { _tag: "RelayConnectionTarget" } },
+    })) as EnvironmentPresentation[];
+    await screen.rerender(
+      <RegistryContext value={fixture.registry}>
+        <Probe subject={subject} />
+      </RegistryContext>,
+    );
+    expect(button(screen.container, `Open ${title} on ${label}`)).toBeDefined();
+  },
+);

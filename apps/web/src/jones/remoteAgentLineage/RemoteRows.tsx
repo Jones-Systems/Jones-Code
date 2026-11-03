@@ -15,7 +15,7 @@ import {
 import { Tooltip, TooltipTrigger, TooltipPopup } from "../../components/ui/tooltip";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { useEnvironment } from "../../state/environments";
-import { resolveMachineIdentity } from "./model";
+import { useMachineLocation } from "./useMachineLocation";
 import type { useParentLink } from "./useParentLink";
 
 /**
@@ -31,6 +31,7 @@ export function RemoteSubagentRow(props: {
   const navigate = useNavigate();
   const environment = useEnvironment(props.agent.remoteChild.environmentId);
   const { remoteChild } = props.agent;
+  const machine = useMachineLocation(remoteChild.environmentId, remoteChild.label);
   const status = props.agent.status;
   const failed = status === "failed";
   const title = formatSubagentDisplayTitle(props.agent.title ?? "Subagent");
@@ -44,7 +45,7 @@ export function RemoteSubagentRow(props: {
               size="sm"
               variant="ghost"
               part="row"
-              aria-label={`${title} on ${environment?.label ?? remoteChild.label}`}
+              aria-label={`${title}${machine ? ` on ${machine.label}` : ""}`}
               disabled={environment?.connection.phase !== "connected"}
               onClick={() =>
                 void navigate({
@@ -71,21 +72,19 @@ export function RemoteSubagentRow(props: {
           <span
             className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"}`}
           >
-            on{" "}
-            {
-              resolveMachineIdentity(
-                environment?.label ?? remoteChild.label,
-                environment?.serverConfig?.environment.platform.machine,
-              ).shortLabel
-            }{" "}
-            · {threadRelationshipStatusLabel(status)}
+            {machine ? `on ${machine.shortLabel} · ` : ""}
+            {threadRelationshipStatusLabel(status)}
           </span>
         </TooltipTrigger>
         <TooltipPopup side="left">
           {title}.{" "}
           {environment?.connection.phase !== "connected"
-            ? `Runs on ${remoteChild.label}. Connect to it to open the thread there.`
-            : `Open on ${remoteChild.label}`}
+            ? machine
+              ? `Runs on ${machine.label}. Connect to it to open the thread there.`
+              : "Connect to the local environment to open the thread."
+            : machine
+              ? `Open on ${machine.label}`
+              : "Open delegated task"}
         </TooltipPopup>
       </Tooltip>
     </li>

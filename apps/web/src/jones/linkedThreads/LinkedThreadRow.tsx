@@ -9,7 +9,7 @@ import { Tooltip, TooltipTrigger, TooltipPopup } from "../../components/ui/toolt
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { useEnvironment } from "../../state/environments";
 import { useQuietThreadShell } from "../../state/entities";
-import { resolveMachineIdentity } from "../remoteAgentLineage/model";
+import { useMachineLocation } from "../remoteAgentLineage/useMachineLocation";
 import type { LinkedEntry } from "./model";
 import type { useLinkedThreads } from "./useLinkedThreads";
 
@@ -94,23 +94,20 @@ export function LinkedEntryLabels({ entry }: { readonly entry: LinkedEntry }) {
 export function LinkedThreadRow({
   entry,
   view,
-  subjectEnvironmentId,
 }: {
   readonly entry: LinkedEntry;
   readonly view: View;
-  readonly subjectEnvironmentId: LinkedThreadLink["from"]["environmentId"];
 }) {
   const navigate = useNavigate();
   const environment = useEnvironment(entry.endpoint.environmentId);
   const shell = useQuietThreadShell(
     scopeThreadRef(entry.endpoint.environmentId, entry.endpoint.threadId),
   );
-  const remote = entry.endpoint.environmentId !== subjectEnvironmentId;
   const online = environment?.connection.phase === "connected";
   const title = shell?.title || entry.snapshot?.title || entry.endpoint.threadId.slice(0, 12);
-  const machine = resolveMachineIdentity(
-    environment?.label ?? entry.snapshot?.environmentLabel,
-    environment?.serverConfig?.environment.platform.machine,
+  const machine = useMachineLocation(
+    entry.endpoint.environmentId,
+    entry.snapshot?.environmentLabel,
   );
   const oneSided =
     entry.relations.some((r) => r.link.reverse === "unavailable") &&
@@ -133,7 +130,7 @@ export function LinkedThreadRow({
               part="row"
               multiline
               disabled={!online}
-              aria-label={`Open ${title}${remote ? ` on ${machine.label}` : ""}`}
+              aria-label={`Open ${title}${machine ? ` on ${machine.label}` : ""}`}
               onClick={() =>
                 void navigate({
                   to: "/$environmentId/$threadId",
@@ -150,10 +147,10 @@ export function LinkedThreadRow({
             <span className="block truncate text-left text-sm font-medium">{title}</span>
             <LinkedEntryLabels entry={entry} />
           </span>
-          {remote ? (
-            <span className="shrink-0 text-2xs text-muted-foreground" aria-label={machine.label}>
-              on {machine.shortLabel}
-              {!online ? " · offline" : ""}
+          {machine || !online ? (
+            <span className="shrink-0 text-2xs text-muted-foreground" aria-label={machine?.label}>
+              {machine ? `on ${machine.shortLabel}` : ""}
+              {!online ? `${machine ? " · " : ""}offline` : ""}
             </span>
           ) : null}
           {oneSided ? (
