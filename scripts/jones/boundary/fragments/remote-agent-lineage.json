@@ -8,7 +8,8 @@
     "apps/web/src/jones/remoteAgentLineage/useParentLink.ts",
     "apps/web/src/jones/remoteAgentLineage/RemoteRows.tsx",
     "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx",
-    "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx"
+    "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
+    "apps/web/src/jones/remoteAgentLineage/useMachineLocation.ts"
   ],
   "hookPaths": [],
   "tombstones": [
@@ -39,6 +40,10 @@
     {
       "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
       "to": "apps/web/src/jones/remoteAgentLineage/RemoteRows.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/ThreadRelationshipsControl.tsx",
+      "to": "apps/web/src/jones/remoteAgentLineage/useMachineLocation.ts"
     }
   ]
 }
