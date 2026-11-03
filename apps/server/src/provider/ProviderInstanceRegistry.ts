@@ -27,6 +27,10 @@ export class ProviderInstanceRegistry extends Context.Service<
     readonly getInstance: (
       instanceId: ProviderInstanceId,
     ) => Effect.Effect<ProviderInstance | undefined>;
+    /** Synchronous ownership read for the final catalog mutation and cache publication boundary. */
+    readonly getCatalogSource: (
+      instanceId: ProviderInstanceId,
+    ) => ProviderInstance | ServerProvider | undefined;
     readonly listInstances: Effect.Effect<ReadonlyArray<ProviderInstance>>;
     readonly listUnavailable: Effect.Effect<ReadonlyArray<ServerProvider>>;
     /** streamChanges subscribes on consumption; use subscribeChanges before forking to avoid missing the next publish. */
@@ -179,7 +183,13 @@ const makeReconcile = <R>(input: {
           replacedIds.add(instanceId);
         }
       }
-      for (const id of [...removedIds, ...replacedIds]) {
+      const retiredIds = new Set([...removedIds, ...replacedIds]);
+      // Withdraw publication authority before a finalizer can await an old source's work.
+      yield* Ref.update(
+        state.entries,
+        (entries) => new Map([...entries].filter(([id]) => !retiredIds.has(id))),
+      );
+      for (const id of retiredIds) {
         const live = previousEntries.get(id);
         if (live) {
           yield* Scope.close(live.scope, Exit.void).pipe(Effect.ignore);
@@ -288,6 +298,8 @@ export const makeProviderInstanceRegistry = Effect.fn(
 
   const registry: ProviderInstanceRegistry["Service"] = {
     getInstance: (id) => Ref.get(entries).pipe(Effect.map((map) => map.get(id)?.instance)),
+    getCatalogSource: (id) =>
+      Ref.getUnsafe(entries).get(id)?.instance ?? Ref.getUnsafe(unavailable).get(id),
     listInstances: Ref.get(entries).pipe(
       Effect.map(
         (map) =>

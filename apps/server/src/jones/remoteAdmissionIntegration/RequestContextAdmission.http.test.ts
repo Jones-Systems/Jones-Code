@@ -66,7 +66,11 @@ it.effect(
         ),
       ),
       Layer.provide(Layer.mock(EnvironmentAuth.EnvironmentAuth)({})),
-      Layer.provide(Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({})),
+      Layer.provide(
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: () => undefined,
+        }),
+      ),
       Layer.provideMerge(memory),
     );
     return Effect.scoped(

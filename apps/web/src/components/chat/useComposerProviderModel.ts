@@ -50,6 +50,7 @@ export function useComposerProviderModel(
     candidateInstanceIds,
     lockedProvider,
     lockedInstanceId,
+    requiredInstanceId,
   } = input;
   const draftModelState = useComposerDraftModelState(threadRef);
   const providerInstanceEntries: ReadonlyArray<ProviderInstanceEntry> = sortProviderInstanceEntries(
@@ -64,9 +65,12 @@ export function useComposerProviderModel(
     candidateInstanceIds,
     lockedProvider,
     lockedInstanceId,
+    requiredInstanceId,
   });
   const selectedInstanceId =
-    selection.selectedProviderEntry?.instanceId ?? NO_PROVIDER_MODEL_SELECTION.instanceId;
+    selection.selectedProviderEntry?.instanceId ??
+    selection.unavailableProviderInstanceId ??
+    NO_PROVIDER_MODEL_SELECTION.instanceId;
   const selectedProvider: ProviderDriverKind =
     selection.selectedProviderEntry?.driverKind ?? selection.requestedDriverKind;
   const modelState = deriveEffectiveComposerModelState({

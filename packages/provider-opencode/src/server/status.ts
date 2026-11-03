@@ -455,6 +455,11 @@ export interface OpenCode2Model extends OpenCodeRelease {
   readonly variants: ReadonlyArray<{ readonly id: string }>;
 }
 
+interface OpenCode2ModelCatalog {
+  readonly models: ReadonlyArray<OpenCode2Model>;
+  readonly complete: boolean;
+}
+
 // Sub-provider names distinguish overlapping catalog entries.
 function subProviderLabelFor(input: {
   readonly providerID: string;
@@ -500,13 +505,21 @@ export const makeOpenCode2ModelLoader = <E>(
           },
           schedule: Schedule.spaced("250 millis"),
         }),
-        Effect.catch((error) => (latest.length > 0 ? Effect.succeed(latest) : Effect.fail(error))),
+        Effect.map((models): OpenCode2ModelCatalog => ({ models, complete: true })),
+        Effect.catch((error) =>
+          latest.length > 0
+            ? Effect.succeed({ models: latest, complete: false })
+            : Effect.fail(error),
+        ),
         Effect.timeoutOption("5 seconds"),
         Effect.map((loaded) => {
           // Fresh progress may still be partial, but a warm cache must not freeze slow catalogs.
-          if (loaded._tag === "Some") lastLoaded = loaded.value;
+          if (loaded._tag === "Some") lastLoaded = loaded.value.models;
           else if (latest.length > 0) lastLoaded = latest;
-          return lastLoaded;
+          return {
+            models: lastLoaded,
+            complete: loaded._tag === "Some" && loaded.value.complete,
+          } satisfies OpenCode2ModelCatalog;
         }),
       );
     });
@@ -606,7 +619,7 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
   settings: OpenCodeSettings,
   version: string,
   checkedAt: string,
-  loadModels: Effect.Effect<ReadonlyArray<OpenCode2Model>, OpenCodeRuntime.OpenCodeRuntimeError>,
+  loadModels: Effect.Effect<OpenCode2ModelCatalog, OpenCodeRuntime.OpenCodeRuntimeError>,
 ) {
   const result = yield* Effect.exit(loadModels);
   const probe = (status: "ready" | "warning" | "error", message: string) => ({
@@ -636,7 +649,7 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
       probe: probe("error", "OpenCode could not load its model list."),
     });
   }
-  if (result.value.length === 0) {
+  if (result.value.models.length === 0) {
     yield* logDiscoveryFailure({
       phase: "models",
       isExternalServer: settings.serverUrl.trim().length > 0,
@@ -645,7 +658,7 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
   }
   const models = providerModelsFromSettings(
     markOpenCodeLegacy(
-      result.value.map((model) => {
+      result.value.models.map((model) => {
         const subProvider = subProviderLabelFor(model);
         return {
           model: {
@@ -653,7 +666,10 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
             name: model.name,
             ...(subProvider ? { subProvider } : {}),
             isCustom: false,
-            capabilities: openCode2ModelCapabilities(model),
+            capabilities:
+              !result.value.complete && model.variants.length === 0
+                ? null
+                : openCode2ModelCapabilities(model),
           },
           release: model,
         };
@@ -669,10 +685,10 @@ const checkOpenCode2 = Effect.fn("checkOpenCode2")(function* (
     models,
     slashCommands: [COMPACT_SLASH_COMMAND],
     probe:
-      result.value.length > 0
+      result.value.models.length > 0
         ? probe(
             "ready",
-            `OpenCode ${version} lists ${result.value.length} model${result.value.length === 1 ? "" : "s"}.`,
+            `OpenCode ${version} lists ${result.value.models.length} model${result.value.models.length === 1 ? "" : "s"}.`,
           )
         : probe("warning", "OpenCode 2 is running, but it did not list any models yet."),
   });
@@ -682,10 +698,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   openCodeSettings: OpenCodeSettings,
   cwd: string,
   probeRuntime: Effect.Effect<ProbedOpenCode, OpenCodeRuntime.OpenCodeRuntimeError>,
-  loadOpenCode2Models: Effect.Effect<
-    ReadonlyArray<OpenCode2Model>,
-    OpenCodeRuntime.OpenCodeRuntimeError
-  >,
+  loadOpenCode2Models: Effect.Effect<OpenCode2ModelCatalog, OpenCodeRuntime.OpenCodeRuntimeError>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,

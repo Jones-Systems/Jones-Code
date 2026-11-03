@@ -3,6 +3,14 @@
   "private": true,
   "type": "module",
   "exports": {
+    "./jones/deliveryEvidence": {
+      "types": "./src/jones/deliveryEvidence.ts",
+      "default": "./src/jones/deliveryEvidence.ts"
+    },
+    "./jones/preparedThreadTurn": {
+      "types": "./src/jones/preparedThreadTurn.ts",
+      "default": "./src/jones/preparedThreadTurn.ts"
+    },
     "./workspace-basename-lookup": {
       "types": "./src/workspaceBasenameLookup.ts",
       "default": "./src/workspaceBasenameLookup.ts"

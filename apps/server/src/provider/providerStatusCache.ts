@@ -10,6 +10,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
 import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
+import { withCurrentCatalogCacheWrite } from "../jones/provider/catalog/cachePublication.ts";
 
 const decodeProviderStatusCache = Schema.decodeUnknownEffect(
   Schema.fromJsonString(ServerProviderSchema),
@@ -133,10 +134,12 @@ export const readProviderStatusCache = Effect.fn("providerStatusCache.readProvid
 export const writeProviderStatusCache = (input: {
   readonly filePath: string;
   readonly provider: ServerProvider;
+  readonly isCurrent?: () => boolean;
 }) => {
   const { updateState: _updateState, ...cacheableProvider } = input.provider;
-  return writeFileStringAtomically({
+  const write = writeFileStringAtomically({
     filePath: input.filePath,
     contents: `${JSON.stringify(cacheableProvider, null, 2)}\n`,
   });
+  return input.isCurrent ? withCurrentCatalogCacheWrite(write, input.isCurrent) : write;
 };

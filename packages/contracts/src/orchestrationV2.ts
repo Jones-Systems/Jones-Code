@@ -1,4 +1,8 @@
 import { GuardedThreadSettlement } from "./jones/guardedThreadSettlement.ts";
+import {
+  OptionalDispatchDeliveryEvidence,
+  OptionalLaunchDeliveryEvidence,
+} from "./jones/deliveryEvidence.ts";
 import { QueuedSteerBatchCommand } from "./jones/queuedSteerBatch.ts";
 import { SettlementRestoreCommand } from "./jones/settlementRestore.ts";
 import { ThreadTurnDispatchGuard } from "./providerQueue.ts";
@@ -3954,6 +3958,7 @@ export type OrchestrationV2ThreadStreamItem = typeof OrchestrationV2ThreadStream
 export class OrchestrationV2DispatchCommandError extends Schema.TaggedError<OrchestrationV2DispatchCommandError>()(
   "OrchestrationV2DispatchCommandError",
   {
+    deliveryEvidence: OptionalDispatchDeliveryEvidence,
     creationRejectionCode: Schema.optionalKey(NativeCreationRejectionCode),
     commandId: CommandId,
     commandType: Schema.String,
@@ -3983,6 +3988,7 @@ export class OrchestrationV2GetShellSnapshotError extends Schema.TaggedError<Orc
 export class OrchestrationV2ThreadLaunchError extends Schema.TaggedError<OrchestrationV2ThreadLaunchError>()(
   "OrchestrationV2ThreadLaunchError",
   {
+    deliveryEvidence: OptionalLaunchDeliveryEvidence,
     commandId: CommandId,
     projectId: ProjectId,
     message: Schema.String,

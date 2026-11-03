@@ -1,4 +1,6 @@
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import { dispatchDeliveryEvidence } from "../jones/orchestration/deliveryEvidence.ts";
+import type { DispatchDeliveryEvidence } from "@t3tools/contracts/jones/deliveryEvidence";
 import * as Queue from "effect/Queue";
 import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
@@ -478,6 +480,10 @@ export interface ThreadManagementServiceShape extends ObservationPorts {
   }) => Effect.Effect<boolean>;
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
   readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  readonly getCommandReceipt: CommandReceiptStore.CommandReceiptStoreV2["Service"]["getByCommandId"];
+  readonly getDispatchDeliveryEvidence: (
+    command: OrchestrationV2Command,
+  ) => Effect.Effect<DispatchDeliveryEvidence>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
@@ -1009,6 +1015,7 @@ const make = Effect.gen(function* () {
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       dispatchMode,
+      ...(input.mode === "auto" ? { deliveryIntent: "auto" as const } : {}),
 
       ...(input.creationSource === "mcp" &&
       (input.senderThreadId !== undefined || (yield* IncomingLinkedMessage)) &&
@@ -1635,6 +1642,8 @@ const make = Effect.gen(function* () {
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,
+    getCommandReceipt: receipts.getByCommandId,
+    getDispatchDeliveryEvidence: (command) => dispatchDeliveryEvidence(receipts, command),
     waitForThread,
     settleAfterRun,
     settleThread,
