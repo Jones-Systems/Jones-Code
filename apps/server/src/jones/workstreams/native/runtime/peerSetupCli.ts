@@ -9,6 +9,7 @@ import * as DateTime from "effect/DateTime";
 import * as AuthRows from "../../../../persistence/AuthSessions.ts";
 import {
   AuthAccessWriteScope,
+  AuthOrchestrationReadScope,
   AuthSessionId,
   EnvironmentHttpBadRequestError,
 } from "@t3tools/contracts";
@@ -310,128 +311,159 @@ const safeLocalFile = (home: string, file: string, limit: number, read: boolean)
   }
 };
 /** Existing signing key is loaded before issuance writers. Reuses the production reservation signer. */
-export const existingCliSessionsLayer = Layer.effect(
-  PeerSetupCliSessions,
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient,
-      rows = yield* AuthRows.AuthSessionRepository;
-    // Reuse the existing signer and reservation matcher; no auth crypto is reimplemented.
-    const materialize = yield* Sessions.makeReservedBearerSessionMaterializer;
-    return PeerSetupCliSessions.of({
-      issue: Effect.fn("PeerSetupCli.issue")(
-        function* () {
-          const now = DateTime.toUtc(yield* DateTime.now);
-          const session: AuthRows.CreateAuthSessionInput = {
-            sessionId: AuthSessionId.make(NodeCrypto.randomUUID()),
-            subject: "workstreams-peer-setup-cli",
-            method: "bearer-access-token",
-            scopes: [AuthAccessWriteScope],
-            client: {
+const makeExistingCliSessionsLayer = (purpose: "peer-setup" | "read-export") =>
+  Layer.effect(
+    PeerSetupCliSessions,
+    Effect.gen(function* () {
+      const metadata =
+        purpose === "peer-setup"
+          ? {
+              subject: "workstreams-peer-setup-cli",
+              scope: AuthAccessWriteScope,
               label: "workstreams peer setup CLI",
-              deviceType: "bot",
-              ipAddress: null,
-              userAgent: null,
-              os: null,
-              browser: null,
-            },
-            issuedAt: now,
-            expiresAt: DateTime.toUtc(DateTime.add(now, { minutes: 5 })),
-          };
-          return yield* sql.withTransaction(
-            rows.createIfAbsent(session).pipe(Effect.andThen(materialize(session))),
-          );
-        },
-        Effect.mapError((cause) => new Sessions.SessionCredentialIssueError({ cause })),
-      ),
-      revoke: (sessionId) =>
-        Effect.flatMap(DateTime.now, (now) =>
-          rows.revoke({ sessionId, revokedAt: DateTime.toUtc(now) }),
-        ).pipe(
-          Effect.as(true),
-          Effect.mapError((cause) => new Sessions.SessionRevocationError({ sessionId, cause })),
-        ),
-    });
-  }),
-);
-const runLive = Effect.fn("PeerSetupCli.live")(
-  function* (home: string, input: W.WorkstreamsPeerSetupOwnerRequest) {
-    const stateDir = NodePath.join(home, "userdata"),
-      dbPath = NodePath.join(stateDir, "statev2.sqlite");
-    const text = yield* Effect.try({
-      try: () => safeLocalFile(home, NodePath.join(stateDir, "server-runtime.json"), 8192, true),
-      catch: unavailable,
-    });
-    const runtime = yield* decodeRuntimeJson(text).pipe(Effect.mapError(unavailable));
-    if (!isProcessAlive(runtime.pid) || runtime.port < 1 || runtime.port > 65535)
-      return yield* unavailable();
-    const databaseIdentity = yield* Effect.try({
-      try: () => {
-        // Existing owner identity and selected DB only; no configuration/bootstrap resolver or port allocator.
-        if (!safeLocalFile(home, NodePath.join(stateDir, "environment-id"), 1024, true).trim())
-          throw unavailable();
-        safeLocalFile(home, dbPath, Number.MAX_SAFE_INTEGER, false);
-        holdJonesServerNativeWriterFence(dbPath);
-        const stat = NodeFS.lstatSync(dbPath);
-        return { device: stat.dev, inode: stat.ino, uid: stat.uid, mode: stat.mode };
-      },
-      catch: unavailable,
-    });
-    const existing = makeExistingEnrollmentSecretStore({
-      baseDir: home,
-      secretsDir: NodePath.join(stateDir, "secrets"),
-    });
-    const key = yield* existing.get("server-signing-key").pipe(Effect.mapError(unavailable));
-    if (Option.isNone(key) || key.value.byteLength !== 32) return yield* unavailable();
-    const secrets = Layer.succeed(Secrets.ServerSecretStore, {
-      ...existing,
-      get: (name) =>
-        name === "server-signing-key"
-          ? Effect.succeedSome(Uint8Array.from(key.value))
-          : existing.get(name),
-    });
-    const sqlite = yield* Effect.try({
-      try: () => makeNativeEnrollmentSqliteConfig(dbPath, "apply"),
-      catch: unavailable,
-    });
-    const selected = Layer.effectDiscard(
-      Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        const connection = yield* sql.reserve;
-        const databases = yield* connection.execute("PRAGMA database_list", [], undefined);
-        const rows = yield* decodeDatabaseList(databases);
-        yield* Effect.try({
-          try: () => {
-            const stat = NodeFS.lstatSync(dbPath);
-            if (
-              rows.filter((row) => row.name === "main" && row.file === dbPath).length !== 1 ||
-              stat.dev !== databaseIdentity.device ||
-              stat.ino !== databaseIdentity.inode ||
-              stat.uid !== databaseIdentity.uid ||
-              stat.mode !== databaseIdentity.mode
-            )
-              throw unavailable();
-            holdJonesServerNativeWriterFence(dbPath);
+            }
+          : {
+              subject: "workstreams-read-export-cli",
+              scope: AuthOrchestrationReadScope,
+              label: "workstreams read export CLI",
+            };
+      const sql = yield* SqlClient.SqlClient,
+        rows = yield* AuthRows.AuthSessionRepository;
+      // Reuse the existing signer and reservation matcher; no auth crypto is reimplemented.
+      const materialize = yield* Sessions.makeReservedBearerSessionMaterializer;
+      return PeerSetupCliSessions.of({
+        issue: Effect.fn("PeerSetupCli.issue")(
+          function* () {
+            const now = DateTime.toUtc(yield* DateTime.now);
+            const session: AuthRows.CreateAuthSessionInput = {
+              sessionId: AuthSessionId.make(NodeCrypto.randomUUID()),
+              subject: metadata.subject,
+              method: "bearer-access-token",
+              scopes: [metadata.scope],
+              client: {
+                label: metadata.label,
+                deviceType: "bot",
+                ipAddress: null,
+                userAgent: null,
+                os: null,
+                browser: null,
+              },
+              issuedAt: now,
+              expiresAt: DateTime.toUtc(DateTime.add(now, { minutes: 5 })),
+            };
+            return yield* sql.withTransaction(
+              rows.createIfAbsent(session).pipe(Effect.andThen(materialize(session))),
+            );
           },
-          catch: unavailable,
-        });
-      }).pipe(Effect.scoped),
-    );
-    const sessionLayer = existingCliSessionsLayer.pipe(
-      Layer.provideMerge(selected),
-      Layer.provideMerge(AuthRows.layer),
-      Layer.provideMerge(NodeSqlite.layer(sqlite)),
-      Layer.provide(secrets),
-    );
-    return yield* Effect.flatMap(
-      makePeerSetupCliHttpEndpoint(home, "http://127.0.0.1:" + runtime.port),
-      (endpoint) => endpoint.run(home, input),
+          Effect.mapError((cause) => new Sessions.SessionCredentialIssueError({ cause })),
+        ),
+        revoke: (sessionId) =>
+          Effect.flatMap(DateTime.now, (now) =>
+            rows.revoke({ sessionId, revokedAt: DateTime.toUtc(now) }),
+          ).pipe(
+            Effect.as(true),
+            Effect.mapError((cause) => new Sessions.SessionRevocationError({ sessionId, cause })),
+          ),
+      });
+    }),
+  );
+export const existingCliSessionsLayer = makeExistingCliSessionsLayer("peer-setup");
+/** Read-only five-minute sessions use the same existing signer and reservation mechanism. */
+export const existingReadExportCliSessionsLayer = makeExistingCliSessionsLayer("read-export");
+
+/** An explicit local command reuses only the selected live runtime and existing signing key.
+ * No resolver, migration, key creation, runtime start or caller-selected URL is involved. */
+export const withSelectedCliSessions = Effect.fn("NativeCli.selectedSessions")(function* <A, E, R>(
+  home: string,
+  purpose: "peer-setup" | "read-export",
+  use: (origin: string, sessions: PeerSetupCliSessions["Service"]) => Effect.Effect<A, E, R>,
+) {
+  const stateDir = NodePath.join(home, "userdata"),
+    dbPath = NodePath.join(stateDir, "statev2.sqlite");
+  const text = yield* Effect.try({
+    try: () => safeLocalFile(home, NodePath.join(stateDir, "server-runtime.json"), 8192, true),
+    catch: unavailable,
+  });
+  const runtime = yield* decodeRuntimeJson(text).pipe(Effect.mapError(unavailable));
+  if (!isProcessAlive(runtime.pid) || runtime.port < 1 || runtime.port > 65535)
+    return yield* unavailable();
+  const databaseIdentity = yield* Effect.try({
+    try: () => {
+      // Existing owner identity and selected DB only; no configuration/bootstrap resolver or port allocator.
+      if (!safeLocalFile(home, NodePath.join(stateDir, "environment-id"), 1024, true).trim())
+        throw unavailable();
+      safeLocalFile(home, dbPath, Number.MAX_SAFE_INTEGER, false);
+      holdJonesServerNativeWriterFence(dbPath);
+      const stat = NodeFS.lstatSync(dbPath);
+      return { device: stat.dev, inode: stat.ino, uid: stat.uid, mode: stat.mode };
+    },
+    catch: unavailable,
+  });
+  const existing = makeExistingEnrollmentSecretStore({
+    baseDir: home,
+    secretsDir: NodePath.join(stateDir, "secrets"),
+  });
+  const key = yield* existing.get("server-signing-key").pipe(Effect.mapError(unavailable));
+  if (Option.isNone(key) || key.value.byteLength !== 32) return yield* unavailable();
+  const secrets = Layer.succeed(Secrets.ServerSecretStore, {
+    ...existing,
+    get: (name) =>
+      name === "server-signing-key"
+        ? Effect.succeedSome(Uint8Array.from(key.value))
+        : existing.get(name),
+  });
+  const sqlite = yield* Effect.try({
+    try: () => makeNativeEnrollmentSqliteConfig(dbPath, "apply"),
+    catch: unavailable,
+  });
+  const selected = Layer.effectDiscard(
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const connection = yield* sql.reserve;
+      const databases = yield* connection.execute("PRAGMA database_list", [], undefined);
+      const rows = yield* decodeDatabaseList(databases);
+      yield* Effect.try({
+        try: () => {
+          const stat = NodeFS.lstatSync(dbPath);
+          if (
+            rows.filter((row) => row.name === "main" && row.file === dbPath).length !== 1 ||
+            stat.dev !== databaseIdentity.device ||
+            stat.ino !== databaseIdentity.inode ||
+            stat.uid !== databaseIdentity.uid ||
+            stat.mode !== databaseIdentity.mode
+          )
+            throw unavailable();
+          holdJonesServerNativeWriterFence(dbPath);
+        },
+        catch: unavailable,
+      });
+    }).pipe(Effect.scoped),
+  );
+  const sessionLayer = (
+    purpose === "peer-setup" ? existingCliSessionsLayer : existingReadExportCliSessionsLayer
+  ).pipe(
+    Layer.provideMerge(selected),
+    Layer.provideMerge(AuthRows.layer),
+    Layer.provideMerge(NodeSqlite.layer(sqlite)),
+    Layer.provide(secrets),
+    Layer.catch(() => Layer.effect(PeerSetupCliSessions, Effect.fail(unavailable()))),
+  );
+  return yield* Effect.flatMap(PeerSetupCliSessions, (sessions) =>
+    use("http://127.0.0.1:" + runtime.port, sessions),
+  ).pipe(Effect.provide(sessionLayer), Effect.scoped);
+});
+const runLive = Effect.fn("PeerSetupCli.live")(
+  (home: string, input: W.WorkstreamsPeerSetupOwnerRequest) =>
+    withSelectedCliSessions(home, "peer-setup", (origin, sessions) =>
+      Effect.flatMap(makePeerSetupCliHttpEndpoint(home, origin), (endpoint) =>
+        endpoint.run(home, input),
+      ).pipe(Effect.provideService(PeerSetupCliSessions, sessions)),
     ).pipe(
-      Effect.provide(Layer.mergeAll(sessionLayer, FetchHttpClient.layer)),
+      Effect.provide(FetchHttpClient.layer),
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
       Effect.scoped,
-    );
-  },
-  (effect) => effect.pipe(Effect.mapError(unavailable)),
+      Effect.mapError(unavailable),
+    ),
 );
 /** Explicit commands only. This binding never starts a runtime, creates a key, or migrates SQL. */
 export const liveEndpointLayer = Layer.succeed(PeerSetupCliEndpoint, { run: runLive });

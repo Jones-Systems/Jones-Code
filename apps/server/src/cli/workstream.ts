@@ -1,3 +1,4 @@
+import { command as exportCommand } from "../jones/workstreams/native/read/exportCli.ts";
 import { registryCommand } from "../jones/workstreams/native/runtime/cli.ts";
 import {
   command as peerSetupCommand,
@@ -51,6 +52,7 @@ export const workstreamCommand = Command.make("workstream").pipe(
   Command.withDescription("Manage cross-system workstream integration."),
   Command.withSubcommands([
     registryCommand,
+    exportCommand,
     peerSetupCommand.pipe(Command.provide(peerSetupLiveEndpointLayer)),
     authorityCommand,
     workstreamProviderCommand,

@@ -153,3 +153,15 @@ export. Revocation, drift, interruption or cancellation leaves the stream incomp
 A mode without a selected exporter, including the current member composition,
 refuses with `workstreams_native_unavailable`; it never falls back to a local
 registry or legacy export. This transport does not advertise native capability.
+
+Use `t3 workstream export --home /absolute/existing/server-home` for a selected
+local home, optionally with `--page-size 1..100`. It requires the already running
+server, existing database and signing key. It creates only a five-minute
+orchestration-read session and revokes that session when finished; it never
+starts a server, migrates storage or creates a key. The CLI checks the original
+JSONL bytes, complete trailer, digest and current read binding before writing
+anything to stdout. Failed downloads or validation produce no export output.
+An interrupted or failed stdout write can leave partial bytes; only EOF and the
+matching trailer establish completion. Redirects, remote origins,
+legacy fallback and automatic retries are unsupported. Member export still
+refuses until its transport is qualified.

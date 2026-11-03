@@ -1,3 +1,6 @@
+import * as NativeExportCli from "../read/exportCli.ts";
+import * as Stdio from "effect/Stdio";
+import * as Sink from "effect/Sink";
 import * as ReadExport from "../read/export.ts";
 import * as HomeAdmission from "../runtime/admission.ts";
 import { validateNativeReadExport } from "../../../../../../../packages/client-runtime/src/state/workstreams/nativeExport.ts";
@@ -2375,6 +2378,57 @@ it.effect(
         expect(completedExport.complete).toBe(true);
         expect(completedExport.pages).toHaveLength(3);
         expect(completedExport.pages.flatMap((page) => page.items)).toHaveLength(3);
+        // The CLI uses the same actual signer/reservation machinery with a fixed read-only purpose.
+        const readCliSessions = Context.get(
+          yield* Layer.build(Cli.existingReadExportCliSessionsLayer).pipe(Effect.provide(f.H.all)),
+          Cli.PeerSetupCliSessions,
+        );
+        const cliOutput: Uint8Array[] = [];
+        const cliStdio = Stdio.make({
+          args: Effect.succeed([]),
+          stdin: Stream.empty,
+          stdout: () =>
+            Sink.forEach((part: string | Uint8Array) =>
+              Effect.sync(() => {
+                cliOutput.push(
+                  typeof part === "string" ? new TextEncoder().encode(part) : part.slice(),
+                );
+              }),
+            ),
+          stderr: () => Sink.drain,
+        });
+        const cliHttp = HttpClient.make((request) =>
+          Effect.gen(function* () {
+            const web = new Request(request.url, {
+              method: request.method,
+              headers: request.headers,
+              ...(request.body._tag === "Uint8Array"
+                ? { body: Buffer.from(request.body.body) }
+                : {}),
+            });
+            const response = yield* Effect.promise(() => exportHttp.handler(web));
+            return HttpResponse.fromWeb(request, response);
+          }),
+        );
+        const cliIssued = yield* readCliSessions.issue();
+        expect(
+          (yield* Context.get(f.H.all, Sessions.SessionStore).verify(cliIssued.token)).scopes,
+        ).toEqual(["orchestration:read"]);
+        yield* NativeExportCli.runNativeReadExportCli(
+          "http://127.0.0.1:1111",
+          { authorization: "Bearer " + cliIssued.token },
+          1,
+        ).pipe(
+          Effect.provideService(HttpClient.HttpClient, cliHttp),
+          Effect.provideService(Stdio.Stdio, cliStdio),
+          Effect.ensuring(readCliSessions.revoke(cliIssued.sessionId).pipe(Effect.orDie)),
+        );
+        expect(Buffer.concat(cliOutput)).toEqual(Buffer.from(exportBytes));
+        expect(
+          (yield* Context.get(f.H.all, Sessions.SessionStore)
+            .verify(cliIssued.token)
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
         expect((yield* exportRequest()).status).toBe(401);
         expect(yield* homeAuth.revokeSession(exportSession.sessionId)).toBe(true);
         expect((yield* exportRequest(exportSession.token)).status).toBe(401);

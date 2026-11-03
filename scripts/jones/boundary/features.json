@@ -2362,9 +2362,10 @@
         "apps/server/src/workstreams/http.test.ts",
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
         "packages/contracts/src/jones/workstreamsNativeExport.test.ts",
-        "packages/contracts/src/jones/environmentHttpGroups.test.ts"
+        "packages/contracts/src/jones/environmentHttpGroups.test.ts",
+        "apps/server/src/jones/workstreams/native/read/exportCli.test.ts"
       ],
-      "scope": "Complete single-home encrypted read projection and authenticated public home/member read envelopes, with explicit placement protocol and coherent bounded continuation pages. Existing v1 adapters, native counts, voice placement and decision snapshot consumers remain shared. Authenticated home HTTP export preserves the existing JSONL producer and shared completion validation. Client loaders, member/CLI export transport, capability advertisement and platform acceptance remain separate."
+      "scope": "Complete single-home encrypted read projection and authenticated public home/member read envelopes, with explicit placement protocol and coherent bounded continuation pages. Existing v1 adapters, native counts, voice placement and decision snapshot consumers remain shared. Authenticated home HTTP export preserves the existing JSONL producer and shared completion validation. Selected-home CLI export validates exact completion before stdout using existing-key read-only sessions. Client loaders, member export transport, capability advertisement and platform acceptance remain separate."
     },
     {
       "id": "workstreams-native-write-foundation",
