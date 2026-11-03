@@ -48,6 +48,7 @@ import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRu
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ProviderRegistryMock from "../../../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts";
@@ -1040,7 +1041,11 @@ it.effect.each([
             keyedThread,
           );
           assert.equal(context.scope.thread, undefined);
-        }).pipe(Effect.provide(h.layer));
+        }).pipe(
+          Effect.provide(h.layer),
+          Effect.provideService(ServerConfig.ServerConfig, { ...config, cwd: root }),
+          Effect.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -1084,7 +1089,11 @@ it.effect("keyed external launch clamps an omitted runtime default to the caller
           (yield* threads.getThreadProjection(unkeyed.threadId)).thread.runtimeMode,
           "approval-required",
         );
-      }).pipe(Effect.provide(h.layer));
+      }).pipe(
+        Effect.provide(h.layer),
+        Effect.provideService(ServerConfig.ServerConfig, { ...config, cwd: root }),
+        Effect.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      );
     }),
   ).pipe(Effect.provide(NodeServices.layer)),
 );

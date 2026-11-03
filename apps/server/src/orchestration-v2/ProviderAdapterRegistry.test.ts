@@ -200,6 +200,7 @@ it.effect(
           ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
             Layer.provide(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                getCatalogSource: (id) => related.find((instance) => instance.instanceId === id),
                 getInstance: (id) =>
                   Effect.succeed(related.find((instance) => instance.instanceId === id)),
                 listInstances: Effect.succeed(related),
@@ -262,6 +263,7 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
         ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
           Layer.provide(
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getCatalogSource: (id) => related.find((instance) => instance.instanceId === id),
               getInstance: (id) =>
                 Effect.succeed(related.find((instance) => instance.instanceId === id)),
               listInstances: Effect.succeed(related),

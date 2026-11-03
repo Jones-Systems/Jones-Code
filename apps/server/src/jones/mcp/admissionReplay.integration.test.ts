@@ -404,7 +404,7 @@ it.effect.each(["provider", "model", "options"] as const)(
             ),
             Effect.flip,
           );
-          if (!("accepted" in lost)) return yield* Effect.fail(lost);
+          if (!("accepted" in lost)) return yield* lost;
           const first = lost.accepted;
           const effects = yield* outbox.listByThreadId(first.childThreadId!);
           yield* orchestrator.dispatch({
@@ -599,7 +599,7 @@ const attachRunningTurn = (cwd: string, queueOnly: boolean) =>
           threadId: parentId,
           runId: run.id,
           occurredAt: now,
-          payload: { ...run, status: "running", updatedAt: now },
+          payload: { ...run, status: "running" },
         },
         {
           id: EventId.make("c4a:provider-turn:running"),

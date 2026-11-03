@@ -19,6 +19,7 @@ import {
   ProviderThreadId,
   type Project,
   type RepositoryIdentity,
+  type ServerProvider,
   RunId,
   ThreadId,
   TurnItemId,
@@ -2287,24 +2288,51 @@ it.effect.each(["pass", "hold"] as const)(
         const thread = yield* makeBoxThread;
         let receivingAuth: EnvironmentAuth.EnvironmentAuth["Service"] | undefined;
         let evaluations = 0;
+        const admissionInstance: ProviderInstance = {
+          instanceId,
+          driverKind: driver,
+          continuationIdentity: { driverKind: driver, continuationKey: instanceId },
+          displayName: undefined,
+          enabled: true,
+          snapshot: {
+            getSnapshot: Effect.succeed({
+              instanceId,
+              driver,
+              enabled: true,
+              installed: true,
+              status: "ready",
+              auth: { status: "authenticated" },
+              checkedAt: "2026-11-02T00:00:00Z",
+              version: null,
+              models: [
+                {
+                  slug: modelSelection.model,
+                  name: "Synthetic admission model",
+                  isCustom: false,
+                  capabilities: null,
+                },
+              ],
+              slashCommands: [],
+              skills: [],
+              supportsRemoteRequestEvaluation: true,
+            } satisfies ServerProvider),
+            refresh: Effect.die("Admission fixtures must not refresh the provider."),
+            resolveMaintenance: () => Effect.die("Admission fixtures must not resolve maintenance."),
+            streamChanges: Stream.empty,
+            applyUsageLimits: () => Effect.die("Admission fixtures must not apply usage limits."),
+          },
+          get orchestrationAdapter(): ProviderInstance["orchestrationAdapter"] {
+            throw new Error("Admission fixtures must not start a provider session.");
+          },
+          get textGeneration(): ProviderInstance["textGeneration"] {
+            throw new Error("Admission fixtures use their injected request evaluator.");
+          },
+        };
         const admissionContext = yield* AdmissionIntake.layer.pipe(
           Layer.provide(
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-              getInstance: (id) =>
-                Effect.succeed(
-                  id === instanceId
-                    ? ({
-                        enabled: true,
-                        snapshot: {
-                          getSnapshot: Effect.succeed({
-                            enabled: true,
-                            supportsRemoteRequestEvaluation: true,
-                            models: [{ slug: modelSelection.model, capabilities: null }],
-                          }),
-                        },
-                      } as unknown as ProviderInstance)
-                    : undefined,
-                ),
+              getCatalogSource: (id) => (id === instanceId ? admissionInstance : undefined),
+              getInstance: (id) => Effect.succeed(id === instanceId ? admissionInstance : undefined),
             }),
           ),
           Layer.provide(

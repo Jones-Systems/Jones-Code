@@ -495,6 +495,7 @@ export function layerWithRegistryAndServices<Error>(
         }),
         layerServerSettings,
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: () => undefined,
           getInstance: (id) => Effect.succeed(new Map<string, ProviderInstance>().get(id)),
         }),
         layerRunExecutionServiceProvided,

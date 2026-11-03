@@ -125,9 +125,10 @@ import {
   resolveMultipleModelTargets,
   prepareTurnAttachments,
 } from "./chatViewSend";
-import type {
-  EnvironmentProject,
-  EnvironmentThreadShell,
+import {
+  presentThreadShell,
+  type EnvironmentProject,
+  type EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import type { UnifiedSettings } from "@t3tools/contracts";
 import type { Dispatch } from "react";
@@ -972,7 +973,20 @@ export function useComposerSend(input: ComposerSendInput) {
               : {}),
         },
       ]);
-      pendingSends.attachThread(environmentId, threadIdForSend, activeThread);
+      // Accepted creation uses this fallback before shell publication; keep the launch selection.
+      pendingSends.attachThread(
+        environmentId,
+        threadIdForSend,
+        isLocalDraftThread
+          ? presentThreadShell(environmentId, {
+              ...activeThread.source,
+              providerInstanceId: ctxSelectedModelSelection.instanceId,
+              modelSelection: ctxSelectedModelSelection,
+              runtimeMode,
+              interactionMode: sendInteractionMode,
+            })
+          : activeThread,
+      );
     }
     if (turnUsesAttachmentUploads && composerAttachmentsSnapshot.length > 0) {
       for (const attachment of composerAttachmentsSnapshot) {

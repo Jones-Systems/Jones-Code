@@ -4,9 +4,12 @@ import {
   OrchestrationV2DispatchCommandError,
   OrchestrationV2ThreadLaunchError,
   ProviderInstanceId,
+  T3_PROJECT_FILE_NAME,
   ThreadId,
+  WS_METHODS,
   type OrchestrationV2Command,
   type OrchestrationV2ThreadLaunchInput,
+  type ProjectReadFileInput,
 } from "@t3tools/contracts";
 import { initialMessageCommandId } from "@t3tools/contracts/jones/deliveryEvidence";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
@@ -53,6 +56,20 @@ vi.mock("../../../../../packages/client-runtime/src/connection/driver.ts", async
             ...lease.session,
             client: new Proxy(lease.session.client, {
               get(target, method, receiver) {
+                // New thread reads optional workspace defaults before it creates and navigates.
+                if (method === WS_METHODS.projectsReadFile)
+                  return (input: ProjectReadFileInput) =>
+                    input.cwd === "/workspace/render" &&
+                    input.relativePath === T3_PROJECT_FILE_NAME &&
+                    input.allowMissing === true
+                      ? Effect.succeed({
+                          relativePath: input.relativePath,
+                          contents: "",
+                          byteLength: 0,
+                          truncated: false,
+                          exists: false,
+                        })
+                      : target[method](input);
                 if (method === ORCHESTRATION_V2_WS_METHODS.dispatchCommand)
                   return (input: OrchestrationV2Command) =>
                     Effect.mapError(
@@ -333,13 +350,21 @@ it.each(["failed", "superseded"] as const)(
         expect(router.state.location.pathname).not.toBe(`/draft/${draftId}`);
       });
       newerDraftPath = router.state.location.pathname;
+      const newerDraftId = DraftId.make(newerDraftPath.slice("/draft/".length));
+      const newerSession = useComposerDraftStore.getState().getDraftSession(newerDraftId);
+      expect(newerSession).toMatchObject({ environmentId: ENVIRONMENT_ID, projectId: PROJECT_ID });
+      expect(newerSession?.threadId).not.toBe(targetId);
       await expect
         .element(page.getByTestId("composer-editor"))
         .not.toHaveTextContent("Keep the rejected draft");
       await userEvent.click(page.getByTestId("composer-editor"));
       await userEvent.type(page.getByTestId("composer-editor"), "Newer composer stays mine");
+      const newerComposer = useComposerDraftStore.getState().getComposerDraft(newerDraftId);
+      expect(newerComposer?.prompt).toBe("Newer composer stays mine");
       resolveNavigation();
       await navigationResult;
+      expect(useComposerDraftStore.getState().getDraftSession(newerDraftId)).toBe(newerSession);
+      expect(useComposerDraftStore.getState().getComposerDraft(newerDraftId)).toBe(newerComposer);
     }
 
     expect(useComposerDraftStore.getState().getDraftSession(draftId)).toBe(recoveredSession);

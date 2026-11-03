@@ -25,6 +25,7 @@ import {
   ProjectId,
   type ModelSelection,
   type ServerProviderModel,
+  type ServerProvider,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -39,6 +40,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -46,6 +48,7 @@ import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import * as EventSink from "./EventSink.ts";
@@ -221,7 +224,9 @@ function startWithMissingWorktree(
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         ServerSettings.layerTest(),
-        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: () => undefined,
+        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
       ),
     ),
@@ -431,6 +436,46 @@ function makeLocalCommandHarness(input: {
     createdAt: now,
     updatedAt: now,
   };
+  const providerInstances = new Map<ProviderInstanceId, ProviderInstance>();
+  for (const instanceId of new Set([
+    newInstanceId,
+    run.modelSelection.instanceId,
+    ProviderInstanceId.make("codex-work"),
+  ])) {
+    const driverKind = ProviderDriverKind.make("codex");
+    providerInstances.set(instanceId, {
+      instanceId,
+      driverKind,
+      continuationIdentity: { driverKind, continuationKey: instanceId },
+      displayName: undefined,
+      enabled: true,
+      snapshot: {
+        getSnapshot: Effect.succeed({
+          instanceId,
+          driver: driverKind,
+          enabled: true,
+          installed: true,
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-09-04T12:00:00Z",
+          version: null,
+          models: input.effortProof?.models ?? [],
+          slashCommands: [],
+          skills: [],
+        } satisfies ServerProvider),
+        refresh: Effect.die("Turn-start fixtures must not refresh providers."),
+        resolveMaintenance: () => Effect.die("Turn-start fixtures must not resolve maintenance."),
+        streamChanges: Stream.empty,
+        applyUsageLimits: () => Effect.die("Turn-start fixtures must not apply usage limits."),
+      },
+      get orchestrationAdapter(): ProviderInstance["orchestrationAdapter"] {
+        throw new Error("Turn-start fixtures use their provided session manager.");
+      },
+      get textGeneration(): ProviderInstance["textGeneration"] {
+        throw new Error("Turn-start fixtures must not generate text.");
+      },
+    });
+  }
   let projection: OrchestrationV2ThreadProjection = {
     thread: {
       id: threadId,
@@ -973,18 +1018,8 @@ function makeLocalCommandHarness(input: {
           getSettings: input.effortProof?.getSettings ?? Effect.succeed(DEFAULT_SERVER_SETTINGS),
         }),
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-          getInstance: (instanceId) =>
-            Effect.succeed({
-              instanceId,
-              driverKind: ProviderDriverKind.make("codex"),
-              snapshot: {
-                getSnapshot: Effect.succeed({
-                  instanceId,
-                  driver: ProviderDriverKind.make("codex"),
-                  models: input.effortProof?.models ?? [],
-                }),
-              },
-            } as never),
+          getCatalogSource: (instanceId) => providerInstances.get(instanceId),
+          getInstance: (instanceId) => Effect.succeed(providerInstances.get(instanceId)),
         }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,

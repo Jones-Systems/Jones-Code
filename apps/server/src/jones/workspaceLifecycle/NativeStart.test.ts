@@ -106,6 +106,7 @@ it.effect.each(["current", "revoked", "retired"] as const)(
             Layer.provide(Settings.layerTest()),
             Layer.provide(
               Layer.mock(Instances.ProviderInstanceRegistry)({
+                getCatalogSource: (id) => (id === f.instance.instanceId ? f.instance : undefined),
                 getInstance: () => Effect.succeed(f.instance),
               }),
             ),

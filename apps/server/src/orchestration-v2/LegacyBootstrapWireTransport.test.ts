@@ -627,7 +627,9 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
     Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
     Layer.mock(WsModelManifest.ModelManifest)({}),
     ProviderLatestVersions.layer,
-    Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+    Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getCatalogSource: () => undefined,
+    }),
     Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
     Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
     Layer.mock(WsProviderAuthService.ProviderAuthService)({}),
@@ -1422,7 +1424,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
           Layer.mock(WsProviderRegistry.ProviderRegistry)({}),
           Layer.mock(WsModelManifest.ModelManifest)({}),
           ProviderLatestVersions.layer,
-          Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+          Layer.mock(WsProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getCatalogSource: () => undefined,
+          }),
           Layer.mock(WsAcpRegistrySupport.AcpRegistryCatalog)({}),
           Layer.mock(WsAcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
           Layer.mock(WsProviderAuthService.ProviderAuthService)({}),

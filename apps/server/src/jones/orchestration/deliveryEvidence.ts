@@ -1,4 +1,9 @@
-import type { CommandId, OrchestrationV2Command, ThreadId } from "@t3tools/contracts";
+import type {
+  CommandId,
+  OrchestrationV2Command,
+  OrchestrationV2ThreadLaunchInput,
+  ThreadId,
+} from "@t3tools/contracts";
 import {
   type DispatchDeliveryEvidence,
   type LaunchDeliveryEvidence,
@@ -13,12 +18,11 @@ import type {
   RecordedAppThread,
   RecordedStoredEvent,
 } from "../../orchestration-v2/RecordedTypes.ts";
-import type { ThreadLaunchInput } from "../../orchestration-v2/ThreadLaunchService.ts";
 
 type ReceiptReader = Pick<Receipts.CommandReceiptStoreV2["Service"], "getByCommandId">;
 type EventReader = Pick<EventSink.EventSinkV2["Service"], "readByCommandId">;
-type LaunchRequest = Pick<
-  ThreadLaunchInput,
+export type LaunchDeliveryRequest = Pick<
+  OrchestrationV2ThreadLaunchInput,
   "commandId" | "projectId" | "threadId" | "reuseExistingThread" | "initialMessage"
 >;
 
@@ -44,7 +48,7 @@ const eventsMatch = (
 
 /** Only the original command's immutable claim can establish its project and target. */
 export function recordedLaunchClaim(
-  input: LaunchRequest,
+  input: LaunchDeliveryRequest,
   receipt: Receipts.CommandReceiptV2,
   events: ReadonlyArray<RecordedStoredEvent>,
 ): RecordedAppThread | undefined {
@@ -71,7 +75,7 @@ export function recordedLaunchClaim(
 
 /** A shell or a receipt for another message is never evidence for this first prompt. */
 export function recordedLaunchMessage(
-  input: LaunchRequest,
+  input: LaunchDeliveryRequest,
   receipt: Receipts.CommandReceiptV2,
   events: ReadonlyArray<RecordedStoredEvent>,
   threadId: ThreadId,
@@ -138,7 +142,7 @@ export const dispatchDeliveryEvidence = Effect.fn("jones.orchestration.dispatchD
 );
 
 export const launchDeliveryEvidence = Effect.fn("jones.orchestration.launchDeliveryEvidence")(
-  function* (receipts: ReceiptReader, events: EventReader, input: LaunchRequest) {
+  function* (receipts: ReceiptReader, events: EventReader, input: LaunchDeliveryRequest) {
     const initialMessage: LaunchDeliveryEvidence["initialMessage"] =
       input.initialMessage === undefined
         ? { status: "not-requested" }

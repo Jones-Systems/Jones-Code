@@ -25,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ServerConfig from "../../config.ts";
@@ -387,6 +388,7 @@ const fixture = (runEffectWorker: boolean) =>
       }),
     ).pipe(Layer.provide(nativeRegistry));
     const database = Database.layerMemory;
+    const eventStore = EventStore.layer.pipe(Layer.provide(database));
     const runtime = Harness.layerWithRegistryAndServices(
       { name: "delivery-lifecycle", runtimePolicyOverride: { cwd } },
       registry,
@@ -421,8 +423,8 @@ const fixture = (runEffectWorker: boolean) =>
     ).pipe(Layer.provide(baseReceipts));
     const baseSettings = Settings.layerTest({
       providerInstances: {
-        [instanceA]: { driver: "codex", enabled: true },
-        [instanceB]: { driver: "codex", enabled: true },
+        [instanceA]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
+        [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
       },
     });
     const settings = Layer.effect(
@@ -507,6 +509,7 @@ const fixture = (runEffectWorker: boolean) =>
       Layer.provide(
         Layer.mergeAll(
           runtime,
+          eventStore,
           external,
           receipts,
           threads,
@@ -521,9 +524,9 @@ const fixture = (runEffectWorker: boolean) =>
       receipts,
       threads,
       launches,
-      EventStore.layer.pipe(Layer.provide(database)),
+      eventStore,
     );
-    const launch = (key: string): Launch.ThreadLaunchInput => ({
+    const launch = (key: string) => ({
       commandId: CommandId.make(`launch:${key}`),
       threadId: ThreadId.make(`thread:${key}`),
       projectId,
@@ -536,7 +539,7 @@ const fixture = (runEffectWorker: boolean) =>
       initialMessage: { messageId: MessageId.make(`${key}:first`), text: "First", attachments: [] },
       createdBy: "user",
       creationSource: "web",
-    });
+    } satisfies Launch.ThreadLaunchInput);
     return {
       layer,
       launch,
@@ -592,8 +595,8 @@ const finishStart = (threadId: ThreadId, runId: RunId) =>
           event.payload.runAttemptId === run.activeAttemptId &&
           event.payload.providerThreadId === run.providerThreadId &&
           event.payload.status === "running"
-            ? Option.some(event.payload)
-            : Option.none(),
+            ? Result.succeed(event.payload)
+            : Result.failVoid,
         ),
         Stream.runHead,
         Effect.map(Option.getOrThrow),
@@ -634,8 +637,8 @@ it.effect(
           yield* Ref.set(f.projectAvailable, false);
           yield* settings.updateSettings({
             providerInstances: {
-              [instanceA]: { driver: "codex", enabled: false },
-              [instanceB]: { driver: "codex", enabled: true },
+              [instanceA]: { driver: Codex.CODEX_DRIVER_KIND, enabled: false },
+              [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
             },
           });
           const readsBeforeRetry = [
@@ -661,8 +664,8 @@ it.effect(
           yield* Ref.set(f.projectAvailable, true);
           yield* settings.updateSettings({
             providerInstances: {
-              [instanceA]: { driver: "codex", enabled: true },
-              [instanceB]: { driver: "codex", enabled: true },
+              [instanceA]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
+              [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
             },
           });
           yield* Deferred.succeed(f.firstComplete, undefined);
@@ -727,8 +730,8 @@ it.effect(
           assert.equal((yield* threads.getDispatchDeliveryEvidence(third)).status, "accepted");
           yield* settings.updateSettings({
             providerInstances: {
-              [instanceA]: { driver: "codex", enabled: false },
-              [instanceB]: { driver: "codex", enabled: false },
+              [instanceA]: { driver: Codex.CODEX_DRIVER_KIND, enabled: false },
+              [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: false },
             },
           });
           assert.isTrue((yield* Intake.dispatchCommand(third)).replayed);
@@ -907,7 +910,8 @@ it.effect(
             "unknown",
           );
           const shellOnly = f.launch("shell-only");
-          yield* Intake.launchThread({ ...shellOnly, initialMessage: undefined });
+          const { initialMessage: _message, ...shellRequest } = shellOnly;
+          yield* Intake.launchThread(shellRequest);
           const missingMessage = yield* launches.getDeliveryEvidence(shellOnly);
           assert.deepEqual(missingMessage.creation, {
             status: "accepted",
@@ -915,10 +919,9 @@ it.effect(
           });
           assert.equal(missingMessage.initialMessage.status, "unknown");
           const reuse = {
-            ...shellOnly,
+            ...shellRequest,
             commandId: CommandId.make("shell-only:reuse"),
             reuseExistingThread: true,
-            initialMessage: undefined,
           };
           yield* Intake.launchThread(reuse);
           assert.deepEqual(
@@ -927,8 +930,8 @@ it.effect(
           );
           yield* settings.updateSettings({
             providerInstances: {
-              [instanceA]: { driver: "codex", enabled: false },
-              [instanceB]: { driver: "codex", enabled: true },
+              [instanceA]: { driver: Codex.CODEX_DRIVER_KIND, enabled: false },
+              [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
             },
           });
           assert.equal(
@@ -942,8 +945,8 @@ it.effect(
           );
           yield* settings.updateSettings({
             providerInstances: {
-              [instanceA]: { driver: "codex", enabled: true },
-              [instanceB]: { driver: "codex", enabled: true },
+              [instanceA]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
+              [instanceB]: { driver: Codex.CODEX_DRIVER_KIND, enabled: true },
             },
           });
           yield* Intake.launchThread(shellOnly);

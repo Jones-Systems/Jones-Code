@@ -2,6 +2,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  MessageId,
   NodeId,
   ProviderDriverKind,
   RunId,
@@ -30,6 +31,7 @@ import {
 import type { McpInvocationScope } from "../../../mcp/McpInvocationContext.ts";
 import { idleThreadProjection, liveThreadShell } from "../../../mcp/McpToolAccess.testkit.ts";
 import * as OrchestratorMcpService from "../../../mcp/OrchestratorMcpService.ts";
+import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapterRegistry from "../../../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ThreadLaunchService from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -90,7 +92,7 @@ describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
     "real OpenCode discovery retains partial options and the public resolver refuses a completed removal without changing saved intent",
     () =>
       Effect.gen(function* () {
-        const settings = Schema.decodeSync(OpenCodeSettings)({
+        const settings = yield* Schema.decodeEffect(OpenCodeSettings)({
           enabled: true,
           binaryPath: "synthetic-opencode",
         });
@@ -127,7 +129,13 @@ describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
           }),
         );
         const producerDependencies = Layer.mergeAll(
-          Layer.mock(OpenCodeRuntime.OpenCodeRuntime)({}),
+          Layer.mock(OpenCodeRuntime.OpenCodeRuntime)({
+            createOpenCodeSdkClient: () => {
+              throw new Error(
+                "The injected OpenCode v2 catalog loader must not create an SDK client.",
+              );
+            },
+          }),
           Layer.mock(OpenCodeServerOwner.OpenCodeServerOwner)({}),
         );
         const produce = Effect.fn("CatalogTest.produceOpenCodeStatus")(function* (
@@ -163,16 +171,29 @@ describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
         const parent = idleThreadProjection(liveThreadShell(parentThreadId));
         const parentProjection = {
           ...parent,
-          thread: { ...parent.thread, modelSelection: savedSelection },
+          thread: {
+            ...parent.thread,
+            providerInstanceId: instanceA,
+            modelSelection: savedSelection,
+          },
           runs: [
             {
               id: RunId.make("run:catalog-options-parent"),
+              threadId: parentThreadId,
               ordinal: 1,
               status: "running",
               rootNodeId: NodeId.make("node:catalog-options-parent"),
               providerInstanceId: instanceA,
               modelSelection: savedSelection,
-            } as OrchestrationV2Run,
+              providerThreadId: null,
+              userMessageId: MessageId.make("message:catalog-options-parent"),
+              activeAttemptId: null,
+              requestedAt: parent.thread.createdAt,
+              startedAt: parent.thread.createdAt,
+              completedAt: null,
+              checkpointId: null,
+              contextHandoffId: null,
+            } satisfies OrchestrationV2Run,
           ],
         };
         const scope: McpInvocationScope = {
@@ -204,9 +225,9 @@ describe("OpenCode completed option discovery (Audit 4.5 / R5)", () => {
               }).pipe(
                 Effect.andThen(
                   Effect.fail(
-                    new ThreadManagementService.ThreadManagementProjectionLoadError({
-                      projectId: parent.thread.projectId,
-                      threadId: parentThreadId,
+                    new Orchestrator.OrchestratorDispatchError({
+                      commandId: command.commandId,
+                      commandType: command.type,
                       cause: new Error(
                         "Synthetic dispatch boundary reached after catalog validation.",
                       ),

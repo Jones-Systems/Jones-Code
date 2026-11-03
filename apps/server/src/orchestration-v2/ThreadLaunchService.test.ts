@@ -3675,6 +3675,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     const failed = yield* ThreadMessageIntake.launchThread(input).pipe(
       Effect.provideService(ThreadLaunch.ThreadLaunchService, {
         preflightLegacyBootstrap: launches.preflightLegacyBootstrap,
+        getDeliveryEvidence: launches.getDeliveryEvidence,
         launch: (request) =>
           launches.launch(request).pipe(
             Effect.andThen(

@@ -3,6 +3,7 @@ import {
   launchDeliveryEvidence,
   recordedLaunchClaim,
   recordedLaunchMessage,
+  type LaunchDeliveryRequest,
 } from "../jones/orchestration/deliveryEvidence.ts";
 import {
   initialMessageCommandId,
@@ -268,10 +269,7 @@ export class ThreadLaunchService extends Context.Service<
       ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
     readonly getDeliveryEvidence: (
-      input: Pick<
-        ThreadLaunchInput,
-        "commandId" | "projectId" | "threadId" | "reuseExistingThread" | "initialMessage"
-      >,
+      input: LaunchDeliveryRequest,
     ) => Effect.Effect<LaunchDeliveryEvidence>;
     /** Check before creation for early errors; launch otherwise accepts and reports base failures inside the thread. */
     readonly checkWorktreeBase: (

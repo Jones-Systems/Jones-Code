@@ -123,8 +123,8 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
           ),
         )).projectId
       : yield* resolveProjectId(context, input.projectId);
-  const readProject = Project.ProjectService.pipe(
-    Effect.flatMap((projects) => projects.getById(projectId)),
+  const projects = yield* Project.ProjectService;
+  const readProject = projects.getById(projectId).pipe(
     Effect.mapError(unavailable),
     Effect.map(Option.getOrUndefined),
   );

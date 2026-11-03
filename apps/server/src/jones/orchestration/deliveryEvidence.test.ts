@@ -92,7 +92,7 @@ it.effect("only an exact typed durable dispatch receipt classifies acceptance or
       });
       assert.strictEqual(error.cause, original);
       const codec = Schema.toCodecJson(OrchestrationV2DispatchCommandError);
-      const decoded = Schema.decodeUnknownSync(codec)(Schema.encodeSync(codec)(error));
+      const decoded = yield* Schema.decodeEffect(codec)(yield* Schema.encodeEffect(codec)(error));
       assert.deepEqual(decoded.deliveryEvidence, deliveryEvidence);
     }
     assert.equal((yield* dispatchDeliveryEvidence(receipts, command("absent"))).status, "unknown");
@@ -197,7 +197,7 @@ it.effect("launch absence and failed reads leave a requested initial message unk
       assert.equal(evidence.creation.status, row.expected);
       assert.equal(evidence.initialMessage.status, "unknown");
     }
-    const old = Schema.decodeUnknownSync(Schema.toCodecJson(OrchestrationV2ThreadLaunchError))({
+    const old = yield* Schema.decodeEffect(Schema.toCodecJson(OrchestrationV2ThreadLaunchError))({
       _tag: "OrchestrationV2ThreadLaunchError",
       commandId: input.commandId,
       projectId,

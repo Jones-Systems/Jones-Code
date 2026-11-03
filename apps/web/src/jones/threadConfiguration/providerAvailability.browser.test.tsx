@@ -1,5 +1,13 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { ProviderInstanceId, type ServerConfig } from "@t3tools/contracts";
+import {
+  ORCHESTRATION_V2_WS_METHODS,
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderThreadId,
+  type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
+  type ServerConfig,
+} from "@t3tools/contracts";
 import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
 import { createMemoryHistory } from "@tanstack/react-router";
 import type * as Context from "effect/Context";
@@ -38,6 +46,52 @@ function disabledSavedProvider(config: ServerConfig): ServerConfig {
   };
 }
 
+const detachedProviderThreadId = ProviderThreadId.make("disabled-saved-account-provider-thread");
+
+function withDetachedProviderThreadShell(
+  thread: OrchestrationV2ThreadShell,
+): OrchestrationV2ThreadShell {
+  return { ...thread, activeProviderThreadId: detachedProviderThreadId };
+}
+
+// A completed run alone cannot prove portable handoff. Retain its native thread
+// after session detachment so the real picker can verify that B is selectable.
+function withDetachedProviderThread(
+  projection: OrchestrationV2ThreadProjection,
+): OrchestrationV2ThreadProjection {
+  return {
+    ...projection,
+    thread: { ...projection.thread, activeProviderThreadId: detachedProviderThreadId },
+    providerThreads: [
+      {
+        id: detachedProviderThreadId,
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: projection.thread.modelSelection.instanceId,
+        providerSessionId: null,
+        appThreadId: projection.thread.id,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver: ProviderDriverKind.make("codex"),
+          nativeId: "synthetic-disabled-saved-conversation",
+          strength: "strong",
+        },
+        nativeConversationHeadRef: null,
+        status: "not_loaded",
+        firstRunOrdinal: projection.runs[0]?.ordinal ?? null,
+        lastRunOrdinal: projection.runs.at(-1)?.ordinal ?? null,
+        handoffIds: [],
+        forkedFrom: null,
+        pendingBackgroundTasks: [],
+        contextUsage: null,
+        nativeMetadata: null,
+        goal: null,
+        createdAt: projection.thread.createdAt,
+        updatedAt: projection.updatedAt,
+      },
+    ],
+  };
+}
+
 vi.mock("../../../../../packages/client-runtime/src/connection/driver.ts", async (original) => {
   const [actual, { fakeDriver }, Layer, Effect, Stream] = await Promise.all([
     original<{ readonly ConnectionDriver: Context.Key<unknown, FakeDriver> }>(),
@@ -55,6 +109,47 @@ vi.mock("../../../../../packages/client-runtime/src/connection/driver.ts", async
           ...lease,
           session: {
             ...lease.session,
+            client: new Proxy(lease.session.client, {
+              get(target, method, receiver) {
+                if (method === ORCHESTRATION_V2_WS_METHODS.getThreadProjection)
+                  return (
+                    input: Parameters<
+                      (typeof target)[typeof ORCHESTRATION_V2_WS_METHODS.getThreadProjection]
+                    >[0],
+                  ) => Effect.map(target[method](input), withDetachedProviderThread);
+                if (method === ORCHESTRATION_V2_WS_METHODS.subscribeThread)
+                  return (
+                    input: Parameters<
+                      (typeof target)[typeof ORCHESTRATION_V2_WS_METHODS.subscribeThread]
+                    >[0],
+                  ) =>
+                    Stream.map(target[method](input), (event) =>
+                      event.kind === "snapshot"
+                        ? { ...event, projection: withDetachedProviderThread(event.projection) }
+                        : event,
+                    );
+                if (method === ORCHESTRATION_V2_WS_METHODS.subscribeShell)
+                  return (
+                    input: Parameters<
+                      (typeof target)[typeof ORCHESTRATION_V2_WS_METHODS.subscribeShell]
+                    >[0],
+                  ) =>
+                    Stream.map(target[method](input), (event) => {
+                      if (event.kind === "snapshot")
+                        return {
+                          ...event,
+                          snapshot: {
+                            ...event.snapshot,
+                            threads: event.snapshot.threads.map(withDetachedProviderThreadShell),
+                          },
+                        };
+                      if (event.kind === "thread.updated")
+                        return { ...event, thread: withDetachedProviderThreadShell(event.thread) };
+                      return event;
+                    });
+                return Reflect.get(target, method, receiver);
+              },
+            }),
             initialConfig: Effect.map(lease.session.initialConfig, disabledSavedProvider),
             subscribeServerConfig: (
               input: Parameters<typeof lease.session.subscribeServerConfig>[0],
@@ -128,7 +223,10 @@ it("shows saved disabled A as unavailable, retains the draft, and sends to B onl
   );
   expect(replacement).not.toBeNull();
   await page.elementLocator(replacement!).click();
-  await page.getByRole("option", { name: /GPT-5.4/ }).click();
+  const replacementModel = page.getByRole("option", { name: /GPT-5.4/ });
+  await expect.element(replacementModel).toBeEnabled();
+  expect(delivery.requests).toEqual([]);
+  await replacementModel.click();
   await vi.waitFor(() =>
     expect(useComposerDraftStore.getState().getComposerDraft(target)).toMatchObject({
       activeProvider: ProviderInstanceId.make("codex-replacement"),

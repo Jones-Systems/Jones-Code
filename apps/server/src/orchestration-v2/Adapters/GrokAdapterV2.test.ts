@@ -302,6 +302,26 @@ describe("Grok launch permission mode", () => {
     Effect.gen(function* () {
       const snapshot = yield* buildInitialGrokProviderSnapshot(LAUNCH_TEST_GROK_SETTINGS);
       const instanceId = ProviderInstanceId.make("grok-launch-test");
+      const instance: ProviderInstance = {
+        instanceId,
+        driverKind: snapshot.driver,
+        continuationIdentity: { driverKind: snapshot.driver, continuationKey: instanceId },
+        displayName: undefined,
+        enabled: true,
+        snapshot: {
+          getSnapshot: Effect.succeed(snapshot),
+          refresh: Effect.die("Runtime policy must not refresh the provider."),
+          resolveMaintenance: () => Effect.die("Runtime policy must not resolve maintenance."),
+          streamChanges: Stream.empty,
+          applyUsageLimits: () => Effect.die("Runtime policy must not apply usage limits."),
+        },
+        get orchestrationAdapter(): ProviderInstance["orchestrationAdapter"] {
+          throw new Error("Runtime policy must not start a provider session.");
+        },
+        get textGeneration(): ProviderInstance["textGeneration"] {
+          throw new Error("Runtime policy must not generate text.");
+        },
+      };
       const now = yield* DateTime.now;
       const threadId = ThreadId.make("grok-launch-test");
       const modelSelection = { instanceId, model: "grok-build" } as const;
@@ -343,10 +363,8 @@ describe("Grok launch permission mode", () => {
             ),
             Layer.provide(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-                getInstance: () =>
-                  Effect.succeed({
-                    snapshot: { getSnapshot: Effect.succeed(snapshot) },
-                  } as ProviderInstance),
+                getCatalogSource: (id) => (id === instanceId ? instance : undefined),
+                getInstance: () => Effect.succeed(instance),
               }),
             ),
           ),

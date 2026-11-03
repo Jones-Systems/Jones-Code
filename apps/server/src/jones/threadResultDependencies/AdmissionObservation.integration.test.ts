@@ -58,7 +58,9 @@ const admissions = Intake.layer.pipe(
     }),
   ),
   // Policy is installed as synthetic fixture data; this regression never resolves a model or starts a provider.
-  Layer.provide(Layer.mock(Providers.ProviderInstanceRegistry)({})),
+  Layer.provide(
+    Layer.mock(Providers.ProviderInstanceRegistry)({ getCatalogSource: () => undefined }),
+  ),
 );
 
 it.effect.each([
