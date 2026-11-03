@@ -2495,7 +2495,8 @@
     "tsconfig.base.json": "hook",
     "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.ts": "jones-owned",
     "apps/server/src/jones/workstreams/testing/sourceRenewalWorker.mjs": "jones-owned",
-    "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/testing/sourceRenewalArtifacts.test.ts": "jones-owned",
+    "apps/server/src/mcp/toolkits/preview/tools.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
