@@ -612,7 +612,7 @@ it.each([
         },
       },
     })) as EnvironmentPresentation[];
-    seed(subject.environmentId, [link()]);
+    seed(subject.environmentId, [link()], { subject });
     await using screen = await render(
       <RegistryContext value={fixture.registry}>
         <Probe subject={subject} />
