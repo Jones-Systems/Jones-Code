@@ -195,10 +195,10 @@ const make = Effect.gen(function* () {
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Operations.MemberOperations, (operations) => operations.open()),
       ),
-    recoverOpen: () =>
+    recoverOpen: (options) =>
       run(
         recovery,
-        Effect.flatMap(Forwarder.MemberForwarder, (forwarder) => forwarder.recoverOpen()),
+        Effect.flatMap(Forwarder.MemberForwarder, (forwarder) => forwarder.recoverOpen(options)),
       ),
     invokeRetainedEffect: (request, invocation) =>
       run(

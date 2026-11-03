@@ -5,6 +5,7 @@ import { WorkstreamOperationRequest } from "@t3tools/contracts/jones/workstreamO
 import * as Wire from "@t3tools/contracts/jones/workstreamsForwarding";
 import type { WorkstreamsNativeSuppliedAttestation } from "@t3tools/contracts/jones/workstreamsNative";
 import * as DateTime from "effect/DateTime";
+import * as Clock from "effect/Clock";
 import * as Crypto from "effect/Crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -87,7 +88,9 @@ export class MemberForwarder extends Context.Service<
     readonly read: (id: string) => Effect.Effect<ForwardView | null, RegistryError>;
     readonly open: () => Effect.Effect<readonly ForwardView[], RegistryError>;
     readonly recover: (id: string) => Effect.Effect<ForwardView | null, RegistryError>;
-    readonly recoverOpen: () => Effect.Effect<readonly ForwardView[], RegistryError>;
+    readonly recoverOpen: (options?: {
+      readonly dueOnly?: boolean;
+    }) => Effect.Effect<readonly ForwardView[], RegistryError>;
   }
 >()("t3/jones/workstreams/native/forwarding/forwarder/MemberForwarder") {}
 
@@ -240,12 +243,17 @@ const make = Effect.gen(function* () {
     yield* admitted.checkCurrent();
     return yield* view(saved, admitted);
   });
-  const recover = Effect.fn("MemberForwarder.recover")((id: string) =>
+  const recover = Effect.fn("MemberForwarder.recover")((id: string, dueAt?: number) =>
     locks.run(
       id,
       Effect.gen(function* () {
         const row = yield* store.readMemberForward(id).pipe(Effect.mapError(storeError));
         if (!row) return null;
+        // Check the current row after acquiring the shared per-ID lock, not an earlier open-list snapshot.
+        if (dueAt !== undefined && row.next_poll_at !== null) {
+          const next = Date.parse(row.next_poll_at);
+          if (!Number.isFinite(next) || next > dueAt) return null;
+        }
         const admitted = yield* authorize(row, true);
         return terminal(row.state) ? yield* replay(row, admitted) : yield* reconcile(row, admitted);
       }),
@@ -474,11 +482,12 @@ const make = Effect.gen(function* () {
     read,
     open,
     recover,
-    recoverOpen: Effect.fn("MemberForwarder.recoverOpen")(function* () {
+    recoverOpen: Effect.fn("MemberForwarder.recoverOpen")(function* (options) {
+      const dueAt = options?.dueOnly ? yield* Clock.currentTimeMillis : undefined;
       const rows = yield* store.openMemberForwards().pipe(Effect.mapError(storeError));
       const views: ForwardView[] = [];
       for (const row of rows) {
-        const result = yield* Effect.exit(recover(row.operation_id));
+        const result = yield* Effect.exit(recover(row.operation_id, dueAt));
         if (result._tag === "Success" && result.value) views.push(result.value);
       }
       return views;

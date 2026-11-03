@@ -6,6 +6,7 @@ import * as Readmission from "../forwarding/sourceReadmissionPort.ts";
 import * as Retained from "../forwarding/retainedSourceEffectPort.ts";
 import * as Reads from "../read/routes.ts";
 import * as Application from "./memberApplication.ts";
+import * as Recovery from "./memberRecovery.ts";
 import * as Pins from "./peerSessionPins.ts";
 import * as Startup from "./startup.ts";
 
@@ -29,6 +30,7 @@ export const layer = (
       );
       return Layer.mergeAll(
         Startup.unavailableServicesLayer(selection),
+        Recovery.layer,
         Layer.effect(
           Reads.AuthorizedReads,
           Effect.map(Application.MemberApplication, (app) => ({ read: app.read })),

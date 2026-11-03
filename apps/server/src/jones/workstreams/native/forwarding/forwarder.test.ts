@@ -11,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import { canonicalJson } from "../../operations/encoding.ts";
@@ -731,3 +732,80 @@ it.effect(
     }).pipe(Effect.provide(f.layer));
   },
 );
+
+it.effect.each(["command", "operation", "appearance"] as const)(
+  "background recovery waits for the retained %s due time and only reads the original home",
+  (kind) => {
+    const f = fixture();
+    f.lose();
+    return Effect.gen(function* () {
+      yield* f.seed;
+      const owner = yield* Forwarder.MemberForwarder;
+      const body =
+        kind === "command"
+          ? raw()
+          : kind === "operation"
+            ? canonicalJson(operation())
+            : appearance();
+      const accepted = yield* owner.submit({ kind, body });
+      expect(accepted.state).toBe("reconciling");
+      const before = f.readbacks();
+      expect(yield* owner.recoverOpen({ dueOnly: true })).toEqual([]);
+      expect(f.readbacks()).toBe(before);
+      yield* TestClock.adjust(29_999);
+      expect(yield* owner.recoverOpen({ dueOnly: true })).toEqual([]);
+      expect(f.readbacks()).toBe(before);
+      yield* TestClock.adjust(1);
+      expect(yield* owner.recoverOpen({ dueOnly: true })).toEqual([
+        expect.objectContaining({ operation_id: accepted.operation_id, state: "committed" }),
+      ]);
+      expect(f.readbacks()).toBe(before + 1);
+      expect(f.calls()).toBe(1);
+      expect(yield* (yield* Store.OperationStore).openMemberForwards()).toEqual([]);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+
+it.effect(
+  "due background unknown outcomes retain the original bytes and lock without redispatch",
+  () => {
+    const f = fixture();
+    f.lose();
+    return Effect.gen(function* () {
+      yield* f.seed;
+      const owner = yield* Forwarder.MemberForwarder;
+      const original = yield* owner.submit({ kind: "operation", body: canonicalJson(operation()) });
+      const store = yield* Store.OperationStore;
+      const before = yield* store.readMemberForward(original.operation_id);
+      f.unknown("not_found");
+      yield* TestClock.adjust(30_000);
+      expect(yield* owner.recoverOpen({ dueOnly: true })).toEqual([
+        expect.objectContaining({ operation_id: original.operation_id, state: "reconciling" }),
+      ]);
+      const after = yield* store.readMemberForward(original.operation_id);
+      expect(after?.member_forward).toEqual(before?.member_forward);
+      expect(after?.request_body).toBe(before?.request_body);
+      expect(yield* store.openMemberForwards()).toHaveLength(1);
+      expect(f.calls()).toBe(1);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+
+it.effect("due background recovery refuses a revoked original caller before calling home", () => {
+  const f = fixture();
+  f.lose();
+  return Effect.gen(function* () {
+    yield* f.seed;
+    const owner = yield* Forwarder.MemberForwarder;
+    const original = yield* owner.submit({ kind: "command", body: raw() });
+    const before = f.readbacks();
+    f.revoke();
+    yield* TestClock.adjust(30_000);
+    expect(yield* owner.recoverOpen({ dueOnly: true })).toEqual([]);
+    expect(f.readbacks()).toBe(before);
+    expect(f.calls()).toBe(1);
+    expect(
+      (yield* (yield* Store.OperationStore).readMemberForward(original.operation_id))?.state,
+    ).toBe("reconciling");
+  }).pipe(Effect.provide(f.layer));
+});

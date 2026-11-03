@@ -60,6 +60,7 @@ import m129 from "../../../persistence/Migrations/129_JonesWorkstreamsMemberBind
 import m130 from "../../../persistence/Migrations/130_JonesWorkstreamsForwardReceipts.ts";
 import * as MemberApp from "../runtime/memberApplication.ts";
 import * as MemberServices from "../runtime/memberServices.ts";
+import * as MemberRecovery from "../runtime/memberRecovery.ts";
 import * as ReadRoutes from "../read/routes.ts";
 import * as Forwarder from "../forwarding/forwarder.ts";
 import * as SourcePort from "../forwarding/sourceReadmissionPort.ts";
@@ -1346,6 +1347,7 @@ it.effect(
           ),
         );
         const app = Context.get(selectedServices, MemberApp.MemberApplication);
+        const recovery = Context.get(selectedServices, MemberRecovery.MemberRecovery);
         expect(Option.isSome(Context.getOption(selectedServices, ReadRoutes.AuthorizedReads))).toBe(
           true,
         );
@@ -1512,10 +1514,21 @@ it.effect(
         ]);
         const forwards = f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL).length;
         f.state.loseForwardReply = false;
-        const recovered = yield* app.recoverOpen();
-        expect(recovered).toEqual([
-          expect.objectContaining({ operation_id: lostRequest.operation_id, state: "committed" }),
-        ]);
+        // The mounted background owner has no HTTP/MCP caller. It readmits the original retained one.
+        expect(yield* recovery.sweep()).toEqual([]);
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${lostRequest.operation_id}`,
+        ).toEqual([{ state: "reconciling" }]);
+        yield* TestClock.adjust(30_000);
+        // Join any timer-owned sweep, so a queued SQL callback cannot masquerade as completion.
+        yield* recovery.sweep();
+        const recovered = yield* app
+          .readOperation(lostRequest.operation_id)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(recovered).toMatchObject({
+          operation_id: lostRequest.operation_id,
+          state: "committed",
+        });
         expect(f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
           forwards,
         );
@@ -1536,8 +1549,25 @@ it.effect(
         expect(
           yield* msql`SELECT operation_id FROM jones_workstreams_operations WHERE operation_id='operation:composed-offline-01'`,
         ).toEqual([]);
+        const revokedRequest = {
+          ...request,
+          operation_id: "operation:composed-revoked-recovery-01",
+        };
+        f.state.loseForwardReply = true;
+        expect(
+          (yield* app
+            .submitOperation({ request: revokedRequest, wait_ms: 0 })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal))).state,
+        ).toBe("reconciling");
+        f.state.loseForwardReply = false;
         const retainedCalls = f.calls.length;
         expect(yield* auth.revokeSession(issued.sessionId)).toBe(true);
+        yield* TestClock.adjust(30_000);
+        yield* recovery.sweep();
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${revokedRequest.operation_id}`,
+        ).toEqual([{ state: "reconciling" }]);
+        expect(f.calls).toHaveLength(retainedCalls);
         expect(
           (yield* app
             .readOperation(request.operation_id)
@@ -1555,10 +1585,11 @@ it.effect(
             ))._tag,
         ).toBe("Failure");
         expect(f.calls).toHaveLength(retainedCalls);
-        expect(yield* hsql`SELECT workstream_id FROM jones_workstreams_records`).toHaveLength(2);
+        expect(yield* hsql`SELECT workstream_id FROM jones_workstreams_records`).toHaveLength(3);
         expect(yield* msql`SELECT state FROM jones_workstreams_operations`).toEqual([
           { state: "committed" },
           { state: "committed" },
+          { state: "reconciling" },
         ]);
 
         // Seed one exact raw source intent through genuine admission and encrypted storage.

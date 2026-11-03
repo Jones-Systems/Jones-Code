@@ -2462,6 +2462,15 @@
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "scope": "Explicit member selection consumes the genuine invocation-scoped member preparation and selected original SQL/keys. Qualified members mount application-owned locks/resources, request-authenticated native reads and fixed source readmission/effect producers. Unsupported public legacy adapters still refuse; no home registry/grant copy or global caller is introduced."
+    },
+    {
+      "id": "workstreams-native-member-recovery",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "One application-scoped selected-member worker starts at startup, coalesces active sweeps and waits thirty seconds after completion. It selects due retained intents under shared original-ID locks, uses current original-caller admission and original-home lookup only, and cancels with the application. Revocation and unknown absence retain the accepted intent and never authorize redispatch; no member home grants are created."
     }
   ]
 }
