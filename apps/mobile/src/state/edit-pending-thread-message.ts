@@ -41,7 +41,8 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
   holdEditingQueuedMessage(message.messageId);
   const draftKey = scopedThreadKey(message.environmentId, message.threadId);
   const revision = threadOutboxRevision(message.messageId);
-  const canTransfer = () => canRestoreQueuedThreadMessage(message) &&
+  const canTransfer = () =>
+    canRestoreQueuedThreadMessage(message) &&
     threadOutboxRevision(message.messageId) === revision &&
     appAtomRegistry.get(dispatchingQueuedMessageIdAtom) !== message.messageId;
   const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
@@ -60,29 +61,44 @@ export async function editPendingThreadMessage(message: QueuedThreadMessage): Pr
       throw new Error("Remove attachments from the composer before editing this message.");
     }
     let mergedDraft = snapshot;
-    await mergeComposerDraftContent(draftKey, message, { onMerged: (draft) => {
-      mergedDraft = retainComposerModelSelectionSnapshot(draft, snapshot);
-      rollback = { snapshot, merged: mergedDraft };
-    } });
+    await mergeComposerDraftContent(draftKey, message, {
+      onMerged: (draft) => {
+        mergedDraft = retainComposerModelSelectionSnapshot(draft, snapshot);
+        rollback = { snapshot, merged: mergedDraft };
+      },
+    });
     if (!canTransfer()) return false;
     const currentDraft = getComposerDraftSnapshot(draftKey);
     const settings = {
-      ...(message.modelSelection && currentDraft.modelSelection === mergedDraft.modelSelection &&
-        composerModelSelectionSnapshotIsCurrent(draftKey, snapshot)
-        ? { modelSelection: message.modelSelection } : {}),
+      ...(message.modelSelection &&
+      currentDraft.modelSelection === mergedDraft.modelSelection &&
+      composerModelSelectionSnapshotIsCurrent(draftKey, snapshot)
+        ? { modelSelection: message.modelSelection }
+        : {}),
       ...(message.runtimeMode && currentDraft.runtimeMode === mergedDraft.runtimeMode
-        ? { runtimeMode: message.runtimeMode } : {}),
+        ? { runtimeMode: message.runtimeMode }
+        : {}),
       ...(message.interactionMode && currentDraft.interactionMode === mergedDraft.interactionMode
-        ? { interactionMode: message.interactionMode } : {}),
+        ? { interactionMode: message.interactionMode }
+        : {}),
     };
     const updated = updateComposerDraftSettings(draftKey, settings);
-    rollback = { snapshot, merged: retainComposerModelSelectionSnapshot({
-      ...mergedDraft,
-      ...settings,
-      ...(settings.modelSelection === undefined ? {} : { modelSelection: updated.modelSelection }),
-    }, updated) };
+    rollback = {
+      snapshot,
+      merged: retainComposerModelSelectionSnapshot(
+        {
+          ...mergedDraft,
+          ...settings,
+          ...(settings.modelSelection === undefined
+            ? {}
+            : { modelSelection: updated.modelSelection }),
+        },
+        updated,
+      ),
+    };
     await flushComposerDrafts();
-    if (!canTransfer() || !(await confirmThreadOutboxMessageQueued(message)) || !canTransfer()) return false;
+    if (!canTransfer() || !(await confirmThreadOutboxMessageQueued(message)) || !canTransfer())
+      return false;
     if (!(await removeThreadOutboxMessage(message, revision, canTransfer))) return false;
     rollback = null;
     return true;

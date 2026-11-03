@@ -1,7 +1,13 @@
 import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
 import {
-  ChatAttachmentId, CommandId, EnvironmentId, MessageId, ORCHESTRATION_V2_WS_METHODS,
-  ProjectId, ProviderInstanceId, ThreadId,
+  ChatAttachmentId,
+  CommandId,
+  EnvironmentId,
+  MessageId,
+  ORCHESTRATION_V2_WS_METHODS,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { initialMessageCommandId } from "@t3tools/contracts/jones/deliveryEvidence";
 import * as Option from "effect/Option";
@@ -51,40 +57,61 @@ vi.mock("../../state/server", async () => {
 vi.mock("../../state/git", () => ({ gitEnvironment: {} }));
 vi.mock("../../state/threads", () => ({ threadEnvironment: {} }));
 vi.mock("../../state/use-atom-command", () => ({ useAtomCommand: () => async () => undefined }));
-vi.mock("../../state/session", () => ({ readEnvironmentScope: () => true, useEnvironmentsWithScope: () => new Set() }));
-vi.mock("../../state/use-remote-environment-registry", () => ({ useRemoteConnectionStatus: () => ({ connectedEnvironments: [] }) }));
+vi.mock("../../state/session", () => ({
+  readEnvironmentScope: () => true,
+  useEnvironmentsWithScope: () => new Set(),
+}));
+vi.mock("../../state/use-remote-environment-registry", () => ({
+  useRemoteConnectionStatus: () => ({ connectedEnvironments: [] }),
+}));
 vi.mock("../../state/use-thread-outbox", async () => {
   const { Atom } = await import("effect/reactivity");
   const { appAtomRegistry } = await import("../../state/atom-registry");
-  const editingQueuedMessageIdsAtom = Atom.make<Readonly<Record<string, true>>>({}).pipe(Atom.keepAlive);
+  const editingQueuedMessageIdsAtom = Atom.make<Readonly<Record<string, true>>>({}).pipe(
+    Atom.keepAlive,
+  );
   return {
     editingQueuedMessageIdsAtom,
     dispatchingQueuedMessageIdAtom: Atom.make<MessageId | null>(null).pipe(Atom.keepAlive),
-    holdEditingQueuedMessage: (id: MessageId) => appAtomRegistry.set(editingQueuedMessageIdsAtom, {
-      ...appAtomRegistry.get(editingQueuedMessageIdsAtom), [id]: true,
-    }),
+    holdEditingQueuedMessage: (id: MessageId) =>
+      appAtomRegistry.set(editingQueuedMessageIdsAtom, {
+        ...appAtomRegistry.get(editingQueuedMessageIdsAtom),
+        [id]: true,
+      }),
     releaseEditingQueuedMessage: (id: MessageId) => {
       const next = { ...appAtomRegistry.get(editingQueuedMessageIdsAtom) };
       delete next[id];
       appAtomRegistry.set(editingQueuedMessageIdsAtom, next);
     },
-    useThreadOutboxMessages: () => ({}), useThreadOutboxShellStatuses: () => new Map(),
+    useThreadOutboxMessages: () => ({}),
+    useThreadOutboxShellStatuses: () => new Map(),
   };
 });
 vi.mock("../../state/thread-outbox", async () => {
   const { createThreadOutboxManager } = await import("../../state/thread-outbox-manager");
   const { appAtomRegistry } = await import("../../state/atom-registry");
-  const { encodeQueuedThreadMessage, decodeQueuedThreadMessage } = await import("../../state/thread-outbox-model");
-  const manager = harness.manager = createThreadOutboxManager({
+  const { encodeQueuedThreadMessage, decodeQueuedThreadMessage } =
+    await import("../../state/thread-outbox-model");
+  const manager = (harness.manager = createThreadOutboxManager({
     registry: appAtomRegistry,
     storage: {
-      load: async () => ({ messages: Array.from(harness.persisted.values(), decodeQueuedThreadMessage), errors: [] }),
-      write: async (message) => { await harness.write(); harness.persisted.set(message.messageId, encodeQueuedThreadMessage(message)); },
-      remove: async (message) => { await harness.remove(); harness.persisted.delete(message.messageId); },
+      load: async () => ({
+        messages: Array.from(harness.persisted.values(), decodeQueuedThreadMessage),
+        errors: [],
+      }),
+      write: async (message) => {
+        await harness.write();
+        harness.persisted.set(message.messageId, encodeQueuedThreadMessage(message));
+      },
+      remove: async (message) => {
+        await harness.remove();
+        harness.persisted.delete(message.messageId);
+      },
     },
-  });
+  }));
   return {
-    threadOutboxManager: manager, flushThreadOutbox: async () => {},
+    threadOutboxManager: manager,
+    flushThreadOutbox: async () => {},
     confirmThreadOutboxMessageQueued: manager.confirmQueued,
     updateThreadOutboxMessage: manager.update,
     threadOutboxRevision: manager.revisionOf,
@@ -94,7 +121,10 @@ vi.mock("../../state/thread-outbox", async () => {
 import { appAtomRegistry } from "../../state/atom-registry";
 import type { QueuedThreadMessage } from "../../state/thread-outbox-model";
 import * as drafts from "../../state/use-composer-drafts";
-import { pendingThreadCreationOutcomesAtom, resolvePendingThreadCreation } from "../../state/pending-thread-creation";
+import {
+  pendingThreadCreationOutcomesAtom,
+  resolvePendingThreadCreation,
+} from "../../state/pending-thread-creation";
 import { restoredNewTaskDraftKey } from "../../state/new-task-draft-key";
 import { threadComposerErrorsAtom } from "../../state/thread-composer-error";
 import { editingQueuedMessageIdsAtom } from "../../state/use-thread-outbox";
@@ -102,58 +132,120 @@ import { restoreRejectedQueuedMessage } from "../../state/use-thread-outbox-drai
 import { recoverFailedThreadDraft } from "../../state/recover-failed-thread-draft";
 import { editPendingThreadMessage } from "../../state/edit-pending-thread-message";
 import {
-  acceptedQueuedThreadDelivery, deliverQueuedThreadTurn, observeQueuedThreadDelivery, queuedThreadDeliveryStatus,
+  acceptedQueuedThreadDelivery,
+  deliverQueuedThreadTurn,
+  observeQueuedThreadDelivery,
+  queuedThreadDeliveryStatus,
   withIssuedQueuedThreadTurn,
 } from "./outboxDelivery";
 import { captureFollowUpModelSelection } from "./modelSelection";
 
 function rejectedCreation(creationAccepted: boolean) {
   const original: QueuedThreadMessage = {
-    environmentId: EnvironmentId.make("c3-recovery-env"), threadId: ThreadId.make("c3-recovery-thread"),
-    commandId: CommandId.make("c3-recovery-command"), messageId: MessageId.make("c3-recovery-message"),
-    text: "Rejected prompt", attachments: [{
-      type: "file", id: "c3-file", name: "report.txt", mimeType: "text/plain", sizeBytes: 4,
-      fileUri: "file:///synthetic-c3/report.txt",
-    }],
-    modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-6.1-sol", options: [{ id: "reasoningEffort", value: "max" }] },
-    modelSelectionExplicit: true, runtimeMode: "full-access", interactionMode: "default",
-    creation: { projectId: ProjectId.make("c3-recovery-project"), workspaceMode: "worktree", branch: null, worktreePath: null },
-    issuance: { state: "unissued" }, createdAt: "2026-11-02T12:00:00.000Z",
+    environmentId: EnvironmentId.make("c3-recovery-env"),
+    threadId: ThreadId.make("c3-recovery-thread"),
+    commandId: CommandId.make("c3-recovery-command"),
+    messageId: MessageId.make("c3-recovery-message"),
+    text: "Rejected prompt",
+    attachments: [
+      {
+        type: "file",
+        id: "c3-file",
+        name: "report.txt",
+        mimeType: "text/plain",
+        sizeBytes: 4,
+        fileUri: "file:///synthetic-c3/report.txt",
+      },
+    ],
+    modelSelection: {
+      instanceId: ProviderInstanceId.make("codex"),
+      model: "gpt-6.1-sol",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    },
+    modelSelectionExplicit: true,
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    creation: {
+      projectId: ProjectId.make("c3-recovery-project"),
+      workspaceMode: "worktree",
+      branch: null,
+      worktreePath: null,
+    },
+    issuance: { state: "unissued" },
+    createdAt: "2026-11-02T12:00:00.000Z",
   };
   const prepared = decodePreparedThreadTurn({
-    method: ORCHESTRATION_V2_WS_METHODS.launchThread, payload: {
-      commandId: original.commandId, threadId: original.threadId, projectId: original.creation!.projectId,
-      title: "Recovery", generateTitle: true, creationSource: "mobile", modelSelection: original.modelSelection,
-      runtimeMode: "full-access", interactionMode: "default", workspaceStrategy: { type: "worktree", branch: "frozen-branch" },
+    method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+    payload: {
+      commandId: original.commandId,
+      threadId: original.threadId,
+      projectId: original.creation!.projectId,
+      title: "Recovery",
+      generateTitle: true,
+      creationSource: "mobile",
+      modelSelection: original.modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
+      workspaceStrategy: { type: "worktree", branch: "frozen-branch" },
       initialMessage: { messageId: original.messageId, text: original.text, attachments: [] },
     },
   });
   return observeQueuedThreadDelivery(withIssuedQueuedThreadTurn(original, prepared), {
-    kind: "launch", commandId: original.commandId, projectId: original.creation!.projectId,
-    creation: creationAccepted ? { status: "accepted", threadId: original.threadId } : { status: "rejected" },
-    initialMessage: { status: creationAccepted ? "rejected" : "unknown", commandId: initialMessageCommandId(original.commandId), messageId: original.messageId },
+    kind: "launch",
+    commandId: original.commandId,
+    projectId: original.creation!.projectId,
+    creation: creationAccepted
+      ? { status: "accepted", threadId: original.threadId }
+      : { status: "rejected" },
+    initialMessage: {
+      status: creationAccepted ? "rejected" : "unknown",
+      commandId: initialMessageCommandId(original.commandId),
+      messageId: original.messageId,
+    },
   });
 }
 function issuedFollowUp() {
   const { creation: _creation, ...message } = rejectedCreation(true);
-  const queuedMessage = { ...message, attachments: message.attachments.map((attachment) => ({
-    ...attachment, uploadedAttachmentId: "uploaded-c3-file", uploadEnvironmentId: message.environmentId,
-  })) };
+  const queuedMessage = {
+    ...message,
+    attachments: message.attachments.map((attachment) => ({
+      ...attachment,
+      uploadedAttachmentId: "uploaded-c3-file",
+      uploadEnvironmentId: message.environmentId,
+    })),
+  };
   const prepared = decodePreparedThreadTurn({
     method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
     payload: {
-      type: "message.dispatch", createdBy: "user", creationSource: "mobile",
-      commandId: message.commandId, threadId: message.threadId, messageId: message.messageId,
-      text: message.text, attachments: [{ type: "file", id: ChatAttachmentId.make("uploaded-c3-file"),
-        name: "report.txt", mimeType: "text/plain", sizeBytes: 4 }],
-      modelSelection: message.modelSelection, modelSelectionExplicit: true,
+      type: "message.dispatch",
+      createdBy: "user",
+      creationSource: "mobile",
+      commandId: message.commandId,
+      threadId: message.threadId,
+      messageId: message.messageId,
+      text: message.text,
+      attachments: [
+        {
+          type: "file",
+          id: ChatAttachmentId.make("uploaded-c3-file"),
+          name: "report.txt",
+          mimeType: "text/plain",
+          sizeBytes: 4,
+        },
+      ],
+      modelSelection: message.modelSelection,
+      modelSelectionExplicit: true,
       dispatchMode: { type: "queue_after_active" },
     },
   });
-  return withIssuedQueuedThreadTurn({ ...queuedMessage, issuance: { state: "unissued" } }, prepared);
+  return withIssuedQueuedThreadTurn(
+    { ...queuedMessage, issuance: { state: "unissued" } },
+    prepared,
+  );
 }
 const keyOf = (message: QueuedThreadMessage) => `${message.environmentId}:${message.threadId}`;
-const queued = () => Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom)).flat();
+const queued = () =>
+  Object.values(appAtomRegistry.get(harness.manager.queuedMessagesByThreadKeyAtom)).flat();
 
 beforeEach(async () => {
   harness.document = JSON.stringify({ schemaVersion: 1, drafts: {} });
@@ -179,11 +271,18 @@ describe("mobile evidence-aware editable recovery", () => {
     await harness.manager.enqueue(message);
     drafts.setComposerDraftText(keyOf(message), "Separate newer draft");
     const before = drafts.getComposerDraftSnapshot(keyOf(message));
-    const dispatch = vi.fn().mockRejectedValueOnce(new Error("Committed response lost")).mockResolvedValue(undefined);
-    const deliver = (queuedMessage: QueuedThreadMessage) => deliverQueuedThreadTurn({
-      message: queuedMessage, revision: harness.manager.revisionOf(queuedMessage.messageId),
-      queue: { ...harness.manager, current: queued }, canDispatch: () => true, dispatch,
-    });
+    const dispatch = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Committed response lost"))
+      .mockResolvedValue(undefined);
+    const deliver = (queuedMessage: QueuedThreadMessage) =>
+      deliverQueuedThreadTurn({
+        message: queuedMessage,
+        revision: harness.manager.revisionOf(queuedMessage.messageId),
+        queue: { ...harness.manager, current: queued },
+        canDispatch: () => true,
+        dispatch,
+      });
     expect((await deliver(message))?.status).toBe("unknown");
     const uncertain = queued()[0]!;
     expect(await editPendingThreadMessage(uncertain)).toBe(false);
@@ -192,7 +291,8 @@ describe("mobile evidence-aware editable recovery", () => {
     expect((await deliver(uncertain))?.status).toBe("accepted");
     if (message.issuance?.state !== "issued") throw new Error("Missing frozen follow-up");
     expect(dispatch.mock.calls.map(([request]) => request)).toEqual([
-      message.issuance.prepared, message.issuance.prepared,
+      message.issuance.prepared,
+      message.issuance.prepared,
     ]);
     for (const [request] of dispatch.mock.calls) expect(request).toBe(message.issuance.prepared);
   });
@@ -208,76 +308,122 @@ describe("mobile evidence-aware editable recovery", () => {
     expect(harness.remove).not.toHaveBeenCalled();
   });
 
-  it.each(["merge", "remove"])("withdraws a pending-message edit after late acceptance during %s and keeps newer editor state", async (phase) => {
-    const issued = issuedFollowUp();
-    if (issued.issuance?.state !== "issued") throw new Error("Missing frozen follow-up");
-    const message = observeQueuedThreadDelivery(issued, {
-      kind: "dispatch", commandId: issued.commandId, commandType: "message.dispatch",
-      threadId: issued.threadId, status: "rejected",
-    });
-    await harness.manager.enqueue(message);
-    const started = Promise.withResolvers<void>();
-    const release = Promise.withResolvers<void>();
-    if (phase === "merge") {
-      const merge = drafts.mergeComposerDraftContent;
-      vi.spyOn(drafts, "mergeComposerDraftContent").mockImplementationOnce(async (...args) => {
-        const result = await merge(...args);
-        started.resolve();
-        await release.promise;
-        return result;
+  it.each(["merge", "remove"])(
+    "withdraws a pending-message edit after late acceptance during %s and keeps newer editor state",
+    async (phase) => {
+      const issued = issuedFollowUp();
+      if (issued.issuance?.state !== "issued") throw new Error("Missing frozen follow-up");
+      const message = observeQueuedThreadDelivery(issued, {
+        kind: "dispatch",
+        commandId: issued.commandId,
+        commandType: "message.dispatch",
+        threadId: issued.threadId,
+        status: "rejected",
       });
-    } else harness.remove.mockImplementationOnce(async () => { started.resolve(); await release.promise; });
-    const editing = editPendingThreadMessage(message);
-    let saving: Promise<void> = Promise.resolve();
-    try {
-      await started.promise;
-      drafts.setComposerDraftText(keyOf(message), "Newer editor text");
-      const newer = drafts.updateComposerDraftSettings(keyOf(message), {
-        modelSelection: { ...message.modelSelection!, model: "newer-model" }, runtimeMode: "approval-required",
-      });
-      const extra = { ...message.attachments[0]!, id: "newer-file", fileUri: "file:///synthetic-c3/newer.txt" };
-      drafts.appendComposerDraftAttachments(keyOf(message), [extra]);
-      const accepted = observeQueuedThreadDelivery(message, acceptedQueuedThreadDelivery(message));
-      saving = harness.manager.enqueue({ ...accepted, text: "Newer saved queue edit" });
-      release.resolve();
-      expect(await editing).toBe(false);
-      await saving;
-      expect(queuedThreadDeliveryStatus(queued()[0]!)).toBe("accepted");
-      expect(queued()[0]?.text).toBe("Newer saved queue edit");
-      expect(queued()[0]?.issuance).toMatchObject({ state: "issued", prepared: issued.issuance.prepared });
-      const current = drafts.getComposerDraftSnapshot(keyOf(message));
-      expect(current.text).toBe("Newer editor text");
-      expect(current.attachments).toEqual([extra]);
-      expect(current.modelSelection).toBe(newer.modelSelection);
-      expect(current.runtimeMode).toBe("approval-required");
-      expect(appAtomRegistry.get(editingQueuedMessageIdsAtom)).toEqual({});
-    } finally { release.resolve(); await editing; await saving; }
-  });
+      await harness.manager.enqueue(message);
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      if (phase === "merge") {
+        const merge = drafts.mergeComposerDraftContent;
+        vi.spyOn(drafts, "mergeComposerDraftContent").mockImplementationOnce(async (...args) => {
+          const result = await merge(...args);
+          started.resolve();
+          await release.promise;
+          return result;
+        });
+      } else
+        harness.remove.mockImplementationOnce(async () => {
+          started.resolve();
+          await release.promise;
+        });
+      const editing = editPendingThreadMessage(message);
+      let saving: Promise<void> = Promise.resolve();
+      try {
+        await started.promise;
+        drafts.setComposerDraftText(keyOf(message), "Newer editor text");
+        const newer = drafts.updateComposerDraftSettings(keyOf(message), {
+          modelSelection: { ...message.modelSelection!, model: "newer-model" },
+          runtimeMode: "approval-required",
+        });
+        const extra = {
+          ...message.attachments[0]!,
+          id: "newer-file",
+          fileUri: "file:///synthetic-c3/newer.txt",
+        };
+        drafts.appendComposerDraftAttachments(keyOf(message), [extra]);
+        const accepted = observeQueuedThreadDelivery(
+          message,
+          acceptedQueuedThreadDelivery(message),
+        );
+        saving = harness.manager.enqueue({ ...accepted, text: "Newer saved queue edit" });
+        release.resolve();
+        expect(await editing).toBe(false);
+        await saving;
+        expect(queuedThreadDeliveryStatus(queued()[0]!)).toBe("accepted");
+        expect(queued()[0]?.text).toBe("Newer saved queue edit");
+        expect(queued()[0]?.issuance).toMatchObject({
+          state: "issued",
+          prepared: issued.issuance.prepared,
+        });
+        const current = drafts.getComposerDraftSnapshot(keyOf(message));
+        expect(current.text).toBe("Newer editor text");
+        expect(current.attachments).toEqual([extra]);
+        expect(current.modelSelection).toBe(newer.modelSelection);
+        expect(current.runtimeMode).toBe("approval-required");
+        expect(appAtomRegistry.get(editingQueuedMessageIdsAtom)).toEqual({});
+      } finally {
+        release.resolve();
+        await editing;
+        await saving;
+      }
+    },
+  );
 
-  it.each([true, false])("restores rejection while retaining the proven target (creation accepted: %s)", async (creationAccepted) => {
-    const message = rejectedCreation(creationAccepted);
-    await harness.manager.enqueue(message);
-    expect(await restoreRejectedQueuedMessage(message, "Refused by admission")).toBe("restored");
-    const draftKey = creationAccepted ? keyOf(message) : restoredNewTaskDraftKey(message.messageId);
-    const restored = drafts.getComposerDraftSnapshot(draftKey);
-    expect(restored.text).toContain(message.text);
-    expect(restored.attachments).toEqual(message.attachments);
-    expect(restored.modelSelection).toEqual(message.modelSelection);
-    expect(queued()).toEqual([]);
-    if (creationAccepted) {
-      expect(restored.workspaceSelection).toBeUndefined();
-      expect(drafts.getComposerDraftSnapshot(restoredNewTaskDraftKey(message.messageId)).text).toBe("");
-      expect(resolvePendingThreadCreation({
-        threadKey: keyOf(message), pending: { message, outcome: { kind: "failed", message, reason: "Refused" } },
-        previous: null, detail: null,
-      })).toBeNull();
-      // A deliberate corrected send owns new message/command keys in the existing thread.
-      const corrected = { ...message, creation: undefined, issuance: { state: "unissued" as const },
-        text: "Corrected prompt", commandId: CommandId.make("new-deliberate-command"), messageId: MessageId.make("new-deliberate-message") };
-      await harness.manager.enqueue(corrected);
-      expect(queued()[0]).toMatchObject({ threadId: message.threadId, commandId: corrected.commandId, messageId: corrected.messageId });
-    } else expect(restored.workspaceSelection?.mode).toBe("worktree");
-  });
+  it.each([true, false])(
+    "restores rejection while retaining the proven target (creation accepted: %s)",
+    async (creationAccepted) => {
+      const message = rejectedCreation(creationAccepted);
+      await harness.manager.enqueue(message);
+      expect(await restoreRejectedQueuedMessage(message, "Refused by admission")).toBe("restored");
+      const draftKey = creationAccepted
+        ? keyOf(message)
+        : restoredNewTaskDraftKey(message.messageId);
+      const restored = drafts.getComposerDraftSnapshot(draftKey);
+      expect(restored.text).toContain(message.text);
+      expect(restored.attachments).toEqual(message.attachments);
+      expect(restored.modelSelection).toEqual(message.modelSelection);
+      expect(queued()).toEqual([]);
+      if (creationAccepted) {
+        expect(restored.workspaceSelection).toBeUndefined();
+        expect(
+          drafts.getComposerDraftSnapshot(restoredNewTaskDraftKey(message.messageId)).text,
+        ).toBe("");
+        expect(
+          resolvePendingThreadCreation({
+            threadKey: keyOf(message),
+            pending: { message, outcome: { kind: "failed", message, reason: "Refused" } },
+            previous: null,
+            detail: null,
+          }),
+        ).toBeNull();
+        // A deliberate corrected send owns new message/command keys in the existing thread.
+        const corrected = {
+          ...message,
+          creation: undefined,
+          issuance: { state: "unissued" as const },
+          text: "Corrected prompt",
+          commandId: CommandId.make("new-deliberate-command"),
+          messageId: MessageId.make("new-deliberate-message"),
+        };
+        await harness.manager.enqueue(corrected);
+        expect(queued()[0]).toMatchObject({
+          threadId: message.threadId,
+          commandId: corrected.commandId,
+          messageId: corrected.messageId,
+        });
+      } else expect(restored.workspaceSelection?.mode).toBe("worktree");
+    },
+  );
 
   it("lets late acceptance defeat recovery without erasing newer text, attachments or selection", async () => {
     const message = rejectedCreation(true);

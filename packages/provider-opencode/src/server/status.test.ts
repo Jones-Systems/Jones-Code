@@ -37,31 +37,33 @@ const decodeOpenCodeSettings = Schema.decodeSync(OpenCodeSettings);
 
 const DEFAULT_VERSION_STDOUT = "opencode 1.14.19\n";
 
-it.effect("a cached model fallback is incomplete when discovery times out without fresh progress", () =>
-  Effect.gen(function* () {
-    const firstRead = yield* Deferred.make<void>();
-    const blockedRead = yield* Deferred.make<void>();
-    let blocked = false;
-    const models: ReadonlyArray<OpenCode2Model> = [
-      { providerID: "openai", id: "fixture", name: "Fixture", variants: [{ id: "high" }] },
-    ];
-    const load = yield* makeOpenCode2ModelLoader(
-      Effect.suspend(() =>
-        blocked
-          ? Deferred.succeed(blockedRead, undefined).pipe(Effect.andThen(Effect.never))
-          : Deferred.succeed(firstRead, undefined).pipe(Effect.as(models)),
-      ),
-    );
-    const warming = yield* load.pipe(Effect.forkChild);
-    yield* Deferred.await(firstRead);
-    yield* TestClock.adjust(250);
-    NodeAssert.deepEqual(yield* Fiber.join(warming), { models, complete: true });
-    blocked = true;
-    const reading = yield* load.pipe(Effect.forkChild);
-    yield* Deferred.await(blockedRead);
-    yield* TestClock.adjust(5_000);
-    NodeAssert.deepEqual(yield* Fiber.join(reading), { models, complete: false });
-  }),
+it.effect(
+  "a cached model fallback is incomplete when discovery times out without fresh progress",
+  () =>
+    Effect.gen(function* () {
+      const firstRead = yield* Deferred.make<void>();
+      const blockedRead = yield* Deferred.make<void>();
+      let blocked = false;
+      const models: ReadonlyArray<OpenCode2Model> = [
+        { providerID: "openai", id: "fixture", name: "Fixture", variants: [{ id: "high" }] },
+      ];
+      const load = yield* makeOpenCode2ModelLoader(
+        Effect.suspend(() =>
+          blocked
+            ? Deferred.succeed(blockedRead, undefined).pipe(Effect.andThen(Effect.never))
+            : Deferred.succeed(firstRead, undefined).pipe(Effect.as(models)),
+        ),
+      );
+      const warming = yield* load.pipe(Effect.forkChild);
+      yield* Deferred.await(firstRead);
+      yield* TestClock.adjust(250);
+      NodeAssert.deepEqual(yield* Fiber.join(warming), { models, complete: true });
+      blocked = true;
+      const reading = yield* load.pipe(Effect.forkChild);
+      yield* Deferred.await(blockedRead);
+      yield* TestClock.adjust(5_000);
+      NodeAssert.deepEqual(yield* Fiber.join(reading), { models, complete: false });
+    }),
 );
 
 it.effect("reads Go limits with the instance's XDG credentials and preserves reset times", () =>
@@ -490,9 +492,7 @@ const checkProvider = Effect.fn("checkProvider")(function* (
         cwd,
         probe,
         openCode2Models.pipe(Effect.map((models) => ({ models, complete: true }))),
-      ).pipe(
-        Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner),
-      );
+      ).pipe(Effect.provideService(OpenCodeServerOwner.OpenCodeServerOwner, serverOwner));
     }),
   );
 });

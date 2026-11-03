@@ -698,10 +698,7 @@ export const checkOpenCodeProviderStatus = Effect.fn("checkOpenCodeProviderStatu
   openCodeSettings: OpenCodeSettings,
   cwd: string,
   probeRuntime: Effect.Effect<ProbedOpenCode, OpenCodeRuntime.OpenCodeRuntimeError>,
-  loadOpenCode2Models: Effect.Effect<
-    OpenCode2ModelCatalog,
-    OpenCodeRuntime.OpenCodeRuntimeError
-  >,
+  loadOpenCode2Models: Effect.Effect<OpenCode2ModelCatalog, OpenCodeRuntime.OpenCodeRuntimeError>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,

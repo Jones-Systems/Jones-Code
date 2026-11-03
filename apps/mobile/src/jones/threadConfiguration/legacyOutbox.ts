@@ -26,35 +26,66 @@ export function legacyQueuedThreadMessageAccepted(
   environmentId: EnvironmentId,
   state: EnvironmentThreadState,
 ): boolean {
-  if (message.issuance !== undefined || message.creation !== undefined ||
-    environmentId !== message.environmentId || state.status !== "live" ||
-    Option.isSome(state.error) || Option.isNone(state.data)) return false;
+  if (
+    message.issuance !== undefined ||
+    message.creation !== undefined ||
+    environmentId !== message.environmentId ||
+    state.status !== "live" ||
+    Option.isSome(state.error) ||
+    Option.isNone(state.data)
+  )
+    return false;
   const projection = state.data.value;
   if (projection.thread.id !== message.threadId) return false;
-  const accepted = projection.messages.find((candidate) =>
-    candidate.id === message.messageId && candidate.threadId === message.threadId &&
-    candidate.role === "user" && candidate.runId !== null && !candidate.streaming);
-  if (accepted === undefined || !projection.runs.some((run) =>
-    run.id === accepted.runId && run.threadId === message.threadId)) return false;
+  const accepted = projection.messages.find(
+    (candidate) =>
+      candidate.id === message.messageId &&
+      candidate.threadId === message.threadId &&
+      candidate.role === "user" &&
+      candidate.runId !== null &&
+      !candidate.streaming,
+  );
+  if (
+    accepted === undefined ||
+    !projection.runs.some((run) => run.id === accepted.runId && run.threadId === message.threadId)
+  )
+    return false;
 
   const attachments: Array<ChatFileAttachment | ChatImageAttachment> = [];
   for (const attachment of message.attachments) {
-    if (attachment.uploadEnvironmentId !== message.environmentId ||
-      attachment.uploadedAttachmentId === undefined) return false;
+    if (
+      attachment.uploadEnvironmentId !== message.environmentId ||
+      attachment.uploadedAttachmentId === undefined
+    )
+      return false;
     const decodedId = uploadedAttachmentId(attachment.uploadedAttachmentId);
     if (Option.isNone(decodedId)) return false;
     const id = decodedId.value;
-    attachments.push(attachment.type === "file" ? {
-      type: "file", id, name: attachment.name, mimeType: attachment.mimeType,
-      sizeBytes: attachment.sizeBytes,
-      ...(attachment.source === undefined ? {} : { source: attachment.source }),
-    } : {
-      type: "image", id, name: attachment.name, mimeType: attachment.mimeType,
-      sizeBytes: attachment.sizeBytes,
-      ...(attachment.source === undefined ? {} : { source: attachment.source }),
-    });
+    attachments.push(
+      attachment.type === "file"
+        ? {
+            type: "file",
+            id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            ...(attachment.source === undefined ? {} : { source: attachment.source }),
+          }
+        : {
+            type: "image",
+            id,
+            name: attachment.name,
+            mimeType: attachment.mimeType,
+            sizeBytes: attachment.sizeBytes,
+            ...(attachment.source === undefined ? {} : { source: attachment.source }),
+          },
+    );
   }
-  if (!knownAttachments(accepted.attachments) || !sameAttachments(attachments, accepted.attachments)) return false;
+  if (
+    !knownAttachments(accepted.attachments) ||
+    !sameAttachments(attachments, accepted.attachments)
+  )
+    return false;
   const context = uploadedComposerContext(message.context, message.attachments, attachments);
   // Either recorded wire representation can prove acceptance; today's capabilities cannot select the old one.
   return [true, false].some((inline) => {

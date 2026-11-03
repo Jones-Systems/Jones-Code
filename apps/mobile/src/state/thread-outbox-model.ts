@@ -25,7 +25,10 @@ import {
 import * as Schema from "effect/Schema";
 
 import { resolveQueuedModelSelection } from "../jones/threadConfiguration/modelSelection";
-import { QueuedThreadIssuance, queuedThreadTurnMatches } from "../jones/threadConfiguration/outboxDeliveryContract";
+import {
+  QueuedThreadIssuance,
+  queuedThreadTurnMatches,
+} from "../jones/threadConfiguration/outboxDeliveryContract";
 import { DraftComposerAttachmentSchema } from "../lib/composer-image-schema";
 import type { ComposerDispatchMode } from "@t3tools/client-runtime/state/composer-dispatch";
 import type { DraftComposerAttachment } from "../lib/composerImages";

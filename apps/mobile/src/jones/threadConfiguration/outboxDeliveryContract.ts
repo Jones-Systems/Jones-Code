@@ -36,10 +36,12 @@ export function queuedThreadTurnMatches(
   prepared: PreparedThreadTurn,
 ): boolean {
   const payload = prepared.payload;
-  return payload.commandId === message.commandId &&
+  return (
+    payload.commandId === message.commandId &&
     payload.threadId === message.threadId &&
     (prepared.method === ORCHESTRATION_V2_WS_METHODS.launchThread
       ? prepared.payload.projectId === message.creation?.projectId &&
         prepared.payload.initialMessage?.messageId === message.messageId
-      : prepared.payload.messageId === message.messageId);
+      : prepared.payload.messageId === message.messageId)
+  );
 }

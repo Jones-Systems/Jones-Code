@@ -82,7 +82,12 @@ import {
   type ThreadOutboxCommandStage,
   type ThreadOutboxFailureAction,
 } from "./thread-outbox-model";
-import { environmentThreadDetails, environmentThreadShells, threadEnvironment, threadFamilies } from "./threads";
+import {
+  environmentThreadDetails,
+  environmentThreadShells,
+  threadEnvironment,
+  threadFamilies,
+} from "./threads";
 import {
   appendComposerDraftAttachments,
   composerDraftsAtom,
@@ -320,15 +325,18 @@ export async function completeQueuedMessageDelivery(
     });
     if (!canComplete()) return "failed";
     // Editors can acquire entries during startTurn without bumping revisions; CAS alone would lose unsaved edits.
-    if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
-      queuedThreadContentChanged(queuedMessage)) {
+    if (
+      appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
+      queuedThreadContentChanged(queuedMessage)
+    ) {
       return "edited";
     }
     retainAcknowledgedThreadMessage(queuedMessage);
     const removed = await removeThreadOutboxMessage(
       queuedMessage,
       deliveryRevision,
-      () => canComplete() && !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
+      () =>
+        canComplete() && !appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId],
     );
     if (!removed) {
       forgetAcknowledgedThreadMessage(queuedMessage);
@@ -719,15 +727,21 @@ export function useThreadOutboxDrain(): void {
   // Targets the shell may have left out hold their thread family until they leave the queue, so
   // the row stays readable through dispatch.
   const familyMountsRef = useRef(new Map<MessageId, () => void>());
-  const legacyProjectionSubscriptionsRef = useRef(new Map<MessageId, {
-    readonly message: QueuedThreadMessage;
-    readonly release: () => void;
-  }>());
+  const legacyProjectionSubscriptionsRef = useRef(
+    new Map<
+      MessageId,
+      {
+        readonly message: QueuedThreadMessage;
+        readonly release: () => void;
+      }
+    >(),
+  );
   useEffect(
     () => () => {
       for (const release of familyMountsRef.current.values()) release();
       familyMountsRef.current.clear();
-      for (const subscription of legacyProjectionSubscriptionsRef.current.values()) subscription.release();
+      for (const subscription of legacyProjectionSubscriptionsRef.current.values())
+        subscription.release();
       legacyProjectionSubscriptionsRef.current.clear();
     },
     [],
@@ -851,72 +865,90 @@ export function useThreadOutboxDrain(): void {
     return { reportFailure };
   }, []);
 
-  const deliverPreparedMessage = useCallback(async (
-    message: QueuedThreadMessage,
-    revision: number,
-    prepared?: PreparedThreadTurn,
-  ): Promise<boolean> => {
-    const canDispatch = () =>
-      readEnvironmentScope(message.environmentId, AuthOrchestrationOperateScope) &&
-      !appAtomRegistry.get(editingQueuedMessageIdsAtom)[message.messageId];
-    const delivery = {
-      message, revision, ...(prepared === undefined ? {} : { prepared }),
-      queue: {
-        current: () => Object.values(appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)).flat(),
-        revisionOf: threadOutboxRevision,
-        confirmQueued: confirmThreadOutboxMessageQueued,
-        update: updateThreadOutboxMessage,
-      },
-      canDispatch,
-      dispatch: async (input: PreparedThreadTurn) => {
-        const dispatched = await dispatchPreparedTurn({ environmentId: message.environmentId, input });
-        if (AsyncResult.isFailure(dispatched)) throw Cause.squash(dispatched.cause);
-        return dispatched.value;
-      },
-    };
-    try {
-      const result = await deliverQueuedThreadTurn(delivery);
-      if (result === null) return true;
-      if (result.status === "unknown") return false;
-      if (result.status === "rejected") {
-        let errorMessage = "The message was rejected. Edit it and send again.";
-        if (result.error instanceof Error) errorMessage = result.error.message;
-        return restoreQueuedMessage(result.message, errorMessage);
+  const deliverPreparedMessage = useCallback(
+    async (
+      message: QueuedThreadMessage,
+      revision: number,
+      prepared?: PreparedThreadTurn,
+    ): Promise<boolean> => {
+      const canDispatch = () =>
+        readEnvironmentScope(message.environmentId, AuthOrchestrationOperateScope) &&
+        !appAtomRegistry.get(editingQueuedMessageIdsAtom)[message.messageId];
+      const delivery = {
+        message,
+        revision,
+        ...(prepared === undefined ? {} : { prepared }),
+        queue: {
+          current: () =>
+            Object.values(
+              appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom),
+            ).flat(),
+          revisionOf: threadOutboxRevision,
+          confirmQueued: confirmThreadOutboxMessageQueued,
+          update: updateThreadOutboxMessage,
+        },
+        canDispatch,
+        dispatch: async (input: PreparedThreadTurn) => {
+          const dispatched = await dispatchPreparedTurn({
+            environmentId: message.environmentId,
+            input,
+          });
+          if (AsyncResult.isFailure(dispatched)) throw Cause.squash(dispatched.cause);
+          return dispatched.value;
+        },
+      };
+      try {
+        const result = await deliverQueuedThreadTurn(delivery);
+        if (result === null) return true;
+        if (result.status === "unknown") return false;
+        if (result.status === "rejected") {
+          let errorMessage = "The message was rejected. Edit it and send again.";
+          if (result.error instanceof Error) errorMessage = result.error.message;
+          return restoreQueuedMessage(result.message, errorMessage);
+        }
+        if (result.message.creation !== undefined) {
+          recordPendingThreadCreationOutcome({ kind: "delivered", message: result.message });
+        } else {
+          acknowledgedExistingThreadMessageIdsRef.current.add(result.message.messageId);
+        }
+        const outcome = await completeQueuedMessageDelivery(result.message, result.revision);
+        if (outcome === "edited") {
+          if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[result.message.messageId])
+            return true;
+          return recoverEditedCreationAfterDelivery(result.message);
+        }
+        if (outcome === "removed")
+          acknowledgedExistingThreadMessageIdsRef.current.delete(result.message.messageId);
+        return outcome === "removed";
+      } catch (error) {
+        console.warn("[thread-outbox] could not persist or reconcile an issued request", {
+          messageId: message.messageId,
+          error,
+        });
+        return false;
       }
-      if (result.message.creation !== undefined) {
-        recordPendingThreadCreationOutcome({ kind: "delivered", message: result.message });
-      } else {
-        acknowledgedExistingThreadMessageIdsRef.current.add(result.message.messageId);
-      }
-      const outcome = await completeQueuedMessageDelivery(result.message, result.revision);
-      if (outcome === "edited") {
-        if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[result.message.messageId]) return true;
-        return recoverEditedCreationAfterDelivery(result.message);
-      }
-      if (outcome === "removed") acknowledgedExistingThreadMessageIdsRef.current.delete(result.message.messageId);
-      return outcome === "removed";
-    } catch (error) {
-      console.warn("[thread-outbox] could not persist or reconcile an issued request", {
-        messageId: message.messageId, error,
-      });
-      return false;
-    }
-  }, [dispatchPreparedTurn, restoreQueuedMessage]);
+    },
+    [dispatchPreparedTurn, restoreQueuedMessage],
+  );
 
-  const prepareAndDeliverMessage = useCallback(async (
-    message: QueuedThreadMessage,
-    revision: number,
-    input: StartThreadTurnInput,
-  ): Promise<boolean> => {
-    if (!readEnvironmentScope(message.environmentId, AuthOrchestrationOperateScope)) return true;
-    const result = await prepareTurn({ environmentId: message.environmentId, input });
-    if (AsyncResult.isFailure(result)) {
-      const failure = makeDeliveryHelpers(message).reportFailure(result, "start-turn");
-      return failure?.action === "restore"
-        ? restoreQueuedMessage(message, failure.message) : false;
-    }
-    return deliverPreparedMessage(message, revision, result.value);
-  }, [prepareTurn, makeDeliveryHelpers, restoreQueuedMessage, deliverPreparedMessage]);
+  const prepareAndDeliverMessage = useCallback(
+    async (
+      message: QueuedThreadMessage,
+      revision: number,
+      input: StartThreadTurnInput,
+    ): Promise<boolean> => {
+      if (!readEnvironmentScope(message.environmentId, AuthOrchestrationOperateScope)) return true;
+      const result = await prepareTurn({ environmentId: message.environmentId, input });
+      if (AsyncResult.isFailure(result)) {
+        const failure = makeDeliveryHelpers(message).reportFailure(result, "start-turn");
+        return failure?.action === "restore"
+          ? restoreQueuedMessage(message, failure.message)
+          : false;
+      }
+      return deliverPreparedMessage(message, revision, result.value);
+    },
+    [prepareTurn, makeDeliveryHelpers, restoreQueuedMessage, deliverPreparedMessage],
+  );
 
   const sendQueuedMessage = useCallback(
     async (queuedMessage: QueuedThreadMessage, thread: EnvironmentThreadShell) => {
@@ -1237,13 +1269,20 @@ export function useThreadOutboxDrain(): void {
       }
     }
     for (const [messageId, subscription] of legacyProjectionSubscriptionsRef.current) {
-      const head = queuedMessagesByThreadKey[
-        scopedThreadKey(subscription.message.environmentId, subscription.message.threadId)
-      ]?.[0];
-      const connected = connectedEnvironments.some((candidate) =>
-        candidate.environmentId === subscription.message.environmentId && candidate.connectionState === "connected");
-      if (head !== subscription.message || !connected ||
-        !operableEnvironments.has(subscription.message.environmentId)) {
+      const head =
+        queuedMessagesByThreadKey[
+          scopedThreadKey(subscription.message.environmentId, subscription.message.threadId)
+        ]?.[0];
+      const connected = connectedEnvironments.some(
+        (candidate) =>
+          candidate.environmentId === subscription.message.environmentId &&
+          candidate.connectionState === "connected",
+      );
+      if (
+        head !== subscription.message ||
+        !connected ||
+        !operableEnvironments.has(subscription.message.environmentId)
+      ) {
         subscription.release();
         legacyProjectionSubscriptionsRef.current.delete(messageId);
       }
@@ -1301,22 +1340,40 @@ export function useThreadOutboxDrain(): void {
       }
 
       if (nextQueuedMessage.issuance === undefined) {
-        const connected = connectedEnvironments.some((candidate) =>
-          candidate.environmentId === nextQueuedMessage.environmentId && candidate.connectionState === "connected");
-        if (nextQueuedMessage.creation === undefined && connected &&
-          operableEnvironments.has(nextQueuedMessage.environmentId)) {
-          const ref = { environmentId: nextQueuedMessage.environmentId, threadId: nextQueuedMessage.threadId };
+        const connected = connectedEnvironments.some(
+          (candidate) =>
+            candidate.environmentId === nextQueuedMessage.environmentId &&
+            candidate.connectionState === "connected",
+        );
+        if (
+          nextQueuedMessage.creation === undefined &&
+          connected &&
+          operableEnvironments.has(nextQueuedMessage.environmentId)
+        ) {
+          const ref = {
+            environmentId: nextQueuedMessage.environmentId,
+            threadId: nextQueuedMessage.threadId,
+          };
           const stateAtom = environmentThreadDetails.stateAtom(ref);
           if (!legacyProjectionSubscriptionsRef.current.has(nextQueuedMessage.messageId)) {
-            const release = appAtomRegistry.subscribe(stateAtom, () => setRetryTick((current) => current + 1));
-            legacyProjectionSubscriptionsRef.current.set(nextQueuedMessage.messageId, { message: nextQueuedMessage, release });
+            const release = appAtomRegistry.subscribe(stateAtom, () =>
+              setRetryTick((current) => current + 1),
+            );
+            legacyProjectionSubscriptionsRef.current.set(nextQueuedMessage.messageId, {
+              message: nextQueuedMessage,
+              release,
+            });
           }
           const revision = threadOutboxRevision(nextQueuedMessage.messageId);
           const canComplete = () =>
             threadOutboxRevision(nextQueuedMessage.messageId) === revision &&
             readEnvironmentScope(nextQueuedMessage.environmentId, AuthOrchestrationOperateScope) &&
             !appAtomRegistry.get(editingQueuedMessageIdsAtom)[nextQueuedMessage.messageId] &&
-            legacyQueuedThreadMessageAccepted(nextQueuedMessage, ref.environmentId, appAtomRegistry.get(stateAtom));
+            legacyQueuedThreadMessageAccepted(
+              nextQueuedMessage,
+              ref.environmentId,
+              appAtomRegistry.get(stateAtom),
+            );
           if (canComplete()) {
             beginDispatchingQueuedMessage(nextQueuedMessage.messageId);
             void confirmThreadOutboxMessageQueued(nextQueuedMessage)
@@ -1334,14 +1391,17 @@ export function useThreadOutboxDrain(): void {
                     clearTimeout(pendingTimer);
                     retryTimersRef.current.delete(nextQueuedMessage.messageId);
                   }
-                  const subscription = legacyProjectionSubscriptionsRef.current.get(nextQueuedMessage.messageId);
+                  const subscription = legacyProjectionSubscriptionsRef.current.get(
+                    nextQueuedMessage.messageId,
+                  );
                   if (subscription !== undefined) subscription.release();
                   legacyProjectionSubscriptionsRef.current.delete(nextQueuedMessage.messageId);
                 }
               })
               .catch((error) => {
                 console.warn("[thread-outbox] could not reconcile an accepted legacy message", {
-                  messageId: nextQueuedMessage.messageId, error,
+                  messageId: nextQueuedMessage.messageId,
+                  error,
                 });
                 scheduleQueuedMessageRetry(nextQueuedMessage.messageId);
               })
@@ -1349,18 +1409,26 @@ export function useThreadOutboxDrain(): void {
             return;
           }
         }
-        setThreadComposerError(threadKey,
+        setThreadComposerError(
+          threadKey,
           "This saved message may already have been delivered. Its original request is unavailable, so automatic retry is paused.",
-          nextQueuedMessage.messageId);
+          nextQueuedMessage.messageId,
+        );
         continue;
       }
       if (nextQueuedMessage.issuance.state === "issued") {
-        const connected = connectedEnvironments.some((candidate) =>
-          candidate.environmentId === nextQueuedMessage.environmentId && candidate.connectionState === "connected");
+        const connected = connectedEnvironments.some(
+          (candidate) =>
+            candidate.environmentId === nextQueuedMessage.environmentId &&
+            candidate.connectionState === "connected",
+        );
         if (!connected || !operableEnvironments.has(nextQueuedMessage.environmentId)) continue;
         // Replay the durable envelope before consulting mutable shell/project/catalog/upload state.
         beginDispatchingQueuedMessage(nextQueuedMessage.messageId);
-        void deliverPreparedMessage(nextQueuedMessage, threadOutboxRevision(nextQueuedMessage.messageId))
+        void deliverPreparedMessage(
+          nextQueuedMessage,
+          threadOutboxRevision(nextQueuedMessage.messageId),
+        )
           .then((settled) => {
             if (!settled) scheduleQueuedMessageRetry(nextQueuedMessage.messageId);
             else {

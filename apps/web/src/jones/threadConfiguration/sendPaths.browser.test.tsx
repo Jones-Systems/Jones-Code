@@ -101,7 +101,9 @@ const cases = [
 ] as const;
 // The app registry keeps its shell subscription between cases, so every case boots
 // against the same roster rather than replacing it with an unseen thread ID.
-const fixtures = cases.map(([path, explicit]) => threadWithHistory(`intent-${path}-${explicit}`, 1));
+const fixtures = cases.map(([path, explicit]) =>
+  threadWithHistory(`intent-${path}-${explicit}`, 1),
+);
 
 it.each(cases)(
   "%s captures explicitness %s before delayed settings and protects the newer pick on acknowledgement",

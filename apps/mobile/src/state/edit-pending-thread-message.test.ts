@@ -33,9 +33,13 @@ vi.mock("./thread-outbox-removal", () => ({ removeThreadOutboxMessage: state.rem
 vi.mock("./use-composer-drafts", () => ({
   waitForComposerDraftsLoaded: async () => {},
   getComposerDraftSnapshot: () => state.draft,
-  mergeComposerDraftContent: async (_key: string, message: QueuedThreadMessage, options?: {
-    onMerged?: (draft: typeof state.draft) => void;
-  }) => {
+  mergeComposerDraftContent: async (
+    _key: string,
+    message: QueuedThreadMessage,
+    options?: {
+      onMerged?: (draft: typeof state.draft) => void;
+    },
+  ) => {
     state.draft = {
       text: `${state.draft.text}\n\n${message.text}`,
       attachments: [...state.draft.attachments, ...message.attachments],

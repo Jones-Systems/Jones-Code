@@ -207,14 +207,16 @@ describe("durable prepared turn envelope", () => {
         expect(restored.payload).toEqual(originalPayload);
         expect(Object.isFrozen(restored.payload)).toBe(true);
         expectDeeplyFrozen(restored);
-        const persistedIssuance = JSON.stringify(
-          Schema.encodeSync(StoredPreparedTurn)({ issuance: { state: "issued", prepared } }),
-        );
+        const encodedIssuance = yield* Schema.encodeEffect(StoredPreparedTurn)({
+          issuance: { state: "issued", prepared },
+        });
+        const persistedIssuance = JSON.stringify(encodedIssuance);
         const storedIssuance: unknown = JSON.parse(persistedIssuance);
-        const nested = Schema.decodeUnknownSync(StoredPreparedTurn)(storedIssuance);
+        const nested = yield* Schema.decodeUnknownEffect(StoredPreparedTurn)(storedIssuance);
         expect(nested.issuance?.prepared).toEqual(restored);
         expectDeeplyFrozen(nested.issuance?.prepared);
-        expect(JSON.stringify(Schema.encodeSync(StoredPreparedTurn)(nested))).toBe(persistedIssuance);
+        const encodedNested = yield* Schema.encodeEffect(StoredPreparedTurn)(nested);
+        expect(JSON.stringify(encodedNested)).toBe(persistedIssuance);
         if (restored.method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
           expect(restored.payload.workspaceStrategy).toEqual({
             type: "worktree",
@@ -222,9 +224,11 @@ describe("durable prepared turn envelope", () => {
           });
           expect(Object.isFrozen(restored.payload.initialMessage.attachments[0])).toBe(true);
         } else {
-          expect(restored.payload.deliveryIntent).toBe("auto");
+          expect(restored.payload).toMatchObject({
+            deliveryIntent: "auto",
+            queuedToolBoundaryEligible: true,
+          });
           expect(restored.payload.dispatchMode).toEqual({ type: "start_immediately" });
-          expect(restored.payload.queuedToolBoundaryEligible).toBe(true);
           expect(Object.isFrozen(restored.payload.attachments[0])).toBe(true);
         }
         expect(JSON.stringify(encodePreparedThreadTurn(restored))).toBe(persisted);

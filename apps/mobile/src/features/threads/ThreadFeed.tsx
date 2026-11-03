@@ -1712,8 +1712,11 @@ function renderFeedEntry(
                   hitSlop={8}
                   className="size-7 items-center justify-center"
                   onPress={() => {
-                    if (entry.pendingMessage && props.onEditPendingMessage &&
-                      canRestoreQueuedThreadMessage(entry.pendingMessage)) {
+                    if (
+                      entry.pendingMessage &&
+                      props.onEditPendingMessage &&
+                      canRestoreQueuedThreadMessage(entry.pendingMessage)
+                    ) {
                       props.onEditPendingMessage(entry.pendingMessage);
                     }
                   }}
