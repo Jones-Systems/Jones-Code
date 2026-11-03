@@ -104,6 +104,35 @@ interface PreparedObservation {
   readonly forward_request_sha256: string;
   readonly checkCurrent: () => Effect.Effect<void, RegistryError>;
 }
+interface CapturedSource {
+  readonly request: string;
+  readonly pin: string;
+  readonly generation: string;
+  readonly ceiling: WorkstreamsTransportCeiling;
+  readonly checkCurrent: () => Effect.Effect<void, RegistryError>;
+}
+const peerSources = new WeakMap<object, CapturedSource>();
+/** Raw PEER acceptance requires genuine private observation membership, never a supplied callback. */
+export const capturePeerEffectSource = Effect.fn("SourceForwardQualification.capturePeerEffect")(
+  function* (
+    prepared: {
+      readonly forward_request_sha256: string;
+      readonly checkCurrent: () => Effect.Effect<void, RegistryError>;
+    },
+    request: Forward.WorkstreamsForwardRequest,
+    pin: WorkstreamsPeerSessionPinV1,
+  ) {
+    const source = peerSources.get(prepared);
+    if (!source || source.request !== encodeForward(request) || source.pin !== canonical(pin))
+      return yield* new RegistryError({ code: "not_granted" });
+    yield* source.checkCurrent();
+    return {
+      generation: source.generation,
+      ceiling: structuredClone(source.ceiling),
+      checkCurrent: source.checkCurrent,
+    };
+  },
+);
 const make = Effect.gen(function* () {
   const peer = yield* Peer.PeerMcpClient;
   const links = yield* Links.PeerLinks;
@@ -298,6 +327,14 @@ const make = Effect.gen(function* () {
       current: structuredClone(result.current_ceiling),
       ceiling,
     });
+    if (!readback)
+      peerSources.set(prepared, {
+        request: encodeForward(request as Forward.WorkstreamsForwardRequest),
+        pin: canonical(pin),
+        generation,
+        ceiling: structuredClone(ceiling),
+        checkCurrent: () => check(observations.get(prepared)),
+      });
     yield* prepared.checkCurrent();
     return prepared;
   });

@@ -14,6 +14,7 @@ import * as Appearance from "../registry/appearance.ts";
 import * as AppearanceStore from "./registryStore.ts";
 import * as Operation from "../operations/forwardedHomeOperation.ts";
 import * as Boundary from "../forwarding/peerWriteAdmission.ts";
+import * as PeerAdmission from "../forwarding/peerEffectAdmission.ts";
 import { RegistryError } from "../registry/session.ts";
 import { canonicalJson } from "../../operations/encoding.ts";
 const hash = (body: string) => NodeCrypto.createHash("sha256").update(body).digest("hex");
@@ -231,14 +232,12 @@ export const layer = Layer.effect(
               const command = yield* decodeCommandBody(request.request.body, {
                 onExcessProperty: "error",
               }).pipe(Effect.mapError(() => new RegistryError({ code: "invalid_request" })));
-              // These raw intents need genuine retained PEER recovery, never a home-local caller.
-              if (
-                ["verify_reference", "request_native_t3_settlement", "refresh_linked_pr"].includes(
-                  command.action.operation,
-                ) ||
-                request.request.evidence
-              )
+              if (command.action.operation === "refresh_linked_pr" || request.request.evidence)
                 return yield* new RegistryError({ code: "peer_recovery_unmounted" });
+              const external =
+                command.action.operation === "verify_reference" ||
+                command.action.operation === "request_native_t3_settlement";
+              if (external) yield* PeerAdmission.assertPeerEffectAcceptance();
               const snapshot = yield* registry.snapshot(admission.caller, "workstreams:write");
               const action = command.action;
               if (
@@ -265,8 +264,25 @@ export const layer = Layer.effect(
               )
                 return yield* new RegistryError({ code: "foreign_thread_claim" });
               const accepted = yield* registry.submit(admission.caller, request.request.body);
-              if (accepted.intent)
-                return yield* new RegistryError({ code: "peer_recovery_unmounted" });
+              if (accepted.intent) {
+                yield* PeerAdmission.checkPeerEffectReserved(accepted.receipt.command_id);
+                if (accepted.receipt.state !== "pending")
+                  return yield* new RegistryError({ code: "invalid_receipt" });
+                const pending = yield* decodeResult({
+                  contract: Forward.WORKSTREAMS_NATIVE_FORWARDING_CONTRACT,
+                  kind: "command",
+                  identity: i,
+                  home: yield* boundary.provenance(admission),
+                  result: accepted.receipt,
+                }).pipe(Effect.mapError(() => new RegistryError({ code: "invalid_receipt" })));
+                yield* authoritative(request, pending, admission);
+                yield* checkSource(exactWireBody);
+                yield* boundary.checkCurrent(admission);
+                // Parent remains accepted: the pending command receipt is not a terminal parent result.
+                return pending;
+              }
+              if (["pending", "unresolved", "unavailable"].includes(accepted.receipt.state))
+                return yield* new RegistryError({ code: "forward_in_flight" });
               yield* boundary.observe(admission, accepted.receipt);
               result = {
                 contract: Forward.WORKSTREAMS_NATIVE_FORWARDING_CONTRACT,

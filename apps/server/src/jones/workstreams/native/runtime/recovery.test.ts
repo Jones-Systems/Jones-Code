@@ -210,3 +210,74 @@ it.effect(
       expect(calls).toBe(1);
     }),
 );
+
+it.effect(
+  "tagged PEER recovery uses its lookup-only port without a fabricated HOME caller; imports remain fenced",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const done = yield* Deferred.make<void>();
+        const calls: string[] = [];
+        let pending = [
+          {
+            command_id: "peer-original",
+            origin: "native" as const,
+            recorded_caller: null,
+            peer_recovery: true,
+            next_poll_at: null,
+          },
+          {
+            command_id: "imported-peer",
+            origin: "legacy_open" as const,
+            recorded_caller: null,
+            peer_recovery: true,
+            next_poll_at: null,
+          },
+        ];
+        yield* Effect.gen(function* () {
+          yield* Recovery.NativeWorkstreamsRecovery;
+          yield* Deferred.await(done);
+          expect(calls).toEqual(["peer-original"]);
+        }).pipe(
+          Effect.provide(
+            worker({
+              pending: () => Effect.succeed(pending),
+              recoverOne: () => Effect.die("PEER must not enter HOME readmission"),
+              recoverPeer: (id) =>
+                Effect.gen(function* () {
+                  expect(yield* Callers.RecordedAdmission).toBeNull();
+                  calls.push(id);
+                  pending = [];
+                  yield* Deferred.succeed(done, undefined);
+                }),
+            }),
+          ),
+        );
+      }),
+    ),
+);
+it.effect("tagged PEER recovery remains fenced if the lookup-only owner is absent", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const workerService = yield* Recovery.NativeWorkstreamsRecovery;
+      const result = yield* workerService.sweep();
+      expect(result).toEqual({ attempted: 0, fenced: 1, deferred: 0 });
+    }).pipe(
+      Effect.provide(
+        worker({
+          pending: () =>
+            Effect.succeed([
+              {
+                command_id: "peer-no-owner",
+                origin: "native",
+                recorded_caller: null,
+                peer_recovery: true,
+                next_poll_at: null,
+              },
+            ]),
+          recoverOne: () => Effect.die("Missing PEER owner cannot become HOME recovery"),
+        }),
+      ),
+    ),
+  ),
+);

@@ -73,6 +73,7 @@ const signing = Layer.succeed(
 const makeSeed = (
   operation: "request_native_t3_settlement" | "verify_reference",
   previous: StoredPrObservation | null,
+  accepted: boolean,
 ) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(Date.parse(Test.now));
@@ -352,32 +353,33 @@ const makeSeed = (
       wire,
     );
     const effects = yield* Store.EffectStore;
-    yield* db.transaction(
-      Test.scope,
-      Effect.gen(function* () {
-        yield* sql`INSERT INTO jones_workstreams_forward_receipts ${sql.insert({
-          ...Test.scope,
-          source_environment_id: "source:test",
-          forward_id: identity.forward_id,
-          request_sha256: hash(body),
-          identity_sha256: hash(canonical(identity)),
-          wire_sha256: hash(wire),
-          state: "accepted",
-          request_envelope: parentEnvelope,
-          result_envelope: null,
-        })}`;
-        yield* effects.reserve(Test.scope, receipt, {
-          command_id: command.command_id,
-          principal_id: "principal:test",
-          native_reference_id: "ref:test",
-          effect: command.action.operation as "verify_reference" | "request_native_t3_settlement",
-          server_generation: 1,
-          admitted_registry_version: context.registry_version,
-          intent,
-          peer_recovery: envelope,
-        });
-      }),
-    );
+    if (accepted)
+      yield* db.transaction(
+        Test.scope,
+        Effect.gen(function* () {
+          yield* sql`INSERT INTO jones_workstreams_forward_receipts ${sql.insert({
+            ...Test.scope,
+            source_environment_id: "source:test",
+            forward_id: identity.forward_id,
+            request_sha256: hash(body),
+            identity_sha256: hash(canonical(identity)),
+            wire_sha256: hash(wire),
+            state: "accepted",
+            request_envelope: parentEnvelope,
+            result_envelope: null,
+          })}`;
+          yield* effects.reserve(Test.scope, receipt, {
+            command_id: command.command_id,
+            principal_id: "principal:test",
+            native_reference_id: "ref:test",
+            effect: command.action.operation as "verify_reference" | "request_native_t3_settlement",
+            server_generation: 1,
+            admitted_registry_version: context.registry_version,
+            intent,
+            peer_recovery: envelope,
+          });
+        }),
+      );
     return {
       sql,
       db,
@@ -388,6 +390,7 @@ const makeSeed = (
       records,
       invocation,
       registration,
+      authenticateOriginal: () => native.authenticate(request, invocation),
       command,
       sessionId: issued.sessionId,
       envelope,
@@ -411,6 +414,7 @@ export const withFixture = <A, E, R>(
   ) => Effect.Effect<A, E, R>,
   operation: "request_native_t3_settlement" | "verify_reference" = "request_native_t3_settlement",
   previous: StoredPrObservation | null = null,
+  options: { readonly accepted: boolean } = { accepted: true },
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -482,7 +486,7 @@ export const withFixture = <A, E, R>(
           Layer.provideMerge(runtime),
         );
         return yield* Effect.gen(function* () {
-          const fixture = yield* makeSeed(operation, previous);
+          const fixture = yield* makeSeed(operation, previous, options.accepted);
           return yield* use({
             ...fixture,
             baseDir,

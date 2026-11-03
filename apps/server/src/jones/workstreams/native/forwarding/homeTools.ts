@@ -1,6 +1,8 @@
 import { HomeTools } from "./homeForwardPort.ts";
 export { HomeTools } from "./homeForwardPort.ts";
 import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
+import * as Wire from "@t3tools/contracts";
+import * as PeerAdmission from "./peerEffectAdmission.ts";
 import * as Crypto from "effect/Crypto";
 import { NativeStoreAuthorityPersistenceError } from "../../../../environment/nativeStoreAuthorityPersistence.ts";
 import * as Bindings from "../store/bindingStore.ts";
@@ -33,6 +35,7 @@ import * as Supplied from "./suppliedEvidence.ts";
 import * as Guard from "./guard.ts";
 
 const decodeForward = Schema.decodeUnknownEffect(Forward.WorkstreamsForwardRequest);
+const decodeCommand = Schema.decodeUnknownEffect(Schema.fromJsonString(Wire.WorkstreamCommand));
 const decodeReadback = Schema.decodeUnknownEffect(Forward.WorkstreamsForwardReadbackRequest);
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const make = Effect.gen(function* () {
@@ -45,6 +48,7 @@ const make = Effect.gen(function* () {
   // This captures application-owned native authentication. Never reconstruct its registration map.
   const native = yield* Pins.NativePeerSessions;
   const localSession = yield* Session.Session;
+  const initial = yield* Effect.serviceOption(PeerAdmission.InitialPeerExecution);
   const prepare = Effect.fn("HomeTools.prepare")(function* (invocation: Mcp.McpInvocationScope) {
     if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
       return yield* new Session.RegistryError({ code: "preparation_in_transaction" });
@@ -159,6 +163,20 @@ const make = Effect.gen(function* () {
       const request = yield* decodeForward(input).pipe(
         Effect.mapError(() => new Session.RegistryError({ code: "unsupported_protocol" })),
       );
+      const command =
+        request.kind === "command"
+          ? yield* decodeCommand(request.request.body, { onExcessProperty: "error" }).pipe(
+              Effect.mapError(() => new Session.RegistryError({ code: "invalid_request" })),
+            )
+          : null;
+      const external =
+        command?.action.operation === "verify_reference" ||
+        command?.action.operation === "request_native_t3_settlement";
+      if (external) {
+        if (Option.isNone(initial))
+          return yield* new Session.RegistryError({ code: "peer_recovery_unmounted" });
+        yield* initial.value.ready();
+      }
       const { graph, fence } = yield* prepare(invocation);
       return yield* Effect.gen(function* () {
         const boundary = yield* Boundary.PeerWriteBoundary;
@@ -170,9 +188,34 @@ const make = Effect.gen(function* () {
         const qualified = yield* source.prepare(request, receiving.pin);
         yield* qualified.checkCurrent();
         yield* fence.checkCurrent();
-        return yield* (yield* Ledger.ForwardReceiptStore)
-          .execute(request, encodeJson(request), admission)
-          .pipe(Effect.provideService(Boundary.CurrentSourceForwardFence, qualified));
+        const ledger = yield* Ledger.ForwardReceiptStore;
+        const wire = encodeJson(request);
+        const accept = ledger.execute(request, wire, admission);
+        const result =
+          external && Option.isSome(initial)
+            ? PeerAdmission.withPeerEffectAcceptance(
+                request,
+                wire,
+                admission,
+                receiving.pin,
+                qualified,
+                accept,
+                (pending, ticket) =>
+                  Effect.gen(function* () {
+                    if (!ticket) return pending;
+                    const receipt = yield* initial.value.run(ticket);
+                    if (!receipt) return pending;
+                    yield* boundary.observe(admission, receipt);
+                    const saved = yield* ledger.readback(request.identity, admission);
+                    if (saved.state !== "present")
+                      return yield* new Session.RegistryError({ code: "forward_in_flight" });
+                    return saved.result;
+                  }),
+              )
+            : accept;
+        return yield* result.pipe(
+          Effect.provideService(Boundary.CurrentSourceForwardFence, qualified),
+        );
       }).pipe(
         Effect.provide(graph.pipe(Layer.fresh)),
         Effect.provideService(Mcp.McpInvocationContext, invocation),

@@ -2445,6 +2445,14 @@
       "id": "workstreams-native-peer-effect-completion",
       "tests": ["apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.test.ts"],
       "scope": "Owner-fenced encrypted retention of successful authenticated PEER results, separate fresh source readmission, and one command/parent completion transaction. Original receiver/current SQL authority and captured directional generation remain mandatory; unknown never dispatches. Actual SQL, encryption, owner/session and peer transport with synthetic remote/provider replies; initial acceptance, dispatch ticket and mounted worker remain separate gates."
+    },
+    {
+      "id": "workstreams-native-peer-effect-initial",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts"
+      ],
+      "scope": "New raw PEER acceptance retains parent, pending receipt and reservation atomically; private callback-scoped post-commit ticket selects one initial dispatch through the existing runner semaphore. Replay and worker recovery remain lookup-only, with original authenticator registration and fresh source/receiver checks. Optional application resources must be genuine; unsupported raw PR/supplied/linked writes remain fenced. Synthetic remote providers and isolated SQLite fixtures qualify source composition only; selected member startup and product/physical acceptance remain separate."
     }
   ]
 }

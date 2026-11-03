@@ -22,9 +22,11 @@ export class RawRecovery extends Context.Service<
         readonly origin: "native" | "legacy_open";
         readonly next_poll_at: string | null;
         readonly recorded_caller: Callers.RecordedCallerV1 | null;
+        readonly peer_recovery?: boolean;
       }[],
       RecoveryError
     >;
+    readonly recoverPeer?: (commandId: string) => Effect.Effect<void, Callers.RecordedCallerFence>;
     readonly recoverOne: (
       commandId: string,
     ) => Effect.Effect<void, Callers.RecordedCallerFence, Callers.RecoveryCaller>;
@@ -74,6 +76,16 @@ const make = Effect.gen(function* () {
         for (const item of yield* raw.pending()) {
           if (!due(item.next_poll_at, now)) {
             result.deferred++;
+            continue;
+          }
+          if (item.origin === "native" && item.peer_recovery) {
+            if (!raw.recoverPeer) {
+              result.fenced++;
+              continue;
+            }
+            const recovered = yield* raw.recoverPeer(item.command_id).pipe(Effect.result);
+            if (recovered._tag === "Failure") result.fenced++;
+            else result.attempted++;
             continue;
           }
           if (item.origin !== "native" || !item.recorded_caller) {

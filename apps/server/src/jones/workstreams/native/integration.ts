@@ -56,6 +56,16 @@ import * as NativeRuntime from "../runtimeIntegration/native.ts";
 import * as Attempts from "../nativeProvider/attemptRepository.ts";
 import * as LocalAttestation from "./providers/localAttestation.ts";
 import * as LocalSettlement from "./providers/localSettlement.ts";
+import * as PeerClient from "../../../peer/PeerMcpClient.ts";
+import * as PeerLinks from "../../../peer/PeerLinks.ts";
+import * as CurrentAuthority from "./runtime/currentAuthority.ts";
+import * as PeerOrigins from "./runtime/peerEffectOrigin.ts";
+import * as RetainedPeer from "./runtime/retainedPeerSession.ts";
+import * as PeerSource from "./forwarding/peerEffectSource.ts";
+import * as PeerRecovery from "./forwarding/peerEffectRecovery.ts";
+import * as InitialPeer from "./forwarding/peerEffectAdmission.ts";
+import * as ReceivingHome from "./forwarding/receivingAuthority.ts";
+import * as SourceQualification from "./forwarding/sourceForwardQualification.ts";
 
 const receiptLayer = ReceiptStore.layer.pipe(Layer.provideMerge(ArchiveStore.layer));
 const effectLayer = EffectStore.layer.pipe(
@@ -131,11 +141,34 @@ const nativeRegistryLayer = NativeRegistry.layer.pipe(
   Layer.provideMerge(nativePersistenceLayer),
 );
 
+/** Optional only when the actual application transport and current owner exist.
+ * No replacement authenticator, stored tuple or permissive qualification is constructed.
+ */
+const nativePeerEffectLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const peer = yield* Effect.serviceOption(PeerClient.PeerMcpClient);
+    const links = yield* Effect.serviceOption(PeerLinks.PeerLinks);
+    const authority = yield* Effect.serviceOption(CurrentAuthority.CurrentAuthority);
+    if (Option.isNone(peer) || Option.isNone(links) || Option.isNone(authority)) return Layer.empty;
+    return PeerRecovery.layer.pipe(
+      Layer.provideMerge(Layer.mergeAll(PeerOrigins.layer, RetainedPeer.layer, PeerSource.layer)),
+      Layer.provideMerge(nativePersistenceLayer),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(PeerClient.PeerMcpClient, peer.value),
+          Layer.succeed(PeerLinks.PeerLinks, links.value),
+          Layer.succeed(CurrentAuthority.CurrentAuthority, authority.value),
+        ),
+      ),
+    );
+  }),
+);
+
 /** Requires explicit NativeHome, source/provider routing and source trust. No mode is inferred here. */
 const nativeLocalRuntimeLayer = NativeLocalTransport.layer.pipe(
   Layer.provideMerge(
     Layer.mergeAll(
-      NativeEffectRunner.layer,
+      NativeEffectRunner.layer.pipe(Layer.provideMerge(nativePeerEffectLayer)),
       NativeAppearance.layer,
       NativeCounts.layer,
       NativePlacements.layer,
@@ -201,13 +234,46 @@ export const nativeRollupRuntimeLayer = Layer.mergeAll(
   ),
 );
 
+/** @public Mount only with actual app authentication, transport, owner and runner resources.
+ * ReceivingHome retains the original invocation and builds one fresh prepared graph per call.
+ */
+export const nativePeerHomeForwardingLayer = Layer.unwrap(
+  Effect.gen(function* () {
+    const peer = yield* Effect.serviceOption(PeerClient.PeerMcpClient);
+    const links = yield* Effect.serviceOption(PeerLinks.PeerLinks);
+    const authority = yield* Effect.serviceOption(CurrentAuthority.CurrentAuthority);
+    const native = yield* Effect.serviceOption(PeerPins.NativePeerSessions);
+    const initial = yield* Effect.serviceOption(InitialPeer.InitialPeerExecution);
+    if (
+      Option.isNone(peer) ||
+      Option.isNone(links) ||
+      Option.isNone(authority) ||
+      Option.isNone(native) ||
+      Option.isNone(initial)
+    )
+      return Layer.empty;
+    return ReceivingHome.layer.pipe(
+      Layer.provideMerge(SourceQualification.layer),
+      Layer.provide(
+        Layer.mergeAll(
+          Layer.succeed(PeerClient.PeerMcpClient, peer.value),
+          Layer.succeed(PeerLinks.PeerLinks, links.value),
+          Layer.succeed(CurrentAuthority.CurrentAuthority, authority.value),
+          Layer.succeed(PeerPins.NativePeerSessions, native.value),
+          Layer.succeed(InitialPeer.InitialPeerExecution, initial.value),
+        ),
+      ),
+    );
+  }),
+);
+
 /** Coherent home reads preserve optional rollup configuration at the composition boundary. */
 export const nativeHomeRuntimeLayer = Layer.unwrap(
   Effect.sync(() =>
-    NativeReadRoutes.layer.pipe(
-      Layer.provideMerge(NativeReadProjection.layer),
-      Layer.provideMerge(nativeLocalRuntimeLayer),
-    ),
+    Layer.mergeAll(
+      NativeReadRoutes.layer.pipe(Layer.provideMerge(NativeReadProjection.layer)),
+      nativePeerHomeForwardingLayer,
+    ).pipe(Layer.provideMerge(nativeLocalRuntimeLayer)),
   ),
 );
 

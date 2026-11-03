@@ -11,6 +11,7 @@ import type { RegistryExternalResult } from "../domain/state.ts";
 import * as Origin from "../runtime/peerEffectOrigin.ts";
 import * as Receiving from "../runtime/retainedPeerSession.ts";
 import * as Source from "./peerEffectSource.ts";
+import * as Initial from "./peerEffectAdmission.ts";
 import * as Keys from "../crypto/keyProvider.ts";
 import * as Envelope from "../crypto/envelope.ts";
 import * as Index from "../crypto/identityIndex.ts";
@@ -27,6 +28,14 @@ import * as Session from "../registry/session.ts";
 export class PeerEffectRecovery extends Context.Service<
   PeerEffectRecovery,
   {
+    readonly runInitial: (
+      ticket: Initial.InitialPeerTicket,
+    ) => Effect.Effect<Wire.WorkstreamReceipt | null, Session.RegistryError>;
+    /** Uses this owner's prepared-key graph; no key retrieval occurs inside the selection writer. */
+    readonly active: () => Effect.Effect<
+      Effect.Success<ReturnType<Effects.EffectStore["Service"]["active"]>>,
+      Session.RegistryError
+    >;
     /** Lookup-only recovery. Unknown outcomes never authorize dispatch or replacement IDs. */
     readonly recoverOne: (
       commandId: string,
@@ -165,10 +174,11 @@ const make = Effect.gen(function* () {
       ),
     );
   });
-  const recoverOne = Effect.fn("PeerEffectRecovery.recoverOne")(
-    (commandId: string) =>
+  const execute = Effect.fn("PeerEffectRecovery.execute")(
+    (commandId: string, ticket?: Initial.InitialPeerTicket) =>
       origins.withOrigin(commandId, (origin) =>
         Effect.gen(function* () {
+          if (ticket) yield* Initial.beginInitialPeerTicket(ticket, origin);
           if (!origin.parent_result) {
             const available = yield* receiving.withCurrent(origin, (receiver) =>
               source.withReadmission(origin, receiver, (prepared) =>
@@ -184,7 +194,9 @@ const make = Effect.gen(function* () {
                     ),
                   );
                   if (previous !== null) return true;
-                  const observed = yield* Source.lookupPeerSourceEffect(prepared);
+                  const observed = yield* ticket
+                    ? Source.dispatchInitialPeerSourceEffect(prepared, ticket)
+                    : Source.lookupPeerSourceEffect(prepared);
                   if (observed.kind === "observation") return false;
                   yield* retain(origin, observed.evidence);
                   return true;
@@ -197,8 +209,20 @@ const make = Effect.gen(function* () {
           // after provider work and before the command and parent completion writer.
           return yield* receiving.withCurrent(origin, (receiver) =>
             source.withReadmission(origin, receiver, (prepared) =>
-              withStores((_effects, _db, completion) =>
-                completion.complete(origin, receiver, prepared).pipe(Effect.map((r) => r.result)),
+              withStores((_effects, db, completion) =>
+                ticket
+                  ? db.transaction(
+                      home,
+                      Effect.gen(function* () {
+                        yield* Initial.checkInitialPeerCurrent(ticket, origin);
+                        const result = yield* completion.complete(origin, receiver, prepared);
+                        yield* Initial.checkInitialPeerCurrent(ticket, origin);
+                        return result.result;
+                      }),
+                    )
+                  : completion
+                      .complete(origin, receiver, prepared)
+                      .pipe(Effect.map((r) => r.result)),
               ),
             ),
           );
@@ -213,6 +237,17 @@ const make = Effect.gen(function* () {
         ),
       ),
   );
-  return PeerEffectRecovery.of({ recoverOne });
+  return PeerEffectRecovery.of({
+    recoverOne: (id) => execute(id),
+    runInitial: (ticket) => execute(ticket.command_id, ticket),
+    active: () =>
+      withStores((effects) => effects.active(scope)).pipe(
+        Effect.mapError((cause) =>
+          isRegistryError(cause)
+            ? cause
+            : new Session.RegistryError({ code: "unavailable", cause }),
+        ),
+      ),
+  });
 });
 export const layer = Layer.effect(PeerEffectRecovery, make);

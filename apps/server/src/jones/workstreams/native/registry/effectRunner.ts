@@ -4,6 +4,9 @@ import * as Wire from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as PeerRecovery from "../forwarding/peerEffectRecovery.ts";
+import * as Initial from "../forwarding/peerEffectAdmission.ts";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { NativeHome } from "../mode/authorityMode.ts";
@@ -51,6 +54,15 @@ const make = Effect.gen(function* () {
   const settlement = yield* Settlement.SourceSettlement;
   const github = yield* GitHub.LinkedPrObserver;
   const lock = yield* Semaphore.make(1);
+  const peer = yield* Effect.serviceOption(PeerRecovery.PeerEffectRecovery);
+  const active = () =>
+    Option.isSome(peer)
+      ? peer.value.active()
+      : store
+          .active(scope)
+          .pipe(
+            Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
+          );
   const observe = Effect.fn("NativeEffects.observe")(function* (
     intent: ExternalIntent,
     check: () => Effect.Effect<void, Session.RegistryError>,
@@ -167,16 +179,18 @@ const make = Effect.gen(function* () {
               Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
             );
           if (imported) return yield* new Session.RegistryError({ code: "unknown_effect" });
-          const item = (yield* store
-            .active(scope)
-            .pipe(
-              Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })),
-            )).find((value) => value.command_id === id);
+          const item = (yield* active()).find((value) => value.command_id === id);
           if (!item) return null;
           // Initial execution and retries use the accepted encrypted wrapper,
           // never a caller captured from the live invocation after queueing.
-          if (item.peer_recovery)
-            return yield* new Session.RegistryError({ code: "peer_recovery_unmounted" });
+          if (item.peer_recovery) {
+            if (Option.isNone(peer))
+              return yield* new Session.RegistryError({ code: "peer_recovery_unmounted" });
+            if (expectedIntent && canonicalJson(expectedIntent) !== canonicalJson(item.intent))
+              return yield* new Session.RegistryError({ code: "unknown_effect" });
+            // Ordinary run/retry/worker entry points never receive the fresh acceptance ticket.
+            return yield* peer.value.recoverOne(id);
+          }
           if (!item.recovery) return yield* new Session.RegistryError({ code: "unknown_effect" });
 
           const intent = item.intent as ExternalIntent;
@@ -248,18 +262,32 @@ const make = Effect.gen(function* () {
   );
   const recoverOne = Effect.fn("NativeEffects.recoverOne")((id: string) => runIntent(id, true));
   const recover = Effect.fn("NativeEffects.recover")(function* () {
-    const active = yield* store
-      .active(scope)
-      .pipe(Effect.mapError((cause) => new Session.RegistryError({ code: "unavailable", cause })));
-    for (const item of active) yield* recoverOne(item.command_id);
+    for (const item of yield* active()) yield* recoverOne(item.command_id);
   });
-  return EffectRunner.of({
+  const runner = EffectRunner.of({
     run: (intent) => runIntent(intent.command.command_id, false, intent),
     recoverOne,
     recover,
   });
+  return Context.make(EffectRunner, runner).pipe(
+    Context.add(
+      Initial.InitialPeerExecution,
+      Initial.InitialPeerExecution.of({
+        ready: () =>
+          Option.isSome(peer)
+            ? Effect.void
+            : Effect.fail(new Session.RegistryError({ code: "peer_recovery_unmounted" })),
+        run: (ticket) =>
+          lock.withPermit(
+            Option.isSome(peer)
+              ? peer.value.runInitial(ticket)
+              : Effect.fail(new Session.RegistryError({ code: "peer_recovery_unmounted" })),
+          ),
+      }),
+    ),
+  );
 });
-export const layer = Layer.effect(EffectRunner, make);
+export const layer = Layer.effectContext(make);
 
 /** Application composition provides this worker port using the same runner and SQL. */
 export const rawRecoveryLayer = Layer.effect(
@@ -269,14 +297,32 @@ export const rawRecoveryLayer = Layer.effect(
       store = yield* EffectStore.EffectStore;
     const receipts = yield* Receipts.ReceiptStore,
       home = yield* NativeHome;
+    const peer = yield* Effect.serviceOption(PeerRecovery.PeerEffectRecovery);
     return Recovery.RawRecovery.of({
       pending: Effect.fn("NativeEffects.pendingRecorded")(function* () {
         const scope = { registry_instance_id: home.registry_instance_id, owner_id: home.owner_id };
-        const items = yield* store
-          .active(scope)
-          .pipe(Effect.mapError(() => new Recovery.RecoveryError({ stage: "reservations" })));
+        const pending = Option.isSome(peer)
+          ? peer.value.active()
+          : store
+              .active(scope)
+              .pipe(
+                Effect.mapError(
+                  (cause) => new Session.RegistryError({ code: "unavailable", cause }),
+                ),
+              );
+        const items = yield* pending.pipe(
+          Effect.mapError(() => new Recovery.RecoveryError({ stage: "reservations" })),
+        );
         return yield* Effect.forEach(items, (item) =>
           Effect.gen(function* () {
+            if (item.peer_recovery)
+              return {
+                command_id: item.command_id,
+                origin: "native" as const,
+                recorded_caller: null,
+                peer_recovery: true,
+                next_poll_at: null,
+              };
             const receipt = yield* receipts
               .read(scope, item.command_id)
               .pipe(Effect.mapError(() => new Recovery.RecoveryError({ stage: "reservations" })));
@@ -289,6 +335,11 @@ export const rawRecoveryLayer = Layer.effect(
           }),
         );
       }),
+      recoverPeer: (id) =>
+        runner.recoverOne(id).pipe(
+          Effect.asVoid,
+          Effect.mapError(() => new Recorded.RecordedCallerFence({ code: "unavailable" })),
+        ),
       recoverOne: (id) =>
         runner.recoverOne(id).pipe(
           Effect.asVoid,

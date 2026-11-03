@@ -3820,6 +3820,18 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict"
       ]
+    },
+    {
+      "id": "jones-workstreams-native-peer-effect-initial",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/recovery.test.ts"
+      ],
+      "commands": [
+        "vp test run --project t3 apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts apps/server/src/jones/workstreams/native/runtime/recovery.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict"
+      ]
     }
   ]
 }

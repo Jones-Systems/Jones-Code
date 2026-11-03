@@ -17,6 +17,7 @@ import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import * as Origin from "../runtime/peerEffectOrigin.ts";
 import * as Receiving from "../runtime/retainedPeerSession.ts";
 import * as Pins from "../runtime/peerSessionPins.ts";
+import * as Initial from "./peerEffectAdmission.ts";
 import { RegistryError } from "../registry/session.ts";
 import { validateAttestation } from "../providers/localAttestation.ts";
 import { nativeSettlementResult } from "../domain/externalIntents.ts";
@@ -90,7 +91,9 @@ interface Facts {
   used: boolean;
   readonly token: object;
   readonly check: () => Effect.Effect<void, RegistryError>;
-  readonly lookup: () => Effect.Effect<PeerSourceLookup, RegistryError>;
+  readonly lookup: (
+    ticket?: Initial.InitialPeerTicket,
+  ) => Effect.Effect<PeerSourceLookup, RegistryError>;
 }
 const facts = new WeakMap<PreparedPeerSource, Facts>();
 const SourceScope = Context.Reference<object | undefined>(
@@ -125,6 +128,18 @@ export const lookupPeerSourceEffect = Effect.fn("PeerEffectSource.lookup")(funct
   if (f.used) return yield* refused("source_observation_consumed");
   f.used = true;
   return yield* f.lookup();
+});
+/** Only an unspent, post-commit acceptance ticket can select settle rather than settle_lookup. */
+export const dispatchInitialPeerSourceEffect = Effect.fn("PeerEffectSource.initial")(function* (
+  proof: PreparedPeerSource,
+  ticket: Initial.InitialPeerTicket,
+) {
+  yield* checkPeerSource(proof);
+  const f = facts.get(proof)!;
+  if (f.used) return yield* refused("source_observation_consumed");
+  yield* Initial.checkInitialPeerTicket(ticket, f.origin);
+  f.used = true;
+  return yield* f.lookup(ticket);
 });
 export class PeerEffectSource extends Context.Service<
   PeerEffectSource,
@@ -211,7 +226,9 @@ export const layer = Layer.effect(
             result.current_ceiling,
           );
           if (!Pins.ceilingAllows(ceiling, "workstreams:write")) return yield* refused();
-          const lookup = Effect.fn("PeerEffectSource.lookupFixed")(function* () {
+          const lookup = Effect.fn("PeerEffectSource.lookupFixed")(function* (
+            ticket?: Initial.InitialPeerTicket,
+          ) {
             if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
               return yield* refused("preparation_in_transaction");
             yield* checkLocal();
@@ -259,7 +276,7 @@ export const layer = Layer.effect(
               );
               input = {
                 ...base,
-                kind: "settle_lookup",
+                kind: ticket ? "settle" : "settle_lookup",
                 request: {
                   owner_id: intent.owner_id,
                   principal_id: intent.actor.principal_id,
@@ -280,6 +297,7 @@ export const layer = Layer.effect(
               Effect.mapError(() => refused("provider_mismatch")),
             );
             const expected = canonical(decoded);
+            if (ticket) yield* Initial.claimInitialPeerTicket(ticket, origin);
             const reply = yield* peer
               .call({
                 environmentId,
@@ -339,7 +357,7 @@ export const layer = Layer.effect(
             used: false,
             token: Object.freeze({}),
             check: () => checkLocal(),
-            lookup: () => lookup(),
+            lookup: (ticket) => lookup(ticket),
           };
           facts.set(proof, f);
           return yield* use(proof).pipe(

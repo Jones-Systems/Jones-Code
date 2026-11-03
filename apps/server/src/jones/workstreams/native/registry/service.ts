@@ -11,6 +11,7 @@ import * as Crypto from "effect/Crypto";
 import * as Option from "effect/Option";
 import * as Recorded from "../runtime/recordedCaller.ts";
 import * as Supplied from "../forwarding/suppliedEvidence.ts";
+import * as PeerAdmission from "../forwarding/peerEffectAdmission.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -478,6 +479,29 @@ const make = Effect.gen(function* () {
           yield* persist(before, state);
           if (result.state === "external") {
             const receipt = state.receipts.get(command.command_id)!;
+            const peerRecovery = yield* PeerAdmission.wrapPeerEffectIfAdmitted(
+              result.intent,
+              caller,
+              body,
+            );
+            if (peerRecovery) {
+              yield* effects.reserve(
+                scope,
+                { receipt, request_body: body, origin: "native" },
+                {
+                  command_id: command.command_id,
+                  principal_id: caller.principal_id,
+                  native_reference_id: result.intent.reference.native_reference_id,
+                  effect: command.action.operation as EffectStore.Reservation["effect"],
+                  server_generation: state.server_generation,
+                  admitted_registry_version: state.registry_version,
+                  intent: result.intent,
+                  peer_recovery: peerRecovery,
+                },
+              );
+              yield* PeerAdmission.markPeerEffectReserved(peerRecovery);
+              return { receipt, intent: result.intent };
+            }
             const recording = yield* Effect.serviceOption(Recorded.RecordedCallers);
             const record = Option.isSome(recording) ? yield* recording.value.captureCaller() : null;
             const recovery = record

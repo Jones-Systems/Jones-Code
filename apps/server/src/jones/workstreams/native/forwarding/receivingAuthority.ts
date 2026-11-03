@@ -12,6 +12,7 @@ import * as Keys from "../crypto/keyProvider.ts";
 import * as Supplied from "./suppliedEvidence.ts";
 import * as Boundary from "./peerWriteAdmission.ts";
 import * as Home from "./homeTools.ts";
+import * as Initial from "./peerEffectAdmission.ts";
 import * as SourceQualification from "./sourceForwardQualification.ts";
 
 /** The callback cannot escape the original registered invocation or current-owner scope. */
@@ -65,6 +66,7 @@ export const layer = Layer.effect(
     const crypto = yield* Crypto.Crypto;
     const source = yield* Supplied.SourceForwardQualification;
     const local = yield* Session.Session;
+    const initial = yield* Effect.serviceOption(Initial.InitialPeerExecution);
     const invoke = <A, E, R>(
       invocation: Mcp.McpInvocationScope,
       use: (tools: Home.HomeTools["Service"]) => Effect.Effect<A, E, R>,
@@ -89,6 +91,9 @@ export const layer = Layer.effect(
                   Layer.succeed(Crypto.Crypto, crypto),
                   Layer.succeed(Supplied.SourceForwardQualification, source),
                   Layer.succeed(Session.Session, local),
+                  Option.isSome(initial)
+                    ? Layer.succeed(Initial.InitialPeerExecution, initial.value)
+                    : Layer.empty,
                 ),
               ),
             ),
