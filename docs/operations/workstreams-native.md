@@ -143,3 +143,13 @@ claiming a native runtime. Source changes alone do not install, switch or adopt
 that runtime. Existing legacy installations continue to use
 [legacy activation](./workstreams-activation.md) until a separately authorized
 transition changes their authority.
+
+A selected home exposes its authenticated read export at
+`GET /api/workstreams/native/v1/export`, with optional `page_size=1..100`.
+It requires the current orchestration read scope and streams the existing JSONL
+format as `application/x-ndjson`. Retain the original UTF-8 bytes through EOF:
+only the final complete trailer and its matching digest establish a completed
+export. Revocation, drift, interruption or cancellation leaves the stream incomplete.
+A mode without a selected exporter, including the current member composition,
+refuses with `workstreams_native_unavailable`; it never falls back to a local
+registry or legacy export. This transport does not advertise native capability.

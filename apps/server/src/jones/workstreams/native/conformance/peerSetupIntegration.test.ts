@@ -1,3 +1,6 @@
+import * as ReadExport from "../read/export.ts";
+import * as HomeAdmission from "../runtime/admission.ts";
+import { validateNativeReadExport } from "../../../../../../../packages/client-runtime/src/state/workstreams/nativeExport.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- Two isolated file-backed homes and all fixture evidence are retained for root cleanup.
 // @effect-diagnostics preferSchemaOverJson:off -- This external HTTP transport preserves/corrupts exact JSON bytes intentionally.
 // @effect-diagnostics effectFnOpportunity:off -- Test-local harness callbacks are framework boundaries.
@@ -2227,6 +2230,170 @@ it.effect(
           }
         });
         expect(readBodies.some((body) => "cursor" in body.request.params)).toBe(true);
+
+        // The home-only export consumes the same production projection/admission factories.
+        // External owner/build fixtures and in-process HTTP remain disclosed; no capability is advertised.
+        const homeReadServices = Layer.mergeAll(ReadExport.layer, ReadRoutes.authorizedLayer).pipe(
+          Layer.provideMerge(ReadRoutes.layer),
+          Layer.provideMerge(ReadProjection.layer),
+          Layer.provideMerge(HomeAdmission.layer),
+          Layer.provide(HomeAdmission.callerBoundaryLayer),
+          Layer.provideMerge(localReads),
+          Layer.provide(homeBase),
+        );
+        const homeReadContext = yield* Layer.build(homeReadServices);
+        // This peer-only fixture initialized registry/grants without a home-local app binding.
+        // Seed that isolated home setup through the real CAS store before exercising app reads.
+        const homeBindings = Context.get(homeReadContext, Bindings.BindingStore);
+        expect(yield* homeBindings.read()).toBeNull();
+        const homeExportStore = Context.get(homeReadContext, Registry.RegistryStore);
+        yield* homeExportStore.appendPlain(Test.scope, "principals", {
+          principal_id: "principal:home-export",
+          kind: "environment",
+          environment_id: f.H.env,
+          provenance: "{}",
+        });
+        yield* homeExportStore.appendPlain(Test.scope, "grants", {
+          grant_id: "grant:home-export",
+          principal_id: "principal:home-export",
+          grant_version: 1,
+          permissions: '["workstreams:read"]',
+          state: "active",
+        });
+        yield* homeBindings.bind(
+          {
+            registry_instance_id: home.registry_instance_id,
+            owner_id: home.owner_id,
+            home_environment_id: f.H.env,
+            home_generation: home.server_generation,
+            principal_id: "principal:home-export",
+            binding_version: 1,
+            state: "active",
+          },
+          null,
+        );
+        expect(yield* hsql`SELECT principal_id FROM jones_workstreams_binding_state`).toEqual([
+          { principal_id: "principal:home-export" },
+        ]);
+        const homeAuth = Context.get(f.H.all, Auth.EnvironmentAuth);
+        const exportSession = yield* homeAuth.issueSession({
+          subject: "native-export-reader",
+          scopes: ["orchestration:read"],
+        });
+        const exportAuthenticated = yield* homeAuth.authenticateHttpRequest(
+          HttpRequest.fromWeb(
+            new Request("https://home.invalid/api/workstreams/native/v1/export", {
+              headers: { authorization: "Bearer " + exportSession.token },
+            }),
+          ),
+        );
+        const exportPrincipal = {
+          ...exportAuthenticated,
+          scopes: new Set(exportAuthenticated.scopes),
+        };
+        const homeMiddleware = yield* Layer.build(
+          AuthHttp.layerAuthenticatedAuth.pipe(
+            Layer.provide(Layer.succeed(Auth.EnvironmentAuth, homeAuth)),
+          ),
+        );
+        const authenticateHome = Context.get(homeMiddleware, EnvironmentAuthenticatedAuth);
+        const exportRoutes = HttpApiBuilder.layer(MemberPlacementTestApi).pipe(
+          Layer.provide(workstreamHttpApiLayer),
+          Layer.provide(Layer.succeedContext(Context.merge(selectedServices, homeReadContext))),
+          Layer.provide(
+            Layer.succeed(EnvironmentAuthenticatedAuth, (effect, endpoint) =>
+              authenticateHome(effect, endpoint).pipe(
+                Effect.provideService(Clock.Clock, httpClock),
+              ),
+            ),
+          ),
+          Layer.provide(workstreamResponseHeadersLayer),
+          Layer.provideMerge(
+            HttpPlatform.layer.pipe(
+              Layer.provideMerge(NodeServices.layer),
+              Layer.provideMerge(Etag.layerWeak),
+            ),
+          ),
+          Layer.provide(NodeServices.layer),
+        );
+        const exportHttp = yield* Effect.acquireRelease(
+          Effect.sync(() => HttpRouter.toWebHandler(exportRoutes, { disableLogger: true })),
+          (value) => Effect.promise(() => value.dispose()),
+        );
+        const exportRequest = (token?: string) =>
+          Effect.promise(() =>
+            exportHttp.handler(
+              new Request("https://home.invalid/api/workstreams/native/v1/export?page_size=1", {
+                headers: token === undefined ? {} : { authorization: "Bearer " + token },
+              }),
+            ),
+          );
+        const homeCounts = yield* Context.get(homeReadContext, ReadRoutes.AuthorizedReads)
+          .read({ route: "counts", params: {} })
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, exportPrincipal));
+        if (homeCounts.route !== "counts") return yield* Effect.die("Expected genuine home counts");
+        const homeBinding = yield* Context.get(homeReadContext, Bindings.BindingStore).read();
+        if (!homeBinding) return yield* Effect.die("Missing genuine home singleton");
+        const exportScope = {
+          capability: {
+            contract: readScope.capability.contract,
+            mode: "native-home" as const,
+            registry: readScope.capability.registry,
+            reads: readScope.capability.reads,
+            placement_proofs: readScope.capability.placement_proofs,
+          },
+          binding: {
+            ...publicReadBinding,
+            principalId: homeBinding.principal_id,
+            authorizationRevision: homeCounts.authorization_revision,
+            registryVersion: homeCounts.envelope.registry.registry_version,
+            permissions: ["workstreams:read" as const],
+          },
+        };
+        const expectedExport = yield* Stream.runCollect(
+          Context.get(homeReadContext, ReadExport.ReadExport).stream(1),
+        ).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, exportPrincipal));
+        const exportCalls = f.calls.length;
+        const exportResponse = yield* exportRequest(exportSession.token);
+        expect(exportResponse.status).toBe(200);
+        expect(exportResponse.headers.get("content-type")).toContain("application/x-ndjson");
+        expect(exportResponse.headers.get("cache-control")).toBe("private, no-store");
+        expect(exportResponse.headers.get("x-content-type-options")).toBe("nosniff");
+        const exportBytes = yield* Effect.promise(
+          async () => new Uint8Array(await exportResponse.arrayBuffer()),
+        );
+        expect(exportBytes).toEqual(new TextEncoder().encode(expectedExport.join("")));
+        const completedExport = yield* Effect.promise(() =>
+          validateNativeReadExport(
+            (async function* () {
+              // Split arbitrary byte/line boundaries; the validator consumes the original bytes.
+              for (let i = 0; i < exportBytes.length; i += 7) yield exportBytes.slice(i, i + 7);
+            })(),
+            { scope: exportScope, sha256: async (bytes) => sha256Bytes(bytes) },
+          ),
+        );
+        expect(completedExport.complete).toBe(true);
+        expect(completedExport.pages).toHaveLength(3);
+        expect(completedExport.pages.flatMap((page) => page.items)).toHaveLength(3);
+        expect((yield* exportRequest()).status).toBe(401);
+        expect(yield* homeAuth.revokeSession(exportSession.sessionId)).toBe(true);
+        expect((yield* exportRequest(exportSession.token)).status).toBe(401);
+        expect(f.calls).toHaveLength(exportCalls);
+        // A member has no exporter mounted; successful reads do not imply export support.
+        const memberExport = yield* Effect.promise(() =>
+          placementHttp.handler(
+            new Request("https://member.invalid/api/workstreams/native/v1/export", {
+              headers: { authorization: "Bearer " + nextSession.token },
+            }),
+          ),
+        );
+        expect(memberExport.status).toBe(409);
+        expect(yield* Effect.promise(() => memberExport.json())).toEqual({
+          _tag: "EnvironmentHttpConflictError",
+          message: "workstreams_native_unavailable",
+        });
+        expect(f.calls).toHaveLength(exportCalls);
+
         expect((yield* requestNativeRead(readOnlySession.token, countsRequest)).status).toBe(200);
         expect((yield* requestNativeRead(undefined, countsRequest)).status).toBe(401);
         expect(

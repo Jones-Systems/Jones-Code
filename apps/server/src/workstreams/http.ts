@@ -1,3 +1,6 @@
+import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
+import * as Stream from "effect/Stream";
+import * as Pull from "effect/Pull";
 import * as NativeMemberServices from "../jones/workstreams/native/runtime/memberServices.ts";
 import { nativeMemberPreparationLayer } from "../jones/workstreams/native/integration.ts";
 import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
@@ -358,6 +361,28 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
             { contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT, ...result },
             { onExcessProperty: "error" },
           ).pipe(Effect.mapError(unavailable));
+        }),
+      )
+      .handle("nativeExport", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeReadExport.ReadExport);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isNone(native)) return yield* unavailable();
+          // Acquire and authorize the first bytes before committing success headers.
+          // The request scope owns the pull through EOF, failure or client cancellation.
+          const pull = yield* Stream.toPull(native.value.stream(args.query.page_size));
+          const first = yield* Pull.catchDone(pull, () => Effect.fail(unavailable())).pipe(
+            Effect.mapError(unavailable),
+          );
+          return HttpServerResponse.stream(
+            Stream.concat(Stream.fromIterable(first), Stream.fromPull(Effect.succeed(pull))).pipe(
+              Stream.encodeText,
+              Stream.mapError(unavailable),
+            ),
+            { contentType: "application/x-ndjson", headers: WORKSTREAM_RESPONSE_HEADERS },
+          );
         }),
       )
       .handle("threadPlacements", (args) =>

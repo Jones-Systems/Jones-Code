@@ -1,3 +1,6 @@
+import * as NativeReadExport from "../jones/workstreams/native/read/export.ts";
+import { RegistryError } from "../jones/workstreams/native/registry/session.ts";
+import * as Stream from "effect/Stream";
 import { workstreamsHttpResponseHeaders } from "@t3tools/contracts/jones/workstreamsHttp";
 // @effect-diagnostics nodeBuiltinImport:off -- Tests exercise real POSIX filesystem custody and exact scratch cleanup.
 import * as NodeFS from "node:fs";
@@ -139,6 +142,7 @@ const withHttpFixture = Effect.fn(function* (
   }) => Promise<void>,
   failure?: "offline" | "cursor-stale" | "not-configured",
   customizeTransport?: (transport: WorkstreamTransport) => WorkstreamTransport,
+  nativeExport?: NativeReadExport.ReadExport["Service"],
 ) {
   const calls = { reads: 0, writes: 0 };
   const submissions = { count: 0 };
@@ -189,6 +193,11 @@ const withHttpFixture = Effect.fn(function* (
   ) as EnvironmentAuth.EnvironmentAuth["Service"];
   const routes = HttpApiBuilder.layer(WorkstreamTestApi).pipe(
     Layer.provide(workstreamHttpApiLayer),
+    Layer.provide(
+      nativeExport === undefined
+        ? Layer.empty
+        : Layer.succeed(NativeReadExport.ReadExport, nativeExport),
+    ),
     Layer.provide(Layer.succeed(WorkstreamsRegistrationContext, makeRegistrationFixture().service)),
     Layer.provide(layerAuthenticatedAuth),
     Layer.provide(Layer.succeed(EnvironmentAuth.EnvironmentAuth, auth)),
@@ -252,6 +261,150 @@ it.effect(
       expect(submissions.count).toBe(0);
     }),
 );
+
+it.effect(
+  "refuses native exports without a selected producer instead of using the legacy Gateway",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const request = (headers: Record<string, string>, query = "") =>
+        new Request("http://fixture/api/workstreams/native/v1/export" + query, { headers });
+      expect((await handler(request({}))).status).toBe(401);
+      const unavailable = await handler(request({ authorization: "Bearer synthetic-token" }));
+      expect(unavailable.status).toBe(409);
+      expect(await unavailable.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(unavailable.headers.get("x-content-type-options")).toBe("nosniff");
+      for (const query of [
+        "?page_size=0",
+        "?page_size=101",
+        "?caller=forged",
+        "?page_size=1&page_size=2",
+      ])
+        expect(
+          (await handler(request({ authorization: "Bearer synthetic-token" }, query))).status,
+        ).toBe(400);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
+
+it.effect("requires read scope before opening a native export producer", () => {
+  let opened = 0;
+  return withHttpFixture(
+    [],
+    async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(403);
+      expect(opened).toBe(0);
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+    },
+    undefined,
+    undefined,
+    {
+      stream: () => {
+        opened += 1;
+        return Stream.empty;
+      },
+    },
+  );
+});
+
+it.effect("contains initial native export refusal before committing stream headers", () =>
+  withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler, calls }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export?page_size=1", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+    },
+    undefined,
+    undefined,
+    { stream: () => Stream.fail(new RegistryError({ code: "forbidden" })) },
+  ),
+);
+
+it.effect("preserves streamed UTF-8 bytes and aborts a failed export without a trailer", () => {
+  const page = '{"private_name":"α and β"}\n';
+  const ready = Promise.withResolvers<void>();
+  return withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+      if (!response.body) throw new Error("Missing native export stream.");
+      const reader = response.body.getReader();
+      const first = await reader.read();
+      ready.resolve();
+      expect(first).toEqual({ done: false, value: new TextEncoder().encode(page) });
+      await expect(reader.read()).rejects.toBeDefined();
+    },
+    undefined,
+    undefined,
+    {
+      stream: () =>
+        Stream.concat(
+          Stream.succeed(page),
+          Stream.fromEffect(Effect.promise(() => ready.promise)).pipe(
+            Stream.flatMap(() => Stream.fail(new RegistryError({ code: "forbidden" }))),
+          ),
+        ),
+    },
+  );
+});
+
+it.effect("client cancellation closes the request-owned native export producer", () => {
+  let released = 0;
+  return withHttpFixture(
+    [AuthOrchestrationReadScope],
+    async ({ handler }) => {
+      const response = await handler(
+        new Request("http://fixture/api/workstreams/native/v1/export", {
+          headers: { authorization: "Bearer synthetic-token" },
+        }),
+      );
+      expect(response.status).toBe(200);
+      if (!response.body) throw new Error("Missing native export stream.");
+      const reader = response.body.getReader();
+      expect((await reader.read()).done).toBe(false);
+      await reader.cancel();
+      expect(released).toBe(1);
+    },
+    undefined,
+    undefined,
+    {
+      stream: () =>
+        Stream.concat(Stream.succeed("page\n"), Stream.never).pipe(
+          Stream.ensuring(
+            Effect.sync(() => {
+              released += 1;
+            }),
+          ),
+        ),
+    },
+  );
+});
 
 const credentials: readonly {
   readonly kind: string;

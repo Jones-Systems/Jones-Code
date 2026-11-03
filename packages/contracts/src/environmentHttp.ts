@@ -1,3 +1,4 @@
+import { WorkstreamsNativeReadExportQuery } from "./jones/workstreamsNativeExport.ts";
 import { WorkstreamsHttpResponseContractHeaders } from "./jones/workstreamsHttp.ts";
 import {
   WorkstreamsHomeReadResult,
@@ -915,6 +916,14 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
       headers: OptionalBearerHeaders,
       payload: WorkstreamsHomeReadResultRequest,
       success: WorkstreamsHomeReadResult,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("nativeExport", "/api/workstreams/native/v1/export", {
+      headers: OptionalBearerHeaders,
+      query: WorkstreamsNativeReadExportQuery,
+      success: Schema.String.pipe(HttpApiSchema.asText({ contentType: "application/x-ndjson" })),
       error: EnvironmentWorkstreamPagedSnapshotErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )

@@ -72,6 +72,10 @@
     {
       "from": "packages/contracts/src/environmentHttp.ts",
       "to": "packages/contracts/src/jones/workstreamsHomeReadResult.ts"
+    },
+    {
+      "from": "packages/contracts/src/environmentHttp.ts",
+      "to": "packages/contracts/src/jones/workstreamsNativeExport.ts"
     }
   ]
 }

@@ -154,6 +154,10 @@
     "./jones/workstreamsHomeRegistration": {
       "types": "./src/jones/workstreamsHomeRegistration.ts",
       "import": "./src/jones/workstreamsHomeRegistration.ts"
+    },
+    "./jones/workstreamsNativeExport": {
+      "types": "./src/jones/workstreamsNativeExport.ts",
+      "import": "./src/jones/workstreamsNativeExport.ts"
     }
   },
   "scripts": {
