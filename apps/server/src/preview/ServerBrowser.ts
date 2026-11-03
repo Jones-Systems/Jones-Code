@@ -756,6 +756,9 @@ const make = Effect.gen(function* () {
     const host = placement
       ? await runPlacement(placement.place(snapshot))
       : { _tag: "local" as const };
+    // An adopted page already belongs to its opener's browser; never mount a second attachment.
+    if (adopted && host._tag === "companion")
+      throw new Error("Companion popup adoption is unavailable without the opener's attachment.");
     const desktop =
       host._tag === "companion" && placement
         ? await (async () => {
@@ -1308,7 +1311,18 @@ const make = Effect.gen(function* () {
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
     const opening = createTab(snapshot)
-      .catch((cause: unknown) => {
+      .catch(async (cause: unknown) => {
+        if (placement) {
+          await Effect.runPromise(placement.release(snapshot));
+          await Effect.runPromise(
+            manager
+              .close({
+                threadId: ThreadId.make(snapshot.threadId),
+                tabId: snapshot.tabId,
+              })
+              .pipe(Effect.ignore),
+          );
+        }
         runFork(
           Effect.logWarning(
             isHostSetupError(cause) ? cause.message : "server preview tab failed to start",
@@ -1362,6 +1376,7 @@ const make = Effect.gen(function* () {
     input: Parameters<typeof manager.open>[0],
   ) {
     let key: string = NodeCrypto.randomUUID();
+    let admitted: PreviewSessionSnapshot | undefined;
     const reservation = { agentId: input.automationOwner ?? null };
     return yield* Effect.acquireUseRelease(
       Effect.try({
@@ -1376,10 +1391,19 @@ const make = Effect.gen(function* () {
           .open({
             ...input,
             beforePublish: (snapshot) => {
+              admitted = snapshot;
               pendingTabs.delete(key);
               key = tabKey(snapshot.threadId, snapshot.tabId);
               pendingTabs.set(key, reservation);
               input.beforePublish?.(snapshot);
+              const adopted = adoptedPages.get(key);
+              placement?.bindAtOpen(
+                snapshot,
+                adopted && {
+                  threadId: snapshot.threadId,
+                  tabId: adopted.openerTabId,
+                },
+              );
             },
           })
           .pipe(
@@ -1397,6 +1421,12 @@ const make = Effect.gen(function* () {
                     .pipe(Effect.ignore),
                 ),
               ),
+            ),
+            Effect.onError(() =>
+              Effect.gen(function* () {
+                adoptedPages.delete(key);
+                if (placement && admitted) yield* placement.release(admitted);
+              }),
             ),
           ),
       () =>

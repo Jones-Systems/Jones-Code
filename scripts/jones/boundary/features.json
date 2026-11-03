@@ -921,9 +921,11 @@
         "apps/server/src/persistence/AuthPairingLinks.test.ts",
         "apps/server/src/preview/SessionControl.test.ts",
         "apps/server/src/preview/ServerBrowser.test.ts",
-        "apps/server/src/mcp/toolkits/preview/handlers.test.ts"
+        "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
+        "apps/server/src/jones/previewCompanion/openBinding.test.ts",
+        "apps/server/src/ws.test.ts"
       ],
-      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Headless fallback rendering, pre-publication tab reservations, bounded CDP events/replies, and navigation generations retain those fences. Companion integration cases stay in ServerBrowser.test.ts and DesktopBrowserHost.test.ts to exercise the real lifecycle harness; previewRuntime.test.ts exercises both renderer entry points against exact assignments. Native host qualification and runtime adoption remain separate."
+      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Headless fallback rendering, pre-publication tab reservations, bounded CDP events/replies, and navigation generations retain those fences. Client WS and agent opens freeze selection synchronously before publication; popup admission inherits only the opener's recorded selection or explicit server, rejects conflicting bindings, and refuses companion adoption before mounting a second attachment. The real WS handler uses production registration with held mirror consumption. Companion integration cases stay in ServerBrowser.test.ts and DesktopBrowserHost.test.ts to exercise the real lifecycle harness; previewRuntime.test.ts exercises both renderer entry points against exact assignments. Native host qualification and runtime adoption remain separate."
     },
     {
       "id": "persistence-upstream-isolation",
