@@ -1,11 +1,10 @@
 import { ClientServerBuildLabels } from "./ClientServerBuildLabels";
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 import { InfoIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { ComposerBannerStackItem } from "../../components/chat/ComposerBannerStack";
 import {
-  dismissVersionMismatch,
-  isVersionMismatchDismissed,
+  useVersionMismatchDismissals,
   resolveServerConfigClientUpdateNotice,
 } from "../../versionSkew";
 import type { ExactSourceTarget } from "./ExactSourceUpdateAction";
@@ -35,7 +34,7 @@ export function useClientUpdateBanners({
   eligibleEnvironments,
   renderExactSourceAction = renderProductionAction,
 }: ClientUpdateBannerInput): ComposerBannerStackItem[] {
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
+  const [dismissed, setDismissed] = useVersionMismatchDismissals();
   const environments = automaticEnvironment
     ? eligibleEnvironments
     : activeEnvironment
@@ -52,8 +51,10 @@ export function useClientUpdateBanners({
       notice.serverVersion,
       notice.clientSourceSha ?? null,
       notice.serverSourceSha ?? null,
+      notice.clientBuildStartedAt ?? null,
+      notice.serverBuildStartedAt ?? null,
     ]);
-    if (dismissed.has(key) || isVersionMismatchDismissed(key)) return [];
+    if (dismissed.keys.includes(key)) return [];
     return [
       {
         id: key,
@@ -78,8 +79,9 @@ export function useClientUpdateBanners({
           : {}),
         dismissLabel: "Dismiss client version notice",
         onDismiss: () => {
-          dismissVersionMismatch(key);
-          setDismissed((previous) => new Set(previous).add(key));
+          setDismissed((previous) => ({
+            keys: previous.keys.includes(key) ? previous.keys : [...previous.keys, key],
+          }));
         },
       },
     ];

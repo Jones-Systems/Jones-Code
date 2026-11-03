@@ -4,11 +4,31 @@ import { EnvironmentId } from "@t3tools/contracts";
 import "../../../index.css";
 import { APP_BUILD_STARTED_AT, APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
 import { ComposerBannerStack } from "../../../components/chat/ComposerBannerStack";
-import { useClientUpdateBanners } from "../clientUpdateBanner";
+import { useClientUpdateBanners, type ClientUpdateBannerInput } from "../clientUpdateBanner";
 import { jonesBuildLabel } from "../buildVersion";
 import { useSyntheticExactSource } from "./exact-source-fixture";
 
+function Conversation({
+  name,
+  selected,
+  ...input
+}: ClientUpdateBannerInput & { readonly name: string; readonly selected: boolean }) {
+  const banners = useClientUpdateBanners(input);
+  return (
+    <section hidden={!selected} aria-label={`Conversation ${name}`}>
+      <output aria-label="Visible notice count">Visible notices: {banners.length}</output>
+      <section aria-label="Production composer notices" className="pt-12">
+        <ComposerBannerStack items={banners} />
+        <div className="rounded-b-lg border p-4 text-muted-foreground">
+          Synthetic conversation {name}
+        </div>
+      </section>
+    </section>
+  );
+}
+
 function Fixture() {
+  const [conversation, setConversation] = useState("A");
   const [selected, setSelected] = useState("Laptop");
   const [automatic, setAutomatic] = useState(false);
   const [scenario, setScenario] = useState("older");
@@ -55,12 +75,6 @@ function Fixture() {
   }));
   // This page has no connection providers; actions run against the synthetic exact-source host.
   const { renderExactSourceAction } = useSyntheticExactSource();
-  const banners = useClientUpdateBanners({
-    activeEnvironment: environments.find((environment) => environment.label === selected),
-    automaticEnvironment: automatic,
-    eligibleEnvironments: environments,
-    renderExactSourceAction,
-  });
   return (
     <main className="mx-auto max-w-3xl space-y-8 p-8 text-foreground">
       <h1 className="text-xl font-semibold">Client version notice fixture</h1>
@@ -102,11 +116,29 @@ function Fixture() {
           </select>
         </label>
       </section>
-      <output aria-label="Visible notice count">Visible notices: {banners.length}</output>
-      <section aria-label="Production composer notices" className="pt-12">
-        <ComposerBannerStack items={banners} />
-        <div className="rounded-b-lg border p-4 text-muted-foreground">Synthetic composer</div>
-      </section>
+      <nav className="flex gap-3" aria-label="Conversations">
+        {["A", "B"].map((name) => (
+          <button
+            key={name}
+            type="button"
+            aria-pressed={conversation === name}
+            onClick={() => setConversation(name)}
+          >
+            Conversation {name}
+          </button>
+        ))}
+      </nav>
+      {["A", "B"].map((name) => (
+        <Conversation
+          key={name}
+          name={name}
+          selected={conversation === name}
+          activeEnvironment={environments.find((environment) => environment.label === selected)}
+          automaticEnvironment={automatic}
+          eligibleEnvironments={environments}
+          renderExactSourceAction={renderExactSourceAction}
+        />
+      ))}
     </main>
   );
 }

@@ -64,6 +64,29 @@ function cleanDismissals(): Disposable {
 }
 
 describe("client notice environment lifecycle", () => {
+  it("acknowledges a build pair across mounted conversations and shows changed builds again", async () => {
+    using _dismissals = cleanDismissals();
+    const props = (version = "0.0.45-preview.20261009.1") => ({
+      activeEnvironment: environment("Shared VPS", "b".repeat(40), version),
+      automaticEnvironment: false,
+      eligibleEnvironments: [],
+    });
+    await using first = await render(bannerUi(props()));
+    await using second = await render(bannerUi(props()));
+    expect(first.container.querySelectorAll("section")).toHaveLength(1);
+    expect(second.container.querySelectorAll("section")).toHaveLength(1);
+    await act(() => first.container.querySelector("button")!.click());
+    expect(first.container.firstChild).toBeNull();
+    expect(second.container.firstChild).toBeNull();
+    await using openedLater = await render(bannerUi(props()));
+    expect(openedLater.container.firstChild).toBeNull();
+    await second.rerender(bannerUi(props("0.0.45-preview.20261011.1")));
+    expect(second.container.textContent).toContain("Shared VPS: Client update available");
+    expect(first.container.firstChild).toBeNull();
+    await second.rerender(bannerUi(props()));
+    expect(second.container.firstChild).toBeNull();
+  });
+
   it("selects active or every eligible automatic environment", async () => {
     using _dismissals = cleanDismissals();
     const active = environment("Active");

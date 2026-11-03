@@ -17,7 +17,7 @@ import {
   resolveJonesSourceCurrency,
   type JonesSourceCurrency,
 } from "./jones/fleetUpdates/sourceCurrency";
-import { getLocalStorageItem, setLocalStorageItem } from "./hooks/useLocalStorage";
+import { getLocalStorageItem, setLocalStorageItem, useLocalStorage } from "./hooks/useLocalStorage";
 
 export interface VersionMismatch {
   readonly clientVersion: string;
@@ -46,6 +46,14 @@ const VersionMismatchDismissalsSchema = Schema.Struct({
 });
 
 type VersionMismatchDismissals = typeof VersionMismatchDismissalsSchema.Type;
+
+export function useVersionMismatchDismissals() {
+  return useLocalStorage(
+    VERSION_MISMATCH_DISMISSALS_STORAGE_KEY,
+    { keys: [] },
+    VersionMismatchDismissalsSchema,
+  );
+}
 
 function normalizeVersion(version: string | null | undefined): string | null {
   const trimmed = version?.trim();
