@@ -63,6 +63,18 @@ import * as MemberApp from "../runtime/memberApplication.ts";
 import * as MemberServices from "../runtime/memberServices.ts";
 import * as MemberRecovery from "../runtime/memberRecovery.ts";
 import * as ReadRoutes from "../read/routes.ts";
+import * as ReadProjection from "../read/projection.ts";
+import * as HomeRead from "../forwarding/homeReadProtocol.ts";
+import * as PeerRead from "../forwarding/peerReadAdmission.ts";
+import * as NativeReadTools from "../../../mcp/workstreams/nativeReads.ts";
+import * as ReadWire from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import * as PublicGateway from "../../../../workstreams/WorkstreamGateway.ts";
+import * as LocalReads from "../registry/localTransport.ts";
+import * as RegistryService from "../registry/service.ts";
+import * as RegistryCounts from "../registry/counts.ts";
+import * as RegistryAppearance from "../registry/appearance.ts";
+import * as Placements from "../registry/placements.ts";
+import * as EffectRunner from "../registry/effectRunner.ts";
 import * as Forwarder from "../forwarding/forwarder.ts";
 import * as SourcePort from "../forwarding/sourceReadmissionPort.ts";
 import * as HomePort from "../forwarding/homeForwardPort.ts";
@@ -133,6 +145,7 @@ const mode = Schema.decodeUnknownSync(
   Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
 );
 
+const decodeReadArgs = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResultRequest);
 const decodeAccessArgs = Schema.decodeUnknownEffect(AccessWire.WorkstreamsHomeAccessRequest);
 const decodeForwardArgs = Schema.decodeUnknownEffect(ForwardWire.WorkstreamsForwardRequest);
 const decodeReadbackArgs = Schema.decodeUnknownEffect(
@@ -1444,6 +1457,62 @@ it.effect(
             Effect.orDie,
           ),
         );
+        // Keep one genuine home read producer across requests so its cursors retain their owner.
+        // Provider dispatch is deliberately unavailable in this read-only graph.
+        const readRegistry = RegistryService.layer.pipe(
+          Layer.provideMerge(Integration.nativeSessionLayer),
+          Layer.provideMerge(Integration.nativePersistenceLayer),
+        );
+        const localReads = LocalReads.layer.pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(RegistryCounts.layer, RegistryAppearance.layer, Placements.layer).pipe(
+              Layer.provideMerge(readRegistry),
+            ),
+          ),
+          Layer.provide(
+            Layer.succeed(EffectRunner.EffectRunner, {
+              run: () => Effect.die("Unexpected read-side effect dispatch"),
+              recover: () => Effect.die("Unexpected read-side effect recovery"),
+              recoverOne: () => Effect.die("Unexpected read-side effect lookup"),
+            }),
+          ),
+          Layer.provide(Layer.succeed(Placements.PlacementTrust, f.H.live.trustProvider)),
+        );
+        const homeRead = yield* HomeRead.HomeReadProtocol.pipe(
+          Effect.provide(
+            HomeRead.layer.pipe(
+              Layer.provide(PeerRead.homeAdmissionLayer),
+              Layer.provideMerge(
+                ReadRoutes.layer.pipe(
+                  Layer.provideMerge(ReadProjection.layer),
+                  Layer.provideMerge(localReads),
+                ),
+              ),
+              Layer.provideMerge(Integration.nativePeerReadBoundaryLayer),
+              Layer.provide(homeBase),
+            ),
+          ),
+        );
+        const readBox = yield* NativeReadTools.toolkit.pipe(
+          Effect.provide(
+            Access.HandlersLayer.layer(NativeReadTools.handlers).pipe(
+              Layer.provide(Layer.succeed(HomeRead.HomeReadProtocol, homeRead)),
+            ),
+          ),
+        );
+        f.mountTool(f.H.env, "jones_workstreams_home_read_result", (args) =>
+          decodeReadArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              readBox.handle("jones_workstreams_home_read_result", decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
+          ),
+        );
+        const gateway = Context.get(selectedServices, PublicGateway.WorkstreamGateway);
         const auth = Context.get(f.M.all, Auth.EnvironmentAuth);
         const issued = yield* auth.issueSession({
           subject: "member-application",
@@ -1469,6 +1538,24 @@ it.effect(
           home: { ...home, canonical_origin: "https://native.workstreams.invalid" },
           capabilities: { permissions: ["workstreams:read", "workstreams:write"] },
         });
+        const publicSession = yield* gateway
+          .readSession()
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(publicSession).toMatchObject({
+          registryId: "https://native.workstreams.invalid",
+          principalId: sessionAccess.principal_id,
+          permissions: ["workstreams:read"],
+        });
+        const emptyPage = yield* gateway
+          .readMetadata({ limit: 1 })
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(emptyPage.items).toEqual([]);
+        expect(emptyPage.binding).toEqual(publicSession);
+        expect(
+          yield* gateway
+            .readRegistryCounts()
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toMatchObject({ counts: { total: 0 }, binding: publicSession });
         const readOnlySession = yield* auth.issueSession({
           subject: "member-readonly",
           scopes: ["orchestration:read"],
@@ -1546,6 +1633,23 @@ it.effect(
         expect(
           f.calls.slice(before).some((call) => call.tool === SourcePort.SOURCE_READMISSION_TOOL),
         ).toBe(true);
+        const publicPage = yield* gateway
+          .readMetadata({ limit: 1 })
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(publicPage.items).toHaveLength(1);
+        const publicId = publicPage.items[0]!.workstreamId;
+        expect(
+          yield* gateway
+            .readDetail(publicId)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toMatchObject({ workstream: { workstream_id: publicId, name: request.workstream.name } });
+        const readOnlyPrincipal = { ...readOnlyAuth, scopes: new Set(readOnlyAuth.scopes) };
+        expect(
+          (yield* gateway
+            .readMetadata()
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, readOnlyPrincipal)))
+            .items,
+        ).toHaveLength(1);
         expect(yield* app.recoverOpen()).toEqual([]);
         const lostRequest = { ...request, operation_id: "operation:composed-lost-reply-01" };
         f.state.loseForwardReply = true;
@@ -1630,6 +1734,18 @@ it.effect(
             ))._tag,
         ).toBe("Failure");
         expect(f.calls).toHaveLength(retainedCalls);
+        expect(
+          yield* gateway
+            .readMetadata()
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal), Effect.flip),
+        ).toMatchObject({ reason: "authorization-not-current" });
+        expect(f.calls).toHaveLength(retainedCalls);
+        expect(
+          (yield* gateway
+            .readMetadata()
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, readOnlyPrincipal)))
+            .items.length,
+        ).toBeGreaterThan(0);
         expect(yield* hsql`SELECT workstream_id FROM jones_workstreams_records`).toHaveLength(3);
         expect(yield* msql`SELECT state FROM jones_workstreams_operations`).toEqual([
           { state: "committed" },

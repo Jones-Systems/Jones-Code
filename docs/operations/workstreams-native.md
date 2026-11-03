@@ -32,7 +32,9 @@ resource and environment-owned secret store. Both paths must be absolute and
 match the server configuration; the native feature opens no second database. Native and legacy activation together
 fence registry access unless the selected mode is explicitly `legacy`. Missing
 keys, incomplete imports and fenced authority refuse access; none selects the
-legacy transport as a fallback. Member mode is refused until its forwarding runtime is supported.
+legacy transport as a fallback. A selected member requires its genuine bound enrollment,
+original SQL resource, existing keys and current owner qualification. Missing composition
+stays fenced; configuration alone never grants home access.
 
 Initialization verifies explicitly provisioned home and local content keys and
 the registry index key before creating registry metadata, its initial grant and
@@ -90,8 +92,12 @@ conflicting legacy activation. None of these repairs authorizes a live transitio
 
 Native callers use current HTTP session scopes, MCP authentication and caller
 limits, or an application-owned trusted CLI context. Request bodies cannot select
-another origin or actor. Linked callers and member forwarding are refused until
-J3. Scheduled MCP calls retain their authenticated agent origin; a queue origin
+another origin or actor. A qualified member can read the home through its
+request-authenticated public Gateway. Its session and appearance views expose read
+permission; public mutations and command receipt recovery remain unavailable until
+their adapters are qualified. Native placement v2 keeps its separate negotiated
+route; the frozen v1 Gateway cannot erase native proof fields to accept it. Linked
+metadata requests remain refused. Scheduled MCP calls retain their authenticated agent origin; a queue origin
 requires separate trusted queue-request evidence and is not accepted from a body.
 
 The current optional native capability is withheld until the complete native read

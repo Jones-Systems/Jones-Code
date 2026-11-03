@@ -2212,7 +2212,9 @@
     "packages/contracts/src/jones/workstreamsHomeAccess.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/registry/capabilities.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/read/memberAccess.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/read/memberGateway.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

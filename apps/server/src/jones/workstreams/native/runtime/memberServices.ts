@@ -5,6 +5,7 @@ import * as Forwarder from "../forwarding/forwarder.ts";
 import * as Readmission from "../forwarding/sourceReadmissionPort.ts";
 import * as Retained from "../forwarding/retainedSourceEffectPort.ts";
 import * as Reads from "../read/routes.ts";
+import * as MemberGateway from "../read/memberGateway.ts";
 import * as Application from "./memberApplication.ts";
 import * as Recovery from "./memberRecovery.ts";
 import * as Pins from "./peerSessionPins.ts";
@@ -29,7 +30,8 @@ export const layer = (
         Layer.provide(Layer.succeed(Startup.Startup, selection)),
       );
       return Layer.mergeAll(
-        Startup.unavailableServicesLayer(selection),
+        // The qualified read adapter overrides only Gateway; unsupported operations stay fenced.
+        Layer.merge(Startup.unavailableServicesLayer(selection), MemberGateway.layer),
         Recovery.layer,
         Layer.effect(
           Reads.AuthorizedReads,
