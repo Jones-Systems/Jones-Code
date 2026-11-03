@@ -4,6 +4,15 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "preview-input-isolation",
+      "tests": [
+        "apps/desktop/src/preview/GuestInput.test.ts",
+        "apps/desktop/src/preview/DesktopBrowserHost.test.ts",
+        "apps/desktop/src/preview/Manager.test.ts"
+      ],
+      "scope": "Backport upstream37d7615/dd6c05 pointer focus preservation and ordering, with a narrow local adaptation that reuses the existing Host relay/tab/detached-session validator after pointer queue and host focus capture waits, immediately before dispatch. The optional internal callback preserves rejection behavior and finally focus cleanup; it adds no wire, policy or lease semantics. A shared Host call forwards child session IDs through the guard. The real Host relay harness covers attached mouse/touch routing, unchanged child non-pointer behavior, and release/tab/page/child revocation during delayed capture with a queued pointer. GuestInput source is an accepted shared adaptation; its unchanged upstream tests remain a shared backport. Preserve unrelated relay policy, close/detach behavior and existing boundary ownership. Source unit/model checks do not prove Apple Silicon/macOS foreground or dictation behavior, eliminate the pending-press interval, identify the historical client revision, or establish the Nov2 routing cause."
+    },
+    {
       "id": "historical-preparation",
       "tests": [
         "scripts/jones/performance/historical-preparation.node-test.mjs",
