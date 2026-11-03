@@ -84,6 +84,8 @@ export const checkAuthenticatedPeerResult = Effect.fn("PeerEffectSource.checkRes
   yield* Origin.checkOriginSnapshot(origin).pipe(Effect.mapError(() => refused()));
 });
 interface Facts {
+  readonly origin: Origin.ValidatedPeerReservation;
+  readonly receiving: Receiving.CurrentRetainedPeer;
   active: boolean;
   used: boolean;
   readonly token: object;
@@ -103,6 +105,16 @@ export const checkPeerSource = Effect.fn("PeerEffectSource.check")(function* (
   const f = facts.get(proof);
   if (!f?.active || (yield* SourceScope) !== f.token) return yield* refused();
   yield* f.check();
+});
+/** Verify the exact authoritative command and original receiver associated with this observation. */
+export const checkPeerSourceOrigin = Effect.fn("PeerEffectSource.checkOrigin")(function* (
+  proof: PreparedPeerSource,
+  origin: Origin.ValidatedPeerReservation,
+  receiving: Receiving.CurrentRetainedPeer,
+) {
+  yield* checkPeerSource(proof);
+  const f = facts.get(proof)!;
+  if (f.origin !== origin || f.receiving !== receiving) return yield* refused();
 });
 /** Only fixed attest/settle_lookup calls; this API has no dispatch operation or arbitrary request input. */
 export const lookupPeerSourceEffect = Effect.fn("PeerEffectSource.lookup")(function* (
@@ -321,6 +333,8 @@ export const layer = Layer.effect(
             }),
           }) as PreparedPeerSource;
           const f: Facts = {
+            origin,
+            receiving,
             active: true,
             used: false,
             token: Object.freeze({}),

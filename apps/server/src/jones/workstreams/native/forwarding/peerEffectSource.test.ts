@@ -448,6 +448,17 @@ it.effect(
           yield* source.withReadmission(origin, receiving, (p) =>
             Effect.gen(function* () {
               escaped = p;
+              yield* Source.checkPeerSourceOrigin(p, origin, receiving);
+              expect(
+                (yield* Source.checkPeerSourceOrigin(p, { ...origin }, receiving).pipe(
+                  Effect.result,
+                ))._tag,
+              ).toBe("Failure");
+              expect(
+                (yield* Source.checkPeerSourceOrigin(p, origin, { ...receiving }).pipe(
+                  Effect.result,
+                ))._tag,
+              ).toBe("Failure");
               expect((yield* Source.checkPeerSource({ ...p }).pipe(Effect.result))._tag).toBe(
                 "Failure",
               );

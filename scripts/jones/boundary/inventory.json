@@ -2199,7 +2199,10 @@
     "apps/server/src/jones/workstreams/native/runtime/retainedPeerSession.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/peerEffectRecovery.testkit.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/forwarding/peerEffectSource.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/store/peerEffectCompletion.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
