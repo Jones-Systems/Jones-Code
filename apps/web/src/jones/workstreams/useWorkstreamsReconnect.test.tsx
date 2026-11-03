@@ -53,6 +53,21 @@ vi.mock("../../lib/runtime", () => ({ runPrimaryHttp: http.run }));
 vi.mock("../../connection/catalog", () => ({
   environmentCatalog: { stateAtom: () => connection },
 }));
+// This CP reconnect fixture has no native session; native lifetimes are exercised separately.
+vi.mock("../../state/session", async () => {
+  const { Atom, AsyncResult } = await import("effect/reactivity");
+  const Option = await import("effect/Option");
+  const prepared = Atom.make(Option.none());
+  const session = Atom.make(AsyncResult.initial());
+  const config = Atom.make(null);
+  return {
+    environmentSession: {
+      preparedConnectionValueAtom: () => prepared,
+      sessionStateAtom: () => session,
+      initialConfigValueAtom: () => config,
+    },
+  };
+});
 vi.mock("../../state/primaryEnvironment", async () => {
   const { Atom } = await import("effect/reactivity");
   const { EnvironmentId } = await import("@t3tools/contracts");

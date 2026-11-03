@@ -112,6 +112,10 @@ const requireNativeWorkstreamsAvailable = (reason: string | null): void => {
   if (reason !== null) throw new Error(reason);
 };
 
+function refuseNativeRead(code: NativeReadError["code"], message: string): never {
+  throw new NativeReadError(code, message);
+}
+
 const metadataCache = new LiveWorkstreamMetadataCache();
 const isHttpConflict = Schema.is(EnvironmentHttpConflictError);
 const isInternalReadError = Schema.is(EnvironmentInternalError);
@@ -1431,8 +1435,7 @@ export function useWorkstreams(
     try {
       requireNativeWorkstreamsAvailable(nativeBlock);
       if (usesNativeReads) {
-        if (!nativeReads)
-          throw new NativeReadError("scope_changed", "Refresh native Workstreams access.");
+        if (!nativeReads) refuseNativeRead("scope_changed", "Refresh native Workstreams access.");
         const page = { workstream_id: workstreamId };
         const [detail, memberships, declarations, edges, history, references] = await Promise.all([
           nativeReads.complete(
@@ -1551,8 +1554,7 @@ export function useWorkstreams(
     try {
       requireNativeWorkstreamsAvailable(nativeBlock);
       if (usesNativeReads) {
-        if (!nativeReads)
-          throw new NativeReadError("scope_changed", "Refresh native Workstreams access.");
+        if (!nativeReads) refuseNativeRead("scope_changed", "Refresh native Workstreams access.");
         const result = await nativeReads.read(
           nativeReadRequest({
             route: "reference",
@@ -1561,7 +1563,7 @@ export function useWorkstreams(
           options.signal,
         );
         if (result.route !== "reference")
-          throw new NativeReadError("invalid_response", "Native reference route changed.");
+          refuseNativeRead("invalid_response", "Native reference route changed.");
         return result.value;
       }
       return await request(
