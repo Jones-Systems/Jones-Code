@@ -11,6 +11,8 @@
     "apps/server/src/preview/Manager.ts": "accepted-shared",
     "packages/contracts/src/preview.ts": "accepted-shared",
     "apps/web/src/browser/previewRuntime.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/preview/ServerBrowserContexts.ts": "accepted-shared",
+    "apps/server/src/preview/ServerBrowserContexts.test.ts": "jones-tests-in-upstream",
     "apps/web/src/jones/wordCiTrace.ts": "jones-owned",
     "apps/web/src/jones/wordCiTrace.test.ts": "jones-owned",
     "apps/web/test/browserSetup.ts": "hook",

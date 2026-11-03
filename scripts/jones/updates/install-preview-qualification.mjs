@@ -1392,7 +1392,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   control("show-client-notices");
   const noticeCount = (count) => steps.push({ action: "wait", text: `Client notices: ${count}` });
   const noticeText = `document.querySelector('[data-testid="notice-banners"]').textContent`;
-  const noticeBuild = (sha, version = "0.0.45-preview.20261011.1.1") => `(() => {
+  const noticeBuild = (sha, version = "0.0.44-preview.20261009.1.1") => `(() => {
     const labels = [...document.querySelectorAll('[data-testid="notice-banners"] [aria-label]')]
       .filter(node => {
         const detail = node.getAttribute('aria-label') ?? '';
@@ -1415,48 +1415,48 @@ export function rendererSteps(origin, sourceSha, runId) {
   const syntheticSource = (sourceSha.startsWith("a") ? "b" : "a").repeat(39) + "b";
   noticeCount(1);
   check(
-    "Warning inputs use explicit synthetic older-client branding and the exact source",
+    "Warning inputs use explicit synthetic client branding and the exact source",
     `document.querySelector('[data-testid="notice-branding"]').textContent === ${JSON.stringify(`Synthetic client 0.0.45-preview.20261011.1.1; exact source ${sourceSha}`)}`,
   );
-  noticeTitles("Manual selection shows only Laptop", ["Laptop: Different preview sources"]);
+  noticeTitles("Manual selection shows only Laptop", ["Laptop: Server update available"]);
   details();
-  steps.push({ action: "wait", text: "Which source is newer is unknown." });
+  steps.push({ action: "wait", text: "Update this server to catch up." });
   capture(
     "client-notice-active-laptop",
-    ["Laptop: Different preview sources", "Which source is newer is unknown."],
-    ["Remote: Different preview sources", "Client update available"],
+    ["Laptop: Server update available", "Update this server to catch up."],
+    ["Remote: Server update available", "Client update available"],
   );
   control("notice-select-remote");
-  steps.push({ action: "wait", text: "Remote: Different preview sources" });
+  steps.push({ action: "wait", text: "Remote: Server update available" });
   noticeTitles("Changing active environment selects Remote only", [
-    "Remote: Different preview sources",
+    "Remote: Server update available",
   ]);
   capture(
     "client-notice-active-remote",
-    ["Remote: Different preview sources"],
-    ["Laptop: Different preview sources"],
+    ["Remote: Server update available"],
+    ["Laptop: Server update available"],
   );
   control("notice-select-excluded");
-  steps.push({ action: "wait", text: "Excluded: Different preview sources" });
+  steps.push({ action: "wait", text: "Excluded: Server update available" });
   control("notice-automatic");
   noticeCount(2);
   noticeTitles("Automatic selection uses eligible environments, not the active excluded one", [
-    "Laptop: Different preview sources",
-    "Remote: Different preview sources",
+    "Laptop: Server update available",
+    "Remote: Server update available",
   ]);
   steps.push({
     action: "hover",
     locator: '[data-testid="notice-banners"] >> role=button[name="Show other notices"]',
   });
-  steps.push({ action: "wait", text: "Remote: Different preview sources" });
+  steps.push({ action: "wait", text: "Remote: Server update available" });
   check(
     "Both automatic notices are visibly expanded",
     `Array.from(document.querySelectorAll('[data-testid="notice-banners"] [role="alert"]')).every(e => getComputedStyle(e).visibility === 'visible' && e.getBoundingClientRect().height > 0)`,
   );
   capture(
     "client-notice-automatic-eligible",
-    ["Laptop: Different preview sources", "Remote: Different preview sources"],
-    ["Excluded: Different preview sources"],
+    ["Laptop: Server update available", "Remote: Server update available"],
+    ["Excluded: Server update available"],
   );
   control("notice-select-laptop");
   noticeCount(1);
@@ -1474,19 +1474,19 @@ export function rendererSteps(origin, sourceSha, runId) {
   capture(
     "client-notice-dismissed-remount",
     ["Client notices: 0", "mount: 2"],
-    ["Laptop: Different preview sources"],
+    ["Laptop: Server update available"],
   );
   control("notice-pair-changed");
   noticeCount(1);
   noticeTitles("A changed full SHA restores the dismissed notice", [
-    "Laptop: Different preview sources",
+    "Laptop: Server update available",
   ]);
   check(
     "Changed full source retains the same displayed abbreviation",
     `document.querySelector('[data-testid="notice-server"]').textContent.endsWith(${JSON.stringify(syntheticSource.slice(0, -1) + "c")}) && ${noticeBuild(syntheticSource.slice(0, -1) + "c")}`,
   );
   capture("client-notice-changed-full-source", [
-    "Laptop: Different preview sources",
+    "Laptop: Server update available",
     syntheticSource.slice(0, 7),
   ]);
   control("notice-pair-equal");
@@ -1495,25 +1495,27 @@ export function rendererSteps(origin, sourceSha, runId) {
   capture(
     "client-notice-equal-source",
     ["pair: equal", "Client notices: 0"],
-    ["Laptop: Different preview sources"],
+    ["Laptop: Server update available"],
   );
   control("notice-pair-missing");
-  noticeCount(0);
+  noticeCount(1);
   steps.push({ action: "wait", text: "source missing" });
-  noticeTitles("Missing preview source stays quiet", []);
-  capture(
-    "client-notice-missing-source",
-    ["source missing", "Client notices: 0"],
-    ["Laptop: Different preview sources"],
-  );
+  noticeTitles("Known preview versions remain ordered without source metadata", [
+    "Laptop: Server update available",
+  ]);
+  capture("client-notice-missing-source", [
+    "source missing",
+    "Client notices: 1",
+    "Laptop: Server update available",
+  ]);
   control("notice-pair-stable");
   noticeCount(1);
-  noticeTitles("Stable 0.1.0 directs the older client to update", [
+  noticeTitles("Stable 9.0.0 directs the older client to update", [
     "Laptop: Client update available",
   ]);
   check(
     "Stable guidance retains full version details and update-or-reload instructions",
-    `${noticeBuild(syntheticSource, "0.1.0")} && ${noticeText}.includes('Update this app or reload an updated web client.')`,
+    `${noticeBuild(syntheticSource, "9.0.0")} && ${noticeText}.includes('Update this app or reload an updated web client.')`,
   );
   details();
   steps.push({ action: "wait", text: "Update this app or reload an updated web client." });
@@ -1525,6 +1527,10 @@ export function rendererSteps(origin, sourceSha, runId) {
       syntheticSource.slice(0, 7),
     ],
     ["Which source is newer is unknown."],
+  );
+  check(
+    "A newer server never offers a download of the older client source",
+    `Array.from(document.querySelectorAll('[data-testid="notice-banners"] button')).every(button => !/^(Download|Install|Replace with) [0-9a-f]{7}$/.test(button.textContent.trim()))`,
   );
   check(
     "Client notices never request a server installation or download",
@@ -1565,7 +1571,7 @@ export function rendererSteps(origin, sourceSha, runId) {
   exactState("Exact-source notices: 1");
   exactState(`Download ${shortSource}`);
   capture("exact-source-download-offer", [
-    "Different preview sources",
+    "Server update available",
     `Download ${shortSource}`,
     "Host: exact",
   ]);

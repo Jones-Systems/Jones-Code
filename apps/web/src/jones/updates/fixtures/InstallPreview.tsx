@@ -75,7 +75,7 @@ function ClientNoticePreview({ runId }: { readonly runId: string }) {
         : pair === "changed"
           ? differentSource.slice(0, -1) + "c"
           : differentSource;
-  const serverVersion = pair === "stable" ? "0.1.0" : APP_VERSION;
+  const serverVersion = pair === "stable" ? "9.0.0" : "0.0.44-preview.20261009.1.1";
   const environments = ["Laptop", "Remote", "Excluded"].map((label) => {
     const environmentId = EnvironmentId.make(`client-notice-${runId}-${label}`);
     return {
@@ -105,8 +105,8 @@ function ClientNoticePreview({ runId }: { readonly runId: string }) {
     <section aria-label="Client notice renderer fixture" className="space-y-3 border-t pt-4">
       <h2 className="font-medium">Client notice renderer fixture</h2>
       <p className="text-sm text-muted-foreground">
-        Synthetic older client version and environment descriptors; exact build source. These inputs
-        do not claim an official installed artifact version.
+        Synthetic client version and environment descriptors; exact build source. These inputs do
+        not claim an official installed artifact version.
       </p>
       <p className="break-all font-mono text-xs" data-testid="notice-branding">
         Synthetic client {APP_VERSION}; exact source {APP_SOURCE_SHA ?? "unknown"}

@@ -8,7 +8,7 @@ import type {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
-import { APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
+import { APP_SOURCE_SHA } from "../../../branding";
 import { ComposerBannerStack } from "../../../components/chat/ComposerBannerStack";
 import { requestConfirmDialog } from "../../../confirmDialog";
 import { useClientUpdateBanners } from "../clientUpdateBanner";
@@ -44,7 +44,7 @@ const distinct = (...taken: ReadonlyArray<string | undefined>) =>
   ["b", "c", "d", "e", "f", "1"].find((digit) => !taken.some((sha) => sha?.startsWith(digit)))!;
 const INSTALLED_SOURCE = distinct(APP_SOURCE_SHA).repeat(39) + "9";
 const OFFERED_SOURCE = distinct(APP_SOURCE_SHA, INSTALLED_SOURCE).repeat(39) + "8";
-const HOST_VERSION = "0.1.0-preview.20261019.39341000929.1";
+const HOST_VERSION = "0.0.44-preview.20261009.1.1";
 
 const build = (sourceSha: string, artifactId: number, version: string): JonesUpdateProvenance => ({
   repository: "Jones-Systems/Jones-Code",
@@ -355,7 +355,7 @@ export function ExactSourcePreview({ runId }: { readonly runId: string }) {
         label: "Mac Mini",
         platform: { os: "darwin", arch: "arm64" } as const,
         capabilities: { repositoryIdentity: true },
-        serverVersion: APP_VERSION,
+        serverVersion: snapshot.state?.currentVersion ?? HOST_VERSION,
         jonesSource: {
           repository: "Jones-Systems/Jones-Code" as const,
           sha: hostSource,
