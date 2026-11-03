@@ -85,6 +85,14 @@ import {
   cancelCompanionChooser,
   CompanionOperationUnsupported,
 } from "../jones/previewCompanion/companionCapabilities.ts";
+import {
+  type RecordingAttempt,
+  RecordingAttempts,
+  RecordingAttemptUnresolved,
+  RecordingCaptureRefused,
+  recordingDeadline,
+  fireRecordingCleanup,
+} from "../jones/previewRecordingOperation/recordingAttempt.ts";
 import { companionOutcome } from "../jones/previewCompanion/outcome.ts";
 import { runPlacement } from "../jones/previewCompanion/serverBrowserAdapter.ts";
 import { CompanionHostUnavailable } from "../jones/previewCompanion/CompanionHostRegistry.ts";
@@ -284,6 +292,7 @@ interface EncoderWindow {
 }
 
 interface Recording {
+  readonly attempt: RecordingAttempt<ServerTab>;
   readonly encoder: Page;
   readonly session: CDPSession;
   readonly startedAt: string;
@@ -489,6 +498,7 @@ const make = Effect.gen(function* () {
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
 
   const tabs = new Map<string, ServerTab>();
+  const recordingAttempts = new RecordingAttempts<ServerTab>();
   const pendingTabs = new Map<
     string,
     { readonly agentId: string | null; promise?: Promise<ServerTab> }
@@ -692,6 +702,8 @@ const make = Effect.gen(function* () {
   const dropTab = (tab: ServerTab, closeSession: boolean) => {
     const key = tabKey(tab.threadId, tab.tabId);
     if (tabs.get(key) !== tab) return;
+    const wasRecording = tab.recording?.attempt.phase === "active";
+    recordingAttempts.drop(tab);
     tabs.delete(key);
     tab.closing = true;
     clearAbortedNavigation(tab);
@@ -702,7 +714,12 @@ const make = Effect.gen(function* () {
     if (tab.desktop) void tab.desktop.close().catch(constVoid);
     else void tab.page.close().catch(constVoid);
     if (tab.isolatedContext) void tab.page.context().close().catch(constVoid);
-    void tab.recording?.encoder.close().catch(constVoid);
+    const recording = tab.recording;
+    if (recording && wasRecording)
+      void recording.attempt.commands.drain().then(() => {
+        fireRecordingCleanup(recording.encoder, recording.session);
+        if (!tab.desktop && tab.page.isClosed()) recordingAttempts.clear(key, recording.attempt);
+      });
     void NodeFSP.rm(downloadDir(tab), { recursive: true, force: true }).catch(constVoid);
     reportLiveTabs();
     if (closeSession) {
@@ -1549,6 +1566,8 @@ const make = Effect.gen(function* () {
   const statusWithTitle = async (
     tab: ServerTab | undefined,
     agentSessionId?: string,
+    deadlineMs?: number,
+    onStart?: () => void,
   ): Promise<PreviewAutomationStatus> => {
     if (!tab) {
       return {
@@ -1561,6 +1580,37 @@ const make = Effect.gen(function* () {
         ...profileStatus(),
       };
     }
+    onStart?.();
+    let title: string | null = null;
+    if (tab.page.url() !== "about:blank" && !tab.dialog) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        title =
+          (await (deadlineMs === undefined
+            ? tab.page.title().catch(() => null)
+            : Promise.race([
+                tab.page.title().catch(() => null),
+                new Promise<null>((resolve) => {
+                  timer = setTimeout(() => resolve(null), Math.max(0, deadlineMs - Date.now()));
+                }),
+              ]))) || null;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    }
+    const current = tabs.get(tabKey(tab.threadId, tab.tabId));
+    if (!current)
+      return {
+        available: false,
+        visible: false,
+        tabId: null,
+        url: null,
+        title: null,
+        loading: false,
+        ...profileStatus(),
+      };
+    const replaced = current !== tab;
+    tab = current ?? tab;
     const url = tab.page.url();
     const viewport = tab.page.viewportSize();
     const status = {
@@ -1568,7 +1618,13 @@ const make = Effect.gen(function* () {
       visible: tab.viewers.size > 0,
       tabId: tab.tabId,
       url: url === "about:blank" ? null : url,
-      title: null,
+      title: replaced ? null : title,
+      recording: recordingAttempts.project(
+        tabKey(tab.threadId, tab.tabId),
+        tab,
+        !replaced,
+        tab.desktop !== null && tab.desktop.origin !== "local",
+      ),
       loading: tab.loading,
       control: {
         owner: tabOwner(tab),
@@ -1601,8 +1657,7 @@ const make = Effect.gen(function* () {
         completedAt,
       })),
     };
-    if (status.url === null || tab.dialog) return status;
-    return { ...status, title: (await tab.page.title().catch(() => "")) || null };
+    return status;
   };
 
   const resolveNavigationUrl = (input: PreviewAutomationNavigateInput) => {
@@ -1651,8 +1706,21 @@ const make = Effect.gen(function* () {
     });
   };
 
-  const withCaptureLock = <A>(tab: ServerTab, operation: () => Promise<A>): Promise<A> => {
+  const assertRecordingCapture = (tab: ServerTab, own?: RecordingAttempt<ServerTab>) =>
+    recordingAttempts.assertCapture(tabKey(tab.threadId, tab.tabId), tab, own);
+
+  const withCaptureLock = <A>(
+    tab: ServerTab,
+    operation: () => Promise<A>,
+    own?: RecordingAttempt<ServerTab>,
+  ): Promise<A> => {
+    try {
+      assertRecordingCapture(tab, own);
+    } catch (cause) {
+      return Promise.reject(cause);
+    }
     const run = tab.captureLock.then(() => {
+      assertRecordingCapture(tab, own);
       if (tab.closing) throw new Error("The preview tab closed.");
       return operation();
     });
@@ -1660,63 +1728,173 @@ const make = Effect.gen(function* () {
     return run;
   };
 
-  const startRecording = (tab: ServerTab): Promise<Recording> => {
+  // CDPSession.close and Browser.isConnected are public Playwright lifecycle evidence.
+  const closedRecordingSessions = new WeakSet<CDPSession>();
+  const watchedRecordingSessions = new WeakSet<CDPSession>();
+  const recordingCommand = <A>(
+    tab: ServerTab,
+    attempt: RecordingAttempt<ServerTab>,
+    session: CDPSession | null,
+    send: () => Promise<A>,
+  ) => {
+    if (session && !watchedRecordingSessions.has(session)) {
+      watchedRecordingSessions.add(session);
+      session.on("close", () => closedRecordingSessions.add(session));
+    }
+    return attempt.commands.track(
+      send,
+      () =>
+        (!tab.desktop && tab.page.isClosed()) ||
+        (!tab.page.isClosed() &&
+          (tab.page.context().browser()?.isConnected() ?? true) &&
+          (!session || !closedRecordingSessions.has(session))),
+    );
+  };
+  const startRecording = (tab: ServerTab, deadlineMs: number): Promise<Recording> => {
     assertCompanionCapability(tab.desktop?.origin ?? null, "recording");
-    const started = withCaptureLock(tab, async () => {
-      if (tab.recording) return tab.recording;
-      const encoder = await contexts.scratchPage();
-      let session: CDPSession | null = null;
-      try {
-        await encoder.evaluate(ServerBrowserPage.recordingEncoderScript(recordingFrameRate));
-        // Seed idle pages before returning so an immediate stop has a frame to encode.
-        const firstFrame = await ServerBrowserPage.captureViewport(tab.page, tab.cdp, {
-          format: "jpeg",
-          quality: RECORDING_SCREENCAST.quality,
-          scale: 1,
-        });
-        await encoder.evaluate(
-          ([data, width]) =>
-            (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
-          [firstFrame, tab.page.viewportSize()?.width ?? UNATTACHED_FILL_VIEWPORT.width] as const,
-        );
-        const opened = await tab.page.context().newCDPSession(tab.page);
-        session = opened;
-        const framesInFlight = new Set<Promise<void>>();
-        opened.on("Page.screencastFrame", (frame) => {
-          const cssWidth = tab.page.viewportSize()?.width ?? frame.metadata.deviceWidth;
-          const delivered: Promise<void> = encoder
-            .evaluate(
-              ([data, width]) =>
-                (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
-              [frame.data, cssWidth] as const,
-            )
-            .then(async (accepted) => {
-              if (!accepted) await opened.send("Page.stopScreencast");
-            })
-            .catch(constVoid)
-            .finally(() => {
-              framesInFlight.delete(delivered);
-              void opened
-                .send("Page.screencastFrameAck", { sessionId: frame.sessionId })
-                .catch(constVoid);
-            });
-          framesInFlight.add(delivered);
-        });
-        await opened.send("Page.startScreencast", RECORDING_SCREENCAST);
-        if (tab.closing) throw new Error("The tab closed while the recording started.");
-        const recording: Recording = {
-          encoder,
-          session: opened,
-          startedAt: new Date().toISOString(),
-          framesInFlight,
-        };
-        tab.recording = recording;
-        return recording;
-      } catch (cause) {
-        await encoder.close().catch(constVoid);
-        await session?.detach().catch(constVoid);
-        throw cause;
-      }
+    assertRecordingCapture(tab);
+    if (tab.recording) return Promise.resolve(tab.recording);
+    const key = tabKey(tab.threadId, tab.tabId);
+    const attempt = recordingAttempts.create(key, tab);
+    let encoder: Page | null = null;
+    let session: CDPSession | null = null;
+    let tabWork = false;
+    const current = () => !attempt.abandoned && !tab.closing && tabs.get(key) === tab;
+    const check = () => {
+      if (!current()) throw new BrowserActionNotStarted();
+    };
+    const clear = () => recordingAttempts.clear(key, attempt);
+    const started = recordingDeadline({
+      attempt,
+      deadlineMs,
+      notStarted: () => new BrowserActionNotStarted(),
+      abandon: () => {
+        void encoder?.close().catch(constVoid);
+        if (attempt.phase === "preparing" || attempt.phase === "queued") clear();
+      },
+      run: async () => {
+        try {
+          encoder = await contexts.scratchPage();
+          check();
+          await encoder.evaluate(ServerBrowserPage.recordingEncoderScript(recordingFrameRate));
+          check();
+          attempt.phase = "queued";
+          return await withCaptureLock(
+            tab,
+            async () => {
+              check();
+              if (tab.recording) {
+                recordingAttempts.restore(key, attempt, tab.recording.attempt);
+                fireRecordingCleanup(encoder, null);
+                return tab.recording;
+              }
+              attempt.phase = "capturing";
+              tabWork = true;
+              try {
+                const firstFrame = await recordingCommand(tab, attempt, tab.cdp, () =>
+                  ServerBrowserPage.captureViewport(tab.page, tab.cdp, {
+                    format: "jpeg",
+                    quality: RECORDING_SCREENCAST.quality,
+                    scale: 1,
+                  }),
+                );
+                check();
+                await encoder!.evaluate(
+                  ([data, width]) =>
+                    (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
+                  [
+                    firstFrame,
+                    tab.page.viewportSize()?.width ?? UNATTACHED_FILL_VIEWPORT.width,
+                  ] as const,
+                );
+                check();
+                session = await recordingCommand(tab, attempt, null, () =>
+                  tab.page.context().newCDPSession(tab.page),
+                );
+                check();
+                const opened = session;
+                const ownEncoder = encoder!;
+                const framesInFlight = new Set<Promise<void>>();
+                opened.on("Page.screencastFrame", (frame) => {
+                  if (!attempt.frames || !current()) return;
+                  const cssWidth = tab.page.viewportSize()?.width ?? frame.metadata.deviceWidth;
+                  const delivered: Promise<void> = ownEncoder
+                    .evaluate(
+                      ([data, width]) =>
+                        (globalThis as unknown as EncoderWindow).__t3Recorder.frame(data, width),
+                      [frame.data, cssWidth] as const,
+                    )
+                    .then((accepted) => {
+                      if (!accepted && attempt.frames && current())
+                        void recordingCommand(tab, attempt, opened, () =>
+                          opened.send("Page.stopScreencast"),
+                        ).catch(constVoid);
+                    })
+                    .catch(constVoid)
+                    .finally(() => {
+                      framesInFlight.delete(delivered);
+                      if (attempt.frames && current())
+                        void recordingCommand(tab, attempt, opened, () =>
+                          opened.send("Page.screencastFrameAck", { sessionId: frame.sessionId }),
+                        ).catch(constVoid);
+                    });
+                  framesInFlight.add(delivered);
+                });
+                check();
+                attempt.startSubmitted = true;
+                await recordingCommand(tab, attempt, opened, () =>
+                  opened.send("Page.startScreencast", RECORDING_SCREENCAST),
+                );
+                check();
+                const recording: Recording = {
+                  attempt,
+                  encoder: ownEncoder,
+                  session: opened,
+                  startedAt: new Date().toISOString(),
+                  framesInFlight,
+                };
+                attempt.phase = "active";
+                attempt.startedAt = recording.startedAt;
+                tab.recording = recording;
+                return recording;
+              } catch (cause) {
+                attempt.revoke();
+                attempt.phase = "abandoning";
+                if (attempt.startSubmitted && session) {
+                  await recordingCommand(tab, attempt, session, () =>
+                    session!.send("Page.stopScreencast"),
+                  ).then(() => {
+                    attempt.stopConfirmed = true;
+                  }, constVoid);
+                }
+                await attempt.commands.drain();
+                fireRecordingCleanup(encoder, session);
+                if (
+                  !attempt.startSubmitted ||
+                  attempt.stopConfirmed ||
+                  (!tab.desktop && tab.page.isClosed())
+                ) {
+                  clear();
+                  if (cause instanceof BrowserActionNotStarted)
+                    throw new Error("The recording start was cancelled; no recording is active.", {
+                      cause,
+                    });
+                  throw cause;
+                }
+                attempt.phase = "unknown";
+                throw new RecordingAttemptUnresolved();
+              }
+            },
+            attempt,
+          );
+        } catch (cause) {
+          if (!tabWork) {
+            clear();
+            fireRecordingCleanup(encoder, session);
+          }
+          throw cause;
+        }
+      },
     }).finally(() => {
       if (tab.recordingStart === started) tab.recordingStart = null;
     });
@@ -1732,7 +1910,11 @@ const make = Effect.gen(function* () {
       try {
         await Promise.all([
           ...[...tab.viewers].map((viewer) => viewer.pause()),
-          recording?.session.send("Page.stopScreencast").catch(constVoid),
+          recording
+            ? recordingCommand(tab, recording.attempt, recording.session, () =>
+                recording.session.send("Page.stopScreencast"),
+              ).catch(constVoid)
+            : undefined,
         ]);
         return await capture();
       } finally {
@@ -1740,10 +1922,13 @@ const make = Effect.gen(function* () {
 
         await Promise.all([
           ...[...tab.viewers].map((viewer) => viewer.resume()),
-          recording && tab.recording === recording
-            ? recording.session.send("Page.startScreencast", RECORDING_SCREENCAST).catch(constVoid)
+          recording && tab.recording === recording && recording.attempt.frames
+            ? recordingCommand(tab, recording.attempt, recording.session, () =>
+                recording.session.send("Page.startScreencast", RECORDING_SCREENCAST),
+              ).catch(constVoid)
             : undefined,
         ]);
+        if (recording) await recording.attempt.commands.drain();
       }
     });
 
@@ -1756,56 +1941,78 @@ const make = Effect.gen(function* () {
           "No recording is active for this tab.",
         );
       }
-      let mimeType: string | null;
-      const chunks: Array<Buffer> = [];
+      const attempt = recording.attempt;
+      attempt.phase = "stopping";
+      attempt.revoke();
+      const stoppedNative = recordingCommand(tab, attempt, recording.session, () =>
+        recording.session.send("Page.stopScreencast"),
+      ).then(() => {
+        attempt.stopConfirmed = true;
+      }, constVoid);
+      let artifact;
+      let encoderError: unknown;
       try {
-        await recording.session.send("Page.stopScreencast").catch(constVoid);
-        await Promise.all(recording.framesInFlight);
-        await recording.session.detach().catch(constVoid);
-        const stopped = await recording.encoder.evaluate(() =>
-          (globalThis as unknown as EncoderWindow).__t3Recorder.stop(),
-        );
-        mimeType = stopped.mimeType;
-        // Checked before the transfer so an oversized video never lands in this process.
-        if (stopped.bytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+        let mimeType: string | null;
+        const chunks: Array<Buffer> = [];
+        try {
+          await Promise.all(recording.framesInFlight);
+          const stopped = await recording.encoder.evaluate(() =>
+            (globalThis as unknown as EncoderWindow).__t3Recorder.stop(),
+          );
+          mimeType = stopped.mimeType;
+          // Checked before the transfer so an oversized video never lands in this process.
+          if (stopped.bytes > PROVIDER_SEND_TURN_MAX_FILE_BYTES) {
+            throw new ServerBrowserPage.ServerBrowserOperationError(
+              "PreviewAutomationRecordingTooLargeError",
+              "The recording is larger than the attachment limit.",
+            );
+          }
+          for (let index = 0; index < stopped.count; index += 1) {
+            const chunk = await recording.encoder.evaluate(
+              (chunkIndex) =>
+                (globalThis as unknown as EncoderWindow).__t3Recorder.chunk(chunkIndex),
+              index,
+            );
+            chunks.push(Buffer.from(chunk, "base64"));
+          }
+        } finally {
+          if (tab.recording === recording) tab.recording = null;
+        }
+        const data = Buffer.concat(chunks);
+        if (!mimeType || data.byteLength === 0) {
           throw new ServerBrowserPage.ServerBrowserOperationError(
-            "PreviewAutomationRecordingTooLargeError",
-            "The recording is larger than the attachment limit.",
+            "PreviewAutomationExecutionError",
+            "The recording captured no frames.",
           );
         }
-        for (let index = 0; index < stopped.count; index += 1) {
-          const chunk = await recording.encoder.evaluate(
-            (chunkIndex) => (globalThis as unknown as EncoderWindow).__t3Recorder.chunk(chunkIndex),
-            index,
-          );
-          chunks.push(Buffer.from(chunk, "base64"));
-        }
-      } finally {
-        await recording.encoder.close().catch(constVoid);
-        tab.recording = null;
-      }
-      const data = Buffer.concat(chunks);
-      if (!mimeType || data.byteLength === 0) {
-        throw new ServerBrowserPage.ServerBrowserOperationError(
-          "PreviewAutomationExecutionError",
-          "The recording captured no frames.",
-        );
-      }
 
-      const extension = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
-      const pendingId = `${PENDING_ATTACHMENT_THREAD_SEGMENT}-${NodeCrypto.randomUUID()}-${extension}`;
-      const path = NodePath.join(config.attachmentsDir, `${pendingId}.${extension}`);
-      await NodeFSP.mkdir(config.attachmentsDir, { recursive: true });
-      await NodeFSP.writeFile(path, data);
-      return {
-        id: pendingId,
-        tabId: tab.tabId,
-        path,
-        mimeType: mimeType.split(";")[0]!,
-        sizeBytes: data.byteLength,
-        createdAt: new Date().toISOString(),
-        uploadedAttachmentId: pendingId,
-      };
+        const extension = mimeType.startsWith("video/mp4") ? "mp4" : "webm";
+        const pendingId = `${PENDING_ATTACHMENT_THREAD_SEGMENT}-${NodeCrypto.randomUUID()}-${extension}`;
+        const path = NodePath.join(config.attachmentsDir, `${pendingId}.${extension}`);
+        await NodeFSP.mkdir(config.attachmentsDir, { recursive: true });
+        await NodeFSP.writeFile(path, data);
+        artifact = {
+          id: pendingId,
+          tabId: tab.tabId,
+          path,
+          mimeType: mimeType.split(";")[0]!,
+          sizeBytes: data.byteLength,
+          createdAt: new Date().toISOString(),
+          uploadedAttachmentId: pendingId,
+        };
+      } catch (cause) {
+        encoderError = cause;
+      }
+      await stoppedNative;
+      await attempt.commands.drain();
+      fireRecordingCleanup(recording.encoder, recording.session);
+      if (!attempt.stopConfirmed && (tab.desktop || !tab.page.isClosed())) {
+        attempt.phase = "unknown";
+        throw new RecordingAttemptUnresolved();
+      }
+      recordingAttempts.clear(tabKey(tab.threadId, tab.tabId), attempt);
+      if (encoderError !== undefined) throw encoderError;
+      return artifact!;
     });
 
   let pointerSequence = 0;
@@ -1945,6 +2152,8 @@ const make = Effect.gen(function* () {
             ? latestThreadTab(request.threadId, request.agentSessionId)
             : tabs.get(tabKey(request.threadId, request.tabId)),
           request.agentSessionId,
+          deadlineMs,
+          onStart,
         );
       case "open": {
         if (!request.agentSessionId)
@@ -2072,6 +2281,7 @@ const make = Effect.gen(function* () {
           request.tabId === undefined
             ? latestThreadTab(request.threadId, request.agentSessionId)
             : tabs.get(tabKey(request.threadId, request.tabId));
+        if (target) assertRecordingCapture(target);
         if (target) assertCompanionCapability(target.desktop?.origin ?? null, "recording");
         if (
           !request.tabIdExplicit &&
@@ -2117,6 +2327,8 @@ const make = Effect.gen(function* () {
     assertCurrentRequest();
     if (tabs.get(tabKey(tab.threadId, tab.tabId)) !== tab || tab.closing)
       throw new BrowserControlInterrupted("This browser tab is closed or replaced.", "closed");
+    if (request.operation === "snapshot" || request.operation === "recordingStart")
+      assertRecordingCapture(tab);
     // Closing must unblock an action waiting on a dialog, without queueing behind it.
     if (request.operation === "close") {
       if (tab.control.agentId !== request.agentSessionId)
@@ -2174,7 +2386,7 @@ const make = Effect.gen(function* () {
         tab.agentOperating = !READ_OPERATIONS.has(request.operation);
         updateFileChooserInterception(tab);
         try {
-          return await executeTabOperation(tab, request, () => onDispatch(tab));
+          return await executeTabOperation(tab, request, () => onDispatch(tab), deadlineMs);
         } finally {
           tab.agentOperating = false;
           updateFileChooserInterception(tab);
@@ -2189,6 +2401,7 @@ const make = Effect.gen(function* () {
     tab: ServerTab,
     request: PreviewAutomationRequest,
     onDispatch: () => Promise<void>,
+    deadlineMs = Date.now() + request.timeoutMs,
   ) => {
     const input = request.input;
     switch (request.operation) {
@@ -2277,7 +2490,7 @@ const make = Effect.gen(function* () {
       case "waitFor":
         return ServerBrowserPage.waitFor(tab.page, input as PreviewAutomationWaitForInput);
       case "recordingStart": {
-        const recording = await startRecording(tab);
+        const recording = await startRecording(tab, deadlineMs);
         return { tabId: tab.tabId, recording: true, startedAt: recording.startedAt };
       }
     }
@@ -2344,6 +2557,13 @@ const make = Effect.gen(function* () {
     // Register at receive time, before asynchronous tab resolution can reorder actions.
     const work = Promise.resolve()
       .then(async () => {
+        if (request.operation === "snapshot") {
+          const target =
+            request.tabId === undefined
+              ? latestThreadTab(request.threadId, request.agentSessionId)
+              : tabs.get(tabKey(request.threadId, request.tabId));
+          if (target) assertRecordingCapture(target);
+        }
         await Promise.allSettled(predecessors);
         assertBrowserActionDeadline(deadlineMs);
         return runOperation(
@@ -2410,7 +2630,11 @@ const make = Effect.gen(function* () {
                   tag: error.tag,
                   message: error.message,
                   detail: error.detail,
-                  outcome: companionFailureOutcome,
+                  outcome:
+                    cause instanceof RecordingAttemptUnresolved ||
+                    cause instanceof RecordingCaptureRefused
+                      ? cause.outcome
+                      : companionFailureOutcome,
                 };
               })(),
     }).pipe(

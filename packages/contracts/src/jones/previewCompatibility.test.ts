@@ -2,6 +2,7 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import {
   PreviewAutomationHost,
+  PreviewAutomationStatus,
   PREVIEW_AUTOMATION_OPERATIONS,
   PreviewAutomationResponse,
   PreviewAutomationHostIdentity,
@@ -12,6 +13,8 @@ const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const { headless: _headless, ...legacySnapshotFields } = PreviewSessionSnapshot.fields;
 const decodeLegacySnapshot = Schema.decodeUnknownSync(Schema.Struct(legacySnapshotFields));
 const decodeSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
+const { recording: _recording, ...legacyStatusFields } = PreviewAutomationStatus.fields;
+const decodeLegacyStatus = Schema.decodeSync(Schema.Struct(legacyStatusFields));
 
 describe("preview resilience mixed-version wire compatibility", () => {
   it("lets an old snapshot reader ignore the additive headless flag", () => {
@@ -67,4 +70,20 @@ describe("preview resilience mixed-version wire compatibility", () => {
       decode({ ...response, error: { ...response.error, outcome: "not_started" } }).error?.outcome,
     ).toBe("not_started");
   });
+});
+
+it("preserves unreported recording state and lets old readers ignore the new field", () => {
+  const legacy = {
+    available: true,
+    visible: false,
+    tabId: "tab",
+    url: null,
+    title: null,
+    loading: false,
+  };
+  const decode = Schema.decodeUnknownSync(PreviewAutomationStatus);
+  expect(decode(legacy)).toEqual(legacy);
+  const status = { ...legacy, recording: { state: "unknown" } };
+  expect(decode(status)).toEqual(status);
+  expect(decodeLegacyStatus(status)).toEqual(legacy);
 });

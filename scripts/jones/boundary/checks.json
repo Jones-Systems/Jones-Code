@@ -4535,10 +4535,14 @@
         "apps/server/src/mcp/PreviewAutomationBroker.test.ts",
         "apps/server/src/mcp/toolkits/preview/tools.test.ts",
         "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
-        "apps/server/src/mcp/McpHttpServer.test.ts"
+        "apps/server/src/mcp/McpHttpServer.test.ts",
+        "apps/server/src/jones/previewRecordingOperation/recordingAttempt.test.ts",
+        "packages/contracts/src/jones/previewRecordingState.test.ts",
+        "apps/server/src/preview/ServerBrowser.test.ts",
+        "apps/server/src/preview/SessionControl.test.ts"
       ],
       "commands": [
-        "vp test run packages/contracts/src/jones/previewRecordingOperation.test.ts apps/server/src/jones/previewRecordingOperation/broker.test.ts apps/server/src/jones/previewRecordingOperation/mcp.test.ts packages/contracts/src/jones/previewCompatibility.test.ts apps/server/src/mcp/PreviewAutomationBroker.test.ts apps/server/src/mcp/toolkits/preview/tools.test.ts apps/server/src/mcp/toolkits/preview/handlers.test.ts apps/server/src/mcp/McpHttpServer.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/contracts/src/jones/previewRecordingOperation.test.ts apps/server/src/jones/previewRecordingOperation/broker.test.ts apps/server/src/jones/previewRecordingOperation/mcp.test.ts packages/contracts/src/jones/previewCompatibility.test.ts apps/server/src/mcp/PreviewAutomationBroker.test.ts apps/server/src/mcp/toolkits/preview/tools.test.ts apps/server/src/mcp/toolkits/preview/handlers.test.ts apps/server/src/mcp/McpHttpServer.test.ts apps/server/src/jones/previewRecordingOperation/recordingAttempt.test.ts packages/contracts/src/jones/previewRecordingState.test.ts apps/server/src/preview/ServerBrowser.test.ts apps/server/src/preview/SessionControl.test.ts --maxConcurrency=1 --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
