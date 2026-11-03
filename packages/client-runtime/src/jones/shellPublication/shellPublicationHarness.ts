@@ -94,6 +94,7 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
         subscribeServerConfig: () => Stream.empty,
         ready: Effect.void,
         probe: Effect.void,
+        inboundFrames: Effect.succeed(0),
         closed: Effect.never,
       };
       const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
@@ -131,18 +132,18 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
     }
     const env = environments.get(ids[0]!)!;
     const cache = Persistence.EnvironmentCacheStore.of({
-      loadShell: () => Effect.succeedNone,
-      saveShell: () => Effect.void,
-      loadThread: () => Effect.succeedNone,
-      saveThread: () => Effect.void,
-      removeThread: () => Effect.void,
-      loadServerConfig: () => Effect.succeedNone,
-      saveServerConfig: () => Effect.void,
-      loadVcsRefs: () => Effect.succeedNone,
-      saveVcsRefs: () => Effect.void,
-      removeVcsRefs: () => Effect.void,
-      clearVcsRefs: () => Effect.void,
-      clear: () => Effect.void,
+      loadShell: Effect.fn("Fixture.loadShell")(() => Effect.succeedNone),
+      saveShell: Effect.fn("Fixture.saveShell")(() => Effect.void),
+      loadThread: Effect.fn("Fixture.loadThread")(() => Effect.succeedNone),
+      saveThread: Effect.fn("Fixture.saveThread")(() => Effect.void),
+      removeThread: Effect.fn("Fixture.removeThread")(() => Effect.void),
+      loadServerConfig: Effect.fn("Fixture.loadServerConfig")(() => Effect.succeedNone),
+      saveServerConfig: Effect.fn("Fixture.saveServerConfig")(() => Effect.void),
+      loadVcsRefs: Effect.fn("Fixture.loadVcsRefs")(() => Effect.succeedNone),
+      saveVcsRefs: Effect.fn("Fixture.saveVcsRefs")(() => Effect.void),
+      removeVcsRefs: Effect.fn("Fixture.removeVcsRefs")(() => Effect.void),
+      clearVcsRefs: Effect.fn("Fixture.clearVcsRefs")(() => Effect.void),
+      clear: Effect.fn("Fixture.clear")(() => Effect.void),
     });
     const environmentRegistry = EnvironmentRegistry.EnvironmentRegistry.of({
       entries: yield* SubscriptionRef.make<ReadonlyMap<EnvironmentId, ConnectionCatalogEntry>>(
@@ -150,25 +151,38 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
       ),
       networkStatus: yield* SubscriptionRef.make<NetworkStatus>("online"),
       start: Effect.void,
-      register: () => Effect.die("Unexpected registration"),
-      registerPlatform: () => Effect.die("Unexpected registration"),
-      reconcilePlatform: () => Effect.die("Unexpected reconciliation"),
-      remove: () => Effect.die("Unexpected removal"),
-      removeRoute: () => Effect.die("Unexpected removal"),
-      reorderRoutes: () => Effect.die("Unexpected reorder"),
-      removeRelayEnvironments: () => Effect.die("Unexpected removal"),
-      retryNow: () => Effect.void,
-      setEnabled: () => Effect.die("Unexpected toggle"),
-      setCompatibility: () => Effect.die("Unexpected compatibility"),
-      recordUpdateCompatibility: () => Effect.die("Unexpected compatibility"),
-      state: (id) => SubscriptionRef.get(environments.get(id)!.supervisor.state),
+      register: Effect.fn("Fixture.register")(() => Effect.die("Unexpected registration")),
+      assertKnownAddress: Effect.fn("Fixture.assertKnownAddress")(() =>
+        Effect.die("Unexpected address assertion"),
+      ),
+      reconcilePlatform: Effect.fn("Fixture.reconcilePlatform")(() =>
+        Effect.die("Unexpected reconciliation"),
+      ),
+      remove: Effect.fn("Fixture.remove")(() => Effect.die("Unexpected removal")),
+      removeRoute: Effect.fn("Fixture.removeRoute")(() => Effect.die("Unexpected removal")),
+      reorderRoutes: Effect.fn("Fixture.reorderRoutes")(() => Effect.die("Unexpected reorder")),
+      removeRelayEnvironments: Effect.fn("Fixture.removeRelayEnvironments")(() =>
+        Effect.die("Unexpected removal"),
+      ),
+      retryNow: Effect.fn("Fixture.retryNow")(() => Effect.void),
+      setEnabled: Effect.fn("Fixture.setEnabled")(() => Effect.die("Unexpected toggle")),
+      setCompatibility: Effect.fn("Fixture.setCompatibility")(() =>
+        Effect.die("Unexpected compatibility"),
+      ),
+      recordUpdateCompatibility: Effect.fn("Fixture.recordUpdateCompatibility")(() =>
+        Effect.die("Unexpected compatibility"),
+      ),
+      state: Effect.fn("Fixture.state")((id) =>
+        SubscriptionRef.get(environments.get(id)!.supervisor.state),
+      ),
       stateChanges: (id) => SubscriptionRef.changes(environments.get(id)!.supervisor.state),
-      run: (id, effect) =>
+      run: Effect.fn("Fixture.run")((id, effect) =>
         Effect.provideService(
           effect,
           EnvironmentSupervisor.EnvironmentSupervisor,
           environments.get(id)!.supervisor,
         ),
+      ),
       runStream: (id, stream) =>
         Stream.provideService(
           stream,
@@ -189,8 +203,9 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
         Layer.succeed(
           ShellSnapshotLoader.ShellSnapshotLoader,
           ShellSnapshotLoader.ShellSnapshotLoader.of({
-            load: (prepared) =>
+            load: Effect.fn("Fixture.load")((prepared) =>
               Effect.sync(() => environments.get(prepared.environmentId)!.httpSnapshot),
+            ),
           }),
         ),
       ),
@@ -209,6 +224,7 @@ export const makeShellPublicationHarness = Effect.fn("TestShellPublication.make"
       ),
     });
     const threads = createEnvironmentThreadShellAtoms({
+      hiddenThreadTagsAtom: () => Atom.make(null),
       catalogValueAtom: catalog,
       snapshotAtom: lifecycle.snapshotAtom,
     });

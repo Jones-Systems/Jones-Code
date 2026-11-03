@@ -35,7 +35,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as TestClock from "effect/testing/TestClock";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
@@ -662,7 +662,7 @@ const scenario = (mode: Mode) =>
           const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
             instanceId: binding.providerInstanceId,
             settings,
-            crypto: yield* Crypto.Crypto,
+            digest: yield* Digest.Digest,
             environment: {},
             fileSystem: fs,
             idAllocator: allocator,

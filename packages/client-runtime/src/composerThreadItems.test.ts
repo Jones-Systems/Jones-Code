@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   matchComposerEnvironmentItems,
-  matchComposerThreadItems,
+  matchUpstreamComposerThreadItems as matchComposerThreadItems,
   type ComposerThreadCandidate,
 } from "./composerThreadItems.ts";
 

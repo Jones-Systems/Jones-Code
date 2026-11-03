@@ -1,3 +1,9 @@
+import {
+  threadActivitySettingsFields,
+  threadActivitySettingsPatchFields,
+} from "./jones/threadActivitySettings.ts";
+import { AgentDecisionSnapshotAccessEnabled } from "./jones/decisionSnapshotAccess.ts";
+import { WorkModeEnabled } from "./jones/workMode.ts";
 import { EasDeviceHostConfigs, SimlockDeviceHostConfigs, SshDeviceHostConfigs } from "./device.ts";
 import {
   AuthOrchestrationOperateScope,

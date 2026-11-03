@@ -10,7 +10,7 @@ import {
   workstreamBindingKey,
   resolveWorkstreamCompletionAuthority,
 } from "@t3tools/client-runtime/state/workstreams";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type ReactNode, type DragEvent } from "react";
@@ -46,8 +46,8 @@ import {
 
 export const workstreamCommandId = () =>
   runtime.runPromise(
-    Crypto.Crypto.pipe(
-      Effect.flatMap((crypto) => crypto.randomUUIDv4()),
+    SecureRandom.SecureRandom.pipe(
+      Effect.flatMap((crypto) => crypto.uuidV4()),
       Effect.map((uuid) => `t3-workstream-${uuid}`),
     ),
   );

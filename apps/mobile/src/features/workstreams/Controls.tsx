@@ -1,6 +1,6 @@
 import { workstreamPageUrl } from "./gateway";
 import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -373,8 +373,8 @@ export function MobileWorkstreamControls({
                   generation={snapshot.data.binding.serverGeneration}
                   createCommandId={() =>
                     runtime.runPromise(
-                      Crypto.Crypto.pipe(
-                        Effect.flatMap((crypto) => crypto.randomUUIDv4()),
+                      SecureRandom.SecureRandom.pipe(
+                        Effect.flatMap((crypto) => crypto.uuidV4()),
                         Effect.map((id) => `t3-color-${id}`),
                       ),
                     )

@@ -161,10 +161,12 @@ export function resolveImportedHistoryOutcome(
     };
   return unknown(importedHistoryReasonText(outcome.reason) ?? "The choice needs reconciliation.");
 }
+const encodeImportedHistoryStart = Schema.encodeSync(ImportedHistoryStart);
+
 export function encodeImportedHistoryCorrelation(value: ImportedHistoryCorrelation): string {
   return importedHistoryCanonicalJson({
     ...value,
-    command: Schema.encodeSync(ImportedHistoryStart)(value.command),
+    command: encodeImportedHistoryStart(value.command),
   });
 }
 export function decodeImportedHistoryCorrelation(raw: string): ImportedHistoryCorrelation {

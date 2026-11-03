@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -51,7 +51,7 @@ export class ShellIdlePrompt {
 /** Child-local startup hooks preserve the user's files; unsupported shells never expire. */
 export const makeShellIdlePromptIntegration = Effect.fn("terminal.makeShellIdlePromptIntegration")(
   function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-shell-idle-" });
@@ -109,7 +109,7 @@ preexec_functions+=(__jones_idle_busy)
         env: NodeJS.ProcessEnv,
       ) {
         if (shellName !== "bash" && shellName !== "zsh") return { env, tracker: undefined };
-        const token = yield* crypto.randomUUIDv4();
+        const token = yield* crypto.uuidV4();
         const tracker = new ShellIdlePrompt(token);
         if (shellName === "bash") {
           // PS0 is emitted immediately before execution, including shell builtins.

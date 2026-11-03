@@ -12,7 +12,7 @@ import {
 import { makeOwnerSelectionStore } from "./ownerSelectionStore.ts";
 import { makeJonesTablePresence } from "../persistence/JonesTablePresence.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -84,8 +84,8 @@ const make = Effect.gen(function* () {
   const transitions = yield* Switch.ProviderSwitchServiceV2;
   const sql = yield* SqlClient.SqlClient;
   const ownerSelections = makeOwnerSelectionStore(sql, makeJonesTablePresence(sql));
-  const crypto = yield* Crypto.Crypto;
-  const generationNamespace = yield* crypto.randomUUIDv4();
+  const crypto = yield* SecureRandom.SecureRandom;
+  const generationNamespace = yield* crypto.uuidV4();
   let nextGeneration = 0;
   const residentGenerations = new WeakMap<object, string>();
   const revision = Effect.fn("ThreadSelfConfiguration.revision")(function* (threadId: ThreadId) {

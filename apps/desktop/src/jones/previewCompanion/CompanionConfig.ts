@@ -1,6 +1,6 @@
 import { DesktopCompanionConfig, type DesktopCompanionConfigureInput } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -40,7 +40,7 @@ const make = Effect.gen(function* () {
   );
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
   const directory = yield* identity.resolveUserDataPath.pipe(
     Effect.mapError(() => new CompanionConfigError({ operation: "read" })),
@@ -57,7 +57,7 @@ const make = Effect.gen(function* () {
     );
   const write = Effect.fn("CompanionConfig.write")(
     function* (config: DesktopCompanionConfig) {
-      const id = yield* crypto.randomUUIDv4();
+      const id = yield* crypto.uuidV4();
       const temporary = `${target}.${id}.tmp`;
       const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(
         config,
@@ -79,7 +79,7 @@ const make = Effect.gen(function* () {
           enabled: false,
           environmentId: null,
           hostId: yield* crypto
-            .randomUUIDv4()
+            .uuidV4()
             .pipe(Effect.mapError(() => new CompanionConfigError({ operation: "identity" }))),
           label: "Browser host",
           browserOnly: productLocked,

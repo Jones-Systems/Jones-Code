@@ -30,6 +30,8 @@
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "knip-schemas.ts",
+        // Retained release CLI; publication workflows stay disabled for this sync.
+        "resolve-nightly-release.ts",
         "linux-after-pack.ts",
         "mobile-behavior/run.ts",
         "mobile-native-client.ts",

@@ -2,7 +2,6 @@ import { pipe } from "effect/Function";
 import type { AuthSessionState, EnvironmentId, ServerConfig } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
-import * as Result from "effect/Result";
 import * as Data from "effect/Data";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -44,8 +43,6 @@ function initialConfigOption<E>(
 
 const DEFAULT_SESSION_STATE_TIMEOUT_MS = 6_000;
 const MAX_SESSION_STATE_TIMEOUT_MS = 60_000;
-const SESSION_STATE_RETRY_BASE_MS = 2_000;
-const SESSION_STATE_RETRY_MAX_MS = 60_000;
 
 export const fetchEnvironmentSessionState = Effect.fn(
   "clientRuntime.state.fetchEnvironmentSessionState",
@@ -137,6 +134,33 @@ function makeEnvironmentSessionAtoms<R, E>(
   // This is only the bootstrap config captured when a transport session is
   // established. Consumers that need current provider/settings state must use
   // createServerEnvironmentAtoms(...).configValueAtom instead.
+  const recoverySignalAtom = runtime.atom(
+    Stream.unwrap(
+      Effect.gen(function* () {
+        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+        const wakeups = yield* Effect.serviceOption(ConnectionWakeups);
+        const foreground = Option.isSome(wakeups)
+          ? wakeups.value.changes.pipe(
+              Stream.filter(
+                (reason) =>
+                  reason === "application-active" ||
+                  reason === "application-active-probe" ||
+                  reason === "application-active-long",
+              ),
+            )
+          : Stream.empty;
+        return Stream.merge(
+          foreground,
+          SubscriptionRef.changes(registry.networkStatus).pipe(
+            Stream.drop(1),
+            Stream.filter((status) => status === "online"),
+          ),
+        ).pipe(Stream.mapEffect(() => Clock.currentTimeMillis));
+      }),
+    ),
+    { initialValue: -Infinity },
+  );
+
   const initialConfigValueAtom = Atom.family((environmentId: EnvironmentId) =>
     Atom.make((get): ServerConfig | null =>
       pipe(
@@ -220,11 +244,9 @@ function makeEnvironmentSessionAtoms<R, E>(
               consecutiveFailures = 0;
             }),
           ),
-          Effect.tapError(() => {
-            const delayMs = Math.min(
-              SESSION_STATE_RETRY_BASE_MS * 2 ** consecutiveFailures,
-              SESSION_STATE_RETRY_MAX_MS,
-            );
+          Effect.tapError((error) => {
+            const delayMs = SESSION_RETRY_DELAYS_MS[consecutiveFailures];
+            if (delayMs === undefined || !isTransientSessionFailure(error)) return Effect.void;
             consecutiveFailures += 1;
             return Effect.sleep(delayMs).pipe(
               Effect.andThen(Effect.sync(() => get.refreshSelf())),

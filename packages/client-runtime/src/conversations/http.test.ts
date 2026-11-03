@@ -113,6 +113,7 @@ describe("conversation library HTTP transport", () => {
         },
       };
       const remoteAuthorization = RemoteEnvironmentAuthorization.of({
+        renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
         authorizeBearer: () => Effect.die("unused"),
         authorizeDpop: () => Effect.die("unused"),
         authorizeDpopHttp: () =>

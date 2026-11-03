@@ -7,7 +7,7 @@ import {
 } from "@t3tools/contracts";
 import type { ProviderAdapterV2SessionRuntime } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -95,7 +95,7 @@ const make = Effect.gen(function* () {
   const threads = yield* ThreadManagement.ThreadManagementService;
   const sessions = yield* Effect.serviceOption(Sessions.ProviderSessionManagerV2);
   const starts = yield* Effect.serviceOption(GoalStart.GoalStartDispatch);
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
   const lock = yield* Semaphore.make(1);
   const bindings = new Map<string, Binding>();
   const execute = (scope: Invocation.McpInvocationScope, input: ThreadGoalInput) =>
@@ -184,7 +184,7 @@ const make = Effect.gen(function* () {
             !sameBinding(binding.provider, provider)
           ) {
             if (mutation) return answer("stale", "read_current_goal_before_mutation");
-            const token = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+            const token = yield* crypto.uuidV4().pipe(Effect.orDie);
             const retain = binding !== undefined && sameConversation(binding, provider, runtime);
             // Preserve rejected keys across an ownership change so durable command dedupe
             // cannot attribute an old conversation's run to its replacement.

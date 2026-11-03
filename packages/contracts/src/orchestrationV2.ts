@@ -773,6 +773,14 @@ export function orchestrationV2WorktreePending(
   );
 }
 
+export const OrchestrationV2ProviderSettlement = Schema.Struct({
+  runAttemptId: RunAttemptId,
+  providerTurnId: ProviderTurnId,
+  status: Schema.Literals(["completed", "interrupted", "failed", "cancelled"]),
+  completedAt: Schema.DateTimeUtc,
+});
+export type OrchestrationV2ProviderSettlement = typeof OrchestrationV2ProviderSettlement.Type;
+
 export const OrchestrationV2RunAttempt = Schema.Struct({
   id: RunAttemptId,
   // Absence preserves historical replay; null requires attributed provider evidence.
@@ -2403,6 +2411,15 @@ export const OrchestrationV2RunJson = OrchestrationV2Run.mapFields((fields) => (
 }));
 export type OrchestrationV2RunJson = typeof OrchestrationV2RunJson.Type;
 
+export const OrchestrationV2ProviderSettlementJson = OrchestrationV2ProviderSettlement.mapFields(
+  (fields) => ({
+    ...fields,
+    completedAt: Schema.DateTimeUtcFromString,
+  }),
+);
+export type OrchestrationV2ProviderSettlementJson =
+  typeof OrchestrationV2ProviderSettlementJson.Type;
+
 export const OrchestrationV2RunAttemptJson = OrchestrationV2RunAttempt.mapFields((fields) => ({
   ...fields,
   providerSettlement: Schema.optional(Schema.NullOr(OrchestrationV2ProviderSettlementJson)),
@@ -3583,8 +3600,24 @@ const OrchestrationV2InternalCommand = Schema.Union([
     title: Schema.optional(TrimmedNonEmptyString),
     driver: ProviderDriverKind,
     modelSelection: ModelSelection,
-    remoteChild: OrchestrationV2RemoteTaskChild,
+    remoteChild: Schema.optional(OrchestrationV2RemoteTaskChild),
     completionWake: Schema.optional(Schema.Literals(["always", "settled_only"])),
+  }),
+  /** Records a nonterminal hold; approval remains owned by the receiving environment. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.hold"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    progress: Schema.String,
+  }),
+  /** Attaches the acknowledged remote child to its reservation, including after restart. */
+  Schema.Struct({
+    type: Schema.Literal("delegated_task.remote.bind"),
+    commandId: CommandId,
+    parentThreadId: ThreadId,
+    taskId: NodeId,
+    remoteChild: OrchestrationV2RemoteTaskChild,
   }),
   /**
    * Completes a delegated task that ran in a linked environment, with what its

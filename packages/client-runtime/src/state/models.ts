@@ -191,23 +191,7 @@ export function presentThreadShell(
   pendingSubagentRequest: PendingSubagentRequest | null = null,
 ): EnvironmentThreadShell {
   const updatedAt = iso(thread.updatedAt);
-  const latestRun =
-    thread.latestRunId === null
-      ? null
-      : ({
-          runId: thread.latestRunId,
-          status: thread.status === "idle" ? "completed" : thread.status,
-          requestedAt: nullableIso(thread.latestRunRequestedAt ?? null),
-          startedAt: nullableIso(thread.latestRunStartedAt ?? null),
-          completedAt:
-            thread.latestRunCompletedAt === undefined
-              ? thread.status === "idle" || terminalRunStatus(thread.status)
-                ? updatedAt
-                : null
-              : nullableIso(thread.latestRunCompletedAt),
-          assistantMessageId: null,
-        } satisfies ThreadRunSummary);
-  const runtime = shellRuntime(thread);
+  const attention = shellAttentionInput(thread, pendingSubagentRequest);
   return {
     ...(thread.runtimeIdentity === undefined ? {} : { runtimeIdentity: thread.runtimeIdentity }),
     environmentId,
@@ -238,12 +222,8 @@ export function presentThreadShell(
     ...(thread.latestUserAuthoredMessageAt === undefined
       ? {}
       : { latestUserAuthoredMessageAt: nullableIso(thread.latestUserAuthoredMessageAt) }),
-    hasPendingApprovals:
-      thread.pendingRuntimeRequest !== null &&
-      thread.pendingRuntimeRequest.kind !== "user_input" &&
-      thread.pendingRuntimeRequest.kind !== "auth_refresh",
-    // Async questions count too, so a thread with any open question leaves Working.
-    hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
+    hasPendingApprovals: attention.hasPendingApprovals,
+    hasPendingUserInput: attention.hasPendingUserInput,
     pendingSubagentRequest,
     pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,

@@ -3536,7 +3536,7 @@ type WsLayerServices =
       | ChildProcessSpawner.ChildProcessSpawner
       | CodexInstallation.CodexInstallation
       | CommandOutputHub.CommandOutputHub
-      | Crypto.Crypto
+      | SecureRandom.SecureRandom
       | DatabaseStorage.DatabaseStorage
       | DeviceService.DeviceService
       | DirectEndpoints.DirectEndpoints

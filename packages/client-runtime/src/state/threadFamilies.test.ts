@@ -133,6 +133,7 @@ describe("createThreadFamilyAtoms", () => {
           initialConfig: Effect.succeed({ shellThreadFamilies: true } as never),
           ready: Effect.void,
           probe: Effect.void,
+          inboundFrames: Effect.succeed(0),
           closed: Effect.never,
         } as unknown as RpcSession.RpcSession;
         const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({

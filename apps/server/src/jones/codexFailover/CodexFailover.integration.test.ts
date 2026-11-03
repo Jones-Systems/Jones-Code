@@ -16,7 +16,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as CodexSchema from "effect-codex-app-server/schema";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -196,7 +196,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       Effect.provide(Codex.layerAppServerClientFactory),
     );
     const adapterDependencies = yield* Effect.context<
-      | Crypto.Crypto
+      | SecureRandom.SecureRandom
       | FileSystem.FileSystem
       | Path.Path
       | IdAllocator.IdAllocatorV2
