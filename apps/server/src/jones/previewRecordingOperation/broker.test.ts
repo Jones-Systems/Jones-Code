@@ -112,7 +112,9 @@ const unknownReply = {
 const success = { ok: true, result: { tabId, recording: true, startedAt: "2026-11-02T12:00:00Z" } };
 const fence = Effect.fn("test.recording.fence")(function* (broker: BrokerService, target = tabId) {
   expect(
-    yield* broker.invoke({ scope, operation: "click", tabId: target, input: {} }).pipe(Effect.flip),
+    yield* broker
+      .invoke({ scope, operation: "click", tabId: target, input: {} })
+      .pipe(Effect.flip, Effect.orDie),
   ).toMatchObject({
     _tag: "PreviewAutomationTimeoutError",
     outcome: "not_started",

@@ -11,7 +11,6 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -55,8 +54,9 @@ const layer = McpHttpServer.layerPreviewToolkit.pipe(
   Layer.provideMerge(McpServer.McpServer.layer),
   Layer.provideMerge(McpToolAccessTestkit.liveThreadsLayer),
   Layer.provideMerge(PreviewAutomationBroker.layer),
-  Layer.provideMerge(Layer.mock(ServerConfig.ServerConfig)({})),
-  Layer.provideMerge(Layer.mock(FileSystem.FileSystem)({})),
+  Layer.provideMerge(
+    ServerConfig.layerTest(process.cwd(), { prefix: "t3-recording-operation-test-" }),
+  ),
   Layer.provideMerge(NodeServices.layer),
 );
 const call = (
@@ -177,7 +177,7 @@ it.effect(
         expect(
           yield* broker
             .invoke({ scope: invocation, operation: "click", tabId, input: {} })
-            .pipe(Effect.flip),
+            .pipe(Effect.flip, Effect.orDie),
         ).toMatchObject({
           outcome: "not_started",
           unreconciled: true,
