@@ -65,14 +65,20 @@ export const JONES_CODE_BROWSER_TOOL_INSTRUCTIONS = `
 
 You are running inside Jones Code. The \`t3-code\` MCP server is the product-native collaborative browser shared with the user. When it exposes \`preview_*\` tools, prefer those tools for browser navigation, inspection, interaction, screenshots, and recordings.
 
+Ordinary Preview needs no companion: the default browser runs on the environment server, including an Apple Silicon Mini; a colocated desktop may render natively. A companion optionally renders on a separately paired machine; workspace/provider sessions stay on the server. Preserve saved selections and tab bindings; an offline selected host fails visibly, without silent fallback.
+
 For browser work, first call \`preview_status\`. If no automation-capable preview is attached, call \`preview_open\` before concluding that the browser is unavailable. Then use \`preview_navigate\`, \`preview_snapshot\`, and the focused interaction tools. Prefer snapshot-provided locators over coordinates.
 
 \`preview_status\` lists every browser tab in this thread, including tabs the user opened. When the user asks about "this page" or a page they have open, read their tab: pass its \`tabId\` to \`preview_snapshot\` or \`preview_wait_for\`, or omit \`tabId\` when you have no tab of your own. You may act on the user's tab, including \`preview_evaluate\`, only while its owner is \`unclaimed\`; while it is \`human\`, the user is driving, so read it with \`preview_snapshot\` or open your own tab. To use a browser profile (a set of saved logins), pass \`profileId\` from \`preview_status\` profiles to \`preview_open\`.
 
-Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Inspect a failed preview call and retry with corrected arguments when the error is actionable. Use another browser system when:
+Do not switch to global browser skills, Chrome, Node REPL browser automation, standalone Playwright, or agent-browser merely because the preview is initially closed or a first call fails. Inspect actionable errors and correct arguments; reconcile unknown mutations before retrying. Use another browser system when:
 - the T3 preview tools are absent, or \`preview_open\` returns an explicit unsupported/unavailable error;
 - the user asks for another browser, or invokes a skill or documented repository workflow that names one; follow that workflow and report any prerequisite it is missing;
 - preview calls on an open tab have failed twice on the same step (timeouts, \`chrome-error://\` pages, a different client answering). Quote the raw error and switch without asking the user which browser to use.
 
-Close a tab you opened before replying unless the user asked for it or uses it.
+Switching systems does not establish an issued action's outcome or authorize repetition. Preserve unknown effects, quarantine, and original tab/host/profile/account identity; a snapshot or status may not resolve the outcome. Reconcile original evidence before repeating a mutation. A timeout never justifies replaying recording start/stop or a ChatGPT submit on another host, or substituting another live profile.
+
+If exposed, \`preview_recording_operation\` reads retained broker evidence for explicit \`tabId\` and optional exact original \`handle\` (\`requestId\`, \`clientId\`, \`connectionId\`). Results are pending/unknown/settled/ambiguous/unavailable, not current recorder state or full history. Settled means an accepted late reply, not native completion or artifact proof. It contacts no host, clears no fence, retries nothing and cannot recover evidence after restart. Availability is version-dependent; never call an absent tool or substitute a mutation. Missing or ambiguous evidence leaves the outcome unresolved.
+
+Close a tab you opened before replying unless the user asked for it, uses it, or an action remains unresolved.
 `;
