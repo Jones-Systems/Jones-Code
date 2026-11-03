@@ -1,4 +1,5 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import type { ConnectionTarget } from "@t3tools/client-runtime/connection";
 import {
   isParentThreadRelationship,
   type ThreadRelationshipWalkRow,
@@ -12,6 +13,19 @@ import type {
   OrchestrationV2ThreadShell,
   ThreadId,
 } from "@t3tools/contracts";
+
+import { isDesktopLocalConnectionTarget } from "../../connection/desktopLocal";
+
+export function isClientLocalMachine(
+  target: ConnectionTarget | undefined,
+  desktop: boolean,
+): boolean {
+  return (
+    desktop &&
+    (target?._tag === "PrimaryConnectionTarget" ||
+      (target !== undefined && isDesktopLocalConnectionTarget(target)))
+  );
+}
 
 export function resolveMachineIdentity(
   label: string | null | undefined,
