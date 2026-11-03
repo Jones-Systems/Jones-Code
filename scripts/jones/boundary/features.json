@@ -2538,6 +2538,14 @@
         "apps/server/src/workstreams/http.test.ts"
       ],
       "scope": "Explicit existing placement-v2 HTTP negotiation over genuine selected-member request admission, bounded coherent pages and independent local authority trust. Preserve complete native proof, original home/principal/grant context, v1 behavior and no-write reader semantics. Isolated synthetic authenticated H/M HTTP proof does not establish physical/runtime/client acceptance."
+    },
+    {
+      "id": "workstreams-native-client-http",
+      "tests": [
+        "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Shared authenticated closed native read and exact-byte JSONL export consumers. Existing cookie/Bearer/DPoP credential renewal remains the sole HTTP auth owner; no native-to-legacy fallback or transport retry is added. Export checks current counts before and after complete original-byte/trailer verification. Genuine mounted member HTTP composition is synthetic source evidence. Application reader lifetimes, platform views and capability advertisement remain separate integration gates."
     }
   ]
 }

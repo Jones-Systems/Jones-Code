@@ -542,6 +542,10 @@
     "./jones/activity/report-lanes": {
       "types": "./src/jones/activity/reportLanes.ts",
       "default": "./src/jones/activity/reportLanes.ts"
+    },
+    "./jones/workstreams/native-http": {
+      "types": "./src/jones/workstreams/nativeHttp.ts",
+      "default": "./src/jones/workstreams/nativeHttp.ts"
     }
   },
   "scripts": {

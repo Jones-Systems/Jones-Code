@@ -70,6 +70,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpResponse from "effect/http/HttpClientResponse";
+import * as UrlParams from "effect/http/UrlParams";
 import * as HttpRequest from "effect/http/HttpServerRequest";
 import * as ServerResponse from "effect/http/HttpServerResponse";
 import * as Cli from "../runtime/peerSetupCli.ts";
@@ -101,6 +102,8 @@ import {
   NativeWorkstreamReader,
   nativeReadRequest,
 } from "../../../../../../../packages/client-runtime/src/state/workstreams/nativeRead.ts";
+import * as NativeHttpClient from "../../../../../../../packages/client-runtime/src/jones/workstreams/nativeHttp.ts";
+import { RelayConnectionTarget } from "../../../../../../../packages/client-runtime/src/connection/model.ts";
 import * as PublicGateway from "../../../../workstreams/WorkstreamGateway.ts";
 import * as LocalReads from "../registry/localTransport.ts";
 import * as RegistryService from "../registry/service.ts";
@@ -2535,9 +2538,12 @@ it.effect(
         ).toEqual(["orchestration:read"]);
         const memberCliHttp = HttpClient.make((request) =>
           Effect.gen(function* () {
+            const endpoint = new URL(request.url);
+            for (const [name, value] of new URLSearchParams(UrlParams.toString(request.urlParams)))
+              endpoint.searchParams.append(name, value);
             const response = yield* Effect.promise(() =>
               placementHttp.handler(
-                new Request(request.url, {
+                new Request(endpoint, {
                   method: request.method,
                   headers: request.headers,
                   ...(request.body._tag === "Uint8Array"
@@ -2549,6 +2555,37 @@ it.effect(
             return HttpResponse.fromWeb(request, response);
           }),
         );
+        // The shared client HTTP adapter consumes the mounted member API with its real bearer
+        // authentication and original bytes, not a fabricated projection/transport response.
+        const nativeHttpInput = {
+          prepared: {
+            environmentId: EnvironmentId.make(f.M.env),
+            label: "Synthetic selected member",
+            httpBaseUrl: "https://member.invalid",
+            socketUrl: "wss://member.invalid/ws",
+            httpAuthorization: { _tag: "Bearer" as const, token: nextSession.token },
+            target: new RelayConnectionTarget({
+              environmentId: EnvironmentId.make(f.M.env),
+              label: "Synthetic selected member",
+            }),
+          },
+          signer: Option.none(),
+          scope: memberExportScope,
+          sha256: async (bytes: Uint8Array) => sha256Bytes(bytes),
+        };
+        const sharedCount = yield* NativeHttpClient.fetchEnvironmentNativeWorkstreamRead({
+          ...nativeHttpInput,
+          request: nativeReadRequest({ route: "counts", params: {} }),
+        }).pipe(Effect.provideService(HttpClient.HttpClient, memberCliHttp));
+        expect(sharedCount.route).toBe("counts");
+        expect(sharedCount.authorization_revision).toBe(memberExportBinding.authorizationRevision);
+        const sharedExport = yield* NativeHttpClient.fetchEnvironmentNativeWorkstreamExport({
+          ...nativeHttpInput,
+          pageSize: 1,
+        }).pipe(Effect.provideService(HttpClient.HttpClient, memberCliHttp));
+        expect(sharedExport.completion.complete).toBe(true);
+        expect(sharedExport.completion.pages).toHaveLength(3);
+        expect(sharedExport.bytes).toEqual(new TextEncoder().encode(exportedHomeBytes.at(-1)!));
         yield* NativeExportCli.runNativeReadExportCli(
           "http://127.0.0.1:1111",
           { authorization: "Bearer " + memberCliIssued.token },

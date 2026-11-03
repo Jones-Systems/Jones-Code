@@ -12,7 +12,9 @@
     "apps/mobile/src/features/workstreams/summary.ts",
     "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.browser.test.tsx",
     "apps/web/src/jones/workstreams/WorkstreamSummaryPanel.tsx",
-    "docs/operations/workstreams-rollups.md"
+    "docs/operations/workstreams-rollups.md",
+    "packages/client-runtime/src/jones/workstreams/nativeHttp.ts",
+    "packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts"
   ],
   "hookPaths": ["apps/server/src/httpCors.ts", "apps/server/src/serverOwnership.ts"],
   "tombstones": [],
