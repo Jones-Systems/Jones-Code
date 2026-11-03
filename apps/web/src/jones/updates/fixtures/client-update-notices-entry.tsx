@@ -38,6 +38,12 @@ function Fixture() {
       : scenario === "changed"
         ? "b".repeat(39) + "c"
         : "b".repeat(40);
+  const serverBuildStartedAt =
+    scenario === "identity" || scenario === "equal"
+      ? APP_BUILD_STARTED_AT
+      : scenario === "newer" || scenario === "stable"
+        ? "2026-10-31T00:43:00Z"
+        : "2026-10-28T15:26:00Z";
   const environments = ["Laptop", "Remote"].map((label) => ({
     environmentId: EnvironmentId.make(`client-notice-fixture-${label}`),
     label,
@@ -55,12 +61,7 @@ function Fixture() {
               : scenario === "identity"
                 ? APP_VERSION
                 : "0.1.2-preview.20261028.40652016025.1",
-        jonesBuildStartedAt:
-          scenario === "identity" || scenario === "equal"
-            ? APP_BUILD_STARTED_AT
-            : scenario === "newer" || scenario === "stable"
-              ? "2026-10-31T00:43:00Z"
-              : "2026-10-28T15:26:00Z",
+        ...(serverBuildStartedAt ? { jonesBuildStartedAt: serverBuildStartedAt } : {}),
         ...(source
           ? {
               jonesSource: {
