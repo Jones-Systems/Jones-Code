@@ -1758,7 +1758,6 @@ const make = Effect.gen(function* () {
     const attempt = recordingAttempts.create(key, tab);
     let encoder: Page | null = null;
     let session: CDPSession | null = null;
-    let tabWork = false;
     const current = () => !attempt.abandoned && !tab.closing && tabs.get(key) === tab;
     const check = () => {
       if (!current()) throw new BrowserActionNotStarted();
@@ -1770,7 +1769,7 @@ const make = Effect.gen(function* () {
       notStarted: () => new BrowserActionNotStarted(),
       abandon: () => {
         void encoder?.close().catch(constVoid);
-        if (attempt.phase === "preparing" || attempt.phase === "queued") clear();
+        if (!attempt.tabWorkStarted) clear();
       },
       run: async () => {
         try {
@@ -1789,7 +1788,7 @@ const make = Effect.gen(function* () {
                 return tab.recording;
               }
               attempt.phase = "capturing";
-              tabWork = true;
+              attempt.tabWorkStarted = true;
               try {
                 const firstFrame = await recordingCommand(tab, attempt, tab.cdp, () =>
                   ServerBrowserPage.captureViewport(tab.page, tab.cdp, {
@@ -1888,7 +1887,7 @@ const make = Effect.gen(function* () {
             attempt,
           );
         } catch (cause) {
-          if (!tabWork) {
+          if (!attempt.tabWorkStarted) {
             clear();
             fireRecordingCleanup(encoder, session);
           }
@@ -2281,7 +2280,7 @@ const make = Effect.gen(function* () {
           request.tabId === undefined
             ? latestThreadTab(request.threadId, request.agentSessionId)
             : tabs.get(tabKey(request.threadId, request.tabId));
-        if (target) assertRecordingCapture(target);
+        if (target) recordingAttempts.assertStop(tabKey(target.threadId, target.tabId), target);
         if (target) assertCompanionCapability(target.desktop?.origin ?? null, "recording");
         if (
           !request.tabIdExplicit &&

@@ -77,6 +77,7 @@ it.each(["preparing", "queued", "capturing"] as const)(
     try {
       const attempt = new RecordingAttempts<object>().create("tab", {});
       attempt.phase = phase;
+      attempt.tabWorkStarted = phase === "capturing";
       const gate = Promise.withResolvers<void>();
       let returned = false;
       const result = recordingDeadline({
@@ -101,3 +102,16 @@ it.each(["preparing", "queued", "capturing"] as const)(
     }
   },
 );
+
+it("refuses a concurrent stop without changing the original stopping owner", () => {
+  const attempts = new RecordingAttempts<object>();
+  const owner = {};
+  const attempt = attempts.create("tab", owner);
+  attempt.phase = "stopping";
+  attempt.startedAt = "original";
+  expect(() => attempts.assertStop("tab", owner)).toThrow(RecordingCaptureRefused);
+  expect(attempts.project("tab", owner, true, false)).toEqual({
+    state: "stopping",
+    startedAt: "original",
+  });
+});

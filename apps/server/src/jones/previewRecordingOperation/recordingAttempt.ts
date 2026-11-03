@@ -74,6 +74,8 @@ export class RecordingAttempt<T extends object> {
     "preparing";
   abandoned = false;
   frames = true;
+  // Physical history survives drop's change to the projected phase.
+  tabWorkStarted = false;
   startSubmitted = false;
   stopConfirmed = false;
   startedAt: string | undefined;
@@ -115,6 +117,10 @@ export class RecordingAttempts<T extends object> {
       throw new RecordingCaptureRefused();
     }
   }
+  assertStop(key: string, owner: T) {
+    this.assertCapture(key, owner);
+    if (this.byKey.get(key)?.phase === "stopping") throw new RecordingCaptureRefused();
+  }
   drop(owner: T) {
     const attempt = this.byInstance.get(owner);
     if (!attempt) return;
@@ -154,7 +160,7 @@ export const recordingDeadline = <T extends object, A>(input: {
       if (input.attempt.phase === "active") return;
       input.attempt.abandoned = true;
       input.attempt.revoke();
-      const inert = input.attempt.phase === "preparing" || input.attempt.phase === "queued";
+      const inert = !input.attempt.tabWorkStarted;
       if (!inert) input.attempt.phase = "abandoning";
       input.abandon();
       if (inert) early.reject(input.notStarted());

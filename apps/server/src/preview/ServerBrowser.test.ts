@@ -42,6 +42,7 @@ import * as DesktopChannel from "./DesktopBrowserChannel.ts";
 import * as Manager from "./Manager.ts";
 import * as PreviewAgentActivity from "./PreviewAgentActivity.ts";
 import * as ServerBrowser from "./ServerBrowser.ts";
+import { SessionControl } from "./SessionControl.ts";
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 import * as PreviewBrowser from "./PreviewBrowser.ts";
 import * as Placement from "../jones/previewCompanion/RenderPlacement.ts";
@@ -3046,6 +3047,18 @@ it.live.each(["error", "ontime", "late-success", "late-error", "closed"] as cons
           expect(yield* recordingStatus(broker, tabId)).toMatchObject({
             recording: { state: "stopping", startedAt: expect.any(String) },
           });
+          const conflicting = yield* broker
+            .invoke({ scope, tabId, operation: "recordingStop", input: {} })
+            .pipe(Effect.result);
+          expect(conflicting).toMatchObject({
+            _tag: "Failure",
+            failure: { outcome: "not_started" },
+          });
+          expect(JSON.stringify(conflicting)).not.toContain("RecordingNotActive");
+          expect(call.pollUnsafe()).toBeUndefined();
+          expect(yield* broker.readRecordingOperation({ scope, input: { tabId } })).toMatchObject({
+            result: { status: "pending" },
+          });
           if (mode.startsWith("late")) {
             yield* Effect.promise(() => vi.advanceTimersByTimeAsync(121_000));
             const result = yield* Fiber.join(call);
@@ -3133,7 +3146,7 @@ it.live.each(["error", "ontime", "late-success", "late-error", "closed"] as cons
 );
 
 it.live.each(
-  (["effect-on-release", "reply-on-release"] as const).flatMap((mode) =>
+  (["effect-on-release", "reply-on-release", "owner-error-answer"] as const).flatMap((mode) =>
     (["resolve", "reject", "never"] as const).map((cleanupMode) => ({ mode, cleanupMode })),
   ),
 )(
@@ -3152,6 +3165,9 @@ it.live.each(
         const closeGate = Promise.withResolvers<void>();
         const stopSubmitted = Promise.withResolvers<void>();
         let stopCount = 0;
+        let ownerAttached = true;
+        let ownerErrors = 0;
+        const answers: string[] = [];
         sessionHook = async (session, index) => {
           if (index < 2) return;
           sessions.push(session);
@@ -3170,12 +3186,19 @@ it.live.each(
             if (index === 2 && method === "Page.stopScreencast" && ++stopCount === 1) {
               callbackSubmitted.resolve();
               await callbackStop.promise;
+              if (mode === "owner-error-answer" && !ownerAttached) {
+                ownerErrors++;
+                answers.push("owner-error");
+                throw new Error("relay protocol error: detached owner");
+              }
             } else if (index === 2 && method === "Page.stopScreencast") stopSubmitted.resolve();
             if (index === 2 && method === "Page.screencastFrameAck") {
               ackSubmitted.resolve();
+              // This legitimate ack is already forwarded; only its reply is held.
               await ack.promise;
+              answers.push("ack-result");
             }
-            if (mode === "effect-on-release") effect();
+            if (mode !== "reply-on-release") effect();
             return {};
           });
         };
@@ -3218,13 +3241,23 @@ it.live.each(
           const b = yield* recordingStart(broker, tabId).pipe(Effect.forkScoped);
           expect(stopping.pollUnsafe()).toBeUndefined();
           expect(b.pollUnsafe()).toBeUndefined();
+          if (mode === "owner-error-answer") ownerAttached = false;
           callbackStop.resolve();
+          yield* Effect.promise(() => Promise.resolve());
           yield* recordingStatus(broker, tabId);
           expect(stopping.pollUnsafe()).toBeUndefined();
           expect(b.pollUnsafe()).toBeUndefined();
+          if (mode === "owner-error-answer") {
+            expect(ownerErrors).toBe(1);
+            expect(answers).toEqual(["owner-error"]);
+            expect(a.detach).not.toHaveBeenCalled();
+            expect(contexts[0]!.page.context().browser()!.isConnected()).toBe(true);
+            expect(contexts[0]!.page.isClosed()).toBe(false);
+          }
           ack.resolve();
           yield* Fiber.join(stopping);
           yield* Fiber.join(b);
+          if (mode === "owner-error-answer") expect(answers).toEqual(["owner-error", "ack-result"]);
           expect(native.active).toBe(true);
           expect(a.detach).toHaveBeenCalledOnce();
           expect(encoder.close).toHaveBeenCalled();
@@ -3520,4 +3553,347 @@ it.live(
         }
       }),
     ).pipe(Effect.provide(layer)),
+);
+
+it.live.each(
+  (["scratch", "script", "queue", "capture", "frame", "session", "start"] as const).flatMap(
+    (held) =>
+      (["close", "drop", "replace"] as const).flatMap((retirement) =>
+        (["before", "after"] as const).map((order) => ({ held, retirement, order })),
+      ),
+  ),
+)(
+  "start-await matrix $held/$retirement/$order deadline preserves physical ownership",
+  ({ held, retirement, order }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const manager = yield* Manager.PreviewManager;
+        const desktop = retirement !== "close";
+        let tabId: PreviewTabId;
+        let owner: ReturnType<typeof makeContext>;
+        let routingViewer: ServerBrowser.ServerBrowserViewer | undefined;
+        if (desktop) {
+          yield* Effect.yieldNow;
+          desktopRendersNext = true;
+          const opened = yield* manager.open({
+            threadId: scope.thread.threadId,
+            runtime: "server",
+          });
+          tabId = PreviewTabId.make(opened.tabId);
+          routingViewer = yield* browser.attachViewer(viewerInput(tabId, false));
+          owner = desktopConnections[0]!.context;
+        } else {
+          tabId = (yield* ready).tabId;
+          owner = contexts[0]!;
+        }
+        const gate = Promise.withResolvers<void>();
+        const entered = Promise.withResolvers<void>();
+        let recorder: ReturnType<typeof makeSession> | undefined;
+        let oldEncoder: ReturnType<typeof makeEncoderPage> | undefined;
+        const inert = held === "scratch" || held === "script" || held === "queue";
+        const hold = async () => {
+          entered.resolve();
+          await gate.promise;
+        };
+        if (held === "scratch") {
+          scratchGate = gate;
+          scratchEntered = entered;
+        }
+        if (held === "script" || held === "frame")
+          encoderGate = async (script) => {
+            if (
+              (held === "script" && typeof script === "string") ||
+              (held === "frame" &&
+                typeof script === "function" &&
+                script.toString().includes("__t3Recorder.frame"))
+            ) {
+              oldEncoder = encoders[0];
+              await hold();
+            }
+          };
+        if (held === "capture") {
+          const main = owner.sessions[0]!;
+          const send = main.send.getMockImplementation()!;
+          main.send.mockImplementation(async (method, input) => {
+            if (method === "Page.captureScreenshot") await hold();
+            return send(method, input);
+          });
+        }
+        const nextSession = owner.sessions.length + 1;
+        sessionHook = async (session, index) => {
+          if (index !== nextSession) return;
+          if (held === "session") {
+            recorder = session;
+            await hold();
+          }
+          if (held === "start" || held === "queue") {
+            recorder = session;
+            const send = session.send.getMockImplementation()!;
+            session.send.mockImplementation(async (method, input) => {
+              if (method === (held === "queue" ? "Page.captureScreenshot" : "Page.startScreencast"))
+                await hold();
+              return send(method, input);
+            });
+          }
+        };
+        let queuedViewer:
+          | Fiber.Fiber<
+              ServerBrowser.ServerBrowserViewer,
+              ServerBrowser.ServerBrowserLaunchError | ServerBrowser.ServerBrowserTabNotFoundError
+            >
+          | undefined;
+        if (held === "queue") {
+          queuedViewer = yield* browser
+            .attachViewer(viewerInput(tabId, false))
+            .pipe(Effect.forkScoped);
+          yield* Effect.promise(() => entered.promise);
+          const prepared = Promise.withResolvers<void>();
+          encoderGate = async (script) => {
+            if (typeof script === "string") prepared.resolve();
+          };
+          scratchEntered = prepared;
+        }
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        try {
+          const a = yield* recordingStart(broker, tabId, 100).pipe(
+            Effect.result,
+            Effect.forkScoped,
+          );
+          if (held === "queue") yield* Effect.promise(() => scratchEntered!.promise);
+          else yield* Effect.promise(() => entered.promise);
+          yield* recordingStatus(broker, tabId);
+          oldEncoder ??= encoders[0];
+          if (order === "after") yield* Effect.promise(() => vi.advanceTimersByTimeAsync(100));
+          if (retirement === "close") yield* Effect.promise(() => owner.page.close());
+          else {
+            yield* Effect.promise(() => desktopDetachSubscribed.promise);
+            if (retirement === "drop") {
+              yield* manager.close({ threadId: scope.thread.threadId, tabId });
+              yield* Effect.promise(() => desktopReleased.promise);
+            } else desktopDetaches.emit("detach", { threadId: scope.thread.threadId, tabId });
+            let end = yield* Queue.take(routingViewer!.output);
+            while (end._tag !== "gone" && end._tag !== "reconnect")
+              end = yield* Queue.take(routingViewer!.output);
+            expect(owner.page.isClosed()).toBe(false);
+          }
+          scratchGate = null;
+          scratchEntered = null;
+          encoderGate = null;
+          sessionHook = null;
+          if (retirement === "replace") yield* browser.attachViewer(viewerInput(tabId, false));
+          if (order === "before") yield* Effect.promise(() => vi.advanceTimersByTimeAsync(100));
+          if (inert) {
+            expect(a.pollUnsafe()).toBeDefined();
+            expect(yield* Fiber.join(a)).toMatchObject({
+              _tag: "Failure",
+              failure: { outcome: "not_started" },
+            });
+          } else {
+            expect(a.pollUnsafe()).toBeUndefined();
+            if (retirement === "replace") {
+              expect(yield* recordingStatus(broker, tabId)).toMatchObject({
+                recording: { state: "unknown" },
+              });
+              for (const operation of ["snapshot", "recordingStart", "recordingStop"] as const) {
+                expect(
+                  yield* broker
+                    .invoke({ scope: asSession("observer"), tabId, operation, input: {} })
+                    .pipe(Effect.result),
+                ).toMatchObject({ _tag: "Failure", failure: { outcome: "not_started" } });
+              }
+            }
+            yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1100));
+            expect(yield* Fiber.join(a)).toMatchObject({
+              _tag: "Failure",
+              failure: { outcome: "unknown" },
+            });
+          }
+          let b: unknown;
+          if (inert && retirement === "replace") b = yield* recordingStart(broker, tabId);
+          const oldSends = owner.sessions.map((session) => session.send.mock.calls.length);
+          gate.resolve();
+          yield* Effect.promise(() => vi.advanceTimersByTimeAsync(0));
+          if (queuedViewer) yield* Fiber.join(queuedViewer).pipe(Effect.result);
+          expect(oldEncoder ?? encoders.at(-1)!).toBeDefined();
+          expect((oldEncoder ?? encoders.at(-1)!).close).toHaveBeenCalled();
+          if (inert) {
+            // A queue predecessor may complete its own capture; A itself never captures or encodes.
+            expect(
+              (oldEncoder ?? encoders.at(-1)!).evaluate.mock.calls.filter(
+                ([script]) => typeof script === "function",
+              ),
+            ).toHaveLength(0);
+          }
+          if (held === "session") {
+            expect(recorder!.detach).toHaveBeenCalled();
+            expect(
+              recorder!.send.mock.calls.some(([method]) => method === "Page.startScreencast"),
+            ).toBe(false);
+          }
+          if (held === "start")
+            expect(
+              recorder!.send.mock.calls.filter(([method]) => method === "Page.stopScreencast"),
+            ).toHaveLength(1);
+          if (b) {
+            expect(yield* recordingStatus(broker, tabId)).toMatchObject({
+              recording: { state: "active", startedAt: (b as { startedAt: string }).startedAt },
+            });
+            if (held !== "queue")
+              expect(owner.sessions.map((session) => session.send.mock.calls.length)).toEqual(
+                oldSends,
+              );
+            const count = encoders.length;
+            yield* recordingStart(broker, tabId, 10);
+            yield* Effect.promise(() => vi.advanceTimersByTimeAsync(20));
+            expect(encoders).toHaveLength(count);
+            expect(yield* recordingStatus(broker, tabId)).toMatchObject({
+              recording: { state: "active" },
+            });
+          } else if (retirement === "replace") {
+            expect(yield* broker.readRecordingOperation({ scope, input: { tabId } })).toMatchObject(
+              {
+                result: { status: "settled", reportedOutcome: "failure" },
+              },
+            );
+            expect(yield* recordingStatus(broker, tabId)).toMatchObject({
+              recording: { state: "idle" },
+            });
+            yield* recordingStart(broker, tabId);
+          }
+        } finally {
+          gate.resolve();
+          scratchGate = null;
+          encoderGate = null;
+          sessionHook = null;
+          vi.useRealTimers();
+        }
+      }),
+    ).pipe(Effect.provide(layer)),
+);
+
+it.live("inside-lock duplicate restores the active attempt and attaches no deadline to it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const start = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      sessionHook = async (session, index) => {
+        if (index !== 2) return;
+        const send = session.send.getMockImplementation()!;
+        session.send.mockImplementation(async (method, input) => {
+          if (method === "Page.startScreencast") {
+            entered.resolve();
+            await start.promise;
+          }
+          return send(method, input);
+        });
+      };
+      // Exercise the defensive capture-lock race directly; normal agent admission serializes these calls.
+      const admission = vi
+        .spyOn(SessionControl.prototype, "agent")
+        .mockImplementation((_id, run) => run());
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        const first = yield* recordingStart(broker, tabId).pipe(Effect.forkScoped);
+        yield* Effect.promise(() => entered.promise);
+        const prepared = Promise.withResolvers<void>();
+        encoderGate = async (script) => {
+          if (typeof script === "string") prepared.resolve();
+        };
+        const duplicate = yield* recordingStart(broker, tabId, 100).pipe(Effect.forkScoped);
+        yield* Effect.promise(() => prepared.promise);
+        yield* recordingStatus(broker, tabId);
+        expect(encoders).toHaveLength(2);
+        expect(contexts[0]!.sessions).toHaveLength(2);
+        start.resolve();
+        const active = yield* Fiber.join(first);
+        expect(yield* Fiber.join(duplicate)).toEqual(active);
+        expect(encoders[1]!.close).toHaveBeenCalled();
+        expect(encoders[0]!.close).not.toHaveBeenCalled();
+        const recorder = contexts[0]!.sessions[1]!;
+        const sends = recorder.send.mock.calls.length;
+        expect(yield* recordingStart(broker, tabId, 10)).toEqual(active);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(1100));
+        expect(recorder.send.mock.calls).toHaveLength(sends);
+        expect(encoders).toHaveLength(2);
+        expect(yield* recordingStatus(broker, tabId)).toMatchObject({
+          recording: { state: "active", startedAt: (active as { startedAt: string }).startedAt },
+        });
+      } finally {
+        start.resolve();
+        admission.mockRestore();
+        vi.useRealTimers();
+      }
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.live("held accepted=false completion released after B is active cannot send or clear B", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const { broker, tabId } = yield* ready;
+      const start = Promise.withResolvers<void>();
+      const entered = Promise.withResolvers<void>();
+      const frameResult = Promise.withResolvers<boolean>();
+      const frameEntered = Promise.withResolvers<void>();
+      const native = { active: false };
+      const sessions: ReturnType<typeof makeSession>[] = [];
+      sessionHook = async (session, index) => {
+        if (index < 2) return;
+        sessions.push(session);
+        session.send.mockImplementation(async (method) => {
+          if (method === "Page.startScreencast") {
+            native.active = true;
+            if (index === 2) {
+              entered.resolve();
+              await start.promise;
+            }
+          }
+          if (method === "Page.stopScreencast") native.active = false;
+          return {};
+        });
+      };
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        const a = yield* recordingStart(broker, tabId, 100).pipe(Effect.result, Effect.forkScoped);
+        yield* Effect.promise(() => entered.promise);
+        const encoder = encoders[0]!;
+        const evaluate = encoder.evaluate.getMockImplementation()!;
+        encoder.evaluate.mockImplementation((script, arg) => {
+          if (typeof script === "function" && script.toString().includes("__t3Recorder.frame")) {
+            frameEntered.resolve();
+            return frameResult.promise;
+          }
+          return evaluate(script, arg);
+        });
+        const frame = { data: "ZnJhbWU=", metadata: { deviceWidth: 1280 }, sessionId: 1 };
+        sessions[0]!.emit("Page.screencastFrame", frame);
+        yield* Effect.promise(() => frameEntered.promise);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(100));
+        expect(a.pollUnsafe()).toBeUndefined();
+        start.resolve();
+        expect(yield* Fiber.join(a)).toMatchObject({ _tag: "Failure" });
+        const b = yield* recordingStart(broker, tabId);
+        expect(native.active).toBe(true);
+        const sends = sessions.map((session) => session.send.mock.calls.length);
+        const writes = encoder.evaluate.mock.calls.length;
+        // B's unsessioned frame also reaches the revoked A listener.
+        sessions[0]!.emit("Page.screencastFrame", frame);
+        frameResult.resolve(false);
+        yield* Effect.promise(() => vi.advanceTimersByTimeAsync(0));
+        expect(sessions.map((session) => session.send.mock.calls.length)).toEqual(sends);
+        expect(encoder.evaluate.mock.calls).toHaveLength(writes);
+        expect(native.active).toBe(true);
+        expect(yield* recordingStatus(broker, tabId)).toMatchObject({
+          recording: { state: "active", startedAt: (b as { startedAt: string }).startedAt },
+        });
+      } finally {
+        start.resolve();
+        frameResult.resolve(false);
+        vi.useRealTimers();
+      }
+    }),
+  ).pipe(Effect.provide(layer)),
 );
