@@ -2217,7 +2217,11 @@
     "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/operations/memberOperationRead.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/operations/memberPublicOperations.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/operations/memberPublicOperations.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/operations/memberPublicOperations.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeRegistration.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/read/memberRegistration.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeRegistration.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/read/memberRegistration.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

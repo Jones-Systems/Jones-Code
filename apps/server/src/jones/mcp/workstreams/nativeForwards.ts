@@ -1,5 +1,6 @@
 import { McpCapabilityUnavailableError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as HomeAccess from "@t3tools/contracts/jones/workstreamsHomeAccess";
+import * as Registration from "@t3tools/contracts/jones/workstreamsHomeRegistration";
 import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Parent from "@t3tools/contracts/jones/workstreamsForwardQualification";
 import * as Raw from "@t3tools/contracts/jones/workstreamsForwardReadmission";
@@ -60,6 +61,19 @@ export const homeToolkit = Toolkit.make(
       "Observe the authenticated peer's current bound Workstreams home, permission ceiling and authorization revision. This read grants no authority and cannot establish or redirect a binding.",
     parameters: HomeAccess.WorkstreamsHomeAccessRequest,
     success: HomeAccess.WorkstreamsHomeAccessResult,
+    failure,
+    failureMode: "return",
+    dependencies: [...dependencies],
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+  Tool.make(Home.HOME_REGISTRATION_TOOL, {
+    description:
+      "Observe the authenticated peer's current bound home grant for source registration. This read cannot establish a binding, grant permission, or redirect a request.",
+    parameters: Registration.WorkstreamsHomeRegistrationRequest,
+    success: Registration.WorkstreamsHomeRegistrationResult,
     failure,
     failureMode: "return",
     dependencies: [...dependencies],
@@ -148,6 +162,9 @@ export const homeHandlers = Access.toLayer(
     return {
       jones_workstreams_home_access: Access.reads((request) =>
         invoke((invocation) => home.access(request, invocation)),
+      ),
+      jones_workstreams_home_registration: Access.reads((request) =>
+        invoke((invocation) => home.registration(request, invocation)),
       ),
       jones_workstreams_home_forward: Access.writes(
         (request) => invoke((invocation) => home.forward(request, invocation), true),

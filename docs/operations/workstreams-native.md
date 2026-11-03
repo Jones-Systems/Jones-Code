@@ -102,6 +102,10 @@ never proof of home absence or permission to redispatch. Setup reports current
 home access; thread assignments remain unverified until native placement proof
 consumers are qualified. The frozen operation codec uses the bound native registry UUID; the Gateway
 session uses its canonical-origin identity. Neither selects a transport destination. Public
+registration context observes the actual current home grant and qualifies the member's
+source-issued enrollment against the source provider's current authority and build.
+A historical enrollment is an association, not home permission. Missing support
+refuses without falling back to a different registry or protocol. Public
 Gateway mutations and command receipt recovery remain unavailable until their
 adapters are qualified. Native placement v2 keeps its separate negotiated
 route; the frozen v1 Gateway cannot erase native proof fields to accept it. Linked

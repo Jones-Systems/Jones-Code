@@ -137,6 +137,7 @@ const homeService = (
   overrides: Partial<Home.HomeTools["Service"]> = {},
 ): Home.HomeTools["Service"] => ({
   access: () => Effect.fail(new RegistryError({ code: "not_granted" })),
+  registration: () => Effect.fail(new RegistryError({ code: "not_granted" })),
   forward: () => Effect.succeed(result),
   readback: () => Effect.succeed(unknown),
   ...overrides,
@@ -177,6 +178,7 @@ const decodeSource = Schema.decodeUnknownSync(
 it("advertises only fixed closed home tools and the explicit V2 or V3 source lookup", () => {
   expect(Object.keys(ForwardMcp.homeToolkit.tools)).toEqual([
     Home.HOME_ACCESS_TOOL,
+    Home.HOME_REGISTRATION_TOOL,
     Home.HOME_FORWARD_TOOL,
     Home.HOME_FORWARD_READBACK_TOOL,
   ]);
@@ -587,4 +589,38 @@ it.effect("fixed home access passes the original invocation and suppresses prote
     Effect.provideService(Invocation.McpInvocationContext, invocation),
     Effect.provide(threads),
   ),
+);
+
+it.effect(
+  "fixed home registration passes the original invocation and suppresses protected causes",
+  () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const toolkit = yield* buildHome(
+        homeService({
+          registration: (_request, actual) => {
+            expect(actual).toBe(invocation);
+            calls++;
+            return Effect.fail(
+              new RegistryError({
+                code: "not_granted",
+                cause: new Error("protected-registration-sentinel"),
+              }),
+            );
+          },
+        }),
+      );
+      const replies = yield* toolkit
+        .handle(Home.HOME_REGISTRATION_TOOL, {
+          contract: "workstreams-native-home-registration/1.0.0",
+          expected_home: home,
+        })
+        .pipe(Stream.unwrap, Stream.runCollect);
+      expect(calls).toBe(1);
+      expect(JSON.stringify(replies)).toContain("not_granted");
+      expect(JSON.stringify(replies)).not.toContain("protected-registration-sentinel");
+    }).pipe(
+      Effect.provideService(Invocation.McpInvocationContext, invocation),
+      Effect.provide(threads),
+    ),
 );

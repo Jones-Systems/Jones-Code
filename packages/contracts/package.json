@@ -150,6 +150,10 @@
     "./jones/workstreamsRetainedSourceEffect": {
       "types": "./src/jones/workstreamsRetainedSourceEffect.ts",
       "import": "./src/jones/workstreamsRetainedSourceEffect.ts"
+    },
+    "./jones/workstreamsHomeRegistration": {
+      "types": "./src/jones/workstreamsHomeRegistration.ts",
+      "import": "./src/jones/workstreamsHomeRegistration.ts"
     }
   },
   "scripts": {

@@ -431,6 +431,12 @@ const encodeAttestationRequest = Schema.encodeEffect(
   Schema.fromJsonString(WorkstreamsNativeAttestationRequest),
 );
 const requestTools = Effect.map(Home.HomeTools, (tools) => ({
+  registration: Effect.fn("HomeToolsTest.registration")(function* (input: unknown) {
+    const invocation = yield* Mcp.McpInvocationContext;
+    return yield* tools
+      .registration(input, invocation)
+      .pipe(Effect.provideService(Layer.CurrentMemoMap, Layer.makeMemoMapUnsafe()));
+  }),
   access: Effect.fn("HomeToolsTest.access")(function* (input: unknown) {
     const invocation = yield* Mcp.McpInvocationContext;
     return yield* tools
@@ -1672,4 +1678,37 @@ it.effect("home access refuses revoked grants and current owner drift", () =>
       expect(yield* f.sql`SELECT * FROM jones_workstreams_forward_receipts`).toEqual([]);
     }),
   ),
+);
+
+it.effect(
+  "home registration observes the actual SQL grant without member authority or writes",
+  () =>
+    run((f) =>
+      Effect.gen(function* () {
+        const tools = yield* requestTools;
+        const input = {
+          contract: "workstreams-native-home-registration/1.0.0",
+          expected_home: home,
+        };
+        const before = yield* f.sql<{ n: number }>`SELECT total_changes() AS n`;
+        expect(yield* tools.registration(input)).toMatchObject({
+          contract: input.contract,
+          grant_id: "grant:test",
+          access: { principal_id: "principal:test", authorization_revision: 1 },
+        });
+        expect(yield* f.sql<{ n: number }>`SELECT total_changes() AS n`).toEqual(before);
+        expect(
+          yield* f.sql.withTransaction(tools.registration(input)).pipe(Effect.flip),
+        ).toMatchObject({ code: "preparation_in_transaction" });
+        yield* f.registry.appendPlain(Test.scope, "grants", {
+          grant_id: "grant:test",
+          principal_id: "principal:test",
+          grant_version: 2,
+          permissions: JSON.stringify(["workstreams:read"]),
+          state: "revoked",
+        });
+        expect((yield* tools.registration(input).pipe(Effect.result))._tag).toBe("Failure");
+        expect(yield* f.sql`SELECT * FROM jones_workstreams_forward_receipts`).toEqual([]);
+      }),
+    ),
 );

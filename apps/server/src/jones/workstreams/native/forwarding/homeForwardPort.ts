@@ -1,4 +1,5 @@
 import type * as Access from "@t3tools/contracts/jones/workstreamsHomeAccess";
+import type * as Registration from "@t3tools/contracts/jones/workstreamsHomeRegistration";
 import type * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
@@ -7,6 +8,7 @@ import type { RegistryError } from "../registry/session.ts";
 
 /** Each fixed tool negotiates its closed contract directly; no tools/list claim. */
 export const HOME_ACCESS_TOOL = "jones_workstreams_home_access";
+export const HOME_REGISTRATION_TOOL = "jones_workstreams_home_registration";
 export const HOME_FORWARD_TOOL = "jones_workstreams_home_forward";
 export const HOME_FORWARD_READBACK_TOOL = "jones_workstreams_home_forward_readback";
 
@@ -17,6 +19,10 @@ export class HomeTools extends Context.Service<
       input: unknown,
       invocation: McpInvocationScope,
     ) => Effect.Effect<Access.WorkstreamsHomeAccessResult, RegistryError>;
+    readonly registration: (
+      input: unknown,
+      invocation: McpInvocationScope,
+    ) => Effect.Effect<Registration.WorkstreamsHomeRegistrationResult, RegistryError>;
     readonly forward: (
       input: unknown,
       invocation: McpInvocationScope,

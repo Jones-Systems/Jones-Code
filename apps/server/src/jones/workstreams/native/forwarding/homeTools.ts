@@ -1,6 +1,7 @@
 import { HomeTools } from "./homeForwardPort.ts";
 export { HomeTools } from "./homeForwardPort.ts";
 import * as HomeAccess from "@t3tools/contracts/jones/workstreamsHomeAccess";
+import * as Registration from "@t3tools/contracts/jones/workstreamsHomeRegistration";
 import * as DateTime from "effect/DateTime";
 import { workstreamCapabilities } from "../registry/capabilities.ts";
 import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
@@ -38,6 +39,12 @@ import * as Supplied from "./suppliedEvidence.ts";
 import * as Guard from "./guard.ts";
 
 const decodeAccess = Schema.decodeUnknownEffect(HomeAccess.WorkstreamsHomeAccessRequest);
+const decodeRegistration = Schema.decodeUnknownEffect(
+  Registration.WorkstreamsHomeRegistrationRequest,
+);
+const decodeRegistrationResult = Schema.decodeUnknownEffect(
+  Registration.WorkstreamsHomeRegistrationResult,
+);
 const decodeAccessResult = Schema.decodeUnknownEffect(HomeAccess.WorkstreamsHomeAccessResult);
 const decodeForward = Schema.decodeUnknownEffect(Forward.WorkstreamsForwardRequest);
 const decodeCommand = Schema.decodeUnknownEffect(Schema.fromJsonString(Wire.WorkstreamCommand));
@@ -262,12 +269,12 @@ const make = Effect.gen(function* () {
     },
     (effect) => effect.pipe(Effect.mapError(Boundary.mapFailure)),
   );
-  const access = Effect.fn("HomeTools.access")(
-    function* (input: unknown, invocation: Mcp.McpInvocationScope) {
-      const request = yield* decodeAccess(input).pipe(
-        Effect.mapError(() => new Session.RegistryError({ code: "unsupported_protocol" })),
-      );
-      yield* Guard.assertTarget(home, request.expected_home);
+  const observe = Effect.fn("HomeTools.observe")(
+    function* (
+      expectedHome: HomeAccess.WorkstreamsHomeAccessRequest["expected_home"],
+      invocation: Mcp.McpInvocationScope,
+    ) {
+      yield* Guard.assertTarget(home, expectedHome);
       const { graph, fence } = yield* prepare(invocation);
       return yield* Effect.gen(function* () {
         const admitted = yield* (yield* Guard.Guard).authorize("workstreams:read");
@@ -277,7 +284,7 @@ const make = Effect.gen(function* () {
         const permissions = admitted.grant.permissions.filter((permission) =>
           Pins.ceilingAllows(qualified.ceiling, permission),
         );
-        const result = {
+        const access = yield* decodeAccessResult({
           contract: HomeAccess.WORKSTREAMS_HOME_ACCESS_CONTRACT,
           home: {
             ...Guard.targetOf(home),
@@ -295,13 +302,11 @@ const make = Effect.gen(function* () {
             },
             permissions,
           ),
-        };
+        }).pipe(Effect.mapError(() => new Session.RegistryError({ code: "invalid_response" })));
         yield* qualified.checkCurrent();
         yield* admitted.checkCurrent();
         yield* fence.checkCurrent();
-        return yield* decodeAccessResult(result).pipe(
-          Effect.mapError(() => new Session.RegistryError({ code: "invalid_response" })),
-        );
+        return { access, grant_id: admitted.grant.grant_id };
       }).pipe(
         Effect.provide(graph.pipe(Layer.fresh)),
         Effect.provideService(Mcp.McpInvocationContext, invocation),
@@ -309,7 +314,29 @@ const make = Effect.gen(function* () {
     },
     (effect) => effect.pipe(Effect.mapError(Boundary.mapFailure)),
   );
-  return HomeTools.of({ forward, readback, access });
+  const access = Effect.fn("HomeTools.access")(
+    function* (input: unknown, invocation: Mcp.McpInvocationScope) {
+      const request = yield* decodeAccess(input).pipe(
+        Effect.mapError(() => new Session.RegistryError({ code: "unsupported_protocol" })),
+      );
+      return (yield* observe(request.expected_home, invocation)).access;
+    },
+    (effect) => effect.pipe(Effect.mapError(Boundary.mapFailure)),
+  );
+  const registration = Effect.fn("HomeTools.registration")(
+    function* (input: unknown, invocation: Mcp.McpInvocationScope) {
+      const request = yield* decodeRegistration(input).pipe(
+        Effect.mapError(() => new Session.RegistryError({ code: "unsupported_protocol" })),
+      );
+      const result = yield* observe(request.expected_home, invocation);
+      return yield* decodeRegistrationResult({
+        contract: Registration.WORKSTREAMS_HOME_REGISTRATION_CONTRACT,
+        ...result,
+      }).pipe(Effect.mapError(() => new Session.RegistryError({ code: "invalid_response" })));
+    },
+    (effect) => effect.pipe(Effect.mapError(Boundary.mapFailure)),
+  );
+  return HomeTools.of({ forward, readback, access, registration });
 });
 /** @public Mount these fixed handlers only in native-home with both current qualification ports. */
 export const layer = Layer.effect(HomeTools, make);

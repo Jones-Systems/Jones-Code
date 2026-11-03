@@ -16,6 +16,8 @@ import {
 import * as W from "@t3tools/contracts/jones/workstreamsPeerSetup";
 import * as F from "@t3tools/contracts/jones/workstreamsHomeBind";
 import * as AccessWire from "@t3tools/contracts/jones/workstreamsHomeAccess";
+import * as RegistrationWire from "@t3tools/contracts/jones/workstreamsHomeRegistration";
+import * as PublicRegistration from "../../registrationContext/service.ts";
 import * as ForwardWire from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as ParentWire from "@t3tools/contracts/jones/workstreamsForwardQualification";
 import * as RawWire from "@t3tools/contracts/jones/workstreamsForwardReadmission";
@@ -150,6 +152,9 @@ const mode = Schema.decodeUnknownSync(
 const decodeReadArgs = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResultRequest);
 const isPublicOperation = Schema.is(OperationWire.WorkstreamOperationResult);
 const decodeAccessArgs = Schema.decodeUnknownEffect(AccessWire.WorkstreamsHomeAccessRequest);
+const decodeRegistrationArgs = Schema.decodeUnknownEffect(
+  RegistrationWire.WorkstreamsHomeRegistrationRequest,
+);
 const decodeForwardArgs = Schema.decodeUnknownEffect(ForwardWire.WorkstreamsForwardRequest);
 const decodeReadbackArgs = Schema.decodeUnknownEffect(
   ForwardWire.WorkstreamsForwardReadbackRequest,
@@ -1343,9 +1348,11 @@ it.effect(
             .withTransaction(Startup.select(selectedInput))
             .pipe(Effect.provide(resources))).problem?.code,
         ).toBe("authority_fenced");
+        let currentSourceBuild = bind.source.enrollment.context.build;
         const providerPorts = {
           ...ProviderTest.makeProviderFixture().ports,
           authority: { readCurrent: f.M.live.readCurrent },
+          build: Effect.sync(() => Option.some(currentSourceBuild)),
         };
         const runtime = Runtime.NativeWorkstreamsRuntime.of({
           provider: makeWorkstreamsNativeProvider(providerPorts),
@@ -1428,6 +1435,18 @@ it.effect(
           decodeAccessArgs(args).pipe(
             Effect.flatMap((decoded) =>
               homeBox.handle(HomePort.HOME_ACCESS_TOOL, decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
+          ),
+        );
+        f.mountTool(f.H.env, HomePort.HOME_REGISTRATION_TOOL, (args) =>
+          decodeRegistrationArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              homeBox.handle(HomePort.HOME_REGISTRATION_TOOL, decoded).pipe(
                 Stream.unwrap,
                 Stream.runCollect,
                 Effect.map((replies) => replies.at(-1)),
@@ -1541,6 +1560,47 @@ it.effect(
           home: { ...home, canonical_origin: "https://native.workstreams.invalid" },
           capabilities: { permissions: ["workstreams:read", "workstreams:write"] },
         });
+        const registration = Context.get(
+          selectedServices,
+          PublicRegistration.WorkstreamsRegistrationContext,
+        );
+        currentSourceBuild = { ...bind.source.enrollment.context.build, sha: "c".repeat(40) };
+        const registered = yield* registration
+          .read()
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(registered).toMatchObject({
+          context: {
+            protocol: "workstreams-registration-context/2.0.0",
+            owner_id: home.owner_id,
+            principal_id: sessionAccess.principal_id,
+            authorization_revision: sessionAccess.authorization_revision,
+            server_generation: home.server_generation,
+            sources: [
+              {
+                provider: "t3",
+                source_instance_id: f.M.env,
+                authority_namespace: bind.source.authority.authority_namespace,
+                store_generation: bind.source.authority.store_generation,
+                native_protocol: "workstreams-t3-provider/1.0.0",
+                build: currentSourceBuild,
+              },
+            ],
+          },
+          t3Availability: { state: "ready" },
+        });
+        const homeGrant = yield* Context.get(f.H.all, SqlClient.SqlClient)<{ grant_id: string }>`
+          SELECT grant_id FROM jones_workstreams_grants
+          WHERE principal_id=${sessionAccess.principal_id}
+          ORDER BY grant_version DESC LIMIT 1
+        `;
+        expect(registered.context.grant_id).toBe(homeGrant[0]?.grant_id);
+        expect(
+          registered.context.sources[0]?.provider === "t3" &&
+            registered.context.sources[0].build.sha,
+        ).not.toBe(bind.source.enrollment.context.build.sha);
+        currentSourceBuild = bind.source.enrollment.context.build;
+        expect(yield* selectedSql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
+        expect(yield* selectedSql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
         const publicSession = yield* gateway
           .readSession()
           .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
@@ -1807,6 +1867,12 @@ it.effect(
               Effect.result,
             ))._tag,
         ).toBe("Failure");
+        expect(f.calls).toHaveLength(retainedCalls);
+        expect(
+          yield* registration
+            .read()
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal), Effect.flip),
+        ).toMatchObject({ reason: "registry_unavailable" });
         expect(f.calls).toHaveLength(retainedCalls);
         expect(
           yield* gateway

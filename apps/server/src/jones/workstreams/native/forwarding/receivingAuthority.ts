@@ -106,6 +106,8 @@ export const layer = Layer.effect(
       );
     return Home.HomeTools.of({
       access: (input, invocation) => invoke(invocation, (tools) => tools.access(input, invocation)),
+      registration: (input, invocation) =>
+        invoke(invocation, (tools) => tools.registration(input, invocation)),
       forward: (input, invocation) =>
         invoke(invocation, (tools) => tools.forward(input, invocation)),
       readback: (input, invocation) =>

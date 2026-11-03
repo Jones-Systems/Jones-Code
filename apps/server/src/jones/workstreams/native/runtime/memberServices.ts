@@ -7,6 +7,7 @@ import * as Retained from "../forwarding/retainedSourceEffectPort.ts";
 import * as Reads from "../read/routes.ts";
 import * as MemberGateway from "../read/memberGateway.ts";
 import * as PublicOperations from "../operations/memberPublicOperations.ts";
+import * as Registration from "../../registrationContext/service.ts";
 import * as Application from "./memberApplication.ts";
 import * as Recovery from "./memberRecovery.ts";
 import * as Pins from "./peerSessionPins.ts";
@@ -31,10 +32,30 @@ export const layer = (
         Layer.provide(Layer.succeed(Startup.Startup, selection)),
       );
       return Layer.mergeAll(
-        // Public adapters override only their qualified services; registration remains fenced.
+        // Public adapters retain application resources only; every call qualifies its original caller.
         Layer.merge(
           Startup.unavailableServicesLayer(selection),
-          Layer.merge(MemberGateway.layer, PublicOperations.layer),
+          Layer.mergeAll(
+            MemberGateway.layer,
+            PublicOperations.layer,
+            Layer.effect(
+              Registration.WorkstreamsRegistrationContext,
+              Effect.map(Application.MemberApplication, (app) => ({
+                read: () =>
+                  app.registration().pipe(
+                    Effect.mapError(
+                      (error) =>
+                        new Registration.RegistrationContextError({
+                          reason:
+                            error.code === "invalid_response"
+                              ? "invalid_response"
+                              : "registry_unavailable",
+                        }),
+                    ),
+                  ),
+              })),
+            ),
+          ),
         ),
         Recovery.layer,
         Layer.effect(

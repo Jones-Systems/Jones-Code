@@ -15,6 +15,7 @@ import * as Runtime from "../../runtimeIntegration/native.ts";
 import * as Integration from "../integration.ts";
 import * as Reads from "../read/memberRead.ts";
 import * as MemberAccess from "../read/memberAccess.ts";
+import * as Registration from "../read/memberRegistration.ts";
 import * as Operations from "../operations/memberOperations.ts";
 import * as PublicRead from "../operations/memberOperationRead.ts";
 import * as Forwarder from "../forwarding/forwarder.ts";
@@ -36,6 +37,7 @@ export class MemberApplication extends Context.Service<
   MemberApplication,
   {
     readonly access: MemberAccess.MemberAccess["Service"]["current"];
+    readonly registration: Registration.MemberRegistration["Service"]["read"];
     readonly read: Reads.MemberReads["Service"]["read"];
     readonly submitCommand: Transport.MemberWriteTransport["Service"]["submitCommand"];
     readonly saveAppearance: Transport.MemberWriteTransport["Service"]["saveAppearance"];
@@ -161,6 +163,19 @@ const make = Effect.gen(function* () {
     ),
   );
   return MemberApplication.of({
+    registration: () =>
+      run(
+        Registration.layer.pipe(
+          Layer.provide(Integration.nativeMemberAdmissionRequestLayer),
+          Layer.provide(
+            Layer.effect(
+              Provider.NativeProvider,
+              Effect.map(Runtime.NativeWorkstreamsRuntime, (runtime) => runtime.providerV2),
+            ),
+          ),
+        ),
+        Effect.flatMap(Registration.MemberRegistration, (registration) => registration.read()),
+      ),
     access: () =>
       run(
         MemberAccess.layer.pipe(Layer.provide(Integration.nativeMemberAdmissionRequestLayer)),
