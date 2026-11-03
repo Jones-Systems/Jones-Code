@@ -350,7 +350,9 @@ const fixture = (runEffectWorker: boolean) =>
                           // A synthetic native sibling requires real thread-closure evidence rather than producer retirement.
                           method === "thread/loaded/list"
                             ? Effect.succeed({ data: [nativeId, "synthetic-sibling"] })
-                            : client.raw.request(method, params),
+                            : Effect.sync(() => requests.push({ instanceId, method, params })).pipe(
+                                Effect.andThen(client.raw.request(method, params)),
+                              ),
                       },
                     })),
                   ),
@@ -790,6 +792,18 @@ it.effect(
               (request) => request.method === "thread/resume" && request.instanceId === instanceB,
             ),
             1,
+          );
+          assert.deepEqual(
+            f.requests
+              .filter(
+                (request) =>
+                  request.method === "thread/start" || request.method === "thread/resume",
+              )
+              .map((request) => [request.instanceId, request.method]),
+            [
+              [instanceA, "thread/start"],
+              [instanceB, "thread/resume"],
+            ],
           );
           assert.lengthOf(
             f.requests.filter((request) => request.method === "turn/interrupt"),
