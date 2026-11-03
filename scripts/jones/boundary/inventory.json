@@ -7,6 +7,8 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/desktop/src/preview/GuestInput.ts": "accepted-shared",
+    "apps/desktop/src/preview/GuestInput.test.ts": "accepted-shared",
     "apps/desktop/src/preview/CdpRelay.test.ts": "accepted-shared",
     "apps/server/src/preview/Manager.ts": "accepted-shared",
     "packages/contracts/src/preview.ts": "accepted-shared",

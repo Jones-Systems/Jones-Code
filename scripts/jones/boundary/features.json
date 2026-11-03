@@ -4,6 +4,15 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "preview-input-isolation",
+      "tests": [
+        "apps/desktop/src/preview/GuestInput.test.ts",
+        "apps/desktop/src/preview/DesktopBrowserHost.test.ts",
+        "apps/desktop/src/preview/Manager.test.ts"
+      ],
+      "scope": "Adopt upstream37d7615/dd6c05 pointer focus preservation and ordering in GuestInput without Jones-specific algorithm divergence. A narrow shared Host call forwards optional child session IDs through the existing guard; its regression belongs in the existing Host relay harness to exercise actual attached-session composition. GuestInput source and tests remain accepted shared backports. Preserve unrelated relay policy, close/detach behavior and existing boundary ownership. Source unit/model checks do not prove Apple Silicon/macOS foreground or dictation behavior, eliminate the pending-press interval, identify the historical client revision, or establish the Nov2 routing cause."
+    },
+    {
       "id": "historical-preparation",
       "tests": [
         "scripts/jones/performance/historical-preparation.node-test.mjs",

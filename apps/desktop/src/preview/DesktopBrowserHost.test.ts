@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeEvents from "node:events";
+import * as NodeVM from "node:vm";
 
 import * as DesktopAppIdentity from "../app/DesktopAppIdentity.ts";
 
@@ -138,6 +139,72 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
   });
 
 describe("DesktopBrowserHost", () => {
+  it.effect.each([
+    { method: "Input.dispatchMouseEvent", params: { type: "mousePressed", x: 10, y: 10 } },
+    {
+      method: "Input.dispatchTouchEvent",
+      params: { type: "touchStart", touchPoints: [{ x: 10, y: 10 }] },
+    },
+  ])(
+    "preserves host focus for a child-session $method without rerouting other commands",
+    ({ method, params }) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        const document = { activeElement: {} as object };
+        const composer = {
+          tagName: "TEXTAREA",
+          isConnected: true,
+          focus: () => {
+            document.activeElement = composer;
+          },
+        };
+        const preview = { tagName: "WEBVIEW", getWebContentsId: () => 7 };
+        document.activeElement = composer;
+        const context = NodeVM.createContext({ document });
+        const steps: Array<string> = [];
+        const executeJavaScript = vi.fn(async (script: string) => {
+          steps.push("host");
+          return NodeVM.runInContext(script, context);
+        });
+        const reload = vi.fn();
+        Object.assign(debuggee.tab.webContents, {
+          id: 7,
+          hostWebContents: { isDestroyed: () => false, executeJavaScript },
+          reload,
+        });
+        const originalSend = debuggee.tab.debugger.sendCommand.bind(debuggee.tab.debugger);
+        const sendCommand = vi
+          .spyOn(debuggee.tab.debugger, "sendCommand")
+          .mockImplementation(async (sentMethod, sentParams, sessionId) => {
+            if (sentMethod === method) {
+              steps.push("pointer");
+              document.activeElement = preview;
+              return {};
+            }
+            if (sentMethod === "Page.reload") return {};
+            return originalSend(sentMethod, sentParams, sessionId);
+          });
+        host.attach(key, debuggee.tab);
+        const replies = yield* watchReplies(host);
+        const raw = (message: Record<string, unknown>) =>
+          host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
+
+        yield* raw({ id: 1, method, params, sessionId: "child-frame" });
+        expect(yield* Queue.take(replies)).toBe(1);
+        expect(sendCommand).toHaveBeenCalledWith(method, params, "child-frame");
+        expect(steps).toEqual(["host", "pointer", "host"]);
+        expect(document.activeElement).toBe(composer);
+        expect(Object.keys(context)).toEqual(["document"]);
+
+        yield* raw({ id: 2, method: "Page.reload", params: {}, sessionId: "child-frame" });
+        expect(yield* Queue.take(replies)).toBe(2);
+        expect(sendCommand).toHaveBeenCalledWith("Page.reload", {}, "child-frame");
+        expect(executeJavaScript).toHaveBeenCalledTimes(2);
+        expect(reload).not.toHaveBeenCalled();
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
