@@ -133,7 +133,10 @@ relationships shown as secondary labels.
 
 [useLinkedThreads](../../apps/web/src/jones/linkedThreads/useLinkedThreads.ts)
 combines navigation links from connected capable environments with existing
-lineage. Remote rows retain environment identity and destination-aware
+lineage. Task and continuation rows omit “on …” for the desktop client’s
+primary and desktop-managed local backends; other destinations retain their
+machine label even when the subject thread is on that same remote server.
+Browser clients retain explicit locations. Rows retain destination-aware
 navigation; offline destinations are disabled and incomplete coverage remains
 visible. Old servers retain the lineage view. Links grant no task control or
 connection access. The section menu offers Link thread and Copy handoff text;
