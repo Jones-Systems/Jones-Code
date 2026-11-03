@@ -272,6 +272,7 @@ it.effect(
               open: unexpectedPreview,
               navigate: unexpectedPreview,
               reportStatus: unexpectedPreview,
+              markHeadless: unexpectedPreview,
               requestReveal: unexpectedPreview,
               resize: unexpectedPreview,
               adjust: unexpectedPreview,
