@@ -1607,7 +1607,7 @@ it.effect(
         expect(publicSession).toMatchObject({
           registryId: "https://native.workstreams.invalid",
           principalId: sessionAccess.principal_id,
-          permissions: ["workstreams:read"],
+          permissions: ["workstreams:read", "workstreams:write"],
         });
         const emptyPage = yield* gateway
           .readMetadata({ limit: 1 })
@@ -2105,6 +2105,181 @@ it.effect(
           request: carrier,
           result: { state: "attested", request: carrier.request },
         });
+
+        const publicWrites = () =>
+          f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL).length;
+        const gatewaySession = yield* gateway
+          .readSession()
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal));
+        const rawCreate = {
+          command_id: "command:gateway-create-application-01",
+          expected_server_generation: gatewaySession.serverGeneration,
+          expected_registry_version: gatewaySession.registryVersion,
+          action: {
+            operation: "create_workstream" as const,
+            name: "Gateway member write",
+            lifecycle: "active" as const,
+            progress: { state: "unknown" as const },
+            sort_order: 4,
+          },
+        };
+        const beforeGatewayWrite = publicWrites();
+        const rawReceipt = yield* gateway
+          .submit(rawCreate)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal));
+        expect(rawReceipt).toMatchObject({
+          command_id: rawCreate.command_id,
+          state: "committed",
+          operation: "create_workstream",
+          registry_version: gatewaySession.registryVersion + 1,
+        });
+        expect(publicWrites()).toBe(beforeGatewayWrite + 1);
+        const rawRow = yield* Context.get(
+          resources,
+          OperationStore.OperationStore,
+        ).readMemberForward(rawCreate.command_id);
+        expect(rawRow?.state).toBe("committed");
+        if (!rawRow) return yield* Effect.die("Missing genuine Gateway intent");
+        expect(rawReceipt.request_sha256).toBe(sha256Bytes(rawRow.request_body));
+        expect(
+          yield* gateway
+            .submit(rawCreate)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toEqual(rawReceipt);
+        expect(
+          yield* gateway
+            .pollCommand(rawCreate.command_id)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toEqual(rawReceipt);
+        expect(
+          yield* gateway
+            .readReceipt(rawCreate.command_id)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toMatchObject({ kind: "receipt", receipt: rawReceipt });
+        expect(
+          yield* gateway
+            .resubmit(rawCreate.command_id, rawRow.request_body)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toEqual({ kind: "receipt", receipt: rawReceipt });
+        expect(
+          yield* gateway
+            .resubmit(rawCreate.command_id, rawRow.request_body + " ")
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toEqual({ kind: "idempotency_conflict" });
+        expect(
+          yield* gateway
+            .pollCommand(rawCreate.command_id)
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, readOnlyPrincipal),
+              Effect.flip,
+            ),
+        ).toMatchObject({ reason: "unknown-effect" });
+        const missingCommand = {
+          ...rawCreate,
+          command_id: "command:gateway-missing-application-01",
+        };
+        expect(
+          yield* gateway
+            .readReceipt(missingCommand.command_id)
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal),
+              Effect.flip,
+            ),
+        ).toMatchObject({ reason: "unknown-effect" });
+        expect(
+          yield* gateway
+            .resubmit(missingCommand.command_id, canonicalSnapshot(missingCommand))
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal),
+              Effect.flip,
+            ),
+        ).toMatchObject({ reason: "unknown-effect" });
+        expect(
+          yield* msql`SELECT operation_id FROM jones_workstreams_operations
+          WHERE operation_id=${missingCommand.command_id}`,
+        ).toEqual([]);
+        expect(publicWrites()).toBe(beforeGatewayWrite + 1);
+
+        const appearance = {
+          command_id: "command:gateway-appearance-application-01",
+          workstream_id: publicId,
+          expected_server_generation: gatewaySession.serverGeneration,
+          expected_version: 0,
+          border_color: "#112233",
+        };
+        expect(
+          yield* gateway
+            .saveAppearance(appearance)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toEqual({ workstream_id: publicId, border_color: "#112233", version: 1 });
+        expect(
+          yield* gateway
+            .readAppearance([publicId])
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toMatchObject({
+          supported: true,
+          page: { items: [{ workstream_id: publicId, border_color: "#112233", version: 1 }] },
+        });
+        const deniedCommand = {
+          ...rawCreate,
+          command_id: "command:gateway-readonly-application-01",
+        };
+        const afterAppearance = publicWrites();
+        expect(
+          yield* gateway
+            .submit(deniedCommand)
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, readOnlyPrincipal),
+              Effect.flip,
+            ),
+        ).toMatchObject({ reason: "authorization-not-current" });
+        expect(
+          yield* msql`SELECT operation_id FROM jones_workstreams_operations
+          WHERE operation_id=${deniedCommand.command_id}`,
+        ).toEqual([]);
+        expect(publicWrites()).toBe(afterAppearance);
+
+        const lostBinding = yield* gateway
+          .readSession()
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal));
+        const lostCommand = {
+          ...rawCreate,
+          command_id: "command:gateway-lost-reply-application-01",
+          expected_registry_version: lostBinding.registryVersion,
+        };
+        f.state.loseForwardReply = true;
+        expect(
+          yield* gateway
+            .submit(lostCommand)
+            .pipe(
+              Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal),
+              Effect.flip,
+            ),
+        ).toMatchObject({ reason: "unknown-effect" });
+        f.state.loseForwardReply = false;
+        const afterLost = publicWrites();
+        expect(afterLost).toBe(afterAppearance + 1);
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations
+          WHERE operation_id=${lostCommand.command_id}`,
+        ).toEqual([{ state: "reconciling" }]);
+        const lostReceipt = yield* gateway
+          .pollCommand(lostCommand.command_id)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal));
+        expect(lostReceipt).toMatchObject({
+          command_id: lostCommand.command_id,
+          state: "committed",
+        });
+        expect(
+          yield* gateway
+            .readReceipt(lostCommand.command_id)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal)),
+        ).toMatchObject({ kind: "receipt", receipt: lostReceipt });
+        expect(publicWrites()).toBe(afterLost);
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations
+          WHERE operation_id=${lostCommand.command_id}`,
+        ).toEqual([{ state: "reconciling" }]);
         expect(yield* auth.revokeSession(nextSession.sessionId)).toBe(true);
         expect(yield* invokeRetained()).toMatchObject({
           state: "denied",

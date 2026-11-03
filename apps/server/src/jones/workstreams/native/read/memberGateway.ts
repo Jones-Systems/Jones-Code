@@ -1,4 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Exact public submission bytes bind the existing synchronous SHA-256 contract.
+import * as NodeCrypto from "node:crypto";
 import * as Wire from "@t3tools/contracts";
+import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
+import type { ForwardView } from "../forwarding/forwarder.ts";
+import { canonicalJson as requestJson } from "../../operations/encoding.ts";
 import * as Access from "@t3tools/contracts/jones/workstreamsHomeAccess";
 import type { WorkstreamsNativeHomeRead } from "@t3tools/contracts/jones/workstreamsNativeRead";
 import * as Clock from "effect/Clock";
@@ -28,13 +33,22 @@ const nativeFailure = (error: RegistryError): Gateway.WorkstreamGatewayError => 
               : "offline";
   return new Gateway.WorkstreamGatewayError({ reason, detail: "Member Workstreams read refused." });
 };
-const unsupported = () =>
-  Effect.fail(
-    new Gateway.WorkstreamGatewayError({
-      reason: "not-configured",
-      detail: "This member Gateway does not support writes or command receipt recovery.",
-    }),
-  );
+const decodeForward = Schema.decodeUnknownEffect(Forward.WorkstreamsForwardResult);
+const sha = (body: string) => NodeCrypto.createHash("sha256").update(body).digest("hex");
+const unknown = () =>
+  new Gateway.WorkstreamGatewayError({
+    reason: "unknown-effect",
+    detail: "The original member command outcome remains unresolved.",
+  });
+const accessIdentity = (value: Access.WorkstreamsHomeAccessResult) =>
+  accessKey({
+    ...value,
+    home: { ...value.home, registry_version: 0 },
+    capabilities: {
+      ...value.capabilities,
+      context: { ...value.capabilities.context, registry_version: 0 },
+    },
+  });
 const accessKey = ({ observed_at: _time, ...value }: Access.WorkstreamsHomeAccessResult) =>
   canonicalJson(value);
 const page = (input: { readonly limit: number; readonly cursor?: string | undefined }) => ({
@@ -63,9 +77,43 @@ const make = Effect.gen(function* () {
     use: (
       gateway: Gateway.WorkstreamGateway["Service"],
     ) => Effect.Effect<A, Gateway.WorkstreamGatewayError>,
+    write = false,
   ) {
     const started = epoch;
     const before = yield* access();
+    let mutationEntered = false;
+    const project = Effect.fn("MemberGateway.projectForward")(function* (
+      view: ForwardView,
+      id: string,
+      body: string,
+    ) {
+      const result = yield* decodeForward(view.result, { onExcessProperty: "error" });
+      if (
+        view.operation_id !== id ||
+        result.identity.source_operation_id !== id ||
+        result.identity.parent_operation_id !== null ||
+        result.identity.request_sha256 !== sha(body) ||
+        result.home.registry.registry_instance_id !== before.home.registry_instance_id ||
+        result.home.registry.owner_id !== before.home.owner_id ||
+        result.home.registry.home_environment_id !== before.home.home_environment_id ||
+        result.home.registry.server_generation !== before.home.server_generation ||
+        result.home.registry.canonical_origin !== before.home.canonical_origin ||
+        result.home.principal_id !== before.principal_id
+      )
+        return yield* new RegistryError({ code: "invalid_response" });
+      return result;
+    });
+    const transportFailure = () =>
+      new Gateway.WorkstreamTransportError({
+        operation: "member-command",
+        effect: "unknown-effect",
+        detail: "Member command outcome is unknown.",
+      });
+    const receipt = (commandId: string, body?: string) =>
+      app.commandReceipt({
+        command_id: commandId,
+        ...(body === undefined ? {} : { retained_body: body }),
+      });
     const read = Effect.fn("MemberGateway.route")(function* <S extends Schema.Decoder<unknown>>(
       request: WorkstreamsNativeHomeRead,
       schema: S,
@@ -113,9 +161,9 @@ const make = Effect.gen(function* () {
         ),
       );
     });
-    // A fresh legacy validator per call retains no caller, terminal receipt or offline page cache.
-    // Write permission is deliberately withheld from this read adapter's public binding.
-    const capabilities = { ...before.capabilities, permissions: ["workstreams:read" as const] };
+    // Reuse the public validators per call, without retaining auth, terminal receipts or offline pages.
+    // MemberAccess has already intersected the real home grant with the original local write ceiling.
+    const capabilities = before.capabilities;
     const transport: Gateway.WorkstreamTransport = {
       getCapabilities: () => Effect.succeed(capabilities),
       getCountsCapabilities: () =>
@@ -184,22 +232,46 @@ const make = Effect.gen(function* () {
           { route: "placements", params: { ...page(input), identities: input.identities } },
           Wire.T3PlacementPage,
         ),
-      getCommand: () =>
-        Effect.fail(
-          new Gateway.WorkstreamTransportError({
-            operation: "receipt",
-            effect: "unknown-effect",
-            detail: "Receipt lookup is unavailable.",
-          }),
+      getCommand: (input) => receipt(input.commandId).pipe(Effect.mapError(transportFailure)),
+      readCommandReceipt: (input) =>
+        receipt(input.commandId).pipe(
+          Effect.map((receipt) => ({ kind: "receipt" as const, receipt })),
+          Effect.mapError(transportFailure),
         ),
-      submitCommand: () =>
-        Effect.fail(
-          new Gateway.WorkstreamTransportError({
-            operation: "submit",
-            effect: "no-effect",
-            detail: "Member Gateway writes are unavailable.",
-          }),
+      resubmitCommand: (input) =>
+        receipt(input.idempotencyKey, input.body).pipe(
+          Effect.map((receipt) => ({ kind: "receipt" as const, receipt })),
+          Effect.catch((error) =>
+            error.code === "operation_id_conflict"
+              ? Effect.succeed({ kind: "idempotency_conflict" as const })
+              : Effect.fail(transportFailure()),
+          ),
         ),
+      submitCommand: Effect.fn("MemberGateway.submitCommand")(function* (
+        input: Parameters<Gateway.WorkstreamTransport["submitCommand"]>[0],
+      ) {
+        mutationEntered = true;
+        const value = yield* project(
+          yield* app.submitCommand(input),
+          input.idempotencyKey,
+          input.body,
+        );
+        if (value.kind !== "command") return yield* new RegistryError({ code: "invalid_response" });
+        return value.result;
+      }, Effect.mapError(transportFailure)),
+      saveAppearance: Effect.fn("MemberGateway.saveAppearance")(function* (
+        input: Parameters<NonNullable<Gateway.WorkstreamTransport["saveAppearance"]>>[0],
+      ) {
+        mutationEntered = true;
+        const value = yield* project(
+          yield* app.saveAppearance(input),
+          input.command_id,
+          requestJson(input),
+        );
+        if (value.kind !== "appearance")
+          return yield* new RegistryError({ code: "invalid_response" });
+        return value.result;
+      }, Effect.mapError(transportFailure)),
     };
     const gateway = yield* Gateway.make(transport, {
       binding: {
@@ -220,6 +292,7 @@ const make = Effect.gen(function* () {
           "invalid-response",
           "offline",
         ] as const;
+        if (mutationEntered) return unknown();
         const reason = reasons.find((value) => value === error.detail);
         return error.reason === "offline" && reason !== undefined
           ? new Gateway.WorkstreamGatewayError({
@@ -229,10 +302,18 @@ const make = Effect.gen(function* () {
           : error;
       }),
     );
-    const after = yield* access();
-    if (started !== epoch || accessKey(before) !== accessKey(after))
+    const after = yield* access().pipe(
+      Effect.mapError((error) => (mutationEntered ? unknown() : error)),
+    );
+    if (
+      started !== epoch ||
+      (write
+        ? accessIdentity(before) !== accessIdentity(after) ||
+          after.home.registry_version < before.home.registry_version
+        : accessKey(before) !== accessKey(after))
+    )
       return yield* new Gateway.WorkstreamGatewayError({
-        reason: "authorization-not-current",
+        reason: mutationEntered ? "unknown-effect" : "authorization-not-current",
         detail: "Member home access changed during observation.",
       });
     return result;
@@ -250,11 +331,12 @@ const make = Effect.gen(function* () {
     readRegistryCounts: () => run((gateway) => gateway.readRegistryCounts()),
     readAppearance: (ids) => run((gateway) => gateway.readAppearance(ids)),
     readThreadPlacements: (input) => run((gateway) => gateway.readThreadPlacements(input)),
-    saveAppearance: unsupported,
-    submit: unsupported,
-    pollCommand: unsupported,
-    readReceipt: unsupported,
-    resubmit: unsupported,
+    saveAppearance: (input) => run((gateway) => gateway.saveAppearance(input), true),
+    submit: (command) => run((gateway) => gateway.submit(command), true),
+    pollCommand: (id) => run((gateway) => gateway.pollCommand(id)),
+    readReceipt: (id) => run((gateway) => gateway.readReceipt(id)),
+    // The native transport's retained resubmit is lookup-only, even when source intent is missing.
+    resubmit: (id, body) => run((gateway) => gateway.resubmit(id, body), true),
     purgeAuthorization: () => {
       epoch++;
     },

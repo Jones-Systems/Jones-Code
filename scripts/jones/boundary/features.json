@@ -2511,6 +2511,16 @@
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "scope": "Selected-member public registration uses a separately negotiated current-home grant observation and genuine source enrollment/provider-v2 context. Original caller, owner, source authority, opaque generation and current grant are rechecked; the member holds no home authority rows. Historical enrollment/build and unknown support cannot mint permission or select a fallback. Isolated application composition only; installed and physical acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-member-gateway-writes",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/read/memberGateway.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/memberTransport.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Selected-member public Gateway commands and appearance mutations use exact durable source intent, original caller and immutable home; fresh effective permissions and post-call fences preserve ambiguity. Public receipt/resubmit is original-intent lookup only, including when local/home absence is unknown. No new dispatch, fallback or absence authority from recovery. Isolated application qualification only; physical/client/installed acceptance separate."
     }
   ]
 }

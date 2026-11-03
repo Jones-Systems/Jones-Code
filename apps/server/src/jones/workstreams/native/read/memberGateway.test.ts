@@ -1,4 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Synthetic exact command digests match the unchanged public contract.
+import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
+import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
+import type { ForwardView } from "../forwarding/forwarder.ts";
+import { canonicalJson as requestJson } from "../../operations/encoding.ts";
 import * as Wire from "@t3tools/contracts";
 import * as Access from "@t3tools/contracts/jones/workstreamsHomeAccess";
 import type { WorkstreamsNativeReadEnvelope } from "@t3tools/contracts/jones/workstreamsNativeRead";
@@ -75,15 +80,141 @@ const fixture = (
     alterRead?: (value: ReadResult) => ReadResult;
     fail?: string;
     beforeRead?: Effect.Effect<void>;
+    beforeWrite?: Effect.Effect<void>;
+    writeFail?: boolean;
+    alterForward?: (view: ForwardView) => ForwardView;
   } = {},
 ) => {
   const reads: Array<Parameters<App.MemberApplication["Service"]["read"]>> = [];
-  let accesses = 0;
+  let accesses = 0,
+    version = 9;
+  const writes: Array<{ kind: string; body: string }> = [];
+  const lookups: Array<{ command_id: string; retained_body?: string }> = [];
+  const receipts = new Map<string, { body: string; receipt: Wire.WorkstreamReceipt }>();
+  const sha = (body: string) => NodeCrypto.createHash("sha256").update(body).digest("hex");
+  const forward = Effect.fn("MemberGatewayTest.forward")(function* (
+    kind: "command" | "appearance",
+    id: string,
+    body: string,
+  ) {
+    writes.push({ kind, body });
+    if (options.writeFail)
+      return yield* new RegistryError({ code: "forbidden", cause: "PRIVATE_SENTINEL" });
+    version++;
+    const result: Forward.WorkstreamsForwardResult = {
+      contract: Forward.WORKSTREAMS_NATIVE_FORWARDING_CONTRACT,
+      kind: "command",
+      identity: {
+        forward_id: "forward:gateway-test",
+        source_operation_id: id,
+        parent_operation_id: null,
+        command_ids: [id],
+        request_sha256: sha(body),
+        recorded_caller_sha256: "a".repeat(64),
+        expected_home: {
+          registry_instance_id: home.registry_instance_id,
+          owner_id: home.owner_id,
+          home_environment_id: home.home_environment_id,
+          server_generation: 1,
+        },
+        canonical_origin: home.canonical_origin,
+        source_authority: {
+          environment_id: "member:test",
+          authority_namespace: "ns",
+          store_generation: 1,
+        },
+        source_enrollment_id: "enrollment",
+        source_enrollment_session_id: "session",
+        principal_id: "principal:test",
+        singleton_binding_version: 1,
+        source_binding_version: 1,
+        member_pin_id: "member-pin",
+        member_pin_bound_revision: 2,
+        outbound_link_generation: "opaque:test",
+      },
+      home: {
+        registry: { ...home, registry_version: version },
+        principal_id: "principal:test",
+        authorization_revision: 4,
+        source_binding_version: 1,
+        incoming_peer_pin_id: "home-pin",
+        incoming_peer_pin_revision: 2,
+      },
+      result: {
+        command_id: id,
+        owner_id: home.owner_id,
+        actor: { principal_id: "principal:test" },
+        operation: "create_workstream",
+        request_sha256: sha(body),
+        server_generation: 1,
+        accepted_at: now,
+        state: "committed",
+        completed_at: now,
+        registry_version: version,
+        changed: true,
+        effects: {
+          workstream_versions: [],
+          native_reference_id: null,
+          membership_ids: [],
+          declaration_id: null,
+          declaration_revision: null,
+          edge_id: null,
+          observation: null,
+          registration: null,
+          lifecycle_declaration: null,
+          coordination_disposition: null,
+          native_settlement: null,
+        },
+      },
+    };
+    receipts.set(id, { body, receipt: result.result });
+    if (options.beforeWrite) yield* options.beforeWrite;
+    const view: ForwardView = {
+      operation_id: id,
+      state: "committed",
+      next_poll_at: null,
+      accepted_at: now,
+      updated_at: now,
+      result:
+        kind === "command"
+          ? result
+          : {
+              ...result,
+              kind: "appearance",
+              result: {
+                workstream_id: workstream.workstream_id,
+                border_color: "#112233",
+                version: 1,
+              },
+            },
+    };
+    return options.alterForward?.(view) ?? view;
+  });
   const ports = Layer.mock(App.MemberApplication)({
     access: () =>
       Effect.sync(() => {
         accesses++;
-        return options.alterAccess?.(observation(), accesses) ?? observation();
+        const current = observation();
+        const value = {
+          ...current,
+          home: { ...current.home, registry_version: version },
+          capabilities: {
+            ...current.capabilities,
+            context: { ...current.capabilities.context, registry_version: version },
+          },
+        };
+        return options.alterAccess?.(value, accesses) ?? value;
+      }),
+    submitCommand: (input) => forward("command", input.idempotencyKey, input.body),
+    saveAppearance: (input) => forward("appearance", input.command_id, requestJson(input)),
+    commandReceipt: (input) =>
+      Effect.suspend(() => {
+        lookups.push(input);
+        const row = receipts.get(input.command_id);
+        if (!row) return Effect.fail(new RegistryError({ code: "unknown_effect" }));
+        if (input.retained_body !== undefined && input.retained_body !== row.body)
+          return Effect.fail(new RegistryError({ code: "operation_id_conflict" }));
+        return Effect.succeed(row.receipt);
       }),
     read: (request, placement) =>
       Effect.gen(function* () {
@@ -142,11 +273,17 @@ const fixture = (
         return options.alterRead?.(result) ?? result;
       }),
   });
-  return { layer: MemberGateway.layer.pipe(Layer.provide(ports)), reads, accesses: () => accesses };
+  return {
+    layer: MemberGateway.layer.pipe(Layer.provide(ports)),
+    reads,
+    writes,
+    lookups,
+    accesses: () => accesses,
+  };
 };
 
 it.effect(
-  "serves fresh read-only sessions and schema-valid metadata without retaining pages",
+  "serves fresh effective-permission sessions and schema-valid metadata without retaining pages",
   () => {
     const f = fixture();
     return Effect.gen(function* () {
@@ -156,7 +293,7 @@ it.effect(
         registryId: home.canonical_origin,
         ownerId: home.owner_id,
         principalId: "principal:test",
-        permissions: ["workstreams:read"],
+        permissions: ["workstreams:read", "workstreams:write"],
         authorizationRevision: 4,
       });
       expect(isBinding(session)).toBe(true);
@@ -192,7 +329,7 @@ it.effect(
       expect(yield* gateway.readAppearance([workstream.workstream_id])).toMatchObject({
         supported: true,
         page: {
-          permissions: ["workstreams:read"],
+          permissions: ["workstreams:read", "workstreams:write"],
           items: [{ workstream_id: workstream.workstream_id }],
         },
       });
@@ -358,44 +495,6 @@ it.effect.each([
     expect(f.reads).toHaveLength(1);
   }).pipe(Effect.provide(f.layer));
 });
-it.effect("leaves command recovery and mutation unavailable before any peer observation", () => {
-  const f = fixture();
-  return Effect.gen(function* () {
-    const gateway = yield* Gateway.WorkstreamGateway;
-    const command: Wire.WorkstreamCommand = {
-      command_id: "gateway-unsupported-command",
-      expected_server_generation: 1,
-      expected_registry_version: 9,
-      action: {
-        operation: "create_workstream",
-        name: "Synthetic",
-        lifecycle: "active",
-        progress: { state: "unknown" },
-        sort_order: 0,
-      },
-    };
-    const attempts: readonly Effect.Effect<unknown, Gateway.WorkstreamGatewayError>[] = [
-      gateway.submit(command),
-      gateway.pollCommand(command.command_id),
-      gateway.readReceipt(command.command_id),
-      gateway.resubmit(command.command_id, "{}"),
-      gateway.saveAppearance({
-        command_id: command.command_id,
-        workstream_id: workstream.workstream_id,
-        expected_server_generation: 1,
-        expected_version: 0,
-        border_color: null,
-      }),
-    ];
-    for (const effect of attempts) {
-      const outcome = yield* Effect.result(effect);
-      expect(outcome._tag).toBe("Failure");
-      if (outcome._tag === "Failure") expect(outcome.failure.reason).toBe("not-configured");
-    }
-    expect(f.accesses()).toBe(0);
-    expect(f.reads).toEqual([]);
-  }).pipe(Effect.provide(f.layer));
-});
 
 it.effect("does not use an earlier live page when the next read fails", () => {
   const state: { fail?: string } = {};
@@ -441,3 +540,220 @@ it.effect("refuses counts from another principal despite matching owner and gran
     ).toMatchObject({ reason: "authorization-not-current" });
   }).pipe(Effect.provide(f.layer));
 });
+
+const command = (): Wire.WorkstreamCommand => ({
+  command_id: "gateway-write-command-001",
+  expected_server_generation: 1,
+  expected_registry_version: 9,
+  action: {
+    operation: "create_workstream",
+    name: "Synthetic",
+    lifecycle: "active",
+    progress: { state: "unknown" },
+    sort_order: 0,
+  },
+});
+it.effect(
+  "submits once, permits its own registry advance and adopts only the retained receipt",
+  () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      const gateway = yield* Gateway.WorkstreamGateway;
+      const request = command(),
+        body = requestJson(request);
+      const first = yield* gateway.submit(request);
+      expect(first).toMatchObject({
+        state: "committed",
+        command_id: request.command_id,
+        registry_version: 10,
+      });
+      expect(yield* gateway.submit(request)).toEqual(first);
+      expect(yield* gateway.pollCommand(request.command_id)).toEqual(first);
+      expect(yield* gateway.readReceipt(request.command_id)).toEqual({
+        kind: "receipt",
+        receipt: first,
+        witness_version: 10,
+      });
+      expect(yield* gateway.resubmit(request.command_id, body)).toEqual({
+        kind: "receipt",
+        receipt: first,
+      });
+      expect(yield* gateway.resubmit(request.command_id, body + " ")).toEqual({
+        kind: "idempotency_conflict",
+      });
+      expect(f.writes).toEqual([{ kind: "command", body }]);
+      expect(f.lookups.every((v) => v.command_id === request.command_id)).toBe(true);
+      expect(f.lookups.at(-1)?.retained_body).toBe(body + " ");
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect("saves appearance through exact durable intent and validates its result", () => {
+  const f = fixture();
+  const input: Wire.WorkstreamAppearanceWrite = {
+    command_id: "gateway-appearance-001",
+    workstream_id: workstream.workstream_id,
+    expected_server_generation: 1,
+    expected_version: 0,
+    border_color: "#112233",
+  };
+  return Effect.gen(function* () {
+    expect(yield* (yield* Gateway.WorkstreamGateway).saveAppearance(input)).toEqual({
+      workstream_id: input.workstream_id,
+      border_color: input.border_color,
+      version: 1,
+    });
+    expect(f.writes).toEqual([{ kind: "appearance", body: requestJson(input) }]);
+  }).pipe(Effect.provide(f.layer));
+});
+it.effect("missing receipt intent and retained resubmit stay unknown and never submit", () => {
+  const f = fixture();
+  return Effect.gen(function* () {
+    const gateway = yield* Gateway.WorkstreamGateway;
+    const request = command();
+    const attempts: ReadonlyArray<Effect.Effect<void, Gateway.WorkstreamGatewayError>> = [
+      gateway.pollCommand(request.command_id).pipe(Effect.asVoid),
+      gateway.readReceipt(request.command_id).pipe(Effect.asVoid),
+      gateway.resubmit(request.command_id, requestJson(request)).pipe(Effect.asVoid),
+    ];
+    for (const attempt of attempts)
+      expect(yield* attempt.pipe(Effect.flip)).toMatchObject({ reason: "unknown-effect" });
+    expect(f.writes).toEqual([]);
+    expect(f.lookups).toHaveLength(3);
+  }).pipe(Effect.provide(f.layer));
+});
+it.effect(
+  "read-only source permission is exposed and refuses mutation before source submission",
+  () => {
+    const f = fixture({
+      alterAccess: (value) => ({
+        ...value,
+        capabilities: { ...value.capabilities, permissions: ["workstreams:read"] },
+      }),
+    });
+    return Effect.gen(function* () {
+      const gateway = yield* Gateway.WorkstreamGateway;
+      expect((yield* gateway.readSession()).permissions).toEqual(["workstreams:read"]);
+      expect(yield* gateway.submit(command()).pipe(Effect.flip)).toMatchObject({
+        reason: "authorization-not-current",
+      });
+      expect(f.writes).toEqual([]);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect.each(["lost", "id", "digest", "home", "principal"] as const)(
+  "keeps %s post-dispatch result failures unresolved",
+  (fault) => {
+    const f = fixture({
+      alterForward: (view) => {
+        if (fault === "lost") return { ...view, state: "reconciling", result: null };
+        const result = view.result!;
+        if (fault === "id") return { ...view, operation_id: "replacement-operation" };
+        if (fault === "digest")
+          return {
+            ...view,
+            result: {
+              ...result,
+              identity: {
+                ...result.identity,
+                request_sha256: "f".repeat(64),
+              },
+            },
+          };
+        return {
+          ...view,
+          result: {
+            ...result,
+            home:
+              fault === "principal"
+                ? { ...result.home, principal_id: "other" }
+                : {
+                    ...result.home,
+                    registry: {
+                      ...result.home.registry,
+                      canonical_origin: "https://other.invalid",
+                    },
+                  },
+          },
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      expect(
+        yield* (yield* Gateway.WorkstreamGateway).submit(command()).pipe(Effect.flip),
+      ).toMatchObject({ reason: "unknown-effect" });
+      expect(f.writes).toHaveLength(1);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect.each(["grant", "principal", "permissions", "generation", "rollback"] as const)(
+  "retains unknown outcome when %s changes after source mutation",
+  (fault) => {
+    const f = fixture({
+      alterAccess: (value, call) => {
+        if (call === 1) return value;
+        if (fault === "grant") return { ...value, authorization_revision: 5 };
+        if (fault === "principal") return { ...value, principal_id: "other" };
+        if (fault === "permissions")
+          return {
+            ...value,
+            capabilities: { ...value.capabilities, permissions: ["workstreams:read"] },
+          };
+        const generation = fault === "generation" ? 2 : 1;
+        const registryVersion = fault === "rollback" ? 8 : value.home.registry_version;
+        return {
+          ...value,
+          home: { ...value.home, server_generation: generation, registry_version: registryVersion },
+          capabilities: {
+            ...value.capabilities,
+            context: {
+              ...value.capabilities.context,
+              server_generation: generation,
+              registry_version: registryVersion,
+            },
+          },
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      expect(
+        yield* (yield* Gateway.WorkstreamGateway).submit(command()).pipe(Effect.flip),
+      ).toMatchObject({ reason: "unknown-effect" });
+      expect(f.writes).toHaveLength(1);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect(
+  "bounds source errors without exposing their protected cause or declaring no effect",
+  () => {
+    const f = fixture({ writeFail: true });
+    return Effect.gen(function* () {
+      const error = yield* (yield* Gateway.WorkstreamGateway).submit(command()).pipe(Effect.flip);
+      expect(error.reason).toBe("unknown-effect");
+      expect(JSON.stringify(error)).not.toContain("PRIVATE_SENTINEL");
+      expect(f.writes).toHaveLength(1);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect("purge fences an in-flight mutation without retry and preserves a usable successor", () =>
+  Effect.gen(function* () {
+    const entered = yield* Deferred.make<void>(),
+      release = yield* Deferred.make<void>();
+    const f = fixture({
+      beforeWrite: Deferred.succeed(entered, undefined).pipe(
+        Effect.andThen(Deferred.await(release)),
+      ),
+    });
+    yield* Effect.gen(function* () {
+      const gateway = yield* Gateway.WorkstreamGateway;
+      const pending = yield* gateway.submit(command()).pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(entered);
+      gateway.purgeAuthorization();
+      yield* Deferred.succeed(release, undefined);
+      const outcome = yield* Fiber.join(pending);
+      expect(outcome._tag).toBe("Failure");
+      if (outcome._tag === "Failure") expect(outcome.failure.reason).toBe("unknown-effect");
+      expect((yield* gateway.readSession()).registryVersion).toBe(10);
+      expect(f.writes).toHaveLength(1);
+    }).pipe(Effect.provide(f.layer));
+  }),
+);

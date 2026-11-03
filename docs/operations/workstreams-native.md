@@ -93,8 +93,8 @@ conflicting legacy activation. None of these repairs authorizes a live transitio
 Native callers use current HTTP session scopes, MCP authentication and caller
 limits, or an application-owned trusted CLI context. Request bodies cannot select
 another origin or actor. A qualified member can read the home through its
-request-authenticated public Gateway. Its session and appearance views expose read
-permission. The public operation service forwards create and primary-placement
+request-authenticated public Gateway. Its session and appearance views expose only
+the intersection of current home permission and the original source caller's ceiling. The public operation service forwards create and primary-placement
 requests through the selected member owner, preserving the original caller, ID,
 request digest and bound home. Its reads expose only that caller's accepted
 operations after fresh home access checks. A null operation is a local unknown,
@@ -106,8 +106,11 @@ registration context observes the actual current home grant and qualifies the me
 source-issued enrollment against the source provider's current authority and build.
 A historical enrollment is an association, not home permission. Missing support
 refuses without falling back to a different registry or protocol. Public
-Gateway mutations and command receipt recovery remain unavailable until their
-adapters are qualified. Native placement v2 keeps its separate negotiated
+Gateway commands and appearance writes use durable source forwarding. Receipt reads
+and retained resubmissions require the original caller's accepted raw intent and
+look up the original home only. Missing intent, unavailable lookup and unknown
+outcomes do not prove absence or authorize dispatch; retained request bytes stay
+unchanged. Native placement v2 keeps its separate negotiated
 route; the frozen v1 Gateway cannot erase native proof fields to accept it. Linked
 metadata requests remain refused. Scheduled MCP calls retain their authenticated agent origin; a queue origin
 requires separate trusted queue-request evidence and is not accepted from a body.

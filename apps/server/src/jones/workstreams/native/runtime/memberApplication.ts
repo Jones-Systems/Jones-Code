@@ -21,6 +21,7 @@ import * as PublicRead from "../operations/memberOperationRead.ts";
 import * as Forwarder from "../forwarding/forwarder.ts";
 import * as Transport from "../forwarding/memberTransport.ts";
 import * as HomeClient from "../forwarding/homeClient.ts";
+import * as CommandReceipts from "../forwarding/memberCommandReceipts.ts";
 import * as Readmission from "../forwarding/readmissionV2.ts";
 import * as SourceReadmission from "../forwarding/sourceReadmissionPort.ts";
 import * as Retained from "../forwarding/retainedSourceEffects.ts";
@@ -37,6 +38,7 @@ export class MemberApplication extends Context.Service<
   MemberApplication,
   {
     readonly access: MemberAccess.MemberAccess["Service"]["current"];
+    readonly commandReceipt: CommandReceipts.MemberCommandReceipts["Service"]["lookup"];
     readonly registration: Registration.MemberRegistration["Service"]["read"];
     readonly read: Reads.MemberReads["Service"]["read"];
     readonly submitCommand: Transport.MemberWriteTransport["Service"]["submitCommand"];
@@ -163,6 +165,14 @@ const make = Effect.gen(function* () {
     ),
   );
   return MemberApplication.of({
+    commandReceipt: (input) =>
+      run(
+        CommandReceipts.layer.pipe(
+          Layer.provide(HomeClient.layer),
+          Layer.provide(Integration.nativeMemberAdmissionRequestLayer),
+        ),
+        Effect.flatMap(CommandReceipts.MemberCommandReceipts, (receipts) => receipts.lookup(input)),
+      ),
     registration: () =>
       run(
         Registration.layer.pipe(

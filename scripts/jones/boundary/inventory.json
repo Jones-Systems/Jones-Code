@@ -2221,7 +2221,9 @@
     "packages/contracts/src/jones/workstreamsHomeRegistration.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/read/memberRegistration.test.ts": "jones-owned",
     "packages/contracts/src/jones/workstreamsHomeRegistration.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/read/memberRegistration.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/read/memberRegistration.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
