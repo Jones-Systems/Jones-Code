@@ -846,9 +846,10 @@
         "packages/contracts/src/jones/previewCompatibility.test.ts",
         "packages/contracts/src/jones/previewRecordingOperation.test.ts",
         "apps/server/src/jones/previewRecordingOperation/broker.test.ts",
-        "apps/server/src/jones/previewRecordingOperation/mcp.test.ts"
+        "apps/server/src/jones/previewRecordingOperation/mcp.test.ts",
+        "apps/server/src/preview/ServerBrowserContexts.test.ts"
       ],
-      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified. Additive caller-scoped recording-operation reads expose only retained broker evidence; completed quarantine replies retain a bounded projection without changing fences or recorder lifecycle."
+      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified. Additive caller-scoped recording-operation reads expose only retained broker evidence; completed quarantine replies retain a bounded projection without changing fences or recorder lifecycle. Upstream profile-clear serialization and its original context-pool regression remain shared to exercise the real profile lifecycle."
     },
     {
       "id": "persistent-private-services",
