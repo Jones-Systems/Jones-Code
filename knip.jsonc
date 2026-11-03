@@ -20,14 +20,18 @@
     },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
-      // Worktree setup, retained archive verifiers, the macOS signer, and mobile
-      // device CLIs are invoked by path rather than through traced imports.
+      // worktree setup (from t3.json) run directly. release-desktop.yml bundles the
+      // Windows verify script with esbuild through a path knip does not trace,
+      // electron-builder loads the macOS signer and the Linux afterPack hook by path, and mobile-e2e.ts runs
+      // agent-device's CLI by path, and mobile-behavior.ts spawns its runner by path.
+      // release-desktop.yml runs the desktop launch check through xvfb-run, which knip
+      // does not trace.
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "knip-schemas.ts",
-        // Retained upstream release CLI; its publishing workflow stays disabled.
-        "resolve-nightly-release.ts",
+        "linux-after-pack.ts",
+        "mobile-behavior/run.ts",
         "mobile-native-client.ts",
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
@@ -47,6 +51,8 @@
         "jones/performance/migration-restore-worker.mjs",
         "jones/performance/current-qualification-worker.mjs",
         "sign-macos.ts",
+        "prepare-server-compile-cache.cjs",
+        "smoke-desktop-app.ts",
         "verify-windows-desktop-artifact.ts",
         // Candidate CI builds and invokes these disposable SEA qualification entries.
         "jones/native-enrollment/candidate.vite.config.ts",
@@ -76,7 +82,6 @@
         "src/jones/updates/*.ts",
         "src/claude-history-worker.ts!",
         "scripts/cli.ts",
-        "scripts/evaluate-thread-titles.ts",
         "scripts/fetch-expo-schema.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
@@ -100,7 +105,12 @@
       // The Vite+ web build prerequisite.
       // Native and disk-loaded provider packages stay external to the bundle; the
       // CLI archive and desktop sidecar stage them from this manifest.
-      "ignoreDependencies": ["@effect/platform-node-shared", "@t3tools/web", "@napi-rs/keyring"],
+      "ignoreDependencies": [
+        "@effect/platform-node-shared",
+        "@t3tools/web",
+        "@napi-rs/keyring",
+        "ffi-rs",
+      ],
     },
     "apps/desktop": {
       // Electron loads these bundles by filename rather than importing them.
@@ -113,6 +123,7 @@
         "src/jones/updates/jonesStagingWorker.ts!",
         "src/boot.ts!",
         "src/compileCache.ts!",
+        "src/serverCompileCache.ts!",
         "src/main.ts!",
         "src/preload.ts!",
         "src/jones/threadMonitor/preload.ts!",
@@ -208,7 +219,8 @@
       ],
     },
     "infra/relay": {
-      "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!"],
+      // Alchemy loads src/worker.ts as the Worker entry and reads its default export.
+      "entry": ["alchemy.run.ts!", "src/persistence/schema.ts!", "src/worker.ts!"],
     },
     "packages/client-runtime": {
       "includeEntryExports": true,

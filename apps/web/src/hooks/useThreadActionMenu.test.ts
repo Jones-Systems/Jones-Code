@@ -52,11 +52,8 @@ vi.mock("../state/session", () => ({
     scope === AuthOrchestrationOperateScope && state.granted.has(environmentId),
 }));
 vi.mock("../state/entities", () => ({
+  readEnvironmentServerConfigLoaded: () => true,
   readEnvironmentSupportsAutoSettleOptOut: () => true,
-  readEnvironmentSupportsPinning: () => true,
-  readEnvironmentSupportsSettlement: () => true,
-  readEnvironmentSupportsSnooze: () => true,
-  readEnvironmentSupportsTitleRegeneration: () => true,
   readThreadShell: () => ({
     id: "thread",
     environmentId: "secondary",
@@ -116,7 +113,7 @@ vi.mock("../localApi", () => ({
     },
   }),
 }));
-vi.mock("../logicalProject", () => ({
+vi.mock("@t3tools/client-runtime/state/project-grouping", () => ({
   deriveLogicalProjectKeyFromSettings: () => "project",
   derivePhysicalProjectKey: () => "project",
   selectProjectGroupingSettings: () => ({}),
@@ -155,6 +152,7 @@ vi.mock("./useSettings", () => ({
     }),
 }));
 vi.mock("./useThreadActions", () => ({
+  canTurnThreadIntoProject: () => false,
   useThreadActions: () =>
     Object.fromEntries(
       [
@@ -184,11 +182,12 @@ const target = {
   threadId: ThreadId.make("thread"),
 };
 const position = { x: 10, y: 20 };
-const createMenu = () =>
+const createMenu = (options: { readonly onFind?: (threadRef: typeof target) => void } = {}) =>
   useThreadActionMenu({
     threadRef: target,
     projectCwd: "/project",
     onStartRename: () => recordEffect("rename"),
+    onFind: options.onFind,
     canShareWithGuest: false,
   });
 
@@ -209,115 +208,24 @@ describe("thread menu permissions", () => {
     state.projection.mockReturnValue(projection.promise);
     try {
       createMenu().openMenu(position);
-      expect(state.show).toHaveBeenCalledExactlyOnceWith(expect.any(Array), position);
-      expect(state.projection).not.toHaveBeenCalled();
-    } finally {
-      projection.resolve(AsyncResult.success({ providerSessions: [] }));
-    }
-  });
+      state.granted.delete("secondary");
+      choice.resolve(action);
+      await state.completed.promise;
+      expect(state.effects).toEqual([]);
+    },
+  );
 
-  it("keeps Stop reachable without loaded sessions and uses the authoritative stop command", async () => {
-    state.granted.add("secondary");
-    state.show.mockResolvedValue("stop-thread");
+  it("offers find only to a header that can open it, without task permission", async () => {
     createMenu().openMenu(position);
-    await state.shown.promise;
-    expect(
-      state.show.mock.calls[0]![0].find((item) => item.id === "stop-thread")?.disabled,
-    ).not.toBe(true);
+    expect(state.show.mock.calls[0]![0].some((item) => item.id === "find")).toBe(false);
+    state.show.mockResolvedValue("find");
+    const onFind = vi.fn(() => recordEffect("find"));
+    createMenu({ onFind }).openMenu(position);
     await state.completed.promise;
-    expect(state.effects).toEqual(["stop-session"]);
-  });
-
-  it("disables mutations for a denied secondary environment", async () => {
-    createMenu().openMenu(position);
-    await state.shown.promise;
-    const items = state.show.mock.calls[0]![0];
-    expect(items.find((item) => item.id === "rename")?.disabled).toBe(true);
-    expect(items.find((item) => item.id === "delete")?.disabled).toBe(true);
-    expect(items.find((item) => item.id === "copy")?.disabled).not.toBe(true);
-  });
-
-  it("allows the target grant even when the primary environment is denied", async () => {
-    state.granted = new Set(["secondary"]);
-    createMenu().openMenu(position);
-    await state.shown.promise;
-    expect(state.show.mock.calls[0]![0].find((item) => item.id === "rename")?.disabled).not.toBe(
-      true,
-    );
-  });
-
-  it("refreshes availability when a retained menu opener gains permission", async () => {
-    const menu = createMenu();
-    menu.openMenu(position);
-    await state.shown.promise;
-    expect(state.show.mock.calls[0]![0].find((item) => item.id === "rename")?.disabled).toBe(true);
-    state.granted.add("secondary");
-    state.shown = deferred<void>();
-    menu.openMenu(position);
-    await state.shown.promise;
-    expect(state.show.mock.calls[1]![0].find((item) => item.id === "rename")?.disabled).not.toBe(
-      true,
-    );
-  });
-
-  it.each([
-    "rename",
-    "regenerate-title",
-    "delete",
-    "pin",
-    "settle",
-    "archive",
-    "stop-thread",
-  ] as const)("%s rechecks after the native menu closes", async (action) => {
-    state.granted.add("secondary");
-    const choice = deferred<ThreadActionMenuId | null>();
-    state.show.mockReturnValue(choice.promise);
-    createMenu().openMenu(position);
-    await state.shown.promise;
-    state.granted.delete("secondary");
-    choice.resolve(action);
-    await state.completed.promise;
-    expect(state.effects).toEqual([]);
-  });
-
-  it.each([
-    ["new-thread-on-branch", "draft"],
-    ["copy-thread-id", "copy"],
-    ["mark-unread", "mark-unread"],
-    ["project-settings", "project-settings"],
-  ] as const)("keeps %s available without task permission", async (action, effect) => {
-    state.show.mockResolvedValue(action);
-    createMenu().openMenu(position);
-    await state.completed.promise;
-    expect(state.effects).toEqual([effect]);
-  });
-});
-
-describe("Jones settlement restore menu item", () => {
-  const ids = () => state.show.mock.calls[0]![0].map((item) => item.id as string);
-
-  it("offers Undo settle beside Un-settle and restores from the server's record", async () => {
-    state.granted.add("secondary");
-    state.settled = true;
-    state.show.mockResolvedValue("jones:undo-settle" as ThreadActionMenuId);
-    createMenu().openMenu(position);
-    await state.completed.promise;
-    expect(ids().slice(ids().indexOf("unsettle"), ids().indexOf("unsettle") + 2)).toEqual([
-      "unsettle",
-      "jones:undo-settle",
-    ]);
-    expect(state.effects).toEqual(["undo-settle:thread"]);
-  });
-
-  it("is absent for active threads and servers without native restore", async () => {
-    createMenu().openMenu(position);
-    await state.shown.promise;
-    state.settled = true;
-    state.settlementRestore = false;
-    state.shown = deferred<void>();
-    createMenu().openMenu(position);
-    await state.shown.promise;
-    for (const call of state.show.mock.calls)
-      expect(call[0].some((item) => (item.id as string) === "jones:undo-settle")).toBe(false);
+    const items = state.show.mock.calls[1]![0];
+    expect(items[0]).toMatchObject({ id: "find", label: "Find in thread" });
+    expect(items[0]?.disabled).not.toBe(true);
+    expect(state.effects).toEqual(["find"]);
+    expect(onFind).toHaveBeenCalledExactlyOnceWith(target);
   });
 });

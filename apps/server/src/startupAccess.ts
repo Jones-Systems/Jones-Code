@@ -3,6 +3,7 @@ import * as NodeOS from "node:os";
 
 import { isPrivateNetworkHost, isSharedAddressSpaceHost } from "@t3tools/shared/hostClassification";
 import { QrCode } from "@t3tools/shared/qrCode";
+import { buildPairingAppLink } from "@t3tools/shared/remote";
 import * as Effect from "effect/Effect";
 import { HttpServer } from "effect/http";
 import * as NetAddress from "effect/net/NetAddress";
@@ -182,7 +183,16 @@ export const renderTerminalQrCode = (value: string, margin = 2): string => {
 };
 
 export const formatHeadlessServeOutput = (accessInfo: HeadlessServeAccessInfo): string =>
-  formatHeadlessStartupOutput(accessInfo.connectionString);
+  [
+    "T3 Code server is ready.",
+    `Connection string: ${accessInfo.connectionString}`,
+    `Token: ${accessInfo.token}`,
+    `Pairing URL: ${accessInfo.pairingUrl}`,
+    `App link: ${buildPairingAppLink(accessInfo.pairingUrl)}`,
+    "",
+    renderTerminalQrCode(accessInfo.pairingUrl),
+    "",
+  ].join("\n");
 
 export const issueHeadlessServeAccessInfo = Effect.fn("issueHeadlessServeAccessInfo")(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;

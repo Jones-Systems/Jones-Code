@@ -29,11 +29,14 @@ export const getUpdateState = DesktopIpc.makeIpcMethod({
 
 export const setUpdateChannel = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_SET_CHANNEL_CHANNEL,
-  payload: DesktopUpdateChannelSchema,
+  payload: Schema.Struct({
+    channel: DesktopUpdateChannelSchema,
+    minimumVersion: Schema.optional(Schema.String),
+  }),
   result: DesktopUpdateStateSchema,
-  handler: Effect.fn("desktop.ipc.updates.setChannel")(function* (channel) {
+  handler: Effect.fn("desktop.ipc.updates.setChannel")(function* ({ channel, minimumVersion }) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
-    return yield* updates.setChannel(channel);
+    return yield* updates.setChannel(channel, { minimumVersion });
   }),
 });
 
@@ -55,24 +58,14 @@ export const downloadUpdate = DesktopIpc.makeIpcMethod({
 
 export const installUpdate = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.UPDATE_INSTALL_CHANNEL,
-  payload: Schema.Union([
-    Schema.Undefined,
-    Schema.String,
-    Schema.Struct({ stagedHandle: Schema.String, campaignId: FleetOperationId }),
-  ]),
+  /** A version installs only that downloaded build, never one that replaced it. */
+  payload: Schema.UndefinedOr(Schema.String),
   result: DesktopUpdateActionResultSchema,
-  handler: Effect.fn("desktop.ipc.updates.install")(function* (request) {
+  handler: Effect.fn("desktop.ipc.updates.install")(function* (expectedVersion) {
     const updates = yield* DesktopUpdates.DesktopUpdates;
-    const stagedHandle = typeof request === "object" ? request.stagedHandle : request;
-    const campaignId = typeof request === "object" ? request.campaignId : undefined;
-    if (stagedHandle !== undefined) {
-      if (updates.installStaged !== undefined)
-        return yield* campaignId === undefined
-          ? updates.installStaged(stagedHandle)
-          : updates.installStaged(stagedHandle, campaignId);
-      return { accepted: false, completed: false, state: yield* updates.getState };
-    }
-    return yield* updates.install;
+    if (expectedVersion === undefined) return yield* updates.install;
+    const { accepted, completed, state } = yield* updates.installPrepared(expectedVersion);
+    return { accepted, completed, state };
   }),
 });
 

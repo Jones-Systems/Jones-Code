@@ -25,7 +25,10 @@ type InputHook = (
   ctx: { ui: { notify: (message: string, level: string) => void } },
 ) => Promise<{ action: string; text: string; images?: ReadonlyArray<unknown> } | undefined>;
 
-async function loadHooks(commands: ReadonlyArray<SkillCommand> = []) {
+async function loadHooks(
+  commands: ReadonlyArray<SkillCommand> = [],
+  argv: ReadonlyArray<string> = [],
+) {
   const handlers = new Map<string, unknown>();
   const source = NodeModule.stripTypeScriptTypes(
     PI_T3_MCP_EXTENSION_SOURCE.replace(/^import .*;$/gm, "").replace(
@@ -34,7 +37,7 @@ async function loadHooks(commands: ReadonlyArray<SkillCommand> = []) {
     ),
   );
   await NodeVM.runInNewContext(`${source}\nt3McpExtension(pi)`, {
-    process: { env: {} },
+    process: { env: {}, argv },
     NodeFSP,
     NodePath,
     stripFrontmatter: (content: string) => content,
@@ -78,29 +81,29 @@ describe("Pi orchestration prompt section", () => {
   });
 });
 
-describe("Pi app identity", () => {
-  it("uses the native section channel for identity and orchestration together", async () => {
-    const bridge = await loadMcpBridge();
-    const hook = bridge.handlers.get("before_agent_start")!;
-    const sections: Record<string, string> = {};
-    const result = await hook(
-      { systemPrompt: "base", systemPromptOptions: { sections } },
-      { ui: { notify: assert.fail } },
-    );
-    assert.isUndefined(result);
-    assert.include(sections.t3_code_app_identity!, "App identity and build source are unavailable");
-    assert.include(sections.t3_code_orchestration!, "orchestrator_capabilities");
-  });
-
-  it("injects unknown identity without MCP guidance when no bridge is attached", async () => {
-    const handlers = await loadHooks();
-    const hook = handlers.get("before_agent_start") as (event: { systemPrompt: string }) => {
-      systemPrompt: string;
+describe("Pi project trust", () => {
+  it.each([
+    { name: "a trusted folder", trusted: true, argv: [], notices: 0 },
+    { name: "an untrusted folder", trusted: false, argv: [], notices: 1 },
+    { name: "--no-approve", trusted: false, argv: ["--approve", "-na"], notices: 0 },
+  ])("sends $notices trust notice per session for $name", async ({ trusted, argv, notices }) => {
+    const sent: string[] = [];
+    const ctx = {
+      cwd: "/repo",
+      isProjectTrusted: () => trusted,
+      ui: { notify: (message: string) => sent.push(message) },
     };
-    const result = hook({ systemPrompt: "/original" });
-    assert.isTrue(result.systemPrompt.startsWith("/original\n\n"));
-    assert.include(result.systemPrompt, "App identity and build source are unavailable");
-    assert.notInclude(result.systemPrompt, "orchestrator_capabilities");
+    // Pi reruns extension factories on session replacement without asking about trust again.
+    for (const _session of [1, 2]) {
+      const handlers = (await loadHooks([], ["node", "pi", ...argv])) as Map<
+        string,
+        (event: unknown, ctx: unknown) => unknown
+      >;
+      for (const _turn of [1, 2]) await handlers.get("before_agent_start")!({}, ctx);
+    }
+    assert.equal(sent.length, notices * 2);
+    for (const message of sent)
+      assert.include(message, "for /repo because the folder is not trusted");
   });
 });
 

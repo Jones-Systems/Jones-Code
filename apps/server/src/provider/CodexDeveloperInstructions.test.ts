@@ -1,5 +1,6 @@
 import * as NodeAssert from "node:assert/strict";
 
+import { T3_CODE_DEVICE_TOOL_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { describe, it } from "vite-plus/test";
 import {
   T3_CODE_ORCHESTRATION_INSTRUCTIONS,
@@ -72,26 +73,14 @@ describe("Codex orchestration context", () => {
       .map(([, entry]) => entry.value)
       .join("\n");
 
-    NodeAssert.ok(orchestration.includes("For other providers, prefer native subagent tools"));
-    NodeAssert.ok(orchestration.includes("Use `delegate_task` for every Claude child"));
-    NodeAssert.ok(orchestration.includes("inheritedOptions"));
-    NodeAssert.ok(orchestration.includes("For an independent T3 delegated review round"));
-    NodeAssert.ok(orchestration.includes("Do not use `t3_thread_send` on `childThreadId`"));
-    NodeAssert.ok(orchestration.includes("Follow a running delegate's `next` instruction"));
-  });
-
-  it("delivers all authored sections in key order with the actual app identity", () => {
-    const context = buildCodexAdditionalContext({
-      model: "gpt-5.3-codex",
-      reasoningEffort: "high",
-    });
-    const sections = Object.keys(context)
-      .filter((key) => key.startsWith("t3_code_orchestration_"))
-      .sort()
-      .map((key) => context[key]!);
-    NodeAssert.deepEqual(
-      sections,
-      T3_CODE_ORCHESTRATION_SECTIONS.map((value) => ({ kind: "application", value })),
+    NodeAssert.ok(orchestration.includes("use your native tool when the child uses your provider"));
+    NodeAssert.ok(orchestration.includes("`run_in_background:false`"));
+    NodeAssert.ok(orchestration.includes("A native type on another provider's model"));
+    NodeAssert.ok(
+      orchestration.includes("Background agent: `delegate_task`, never a background `Agent`."),
+    );
+    NodeAssert.ok(
+      orchestration.includes("Every new delegate review or re-check is a new `delegate_task`"),
     );
     NodeAssert.equal(
       sections.map((entry) => entry.value).join("\n\n"),
@@ -128,6 +117,18 @@ describe("Jones browser developer instructions", () => {
       .t3_code_tools!.value;
     NodeAssert.match(browserOnly, /preview_open/);
     NodeAssert.doesNotMatch(browserOnly, /device_open/);
+  });
+});
+
+describe("Codex device context", () => {
+  it("adds the shared device block only when the session holds device access", () => {
+    const tools = (device: boolean) =>
+      buildCodexAdditionalContext({ model: "gpt-6.1-sol" }, { browser: true, device }).t3_code_tools
+        ?.value ?? "";
+
+    NodeAssert.ok(tools(true).includes(T3_CODE_DEVICE_TOOL_INSTRUCTIONS));
+    NodeAssert.ok(!tools(true).includes("ToolSearch"));
+    NodeAssert.ok(!tools(false).includes("## T3 Code devices"));
   });
 });
 

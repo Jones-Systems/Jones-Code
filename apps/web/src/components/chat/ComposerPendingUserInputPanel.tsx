@@ -7,17 +7,17 @@ import {
   type QuestionAnswerAttachmentCapabilities,
 } from "../../jones/questionAnswer/questionAnswerCard";
 import { type RuntimeRequestId, type ScopedThreadRef } from "@t3tools/contracts";
-import { memo, use, useEffect, useEffectEvent, useState } from "react";
+import { markdownProseDirection, textDirection } from "~/textDirection";
+import { memo, use, useEffect, useEffectEvent, useRef, useState } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { type PendingUserInput } from "../../session-logic";
-import {
-  derivePendingUserInputProgress,
-  type PendingUserInputDraftAnswer,
-} from "../../pendingUserInput";
+import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/state/pending-user-input";
+import { derivePendingUserInputProgress } from "../../pendingUserInput";
 import { CheckboxMark } from "../ui/checkbox";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { Kbd } from "../ui/kbd";
 import { cn } from "~/lib/utils";
+import { isInSideChatPane } from "~/lib/sideChatPane";
 import { ComposerBanner } from "./ComposerBanner";
 import ChatMarkdown from "../ChatMarkdown";
 
@@ -129,6 +129,29 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   );
   const isCollapsed = collapsedQuestionId !== null && collapsedQuestionId === activeQuestion?.id;
 
+  if (
+    optimisticSingleSelect &&
+    activeQuestion &&
+    !activeQuestion.multiSelect &&
+    (optimisticSingleSelect.questionId !== activeQuestion.id ||
+      (!customAnswerActive &&
+        progress.selectedOptionValues.includes(optimisticSingleSelect.optionValue)))
+  ) {
+    setOptimisticSingleSelect(null);
+  }
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the auto-advance timer when the question changes, input is disabled, or the panel unmounts
+  useEffect(() => {
+    const clearAutoAdvance = () => {
+      if (autoAdvanceTimerRef.current !== null) {
+        window.clearTimeout(autoAdvanceTimerRef.current);
+        autoAdvanceTimerRef.current = null;
+      }
+    };
+    if (disabled || activeQuestion?.id === undefined) clearAutoAdvance();
+    return clearAutoAdvance;
+  }, [activeQuestion?.id, disabled]);
+
   const handleOptionSelection = (questionId: string, optionValue: string) => {
     if (!responseDisabled) onToggleOption(questionId, optionValue);
   };
@@ -136,12 +159,14 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   const selectOptionFromShortcut = useEffectEvent(handleOptionSelection);
   const backgroundThread = use(BackgroundThreadContext);
 
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes a document keydown listener for digit shortcuts while a question is answerable
   useEffect(() => {
     if (!activeQuestion || responseDisabled || isCollapsed || backgroundThread) return;
     const handler = (event: globalThis.KeyboardEvent) => {
       if (event.repeat || event.isComposing) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target;
+      if (isInSideChatPane(target)) return;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
         return;
       }
@@ -168,28 +193,48 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
     return null;
   }
 
+  const promptDirection = markdownProseDirection(
+    prompt.questions
+      .flatMap((question) => [
+        question.header,
+        question.question,
+        ...question.options.flatMap((option) => [option.label, option.description ?? ""]),
+      ])
+      .join(" "),
+  );
+  const questionTextAlign = promptDirection === "rtl" ? "text-right" : "text-left";
+
   return (
-    <ComposerBanner.Scroll>
-      <Collapsible
-        open={!isCollapsed}
-        onOpenChange={(open) => {
-          setCollapsedQuestionId(open ? null : activeQuestion.id);
-        }}
+    <Collapsible
+      dir={promptDirection}
+      open={!isCollapsed}
+      onOpenChange={(open) => {
+        setCollapsedQuestionId(open ? null : activeQuestion.id);
+      }}
+    >
+      <CollapsibleTrigger
+        render={<ComposerBanner.Row render={<button type="button" />} />}
+        title={
+          isCollapsed ? "Show the question and its options" : "Hide the question and its options"
+        }
+        data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
+        className="px-4 pt-1.5"
       >
-        <ComposerBanner.Row className="flex flex-wrap items-center gap-2 px-4 pt-1.5 @max-[18rem]:px-2">
-          <CollapsibleTrigger
-            render={<button type="button" />}
-            title={
-              isCollapsed
-                ? "Show the question and its options"
-                : "Hide the question and its options"
-            }
-            data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
-            className="flex min-w-0 flex-1 basis-32 items-center gap-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        <ComposerBanner.Content>
+          <span
+            className={cn("min-w-0 truncate text-muted-foreground", isCollapsed && "max-w-1/2")}
+            dir={textDirection(activeQuestion.header)}
           >
-            <ComposerBanner.Content>
-              <span className="min-w-0 truncate text-muted-foreground">
-                {activeQuestion.header}
+            {activeQuestion.header}
+          </span>
+          {isCollapsed ? (
+            <>
+              <ComposerBanner.Separator />
+              <span
+                className={cn("min-w-0 flex-1 truncate text-secondary-label", questionTextAlign)}
+                dir={markdownProseDirection(activeQuestion.question)}
+              >
+                {activeQuestion.question}
               </span>
               {isCollapsed ? (
                 <>
@@ -234,7 +279,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               text={activeQuestion.question}
               cwd={cwd}
               threadRef={threadRef}
-              className="pt-2 text-foreground/85"
+              className={cn("pt-2 text-foreground/85", questionTextAlign)}
             />
             {/* Rows span the header row's width so the radios align with the question text and the shortcut column sits under the dismiss button. */}
             <div className="-ms-2 mt-1.5 sm:-ms-1.5">
@@ -242,7 +287,8 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                 const optionValue = option.value ?? option.label;
                 const isSelected = draftSelectedOptions?.[index] === true;
                 const className = cn(
-                  "group flex w-full items-start gap-2.5 rounded-md bg-transparent py-1.5 ps-2 text-left sm:ps-1.5 outline-none transition-colors duration-150 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/25",
+                  questionTextAlign,
+                  "group flex w-full items-start gap-2.5 rounded-md bg-transparent py-1.5 ps-2 sm:ps-1.5 outline-none transition-colors duration-150 focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-primary/25",
                   isSelected ? "text-foreground" : "text-foreground/70 hover:bg-muted/30",
                   (disabled || isResponding) && "opacity-50 cursor-not-allowed",
                   !disabled && !isResponding && "cursor-pointer",
@@ -258,9 +304,16 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
                       )}
                     </span>
                     <div className="min-w-0 flex-1 flex flex-col gap-0.5">
-                      <span className="text-sm font-medium">{option.label}</span>
+                      <span className="text-sm font-medium" dir={textDirection(option.label)}>
+                        {option.label}
+                      </span>
                       {option.description && option.description !== option.label ? (
-                        <span className="text-secondary-label text-2xs">{option.description}</span>
+                        <span
+                          className="text-secondary-label text-2xs"
+                          dir={textDirection(option.description)}
+                        >
+                          {option.description}
+                        </span>
                       ) : null}
                     </div>
                     {index < 9 ? (

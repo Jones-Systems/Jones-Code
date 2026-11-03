@@ -1,18 +1,13 @@
+import * as DocumentText from "../provider/DocumentText.ts";
 import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
-  AuthSessionId,
-  AuthAdministrativeScopes,
   CommandId,
   EventId,
   MessageId,
   NodeId,
   type OrchestrationV2Run,
-  OrchestratorMcpFailure,
-  type OrchestratorMcpThreadReadResult,
-  type OrchestratorMcpThreadWaitInput,
-  type OrchestratorMcpThreadWaitResult,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -27,14 +22,15 @@ import { expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as SubscriptionRef from "effect/SubscriptionRef";
-import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 import type * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer } from "effect/ai";
 
@@ -54,12 +50,10 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
+import * as ProjectCloneTracker from "../project/ProjectCloneTracker.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as RepositoryIdentityResolver from "../project/RepositoryIdentityResolver.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
-import * as DocumentText from "../provider/DocumentText.ts";
-import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
-import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -70,11 +64,7 @@ import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinks from "./PeerLinks.ts";
 import { descriptorOf, layerLinkingEnvironment, linkTo, servePeer } from "./PeerLinks.testkit.ts";
 import * as RemoteDelegation from "./RemoteDelegation.ts";
-import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
-import * as RemoteAdmission from "../jones/remoteAdmission/RemoteAdmission.ts";
-import * as AdmissionIntake from "../jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
-import * as AdmissionCancel from "../jones/remoteAdmissionIntegration/cancelTool.ts";
-import * as DelegationIntents from "../jones/remoteDelegation/IntentStore.ts";
+import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 
 // The laptop's agent delegates a task to the box through a link. The box is
 // its real /mcp behind real OAuth, with one thread the test finishes; the
@@ -90,7 +80,7 @@ const modelSelection = { instanceId, model: "gpt-5.4" };
 
 type LaunchedWith = Pick<
   ThreadLaunch.ThreadLaunchInput,
-  "modelSelection" | "runtimeMode" | "interactionMode" | "workspaceStrategy"
+  "modelSelection" | "runtimeMode" | "interactionMode"
 >;
 
 /** The thread the box launches for the task, which the test finishes. */
@@ -110,10 +100,8 @@ interface BoxThread {
   readonly laterError: Ref.Ref<string | null>;
   /** A later run's reply, after the task's own, as a follow-up message would leave. */
   readonly laterReply: Ref.Ref<string | null>;
-  readonly laterRun: Ref.Ref<OrchestrationV2Run | null>;
   /** The run each wait asked for, in order. */
   readonly waitedFor: Ref.Ref<ReadonlyArray<RunId | undefined>>;
-  readonly waitStarted: Deferred.Deferred<void>;
   /** The thread's run ends with a task of its own still running, whose result wakes it again. */
   readonly nested: Ref.Ref<boolean>;
   /** Completed once a wait there blocks on that task. */
@@ -139,6 +127,8 @@ interface BoxThread {
   readonly releaseStop: Deferred.Deferred<void>;
   /** Messages sent to the thread there after its launch, each starting a later run. */
   readonly sent: Ref.Ref<ReadonlyArray<string>>;
+  /** Runs as the launch there is answered, before the laptop hears back. */
+  readonly afterLaunch: Ref.Ref<Effect.Effect<void>>;
 }
 
 const makeBoxThread = Effect.gen(function* () {
@@ -155,9 +145,7 @@ const makeBoxThread = Effect.gen(function* () {
     error: yield* Ref.make<string | null>(null),
     laterError: yield* Ref.make<string | null>(null),
     laterReply: yield* Ref.make<string | null>(null),
-    laterRun: yield* Ref.make<OrchestrationV2Run | null>(null),
     waitedFor: yield* Ref.make<ReadonlyArray<RunId | undefined>>([]),
-    waitStarted: yield* Deferred.make<void>(),
     nested: yield* Ref.make(false),
     nestedWaiting: yield* Deferred.make<void>(),
     nestedSettled: yield* Deferred.make<void>(),
@@ -174,6 +162,7 @@ const makeBoxThread = Effect.gen(function* () {
     stopStarted: yield* Deferred.make<void>(),
     releaseStop: yield* Deferred.make<void>(),
     sent: yield* Ref.make<ReadonlyArray<string>>([]),
+    afterLaunch: yield* Ref.make<Effect.Effect<void>>(Effect.void),
   } satisfies BoxThread;
 });
 
@@ -239,24 +228,16 @@ const boxToolkitLayer = (thread: BoxThread) => {
       modelSelection,
       requestedAt: DateTime.makeUnsafe(0),
       startedAt: DateTime.makeUnsafe(0),
-      completedAt: ["completed", "failed", "cancelled", "interrupted", "rolled_back"].includes(
-        status,
-      )
-        ? DateTime.makeUnsafe(1_000)
-        : null,
+      completedAt: null,
     }) as unknown as OrchestrationV2Run;
   const projectionOf = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const shell = yield* shellOf(threadId);
       const status = yield* Ref.get(thread.status);
       const runless = yield* Ref.get(thread.runless);
-      const laterRun = yield* Ref.get(thread.laterRun);
       return shell === null
         ? (null as never)
-        : {
-            ...idleThreadProjection(shell),
-            runs: runless ? [] : [runOf(status), ...(laterRun === null ? [] : [laterRun])],
-          };
+        : { ...idleThreadProjection(shell), runs: runless ? [] : [runOf(status)] };
     });
   // One record per command id, as its receipt replays a repeat.
   const recordStop = (commandId: string, kind: "interrupt" | "thread.stop" | "delegated-tasks") =>
@@ -276,7 +257,6 @@ const boxToolkitLayer = (thread: BoxThread) => {
     waitForThread: (input) =>
       Effect.gen(function* () {
         yield* Ref.update(thread.waitedFor, (seen) => [...seen, input.runId]);
-        yield* Deferred.succeed(thread.waitStarted, undefined);
         // A thread with no run has nothing to wait for.
         if (yield* Ref.get(thread.runless)) {
           return { threadId: input.threadId, run: null, timedOut: false };
@@ -440,7 +420,6 @@ const boxToolkitLayer = (thread: BoxThread) => {
       ),
   });
   const layerBoxLaunches = Layer.mock(ThreadLaunch.ThreadLaunchService)({
-    checkWorktreeBase: () => Effect.void,
     launch: (input) =>
       Ref.get(thread.runless).pipe(
         Effect.flatMap((runless) =>
@@ -453,9 +432,9 @@ const boxToolkitLayer = (thread: BoxThread) => {
                 modelSelection: input.modelSelection,
                 runtimeMode: input.runtimeMode,
                 interactionMode: input.interactionMode,
-                workspaceStrategy: input.workspaceStrategy,
               }),
             ),
+            Effect.andThen(Effect.flatten(Ref.get(thread.afterLaunch))),
             Effect.as({
               threadId: input.threadId,
               projection: {
@@ -486,19 +465,14 @@ const boxToolkitLayer = (thread: BoxThread) => {
     McpHttpServer.layerOrchestratorToolkit,
     McpHttpServer.layerProjectRegistration,
   ).pipe(
+    Layer.provide(DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer))),
     Layer.provide(NodeCrypto.layer),
     Layer.provide(layerBoxThreads),
     Layer.provide(layerBoxLaunches),
-    Layer.provide(Layer.mock(Orchestrator.OrchestratorV2)({})),
     Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
-    Layer.provide(
-      Layer.mergeAll(
-        SqlitePersistence.layerMemory,
-        Layer.mock(EventSink.EventSinkV2)({}),
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({}),
-      ),
-    ),
     Layer.provide(Layer.mock(PeerForwarding.PeerForwarding)({})),
+    Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
+    Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
     Layer.provide(
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/p" }),
     ),
@@ -512,16 +486,11 @@ const boxToolkitLayer = (thread: BoxThread) => {
     Layer.provide(
       Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
     ),
-    Layer.provide(
-      Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({
-        list: () => Effect.succeed([]),
-      }),
-    ),
+    Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
     Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: (id) =>
-          Effect.succeed(Option.fromUndefinedOr(boxProjects.find((project) => project.id === id))),
+        getById: () => Effect.succeedNone,
         // More than a page, so finding the project with this repository pages.
         listPage: ({ cursor, limit }) =>
           Effect.succeed({
@@ -530,9 +499,9 @@ const boxToolkitLayer = (thread: BoxThread) => {
           }),
       }),
     ),
+    Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
     Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
     Layer.provide(ServerSettings.layerTest()),
-    Layer.provide(DocumentText.layer),
     Layer.provide(NodeServices.layer),
   );
 };
@@ -571,15 +540,6 @@ const makeLaptop = (
   >,
   /** The laptop's links from before a restart, which keep their sessions there. */
   kept?: Context.Context<Layer.Success<ReturnType<typeof layerLinkingEnvironment>>>,
-  observeStopFailure?: (error: OrchestratorMcpFailure) => Effect.Effect<void>,
-  transformObservation?: (
-    read: OrchestratorMcpThreadReadResult,
-  ) => Effect.Effect<OrchestratorMcpThreadReadResult, OrchestratorMcpFailure>,
-  transformWait?: (
-    wait: Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>,
-    input: OrchestratorMcpThreadWaitInput,
-  ) => Effect.Effect<OrchestratorMcpThreadWaitResult, OrchestratorMcpFailure>,
-  observeForwardedCall?: (toolName: string) => void,
 ) =>
   Effect.gen(function* () {
     const linking = kept ?? (yield* layerLinkingEnvironment(laptop).pipe(Layer.build));
@@ -604,50 +564,11 @@ const makeLaptop = (
       Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
       Layer.provideMerge(Layer.merge(layerOrchestrator, ServerSettings.layerTest())),
     );
-    const layerForwarding =
-      observeStopFailure === undefined &&
-      transformObservation === undefined &&
-      transformWait === undefined &&
-      observeForwardedCall === undefined
-        ? PeerForwarding.layer
-        : Layer.effect(
-            PeerForwarding.PeerForwarding,
-            Effect.gen(function* () {
-              const forwarding = yield* PeerForwarding.PeerForwarding;
-              const call: typeof forwarding.call = (scope, tool, environmentId, input) => {
-                observeForwardedCall?.(tool.name);
-                return forwarding.call(scope, tool, environmentId, input);
-              };
-              return {
-                ...forwarding,
-                call,
-                waitForThread: (...args: Parameters<typeof forwarding.waitForThread>) => {
-                  const wait = forwarding.waitForThread(...args);
-                  return transformWait === undefined ? wait : transformWait(wait, args[2]);
-                },
-                readThread: (...args: Parameters<typeof forwarding.readThread>) =>
-                  forwarding
-                    .readThread(...args)
-                    .pipe(
-                      Effect.flatMap((read) =>
-                        args[2].childProgressForRunId === undefined ||
-                        transformObservation === undefined
-                          ? Effect.succeed(read)
-                          : transformObservation(read),
-                      ),
-                    ),
-                interruptThread: (...args: Parameters<typeof forwarding.interruptThread>) =>
-                  forwarding
-                    .interruptThread(...args)
-                    .pipe(Effect.tapError(observeStopFailure ?? (() => Effect.void))),
-              };
-            }),
-          ).pipe(Layer.provide(PeerForwarding.layer));
     const layerHere = McpHttpServer.layerOrchestratorToolkit.pipe(
-      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
       Layer.provideMerge(
         RemoteDelegation.layer.pipe(
-          Layer.provideMerge(layerForwarding),
+          Layer.provideMerge(PeerForwarding.layer),
           Layer.provide(
             Layer.mock(ProjectService.ProjectService)({
               // A cold enrichment cache: the project itself reports no identity yet.
@@ -671,24 +592,24 @@ const makeLaptop = (
         ),
       ),
       Layer.provide(Layer.succeedContext(linking)),
+      Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
       Layer.provide(NodeCrypto.layer),
       Layer.provideMerge(layerThreads),
-      Layer.provide(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
       Layer.provide(Layer.mock(ProviderRegistry.ProviderRegistry)({})),
       Layer.provide(Layer.mock(ProviderAdapterRegistry.ProviderAdapterRegistryV2)({})),
       Layer.provide(Layer.mock(ScheduledTaskService.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(ProjectService.ProjectService)({})),
+      Layer.provide(Layer.mock(ProjectCloneTracker.ProjectCloneTracker)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(ThreadLaunch.ThreadLaunchService)({})),
       Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-      Layer.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
       Layer.fresh,
     );
     const here = yield* Layer.build(layerHere);
     const server = Context.get(here, McpServer.McpServer);
     return {
-      intents: yield* DelegationIntents.make.pipe(Effect.provide(linking)),
       links: Context.get(linking, PeerLinks.PeerLinks),
+      settings: Context.get(linking, ServerSettings.ServerSettingsService),
       orchestrator: Context.get(here, Orchestrator.OrchestratorV2),
       remote: Context.get(here, RemoteDelegation.RemoteDelegation),
       threads: Context.get(here, ThreadManagement.ThreadManagementService),
@@ -844,6 +765,7 @@ const delegateToBox = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>)
           status: string;
           childThreadId: null;
           remoteChild: { environmentId: string; threadId: ThreadId; label: string };
+          link?: string;
         };
       }),
     );
@@ -871,137 +793,6 @@ const taskResult = (laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>, ta
       ),
     );
 
-it.effect(
-  "refuses unsolicited remote supervision before side effects and keeps the key reusable",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread);
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const forwarded: Array<string> = [];
-        const a = yield* makeLaptop(
-          database,
-          offers,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          (toolName) => forwarded.push(toolName),
-        );
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-        const request = {
-          task: "Inspect the diff on the box.",
-          target: { environmentId: box.environmentId },
-          runtimeMode: "approval-required",
-          clientRequestId: "supervised-remote-key",
-        };
-        const refused = yield* a.call("delegate_task", request);
-        expect(refused.isError).toBe(true);
-        expect(JSON.stringify(refused.content)).toContain("invalid_request");
-        expect(forwarded).toEqual([]);
-        expect(yield* Ref.get(thread.launched)).toBeNull();
-        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
-          0,
-        );
-        const store = a.intents;
-        expect(yield* store.pending).toEqual([]);
-        const accepted = yield* a.call("delegate_task", {
-          ...request,
-          supervisionRequestedByUser: true,
-        });
-        expect(accepted.isError, JSON.stringify(accepted.content)).toBe(false);
-        expect(forwarded.filter((name) => name === "t3_thread_launch")).toHaveLength(1);
-        expect((yield* Ref.get(thread.launchedWith))?.runtimeMode).toBe("approval-required");
-        const replayed = yield* a.call("delegate_task", {
-          ...request,
-          supervisionRequestedByUser: true,
-        });
-        const acceptedTask = accepted.structuredContent as { taskId: NodeId };
-        expect(replayed.structuredContent).toMatchObject({ taskId: acceptedTask.taskId });
-        expect(forwarded.filter((name) => name === "t3_thread_launch")).toHaveLength(1);
-        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
-          1,
-        );
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-it.effect("replays a legacy pending remote intent with narrower modes without new opt-in", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const a = yield* makeLaptop(database, offers);
-      yield* linkTo(a.links, b, "full-access");
-      yield* seedParent(a);
-      const link = yield* a.links.get(box.environmentId).pipe(Effect.map(Option.getOrThrow));
-      const key = "legacy-pending-supervision";
-      const commandId = CommandId.make(
-        `command:mcp:${encodeURIComponent(parentScope.requestNamespace)}:remote-delegate:${key}`,
-      );
-      const request = {
-        task: "Inspect the legacy task.",
-        target: { environmentId: box.environmentId },
-        runtimeMode: "approval-required",
-        clientRequestId: key,
-      };
-      const store = a.intents;
-      yield* store.prepare(commandId, request, {
-        scope: {
-          environmentId: parentScope.environmentId,
-          requestNamespace: parentScope.requestNamespace,
-          thread: parentScope.thread!,
-        },
-        environmentId: box.environmentId,
-        linkedAt: DateTime.formatIso(link.linkedAt),
-        label: link.label,
-        launch: {
-          projectId: boxProject,
-          title: "Laptop parent",
-          modelSelection,
-          runtimeMode: "approval-required",
-          message: request.task,
-          clientRequestId: `delegate:${parentThreadId}:${key}`,
-          delegatedFrom: {
-            environmentId: laptop.environmentId,
-            threadId: parentThreadId,
-            title: "Laptop parent",
-          },
-        },
-        request: {
-          type: "delegated_task.remote.request",
-          commandId,
-          parentThreadId,
-          parentRunId,
-          parentNodeId: parentRootNode,
-          task: request.task,
-          driver: ProviderDriverKind.make("remote"),
-          modelSelection,
-          completionWake: "always",
-        },
-      });
-      expect(yield* store.pending).toHaveLength(1);
-      const result = yield* a.remote.delegate(
-        parentScope as McpInvocationContext.McpThreadInvocationScope,
-        { ...request, runtimeMode: "approval-required" },
-      );
-      expect(result.taskId).toBeDefined();
-      const saved = yield* store.get(commandId);
-      expect(saved?.taskId).toBe(result.taskId);
-      expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
 it.effect("a task delegated to the box wakes the laptop's parent when it ends there", () =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -1023,6 +814,10 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       });
       // The box launched it in the project with the same repository.
       expect(yield* Ref.get(thread.launched)).toBe(delegated.remoteChild.threadId);
+      // Its link opens the thread there, so the parent can mention it like any other.
+      expect(delegated.link).toBe(
+        `<t3-thread://v2/${box.environmentId}/${delegated.remoteChild.threadId}>`,
+      );
       // ...naming the parent here, so the thread there links back to it.
       expect(yield* Ref.get(thread.delegatedFrom)).toEqual({
         environmentId: laptop.environmentId,
@@ -1033,6 +828,42 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       const retried = yield* delegateToBox(a);
       expect(retried.taskId).toBe(delegated.taskId);
       expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(1);
+
+      const historyReads: Array<string> = [];
+      const historyTracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            const query = span.attributes.get("db.query.text");
+            if (
+              typeof query === "string" &&
+              /\bSELECT\s+payload_json\s+FROM orchestration_v2_projection_(?:runs|context_transfers)\b/i.test(
+                query,
+              )
+            ) {
+              historyReads.push(query);
+            }
+          };
+          return span;
+        },
+      });
+      const running = yield* a
+        .call("task_status", { taskId: delegated.taskId })
+        .pipe(Effect.withTracer(historyTracer));
+      expect(running.structuredContent).toMatchObject({
+        taskId: delegated.taskId,
+        childThreadId: null,
+        remoteChild: delegated.remoteChild,
+        status: "running",
+        workState: "working",
+        summary: null,
+        hasPendingQuestion: false,
+        pendingApproval: null,
+      });
+      // A running task there needs its local row, not the parent's run or transfer history.
+      expect(historyReads).toEqual([]);
 
       yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
       yield* Ref.set(thread.status, "completed");
@@ -1051,18 +882,48 @@ it.effect("a task delegated to the box wakes the laptop's parent when it ends th
       );
       expect(Option.isSome(offered)).toBe(true);
 
-      const status = yield* a.call("task_status", { taskId: delegated.taskId });
+      const messageReads: Array<string> = [];
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (endTime, exit) => {
+            end(endTime, exit);
+            const query = span.attributes.get("db.query.text");
+            if (
+              typeof query === "string" &&
+              /SELECT[\s\S]*FROM orchestration_v2_projection_messages/i.test(query)
+            ) {
+              messageReads.push(query);
+            }
+          };
+          return span;
+        },
+      });
+      const status = yield* a
+        .call("task_status", { taskId: delegated.taskId })
+        .pipe(Effect.withTracer(tracer));
       expect(status.structuredContent).toMatchObject({
         status: "completed",
         summary: "All 412 tests pass on the box.",
+      });
+      // Delivery validation still reads messages; choosing the observer does not need another read.
+      expect(messageReads).toHaveLength(2);
+      expect(messageReads.filter((query) => !/\bmessage_id\s+IN\b/i.test(query))).toHaveLength(1);
+      const acknowledged = yield* a.projections.getThreadRecords(parentThreadId, ["subagents"], {
+        subagentIds: [delegated.taskId],
+      });
+      expect(acknowledged.subagents[0]?.completionDelivery).toEqual({
+        state: "acknowledged",
+        observedByRunId: parentRunId,
       });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect.each(["wrong outer thread", "running result run"] as const)(
-  "retries a matching observation with $0 without false fleet completion",
-  (malformation) =>
+it.effect.each(["no active parent run", "a newer run owned by another provider"] as const)(
+  "preserves remote observation guards with %s",
+  (observer) =>
     Effect.scoped(
       Effect.gen(function* () {
         const thread = yield* makeBoxThread;
@@ -1071,62 +932,149 @@ it.effect.each(["wrong outer thread", "running result run"] as const)(
           ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
         >([]);
         const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const retryStarted = yield* Deferred.make<void>();
-        const allowValidResponse = yield* Deferred.make<void>();
-        let malformed = false;
-        const forwardedAfterMalformed: string[] = [];
-        const a = yield* makeLaptop(
-          database,
-          offers,
-          undefined,
-          undefined,
-          undefined,
-          (wait) =>
-            wait.pipe(
-              Effect.flatMap((result) =>
-                Effect.gen(function* () {
-                  if (!malformed) {
-                    malformed = true;
-                    expect(result.remoteObservation).toBeDefined();
-                    return malformation === "wrong outer thread"
-                      ? { ...result, threadId: ThreadId.make("wrong-thread") }
-                      : { ...result, resultRun: { runId: boxRunId, status: "running" as const } };
-                  }
-                  yield* Deferred.succeed(retryStarted, undefined);
-                  yield* Deferred.await(allowValidResponse);
-                  return result;
-                }),
-              ),
-            ),
-          (tool) => {
-            if (malformed) forwardedAfterMalformed.push(tool);
-          },
-        );
+        const a = yield* makeLaptop(database, offers);
         yield* linkTo(a.links, b, "full-access");
         yield* seedParent(a);
         const delegated = yield* delegateToBox(a);
-        yield* Ref.set(thread.reply, "Exact settled result.");
+
+        yield* Ref.set(thread.reply, "Remote result remains available.");
         yield* Ref.set(thread.status, "completed");
         yield* Deferred.succeed(thread.finished, undefined);
-        const outcome = yield* Effect.raceFirst(
-          Deferred.await(retryStarted).pipe(Effect.as("retry")),
-          taskResult(a, delegated.taskId).pipe(Effect.as("false completion")),
-        ).pipe(Effect.timeout(Duration.seconds(5)));
-        expect(outcome).toBe("retry");
-        const pending = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (task) => task.id === delegated.taskId,
+        yield* taskResult(a, delegated.taskId);
+        yield* SubscriptionRef.changes(offers).pipe(
+          Stream.filter((seen) => seen.some((offer) => offer.threadId === parentThreadId)),
+          Stream.runHead,
         );
-        expect(pending?.result).toBeNull();
-        expect(pending?.remoteChild?.stoppedThere).not.toBe(true);
-        expect(yield* Ref.get(thread.stops)).toEqual([]);
-        expect(forwardedAfterMalformed).not.toContain("t3_thread_read");
-        yield* Deferred.succeed(allowValidResponse, undefined);
-        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+
+        const parent = yield* a.projections.getThreadRecords(
+          parentThreadId,
+          ["runs", "subagents"],
+          {
+            subagentIds: [delegated.taskId],
+          },
+        );
+        expect(parent.subagents[0]?.completionDelivery?.state).not.toBe("acknowledged");
+        const parentRun = parent.runs.find((run) => run.id === parentRunId);
+        if (parentRun === undefined) return yield* Effect.die("The parent run was not seeded.");
+        const now = yield* DateTime.now;
+        const otherInstanceId = ProviderInstanceId.make("codex-other");
+        const observingRun: OrchestrationV2Run =
+          observer === "no active parent run"
+            ? { ...parentRun, status: "completed", completedAt: now }
+            : {
+                id: RunId.make("run:laptop-other-provider"),
+                threadId: parentThreadId,
+                ordinal: parentRun.ordinal + 1,
+                providerInstanceId: otherInstanceId,
+                modelSelection: { instanceId: otherInstanceId, model: "gpt-5.4" },
+                providerThreadId: null,
+                userMessageId: MessageId.make("message:laptop-other-provider"),
+                rootNodeId: null,
+                activeAttemptId: null,
+                status: "preparing",
+                requestedAt: now,
+                startedAt: null,
+                completedAt: null,
+                checkpointId: null,
+                contextHandoffId: null,
+              };
+        yield* a.sink.write({
+          commandId: CommandId.make("command:change-remote-result-observer"),
+          events: [
+            {
+              id: EventId.make("event:change-remote-result-observer"),
+              type: "run.updated",
+              threadId: parentThreadId,
+              runId: observingRun.id,
+              providerInstanceId: observingRun.providerInstanceId,
+              occurredAt: now,
+              payload: observingRun,
+            },
+          ],
+        });
+
+        const status = yield* a.call("task_status", { taskId: delegated.taskId });
+        if (observer === "no active parent run") {
+          expect(status.isError).toBe(true);
+          expect(status.content).toEqual([
+            {
+              type: "text",
+              text: JSON.stringify({
+                _tag: "OrchestratorMcpFailure",
+                code: "parent_not_active",
+                message: "The calling provider no longer owns an active thread run.",
+              }),
+            },
+          ]);
+          const unacknowledged = yield* a.projections.getThreadRecords(
+            parentThreadId,
+            ["subagents"],
+            { subagentIds: [delegated.taskId] },
+          );
+          expect(unacknowledged.subagents[0]?.result).toBe("Remote result remains available.");
+          expect(unacknowledged.subagents[0]?.completionDelivery?.state).not.toBe("acknowledged");
+          return;
+        }
+        expect(status.isError, JSON.stringify(status.content)).not.toBe(true);
+        expect(status.structuredContent).toMatchObject({
           status: "completed",
-          result: "Exact settled result.",
+          summary: "Remote result remains available.",
+        });
+        const acknowledged = yield* a.projections.getThreadRecords(parentThreadId, ["subagents"], {
+          subagentIds: [delegated.taskId],
+        });
+        expect(acknowledged.subagents[0]?.completionDelivery).toEqual({
+          state: "acknowledged",
+          observedByRunId: null,
         });
       }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+);
+
+it.effect(
+  "with the beta off here, a task already running there still ends, and no new one starts",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const thread = yield* makeBoxThread;
+        const b = yield* serveBox(thread);
+        const offers = yield* SubscriptionRef.make<
+          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+        >([]);
+        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+        const a = yield* makeLaptop(database, offers);
+        yield* linkTo(a.links, b, "full-access");
+        yield* seedParent(a);
+        const delegated = yield* delegateToBox(a);
+
+        yield* a.settings.updateSettings({ linkedEnvironmentsEnabled: false });
+        const refused = yield* a.call("delegate_task", {
+          task: "Run the linter on the box.",
+          target: {
+            environmentId: box.environmentId,
+            providerInstanceId: instanceId,
+            model: "gpt-5.4",
+          },
+          mode: "async",
+          clientRequestId: "lint-on-box",
+        });
+        expect(refused.isError).toBe(true);
+        expect(JSON.stringify(refused.content)).toContain(
+          PeerForwarding.linkedEnvironmentsOff.message,
+        );
+        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
+          1,
+        );
+
+        yield* Ref.set(thread.reply, "All 412 tests pass on the box.");
+        yield* Ref.set(thread.status, "completed");
+        yield* Deferred.succeed(thread.finished, undefined);
+        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+          status: "completed",
+          result: "All 412 tests pass on the box.",
+        });
+      }),
+    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a task named only by environment inherits the parent's model, within the link", () =>
@@ -1153,7 +1101,6 @@ it.effect("a task named only by environment inherits the parent's model, within 
         modelSelection,
         runtimeMode: "auto-accept-edits",
         interactionMode: "default",
-        workspaceStrategy: { type: "root" },
       });
 
       // Asking for more than the link allows is still refused there.
@@ -1163,151 +1110,12 @@ it.effect("a task named only by environment inherits the parent's model, within 
         runtimeMode: "full-access",
         clientRequestId: "broader",
       });
-      expect(broader.isError).toBe(false);
-      expect(broader.structuredContent).toMatchObject({ status: "failed" });
+      expect(broader.isError).toBe(true);
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect(
-  "task_status observes queued follow-up work and a failed provider start without replacing the original result",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread);
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-        const delegated = yield* delegateToBox(a);
-        yield* Ref.set(thread.reply, "Original completed result.");
-        yield* Ref.set(thread.status, "completed");
-        yield* Deferred.succeed(thread.finished, undefined);
-        yield* taskResult(a, delegated.taskId);
-        const later = {
-          id: boxLaterRunId,
-          threadId: delegated.remoteChild.threadId,
-          ordinal: 2,
-          status: "queued",
-          queueHeld: false,
-          modelSelection,
-          requestedAt: DateTime.makeUnsafe(2_000),
-          startedAt: null,
-          completedAt: null,
-        } as OrchestrationV2Run;
-        yield* Ref.set(thread.laterRun, later);
-        const pending = yield* a.call("task_status", { taskId: delegated.taskId });
-        expect(pending.isError).not.toBe(true);
-        expect(pending.structuredContent).toMatchObject({
-          status: "completed",
-          summary: "Original completed result.",
-          hasPendingChildRuns: true,
-          latestTerminalRunId: boxRunId,
-          latestTerminalStatus: "completed",
-          latestTerminalSummary: "Original completed result.",
-          remoteObservation: {
-            originalRunId: boxRunId,
-            threadId: delegated.remoteChild.threadId,
-            environmentId: box.environmentId,
-          },
-        });
-        yield* Ref.set(thread.laterRun, { ...later, queueHeld: true });
-        expect(
-          (yield* a.call("task_status", { taskId: delegated.taskId })).structuredContent,
-        ).toMatchObject({ hasPendingChildRuns: false });
-        yield* Ref.set(thread.laterRun, {
-          ...later,
-          status: "failed",
-          completedAt: DateTime.makeUnsafe(3_000),
-        });
-        yield* Ref.set(thread.laterReply, "Earlier partial follow-up output.");
-        yield* Ref.set(thread.laterError, "The follow-up provider failed before starting.");
-        const failed = yield* a.call("task_status", { taskId: delegated.taskId });
-        expect(failed.isError).not.toBe(true);
-        expect(failed.structuredContent).toMatchObject({
-          status: "completed",
-          summary: "Original completed result.",
-          hasPendingChildRuns: false,
-          latestTerminalRunId: boxLaterRunId,
-          latestTerminalStatus: "failed",
-          latestTerminalSummary: "The follow-up provider failed before starting.",
-        });
-        const original = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (task) => task.id === delegated.taskId,
-        );
-        expect(original).toMatchObject({
-          status: "completed",
-          result: "Original completed result.",
-        });
-        const missing = yield* a.remote
-          .observe(parentScope as McpInvocationContext.McpThreadInvocationScope, {
-            ...original!,
-            remoteChild: { ...original!.remoteChild!, runId: undefined },
-          })
-          .pipe(Effect.flip);
-        expect(missing.message).toContain("original remote run is not attributed");
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-it.effect.each(["unsupported", "unavailable", "mismatched"] as const)(
-  "task_status leaves terminal delivery unacknowledged when fresh progress is %s",
-  (failure) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread);
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers, undefined, undefined, (read) => {
-          if (failure === "unavailable")
-            return Effect.fail(
-              new OrchestratorMcpFailure({
-                code: "orchestration_error",
-                message: "Synthetic unavailable remote observation.",
-              }),
-            );
-          if (failure === "unsupported") {
-            const { remoteObservation: _remoteObservation, ...legacy } = read;
-            return Effect.succeed(legacy);
-          }
-          return Effect.succeed({
-            ...read,
-            remoteObservation: {
-              ...read.remoteObservation!,
-              originalRunId: RunId.make("run:wrong-task"),
-            },
-          });
-        });
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-        const delegated = yield* delegateToBox(a);
-        yield* Ref.set(thread.reply, "Original completed result.");
-        yield* Ref.set(thread.status, "completed");
-        yield* Deferred.succeed(thread.finished, undefined);
-        const before = yield* taskResult(a, delegated.taskId);
-        const status = yield* a.call("task_status", { taskId: delegated.taskId });
-        expect(status.isError).toBe(true);
-        expect(JSON.stringify(status.content)).toContain(
-          failure === "mismatched" ? "mismatched task binding" : failure,
-        );
-        const after = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (task) => task.id === delegated.taskId,
-        )!;
-        expect(after.result).toBe("Original completed result.");
-        expect(after.completionDelivery).toEqual(before?.completionDelivery);
-        expect(after.completionDelivery?.state).not.toBe("acknowledged");
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-it.effect("delegates worktree isolation to the destination launch defaults", () =>
+it.effect("refuses worktree isolation for a task there before launching anything", () =>
   Effect.scoped(
     Effect.gen(function* () {
       const thread = yield* makeBoxThread;
@@ -1325,11 +1133,9 @@ it.effect("delegates worktree isolation to the destination launch defaults", () 
         target: { environmentId: box.environmentId },
         isolation: "worktree",
       });
-      expect(result.isError, JSON.stringify(result.content)).toBe(false);
-      expect((yield* Ref.get(thread.launchedWith))?.workspaceStrategy).toEqual({
-        type: "worktree",
-      });
-      expect(yield* Ref.get(thread.launched)).not.toBeNull();
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result.content)).toContain("isolation");
+      expect(yield* Ref.get(thread.launched)).toBeNull();
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
@@ -1365,129 +1171,6 @@ it.effect("follows an open task again after the laptop restarts", () =>
       expect(task).toMatchObject({ status: "completed", result: "Finished while you were away." });
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-it.effect.each(["completed", "failed"] as const)(
-  "CSR-F1 reconciles an already launched legacy %s result with its complete original-run text",
-  (status) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread);
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const delegated = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const before = yield* makeLaptop(database, offers);
-            yield* linkTo(before.links, b, "full-access");
-            yield* seedParent(before);
-            return yield* delegateToBox(before);
-          }),
-        );
-        const result = `${status}: ${"x".repeat(65_000)} complete`;
-        yield* Ref.set(thread.reply, status === "completed" ? result : "Earlier partial reply.");
-        if (status === "failed") yield* Ref.set(thread.error, result);
-        yield* Ref.set(thread.laterReply, "Unrelated later run.");
-        yield* Ref.set(thread.status, status);
-        yield* Deferred.succeed(thread.finished, undefined);
-        let waits = 0;
-        const after = yield* makeLaptop(
-          database,
-          offers,
-          undefined,
-          undefined,
-          (read) => {
-            const { remoteObservation: _, ...legacy } = read;
-            return Effect.succeed(legacy);
-          },
-          (wait) =>
-            wait.pipe(
-              Effect.map(({ remoteObservation: _, ...legacy }) => {
-                waits++;
-                return legacy;
-              }),
-            ),
-        );
-        yield* linkTo(after.links, b, "full-access");
-        yield* after.remote.start();
-        const completed = yield* taskResult(after, delegated.taskId).pipe(
-          Effect.timeout(Duration.seconds(3)),
-        );
-        expect(completed).toMatchObject({ status, result });
-        expect(waits).toBe(1);
-        expect(
-          yield* after.threads.readRemoteTaskObservation!(parentThreadId, delegated.taskId),
-        ).toBeUndefined();
-        const freshStatus = yield* after.call("task_status", { taskId: delegated.taskId });
-        expect(freshStatus.isError).toBe(true);
-        expect(JSON.stringify(freshStatus.content)).toContain("unsupported");
-        expect(yield* Ref.get(thread.stops)).toEqual([]);
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
-);
-
-it.effect("CSR-F1 fails and stops nonterminal legacy work after one bounded wait", () =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const thread = yield* makeBoxThread;
-      const b = yield* serveBox(thread);
-      const offers = yield* SubscriptionRef.make<
-        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-      >([]);
-      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const delegated = yield* Effect.scoped(
-        Effect.gen(function* () {
-          const before = yield* makeLaptop(database, offers);
-          yield* linkTo(before.links, b, "full-access");
-          yield* seedParent(before);
-          return yield* delegateToBox(before);
-        }),
-      );
-      const waits: Array<OrchestratorMcpThreadWaitInput> = [];
-      const after = yield* makeLaptop(
-        database,
-        offers,
-        undefined,
-        undefined,
-        undefined,
-        (_wait, input) =>
-          Effect.sync(() => {
-            waits.push(input);
-            return {
-              threadId: input.threadId,
-              runId: input.runId ?? null,
-              status: "running" as const,
-              timedOut: true,
-            };
-          }),
-      );
-      yield* linkTo(after.links, b, "full-access");
-      yield* after.remote.start();
-      const failed = yield* taskResult(after, delegated.taskId).pipe(
-        Effect.timeout(Duration.seconds(3)),
-      );
-      expect(failed?.status).toBe("failed");
-      expect(failed?.result).toMatch(/observation.*unsupported/i);
-      expect(waits).toHaveLength(1);
-      expect(waits[0]).toMatchObject({
-        threadId: delegated.remoteChild.threadId,
-        runId: boxRunId,
-        timeoutMs: 50_000,
-      });
-      yield* Deferred.await(thread.interruptedOnce).pipe(Effect.timeout(Duration.seconds(8)));
-      expect(yield* Ref.get(thread.stops)).toContain("thread.stop");
-      expect(waits).toHaveLength(1);
-      const current = (yield* after.orchestrator.getThreadProjection(
-        parentThreadId,
-      )).subagents.find((task) => task.id === delegated.taskId);
-      expect(current?.result).toBe(failed?.result);
-      expect(
-        yield* after.threads.readRemoteTaskObservation!(parentThreadId, delegated.taskId),
-      ).toBeUndefined();
-    }),
-  ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
 );
 
 it.effect("fails the task when the box revokes the link, and cancel interrupts it there", () =>
@@ -1814,7 +1497,6 @@ it.effect("cancel ends the task here even when the link is gone", () =>
       yield* seedParent(a);
 
       const delegated = yield* delegateToBox(a);
-      yield* Deferred.await(thread.waitStarted);
       yield* a.links.unlink(box.environmentId);
       const cancel = yield* a.call("task_cancel", { taskId: delegated.taskId });
       expect(cancel.structuredContent).toEqual({
@@ -1864,88 +1546,54 @@ it.effect("a parent stopped while the task's result is read still stops its thre
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect(
-  "a stop refused by lowered modes remains owed until the original child can be stopped",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread);
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const stopRefused = yield* Deferred.make<OrchestratorMcpFailure>();
-        const a = yield* makeLaptop(database, offers, undefined, (error) =>
-          Deferred.succeed(stopRefused, error).pipe(Effect.asVoid),
-        );
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-        const delegated = yield* delegateToBox(a);
+it.effect("a stop the box refuses because the parent was lowered ends instead of retrying", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      const delegated = yield* delegateToBox(a);
 
-        // The parent is lowered below the full-access thread there, then stopped.
-        yield* a.orchestrator.dispatch({
-          type: "thread.runtime-mode.set",
-          commandId: CommandId.make("command:lower:laptop-parent"),
-          threadId: parentThreadId,
-          runtimeMode: "approval-required",
-        });
-        yield* a.threads.stopDelegatedTasks({
-          threadId: parentThreadId,
-          commandId: CommandId.make("command:stop:laptop-parent-lowered"),
-        });
+      // The parent is lowered below the full-access thread there, then stopped.
+      yield* a.orchestrator.dispatch({
+        type: "thread.runtime-mode.set",
+        commandId: CommandId.make("command:lower:laptop-parent"),
+        threadId: parentThreadId,
+        runtimeMode: "approval-required",
+      });
+      yield* a.threads.stopDelegatedTasks({
+        threadId: parentThreadId,
+        commandId: CommandId.make("command:stop:laptop-parent-lowered"),
+      });
 
-        const refusal = yield* Deferred.await(stopRefused).pipe(
-          Effect.timeout(Duration.seconds(10)),
-          Effect.catchTags({
-            TimeoutError: () =>
-              Effect.die(
-                "The follower did not observe a remote stop refusal while modes were lowered.",
-              ),
-          }),
-        );
-        expect(refusal.code).toBe("runtime_mode_escalation_denied");
-        expect(refusal.message).toContain(
-          "full-access is broader than parent mode approval-required",
-        );
-        const pending = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (task) => task.id === delegated.taskId,
-        )!;
-        expect(pending.status).toBe("interrupted");
-        expect(pending.remoteChild?.stoppedThere).not.toBe(true);
-        expect(yield* Ref.get(thread.stops)).toEqual([]);
-        expect(yield* a.projections.getOpenRemoteDelegatedTasks).toContainEqual({
-          parentThreadId,
-          taskId: delegated.taskId,
-        });
-        yield* a.orchestrator.dispatch({
-          type: "thread.runtime-mode.set",
-          commandId: CommandId.make("command:restore:laptop-parent"),
+      // The box refuses that stop; the follower records it as settled and
+      // stops, so nothing retries it, now or after a restart.
+      const settled = yield* a.orchestrator
+        .streamStoredEventsFrom({
           threadId: parentThreadId,
-          runtimeMode: "full-access",
-        });
-        yield* Deferred.await(thread.interruptedOnce).pipe(
-          Effect.timeout(Duration.seconds(10)),
-          Effect.catchTags({
-            TimeoutError: () =>
-              Effect.die(
-                "The original remote child was not stopped after its parent's modes were restored.",
-              ),
-          }),
+          afterSequence: 0,
+          eventType: "subagent.updated",
+        })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" &&
+              stored.event.payload.id === delegated.taskId &&
+              stored.event.payload.remoteChild?.stoppedThere === true,
+          ),
+          Stream.runHead,
         );
-        const acknowledged = yield* stoppedThere(a, delegated.taskId, 0).pipe(
-          Effect.timeout(Duration.seconds(10)),
-          Effect.catchTags({
-            TimeoutError: () =>
-              Effect.die("The original remote child's stop was not durably acknowledged."),
-          }),
-        );
-        expect(acknowledged?.remoteChild).toMatchObject({
-          threadId: pending.remoteChild!.threadId,
-          stoppedThere: true,
-        });
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
+      expect(Option.isSome(settled)).toBe(true);
+      expect(yield* Ref.get(thread.stops)).toEqual([]);
+      expect(yield* a.projections.getOpenRemoteDelegatedTasks).toEqual([]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("stopping the parent stops its task there", () =>
@@ -1979,11 +1627,22 @@ it.effect("stopping the parent stops its task there", () =>
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-/** Waits for the recorded Stop acknowledgment; zero names the initial stop with no counter. */
+/** A follower retry schedule the test steps: each failed attempt is offered, then waits for `retry`. */
+const steppedRetries = Effect.gen(function* () {
+  const failed = yield* Queue.unbounded<void>();
+  const retry = yield* Queue.unbounded<void>();
+  const schedule = Schedule.forever.pipe(
+    Schedule.tap(() => Queue.offer(failed, undefined).pipe(Effect.andThen(Queue.take(retry)))),
+  );
+  return { failed, retry, schedule };
+});
+
+/** Waits until the task here records that the `stopCount`th Stop after its result reached there. */
 const stoppedThere = (
   laptopEnv: Effect.Success<ReturnType<typeof makeLaptop>>,
   taskId: NodeId,
-  stopCount = 1,
+  // `null` for a cancel's stop, which carries no count.
+  stopCount: number | null = 1,
 ) =>
   laptopEnv.orchestrator
     .streamStoredEventsFrom({
@@ -1997,7 +1656,7 @@ const stoppedThere = (
           stored.event.type === "subagent.updated" &&
           stored.event.payload.id === taskId &&
           stored.event.payload.remoteChild?.stoppedThere === true &&
-          (stored.event.payload.remoteChild.stopCount ?? 0) === stopCount,
+          stored.event.payload.remoteChild.stopCount === (stopCount ?? undefined),
       ),
       Stream.runHead,
       Effect.map((stored) =>
@@ -2036,9 +1695,7 @@ it.effect("stopping the parent stops follow-up work on a task there that has its
         message: "Now run the slow suite too.",
       });
       expect(sent.isError, JSON.stringify(sent.content)).toBe(false);
-      expect(yield* Ref.get(thread.sent)).toEqual([
-        "**T3M** · From Laptop parent (remote environment `environment-laptop`, thread `thread:laptop-parent`; via linked client T3 Code · Laptop) · Sent: 12/31 19:00:00\n\nNow run the slow suite too.",
-      ]);
+      expect(yield* Ref.get(thread.sent)).toEqual(["Now run the slow suite too."]);
       expect(yield* Ref.get(thread.interrupted)).toBe(0);
 
       yield* a.threads.stopDelegatedTasks({
@@ -2161,16 +1818,19 @@ it.effect("a parent stopped while the box is unreachable still stops its task th
         ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
       >([]);
       const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-      const unreachable = yield* Deferred.make<OrchestratorMcpFailure>();
-      const a = yield* makeLaptop(database, offers, undefined, undefined, undefined, (wait) =>
-        wait.pipe(Effect.tapError((error) => Deferred.succeed(unreachable, error))),
+      const retries = yield* steppedRetries;
+      const a = yield* makeLaptop(database, offers).pipe(
+        Effect.provideService(RemoteDelegation.FollowRetrySchedule, retries.schedule),
       );
       yield* linkTo(a.links, b, "full-access");
       yield* seedParent(a);
-      // The box sleeps as soon as the task is there, so its follower backs off.
+      // The box sleeps as soon as the task is there, so its follower's first attempt fails.
+      yield* Ref.set(
+        thread.afterLaunch,
+        Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere")),
+      );
       const delegated = yield* delegateToBox(a);
-      yield* Ref.set(b.descriptor, descriptorOf("environment-elsewhere", "Elsewhere"));
-      expect((yield* Deferred.await(unreachable)).message).toContain("Box did not answer");
+      yield* Queue.take(retries.failed);
       // The parent is stopped meanwhile.
       yield* a.threads.stopDelegatedTasks({
         threadId: parentThreadId,
@@ -2180,7 +1840,7 @@ it.effect("a parent stopped while the box is unreachable still stops its task th
 
       // Once the box is back, the follower's next attempt stops the task there.
       yield* Ref.set(b.descriptor, box);
-      yield* TestClock.adjust(Duration.minutes(5));
+      yield* Queue.offer(retries.retry, undefined);
       yield* Deferred.await(thread.interruptedOnce);
       expect(yield* Ref.get(thread.interrupted)).toBe(1);
     }),
@@ -2218,9 +1878,7 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
       yield* after.remote.start();
       yield* Deferred.await(thread.interruptedOnce);
       // Once the stop is recorded, nothing is owed there any more.
-      expect(yield* stoppedThere(after, delegated.taskId, 0)).toMatchObject({
-        status: "cancelled",
-      });
+      yield* stoppedThere(after, delegated.taskId, null);
       expect(yield* after.projections.getOpenRemoteDelegatedTasks).toEqual([]);
       expect(yield* Ref.get(thread.stops)).toEqual(["thread.stop", "delegated-tasks"]);
       // The result here is still the cancel's.
@@ -2229,34 +1887,31 @@ it.effect("a task cancelled while the box is unreachable is stopped there after 
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
-it.effect(
-  "a task without an attributed remote run remains pending instead of using a latest reply",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        const b = yield* serveBox(thread);
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-        // An old reply does not identify the run belonging to this launch.
-        yield* Ref.set(thread.runless, true);
-        yield* Ref.set(thread.reply, "Done before it was followed.");
+it.effect("a task whose thread there has no run ends with its last reply", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const thread = yield* makeBoxThread;
+      const b = yield* serveBox(thread);
+      const offers = yield* SubscriptionRef.make<
+        ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
+      >([]);
+      const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
+      const a = yield* makeLaptop(database, offers);
+      yield* linkTo(a.links, b, "full-access");
+      yield* seedParent(a);
+      // As a task recorded before its run was kept, whose thread there is idle.
+      yield* Ref.set(thread.runless, true);
+      yield* Ref.set(thread.reply, "Done before it was followed.");
 
-        const delegated = yield* delegateToBox(a);
-        const task = (yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents.find(
-          (task) => task.id === delegated.taskId,
-        );
-        expect(task?.status).toBe("running");
-        expect(task?.result).toBeNull();
-        expect(task?.remoteChild).toBeUndefined();
-        expect(yield* Ref.get(thread.waitedFor)).toEqual([]);
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest)),
+      const delegated = yield* delegateToBox(a);
+      expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
+        status: "completed",
+        result: "Done before it was followed.",
+      });
+      // One look, not a loop.
+      expect(yield* Ref.get(thread.waitedFor)).toEqual([undefined]);
+    }),
+  ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
 it.effect("a local task runs in this thread's project", () =>
@@ -2277,139 +1932,4 @@ it.effect("a local task runs in this thread's project", () =>
       expect(JSON.stringify(result.content)).toContain("invalid_request");
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
-);
-
-it.effect.each(["pass", "hold"] as const)(
-  "authenticated peer admission %s preserves the reserved task and launches once",
-  (verdict) =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const thread = yield* makeBoxThread;
-        let receivingAuth: EnvironmentAuth.EnvironmentAuth["Service"] | undefined;
-        let evaluations = 0;
-        const admissionContext = yield* AdmissionIntake.layer.pipe(
-          Layer.provide(
-            Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
-              getInstance: (id) =>
-                Effect.succeed(
-                  id === instanceId
-                    ? ({
-                        enabled: true,
-                        snapshot: {
-                          getSnapshot: Effect.succeed({
-                            enabled: true,
-                            supportsRemoteRequestEvaluation: true,
-                            models: [{ slug: modelSelection.model, capabilities: null }],
-                          }),
-                        },
-                      } as unknown as ProviderInstance)
-                    : undefined,
-                ),
-            }),
-          ),
-          Layer.provide(
-            RemoteAdmission.layerWithEvaluator(() =>
-              Effect.sync(() => {
-                evaluations++;
-                return {
-                  verdict,
-                  category: verdict === "pass" ? "none" : "risky",
-                  reason: "Synthetic peer admission",
-                };
-              }),
-            ),
-          ),
-          Layer.provide(
-            Layer.mock(EnvironmentAuth.EnvironmentAuth)({
-              listSessions: () =>
-                receivingAuth === undefined
-                  ? Effect.die("Receiving auth not ready")
-                  : receivingAuth.listSessions(),
-            }),
-          ),
-          Layer.provide(SqlitePersistence.layerMemory),
-          Layer.fresh,
-          Layer.build,
-        );
-        const intake = Context.get(admissionContext, AdmissionIntake.RemoteAdmissionIntake);
-        yield* intake.updatePolicy({
-          expectedRevision: "initial",
-          enabled: true,
-          modelSelection,
-        });
-        const b = yield* servePeer(
-          box,
-          Layer.merge(
-            boxToolkitLayer(thread),
-            McpHttpServer.toolkitRegistration(AdmissionCancel.toolkit, AdmissionCancel.handlers),
-          ).pipe(Layer.provide(Layer.succeedContext(admissionContext))),
-        );
-        receivingAuth = b.auth;
-        const offers = yield* SubscriptionRef.make<
-          ReadonlyArray<ProviderContinuationRequests.ProviderContinuationRequest>
-        >([]);
-        const database = yield* SqlitePersistence.layerMemory.pipe(Layer.build);
-        const a = yield* makeLaptop(database, offers);
-        yield* linkTo(a.links, b, "full-access");
-        yield* seedParent(a);
-        const delegated = yield* delegateToBox(a);
-        if (verdict === "hold") {
-          expect(yield* Ref.get(thread.launched)).toBeNull();
-          const status = yield* a.call("task_status", { taskId: delegated.taskId });
-          expect(status.structuredContent).toMatchObject({
-            status: "running",
-            hasPendingQuestion: true,
-            summary: "Awaiting owner approval in Box.",
-          });
-          const projection = yield* a.orchestrator.getThreadProjection(parentThreadId);
-          expect(projection.subagents[0]).toMatchObject({ status: "waiting", result: null });
-          expect(
-            projection.messages.filter((message) =>
-              message.text.includes("Awaiting owner approval in Box."),
-            ),
-          ).toHaveLength(1);
-          const held = (yield* intake.snapshot()).pending[0]!;
-          expect(held.status).toBe("held");
-          yield* intake.decide(
-            { id: held.id, bindingDigest: held.bindingDigest, decision: "approve" },
-            {
-              sessionId: AuthSessionId.make("synthetic-owner"),
-              subject: "one-time-token",
-              method: "browser-session-cookie",
-              scopes: new Set(AuthAdministrativeScopes),
-            },
-          );
-          yield* a.threads
-            .streamStoredEventsFrom({
-              threadId: parentThreadId,
-              afterSequence: 0,
-              eventType: "subagent.updated",
-            })
-            .pipe(
-              Stream.filter(
-                (stored) =>
-                  stored.event.type === "subagent.updated" &&
-                  stored.event.payload.id === delegated.taskId &&
-                  stored.event.payload.remoteChild !== undefined,
-              ),
-              Stream.runHead,
-              Effect.timeout(Duration.seconds(10)),
-            );
-        }
-        expect(yield* Ref.get(thread.launched)).not.toBeNull();
-        const replayed = yield* delegateToBox(a);
-        expect(replayed.taskId).toBe(delegated.taskId);
-        expect(evaluations).toBe(1);
-        expect((yield* a.orchestrator.getThreadProjection(parentThreadId)).subagents).toHaveLength(
-          1,
-        );
-        yield* Ref.set(thread.reply, "Approved task result.");
-        yield* Ref.set(thread.status, "completed");
-        yield* Deferred.succeed(thread.finished, undefined);
-        expect(yield* taskResult(a, delegated.taskId)).toMatchObject({
-          status: "completed",
-          result: "Approved task result.",
-        });
-      }),
-    ).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
 );

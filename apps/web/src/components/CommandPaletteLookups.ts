@@ -1,12 +1,17 @@
 import {
   type ClientSettings,
-  type ProjectId,
+  type EnvironmentId,
   resolveEnvironmentMachineKind,
 } from "@t3tools/contracts";
 
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
-import { useProjects } from "../state/entities";
-import { useEnvironments } from "../state/environments";
+import { useClientSettings } from "../hooks/useSettings";
+import { getProjectOrderKey } from "@t3tools/client-runtime/state/project-grouping";
+import { useProjects, useVisibleThreadShells } from "../state/entities";
+import { useEnvironments, usePrimaryEnvironmentId } from "../state/environments";
+import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
+import { legacyProjectCwdPreferenceKey, useUiStateStore } from "../uiStateStore";
+import { orderItemsByPreferredIds, sortLogicalProjectsForSidebar } from "./Sidebar.logic";
 
 // Each helper reads its own source hook so the compiler caches the derived value on that
 // source. Taking the source as an argument instead leaves the helper hook-free, and the
@@ -35,16 +40,10 @@ export function useEnvironmentLookups() {
 
 export function useProjectLookups() {
   const projects = useProjects();
-  const projectCwdById = new Map<ProjectId, string>(
-    projects.map((project) => [project.id, project.workspaceRoot]),
-  );
   const projectByKey = new Map(
     projects.map((project) => [`${project.environmentId}:${project.id}`, project]),
   );
-  const projectTitleById = new Map<ProjectId, string>(
-    projects.map((project) => [project.id, project.title]),
-  );
-  return { projectCwdById, projectByKey, projectTitleById };
+  return { projectByKey };
 }
 
 export const selectCommandPaletteClientSettings = (settings: ClientSettings) => ({
@@ -53,3 +52,35 @@ export const selectCommandPaletteClientSettings = (settings: ClientSettings) => 
   sidebarProjectSortOrder: settings.sidebarProjectSortOrder,
   sidebarThreadSortOrder: settings.sidebarThreadSortOrder,
 });
+
+export function useSortedProjectGroups(environmentLabelById: ReadonlyMap<EnvironmentId, string>) {
+  const projects = useProjects();
+  const threads = useVisibleThreadShells();
+  const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
+  const primaryEnvironmentId = usePrimaryEnvironmentId();
+  const projectGroupingSettings = {
+    sidebarProjectGroupingMode: clientSettings.sidebarProjectGroupingMode,
+    sidebarProjectGroupingOverrides: clientSettings.sidebarProjectGroupingOverrides,
+  };
+  const orderedProjects = orderItemsByPreferredIds({
+    items: projects,
+    preferredIds: projectOrder,
+    getId: getProjectOrderKey,
+    getPreferenceIds: (project) => [
+      getProjectOrderKey(project),
+      legacyProjectCwdPreferenceKey(project.workspaceRoot),
+    ],
+  });
+  const unsortedProjectGroups = buildSidebarProjectSnapshots({
+    projects: clientSettings.sidebarProjectSortOrder === "manual" ? orderedProjects : projects,
+    settings: projectGroupingSettings,
+    primaryEnvironmentId,
+    resolveEnvironmentLabel: (environmentId) => environmentLabelById.get(environmentId) ?? null,
+  });
+  return sortLogicalProjectsForSidebar(
+    unsortedProjectGroups,
+    threads,
+    clientSettings.sidebarProjectSortOrder,
+  );
+}

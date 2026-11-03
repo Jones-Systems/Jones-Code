@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ConnectionCatalogDocument } from "@t3tools/client-runtime/platform";
@@ -75,6 +76,7 @@ function layerFor(
     layerEnvironment,
     layerSafeStorage,
     NodeServices.layer,
+    NodeCrypto.layer,
     fileSystemLayer,
   );
   const layerSavedEnvironments = DesktopSavedEnvironments.layer.pipe(
@@ -100,22 +102,7 @@ const withStore = <A, E, R>(
   }).pipe(Effect.provide(NodeServices.layer), Effect.scoped);
 
 describe("DesktopConnectionCatalogStore", () => {
-  it.effect("reads a missing diagnostic snapshot without invoking legacy migration", () =>
-    withStore(
-      Effect.gen(function* () {
-        const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
-        const environment = yield* DesktopEnvironment.DesktopEnvironment;
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        assert.deepStrictEqual(yield* store.snapshot, Option.none());
-        assert.isFalse(
-          yield* fs.exists(path.join(environment.stateDir, "connection-catalog.json")),
-        );
-      }),
-    ),
-  );
-
-  it.effect("persists, reads, and clears an encrypted connection catalog", () =>
+  it.effect("persists and reads an encrypted connection catalog", () =>
     withStore(
       Effect.gen(function* () {
         const store = yield* DesktopConnectionCatalogStore.DesktopConnectionCatalogStore;
@@ -123,10 +110,6 @@ describe("DesktopConnectionCatalogStore", () => {
 
         assert.isTrue(yield* store.set(catalog));
         assert.deepStrictEqual(yield* store.get, Option.some(catalog));
-        assert.deepStrictEqual(yield* store.snapshot, Option.some(catalog));
-
-        yield* store.clear;
-        assert.deepStrictEqual(yield* store.get, Option.none());
       }),
     ),
   );

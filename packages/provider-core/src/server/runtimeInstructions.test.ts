@@ -3,34 +3,22 @@ import { assert, describe, it } from "@effect/vitest";
 import { buildRuntimeInstructions } from "./runtimeInstructions.ts";
 
 describe("buildRuntimeInstructions", () => {
-  it("keeps absent identity unknown and describes the supplied Jones build", () => {
-    const unknown = buildRuntimeInstructions({ harness: "Codex" });
-    assert.include(unknown, "App identity and build source are unavailable");
-    assert.notInclude(unknown, "running in T3 Code");
-    const identified = buildRuntimeInstructions({
-      harness: "Codex",
-      appIdentity: {
-        productId: "jones-code",
-        productName: "Jones Code",
-        version: "0.1.0-test",
-        source: {
-          repository: "Jones-Systems/Jones-Code",
-          sha: "a".repeat(40),
-          tree: "b".repeat(40),
-        },
-      },
+  it("leaves PR linking to a session that already carries it, and keeps runtime identity", () => {
+    const instructions = buildRuntimeInstructions({
+      harness: "Antigravity",
+      model: "gemini-3.8-flash",
+      pullRequestLinking: false,
     });
-    assert.include(identified, "running in Jones Code through the Codex harness");
-    assert.include(identified, "commit " + "a".repeat(40));
-    assert.include(identified, "tree " + "b".repeat(40));
-    assert.include(identified, "a connected desktop or mobile client may have a different version");
+
+    assert.include(instructions, "through the Antigravity harness, as gemini-3.8-flash.");
+    assert.notInclude(instructions, "<pull_request_linking>");
   });
 
   it("links PRs the agent creates, takes over, or pushes to, and no others", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
 
     assert.include(instructions, "Link each PR you create, take over, or push to");
-    assert.include(instructions, "one link_pull_request per PR");
+    assert.include(instructions, "every stack layer");
     assert.include(instructions, "Skip PRs you only read or review");
     assert.include(instructions, "If linking fails, say so.");
     assert.notInclude(instructions, "git log -1");
@@ -58,7 +46,10 @@ describe("buildRuntimeInstructions", () => {
       instructions,
       "After PR work, a child's last line is: PR <full URL>, head <SHA>, checks and reviews <state>.",
     );
-    assert.include(instructions, "Never wait with sleep");
+    assert.include(
+      instructions,
+      "For PR waits, no sleep, loops, gh --watch, Monitor or ScheduleWakeup.",
+    );
     assert.include(instructions, "call unwatch_pull_request");
   });
 });

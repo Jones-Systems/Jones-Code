@@ -8,10 +8,10 @@ import {
   type ProviderInstanceId,
   type ProviderInteractionMode,
   type RuntimeMode,
-  type ThreadId,
+  ThreadId,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 
 import type { OrchestratorV2Error } from "../orchestration-v2/Orchestrator.ts";
@@ -19,6 +19,27 @@ import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.t
 import { resolveInteractionMode, resolveRuntimeMode } from "./delegatedTaskModes.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as OrchestrationMcp from "./OrchestratorMcpService.ts";
+
+/**
+ * Threads an agent starts over MCP are `mcp:<uuid>`, and agents often paste the
+ * bare uuid. The id is never rewritten, so permission checks keyed on it still
+ * hold; the miss only names a live thread the caller could read by its full id.
+ */
+export const threadNotFound = Effect.fn("OrchestratorMcpService.threadNotFound")(function* (
+  threads: Pick<ThreadManagement.ThreadManagementService["Service"], "getThreadShell">,
+  threadId: ThreadId,
+  message: string,
+) {
+  const prefixed = ThreadId.make(`mcp:${threadId}`);
+  const shell = yield* threads.getThreadShell(prefixed).pipe(Effect.orElseSucceed(() => null));
+  return yield* new OrchestratorMcpFailure({
+    code: "thread_not_found",
+    message:
+      shell === null || shell.deletedAt !== null
+        ? message
+        : `${message} Did you mean \`${prefixed}\`?`,
+  });
+});
 
 export const unavailable = () =>
   new OrchestratorMcpFailure({
@@ -29,7 +50,8 @@ export const unavailable = () =>
 export const dispatchFailure = (
   error: OrchestratorV2Error | ThreadManagement.ThreadManagementProviderInstanceDisabledError,
 ) =>
-  error._tag === "ThreadManagementProviderInstanceDisabledError"
+  error._tag === "ThreadManagementProviderInstanceDisabledError" ||
+  error._tag === "OrchestratorRuntimeModeAboveCeilingError"
     ? new OrchestratorMcpFailure({ code: "invalid_request", message: error.message })
     : (error._tag === "OrchestratorDispatchError" ||
           error._tag === "OrchestratorCommandRejectedError") &&
@@ -101,11 +123,7 @@ export const assertTargetWithinLimits = (
     Effect.asVoid,
   );
 
-/**
- * A live caller thread is unarchived, on the caller's provider instance, with an active run or its background subagent.
- * Background subagents may outlive their run and use the thread credential until their provider process exits,
- * which revokes that credential.
- */
+/** Background subagents retain credentials until provider exit; archived threads and other instances cannot act. */
 export const isLiveCallerShell = (
   shell: Pick<
     OrchestrationV2ThreadShell,
@@ -122,45 +140,17 @@ export const isLiveCallerShell = (
     ) ??
       false));
 
-/**
- * A thread caller acts only while it owns a live run, or a background
- * subagent that run started, of a thread that is not archived, so a provider
- * token that outlived its session cannot act. An OAuth client has no run; its
- * session and ceiling are its authority.
- */
-export function assertLiveCaller({ caller, scope, threads }: Caller) {
+/** Thread callers need a live run or its background subagent in an unarchived thread. OAuth clients rely on their session and ceiling. */
+export function assertLiveCaller({ caller, scope }: Caller) {
   if (caller === undefined) return Effect.void;
-  return Effect.gen(function* () {
-    if (isLiveCallerShell(caller, scope.thread?.providerInstanceId)) return;
-    const manager = yield* Effect.serviceOption(ProviderSessions.ProviderSessionManagerV2);
-    if (
-      caller.archivedAt === null &&
-      caller.deletedAt === null &&
-      scope.thread !== undefined &&
-      Option.isSome(manager)
-    ) {
-      const records = yield* threads
-        .getThreadRecords(caller.id, ["runs", "providerThreads"])
-        .pipe(Effect.mapError(unavailable));
-      const run = records.runs.find((run) => run.id === caller.activeRunId);
-      const provider = records.providerThreads.find((row) => row.id === run?.providerThreadId);
-      if (
-        run?.providerInstanceId === scope.thread.providerInstanceId &&
-        provider?.providerSessionId != null &&
-        (yield* manager.value.isMcpCallerAttached({
-          threadId: caller.id,
-          providerSessionId: provider.providerSessionId,
-          providerInstanceId: scope.thread.providerInstanceId,
-          mcpCredentialId: scope.thread.providerSessionId,
-        }))
-      )
-        return;
-    }
-    return yield* new OrchestratorMcpFailure({
-      code: "parent_not_active",
-      message: "The calling provider no longer owns an active thread run.",
-    });
-  });
+  return isLiveCallerShell(caller, scope.thread?.providerInstanceId)
+    ? Effect.void
+    : Effect.fail(
+        new OrchestratorMcpFailure({
+          code: "parent_not_active",
+          message: "The calling provider no longer owns an active thread run.",
+        }),
+      );
 }
 
 export const assertFullAccess = (context: Caller, message: string) =>
@@ -199,11 +189,7 @@ export const readThread = Effect.fn("mcp.readThread")(function* <
   const targetId = yield* resolveThreadId(context, threadId);
   const shell = yield* context.threads.getThreadShell(targetId).pipe(Effect.mapError(unavailable));
   if (shell === null || shell.deletedAt !== null) {
-    return yield* OrchestrationMcp.threadNotFound(
-      context.threads,
-      targetId,
-      "The thread was not found.",
-    );
+    return yield* threadNotFound(context.threads, targetId, "The thread was not found.");
   }
   const projection = yield* context.threads
     .getProjectThreadRecords({ projectId: shell.projectId, threadId: targetId }, fields, {
@@ -240,6 +226,6 @@ export const readMessageWritableThread = Effect.fn("mcp.readMessageWritableThrea
 });
 
 export const newCommandId = Effect.fn("mcp.newCommandId")(function* () {
-  const crypto = yield* Crypto.Crypto;
-  return CommandId.make(`mcp:${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`);
+  const random = yield* SecureRandom.SecureRandom;
+  return CommandId.make(`mcp:${yield* random.uuidV4()}`);
 });

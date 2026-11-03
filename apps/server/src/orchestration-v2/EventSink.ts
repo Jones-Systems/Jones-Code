@@ -393,6 +393,8 @@ export interface EventSinkV2Shape {
       readonly effectTypes: ReadonlyArray<EffectOutbox.OrchestrationEffectRequestV2["type"]>;
       readonly reason: string;
     };
+    /** Like writeWithEffects' updateDelegatedCompletionOnly, for this run's run.updated only. */
+    readonly updateDelegatedCompletionOnlyRunId?: RunId;
   }) => Effect.Effect<
     {
       readonly receipt: CommandReceiptStore.CommandReceiptV2;
@@ -866,6 +868,28 @@ const layerBase: Layer.Layer<
         return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
 
+    // The enclosing write or commit span already traces this per-event projection merge.
+    const updateDelegatedCompletionOnly = Effect.fnUntraced(function* (
+      events: ReadonlyArray<OrchestrationV2DomainEvent>,
+      includesRun: (runId: RunId) => boolean,
+    ) {
+      return yield* Effect.forEach(events, (event) =>
+        Effect.gen(function* () {
+          if (event.type !== "run.updated" || !includesRun(event.payload.id)) return event;
+          const { runs } = yield* projectionStore.getThreadRecords(event.threadId, ["runs"], {
+            runIds: [event.payload.id],
+          });
+          const current = runs[0];
+          return current === undefined
+            ? event
+            : {
+                ...event,
+                payload: { ...current, delegatedCompletion: event.payload.delegatedCompletion },
+              };
+        }),
+      );
+    });
+
     const writeEffect = Effect.fn("orchestrationV2.EventSink.write")(function* (
       input: Parameters<EventSinkV2Shape["writeWithEffects"]>[0] & {
         readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
@@ -896,26 +920,7 @@ const layerBase: Layer.Layer<
           // Checkpoint capture can finish after a cohort writer reads its parent run.
           // Merge in this transaction so the event log and projection keep that completion.
           const events = input.updateDelegatedCompletionOnly
-            ? yield* Effect.forEach(input.events, (event) =>
-                Effect.gen(function* () {
-                  if (event.type !== "run.updated") return event;
-                  const { runs } = yield* projectionStore.getThreadRecords(
-                    event.threadId,
-                    ["runs"],
-                    { runIds: [event.payload.id] },
-                  );
-                  const current = runs[0];
-                  return current === undefined
-                    ? event
-                    : {
-                        ...event,
-                        payload: {
-                          ...current,
-                          delegatedCompletion: event.payload.delegatedCompletion,
-                        },
-                      };
-                }),
-              )
+            ? yield* updateDelegatedCompletionOnly(input.events, () => true)
             : input.events;
           const identityEvents = yield* guardRuntimeIdentity({ ...input, events });
           if (identityEvents === null) return { committed: [], outcomes: [] };
@@ -1291,56 +1296,17 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
-          if (input.threadSelfConfiguration)
-            input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
-          if (input.codexFailover?.revalidate)
-            input = { ...input, events: yield* input.codexFailover.revalidate(input) };
-          if (input.providerConversationReselection)
-            yield* input.providerConversationReselection.revalidate(input);
-          if (input.taskContinuation) yield* input.taskContinuation.accept(input);
-          if (input.threadTitle) yield* input.threadTitle.accept;
-
-          if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
-            const receipt: CommandReceiptStore.CommandReceiptV2 = {
-              commandId: input.commandId,
-              threadId: input.threadId,
-              commandType: input.commandType,
-              acceptedAt: input.acceptedAt,
-              resultSequence: 0,
-              status: "rejected",
-              error: choice.rejectionReason,
-            };
-            yield* commandReceipts.upsert(receipt);
-            yield* ImportedChoice.recordImportedHistoryOutcome({
-              commandId: input.commandId,
-              threadId: input.threadId,
-              actorSessionId: imported.principal.sessionId,
-              commandDigest: choice.identity.commandDigest,
-              deliveryDigest: choice.identity.deliveryDigest,
-              reviewedBasis: imported.command.reviewedBasis,
-              status: "rejected",
-              runId: null,
-              effectId: null,
-              reason: choice.rejectionReason,
-            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
-            return {
-              receipt,
-              storedEvents: [],
-              outcomes: [],
-              committed: true as const,
-              cancelledEffectIds: [],
-            };
-          }
-          if (ordinary !== undefined && Option.isSome(checkoutIntent))
-            yield* checkoutIntent.value.validate(ordinary);
-          yield* WorkspaceLifecycle.validateCommand(input.ordinaryCheckoutCommand, input.events);
-          const normalized = yield* normalizeEvents(input.events);
-          const storedEvents = yield* eventStore
-            .append({
-              commandId: input.commandId,
-              events: normalized,
-            })
-            .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
+          const runId = input.updateDelegatedCompletionOnlyRunId;
+          const normalized = yield* normalizeEvents(
+            runId === undefined
+              ? input.events
+              : yield* updateDelegatedCompletionOnly(input.events, (id) => id === runId),
+          );
+          const storedEvents = yield* eventStore.append({
+            commandId: input.commandId,
+            events: normalized,
+          });
+          // A Stop that changes nothing can still queue the stop of its delegated tasks.
           const sequence =
             storedEvents.at(-1)?.sequence ??
             (input.effects.length === 0

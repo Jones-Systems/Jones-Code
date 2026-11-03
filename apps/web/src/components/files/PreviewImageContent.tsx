@@ -14,18 +14,27 @@ export default function PreviewImageContent(props: {
   const [failed, setFailed] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [natural, setNatural] = useState({ width: 0, height: 0 });
-  const viewer = useRef<ZoomableImageHandle>(null);
-  const [view, setView] = useState({ width: 0, height: 0, zoom: 1, fit: 1 });
-  const [percent, setPercent] = useState("100");
-  const scale = view.fit * view.zoom;
-  const commitPercent = () => {
-    const value = Number(percent.trim());
-    if (percent.trim() && Number.isFinite(value) && value >= 60 && value <= 800)
-      viewer.current?.zoomTo(value / 100);
-    else setPercent(String(Math.round(view.zoom * 100)));
-  };
-  if (failed)
-    return <FileSurfaceFailure message="Unable to load image." onRetry={() => setFailed(false)} />;
+  const [viewport, setViewport] = useState({ width: 0, height: 0 });
+  const [zoom, setZoom] = useState<number | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Measure the image viewport before paint and observe resizes to keep fit-to-view scaling accurate.
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const update = () => setViewport({ width: node.clientWidth, height: node.clientHeight });
+    update();
+    return observeResize(node, update);
+  }, []);
+  const fit = natural.width
+    ? Math.min(
+        1,
+        Math.max(1, viewport.width - 32) / natural.width,
+        Math.max(1, viewport.height - 32) / natural.height,
+      )
+    : 1;
+  const scale = zoom ?? fit;
+  const changeZoom = (factor: number) => setZoom(Math.max(0.05, Math.min(8, scale * factor)));
+  if (failed) return <FileSurfaceFailure message="Unable to load image." />;
   return (
     <>
       <div className="flex min-h-10 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/60 px-3 py-1 text-xs text-muted-foreground">

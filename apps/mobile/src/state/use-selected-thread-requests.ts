@@ -17,25 +17,33 @@ import {
   composerAttachmentsStillUploading,
 } from "./composer-attachment-uploads";
 import { useAtomValue } from "@effect/atom-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
-import { type ProviderApprovalDecision, type RuntimeRequestId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  type ProviderApprovalDecision,
+  type RuntimeRequestId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import {
   type PendingThreadRequests,
   type ThreadUserInputQuestion,
+  onThreadRequestsResolved,
+  pruneResolvedUserInputDrafts,
+  resolvedQuestionDraftKeys,
   seedUserInputDraftAnswers,
+  userInputDraftKey,
 } from "@t3tools/client-runtime/state/thread-requests";
 import { AuthOrchestrationOperateScope } from "@t3tools/contracts";
 import { Atom } from "effect/reactivity";
 
-import { threadEnvironment } from "../state/threads";
-import { scopedRequestKey } from "../lib/scopedEntities";
+import { environmentThreadDetails, threadEnvironment } from "../state/threads";
 import {
   buildPendingUserInputAnswers,
   setPendingUserInputCustomAnswer,
   togglePendingUserInputOptionSelection,
   type PendingUserInputDraftAnswer,
-} from "../lib/threadActivity";
+} from "@t3tools/client-runtime/state/pending-user-input";
 import { appAtomRegistry } from "./atom-registry";
 import { useSelectedThreadPendingRequests } from "./use-thread-detail";
 import { useThreadSelection } from "./use-thread-selection";
@@ -47,6 +55,14 @@ const EMPTY_PENDING_REQUESTS: PendingThreadRequests = { approvals: [], userInput
 const userInputDraftsByRequestKeyAtom = Atom.make<
   Record<string, Record<string, PendingUserInputDraftAnswer>>
 >({}).pipe(Atom.keepAlive, Atom.withLabel("mobile:user-input-drafts"));
+
+// Writes start from the suggested answer the user was looking at.
+function seededDraft(
+  drafts: Record<string, PendingUserInputDraftAnswer> | undefined,
+  question: ThreadUserInputQuestion,
+): PendingUserInputDraftAnswer | undefined {
+  return seedUserInputDraftAnswers([question], drafts ?? {})[question.id];
+}
 
 function setUserInputDraftOption(
   requestKey: string,
@@ -67,7 +83,11 @@ function setUserInputDraftOption(
     ...current,
     [requestKey]: {
       ...current[requestKey],
-      [question.id]: draft,
+      [question.id]: togglePendingUserInputOptionSelection(
+        question,
+        seededDraft(current[requestKey], question),
+        value,
+      ),
     },
   });
   return draft;
@@ -86,12 +106,74 @@ function setUserInputDraftCustomAnswer(
       ...current[requestKey],
       [question.id]: setPendingUserInputCustomAnswer(
         question,
-        current[requestKey]?.[question.id],
+        seededDraft(current[requestKey], question),
         customAnswer,
         { notes },
       ),
     },
   });
+}
+
+/** Drops a thread's answer and attachment drafts for every request outside `pendingRequestIds`. */
+function pruneResolvedRequestDrafts(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  pendingRequestIds: ReadonlyArray<RuntimeRequestId>,
+): void {
+  const drafts = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
+  const prunedDrafts = pruneResolvedUserInputDrafts(
+    drafts,
+    environmentId,
+    threadId,
+    pendingRequestIds,
+  );
+  if (prunedDrafts !== drafts) appAtomRegistry.set(userInputDraftsByRequestKeyAtom, prunedDrafts);
+
+  const prefix = questionAttachmentDraftPrefix(environmentId, threadId);
+  const attachmentDrafts = appAtomRegistry.get(questionAttachmentDraftsAtom(prefix));
+  const counts = { ...appAtomRegistry.get(questionAttachmentPreparationAtom) };
+  let changed = false;
+  for (const key of resolvedQuestionDraftKeys(
+    new Set([...Object.keys(attachmentDrafts), ...Object.keys(counts)]),
+    prefix,
+    pendingRequestIds,
+  )) {
+    if (attachmentDrafts[key]) clearComposerDraft(key);
+    if (key in counts) {
+      delete counts[key];
+      changed = true;
+    }
+  }
+  if (changed) appAtomRegistry.set(questionAttachmentPreparationAtom, counts);
+}
+
+// Resolution can come from anywhere: another device, an interrupt, the turn
+// ending, or a reload over drafts for requests that resolved meanwhile.
+onThreadRequestsResolved(({ environmentId, threadId, pendingRequestIds }) =>
+  pruneResolvedRequestDrafts(environmentId, threadId, pendingRequestIds),
+);
+
+/**
+ * Drops `answeredRequestId`'s drafts as soon as the server accepts the
+ * response, before the projection push that resolves it lands.
+ */
+function collectAnsweredRequestDrafts(
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+  answeredRequestId: RuntimeRequestId,
+) {
+  const current = appAtomRegistry.get(
+    environmentThreadDetails.pendingRequestsAtom({ environmentId, threadId }),
+  );
+  // Missing detail is not resolution.
+  if (current === null) return;
+  pruneResolvedRequestDrafts(
+    environmentId,
+    threadId,
+    [...current.approvals, ...current.userInputs]
+      .map((request) => request.requestId)
+      .filter((requestId) => requestId !== answeredRequestId),
+  );
 }
 
 export function useSelectedThreadRequests() {
@@ -118,19 +200,6 @@ export function useSelectedThreadRequests() {
   const activePendingApproval = activePendingApprovals[0] ?? null;
   const activePendingUserInputs = pendingRequests?.userInputs ?? EMPTY_PENDING_REQUESTS.userInputs;
   const activePendingUserInput = activePendingUserInputs[0] ?? null;
-  useEffect(() => {
-    if (!activePendingUserInput || !selectedThreadShell) return;
-    const requestKey = scopedRequestKey(
-      selectedThreadShell.environmentId,
-      activePendingUserInput.requestId,
-    );
-    const existing = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
-    const drafts = existing[requestKey] ?? {};
-    const seeded = seedUserInputDraftAnswers(activePendingUserInput.questions, drafts);
-    if (seeded !== drafts) {
-      appAtomRegistry.set(userInputDraftsByRequestKeyAtom, { ...existing, [requestKey]: seeded });
-    }
-  }, [activePendingUserInput, selectedThreadShell]);
   const questionServerConfigs = useServerConfigs();
   const attachmentDrafts = useAtomValue(
     questionAttachmentDraftsAtom(
@@ -141,36 +210,20 @@ export function useSelectedThreadRequests() {
   );
   const preparationCounts = useAtomValue(questionAttachmentPreparationAtom);
   const uploadStates = useAtomValue(composerAttachmentUploadsAtom);
-  useEffect(() => {
-    if (!selectedThreadShell || !pendingRequests) return;
-    const prefix = questionAttachmentDraftPrefix(
-      selectedThreadShell.environmentId,
-      selectedThreadShell.id,
-    );
-    const retained = new Set(
-      activePendingUserInputs.flatMap((request) =>
-        request.questions.map((question) =>
-          questionAttachmentDraftKey(
-            selectedThreadShell.environmentId,
-            selectedThreadShell.id,
-            request.requestId,
-            question.id,
-          ),
-        ),
-      ),
-    );
-    const counts = { ...appAtomRegistry.get(questionAttachmentPreparationAtom) };
-    let changed = false;
-    for (const key of new Set([...Object.keys(attachmentDrafts), ...Object.keys(counts)])) {
-      if (!key.startsWith(prefix) || retained.has(key)) continue;
-      if (attachmentDrafts[key]) clearComposerDraft(key);
-      if (key in counts) {
-        delete counts[key];
-        changed = true;
-      }
-    }
-    if (changed) appAtomRegistry.set(questionAttachmentPreparationAtom, counts);
-  }, [activePendingUserInputs, attachmentDrafts, pendingRequests, selectedThreadShell]);
+  // Suggested answers are shown until the user edits them; only edits are stored.
+  const activePendingUserInputAnswerDrafts =
+    activePendingUserInput && selectedThreadShell
+      ? seedUserInputDraftAnswers(
+          activePendingUserInput.questions,
+          userInputDraftsByRequestKey[
+            userInputDraftKey(
+              selectedThreadShell.environmentId,
+              selectedThreadShell.id,
+              activePendingUserInput.requestId,
+            )
+          ] ?? {},
+        )
+      : {};
   const activePendingUserInputDrafts =
     activePendingUserInput && selectedThreadShell
       ? Object.fromEntries(
@@ -191,17 +244,11 @@ export function useSelectedThreadRequests() {
             return [
               question.id,
               {
-                ...userInputDraftsByRequestKey[
-                  scopedRequestKey(
-                    selectedThreadShell.environmentId,
-                    activePendingUserInput.requestId,
-                  )
-                ]?.[question.id],
+                ...activePendingUserInputAnswerDrafts[question.id],
                 attachmentCount: attachments.length,
                 attachmentsBlocked:
                   (attachments.length > 0 &&
-                    questionServerConfigs.get(selectedThreadShell.environmentId)?.environment
-                      .capabilities.questionAttachments !== true) ||
+                    questionServerConfigs.get(selectedThreadShell.environmentId) === undefined) ||
                   (preparationCounts[key] ?? 0) > 0 ||
                   composerAttachmentsStillUploading(uploadInput) ||
                   composerAttachmentUploadBlockReason({
@@ -219,70 +266,85 @@ export function useSelectedThreadRequests() {
       })
     : null;
 
-  const onChangeUserInputCustomAnswer = useCallback(
-    (requestId: RuntimeRequestId, questionId: string, customAnswer: string) => {
-      const question = activePendingUserInputs
-        .find((request) => request.requestId === requestId)
-        ?.questions.find((entry) => entry.id === questionId);
-      if (!selectedThreadShell || !question) {
-        return;
-      }
+  const onSelectUserInputOption = (
+    requestId: RuntimeRequestId,
+    question: ThreadUserInputQuestion,
+    value: string,
+  ) => {
+    if (!selectedThreadShell) {
+      return;
+    }
 
-      const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftCustomAnswer(
-        requestKey,
-        question,
-        customAnswer,
-        supportsUserResponseAnswerNotes(
-          activePendingUserInputs.find((request) => request.requestId === requestId)
-            ?.responseCapability ?? "",
-        ),
-      );
-    },
-    [activePendingUserInputs, selectedThreadShell],
-  );
+    const requestKey = userInputDraftKey(
+      selectedThreadShell.environmentId,
+      selectedThreadShell.id,
+      requestId,
+    );
+    setUserInputDraftOption(requestKey, question, value);
+  };
 
-  const onRespondToApproval = useCallback(
-    async (requestId: RuntimeRequestId, decision: ProviderApprovalDecision, feedback?: string) => {
-      if (
-        !selectedThreadShell ||
-        !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
-      ) {
-        return;
-      }
-      if (
-        activePendingApprovals.find((approval) => approval.requestId === requestId)
-          ?.responseCapability !== "live"
-      ) {
-        return;
-      }
+  const onChangeUserInputCustomAnswer = (
+    requestId: RuntimeRequestId,
+    questionId: string,
+    customAnswer: string,
+  ) => {
+    const question = activePendingUserInputs
+      .find((request) => request.requestId === requestId)
+      ?.questions.find((entry) => entry.id === questionId);
+    if (!selectedThreadShell || !question) {
+      return;
+    }
 
-      setRespondingApprovalId(requestId);
-      const result = await respondToApproval({
-        environmentId: selectedThreadShell.environmentId,
-        input: {
-          threadId: selectedThreadShell.id,
-          requestId,
-          decision,
-          ...(feedback === undefined ? {} : { feedback }),
-        },
-      });
-      setRespondingApprovalId((current) => (current === requestId ? null : current));
-      return result;
-    },
-    [activePendingApprovals, respondToApproval, selectedThreadShell],
-  );
+    const requestKey = userInputDraftKey(
+      selectedThreadShell.environmentId,
+      selectedThreadShell.id,
+      requestId,
+    );
+    setUserInputDraftCustomAnswer(requestKey, question, customAnswer);
+  };
 
-  const submitUserInputAnswers = useCallback(
-    async (answers: Record<string, string | ReadonlyArray<string>>) => {
-      if (
-        !selectedThreadShell ||
-        !activePendingUserInput ||
-        activePendingUserInput.responseCapability === "not_resumable" ||
-        !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
-      ) {
-        return;
-      }
+  const onRespondToApproval = async (
+    requestId: RuntimeRequestId,
+    decision: ProviderApprovalDecision,
+    feedback?: string,
+  ) => {
+    if (
+      !selectedThreadShell ||
+      !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
+    ) {
+      return;
+    }
+    if (
+      activePendingApprovals.find((approval) => approval.requestId === requestId)
+        ?.responseCapability !== "live"
+    ) {
+      return;
+    }
+
+    setRespondingApprovalId(requestId);
+    const result = await respondToApproval({
+      environmentId: selectedThreadShell.environmentId,
+      input: {
+        threadId: selectedThreadShell.id,
+        requestId,
+        decision,
+        ...(feedback === undefined ? {} : { feedback }),
+      },
+    });
+    setRespondingApprovalId((current) => (current === requestId ? null : current));
+    return result;
+  };
+
+  const onSubmitUserInput = async () => {
+    if (
+      !selectedThreadShell ||
+      !activePendingUserInput ||
+      activePendingUserInput.responseCapability === "not_resumable" ||
+      !activePendingUserInputAnswers ||
+      !readEnvironmentScope(selectedThreadShell.environmentId, AuthOrchestrationOperateScope)
+    ) {
+      return;
+    }
 
       const responseKey = questionAttachmentDraftKey(
         selectedThreadShell.environmentId,
@@ -346,70 +408,35 @@ export function useSelectedThreadRequests() {
       setRespondingUserInputId((current) =>
         current === activePendingUserInput.requestId ? null : current,
       );
-      return result;
-    },
-    [activePendingUserInput, respondToUserInput, selectedThreadShell],
-  );
-
-  const onSubmitUserInput = useCallback(async () => {
-    if (activePendingUserInputAnswers) return submitUserInputAnswers(activePendingUserInputAnswers);
-  }, [activePendingUserInputAnswers, submitUserInputAnswers]);
-
-  const onSelectUserInputOption = useCallback(
-    (
-      requestId: RuntimeRequestId,
-      question: ThreadUserInputQuestion,
-      value: string,
-    ): number | undefined => {
-      if (
-        !selectedThreadShell ||
-        activePendingUserInput?.requestId !== requestId ||
-        activePendingUserInput.responseCapability === "not_resumable" ||
-        respondingUserInputId === requestId
-      )
-        return;
-      const currentQuestion = activePendingUserInput.questions.find(
-        (entry) => entry.id === question.id,
+    }
+    userInputResponsesInFlight.current.add(responseKey);
+    setRespondingUserInputId(activePendingUserInput.requestId);
+    const result = await respondToUserInput({
+      environmentId: selectedThreadShell.environmentId,
+      input: {
+        threadId: selectedThreadShell.id,
+        requestId: activePendingUserInput.requestId,
+        answers: activePendingUserInputAnswers,
+        ...(attachmentsByQuestionId.size > 0
+          ? { attachmentsByQuestionId: Object.fromEntries(attachmentsByQuestionId) }
+          : {}),
+      },
+    });
+    userInputResponsesInFlight.current.delete(responseKey);
+    setRespondingUserInputId((current) =>
+      current === activePendingUserInput.requestId ? null : current,
+    );
+    if (result._tag === "Success") {
+      collectAnsweredRequestDrafts(
+        selectedThreadShell.environmentId,
+        selectedThreadShell.id,
+        activePendingUserInput.requestId,
       );
-      if (
-        !currentQuestion ||
-        !currentQuestion.options.some((option) => (option.value ?? option.label.trim()) === value)
-      )
-        return;
-      const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      const notes = supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability);
-      const draft = setUserInputDraftOption(requestKey, currentQuestion, value, notes);
-      if (currentQuestion.multiSelect) return;
-      const latest = appAtomRegistry.get(userInputDraftsByRequestKeyAtom)[requestKey] ?? {};
-      const drafts = Object.fromEntries(
-        activePendingUserInput.questions.map((entry) => [
-          entry.id,
-          {
-            ...activePendingUserInputDrafts[entry.id],
-            ...latest[entry.id],
-          },
-        ]),
-      );
-      drafts[question.id] = { ...drafts[question.id], ...draft };
-      const answers = buildPendingUserInputAnswers(activePendingUserInput.questions, drafts, {
-        notes,
-      });
-      if (answers) void submitUserInputAnswers(answers);
-      else
-        return activePendingUserInput.questions.findIndex(
-          (entry) => buildPendingUserInputAnswers([entry], drafts, { notes }) === null,
-        );
-    },
-    [
-      activePendingUserInput,
-      activePendingUserInputDrafts,
-      respondingUserInputId,
-      selectedThreadShell,
-      submitUserInputAnswers,
-    ],
-  );
+    }
+    return result;
+  };
 
-  const onDismissUserInput = useCallback(async () => {
+  const onDismissUserInput = async () => {
     if (
       !selectedThreadShell ||
       !activePendingUserInput ||
@@ -429,8 +456,15 @@ export function useSelectedThreadRequests() {
     setRespondingUserInputId((current) =>
       current === activePendingUserInput.requestId ? null : current,
     );
+    if (result._tag === "Success") {
+      collectAnsweredRequestDrafts(
+        selectedThreadShell.environmentId,
+        selectedThreadShell.id,
+        activePendingUserInput.requestId,
+      );
+    }
     return result;
-  }, [activePendingUserInput, dismissUserInput, selectedThreadShell]);
+  };
 
   return {
     activePendingApproval,

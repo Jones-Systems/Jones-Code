@@ -1,19 +1,29 @@
+import * as NodeV8 from "node:v8";
+import * as NodeVM from "node:vm";
 import { assert, it } from "@effect/vitest";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as Layer from "effect/Layer";
 import { PullRequestOperationError } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
-import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as KeyValueStore from "effect/persistence/KeyValueStore";
+import * as TestClock from "effect/testing/TestClock";
 import * as PullRequestReadCache from "./PullRequestReadCache.ts";
+
+NodeV8.setFlagsFromString("--expose-gc");
+const collectGarbage = NodeVM.runInNewContext("gc") as () => void;
 
 const cacheLayer = (directory: string) =>
   PullRequestReadCache.make.pipe(Effect.provide(KeyValueStore.layerFileSystem(directory)));
 
-it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PR filesystem cache", (it) => {
   it.effect("clears in-flight reads before a new service can reuse them", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -43,217 +53,21 @@ it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
     }),
   );
 
-  it.effect("invalidates A while B's lookup is blocked and preserves freshness after restart", () =>
+  it.effect("prunes expired entry files the store wrote", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pr-cache-" });
-      const started = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      let aReads = 0;
-      let bReads = 0;
-      const readA = Effect.sync(() => `a-${++aReads}`);
       const cache = yield* cacheLayer(directory);
-      assert.strictEqual(yield* cache.get("a", readA, ["a"]), "a-1");
-      const readB = yield* cache
-        .get(
-          "b",
-          Effect.gen(function* () {
-            bReads++;
-            yield* Deferred.succeed(started, undefined);
-            yield* Deferred.await(release);
-            return "b";
-          }),
-          ["b"],
-        )
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(started);
-
-      // This must finish before B is released, including its persisted revision.
-      yield* cache.invalidate("a");
-      const restarted = yield* cacheLayer(directory);
-      assert.strictEqual(yield* restarted.get("a", readA, ["a"]), "a-2");
-      assert.strictEqual(yield* cache.get("a", readA, ["a"]), "a-2");
-      yield* Deferred.succeed(release, undefined);
-      assert.strictEqual(yield* Fiber.join(readB), "b");
-      assert.strictEqual(yield* restarted.get("b", Effect.die("cache miss"), ["b"]), "b");
-      assert.strictEqual(aReads, 2);
-      assert.strictEqual(bReads, 1);
-    }),
-  );
-
-  it.effect("invalidates without a read permit while 512 same-scope reads run concurrently", () =>
-    Effect.gen(function* () {
-      const cache = yield* PullRequestReadCache.make;
-      const started = yield* Queue.unbounded<number>();
-      const release = yield* Deferred.make<void>();
-      let reads = 0;
-      const pending = yield* Effect.forEach(
-        Array.from({ length: 513 }, (_, index) => index),
-        (index) =>
-          cache.get(
-            `key-${index}`,
-            Effect.gen(function* () {
-              reads++;
-              yield* Queue.offer(started, index);
-              yield* Deferred.await(release);
-              return String(index);
-            }),
-            ["b"],
-          ),
-        { concurrency: "unbounded" },
-      ).pipe(Effect.forkChild);
-      yield* Queue.takeN(started, 512);
-      assert.strictEqual(reads, 512);
-      yield* cache.invalidate("a");
-      assert.strictEqual(reads, 512);
-      yield* Deferred.succeed(release, undefined);
-      assert.deepStrictEqual(
-        yield* Fiber.join(pending),
-        Array.from({ length: 513 }, (_, index) => String(index)),
+      yield* cache.get("summary", Effect.succeed("value"));
+      const [entry] = yield* fs.readDirectory(directory);
+      assert.isDefined(entry);
+      const info = yield* fs.stat(path.join(directory, entry));
+      yield* TestClock.setTime(
+        Option.getOrThrow(info.mtime).getTime() + Duration.toMillis(Duration.days(2)),
       );
-      assert.strictEqual(reads, 513);
-    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
-  );
-
-  it.effect("orders a queued scope invalidation before later reads of that scope", () =>
-    Effect.gen(function* () {
-      const cache = yield* PullRequestReadCache.make;
-      const started = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      let reads = 0;
-      const lookup = Effect.gen(function* () {
-        const current = ++reads;
-        if (current === 1) {
-          yield* Deferred.succeed(started, undefined);
-          yield* Deferred.await(release);
-        }
-        return current === 1 ? "old" : "fresh";
-      });
-      const read = cache.get("summary", lookup, ["z-project", "a-pr"]);
-      const first = yield* read.pipe(Effect.forkChild);
-      yield* Deferred.await(started);
-      const invalidation = yield* cache
-        .invalidate("a-pr")
-        .pipe(Effect.forkChild({ startImmediately: true }));
-      const later = yield* read.pipe(Effect.forkChild({ startImmediately: true }));
-      assert.isUndefined(invalidation.pollUnsafe());
-      assert.strictEqual(reads, 1);
-      yield* Deferred.succeed(release, undefined);
-      assert.strictEqual(yield* Fiber.join(first), "old");
-      yield* Fiber.join(invalidation);
-      assert.strictEqual(yield* Fiber.join(later), "fresh");
-      assert.strictEqual(yield* read, "fresh");
-      assert.strictEqual(reads, 2);
-    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
-  );
-
-  it.effect("persists unrelated concurrent invalidations without losing either revision", () =>
-    Effect.gen(function* () {
-      const backing = yield* KeyValueStore.KeyValueStore;
-      const writing = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      let writes = 0;
-      const cache = yield* PullRequestReadCache.make.pipe(
-        Effect.provideService(KeyValueStore.KeyValueStore, {
-          ...backing,
-          set: (key, value) =>
-            Effect.gen(function* () {
-              if (key === "revisions" && ++writes === 1) {
-                yield* Deferred.succeed(writing, undefined);
-                yield* Deferred.await(release);
-              }
-              yield* backing.set(key, value);
-            }),
-        }),
-      );
-      let aReads = 0;
-      let bReads = 0;
-      const readA = Effect.sync(() => `a-${++aReads}`);
-      const readB = Effect.sync(() => `b-${++bReads}`);
-      yield* cache.get("a", readA, ["a"]);
-      yield* cache.get("b", readB, ["b"]);
-      const a = yield* cache.invalidate("a").pipe(Effect.forkChild);
-      yield* Deferred.await(writing);
-      // Always release the deliberately blocked, uninterruptible revision write.
-      yield* Effect.gen(function* () {
-        const b = yield* cache.invalidate("b").pipe(Effect.forkChild({ startImmediately: true }));
-        assert.strictEqual(writes, 1);
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(a);
-        yield* Fiber.join(b);
-      }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
-
-      const stored = yield* backing.get("revisions");
-      assert.deepStrictEqual(Object.keys(JSON.parse(stored ?? "{}")).toSorted(), ["a", "b"]);
-      const restarted = yield* PullRequestReadCache.make;
-      assert.strictEqual(yield* restarted.get("a", readA, ["a"]), "a-2");
-      assert.strictEqual(yield* restarted.get("b", readB, ["b"]), "b-2");
-      assert.strictEqual(aReads, 2);
-      assert.strictEqual(bReads, 2);
-      assert.strictEqual(writes, 2);
-    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
-  );
-
-  it.effect("keeps payload persistence outside the revision mutex", () =>
-    Effect.gen(function* () {
-      const backing = yield* KeyValueStore.KeyValueStore;
-      const writing = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const cache = yield* PullRequestReadCache.make.pipe(
-        Effect.provideService(KeyValueStore.KeyValueStore, {
-          ...backing,
-          set: (key, value) =>
-            Effect.gen(function* () {
-              if (key !== "revisions") {
-                yield* Deferred.succeed(writing, undefined);
-                yield* Deferred.await(release);
-              }
-              yield* backing.set(key, value);
-            }),
-        }),
-      );
-      let reads = 0;
-      const pending = yield* cache
-        .get(
-          "b",
-          Effect.sync(() => String(++reads)),
-          ["b"],
-        )
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(writing);
-      yield* cache.invalidate("a").pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
-      assert.strictEqual(yield* Fiber.join(pending), "1");
-      const restarted = yield* PullRequestReadCache.make;
-      assert.strictEqual(yield* restarted.get("b", Effect.die("cache miss"), ["b"]), "1");
-      assert.strictEqual(reads, 1);
-    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
-  );
-
-  it.effect("preserves caller order and duplicate positions in persisted revision vectors", () =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pr-cache-" });
-      const expiresAt = DateTime.toEpochMillis(yield* DateTime.now) + 60_000;
-      yield* fs.writeFileString(
-        `${directory}/revisions`,
-        JSON.stringify({
-          z: { revision: "z-revision", expiresAt },
-          a: { revision: "a-revision", expiresAt },
-        }),
-      );
-      const scopes = ["z", "a", "z"];
-      const cache = yield* cacheLayer(directory);
-      yield* cache.get("summary", Effect.succeed("cached"), scopes);
-      const entryKey = (yield* fs.readDirectory(directory)).find((key) => key.startsWith("pr-v2"));
-      assert.isDefined(entryKey);
-      const stored = yield* fs.readFileString(`${directory}/${entryKey}`);
-      assert.include(stored, "z-revision:a-revision:z-revision");
-      assert.deepStrictEqual(scopes, ["z", "a", "z"]);
-      const restarted = yield* cacheLayer(directory);
-      assert.strictEqual(
-        yield* restarted.get("summary", Effect.die("cache miss"), scopes),
-        "cached",
-      );
+      yield* PullRequestReadCache.pruneExpiredEntryFiles(directory);
+      assert.deepStrictEqual(yield* fs.readDirectory(directory), []);
     }),
   );
 
@@ -334,6 +148,27 @@ it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
     }),
   );
 
+  it.effect.each(["", "{", '{"pr":{"revision":42}}'])(
+    "recovers from malformed scope revisions without reusing stale entries: %j",
+    (corrupt) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pr-cache-" });
+        const original = yield* cacheLayer(directory);
+        yield* original.get("summary", Effect.succeed("stale"), ["pr"]);
+        yield* fs.writeFileString(directory + "/revisions", corrupt);
+        const recovered = yield* cacheLayer(directory);
+        let reads = 0;
+        const lookup = Effect.sync(() => String(++reads));
+        assert.strictEqual(yield* recovered.get("summary", lookup, ["pr"]), "1");
+        assert.strictEqual(yield* recovered.get("summary", lookup, ["pr"]), "1");
+        yield* recovered.invalidate("pr");
+        assert.strictEqual(yield* recovered.get("summary", lookup, ["pr"]), "2");
+        const restarted = yield* cacheLayer(directory);
+        assert.strictEqual(yield* restarted.get("summary", lookup, ["pr"]), "2");
+        assert.strictEqual(reads, 2);
+      }),
+  );
   it.effect("resumes caching after a failed scope read", () =>
     Effect.gen(function* () {
       const backing = yield* KeyValueStore.KeyValueStore;
@@ -363,109 +198,30 @@ it.layer(NodeServices.layer)("PR filesystem cache", (it) => {
     }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   );
 
-  it.effect("uses the disabled fallback for reads queued behind a failed invalidation", () =>
-    Effect.gen(function* () {
-      const backing = yield* KeyValueStore.KeyValueStore;
-      const writing = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const cache = yield* PullRequestReadCache.make.pipe(
-        Effect.provideService(KeyValueStore.KeyValueStore, {
-          ...backing,
-          set: (key, value) =>
-            key === "revisions"
-              ? Deferred.succeed(writing, undefined).pipe(
-                  Effect.andThen(Deferred.await(release)),
-                  Effect.andThen(
-                    Effect.fail(
-                      new KeyValueStore.KeyValueStoreError({
-                        method: "set",
-                        message: "unavailable",
-                      }),
-                    ),
-                  ),
-                )
-              : backing.set(key, value),
-        }),
-      );
-      let reads = 0;
-      const read = cache.get(
-        "summary",
-        Effect.sync(() => String(++reads)),
-        ["pr"],
-      );
-      assert.strictEqual(yield* read, "1");
-      const invalidation = yield* cache.invalidate("pr").pipe(Effect.forkChild);
-      yield* Deferred.await(writing);
-      yield* Effect.gen(function* () {
-        const pending = yield* read.pipe(Effect.forkChild({ startImmediately: true }));
-        yield* Deferred.succeed(release, undefined);
-        yield* Fiber.join(invalidation);
-        assert.strictEqual(yield* Fiber.join(pending), "2");
-      }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
-      assert.strictEqual(yield* read, "3");
-      assert.strictEqual(reads, 3);
-    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
-  );
-
-  it.effect("cancels an invalidation waiting for its scope without disabling the cache", () =>
+  it.effect("does not keep a caller's data alive after its reads and invalidations", () =>
     Effect.gen(function* () {
       const cache = yield* PullRequestReadCache.make;
-      const started = yield* Deferred.make<void>();
-      const read = yield* cache
-        .get("pending", Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)), [
-          "pr",
-        ])
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(started);
-      const invalidation = yield* cache
-        .invalidate("pr")
-        .pipe(Effect.forkChild({ startImmediately: true }));
-      yield* Fiber.interrupt(invalidation);
-
-      assert.strictEqual(yield* cache.get("other", Effect.succeed("cached"), ["pr"]), "cached");
-      assert.strictEqual(yield* cache.get("other", Effect.die("cache miss"), ["pr"]), "cached");
-      yield* Fiber.interrupt(read);
-      yield* cache.invalidate("pr");
-      assert.strictEqual(yield* cache.get("other", Effect.succeed("fresh"), ["pr"]), "fresh");
-    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
-  );
-
-  it.effect(
-    "cancels an invalidation waiting for the revision mutex without writing its scope",
-    () =>
-      Effect.gen(function* () {
-        const backing = yield* KeyValueStore.KeyValueStore;
-        const writing = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const cache = yield* PullRequestReadCache.make.pipe(
-          Effect.provideService(KeyValueStore.KeyValueStore, {
-            ...backing,
-            set: (key, value) =>
-              Effect.gen(function* () {
-                if (key === "revisions") {
-                  yield* Deferred.succeed(writing, undefined);
-                  yield* Deferred.await(release);
-                }
-                yield* backing.set(key, value);
-              }),
-          }),
+      const sweeps: Array<WeakRef<object>> = [];
+      // Like a sync sweep: an Effect.fn made per run that closes over that run's data.
+      const sweep = Effect.fn("sweep")(function* (index: number) {
+        const groups = new Map<string, number>(
+          Array.from({ length: 1_000 }, (_, id) => [`group-${id}`, id]),
         );
-        const first = yield* cache.invalidate("a").pipe(Effect.forkChild);
-        yield* Deferred.await(writing);
-        yield* Effect.gen(function* () {
-          const canceled = yield* cache
-            .invalidate("b")
-            .pipe(Effect.forkChild({ startImmediately: true }));
-          yield* Fiber.interrupt(canceled);
-          yield* Deferred.succeed(release, undefined);
-          yield* Fiber.join(first);
-        }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
-        const before = yield* backing.get("revisions");
-        assert.deepStrictEqual(Object.keys(JSON.parse(before ?? "{}")), ["a"]);
-        yield* cache.invalidate("b");
-        const after = yield* backing.get("revisions");
-        assert.deepStrictEqual(Object.keys(JSON.parse(after ?? "{}")).toSorted(), ["a", "b"]);
-      }).pipe(Effect.provide(KeyValueStore.layerMemory)),
+        sweeps.push(new WeakRef(groups));
+        const read = Effect.fn("read")(function* (pr: string) {
+          const size = groups.size;
+          yield* cache.invalidate(pr);
+          const answer = yield* cache.get(`${pr}-${index}`, Effect.succeed("answer"), [pr]);
+          return size + answer.length;
+        });
+        yield* Effect.forEach(["pr-1", "pr-2"], read, { discard: true });
+      });
+      for (let index = 0; index < 5; index++) yield* sweep(index);
+      // WeakRef targets stay alive until the current job ends, so yield before collecting.
+      yield* Effect.yieldNow;
+      collectGarbage();
+      assert.strictEqual(sweeps.filter((sweepData) => sweepData.deref() !== undefined).length, 0);
+    }).pipe(Effect.provide(KeyValueStore.layerMemory)),
   );
 
   it.effect("cancels abandoned reads without blocking invalidation", () =>

@@ -212,11 +212,33 @@ const PullRequestIdentity = {
   url: Schema.String,
 };
 
+/** A delegated child's report is how its parent learns the PR, so the link result asks for it. */
+export const CHILD_PULL_REQUEST_REPORT_NEXT =
+  "End your reply with: PR <full URL>, head <SHA>, checks and reviews <state>.";
+
 export const LinkPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
   alreadyLinked: Schema.Boolean,
+  next: Schema.optional(Schema.String),
 });
 export type LinkPullRequestResult = typeof LinkPullRequestResult.Type;
+
+const PullRequestNumbersByRepository = Schema.Array(
+  Schema.Struct({
+    host: Schema.String,
+    repository: Schema.String,
+    numbers: Schema.Array(Schema.Int),
+  }),
+);
+
+export const LinkPullRequestsResult = Schema.Struct({
+  linked: PullRequestNumbersByRepository,
+  alreadyLinked: PullRequestNumbersByRepository,
+  linkedCount: Schema.Int,
+  invalidUrls: Schema.optional(Schema.Array(Schema.String)),
+  next: Schema.optional(Schema.String),
+});
+export type LinkPullRequestsResult = typeof LinkPullRequestsResult.Type;
 
 export const UnlinkPullRequestResult = Schema.Struct({
   host: Schema.String,
@@ -225,6 +247,20 @@ export const UnlinkPullRequestResult = Schema.Struct({
   wasLinked: Schema.Boolean,
 });
 export type UnlinkPullRequestResult = typeof UnlinkPullRequestResult.Type;
+
+export const UnlinkPullRequestsResult = Schema.Struct({
+  unlinked: Schema.Array(
+    Schema.Struct({
+      host: Schema.String,
+      repository: Schema.String,
+      state: PullRequestState,
+      numbers: Schema.Array(Schema.Int),
+    }),
+  ),
+  unlinkedCount: Schema.Int,
+  remaining: Schema.Int,
+});
+export type UnlinkPullRequestsResult = typeof UnlinkPullRequestsResult.Type;
 
 export const WatchPullRequestResult = Schema.Struct({
   ...PullRequestIdentity,
@@ -266,13 +302,32 @@ export const ListThreadPullRequestsResult = Schema.Struct({
 export type ListThreadPullRequestsResult = typeof ListThreadPullRequestsResult.Type;
 
 const LinkPullRequestTool = Tool.make("link_pull_request", {
-  description: "Link a PR to this thread. T3 shows its status and settles the thread on merge.",
+  description:
+    "Link a PR to this thread. T3 shows its status and settles the thread on merge. For several PRs, use `link_pull_requests`.",
   parameters: PullRequestTargetInput,
   success: LinkPullRequestResult,
   failure: PullRequestToolError,
   dependencies,
 })
   .annotate(Tool.Title, "Link pull request to thread")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, false)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
+const LinkPullRequestsTool = Tool.make("link_pull_requests", {
+  description:
+    "Link several PRs to a thread in one call. Use it instead of one `link_pull_request` per PR. URLs that are not PRs come back in `invalidUrls`.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
+    urls: Schema.Array(TrimmedNonEmptyString).check(Schema.isMinLength(1)),
+  }),
+  success: LinkPullRequestsResult,
+  failure: PullRequestToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Link pull requests to thread")
   .annotate(Tool.Readonly, false)
   .annotate(Tool.Destructive, false)
   .annotate(Tool.Idempotent, true)
@@ -292,14 +347,30 @@ const UnlinkPullRequestTool = Tool.make("unlink_pull_request", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false);
 
+const UnlinkPullRequestsTool = Tool.make("unlink_pull_requests", {
+  description:
+    "Unlink every PR on a thread whose last known state (as `list_thread_pull_requests` shows) is in `states`, in one call. Use it instead of one `unlink_pull_request` per PR. PRs with no known state stay linked.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
+    states: Schema.Array(PullRequestState).check(Schema.isMinLength(1)),
+  }),
+  success: UnlinkPullRequestsResult,
+  failure: PullRequestToolError,
+  dependencies,
+})
+  .annotate(Tool.Title, "Unlink pull requests by state")
+  .annotate(Tool.Readonly, false)
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true)
+  .annotate(Tool.OpenWorld, false);
+
 const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
   description:
     "List PRs linked to a thread, with last known state and stack order (bottom to top). Call only when you need that list. Never as an end-of-work check.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
-    threadId: Schema.optional(
-      ThreadId.annotate({ description: "Thread to list. Omit for this thread." }),
-    ),
+    threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
   }),
   success: ListThreadPullRequestsResult,
   failure: PullRequestToolError,
@@ -390,7 +461,7 @@ const WritePullRequestGuidesTool = Tool.make("write_pull_request_guides", {
 
 const ReadPullRequestGuideTool = Tool.make("read_pull_request_guide", {
   description:
-    "Read a pull request's stored review guide and its run: run.Running while one is being written, run.Failed with the reason when the last one failed, guide null when none was written. stale is true after a push the guide has not caught up with. Never starts a run.",
+    "Read a PR's stored review guide and run state. `guide` is null when none exists. Never starts a run.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     ...GuideTarget.fields,
@@ -407,7 +478,9 @@ const ReadPullRequestGuideTool = Tool.make("read_pull_request_guide", {
 
 export const PullRequestsToolkit = Toolkit.make(
   LinkPullRequestTool,
+  LinkPullRequestsTool,
   UnlinkPullRequestTool,
+  UnlinkPullRequestsTool,
   ListThreadPullRequestsTool,
   WatchPullRequestTool,
   UnwatchPullRequestTool,

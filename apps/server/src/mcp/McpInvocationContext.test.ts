@@ -64,39 +64,34 @@ it.effect("refuses thread-owned capabilities to a caller signed in from outside 
   });
 });
 
-it.effect("requires an explicit focused decision snapshot grant", () => {
-  const invocation: McpInvocationContext.McpInvocationScope = {
-    environmentId: EnvironmentId.make("environment-snapshot"),
-    requestNamespace: "provider-session-snapshot",
-    thread: {
-      threadId: ThreadId.make("thread-snapshot"),
-      providerSessionId: "provider-session-snapshot",
-      providerInstanceId: ProviderInstanceId.make("codex"),
-    },
-    client: undefined,
-    capabilities: new Set(["preview", "orchestration", "worktree", "pull-requests"]),
+it("acts at an administrator's ceiling for a client approved above it", () => {
+  const scope = (
+    access: McpInvocationContext.McpClientCaller["access"],
+    narrowedTo?: McpInvocationContext.ClientModes,
+  ): McpInvocationContext.McpInvocationScope => ({
+    environmentId: EnvironmentId.make("environment-1"),
+    requestNamespace: "client:session-1",
+    thread: undefined,
+    client: { sessionId: "session-1", label: "Claude Code", access, narrowedTo },
+    capabilities: new Set(["orchestration"]),
     issuedAt: 1,
-  };
-  return Effect.gen(function* () {
-    const error = yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, invocation),
-      Effect.flip,
-    );
-    expect(error).toBeInstanceOf(McpCapabilityUnavailableError);
-    expect(error).toMatchObject({
-      capability: "decision-snapshot",
-      environmentId: invocation.environmentId,
-      threadId: invocation.thread?.threadId,
-      providerSessionId: invocation.thread?.providerSessionId,
-      providerInstanceId: invocation.thread?.providerInstanceId,
-    });
-    const granted: McpInvocationContext.McpInvocationScope = {
-      ...invocation,
-      capabilities: new Set(["decision-snapshot"]),
-    };
-    const scope = yield* McpInvocationContext.requireMcpCapability("decision-snapshot").pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, granted),
-    );
-    expect(scope).toBe(granted);
   });
+  const modes = (invocation: McpInvocationContext.McpInvocationScope, ceiling?: "auto") =>
+    McpInvocationContext.clientModeCeiling(
+      McpInvocationContext.withRuntimeModeCeiling(invocation, ceiling).client,
+    );
+
+  expect(modes(scope("full-access"), "auto")).toEqual({
+    runtimeMode: "auto",
+    interactionMode: "default",
+  });
+  // A narrower request and the approved mode still win below the ceiling.
+  expect(
+    modes(
+      scope("full-access", { runtimeMode: "approval-required", interactionMode: "plan" }),
+      "auto",
+    ),
+  ).toEqual({ runtimeMode: "approval-required", interactionMode: "plan" });
+  expect(modes(scope("auto-accept-edits"), "auto").runtimeMode).toBe("auto-accept-edits");
+  expect(modes(scope("full-access")).runtimeMode).toBe("full-access");
 });

@@ -97,6 +97,8 @@ describe("scheduleFromDraft", () => {
 
   it.each([
     ["1.5", 90_000],
+    ["2,5", 150_000],
+    [" 2,5 ", 150_000],
     [String(60_001 / 60_000), 60_001],
   ])("preserves a valid %s minute interval when saving", (intervalMinutes, everyMs) => {
     expect(scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "interval", intervalMinutes })).toEqual({
@@ -105,70 +107,14 @@ describe("scheduleFromDraft", () => {
     });
   });
 
-  it.each(["NaN", "Infinity", "9007199254740991", "0.5"])(
-    "rejects intervals that cannot be written as safe whole milliseconds: %s",
+  it.each(["0,5", "2,5,0", "Infinity", "150119987580", ""])(
+    "rejects invalid interval minutes: %s",
     (intervalMinutes) => {
       expect(
         scheduleFromDraft({ ...DEFAULT_SCHEDULE, mode: "interval", intervalMinutes }),
       ).toBeNull();
     },
   );
-});
-
-const legacyTask: ScheduledTask = {
-  id: ScheduledTaskId.make("legacy-task"),
-  title: "Review issues",
-  prompt: "Review open issues",
-  enabled: true,
-  schedule: { type: "interval", everyMs: 60_000 },
-  projectId: ProjectId.make("project"),
-  threadId: null,
-  workspaceStrategy: { type: "worktree", baseRef: "release" },
-  modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
-  runtimeMode: "full-access",
-  interactionMode: "default",
-  createdBy: "user",
-  creationSource: "web",
-  createdAt: "2026-09-17T00:00:00.000Z",
-  updatedAt: "2026-09-17T00:00:00.000Z",
-  nextRunAt: null,
-  lastRunAt: null,
-  lastRunStatus: "never",
-  lastRunError: null,
-  runCount: 0,
-};
-
-describe("editing scheduled task branch settings", () => {
-  it("opens an automatic worktree base as an empty editable field", () => {
-    const task = {
-      ...legacyTask,
-      workspaceStrategy: { type: "worktree" as const, startFromOrigin: true },
-    };
-    const draft = editDraft(task);
-
-    expect(draft.baseRef).toBe("");
-    expect(draft.startFromOrigin).toBe(true);
-    expect(draft.task?.workspaceStrategy).not.toHaveProperty("baseRef");
-    expect(hasScheduledTaskDraftChanges(draft, editDraft(task))).toBe(false);
-  });
-
-  it("keeps an omitted origin flag on the local base branch", () => {
-    const draft = editDraft(legacyTask);
-    expect(draft.baseRef).toBe("release");
-    expect(draft.startFromOrigin).toBe(false);
-  });
-
-  it.each([true, false])("preserves an explicit origin flag of %s", (startFromOrigin) => {
-    const draft = editDraft({
-      ...legacyTask,
-      workspaceStrategy: { type: "worktree", baseRef: "release", startFromOrigin },
-    });
-    expect(draft.startFromOrigin).toBe(startFromOrigin);
-  });
-});
-
-it("continues to default newly created tasks to origin", () => {
-  expect(createDraft(null, null).startFromOrigin).toBe(true);
 });
 
 describe("scheduled task model defaults", () => {

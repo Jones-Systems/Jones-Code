@@ -52,30 +52,20 @@ export function usePreviewAvailable(environmentId: EnvironmentId | null): boolea
 export function rendersServerTabNatively(
   environmentId: EnvironmentId,
   primaryEnvironmentId: EnvironmentId | null,
-  snapshot:
-    | (Pick<PreviewSessionSnapshot, "runtime"> &
-        Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
-    | null
-    | undefined,
+  snapshot: Pick<PreviewSessionSnapshot, "runtime" | "headless"> | null | undefined,
 ): boolean {
-  if (!isElectron || snapshot?.runtime !== "server") return false;
-  if (!snapshot.threadId || !snapshot.tabId) return environmentId === primaryEnvironmentId;
-  return nativeCompanionRendering({
-    environmentId,
-    primaryEnvironmentId,
-    snapshot: { ...snapshot, threadId: snapshot.threadId, tabId: snapshot.tabId },
-    binding: readBindingResult({ environmentId, threadId: ThreadId.make(snapshot.threadId) }),
-    companion: appAtomRegistry.get(companionStateAtom),
-  });
+  return (
+    isElectron &&
+    snapshot?.runtime === "server" &&
+    !snapshot.headless &&
+    primaryEnvironmentId !== null &&
+    environmentId === primaryEnvironmentId
+  );
 }
 
 export function useRendersServerTabNatively(
   environmentId: EnvironmentId,
-  snapshot:
-    | (Pick<PreviewSessionSnapshot, "runtime"> &
-        Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
-    | null
-    | undefined,
+  snapshot: Pick<PreviewSessionSnapshot, "runtime" | "headless"> | null | undefined,
 ): boolean {
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
   const companion = useAtomValue(companionStateAtom);

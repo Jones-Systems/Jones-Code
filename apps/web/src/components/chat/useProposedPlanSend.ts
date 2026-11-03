@@ -57,7 +57,6 @@ interface PlanSendBase {
   readonly activeProposedPlan: LatestProposedPlanState | null;
   readonly isServerThread: boolean;
   readonly isSendBusy: boolean;
-  readonly isConnecting: boolean;
   readonly composerRef: ComposerHandleRef;
   readonly beginLocalDispatch: LocalDispatchState["beginLocalDispatch"];
   readonly resetLocalDispatch: LocalDispatchState["resetLocalDispatch"];
@@ -90,7 +89,6 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
     activeProposedPlan,
     isServerThread,
     isSendBusy,
-    isConnecting,
     composerRef,
     beginLocalDispatch,
     resetLocalDispatch,
@@ -121,7 +119,6 @@ export function usePlanFollowUpSend(input: PlanFollowUpSendInput) {
       !activeThread ||
       !isServerThread ||
       isSendBusy ||
-      isConnecting ||
       sendInFlightRef.current
     ) {
       return false;
@@ -249,7 +246,6 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
     activeProposedPlan,
     isServerThread,
     isSendBusy,
-    isConnecting,
     composerRef,
     beginLocalDispatch,
     resetLocalDispatch,
@@ -270,7 +266,6 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
       !activeProposedPlan ||
       !isServerThread ||
       isSendBusy ||
-      isConnecting ||
       activeEnvironmentUnavailable ||
       sendInFlightRef.current
     ) {

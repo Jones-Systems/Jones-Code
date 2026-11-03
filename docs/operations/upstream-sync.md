@@ -106,10 +106,7 @@ does not perform repository deletion or authorize runtime changes.
 
 ## Workflow policy
 
-The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`,
-`artifact-cli-mac.yml`, `artifact-desktop-mac.yml`,
-`jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and
-`jones-native-workflows.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
+The Jones-Code workflow allowlist is `artifact-cli-linux.yml`, `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`, `ci.yml`, `jones-desktop-signing.yml`, `jones-native-workflows.yml`, `jones-thread-monitor-native.yml`, `jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and `server-parallel-qualification.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
 on pull requests, main pushes and manual dispatch. `Check` is the required
 aggregate; selected Linux jobs may skip only
 on explicit successful classification, with full main, unknown-change and
@@ -169,6 +166,12 @@ to deferred until its trigger, runner, permissions and secrets are reviewed.
 | `release.yml`                       | Push, schedule, manual                   | Deferred               | Scheduled and tag-driven release pipeline.                          |
 | `thread-transfer-report.yml`        | Workflow completion                      | Not applicable         | Upstream report publishing.                                         |
 | `web-preview.yml`                   | PR                                       | Deferred               | Web preview deployment and credentials.                             |
+| `relay-preview.yml` | pull_request | Deferred | Deploys relay previews using upstream credentials. |
+| `relay-preview-cleanup.yml` | pull_request_target, schedule, workflow_dispatch | Deferred | Cleans up preview deployments using upstream credentials. |
+| `stale-needs-more-info.yml` | schedule, workflow_dispatch | Deferred | Upstream issue maintenance; its scheduled automation is not adopted. |
+| `agent-context-budget.yml` | pull_request | Deferred | Upstream agent budget automation requires separate policy review. |
+| `mobile-eas-preview-fork.yml` | pull_request_target | Deferred | Privileged EAS fork-preview publishing and credentials. |
+| `mobile-fingerprint-label.yml` | workflow_run | Deferred | Privileged native fingerprint labeling requires separate review. |
 | `windows-tests.yml`                 | Manual                                   | Retired                | Jones Code does not support Windows.                                |
 
 The removed `setup-apt-mirrors` action configured a Blacksmith-specific apt mirror. CI now uses the hosted Ubuntu image's apt sources. Core `ci.yml` checks do not publish desktop or CLI releases, deploy the relay, run Windows tests, or run the mobile fingerprint check. The three artifact workflows build downloadable trial files without publishing a Release. Restore a deferred workflow only in a separate reviewed PR, replace its runner and credentials with Jones-Code-owned capabilities, and verify its first run. Do not re-enable upstream schedules or privileged events as a side effect of merging upstream.

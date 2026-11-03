@@ -32,9 +32,7 @@ import {
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
-import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
-import * as DateTime from "effect/DateTime";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -445,7 +443,7 @@ const classifyResponseError = (
 };
 
 export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const state = yield* SynchronizedRef.make<BrokerState>({
     clients: new Map(),
     assignments: new Map(),
@@ -515,7 +513,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
   ) {
     const clientId = host.clientId;
     const queue = yield* Queue.unbounded<PreviewAutomationStreamEvent, Cause.Done>();
-    const connectionId = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const connectionId = yield* random.uuidV4();
     yield* Queue.offer(queue, { type: "connected", connectionId });
     const connection: ClientConnection = {
       clientId,
@@ -1107,32 +1105,14 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         input.updateCurrentTab === false ? timeoutMs : timeoutMs + HOST_RESPONSE_GRACE_MS;
       const result = yield* Deferred.await(deferred).pipe(Effect.timeoutOption(responseTimeoutMs));
       return yield* Option.match(result, {
-        onNone: () =>
-          Effect.gen(function* () {
-            // Do not replay timed-out actions: their effects remain unknown.
-            // Quarantine mutations and probe liveness without discarding affinity.
-            const expiredAt = yield* Clock.currentTimeMillis;
-            const expired = yield* SynchronizedRef.modify(state, (current) => {
-              const entry = current.pending.get(requestId);
-              if (!entry) return [undefined, current] as const;
-              const pending = new Map(current.pending);
-              pending.delete(requestId);
-              const tombstones = new Map(
-                Array.from(current.tombstones).filter(([, value]) => value.expiresAt > expiredAt),
-              );
-              tombstones.set(requestId, { ...entry, expiresAt: expiredAt + 60_000 });
-              while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
-              const quarantine = new Map(current.quarantine);
-              if (!readOnlyOperations.has(input.operation)) quarantine.set(requestId, entry);
-              return [entry, { ...current, pending, tombstones, quarantine }] as const;
-            });
-            if (expired && input.failurePolicy !== "request_only")
-              yield* checkLiveness(connection, expired).pipe(Effect.forkDetach);
-            return yield* new PreviewAutomationTimeoutError({
-              ...requestContext,
-              outcome: "unknown",
-            });
-          }),
+        // The enclosing operation owns the span for this inline handler.
+        onNone: Effect.fnUntraced(function* () {
+          // Never replay possibly applied actions; slow metadata reads must not evict the host.
+          if (input.updateCurrentTab !== false) {
+            yield* disconnect(connection.clientId, connection.queue, true);
+          }
+          return yield* new PreviewAutomationTimeoutError(requestContext);
+        }),
         onSome: (value) => Effect.succeed(value as A),
       });
     });

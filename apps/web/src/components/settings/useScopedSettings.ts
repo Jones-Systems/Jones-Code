@@ -14,17 +14,7 @@ import {
   type UnifiedSettings,
 } from "@t3tools/contracts";
 
-import {
-  persistClientSettingsPatch,
-  mergeEnvironmentSettings,
-  useMergedSettings,
-  useMigrateModelPreferences,
-} from "../../hooks/useSettings";
-import {
-  createModelSelectionResolver,
-  modelSelectionsAreMixed,
-} from "../../jones/settings/modelSelectionCorrespondence";
-import { useEnvironmentProviders } from "../../state/environments";
+import { persistClientSettingsPatch, useMergedSettings } from "../../hooks/useSettings";
 import { serverEnvironment } from "../../state/server";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { toastManager } from "../ui/toast";
@@ -43,7 +33,6 @@ export function useScopedSettings<T = UnifiedSettings>(
   selector?: (settings: UnifiedSettings) => T,
 ): T {
   const { target } = useSettingsScope();
-  useMigrateModelPreferences(target?.environmentId ?? null, target?.settings ?? null);
   return useMergedSettings(target?.settings ?? DEFAULT_SERVER_SETTINGS, selector);
 }
 
@@ -67,13 +56,14 @@ export function useScopedSettingSource(keys: readonly (keyof ServerSettings)[]) 
 
 function useRunScopedPlan() {
   const persistServer = useAtomCommand(serverEnvironment.updateSettings, { reportFailure: false });
-  return (plan: ReturnType<typeof planScopedSettingsPatch>) => {
+  return (plan: ReturnType<typeof planScopedSettingsPatch>, onFailed?: () => void) => {
     if (plan.unavailableReason) {
       toastManager.add({
         type: "warning",
         title: "Setting not saved",
         description: plan.unavailableReason,
       });
+      onFailed?.();
       return;
     }
     void persistScopedSettingsPatch(
@@ -96,6 +86,7 @@ function useRunScopedPlan() {
       persistClientSettingsPatch,
     ).then(({ failedEnvironments, savedEnvironments, savedEnvironmentCount }) => {
       if (failedEnvironments.length === 0) return;
+      onFailed?.();
       toastManager.add({
         type: "error",
         title:
@@ -118,24 +109,9 @@ export function useUpdateScopedSettings() {
   const providersByEnvironment = useEnvironmentProviders();
   const settings = useMergedSettings(target?.settings ?? DEFAULT_SERVER_SETTINGS);
   const run = useRunScopedPlan();
-  return (patch: ScopedSettingsPatch, options?: { literalModelSelections?: boolean }) =>
-    run(
-      planScopedSettingsPatch(
-        scope,
-        environments,
-        patch,
-        createModelSelectionResolver(
-          {
-            representative: target,
-            targets,
-            providersByEnvironment,
-            settingsForDestination: (destination) =>
-              mergeEnvironmentSettings(destination.settings, settings),
-          },
-          options,
-        ),
-      ),
-    );
+  /** `onFailed` runs when any target rejects or drops the patch, so a draft can fall back. */
+  return (patch: ScopedSettingsPatch, options?: { readonly onFailed?: () => void }) =>
+    run(planScopedSettingsPatch(scope, environments, patch), options?.onFailed);
 }
 
 export function useClearScopedSettings() {

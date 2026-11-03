@@ -25,6 +25,7 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -43,6 +44,7 @@ import {
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as AgentAwarenessRelay from "./AgentAwarenessRelay.ts";
@@ -204,6 +206,9 @@ const makeTestRelay = Effect.fnUntraced(function* (
         );
       }),
     listActiveSubagentThreadIds: unused,
+    listAppOwnedChildThreadIds: unused,
+    countThreads: unused,
+    listActiveShellIndex: () => Effect.succeed([]),
     listOlderSettledThreads: unused,
     readShellSnapshot: unused,
     ensureLegacyTranscript: unused,
@@ -222,7 +227,6 @@ const makeTestRelay = Effect.fnUntraced(function* (
     getThreadTranscript: unused,
     getThreadSnapshotWindow: unused,
     getProjectThreadRecords: () => Effect.die("unused project record read"),
-    getProjectThread: unused,
     listProjectThreads: unused,
     sendToThread: unused,
     assertProviderInstanceEnabled: unused,
@@ -234,6 +238,7 @@ const makeTestRelay = Effect.fnUntraced(function* (
     settleThread: unused,
     interruptThread: unused,
     stopWorkflow: () => Effect.die("unused stopWorkflow"),
+    forceStopThread: () => Effect.die("unused forceStopThread"),
     awaitBackgroundTasks: unused,
     stopDelegatedTasks: unused,
     getThreadEventSequence: unused,
@@ -536,6 +541,113 @@ describe("AgentAwarenessRelay", () => {
     }),
   );
 
+  it.effect("publishes a cleared thread's tombstone once while it stays cleared", () =>
+    Effect.gen(function* () {
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* relay.publishThread(THREAD_ID);
+      const completed = shell({ status: "completed" });
+      yield* Ref.set(currentShell, completed);
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      yield* Ref.set(currentShell, {
+        ...completed,
+        settledOverride: "settled",
+        settledAt: yield* DateTime.now,
+        lastVisitedAt: null,
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", "completed", null],
+      );
+
+      for (let i = 0; i < 3; i++) {
+        yield* relay.publishThread(THREAD_ID);
+        yield* TestClock.adjust("5 seconds");
+        yield* relay.drain;
+      }
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        ["running", "completed", null],
+      );
+    }),
+  );
+
+  it.effect("does not alert an old completion after publishing its thread's tombstone", () =>
+    Effect.gen(function* () {
+      const oldCompleted = shell({
+        status: "completed",
+        latestRunCompletedAt: DateTime.makeUnsafe("2026-09-04T11:59:00.000Z"),
+      });
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(NOW)));
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      yield* Ref.set(currentShell, {
+        ...oldCompleted,
+        settledOverride: "settled",
+        settledAt: DateTime.makeUnsafe(NOW),
+        lastVisitedAt: null,
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state),
+        [null],
+      );
+
+      yield* Ref.set(currentShell, oldCompleted);
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state),
+        [null],
+      );
+    }),
+  );
+
+  it.effect("alerts a completion settled during its hold after an earlier tombstone", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DateTime.toEpochMillis(DateTime.makeUnsafe(NOW)));
+      const { relay, currentShell, publications } = yield* makeTestRelay();
+      const settledAt = DateTime.makeUnsafe(NOW);
+      yield* Ref.set(currentShell, {
+        ...shell({ status: "completed" }),
+        settledOverride: "settled",
+        settledAt,
+        lastVisitedAt: null,
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+
+      const completed = shell({
+        status: "completed",
+        latestRunCompletedAt: DateTime.makeUnsafe("2026-09-04T12:00:06.000Z"),
+      });
+      yield* Ref.set(currentShell, completed);
+      yield* relay.publishThread(THREAD_ID);
+      yield* Ref.set(currentShell, {
+        ...completed,
+        settledOverride: "settled",
+        settledAt,
+        lastVisitedAt: null,
+      });
+      yield* relay.publishThread(THREAD_ID);
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      yield* TestClock.adjust("5 seconds");
+      yield* relay.drain;
+      assert.deepEqual(
+        publications.map((publication) => publication.state?.phase ?? null),
+        [null, "completed", null],
+      );
+    }),
+  );
+
   it.effect("drops a held completion when a queued continuation hides the thread", () =>
     Effect.gen(function* () {
       const { relay, currentShell, publications } = yield* makeTestRelay();
@@ -768,98 +880,41 @@ describe("AgentAwarenessRelay", () => {
         publications.map((publication) => publication.state?.phase),
         ["running", "completed"],
       );
-    }).pipe(Effect.scoped, Effect.provide(ProjectionStore.layerMemory)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory))),
+    ),
   );
 });
 
-// A small synthetic database exercises the relay hook's actual connection
-// routing. SQLite and its worker close before the scoped directory is removed.
-const relayDatabase = Layer.unwrap(
+it.effect("catches up after startup without polling after success", () =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "jones-relay-reader-" });
-    return NodeSqliteClient.layer({
-      filename: path.join(directory, "state.sqlite"),
-      readerWorker: true,
-      readerFailureMode: "fail",
-    });
-  }),
-);
-
-it.live("catch-up requests active shells on the file reader while the writer is held", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`PRAGMA journal_mode = WAL`;
-    yield* sql`CREATE TABLE relay_fixture (value INTEGER NOT NULL)`;
-    yield* sql`INSERT INTO relay_fixture VALUES (1)`;
-    yield* sql`SELECT value FROM relay_fixture`.pipe(NodeSqliteClient.readOnly);
-    const completed = yield* Deferred.make<void>();
-    const { relay, catchUp } = yield* makeTestRelay({
-      readSnapshot: (query) =>
-        Effect.gen(function* () {
-          assert.deepStrictEqual(query, { location: "active" });
-          const rows = yield* sql.withTransaction(
-            sql<{ value: number }>`SELECT value FROM relay_fixture`,
-          );
-          assert.equal(rows[0]?.value, 1);
-          yield* Deferred.succeed(completed, undefined);
-          return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
-        }).pipe(
-          Effect.mapError(
-            (cause) => new Orchestrator.OrchestratorProjectionError({ threadId: THREAD_ID, cause }),
-          ),
-        ),
-    });
-    const held = yield* Deferred.make<void>();
-    const release = yield* Deferred.make<void>();
-    const writer = yield* Effect.forkScoped(
-      sql.withTransaction(
-        Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
-      ),
-    );
-    yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined));
-    yield* Deferred.await(held);
+    const { relay, secrets, secretReads, catchUp } = yield* makeTestRelay();
     yield* relay.start();
-    const result = yield* Deferred.await(completed).pipe(Effect.timeoutOption("5 seconds"));
-    // Release before asserting: a regression can leave connection acquisition waiting.
-    yield* Deferred.succeed(release, undefined);
-    yield* Fiber.join(writer);
-    assert.isTrue(Option.isSome(result), "Relay catch-up waited behind the writer");
+    yield* TestClock.adjust("1 second");
     assert.equal(catchUp.shellSnapshotReads, 1);
-  }).pipe(Effect.provide(relayDatabase), Effect.scoped, Effect.provide(NodeServices.layer)),
-);
 
-it.live("unavailable file reader fails catch-up without a writer fallback, including retry", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    // Deliberately retain DELETE journal mode: strict readers require WAL.
-    yield* sql`CREATE TABLE relay_fixture (value INTEGER NOT NULL)`;
-    yield* sql`INSERT INTO relay_fixture VALUES (1)`;
-    const outcomes = yield* Queue.unbounded<boolean>();
-    let successes = 0;
-    const { relay, catchUp } = yield* makeTestRelay({
-      readSnapshot: (query) =>
-        Effect.gen(function* () {
-          assert.deepStrictEqual(query, { location: "active" });
-          yield* sql.withTransaction(sql`SELECT value FROM relay_fixture`);
-          successes += 1;
-          return { schemaVersion: 2, snapshotSequence: 1, threads: [], archivedThreads: [] };
-        }).pipe(
-          Effect.onExit((exit) => Queue.offer(outcomes, exit._tag === "Success")),
-          Effect.mapError(
-            (cause) => new Orchestrator.OrchestratorProjectionError({ threadId: THREAD_ID, cause }),
-          ),
-        ),
-    });
-    yield* relay.start();
-    const first = yield* Queue.take(outcomes).pipe(Effect.timeoutOption("5 seconds"));
-    assert.deepStrictEqual(first, Option.some(false));
+    yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("false"));
     yield* relay.requestCatchUp();
-    const retry = yield* Queue.take(outcomes).pipe(Effect.timeoutOption("5 seconds"));
-    assert.deepStrictEqual(retry, Option.some(false));
+    yield* TestClock.adjust("1 second");
+    assert.equal(catchUp.shellSnapshotReads, 1);
+
+    yield* secrets.set(PUBLISH_AGENT_ACTIVITY_SECRET, new TextEncoder().encode("true"));
+    yield* relay.requestCatchUp();
+    yield* TestClock.adjust("1 second");
     assert.equal(catchUp.shellSnapshotReads, 2);
-    assert.equal(successes, 0);
-    assert.lengthOf(yield* sql`SELECT value FROM relay_fixture`, 1);
-  }).pipe(Effect.provide(relayDatabase), Effect.scoped, Effect.provide(NodeServices.layer)),
+
+    const readsBeforeIdle = secretReads.length;
+    yield* TestClock.adjust("10 minutes");
+    assert.equal(catchUp.shellSnapshotReads, 2);
+    assert.equal(secretReads.length, readsBeforeIdle);
+
+    yield* secrets.set(
+      RELAY_ENVIRONMENT_CREDENTIAL_SECRET,
+      new TextEncoder().encode("credential-2"),
+    );
+    yield* relay.requestCatchUp();
+    yield* TestClock.adjust("1 second");
+    assert.equal(catchUp.shellSnapshotReads, 3);
+  }).pipe(Effect.scoped),
 );

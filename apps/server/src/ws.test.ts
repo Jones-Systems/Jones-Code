@@ -1,7 +1,5 @@
-import * as PeerLinks from "./peer/PeerLinks.ts";
-import * as QueueCompatibility from "./orchestration-v2/QueueCompatibility.ts";
-import * as SettlementOrigins from "./jones/settlementOrigins/SettlementOrigins.ts";
-import * as TokenAccountingService from "./tokenAccounting/TokenAccountingService.ts";
+import * as SecretResolver from "@t3tools/secret-provider-core/server/SecretResolver";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -24,6 +22,7 @@ import {
 import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
@@ -44,6 +43,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
 import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
+import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as CodexInstallation from "./provider/CodexInstallation.ts";
 import * as DeviceService from "./device/DeviceService.ts";
@@ -54,11 +54,14 @@ import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as GitWorkflowService from "./git/GitWorkflowService.ts";
 import * as HostResources from "./resourceTelemetry/HostResources.ts";
 import * as ManagedProjectFolders from "./project/ManagedProjectFolders.ts";
+import * as ScratchThreadPromotion from "./project/ScratchThreadPromotion.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ModelManifest from "./provider/ModelManifest.ts";
 import * as Orchestrator from "./orchestration-v2/Orchestrator.ts";
 import * as OtlpEndpointCheck from "./observability/OtlpEndpointCheck.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
+import * as PeerLinkRequests from "./peer/PeerLinkRequests.ts";
+import * as PeerLinks from "./peer/PeerLinks.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
@@ -86,9 +89,11 @@ import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as ServerLifecycleEvents from "./serverLifecycleEvents.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerSelfUpdate from "./cloud/selfUpdate.ts";
+import * as NpmRelease from "./cloud/npmRelease.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import * as SourceControlDiscovery from "./sourceControl/SourceControlDiscovery.ts";
 import * as SourceControlRepositoryService from "./sourceControl/SourceControlRepositoryService.ts";
+import * as SourceControlSignIn from "./sourceControl/SourceControlSignIn.ts";
 import * as StorageCleanup from "./storageCleanup.ts";
 import * as DatabaseStorage from "./persistence/DatabaseStorage.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
@@ -103,11 +108,13 @@ import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
 import * as WorktreeSetupTracker from "./project/WorktreeSetupTracker.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as TraceDiagnostics from "./diagnostics/TraceDiagnostics.ts";
+import * as TriageService from "./triage/TriageService.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as ServerConfigModule from "./config.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ServerSettings from "./serverSettings.ts";
+import * as ManagedPolicy from "./policy/ManagedPolicy.ts";
 
 import * as EventStore from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
@@ -121,10 +128,11 @@ import * as ProjectEnrichment from "./project/ProjectEnrichmentService.ts";
 import * as ProjectService from "./project/ProjectService.ts";
 import {
   layerWsRpc,
+  resolveOpenDiscoveryForConfig,
   subscribeOrchestrationV2Shell,
   subscribeOrchestrationV2Thread,
   WS_RPC_SERVER_OPTIONS,
-  withLateEditorConfig,
+  withLateConfigDiscovery,
 } from "./ws.ts";
 
 const snapshotConfig = (fields: Partial<ServerConfig>) =>
@@ -139,7 +147,7 @@ const settingsUpdated = (settings: object): ServerConfigStreamEvent => ({
 it.effect("resends late editors without rolling back updates already sent", () =>
   Effect.gen(function* () {
     const settingsSent = yield* Deferred.make<void>();
-    const events = yield* withLateEditorConfig(
+    const events = yield* withLateConfigDiscovery(
       snapshotConfig({ settings: { enableProviderUpdateChecks: true } as never }),
       Stream.make(settingsUpdated({ enableProviderUpdateChecks: false })),
       {
@@ -147,6 +155,8 @@ it.effect("resends late editors without rolling back updates already sent", () =
         resolveFileManagerRevealKind: () =>
           Deferred.await(settingsSent).pipe(Effect.as("file-explorer" as const)),
       },
+      { resolveTargets: () => Effect.succeed([]) },
+      { resolve: () => Effect.succeed([]) },
     ).pipe(
       Stream.tap((event) =>
         event.type === "settingsUpdated" ? Deferred.succeed(settingsSent, undefined) : Effect.void,
@@ -166,23 +176,67 @@ it.effect("resends late editors without rolling back updates already sent", () =
   }),
 );
 
-it.effect("resends a file manager reveal kind that missed the snapshot", () =>
+it.effect("resends a reveal kind and remote targets that outlast the snapshot timeout", () =>
   Effect.gen(function* () {
-    const events = yield* withLateEditorConfig(
+    const targets = [{ kind: "mdns" as const, host: "test.local" }];
+    const finishDiscovery = yield* Deferred.make<typeof targets>();
+    const collecting = yield* withLateConfigDiscovery(
       snapshotConfig({ availableEditors: ["file-manager"] }),
       Stream.empty,
       {
         resolveAvailableEditors: () => Effect.succeed(["file-manager"]),
         resolveFileManagerRevealKind: () => Effect.succeed("file-explorer"),
       },
-    ).pipe(Stream.runCollect);
+      { resolveTargets: () => Deferred.await(finishDiscovery) },
+      { resolve: () => Effect.succeed([]) },
+    ).pipe(Stream.runCollect, Effect.forkScoped({ startImmediately: true }));
+    yield* TestClock.adjust("6 seconds");
+    yield* Deferred.succeed(finishDiscovery, targets);
+    const events = yield* Fiber.join(collecting);
 
-    const [late] = Array.from(events);
-    assert.equal(events.length, 1);
+    const [late, remote] = Array.from(events);
+    assert.equal(events.length, 2);
     assert.equal(late?.type, "snapshot");
     if (late?.type === "snapshot") {
       assert.equal(late.config.shellRevealInFileManagerKind, "file-explorer");
     }
+    assert.equal(remote?.type, "snapshot");
+    if (remote?.type === "snapshot") {
+      assert.deepEqual(remote.config.remoteOpenTargets, targets);
+      assert.equal(remote.config.shellRevealInFileManagerKind, "file-explorer");
+    }
+  }).pipe(Effect.scoped),
+);
+
+it.effect("runs editor, remote open target and direct endpoint discovery side by side", () =>
+  Effect.gen(function* () {
+    // Each discovery finishes only once the other two have started, so a
+    // config that ran them one after another would never resolve.
+    const editorsStarted = yield* Deferred.make<void>();
+    const targetsStarted = yield* Deferred.make<void>();
+    const endpointsStarted = yield* Deferred.make<void>();
+    const startThenAwait = <A>(started: Deferred.Deferred<void>, value: A) =>
+      Deferred.succeed(started, undefined).pipe(
+        Effect.andThen(
+          Effect.forEach([editorsStarted, targetsStarted, endpointsStarted], Deferred.await),
+        ),
+        Effect.as(value),
+      );
+
+    const discovery = yield* resolveOpenDiscoveryForConfig({
+      editors: startThenAwait(editorsStarted, ["file-manager" as const]),
+      fileManagerRevealKind: Effect.succeed("finder" as const),
+      remoteOpenTargets: startThenAwait(targetsStarted, []),
+      directEndpoints: startThenAwait(endpointsStarted, []),
+    });
+
+    assert.deepEqual(discovery, {
+      availableEditors: ["file-manager"],
+      shellRevealInFileManager: true,
+      shellRevealInFileManagerKind: "finder",
+      remoteOpenTargets: [],
+      directEndpoints: [],
+    });
   }),
 );
 
@@ -305,6 +359,199 @@ it.live.each(["thread", "shell"] as const)(
     }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
 );
 
+it.effect("coalesces streaming replay before synchronization and the live tail", () =>
+  Effect.gen(function* () {
+    const store = yield* OrchestrationEventStore.OrchestrationEventStore;
+    const sql = yield* SqlClient.SqlClient;
+    const threadId = ThreadId.make("thread:streaming-replay");
+    const now = "2026-10-27T00:00:00.000Z";
+    const insert = (version: number, text: string, streaming: boolean) => sql<{
+      sequence: number;
+    }>`
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type,
+        occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+      ) VALUES (
+        ${`streaming-replay:${version}`}, 'thread', ${threadId}, ${version}, 'message.updated',
+        ${now}, 'server', ${JSON.stringify({
+          createdBy: "agent",
+          creationSource: "web",
+          id: "message:streaming-replay",
+          threadId,
+          runId: null,
+          nodeId: null,
+          role: "assistant",
+          text,
+          attachments: [],
+          streaming,
+          createdAt: now,
+          updatedAt: now,
+        })}, '{}', 2
+      ) RETURNING sequence
+    `;
+    yield* insert(0, "H", true);
+    yield* insert(1, "He", true);
+    const [latest] = yield* insert(2, "Hello", true);
+    const [completed] = yield* insert(3, "Hello!", false);
+    const items = yield* subscribeOrchestrationV2Thread({
+      threadId,
+      afterSequence: 0,
+      requestCompletionMarker: true,
+    }).pipe(
+      Effect.flatMap(Stream.runCollect),
+      Effect.provideService(ThreadManagement.ThreadManagementService, {
+        ensureLegacyTranscript: () => Effect.void,
+        streamStoredEventsFrom: () =>
+          Stream.unwrap(
+            insert(4, "Next", false).pipe(
+              Effect.map(() =>
+                store.readAgentEvents({ threadId, afterSequence: completed!.sequence }),
+              ),
+            ),
+          ),
+      } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+    );
+    assert.deepEqual(
+      items.map((item) =>
+        item.kind === "event"
+          ? [item.sequence, item.event.type === "message.updated" ? item.event.payload.text : null]
+          : [item.kind],
+      ),
+      [
+        [latest!.sequence, "Hello"],
+        [completed!.sequence, "Hello!"],
+        ["synchronized"],
+        [completed!.sequence + 1, "Next"],
+      ],
+    );
+  }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
+);
+
+it.effect("shell groups read distinct threads once and keep each event's own sequence", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const now = "2026-10-27T00:00:00.000Z";
+    const insert = (aggregateKind: "thread" | "project", streamId: string, version: number) =>
+      sql<{ sequence: number }>`
+      INSERT INTO orchestration_events (
+        event_id, aggregate_kind, stream_id, stream_version, event_type,
+        occurred_at, actor_kind, payload_json, metadata_json, application_event_version
+      ) VALUES (
+        ${`shell-group:${streamId}:${version}`}, ${aggregateKind}, ${streamId}, ${version},
+        ${aggregateKind === "thread" ? "provider-session.detached" : "project.meta-updated"},
+        ${now}, 'server', ${JSON.stringify(
+          aggregateKind === "thread"
+            ? { providerSessionId: "session:shell-group", detachedAt: now }
+            : { projectId: streamId, updatedAt: now },
+        )}, '{}', 2
+      ) RETURNING sequence
+    `.pipe(Effect.map(([row]) => row!.sequence));
+    const shell = (id: string, archivedAt: string | null = null) =>
+      ({ id: ThreadId.make(id), archivedAt }) as unknown as OrchestrationV2ThreadShell;
+    const project = {
+      id: ProjectId.make("project:group"),
+    } as unknown as OrchestrationProjectShell;
+
+    const after = yield* insert("project", "project:before", 0);
+    yield* insert("thread", "thread:active", 0);
+    const archived = yield* insert("thread", "thread:archived", 0);
+    const projectUpdated = yield* insert("project", project.id, 0);
+    const active = yield* insert("thread", "thread:active", 1);
+    const missing = yield* insert("thread", "thread:missing", 0);
+
+    const shellReads: Array<ReadonlyArray<string> | undefined> = [];
+    let batchFails = false;
+    const collect = (afterSequence: number) =>
+      subscribeOrchestrationV2Shell({ afterSequence, requestCompletionMarker: true }).pipe(
+        Effect.flatMap((stream) =>
+          stream.pipe(
+            Stream.takeUntil((item) => item.kind === "synchronized"),
+            Stream.runCollect,
+          ),
+        ),
+        Effect.provideService(ThreadManagement.ThreadManagementService, {
+          listActiveSubagentThreadIds: () => Effect.succeed([]),
+          getShellSnapshot: (options?: { readonly threadIds?: ReadonlyArray<string> }) =>
+            Effect.suspend(() => {
+              shellReads.push(options?.threadIds);
+              return batchFails
+                ? Effect.fail("batch failed")
+                : Effect.succeed({
+                    schemaVersion: 1,
+                    snapshotSequence: Number.MAX_SAFE_INTEGER,
+                    threads: [shell("thread:active")],
+                    archivedThreads: [shell("thread:archived", now)],
+                  });
+            }),
+          getThreadShell: (threadId: string) =>
+            Effect.sync(() => {
+              shellReads.push([`scalar:${threadId}`]);
+              return threadId === "thread:missing"
+                ? null
+                : shell(threadId, threadId === "thread:archived" ? now : null);
+            }),
+        } as unknown as ThreadManagement.ThreadManagementService["Service"]),
+        Effect.provideService(ProjectStore.ProjectStoreV2, {
+          listShells: () => Effect.succeed([]),
+        } as unknown as ProjectStore.ProjectStoreV2["Service"]),
+        Effect.provideService(ProjectService.ProjectService, {
+          getShell: () => Effect.succeedSome(project),
+        } as unknown as ProjectService.ProjectService["Service"]),
+        Effect.provideServiceEffect(
+          ProjectEnrichment.ProjectEnrichmentService,
+          PubSub.unbounded().pipe(
+            Effect.map(
+              (changes) =>
+                ({
+                  subscribeChanges: PubSub.subscribe(changes),
+                }) as unknown as ProjectEnrichment.ProjectEnrichmentService["Service"],
+            ),
+          ),
+        ),
+      );
+
+    const collectSummary = (afterSequence: number) =>
+      collect(afterSequence).pipe(
+        Effect.map((items) =>
+          items.flatMap((item): ReadonlyArray<ReadonlyArray<string | number>> =>
+            item.kind === "thread.updated"
+              ? [[item.kind, item.sequence, item.thread.id]]
+              : item.kind === "thread.removed"
+                ? [[item.kind, item.sequence, item.threadId]]
+                : item.kind === "project.updated"
+                  ? [[item.kind, item.sequence, item.project.id]]
+                  : [],
+          ),
+        ),
+      );
+    const expectedGroup = [
+      ["thread.removed", archived, "thread:archived"],
+      ["project.updated", projectUpdated, project.id],
+      ["thread.updated", active, "thread:active"],
+      ["thread.removed", missing, "thread:missing"],
+    ];
+
+    assert.deepEqual(yield* collectSummary(after), expectedGroup);
+    assert.deepEqual(shellReads, [["thread:archived", "thread:active", "thread:missing"]]);
+
+    shellReads.length = 0;
+    assert.deepEqual(yield* collectSummary(active), [
+      ["thread.removed", missing, "thread:missing"],
+    ]);
+    assert.deepEqual(shellReads, [["scalar:thread:missing"]]);
+
+    shellReads.length = 0;
+    batchFails = true;
+    assert.deepEqual(yield* collectSummary(after), expectedGroup);
+    assert.deepEqual(shellReads, [
+      ["thread:archived", "thread:active", "thread:missing"],
+      ["scalar:thread:archived"],
+      ["scalar:thread:active"],
+      ["scalar:thread:missing"],
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(ReplayTestLayer)),
+);
+
 it.effect("shell snapshots omit idle children and older settled threads only on request", () =>
   Effect.gen(function* () {
     const shell = (
@@ -346,12 +593,23 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
         Effect.map(([item]) => (item?.kind === "snapshot" ? item.snapshot : null)),
         Effect.provide(ShellMaterialization.layer),
         Effect.provideService(ThreadManagement.ThreadManagementService, {
-          readShellSnapshot: () =>
+          listActiveShellIndex: () =>
+            Effect.succeed(
+              threads.map((thread) => ({
+                ...thread,
+                pinnedAt: null,
+                snoozedUntil: null,
+                mayBeLive: thread.activityRunStatus !== null,
+              })),
+            ),
+          readShellSnapshot: (options?: { readonly threadIds?: ReadonlyArray<string> }) =>
             Effect.succeed(
               Effect.succeed({
                 schemaVersion: 1,
                 snapshotSequence: 0,
-                threads,
+                threads: threads.filter(
+                  (thread) => options?.threadIds?.includes(thread.id) ?? true,
+                ),
                 archivedThreads: [],
               }),
             ),
@@ -409,6 +667,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ServerSecretStore.ServerSecretStore)({}),
   Layer.mock(WorkspacePaths.WorkspacePaths)({}),
   Layer.mock(TraceDiagnostics.TraceDiagnostics)({}),
+  Layer.mock(TriageService.TriageService)({}),
   Layer.mock(ProjectFaviconResolver.ProjectFaviconResolver)({}),
   Layer.mock(ProjectEnrichment.ProjectEnrichmentService)({}),
   Layer.mock(AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator)({}),
@@ -419,6 +678,7 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(AntigravityInstallation.AntigravityInstallation)({ managedDirectory: "/unused" }),
   Layer.mock(BackgroundPolicy.BackgroundPolicy)({}),
   Layer.mock(CheckpointDiffQuery.CheckpointDiffQuery)({}),
+  Layer.mock(NativeChildWorkQuery.NativeChildWorkQuery)({}),
   Layer.mock(CommandOutputHub.CommandOutputHub)({}),
   Layer.mock(CodexInstallation.CodexInstallation)({ managedDirectory: "/unused" }),
   Layer.mock(DeviceService.DeviceService)({}),
@@ -431,7 +691,9 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(Orchestrator.OrchestratorV2)({}),
   Layer.mock(OtlpEndpointCheck.OtlpEndpointCheck)({}),
   Layer.mock(PairingGrantStore.PairingGrantStore)({}),
-  Layer.mock(PortScanner.PortDiscovery)({}),
+  Layer.mock(PeerLinks.PeerLinks)({}),
+  Layer.mock(PeerLinkRequests.PeerLinkRequests)({}),
+  Layer.mock(PortScanner.PortDiscovery)({ trackAgent: () => () => undefined }),
   Layer.mock(PreviewManager.PreviewManager)({}),
   Layer.mock(ProcessDiagnostics.ProcessDiagnostics)({}),
   Layer.mock(ProcessResourceMonitor.ProcessResourceMonitor)({}),
@@ -453,13 +715,16 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
   Layer.mock(ReviewService.ReviewService)({}),
   Layer.mock(ScheduledTasks.ScheduledTaskService)({}),
   Layer.mock(SecretRequests.SecretRequests)({}),
+  Layer.mock(SecretResolver.SecretResolver)({}),
   Layer.mock(GuestShareService.GuestShareService)({}),
   Layer.mock(ServerLifecycleEvents.ServerLifecycleEvents)({}),
   Layer.mock(ServerRuntimeStartup.ServerRuntimeStartup)({}),
   Layer.mock(ServerSelfUpdate.ServerSelfUpdate)({}),
+  Layer.mock(NpmRelease.NpmRelease)({}),
   Layer.mock(SessionStore.SessionStore)({ cookieName: "config-test", legacyCookieName: undefined }),
   Layer.mock(SourceControlDiscovery.SourceControlDiscovery)({}),
   Layer.mock(SourceControlRepositoryService.SourceControlRepositoryService)({}),
+  Layer.mock(SourceControlSignIn.SourceControlSignIn)({}),
   Layer.mock(StorageCleanup.StorageCleanup)({}),
   Layer.mock(DatabaseStorage.DatabaseStorage)({}),
   Layer.mock(TerminalManager.TerminalManager)({}),
@@ -476,7 +741,9 @@ const layerUnusedConfigRpcServices = Layer.mergeAll(
 
 const layerConfigSources = Layer.mergeAll(
   Keybindings.layer,
-  ServerSettings.layer.pipe(Layer.provide(ServerSecretStore.layer)),
+  ServerSettings.layer.pipe(
+    Layer.provide(Layer.merge(ServerSecretStore.layer, ManagedPolicy.layerTest())),
+  ),
 ).pipe(
   Layer.provideMerge(Layer.fresh(SqlitePersistence.layerMemory)),
   Layer.provideMerge(
@@ -484,186 +751,19 @@ const layerConfigSources = Layer.mergeAll(
       ServerConfigModule.layerTest(process.cwd(), { prefix: "t3-config-subscription-test-" }),
     ),
   ),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
-const makeConfigDiscoveryRpc = Effect.fn(function* (discoveries: {
-  readonly editors: ReturnType<
-    ExternalLauncher.ExternalLauncher["Service"]["resolveAvailableEditors"]
-  >;
-  readonly targets: ReturnType<RemoteOpenTargets.RemoteOpenTargets["Service"]["resolveTargets"]>;
-  readonly endpoints: ReturnType<DirectEndpoints.DirectEndpoints["Service"]["resolve"]>;
-}) {
-  const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
-  const services = Layer.mergeAll(
-    layerUnusedConfigRpcServices,
-    Layer.mock(ExternalLauncher.ExternalLauncher)({
-      resolveAvailableEditors: () => discoveries.editors,
-      resolveFileManagerRevealKind: () => Effect.succeed("file-explorer"),
-    }),
-    Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({ resolveTargets: () => discoveries.targets }),
-    Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => discoveries.endpoints }),
-    Layer.mock(ProviderRegistry.ProviderRegistry)({
-      getProviders: Effect.succeed([]),
-      streamChanges: Stream.never,
-    }),
-    Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
-    Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
-      scratchRoot: Effect.succeedNone,
-      namedProjectsRoot: process.cwd(),
-    }),
-    Layer.mock(ServerEnvironment.ServerEnvironment)({
-      getDescriptor: Effect.succeed({
-        environmentId: EnvironmentId.make("discovery-test"),
-        label: "Discovery test",
-        platform: { os: "linux", arch: "x64" },
-        serverVersion: "0.0.0",
-        capabilities: { repositoryIdentity: false },
-      }),
-    }),
-    Layer.mock(EnvironmentAuth.EnvironmentAuth)({
-      getDescriptor: () =>
-        Effect.succeed({
-          policy: "loopback-browser",
-          bootstrapMethods: [],
-          sessionMethods: ["browser-session-cookie"],
-          sessionCookieName: "discovery-test-session",
-        }),
-    }),
-  );
-  const server = yield* RpcServer.makeNoSerialization(RpcGroup.make(WsSubscribeServerConfigRpc), {
-    ...WS_RPC_SERVER_OPTIONS,
-    onFromServer: (response) =>
-      response._tag === "Chunk"
-        ? Effect.forEach(response.values, (event) => Queue.offer(responses, event), {
-            discard: true,
-          })
-        : Effect.void,
-  }).pipe(
-    Effect.provide(
-      layerWsRpc(
-        {
-          sessionId: AuthSessionId.make("discovery-test"),
-          subject: "discovery-test",
-          method: "browser-session-cookie",
-          scopes: [],
-        },
-        {},
-        {},
-        yield* PreviewAutomationBroker.PreviewAutomationBroker,
-        yield* ServerBrowser.ServerBrowser,
-        () => Effect.succeed({}),
-      ).pipe(Layer.provide(services)),
-    ),
-  );
-  const requestId = RpcMessage.RequestId("discovery");
-  yield* server.write(0, {
-    _tag: "Request",
-    id: requestId,
-    tag: WS_METHODS.subscribeServerConfig,
-    payload: {},
-    headers: Headers.empty,
-  });
-  return {
-    responses,
-    interrupt: server.write(0, { _tag: "Interrupt", requestId, interruptors: [] }),
-  };
-});
-
-const layerConfigDiscoveryTest = Layer.mergeAll(
-  Layer.fresh(layerConfigSources),
-  Layer.mock(PreviewAutomationBroker.PreviewAutomationBroker)({}),
-  Layer.mock(ServerBrowser.ServerBrowser)({}),
-);
-
-const discoveryTargets = [{ kind: "mdns", host: "discovery.local", username: "test" }] as const;
-const discoveryEndpoints = [{ kind: "lan", httpBaseUrl: "http://192.168.1.2:3773/" }] as const;
-const discoveryNames = ["editors", "targets", "endpoints"] as const;
-
-it.effect.each(["none", ...discoveryNames, "all"] as const)(
-  "starts all config discoveries before release and preserves fields with %s timing out",
-  (timeout) =>
-    Effect.gen(function* () {
-      const gates = yield* Effect.forEach(discoveryNames, () =>
-        Effect.all({ started: Deferred.make<void>(), release: Deferred.make<void>() }),
-      );
-      const discover = <A>(index: number, value: A) =>
-        Deferred.succeed(gates[index]!.started, undefined).pipe(
-          Effect.andThen(Deferred.await(gates[index]!.release)),
-          Effect.as(value),
-        );
-      const rpc = yield* makeConfigDiscoveryRpc({
-        editors: discover(0, ["file-manager"] as const),
-        targets: discover(1, discoveryTargets),
-        endpoints: discover(2, discoveryEndpoints),
-      });
-      yield* Deferred.await(gates[0]!.started);
-      yield* TestClock.adjust("0 millis");
-      for (const gate of gates) assert.isTrue(yield* Deferred.isDone(gate.started));
-
-      yield* TestClock.adjust("4 seconds");
-      for (const index of [2, 0, 1]) {
-        if (timeout !== "all" && timeout !== discoveryNames[index]) {
-          yield* Deferred.succeed(gates[index]!.release, undefined);
-        }
-      }
-      if (timeout !== "none") {
-        yield* TestClock.adjust("999 millis");
-        assert.equal(yield* Queue.size(rpc.responses), 0);
-        yield* TestClock.adjust("1 millis");
-      }
-      const snapshot = yield* Queue.take(rpc.responses);
-      assert.equal(snapshot.type, "snapshot");
-      if (snapshot.type !== "snapshot") return yield* Effect.die("Expected config snapshot");
-      const editorsTimedOut = timeout === "editors" || timeout === "all";
-      assert.deepEqual(snapshot.config.availableEditors, editorsTimedOut ? [] : ["file-manager"]);
-      assert.equal(snapshot.config.shellRevealInFileManager, editorsTimedOut ? undefined : true);
-      assert.equal(
-        snapshot.config.shellRevealInFileManagerKind,
-        editorsTimedOut ? undefined : "file-explorer",
-      );
-      assert.deepEqual(
-        snapshot.config.remoteOpenTargets,
-        timeout === "targets" || timeout === "all" ? [] : discoveryTargets,
-      );
-      assert.deepEqual(
-        snapshot.config.directEndpoints,
-        timeout === "endpoints" || timeout === "all" ? [] : discoveryEndpoints,
-      );
-      yield* rpc.interrupt;
-    }).pipe(Effect.provide(layerConfigDiscoveryTest), Effect.scoped),
-);
-
-it.effect(
-  "interrupting config discovery cancels all three probes without publishing a snapshot",
-  () =>
-    Effect.gen(function* () {
-      const probes = yield* Effect.forEach(discoveryNames, () =>
-        Effect.all({ started: Deferred.make<void>(), interrupted: Deferred.make<void>() }),
-      );
-      const discover = (index: number) =>
-        Deferred.succeed(probes[index]!.started, undefined).pipe(
-          Effect.andThen(Effect.never),
-          Effect.onInterrupt(() => Deferred.succeed(probes[index]!.interrupted, undefined)),
-        );
-      const rpc = yield* makeConfigDiscoveryRpc({
-        editors: discover(0),
-        targets: discover(1),
-        endpoints: discover(2),
-      });
-      yield* Deferred.await(probes[0]!.started);
-      yield* TestClock.adjust("0 millis");
-      for (const probe of probes) assert.isTrue(yield* Deferred.isDone(probe.started));
-      yield* rpc.interrupt;
-      yield* TestClock.adjust("0 millis");
-      for (const probe of probes) assert.isTrue(yield* Deferred.isDone(probe.interrupted));
-      assert.equal(yield* Queue.size(rpc.responses), 0);
-    }).pipe(Effect.provide(layerConfigDiscoveryTest), Effect.scoped),
-);
-
-it.effect(
-  "preserves settings during discovery and keybindings during snapshot ACK at the config RPC boundary",
-  () =>
+it.effect.each([
+  "pending",
+  "cached",
+  "direct-pending",
+  "direct-cached",
+  "direct-failed",
+  "direct-interrupted",
+] as const)(
+  "%s endpoint discovery preserves initial config and updates through discovery and ACK",
+  (discovery) =>
     Effect.gen(function* () {
       const keybindings = yield* Keybindings.Keybindings;
       const settings = yield* ServerSettings.ServerSettingsService;
@@ -678,6 +778,18 @@ it.effect(
       const initialKeybindings = (yield* keybindings.getSnapshot).keybindings;
       const discoveryStarted = yield* Deferred.make<void>();
       const finishDiscovery = yield* Deferred.make<void>();
+      const remoteDiscoveryStarted = yield* Deferred.make<void>();
+      const finishRemoteDiscovery = yield* Deferred.make<void>();
+      const targets = [{ kind: "mdns" as const, host: "test.local" }];
+      const direct = discovery.startsWith("direct-");
+      const bound = [{ kind: "lan" as const, httpBaseUrl: "http://192.168.1.10:3773/" }];
+      const endpoints = [
+        ...bound,
+        { kind: "tailnet" as const, httpBaseUrl: "https://test.ts.net/" },
+      ];
+      const directStarted = yield* Deferred.make<void>();
+      const finishDirect = yield* Deferred.make<void>();
+      const directStopped = yield* Deferred.make<void>();
       const responses = yield* Queue.unbounded<ServerConfigStreamEvent>();
       const configRpcServices = Layer.mergeAll(
         layerUnusedConfigRpcServices,
@@ -696,13 +808,38 @@ it.effect(
         }),
         Layer.mock(UsageLimitSources.UsageLimitSources)({ streamChanges: Stream.make([]) }),
         Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
-          resolveTargets: () => Effect.succeed([]),
+          resolveTargets: () =>
+            Deferred.succeed(remoteDiscoveryStarted, undefined).pipe(
+              Effect.andThen(
+                discovery === "cached" || direct
+                  ? Effect.void
+                  : Deferred.await(finishRemoteDiscovery),
+              ),
+              Effect.as(targets),
+            ),
         }),
-        Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({
+          resolveAvailable: () => Effect.succeed(discovery === "direct-cached" ? endpoints : bound),
+          resolve: () =>
+            direct
+              ? Deferred.succeed(directStarted, undefined).pipe(
+                  Effect.andThen(
+                    discovery === "direct-cached" ? Effect.void : Deferred.await(finishDirect),
+                  ),
+                  Effect.andThen(
+                    discovery === "direct-failed"
+                      ? Effect.die("probe failed")
+                      : Effect.succeed(endpoints),
+                  ),
+                  Effect.onExit(() => Deferred.succeed(directStopped, undefined)),
+                )
+              : Effect.succeed(bound),
+        }),
         Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
           scratchRoot: Effect.succeedNone,
           namedProjectsRoot: process.cwd(),
         }),
+        Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
         Layer.mock(ServerEnvironment.ServerEnvironment)({
           getDescriptor: Effect.succeed({
             environmentId: EnvironmentId.make("config-test"),
@@ -755,10 +892,8 @@ it.effect(
               scopes: [],
             },
             {},
-            {},
-            yield* PreviewAutomationBroker.PreviewAutomationBroker,
             yield* ServerBrowser.ServerBrowser,
-            () => Effect.succeed({}),
+            () => Effect.void,
           ).pipe(Layer.provide(configRpcServices)),
         ),
       );
@@ -772,12 +907,21 @@ it.effect(
         headers: Headers.empty,
       });
       yield* Deferred.await(discoveryStarted);
+      assert.isTrue(yield* Deferred.isDone(remoteDiscoveryStarted));
 
       const duringDiscovery = yield* settings.updateSettings({ defaultAutoPull: true });
       yield* Deferred.succeed(finishDiscovery, undefined);
       const snapshot = yield* Queue.take(responses);
       assert.equal(snapshot.type, "snapshot");
       if (snapshot.type !== "snapshot") return yield* Effect.die("Missing initial snapshot");
+      assert.deepEqual(
+        snapshot.config.remoteOpenTargets,
+        discovery === "cached" || direct ? targets : [],
+      );
+      assert.deepEqual(
+        snapshot.config.directEndpoints,
+        discovery === "direct-cached" ? endpoints : bound,
+      );
       assert.isFalse(snapshot.config.settings.defaultAutoPull);
       assert.deepEqual(snapshot.config.keybindings, initialKeybindings);
       const duringAck = yield* keybindings.upsertKeybindingRule({
@@ -797,7 +941,7 @@ it.effect(
       const expectedSettings = [duringDiscovery, latestSettings].map(
         ServerSettings.redactServerSettingsForClient,
       );
-      const expectedKeybindings = [duringAck, latestKeybindings];
+      const expectedKeybindings = [duringAck.keybindings, latestKeybindings.keybindings];
       // The two sources can interleave, but each must retain its own publication order.
       for (let i = 0; i < 4; i++) {
         const event = yield* Queue.take(responses);
@@ -814,7 +958,45 @@ it.effect(
       }
       assert.isEmpty(expectedSettings);
       assert.isEmpty(expectedKeybindings);
+      if (discovery === "pending") {
+        yield* Deferred.await(remoteDiscoveryStarted);
+        yield* Deferred.succeed(finishRemoteDiscovery, undefined);
+        const resolved = yield* Queue.take(responses);
+        assert.equal(resolved.type, "snapshot");
+        if (resolved.type !== "snapshot") return yield* Effect.die("Missing remote targets");
+        assert.deepEqual(resolved.config.remoteOpenTargets, targets);
+        assert.deepEqual(
+          resolved.config.settings,
+          ServerSettings.redactServerSettingsForClient(latestSettings),
+        );
+        assert.deepEqual(resolved.config.keybindings, latestKeybindings.keybindings);
+        yield* acknowledge;
+      }
+      if (direct) {
+        yield* Deferred.await(directStarted);
+        if (discovery === "direct-pending") {
+          yield* Deferred.succeed(finishDirect, undefined);
+          const resolved = yield* Queue.take(responses);
+          assert.equal(resolved.type, "snapshot");
+          if (resolved.type !== "snapshot") return yield* Effect.die("Missing direct endpoints");
+          assert.deepEqual(resolved.config.directEndpoints, endpoints);
+          assert.deepEqual(
+            resolved.config.settings,
+            ServerSettings.redactServerSettingsForClient(latestSettings),
+          );
+          assert.deepEqual(resolved.config.keybindings, latestKeybindings.keybindings);
+          yield* acknowledge;
+        } else if (discovery === "direct-failed") {
+          yield* Deferred.succeed(finishDirect, undefined);
+          yield* Deferred.await(directStopped);
+          yield* settings.updateSettings({ defaultAutoPull: false });
+          const event = yield* Queue.take(responses);
+          assert.equal(event.type, "settingsUpdated");
+          yield* acknowledge;
+        }
+      }
       yield* server.write(0, { _tag: "Interrupt", requestId, interruptors: [] });
+      if (direct) yield* Deferred.await(directStopped);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -877,11 +1059,15 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
       Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({
         resolveTargets: () => Effect.succeed([]),
       }),
-      Layer.mock(DirectEndpoints.DirectEndpoints)({ resolve: () => Effect.succeed([]) }),
+      Layer.mock(DirectEndpoints.DirectEndpoints)({
+        resolve: () => Effect.succeed([]),
+        resolveAvailable: () => Effect.succeed([]),
+      }),
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         scratchRoot: Effect.succeedNone,
         namedProjectsRoot: process.cwd(),
       }),
+      Layer.mock(ScratchThreadPromotion.ScratchThreadPromotion)({}),
       Layer.mock(ServerEnvironment.ServerEnvironment)({
         getDescriptor: Effect.succeed({
           environmentId: EnvironmentId.make("config-test"),
@@ -924,10 +1110,8 @@ it.effect("on-demand clients get provider config without workspace snapshots", (
             scopes: [],
           },
           {},
-          {},
-          yield* PreviewAutomationBroker.PreviewAutomationBroker,
           yield* ServerBrowser.ServerBrowser,
-          () => Effect.succeed({}),
+          () => Effect.void,
         ).pipe(Layer.provide(configRpcServices)),
       ),
     );

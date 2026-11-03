@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -233,15 +234,23 @@ const make = Effect.gen(function* () {
     function* (databasePath: string) {
       const legacy = legacyPath(databasePath);
       if (!(yield* fs.exists(legacy))) return;
-      // A version before 0.1.0 may still be running against it. Keep the lock
-      // while deleting, and delete the database before its WAL so a failure
-      // never leaves it without committed transactions.
-      yield* Effect.gen(function* () {
-        yield* lockExclusively(legacy);
-        for (const suffix of ["", "-wal", "-shm"]) {
-          yield* fs.remove(legacy + suffix, { force: true });
-        }
-      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: legacy })));
+      // Delete the database before WAL to preserve commits if unlink fails.
+      const removeFiles = Effect.forEach(
+        ["", "-wal", "-shm"],
+        (suffix) => fs.remove(legacy + suffix, { force: true }),
+        { discard: true },
+      );
+      const connection = NodeSqliteClient.layer({ filename: legacy });
+      if ((yield* HostProcess.Platform) === "win32") {
+        // Windows blocks unlink while any SQLite handle is open, including our own.
+        yield* lockExclusively(legacy).pipe(Effect.provide(connection));
+        yield* removeFiles;
+      } else {
+        yield* lockExclusively(legacy).pipe(
+          Effect.andThen(removeFiles),
+          Effect.provide(connection),
+        );
+      }
     },
     (effect, databasePath) =>
       effect.pipe(

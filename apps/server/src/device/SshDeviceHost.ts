@@ -8,7 +8,7 @@ import {
 import { runSshCommand, baseSshArgs, resolveSshCommand } from "@t3tools/ssh/command";
 import * as NetService from "@t3tools/shared/Net";
 import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -22,6 +22,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as ServerConfig from "../config.ts";
+import { releaseAgentDeviceSession } from "./AgentDeviceTarget.ts";
 import * as DeviceHost from "./DeviceHost.ts";
 import { DeviceDirectGrants } from "../jones/device/DeviceDirectGrants.ts";
 import { registerDirectRetirement, directGatewayHealth } from "../jones/device/directLifecycle.ts";
@@ -96,9 +97,12 @@ const ownerFor = Effect.fn("SshDeviceHost.ownerFor")(function* (hostId: string) 
   const environmentId = yield* fs
     .readFileString(server.environmentIdPath)
     .pipe(Effect.orElseSucceed(() => server.stateDir));
-  const crypto = yield* Crypto.Crypto;
-  const owner = yield* crypto
-    .digest("SHA-256", new TextEncoder().encode(`${environmentId}\0${server.stateDir}\0${hostId}`))
+  const digest = yield* Digest.Digest;
+  const owner = yield* digest
+    .digest(
+      Digest.sha256,
+      new TextEncoder().encode(`${environmentId}\0${server.stateDir}\0${hostId}`),
+    )
     .pipe(Effect.map(Hex.encode), Effect.orDie);
   return owner.slice(0, 24);
 });
@@ -149,7 +153,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
   const net = yield* NetService.NetService;
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const crypto = yield* Crypto.Crypto;
+  const digest = yield* Digest.Digest;
   const parentScope = yield* Scope.Scope;
   const ssh = yield* resolveSshCommand;
   const owner = yield* ownerFor(config.id);
@@ -160,7 +164,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       | FileSystem.FileSystem
       | Path.Path
       | ChildProcessSpawner.ChildProcessSpawner
-      | Crypto.Crypto
+      | Digest.Digest
       | ServerConfig.ServerConfig
     >,
   ) =>
@@ -169,7 +173,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
       Effect.provideService(Path.Path, path),
       Effect.provideService(ServerConfig.ServerConfig, server),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-      Effect.provideService(Crypto.Crypto, crypto),
+      Effect.provideService(Digest.Digest, digest),
     );
   const lock = yield* Semaphore.make(1);
   let stopped = false;
@@ -265,63 +269,83 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
           direct ? generation : undefined,
         ),
       );
-      yield* onStatus("starting");
-      const remote = yield* decodeStarted(result.stdout.trim()).pipe(
-        Effect.mapError(
-          (cause) =>
-            new DeviceHost.DeviceHostError({
-              hostId: config.id,
-              step: "reading host endpoints",
-              cause,
-            }),
+    let stderr = "";
+    yield* child.stderr.pipe(
+      Stream.decodeText(),
+      Stream.runForEach((chunk) =>
+        Effect.sync(() => {
+          stderr = (stderr + chunk).slice(-2000);
+        }),
+      ),
+      Effect.forkIn(scope),
+    );
+    const hubOrigin = `http://127.0.0.1:${hubPort}`;
+    const next = {
+      nodePath: remote.nodePath,
+      hub: { origin: hubOrigin },
+      devices: makeDeviceHubOperations({
+        hostId: config.id,
+        origin: hubOrigin,
+        http,
+        run,
+        // Keep probing negative reports so an SDK installed after connecting is still found.
+        androidAvailable: Effect.suspend(() =>
+          summary.platforms.some((p) => p.platform === "android" && p.available)
+            ? Effect.succeed(true)
+            : platformAvailability("android").pipe(
+                Effect.map((availability) => availability.available),
+              ),
         ),
-      );
-      summary = {
-        ...summary,
-        platforms: remote.platforms,
-        tools: remote.tools,
-        hubInstalled: true,
-        agentDeviceInstalled: wantsAgent || summary.agentDeviceInstalled,
-      };
-      const reserve = (step: string) =>
-        net
-          .reserveLoopbackPort("127.0.0.1")
-          .pipe(
-            Effect.mapError(
-              (cause) => new DeviceHost.DeviceHostError({ hostId: config.id, step, cause }),
-            ),
-          );
-      const hubPort = yield* reserve("reserving hub port");
-      const daemonPort =
-        remote.daemonPort === undefined ? undefined : yield* reserve("reserving daemon port");
-      if (direct && (!currentEndpoint || remote.directMedia?.generation !== generation))
-        return yield* new DeviceHost.DeviceHostError({
-          hostId: config.id,
-          step: "reading direct gateway endpoints",
-          cause: new Error("Missing direct gateway descriptor or readiness callback."),
-        });
-      const endpoint =
-        direct && remote.directMedia && config.directSshTarget
-          ? {
-              target: config.directSshTarget,
-              gatewayPort: remote.directMedia.gatewayPort,
-              owner,
-              generation,
-            }
-          : undefined;
-      const gatewayProbePort = endpoint ? yield* reserve("reserving gateway port") : undefined;
-      const admission =
-        endpoint && currentEndpoint
-          ? yield* openDirectAdmission({
-              hostId: config.id,
-              owner,
-              generation,
-              gatewayPort: endpoint.gatewayPort,
-              currentEndpoint,
-              isActive: () => active && !stopped && connectionScope === scope,
-            }).pipe(
-              Effect.provideService(DeviceDirectGrants, grants),
-              Effect.provideService(Scope.Scope, scope),
+      }),
+      ...(remote.daemonPort !== undefined &&
+      remote.token !== undefined &&
+      remote.entryPath !== undefined
+        ? {
+            agentDevice: {
+              baseUrl: `http://127.0.0.1:${daemonPort}`,
+              token: remote.token,
+              entryPath: remote.entryPath,
+            },
+          }
+        : {}),
+      helpers: remote.helpers,
+      run,
+    };
+    for (const [baseUrl, route] of [
+      [next.hub.origin, "/readyz"],
+      ...(next.agentDevice ? [[next.agentDevice.baseUrl, "/health"]] : []),
+    ]) {
+      yield* waitForHttpReady({
+        baseUrl: baseUrl!,
+        path: route!,
+        timeoutMs: 15000,
+        makeError: () =>
+          new DeviceHost.DeviceHostError({
+            hostId: config.id,
+            step: "waiting for SSH forward",
+            cause: new Error(stderr || "Forwarded endpoint did not answer."),
+          }),
+      }).pipe(Effect.provideService(HttpClient.HttpClient, http));
+    }
+    if (next.agentDevice) yield* onReady({ ...next, agentDevice: next.agentDevice });
+    ready = next.agentDevice
+      ? { ...next, releaseAgentSession: releaseAgentDeviceSession(http, next.agentDevice) }
+      : next;
+    yield* onStatus("ready");
+    // Reconnect also repairs helpers that died while SSH itself stayed connected.
+    const unhealthy = Effect.gen(function* () {
+      while (true) {
+        yield* Effect.sleep("10 seconds");
+        const alive = yield* http.get(`${next.hub.origin}/readyz`).pipe(
+          Effect.timeout("5 seconds"),
+          Effect.map((r) => r.status === 200),
+          Effect.orElseSucceed(() => false),
+        );
+        const daemonAlive = next.agentDevice
+          ? yield* http.get(`${next.agentDevice!.baseUrl}/health`).pipe(
+              Effect.timeout("5 seconds"),
+              Effect.map((r) => r.status === 200),
+              Effect.orElseSucceed(() => false),
             )
           : undefined;
       const child = yield* spawner

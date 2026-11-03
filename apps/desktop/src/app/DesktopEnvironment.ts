@@ -78,7 +78,6 @@ export class DesktopEnvironment extends Context.Service<
     readonly displayName: string;
     readonly appUserModelId: string;
     readonly linuxDesktopEntryName: string;
-    readonly linuxWmClass: string;
     readonly linuxApplicationsDir: string;
     readonly desktopLauncherPath: Option.Option<string>;
     readonly appImagePath: Option.Option<string>;
@@ -239,19 +238,10 @@ const make = Effect.fn("desktop.environment.make")(function* (
     otlpProtocol: config.otlpProtocol,
     branding,
     displayName,
-    appUserModelId: config.previewCompanionProduct
-      ? COMPANION_PRODUCT.appId
-      : Option.getOrElse(config.appUserModelIdOverride, () =>
-          isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
-        ),
-    linuxDesktopEntryName: config.previewCompanionProduct
-      ? `${COMPANION_PRODUCT.packageName}.desktop`
-      : resolveLinuxDesktopEntryName(isDevelopment),
-    linuxWmClass: config.previewCompanionProduct
-      ? COMPANION_PRODUCT.packageName
-      : isDevelopment
-        ? "t3code-dev"
-        : "t3code",
+    appUserModelId: Option.getOrElse(config.appUserModelIdOverride, () =>
+      isDevelopment ? "com.t3tools.t3code.dev" : "com.t3tools.t3code",
+    ),
+    linuxDesktopEntryName: resolveLinuxDesktopEntryName(isDevelopment),
     linuxApplicationsDir,
     desktopLauncherPath: config.desktopLauncherPath,
     appImagePath: config.appImagePath,
