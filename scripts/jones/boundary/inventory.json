@@ -2526,7 +2526,8 @@
     "apps/server/src/provider/ProviderAuthService.test.ts": "jones-tests-in-upstream",
     "apps/server/src/provider/providerInstallation.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/previewCompanion/openBinding.ts": "jones-owned",
-    "apps/server/src/jones/previewCompanion/openBinding.test.ts": "jones-owned"
+    "apps/server/src/jones/previewCompanion/openBinding.test.ts": "jones-owned",
+    "apps/server/src/mcp/toolkits/previewControls/handlers.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -2908,6 +2908,12 @@ const make = Effect.gen(function* () {
       },
       {
         preferred: true,
+        resolveTabRetired: ({ threadId, tabId }) =>
+          manager
+            .list({ threadId: ThreadId.make(threadId) })
+            .pipe(
+              Effect.map(({ sessions }) => !sessions.some((session) => session.tabId === tabId)),
+            ),
         resolveRuntimeEvidence: ({ threadId, tabId }) =>
           Effect.suspend(() => {
             if (tabId === undefined) return Effect.succeed(null);

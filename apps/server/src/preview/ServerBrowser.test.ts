@@ -2670,3 +2670,32 @@ it.live.each([true, false])(
       if (online) expect(desktopConnections[1]!.context.page.goto).not.toHaveBeenCalled();
     }).pipe(Effect.scoped, Effect.provide(placementLayer)),
 );
+
+it.live(
+  "REC-R registered logical retirement releases a desktop pin without claiming page cessation",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const browser = yield* ServerBrowser.ServerBrowser;
+        const broker = yield* Broker.PreviewAutomationBroker;
+        const manager = yield* Manager.PreviewManager;
+        yield* Effect.yieldNow;
+        desktopRendersNext = true;
+        const opened = yield* manager.open({ threadId: scope.thread.threadId, runtime: "server" });
+        yield* browser.attachViewer(viewerInput(opened.tabId, true));
+        const tabId = PreviewTabId.make(opened.tabId);
+        const status = yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
+        expect(status).toMatchObject({
+          selectedClient: { runtimeIdentity: desktopRuntimeIdentity },
+        });
+        const page = desktopConnections[0]!.context.page;
+        yield* manager.close({ threadId: scope.thread.threadId, tabId });
+        yield* Effect.promise(() => desktopReleased.promise);
+        const missing = yield* broker
+          .invoke({ scope, operation: "snapshot", tabId, input: {} })
+          .pipe(Effect.flip, Effect.orDie);
+        expect(missing).toMatchObject({ _tag: "PreviewAutomationTabNotFoundError", tabId });
+        expect(page.close).not.toHaveBeenCalled();
+      }),
+    ).pipe(Effect.provide(layer)),
+);

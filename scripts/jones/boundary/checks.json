@@ -1570,12 +1570,15 @@
         "apps/server/src/preview/SessionControl.test.ts",
         "packages/contracts/src/preview.test.ts",
         "packages/contracts/src/jones/previewCompatibility.test.ts",
-        "apps/server/src/preview/ServerBrowserContexts.test.ts"
+        "apps/server/src/preview/ServerBrowserContexts.test.ts",
+        "apps/server/src/jones/previewTabAffinity/tabAffinity.test.ts",
+        "apps/server/src/mcp/toolkits/previewControls/handlers.test.ts"
       ],
       "commands": [
         "vp test run apps/desktop/src/ipc/methods/preview.test.ts apps/desktop/src/preview/DesktopBrowserHost.test.ts apps/desktop/src/preview/Manager.test.ts apps/server/src/mcp/PreviewAutomationBroker.test.ts apps/server/src/mcp/toolkits/preview/handlers.test.ts apps/server/src/jones/platformCompatibility/preview/DesktopBrowserChannel.test.ts apps/server/src/preview/ServerBrowser.test.ts apps/server/src/preview/SessionControl.test.ts packages/contracts/src/preview.test.ts",
         "vp test run apps/web/src/browser/previewRuntime.test.ts apps/desktop/src/preview/CdpRelay.test.ts packages/contracts/src/jones/previewCompatibility.test.ts --maxWorkers=1 --no-file-parallelism --maxConcurrency=1",
-        "vp test run apps/server/src/preview/ServerBrowserContexts.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run apps/server/src/preview/ServerBrowserContexts.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/jones/previewTabAffinity/tabAffinity.test.ts apps/server/src/mcp/PreviewAutomationBroker.test.ts apps/server/src/mcp/toolkits/previewControls/handlers.test.ts apps/server/src/jones/previewRecordingOperation/broker.test.ts apps/server/src/preview/ServerBrowser.test.ts --maxWorkers=1 --no-file-parallelism --maxConcurrency=1"
       ]
     },
     {
