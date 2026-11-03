@@ -1002,6 +1002,7 @@ function makeLocalCommandHarness(input: {
     createWorktree,
     open,
     fallbackEnsure: resumeFallbackSession.ensureThread,
+    ensureThread,
     successEnsure,
     unknownResumeFailure,
     writeIfRunCurrent,
@@ -1845,12 +1846,41 @@ effectIt.effect(
       );
       const retry = makeLocalCommandHarness({ text: "Continue once", unknownResumeBinding: true });
       const retryResult = yield* retry.startWithRetry.pipe(Effect.result);
-      expect(retryResult._tag).toBe("Failure");
-      expect(retry.projection().runs.at(-1)?.status).toBe("starting");
+      expect(retryResult._tag).toBe("Success");
+      expect(retry.projection().runs.at(-1)?.status).toBe("failed");
       expect(retry.fallbackEnsure).not.toHaveBeenCalled();
       expect(retry.startRootRun).not.toHaveBeenCalled();
-      expect(retry.events).toHaveLength(0);
+      expect(
+        retry.events.filter(
+          (event) => event.type === "run.updated" && event.payload.status === "failed",
+        ),
+      ).toHaveLength(1);
     }),
+);
+
+effectIt.effect("settles an unknown ensure binding once even when the worker permits retry", () =>
+  Effect.gen(function* () {
+    const failure = new ProviderAdapter.ProviderRuntimeBindingError({
+      driver: ProviderDriverKind.make("codex"),
+      detail: "Codex startup has an unconfirmed native effect; another admission is not safe.",
+    });
+    const harness = makeLocalCommandHarness({
+      text: "Start once",
+      ensureThreadFailure: failure,
+    });
+    yield* harness.startWithRetry;
+    yield* harness.startWithRetry;
+    expect(harness.ensureThread).toHaveBeenCalledOnce();
+    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.dispatched).toHaveLength(0);
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(
+      harness.events.filter(
+        (event) => event.type === "run.updated" && event.payload.status === "failed",
+      ),
+    ).toHaveLength(1);
+  }),
 );
 
 const effortModels: ReadonlyArray<ServerProviderModel> = [

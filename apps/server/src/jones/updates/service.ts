@@ -885,7 +885,7 @@ export const layer = Layer.effect(
         if (!result.retired)
           throw new Error(result.reason ?? "Native stage retirement remains held.");
       },
-      install: async (input, reportStep) => {
+      install: async (input, reportStep, onPreparationRefused) => {
         if (qualifiedSelfUpdate.installQualified === undefined)
           throw new Error("bootstrap-required: Qualified Install is unavailable.");
         const operationId =
@@ -985,6 +985,7 @@ export const layer = Layer.effect(
                           ),
                 ),
               (step) => Effect.sync(() => reportStep?.(step)),
+              () => Effect.sync(() => onPreparationRefused?.()),
             ),
         });
         const accepted = await run(

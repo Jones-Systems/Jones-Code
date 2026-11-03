@@ -1,5 +1,10 @@
 import * as Schema from "effect/Schema";
-import { NonNegativeInt, PositiveInt, IsoDateTime } from "./baseSchemas.ts";
+import {
+  NonNegativeInt,
+  PositiveInt,
+  IsoDateTime,
+  ForwardCompatibleOptional,
+} from "./baseSchemas.ts";
 
 export const HostStatusId = Schema.Literals(["vps", "test", "mini", "home"]);
 export type HostStatusId = typeof HostStatusId.Type;
@@ -39,6 +44,9 @@ export const HostStatus = Schema.Union([
       "invalid_response",
       "stale",
     ]),
+    diagnostic: ForwardCompatibleOptional(
+      Schema.Literals(["collector_disconnected", "sample_expired", "upstream_failure"]),
+    ),
   }),
 ]);
 export type HostStatus = typeof HostStatus.Type;

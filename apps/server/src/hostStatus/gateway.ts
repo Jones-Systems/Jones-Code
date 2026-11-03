@@ -34,6 +34,7 @@ export function hostStatusConfigFromEnv(
 
 class InvalidResponse extends Error {}
 class StaleResponse extends Error {}
+class CollectorDisconnected extends StaleResponse {}
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value))
@@ -62,7 +63,7 @@ function nodeInfo(payload: unknown, selectedNode?: string) {
     .filter(({ guid }) => !selectedNode || guid === selectedNode);
   if (matching.length !== 1) throw new InvalidResponse();
   const { node, guid } = matching[0]!;
-  if (node.state !== "reachable") throw new StaleResponse();
+  if (node.state !== "reachable") throw new CollectorDisconnected();
   const cpus = record(node.hw).cpus;
   if (typeof cpus !== "string" || !/^[1-9][0-9]*$/.test(cpus)) throw new InvalidResponse();
   const logicalCpuCount = Number(cpus);
@@ -401,6 +402,13 @@ async function readHost(
           : error instanceof InvalidResponse
             ? "invalid_response"
             : "upstream_unavailable",
+      ...(error instanceof CollectorDisconnected
+        ? { diagnostic: "collector_disconnected" as const }
+        : error instanceof StaleResponse
+          ? { diagnostic: "sample_expired" as const }
+          : error instanceof InvalidResponse
+            ? {}
+            : { diagnostic: "upstream_failure" as const }),
     };
   } finally {
     clearTimeout(timeout);

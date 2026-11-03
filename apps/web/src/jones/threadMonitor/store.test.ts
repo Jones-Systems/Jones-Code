@@ -14,6 +14,47 @@ function setup() {
   return { store, row };
 }
 describe("main-owned monitor lifetime and drafts", () => {
+  it("replays only authenticated matching Restore identities when explicitly requested", async () => {
+    const { store, row } = setup();
+    const restore = {
+      ...refOf(row),
+      type: "restore" as const,
+      actionId: "restore",
+      commandId: CommandId.make("restore-command"),
+      settleCommandId: CommandId.make("settle-command"),
+    };
+    store.recordIdentity(restore);
+    const result = {
+      ...refOf(row),
+      type: "actionResult" as const,
+      actionId: restore.actionId,
+      commandId: restore.commandId,
+      status: "unknown" as const,
+      reason: null,
+    };
+    store.result(result);
+    store.result({ ...result, actionId: "unresolved-old-result" });
+    expect(store.replayResults()).toEqual([
+      result,
+      { ...result, actionId: "unresolved-old-result" },
+    ]);
+    expect(store.replayResults(true)).toEqual([
+      { ...result, restoreIdentity: { type: "restore", settleCommandId: restore.settleCommandId } },
+      { ...result, actionId: "unresolved-old-result" },
+    ]);
+    for (const patch of [
+      { commandId: CommandId.make("other-command") },
+      { threadId: ThreadId.make("other-thread") },
+      { environmentEpoch: 1 },
+      { publisherGeneration: "other-generation" },
+    ]) {
+      store.identities.set(restore.actionId, { ...restore, ...patch });
+      expect(store.replayResults(true)).toEqual(store.replayResults());
+    }
+    store.recordIdentity(restore);
+    await store.retire(row.environmentId);
+    expect(store.replayResults(true)).toEqual([]);
+  });
   it("replays an unresolved input draft when an approval takes selection, then prunes only resolved requests", async () => {
     const { store, row } = setup();
     const input = RuntimeRequestId.make("input-a");

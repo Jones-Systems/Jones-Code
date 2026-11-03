@@ -694,6 +694,97 @@ it.effect(
 );
 
 layer("GitHubPullRequestApi.layer", (it) => {
+  it.effect(
+    "preserves observation metadata and rereads it despite unchanged conditional validators",
+    () =>
+      Effect.gen(function* () {
+        const sha = "a".repeat(40);
+        mockedExecute.mockImplementation((call) => {
+          if (call.kind === "graphql")
+            return Effect.die("conditional checks must use the supplied read");
+          if (call.ifNoneMatch) return Effect.succeed(output("", false, false, {}, 304));
+          const body = call.path.includes("/pulls/")
+            ? { head: { sha, repo: { id: 1 } }, base: { repo: { id: 1 } } }
+            : {};
+          return Effect.succeed(output(encodeJson(body), false, false, { etag: '"unchanged"' }));
+        });
+        const api = yield* GitHubPullRequestApi.GitHubPullRequestApi;
+        let reads = 0;
+        const read = Effect.sync(() => ({
+          state: "open" as const,
+          checks: [],
+          headSha: sha,
+          workflowApprovalsRequired: 0,
+          jonesCheckObservation: {
+            headSha: sha,
+            enumerationComplete: ++reads > 1,
+            workflowState: reads > 1 ? ("complete" as const) : ("unknown" as const),
+            requiredSetKnown: false,
+            requiredState: "unknown" as const,
+            requiredChecks: [],
+          },
+        }));
+        const revalidate = api.revalidateChecks(pullRequestInput, read).pipe(
+          Effect.provideService(GitHubRequestPolicy.PinnedGitHubCredential, {
+            host: "github.com",
+            token: Redacted.make("credential"),
+            credentialFingerprint: "observation-metadata",
+          }),
+        );
+        const first = yield* revalidate;
+        expect(first.jonesCheckObservation?.enumerationComplete).toBe(false);
+        const second = yield* revalidate;
+        expect(second.jonesCheckObservation?.enumerationComplete).toBe(true);
+        expect(second.jonesCheckObservation?.headSha).toBe(sha);
+        expect(reads).toBe(2);
+      }),
+  );
+
+  it.effect(
+    "composes fresh REST observation into provider detail when GraphQL has no check rollup",
+    () =>
+      Effect.gen(function* () {
+        mockedExecute.mockImplementation((call) => {
+          if (call.kind === "graphql") return Effect.succeed(output(encodeJson(coreResponse())));
+          const body = call.path.includes("/pulls/")
+            ? {
+                head: { sha: "abc123", ref: "feature" },
+                base: { ref: "main", repo: { full_name: "acme/web" } },
+              }
+            : call.path.includes("/check-runs")
+              ? {
+                  total_count: 1,
+                  check_runs: [
+                    {
+                      id: 1,
+                      name: "failed-rest-check",
+                      head_sha: "abc123",
+                      status: "completed",
+                      conclusion: "failure",
+                      details_url: null,
+                      check_suite: { id: 1 },
+                      app: null,
+                    },
+                  ],
+                }
+              : call.path.includes("/statuses")
+                ? []
+                : { total_count: 0, workflow_runs: [] };
+          return Effect.succeed(output(encodeJson(body)));
+        });
+        const provider = yield* GitHubPullRequestProvider.make;
+        const detail = yield* provider.getChangeRequest(pullRequestInput);
+        expect(detail.checks).toMatchObject([{ name: "failed-rest-check", status: "failure" }]);
+        expect(detail.jonesCheckObservation).toMatchObject({
+          headSha: "abc123",
+          enumerationComplete: true,
+          requiredSetKnown: false,
+        });
+        expect(restCallsTo("/check-runs")).toHaveLength(1);
+        expect(restCallsTo("/actions/runs")).toHaveLength(1);
+      }),
+  );
+
   it.effect.each(["mixed", "merges", "unavailable"] as const)(
     "reads stats only for displayed non-merge commits (%s)",
     (kind) =>

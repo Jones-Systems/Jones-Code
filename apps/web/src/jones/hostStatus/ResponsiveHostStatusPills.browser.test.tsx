@@ -25,6 +25,47 @@ const hosts: HostStatusDisplay[] = ["VPS", "Test", "Mini", "Laptop"].map((name, 
   },
 }));
 
+it("shows a disconnected collector recovery hint on hover and keyboard focus", async () => {
+  const metrics = hostStatusMetrics({
+    id: "vps",
+    status: "unavailable",
+    reason: "stale",
+    diagnostic: "collector_disconnected",
+  });
+  const label = `VPS: ${metrics.detail}`;
+  const container = document.createElement("div");
+  container.style.width = "1000px";
+  await using _screen = await render(
+    <TooltipProvider>
+      <ResponsiveHostStatusPills
+        hosts={hosts.map((host) => (host.id === "vps" ? { ...host, label, metrics } : host))}
+      />
+    </TooltipProvider>,
+    { container, router: false },
+  );
+  await expect.poll(() => container.querySelector('[data-host-id="vps"]')).not.toBeNull();
+  const pill = container.querySelector<HTMLElement>('[data-host-id="vps"]')!;
+  const popup = () => document.querySelector<HTMLElement>('[data-slot="tooltip-popup"]');
+  const expected = [
+    "Host status collector is disconnected",
+    "Check the collector connection to the Netdata parent",
+    "Retries every 10 seconds while visible",
+  ];
+  expect(pill.getAttribute("aria-label")).toContain(expected[1]);
+  await userEvent.hover(pill);
+  await expect
+    .poll(() => [...(popup()?.querySelectorAll("li") ?? [])].map((li) => li.textContent))
+    .toEqual(expected);
+  await userEvent.unhover(pill);
+  await expect.poll(() => popup()).toBeNull();
+  await act(async () => pill.focus());
+  await expect
+    .poll(() => [...(popup()?.querySelectorAll("li") ?? [])].map((li) => li.textContent))
+    .toEqual(expected);
+  await userEvent.keyboard("{Escape}");
+  await expect.poll(() => popup()).toBeNull();
+});
+
 it("keeps the original wide formatting and left alignment without spreading spare space", async () => {
   const container = document.createElement("div");
   container.style.width = "1000px";

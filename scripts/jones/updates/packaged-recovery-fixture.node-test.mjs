@@ -8,6 +8,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import { seedPackagedRecoveryFixture, legacyRefusalCases } from "./packaged-recovery-fixture.mjs";
 import { restoreStagedSelection } from "../../../apps/server/src/jones/updates/stagedSelection.ts";
+import { decodeServiceState } from "../../../apps/server/src/cloud/serviceProtocol.ts";
 import { preparePackagedInstallObservation } from "./packaged-recovery-launcher.mjs";
 import {
   qualifiedPayloadDigest,
@@ -195,6 +196,8 @@ NodeTest.test(
         const reservation = await NodeFSP.readFile(reservationPath);
         const statePath = NodePath.join(prepared.baseDir, "runtime", "service-state.json");
         const stateBytes = await NodeFSP.readFile(statePath);
+        NodeAssert.deepEqual(decodeServiceState(JSON.parse(stateBytes)), prepared.state);
+        NodeAssert.equal(prepared.state.activeVersion, input.active.receipt.version);
         const outcomePath = NodePath.join(
           prepared.baseDir,
           "runtime",

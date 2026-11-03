@@ -105,11 +105,13 @@ For a foreground delay, identify both the target environment and the server
 receiving the renderer's traces:
 
 - Thread open: cold opens normally use HTTP. Follow renderer
-  `environment.orchestration.threadBoundedSnapshot` to server
-  `http.orchestration.loadThreadSnapshotWindow`; older history uses
+  `clientRuntime.state.fetchEnvironmentBoundedThreadSnapshot` and
+  `clientRuntime.state.executeAuthenticatedEnvironmentHttpRequest` to server
+  `environment.orchestration.threadBoundedSnapshot` and its child
+  `http.orchestration.loadThreadSnapshotWindow`; older history uses server
   `environment.orchestration.threadHistoryPage`. Inspect child `db.connection`
   and `db.lock_wait_ms`. Socket resume and fallback use
-  `ws.orchestrationV2.subscribeThread` and `threadSnapshotThenLive`, which measure
+  `ws.orchestrationV2.subscribeThread` and `ws.orchestrationV2.threadSnapshotThenLive`, which measure
   setup; `ws.rpc.orchestration.subscribeThread` measures the stream lifetime.
 - Send: pair server `ws.rpc.orchestration.dispatchCommand` with renderer
   `orchestration.dispatchCommand` by method and time. WebSocket client and server
@@ -230,9 +232,10 @@ diagnostics. Enabling export needs an approved receiver and agreement on the
 data sent, and changing startup configuration requires its own operational scope.
 
 Use the installed Jones build, not `npx t3`: the npm package belongs to upstream
-T3 Code. The current `t3 triage` playbook also targets upstream source and its
-issue tracker, so it is not the Jones investigation route. Use bounded local
-trace summaries and this guide instead; see
+T3 Code. The installed Jones build's `t3 triage` playbook targets Jones source and the Jones issue tracker,
+keeps server and client build attribution separate, and requires explicit permission
+for bounded private-state inspection and diagnostic uploads. Start with bounded local
+trace summaries and this guide; see
 [`triagePrompt.ts`](../../apps/server/src/cli/triagePrompt.ts).
 
 ### Option 1: Local Traces Only

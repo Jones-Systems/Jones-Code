@@ -118,6 +118,48 @@ const diskFetch = (payload: unknown = disk(), cpuPayload: unknown = cpu()) => {
 afterEach(() => vi.useRealTimers());
 
 describe("Netdata host status", () => {
+  it("distinguishes disconnected collectors, expired samples, and upstream failures", async () => {
+    const disconnected = fixtureFetch(cpu(), data("free", 4096.5, "MiB"), {
+      ...nodes,
+      nodes: [{ ...nodes.nodes[0], state: "unreachable" }],
+    });
+    const cases = [
+      [disconnected, "stale", "collector_disconnected"],
+      [fixtureFetch(cpu({}, now / 1000 - 31)), "stale", "sample_expired"],
+      [
+        vi.fn<typeof fetch>(async () => new Response(null, { status: 503 })),
+        "upstream_unavailable",
+        "upstream_failure",
+      ],
+    ] as const;
+    for (const [fetcher, reason, diagnostic] of cases) {
+      const host = (await readHostStatus(config, fetcher, () => now)).hosts[0];
+      expect(host).toEqual({ id: "vps", status: "unavailable", reason, diagnostic });
+      expect(JSON.stringify(host)).not.toMatch(/netdata\.example|test-only-secret|aaaaaaaa/);
+    }
+    expect(disconnected).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps diagnostic metadata compatible with older and future peers", () => {
+    const legacy = { id: "vps", status: "unavailable", reason: "stale" };
+    const decode = Schema.decodeUnknownSync(HostStatus);
+    expect(decode(legacy)).toEqual(legacy);
+    expect(decode({ ...legacy, diagnostic: "collector_disconnected" })).toMatchObject({
+      diagnostic: "collector_disconnected",
+    });
+    const future = decode({ ...legacy, diagnostic: "future_diagnostic" });
+    expect(future.status).toBe("unavailable");
+    if (future.status === "unavailable") expect(future.diagnostic).toBeUndefined();
+    const oldUnavailable = Schema.Struct({
+      id: Schema.Literal("vps"),
+      status: Schema.Literal("unavailable"),
+      reason: Schema.Literal("stale"),
+    });
+    expect(
+      Schema.decodeUnknownSync(oldUnavailable)({ ...legacy, diagnostic: "sample_expired" }),
+    ).toEqual(legacy);
+  });
+
   it("decodes legacy hosts without storage and validates optional storage bytes and mount points", () => {
     const decode = Schema.decodeUnknownSync(HostStatus);
     const legacy = {
@@ -1033,6 +1075,7 @@ describe("Netdata host status", () => {
       id: "test",
       status: "unavailable",
       reason: "upstream_unavailable",
+      diagnostic: "upstream_failure",
     });
     expect(JSON.stringify(result)).not.toContain("private");
   });

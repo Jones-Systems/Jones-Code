@@ -298,7 +298,7 @@ test("unconditional Lint admits Jones migration order after dependencies are rea
   const workflow = readFileSync(join(__dirname, "../../../.github/workflows/ci.yml"), "utf8");
   const lint = workflow.match(/^  lint:\n([\s\S]*?)(?=^  [\w-]+:)/m)[1];
   assert.doesNotMatch(lint, /needs:|\n    if:/);
-  assert.match(lint, /fetch-depth: 0/);
+  assert.match(lint, /JONES_CHECKOUT_DEPTH: "0"/);
   assert.match(
     lint,
     /run-install: true[\s\S]*?- name: Check Jones migration order\n        run: node scripts\/jones\/ci\/jones-migration-order\.cjs/,

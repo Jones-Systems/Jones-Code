@@ -155,7 +155,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
       if (!alive || !initialized) return;
       await publishBatch(viewFrames());
     };
-    const fullReplay = async () => {
+    const fullReplay = async (restoreIdentityReplay = false) => {
       if (!alive || !initialized) return;
       const frames: ThreadMonitorPublisherFrame[] = [...viewFrames()];
       if (theme)
@@ -178,7 +178,7 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
             childAttention: false,
           }),
         });
-      frames.push(...monitorStore.results.values(), {
+      frames.push(...monitorStore.replayResults(restoreIdentityReplay), {
         type: "viewState",
         state: monitorStore.viewState,
       });
@@ -198,7 +198,11 @@ function NativeMonitorPublisher({ router }: { readonly router: AppRouter }) {
     const actions = new MonitorActionController(router, publish);
     const unsubscribe = bridge.onIntent((intent) => {
       if (intent.type === "ready" || intent.type === "requestSnapshot") {
-        void fullReplay().catch(() => undefined);
+        void fullReplay(
+          intent.type === "requestSnapshot" &&
+            intent.restoreIdentityReplay?.publisherGeneration ===
+              monitorStore.fence.publisherGeneration,
+        ).catch(() => undefined);
         return;
       }
       if (intent.type === "setViewState") {

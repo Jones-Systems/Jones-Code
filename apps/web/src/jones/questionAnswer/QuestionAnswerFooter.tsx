@@ -93,7 +93,7 @@ export function QuestionAnswerFooter({
   }, [progress.customAnswer, state.showField]);
 
   return (
-    <ComposerBanner.Body className="pe-4">
+    <ComposerBanner.Body className="pe-4 @max-[24rem]/composer-surface:ps-4">
       <div
         ref={surfaceRef}
         {...threadContextDropTargetProps()}
@@ -117,14 +117,14 @@ export function QuestionAnswerFooter({
             void attachments.addFiles(Array.from(event.dataTransfer.files));
           else insert(event.dataTransfer.getData("text/plain"));
         }}
-        className="ms-5 space-y-2 pb-2"
+        className="ms-5 space-y-2 pb-2 @max-[24rem]/composer-surface:ms-0"
       >
         {state.showField && !state.notes && progress.activeQuestion?.options.length ? (
           <p className="text-xs text-muted-foreground">Typing replaces your choice</p>
         ) : null}
-        <div className="flex items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2">
           {state.showField ? (
-            <div className="relative min-w-0 flex-1">
+            <div className="relative min-w-0 flex-1 basis-48">
               <textarea
                 ref={fieldRef}
                 aria-label="Your answer"
@@ -132,7 +132,7 @@ export function QuestionAnswerFooter({
                 value={progress.customAnswer}
                 disabled={state.fieldDisabled}
                 rows={1}
-                className="block w-full resize-none overflow-y-auto rounded-md border border-input bg-background py-1.5 ps-3 pe-10 text-sm/5 outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50"
+                className={`block w-full resize-none overflow-y-auto rounded-md border border-input bg-background py-1.5 ps-3 ${capabilities.supportsQuestionAttachments ? "pe-10" : "pe-3"} text-sm/5 outline-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:opacity-50`}
                 onChange={(event) => onChangeCustomAnswer(questionId, event.target.value)}
                 onKeyDown={(event) => {
                   event.stopPropagation();
@@ -203,7 +203,7 @@ export function QuestionAnswerFooter({
           ) : (
             <div className="flex-1" />
           )}
-          <div className="pb-0.5">
+          <div className="shrink-0 pb-0.5">
             <Button
               type="button"
               size="sm"

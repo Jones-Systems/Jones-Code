@@ -306,6 +306,25 @@ export class MonitorStore {
       ...(action.type === "restore" ? { settleCommandId: action.settleCommandId } : {}),
     });
   }
+  replayResults(restoreIdentityReplay = false): ThreadMonitorActionResult[] {
+    return [...this.results.values()].map((result) => {
+      const identity = this.identities.get(result.actionId);
+      if (
+        !restoreIdentityReplay ||
+        !this.fence.accepts(result) ||
+        identity?.type !== "restore" ||
+        identity.settleCommandId === undefined ||
+        identity.commandId !== result.commandId ||
+        !sameMonitorLifetime(identity, result) ||
+        monitorThreadKey(identity) !== monitorThreadKey(result)
+      )
+        return result;
+      return {
+        ...result,
+        restoreIdentity: { type: "restore", settleCommandId: identity.settleCommandId },
+      };
+    });
+  }
   result(result: ThreadMonitorActionResult): ThreadMonitorDraft | null {
     if (!this.fence.accepts(result)) return null;
     const known = this.identities.get(result.actionId);

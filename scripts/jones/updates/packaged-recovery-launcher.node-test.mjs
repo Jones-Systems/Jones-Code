@@ -66,9 +66,9 @@ NodeTest.test(
           const context=JSON.parse(process.env.T3_SERVICE_LAUNCHER_CONTEXT);
           const pending=new Map();
           process.on("message",message=>{
-            if(message.type==="update-reconciled"){
-              const reply=pending.get(message.requestId);
-              if(reply){pending.delete(message.requestId);reply.resolve(message)}
+            if(message.type==="update-reconciled" || message.type==="update-rejected"){
+              const reply=pending.get(message.requestId ?? message.operationId);
+              if(reply){pending.delete(message.requestId ?? message.operationId);reply.resolve(message)}
             }
           });
           const snapshot=async()=>({
@@ -76,27 +76,54 @@ NodeTest.test(
             environmentId:await fs.readFile(path.join(home,"userdata","environment-id"),"utf8"),
             currentVersion:context.childVersion,capability:{check:true,download:true,install:true},
           });
+          const requestedPort=Number(process.env.T3CODE_PORT);
+          if(!Number.isInteger(requestedPort)||requestedPort<1||requestedPort>65535)
+            throw new Error("Packaged server requires a port from 1 to 65535.");
           const server=http.createServer(async(request,response)=>{
             response.setHeader("content-type","application/json");
             if(request.headers.authorization!=="Bearer synthetic-legacy-fixture-token"){
               response.writeHead(401);response.end("{}");return
             }
             try{
+              if(request.method==="POST" && request.url==="/api/jones-updates/operations/start"){
+                const chunks=[];let size=0;
+                for await(const chunk of request){size+=chunk.length;if(size>4096)throw new Error("fixture input bound");chunks.push(chunk)}
+                const body=JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                const reply=await new Promise((resolve,reject)=>{
+                  pending.set(body.operationId,{resolve,reject});
+                  process.send({type:"request-update",operationId:body.operationId,
+                    targetVersion:"0.0.0-preview.20261002.101.1",dbPath:path.join(home,"userdata","statev2.sqlite"),
+                    stagedHandle:body.action.stagedHandle},error=>{if(error)reject(error)});
+                });
+                response.end(JSON.stringify({...body,protocol:1,phase:"blocked",updatedAt:new Date().toISOString(),
+                  code:"failed-operation-unsettled",message:reply.reason}));
+                return;
+              }
               if(request.method==="POST" && request.url==="/api/jones-updates/reconcile"){
                 const chunks=[];let size=0;
                 for await(const chunk of request){size+=chunk.length;if(size>4096)throw new Error("fixture input bound");chunks.push(chunk)}
                 const body=JSON.parse(Buffer.concat(chunks).toString("utf8"));
-                await new Promise((resolve,reject)=>{
+                const reply=await new Promise((resolve,reject)=>{
                   pending.set(body.requestId,{resolve,reject});
                   process.send({type:"reconcile-failed-update",operationId:body.operationId,requestId:body.requestId},error=>{if(error)reject(error)});
                 });
+                if(reply.result==="refused"){
+                  response.end(JSON.stringify({
+                    source:"jones-actions",channel:"jones-main",phase:"blocked",
+                    message:"Reconciliation refused: "+reply.reason+".",
+                    capability:{check:false,download:false,install:false,reason:"bootstrap-required"},
+                    childVersion:context.childVersion,launcherVersion:context.launcherVersion,
+                    launcherSettlement:"supported",launcherRefresh:"none",settlement:"none",
+                    updateId:body.operationId,settlementRefusal:reply.reason,
+                  }));return;
+                }
               }else if(request.method!=="GET" || request.url!=="/api/jones-updates"){
                 response.writeHead(404);response.end("{}");return
               }
               response.end(JSON.stringify(await snapshot()));
             }catch(error){response.writeHead(500);response.end("{}");console.error(error.message)}
           });
-          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(0,"127.0.0.1",resolve)});
+          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(requestedPort,"127.0.0.1",resolve)});
           const runtime=path.join(home,"userdata","server-runtime.json");
           const port=server.address().port;
           await fs.writeFile(runtime+".synthetic.tmp",JSON.stringify({
@@ -114,7 +141,7 @@ NodeTest.test(
           state=JSON.parse(await fs.readFile(statePath,"utf8"));
           if(state.protocol!==4 || !state.update) throw new Error("Synthetic launcher refuses invalid service state.");
         }catch(error){console.error(error.message);process.exitCode=1;return}
-        const {writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
+        const {archiveUpdateOperation,writeFailedUpdateOperation,readUpdateOperationSettlement,publishUpdateOperationSettlement,evaluateLegacyUpdateSettlement,assertNoUnreconciledUpdateOperations,FailedOperationUnsettledError}=load(${JSON.stringify(NodeURL.fileURLToPath(ledger))});
         const {removeQualifiedRecoveryPayload}=load(${JSON.stringify(NodeURL.fileURLToPath(backup))});
 
         if(state.update.status==="failed"){
@@ -122,11 +149,28 @@ NodeTest.test(
           const active=path.join(home,"runtime","versions",state.activeVersion,"t3");
           const child=spawn(active,["serve"],{
             env:{...process.env,T3CODE_HOME:home,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
-              protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",updateSettlementProtocol:1,
+              protocol:4,childVersion:state.activeVersion,launcherVersion:qualified.receipt.version,updateSettlementProtocol:1,
+              update:state.update,
             })},stdio:["inherit","inherit","inherit","ipc"],
           });
           let queue=Promise.resolve();
           child.on("message",message=>{
+            if(message.type==="request-update"){
+              queue=queue.then(async()=>{
+                try {
+                  await archiveUpdateOperation(home,state.update);
+                  await assertNoUnreconciledUpdateOperations(home,state.update);
+                  throw new Error("synthetic fixture expected an unsettled operation");
+                } catch(error) {
+                  if(!(error instanceof FailedOperationUnsettledError))throw error;
+                  await new Promise((resolve,reject)=>child.send({type:"update-rejected",operationId:message.operationId,
+                    reason:"failed-operation-unsettled: "+error.operationId+
+                      " requires reconciliation before another Install; the current server remains active.",
+                  },error=>error?reject(error):resolve()));
+                }
+              }).catch(error=>{console.error(error.message);child.kill("SIGTERM")});
+              return;
+            }
             if(message.type!=="reconcile-failed-update")return;
             queue=queue.then(async()=>{
               let existing=await readUpdateOperationSettlement(home,message.operationId);
@@ -134,7 +178,8 @@ NodeTest.test(
               if(!existing){
                 const evaluated=await evaluateLegacyUpdateSettlement({
                   baseDir:home,operationId:message.operationId,current:state.update,
-                  active:{activeVersion:state.activeVersion,activeSourceSha:qualified.binding.activeSourceSha},
+                  active:{activeVersion:state.activeVersion,activeSourceSha:JSON.parse(
+                    await fs.readFile(path.join(home,"runtime","versions",state.activeVersion,".jones-runtime-receipt.json"),"utf8")).sourceSha},
                 });
                 if(evaluated.result==="refused"){
                   result="refused";reason=evaluated.reason;
@@ -300,6 +345,8 @@ NodeTest.test(
             active: { payloadDirectory, receipt: receipt(true) },
             candidate: { payloadDirectory, receipt: receipt(false) },
             operationId: "12345678-1234-4234-8234-123456789abc",
+            kind: "legacy-failed",
+            legacyVariant: "restore-pending",
           });
           const token = "synthetic-fixture-only-token";
           const calls = [];
@@ -324,6 +371,34 @@ NodeTest.test(
               body: chunks.length ? JSON.parse(Buffer.concat(chunks).toString("utf8")) : undefined,
             });
             response.setHeader("content-type", "application/json");
+            if (mode.startsWith("refusal")) {
+              const value = {
+                source: "jones-actions",
+                channel: "jones-main",
+                phase: "blocked",
+                message: "Reconciliation refused: restore-pending.",
+                capability: {
+                  check: false,
+                  download: false,
+                  install: false,
+                  reason: "bootstrap-required",
+                },
+                childVersion: prepared.state.activeVersion,
+                launcherVersion: prepared.inputs.candidate.receipt.version,
+                launcherSettlement: "supported",
+                launcherRefresh: "none",
+                settlement: "none",
+                updateId: prepared.operationId,
+                settlementRefusal: "restore-pending",
+              };
+              if (mode === "refusal-child") value.childVersion = "foreign";
+              if (mode === "refusal-operation") value.updateId = "foreign";
+              if (mode === "refusal-reason") value.settlementRefusal = "insufficient-evidence";
+              if (mode === "refusal-capability") value.capability.install = true;
+              if (mode === "refusal-status") response.writeHead(409);
+              response.end(JSON.stringify(value));
+              return;
+            }
             if (mode === "redirect") {
               response.writeHead(302, {
                 location: "http://127.0.0.1:" + server.address().port + "/must-not-follow",
@@ -432,6 +507,27 @@ NodeTest.test(
               ],
             );
             NodeAssert.ok(calls.every((call) => call.authorization === "Bearer " + token));
+            mode = "refusal";
+            const refused = await client.reconcile(requestId, "restore-pending");
+            NodeAssert.equal(refused.settlementRefusal, "restore-pending");
+            NodeAssert.equal(refused.childVersion, prepared.state.activeVersion);
+            await NodeAssert.rejects(client.reconcile(requestId), /HTTP exchange failed/);
+            NodeAssert.throws(
+              () => client.reconcile(requestId, "insufficient-evidence"),
+              /expected fixture reconciliation refusal/,
+            );
+            for (mode of [
+              "refusal-child",
+              "refusal-operation",
+              "refusal-reason",
+              "refusal-capability",
+              "refusal-status",
+            ])
+              await NodeAssert.rejects(
+                client.reconcile(requestId, "restore-pending"),
+                /HTTP exchange failed/,
+              );
+            mode = "ok";
             const freshId = "42345678-1234-4234-8234-123456789abc";
             const initialInstall = await client.installOperation();
             NodeAssert.equal(initialInstall.operationId, prepared.operationId);
@@ -610,6 +706,16 @@ NodeTest.test(
             preparePackagedReconciliationObservation({ prepared, requestIds: [ids[0], ids[0]] }),
             /two distinct request IDs/,
           );
+          for (const installOperationId of ["invalid", prepared.operationId, ids[0]]) {
+            await NodeAssert.rejects(
+              preparePackagedReconciliationObservation({
+                prepared,
+                requestIds: ids,
+                installOperationId,
+              }),
+              /distinct fixed unsettled Install/,
+            );
+          }
           const observation = await preparePackagedReconciliationObservation({
             prepared,
             requestIds: ids,
@@ -618,6 +724,7 @@ NodeTest.test(
           const planBytes = await NodeFSP.readFile(planPath);
           const plan = JSON.parse(planBytes);
           NodeAssert.equal(plan.operationId, prepared.operationId);
+          NodeAssert.deepEqual(plan.retainedUpdate, prepared.state.update);
           NodeAssert.equal(
             plan.childExecutable,
             NodePath.join(
@@ -708,6 +815,7 @@ NodeTest.test(
         { archivedOutcome: false },
         { archivedOutcome: true },
         { archivedOutcome: true, legacyVariant: "restore-pending" },
+        { archivedOutcome: true, legacyVariant: "active-changed" },
       ]) {
         await t.test(
           "runs the real HTTP/IPC transport control with archivedOutcome=" +
@@ -735,6 +843,7 @@ NodeTest.test(
                 "32345678-1234-4234-8234-123456789abc",
               ],
               token: "synthetic-legacy-fixture-token",
+              installOperationId: "52345678-1234-4234-8234-123456789abc",
             };
             await NodeAssert.rejects(
               exercisePackagedLegacyReconciliation({ ...input, token: "unsafe\nbearer" }),
@@ -749,8 +858,23 @@ NodeTest.test(
               fixedIds,
             );
             NodeAssert.equal(result.assertionsPassed, true);
+            NodeAssert.equal(result.installArchive.created, !archivedOutcome);
+            NodeAssert.match(result.installArchive.sha256, /^[a-f0-9]{64}$/);
             NodeAssert.equal(result.packagedRecoveryMatrixPassed, false);
             NodeAssert.equal(result.externalDescendantSettlementRequired, true);
+            NodeAssert.equal(result.installReceipt.operationId, input.installOperationId);
+            NodeAssert.equal(result.installReceipt.phase, "blocked");
+            NodeAssert.equal(
+              result.observation.admissionRefusal.requestId,
+              input.installOperationId,
+            );
+            NodeAssert.equal(result.observation.admissionRefusal.sendCallbackCompleted, true);
+            NodeAssert.equal(
+              result.observation.admissionRefusal.reason,
+              "failed-operation-unsettled: " +
+                prepared.operationId +
+                " requires reconciliation before another Install; the current server remains active.",
+            );
             NodeAssert.deepEqual(
               result.observation.replies.map((reply) => reply.result),
               legacyVariant ? ["refused", "refused"] : ["settled", "already-settled"],
@@ -759,17 +883,31 @@ NodeTest.test(
               NodeAssert.equal(result.settlement, null);
               NodeAssert.deepEqual(result.refusal, {
                 variant: legacyVariant,
-                reason: "restore-pending",
+                reason: legacyVariant,
                 heldEvidenceUnchanged: true,
               });
               NodeAssert.ok(
-                result.observation.replies.every((reply) => reply.reason === "restore-pending"),
+                result.observation.replies.every((reply) => reply.reason === legacyVariant),
               );
               await NodeAssert.rejects(
                 preparePackagedReconciliationObservation({ prepared, requestIds: fixedIds }),
                 /occupied|EEXIST/,
               );
             } else NodeAssert.equal(result.settlement.basis, "legacy-reconciled");
+            if (legacyVariant === "active-changed") {
+              NodeAssert.equal(
+                result.activeReceiptDrift.launcherPid,
+                result.observation.replies[0].launcherPid,
+              );
+              NodeAssert.equal(
+                result.activeReceiptDrift.childPid,
+                result.observation.replies[0].childPid,
+              );
+              NodeAssert.notEqual(
+                result.activeReceiptDrift.originalSha256,
+                result.activeReceiptDrift.changedSha256,
+              );
+            } else NodeAssert.equal(result.activeReceiptDrift, undefined);
             NodeAssert.equal(result.state.update.id, prepared.operationId);
             NodeAssert.equal(result.state.update.status, "failed");
             NodeAssert.ok(!JSON.stringify(result).includes(input.token));
@@ -863,6 +1001,9 @@ NodeTest.test(
           const http=require("node:http"),pending=new Map();
           process.on("message",m=>{if(m.type==="update-accepted"){
             const resolve=pending.get(m.updateId);if(resolve){pending.delete(m.updateId);resolve()}}});
+          const requestedPort=Number(process.env.T3CODE_PORT);
+          if(!Number.isInteger(requestedPort)||requestedPort<1||requestedPort>65535)
+            throw new Error("Packaged server requires a port from 1 to 65535.");
           const server=http.createServer(async(req,res)=>{
             res.setHeader("content-type","application/json");
             if(req.headers.authorization!=="Bearer synthetic-accepted-fixture-token"){res.writeHead(401);res.end("{}");return}
@@ -880,7 +1021,7 @@ NodeTest.test(
                 updatedAt:new Date().toISOString(),...(refused?{}:{acceptedAt:new Date().toISOString()})}));
             }catch(e){res.writeHead(500);res.end("{}");console.error(e.message)}
           });
-          await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));const port=server.address().port;
+          await new Promise((resolve,reject)=>{server.once("error",reject);server.listen(requestedPort,"127.0.0.1",resolve)});const port=server.address().port;
           await write(path.join(home,"userdata","server-runtime.json"),{version:1,pid:process.pid,host:"127.0.0.1",port,
             origin:"http://127.0.0.1:"+port,startedAt:new Date().toISOString(),serviceManaged:true});
           process.once("SIGTERM",()=>server.close(()=>{if(process.connected)process.disconnect()}));
@@ -908,10 +1049,11 @@ NodeTest.test(
         const child=spawn(active,["serve"],{env:{...process.env,T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({
           protocol:4,childVersion:state.activeVersion,launcherVersion:"1.0.0",startupGateProtocol:1,
         })},stdio:["inherit","inherit","inherit","ipc"]});
-        let dispatching=false,ending=false;
+        let dispatching=false,ending=false,postWriteCleanupPending=false;
         const stopChild=()=>new Promise(resolve=>{if(child.exitCode!==null||child.signalCode!==null){resolve();return}
           child.once("close",resolve);child.kill("SIGTERM")});
-        process.once("SIGTERM",()=>{ending=true;stopChild()});
+        process.once("SIGTERM",()=>{if(postWriteCleanupPending){console.error("stopped during native post-write completion");process.exitCode=1}
+          ending=true;stopChild()});
         child.on("message",m=>{
           if(m.type!=="request-update")return;
           dispatching=true;
@@ -941,7 +1083,15 @@ NodeTest.test(
               process.exitCode=1;return;
             }
             if(!wasFailed)throw Error("expected injected first-attempt fault");
+            const terminalBackup=path.join(home,"runtime","db-backup",m.operationId);
+            await fs.mkdir(terminalBackup,{recursive:true,mode:0o700});
+            await write(path.join(terminalBackup,"paired-binding.json"),{transactionId:m.operationId,qualified});
+            await fs.writeFile(path.join(terminalBackup,"database"),"synthetic retained backup",{mode:0o600});
+            postWriteCleanupPending=true;
             state.activeVersion=m.targetVersion;state.update={...pending,status:"committed"};await write(statePath,state);
+            await new Promise(resolve=>setImmediate(resolve));
+            await fs.unlink(path.join(terminalBackup,"database"));postWriteCleanupPending=false;
+            const cleanupDir=await fs.open(terminalBackup,"r");try{await cleanupDir.sync()}finally{await cleanupDir.close()}
           })().catch(e=>{console.error(e.stack);process.exitCode=1;ending=true;stopChild()});
         });
         child.once("error",e=>{console.error(e.message);process.exitCode=1});

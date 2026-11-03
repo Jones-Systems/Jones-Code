@@ -1,0 +1,24 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "word-ci-trace",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/wordCiTrace.ts",
+    "apps/web/src/jones/wordCiTrace.test.ts"
+  ],
+  "hookPaths": ["apps/web/test/browserSetup.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/files/AttachmentFilePreview.browser.test.tsx",
+      "to": "apps/web/src/jones/wordCiTrace.ts"
+    },
+    {
+      "from": "apps/web/vite.config.ts",
+      "to": "apps/web/src/jones/wordCiTrace.ts"
+    },
+    {
+      "from": "apps/web/test/browserSetup.ts",
+      "to": "apps/web/src/jones/wordCiTrace.ts"
+    }
+  ]
+}

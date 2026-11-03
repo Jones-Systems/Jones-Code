@@ -1562,6 +1562,12 @@ it.each(["directory", "binding", "restore-intent"] as const)(
           rejection.reason,
           /^recovery-cleanup-required: .*the current server remains active/,
         );
+        const category = {
+          directory: "unsafe-payload",
+          binding: "binding-mismatch",
+          "restore-intent": "restore-intent-unexpected",
+        }[previousFault];
+        assert.include(rejection.reason, `(${category})`);
         const survivor = JSON.parse(
           await NodeFSP.readFile(NodePath.join(base, "runtime", "old-child-survived.json"), "utf8"),
         );

@@ -12,6 +12,18 @@ on:
         description: Inspected full diagnostic artifact name; required only for the one optional control
         type: string
         default: ""
+      observer_source_sha:
+        description: Exact original full diagnostic source SHA; control only
+        type: string
+        default: ""
+      observer_full_archive_sha256:
+        description: Inspected full artifact ZIP SHA256; control only
+        type: string
+        default: ""
+      observer_full_receipt_sha256:
+        description: Inspected observer-full.json SHA256; control only
+        type: string
+        default: ""
   pull_request:
     paths:
       - .github/workflows/server-parallel-qualification.yml
@@ -68,9 +80,107 @@ jobs:
       VP_NODE_VERSION: "26.12.1"
       JONES_SP_SCOPE: ${{ github.event.inputs.scope || 'source-evidence' }}
     steps:
+      - name: Select exact workload revision
+        id: source
+        env:
+          DEFAULT_SOURCE: ${{ github.event.pull_request.head.sha || github.sha }}
+          ORCHESTRATION_SHA: ${{ github.workflow_sha }}
+          CONTROL_SOURCE: ${{ github.event.inputs.observer_source_sha }}
+          FULL_ARTIFACT: ${{ github.event.inputs.observer_full_artifact }}
+          FULL_ARCHIVE_SHA256: ${{ github.event.inputs.observer_full_archive_sha256 }}
+          FULL_RECEIPT_SHA256: ${{ github.event.inputs.observer_full_receipt_sha256 }}
+          QUALIFICATION_OS: ${{ matrix.os }}
+        run: |
+          python3 -B - <<'PY_SELECT'
+          import os, re
+          e = os.environ
+          def require(condition, message='Invalid qualification source inputs'):
+              if not condition:
+                  raise RuntimeError(message)
+          control = e['JONES_SP_SCOPE'] == 'observer-control'
+          pins = [e['CONTROL_SOURCE'], e['FULL_ARTIFACT'], e['FULL_ARCHIVE_SHA256'], e['FULL_RECEIPT_SHA256']]
+          if control:
+              require(e['GITHUB_EVENT_NAME'] == 'workflow_dispatch' and e['QUALIFICATION_OS'] == 'linux')
+              require(e['GITHUB_REPOSITORY'] == 'Jones-Systems/Jones-Code' and e['GITHUB_RUN_ATTEMPT'] == '1')
+              require(pins[0] == '8e20d00f7df1c9f86bc48fcc296f0521a9f6e343')
+              require(pins[1] == 'server-parallel-linux-40828828769-1')
+              require(all(re.fullmatch('[0-9a-f]{64}', value) for value in pins[2:]))
+              require(re.fullmatch('[0-9a-f]{40}', e['ORCHESTRATION_SHA']))
+              source = pins[0]
+          else:
+              require(not any(pins), 'Control inputs are forbidden for ordinary qualification')
+              source = e['DEFAULT_SOURCE']
+          require(re.fullmatch('[0-9a-f]{40}', source))
+          with open(e['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'commit={source}\n')
+          PY_SELECT
+
+      - name: Prepare pinned control orchestration outside the measured checkout
+        id: control_prepare
+        if: env.JONES_SP_SCOPE == 'observer-control'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORCHESTRATION_SHA: ${{ github.workflow_sha }}
+          CONTROL_SOURCE: ${{ github.event.inputs.observer_source_sha }}
+          FULL_ARTIFACT: ${{ github.event.inputs.observer_full_artifact }}
+          FULL_ARCHIVE_SHA256: ${{ github.event.inputs.observer_full_archive_sha256 }}
+          FULL_RECEIPT_SHA256: ${{ github.event.inputs.observer_full_receipt_sha256 }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          test "$(realpath -e "$RUNNER_TEMP")" = "$RUNNER_TEMP"
+          CONTROL_ROOT=$(mktemp -d "$RUNNER_TEMP/jones-observer-control-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-XXXXXX")
+          export CONTROL_ROOT
+          printf 'root=%s\n' "$CONTROL_ROOT" >> "$GITHUB_OUTPUT"
+          printf 'CONTROL_ROOT=%s\n' "$CONTROL_ROOT" >> "$GITHUB_ENV"
+          printf '%s\n' "$GITHUB_RUN_ID.$GITHUB_RUN_ATTEMPT" > "$CONTROL_ROOT/OWNER"
+          mkdir -m 700 "$CONTROL_ROOT/evidence" "$CONTROL_ROOT/orchestration"
+          git -C "$CONTROL_ROOT/orchestration" init
+          git -C "$CONTROL_ROOT/orchestration" remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git -C "$CONTROL_ROOT/orchestration" sparse-checkout init --no-cone
+          printf '%s\n' '/.github/workflows/server-parallel-qualification.yml' '/scripts/jones/ci/server-parallel-observer-control.py' | git -C "$CONTROL_ROOT/orchestration" sparse-checkout set --no-cone --stdin
+          git -C "$CONTROL_ROOT/orchestration" -c protocol.version=2 fetch --no-tags --depth=1 origin "$ORCHESTRATION_SHA"
+          git -C "$CONTROL_ROOT/orchestration" checkout --detach FETCH_HEAD
+          export OBS_ORCHESTRATION_HEAD=$(git -C "$CONTROL_ROOT/orchestration" rev-parse HEAD)
+          export OBS_ORCHESTRATION_TREE=$(git -C "$CONTROL_ROOT/orchestration" rev-parse HEAD^{tree})
+          export OBS_ORCHESTRATION_STATUS=$(git -C "$CONTROL_ROOT/orchestration" status --porcelain=v1 --untracked-files=no)
+          test "$OBS_ORCHESTRATION_HEAD" = "$ORCHESTRATION_SHA"
+          test -z "$OBS_ORCHESTRATION_STATUS"
+          python3 -B - <<'PY_CONTEXT'
+          import json, os, pathlib
+          e = os.environ
+          root = pathlib.Path(e['CONTROL_ROOT'])
+          evidence = root / 'evidence'
+          context = {
+              'repository': e['GITHUB_REPOSITORY'], 'event': e['GITHUB_EVENT_NAME'],
+              'scope': e['JONES_SP_SCOPE'], 'platform': 'linux',
+              'source': e['CONTROL_SOURCE'], 'artifactName': e['FULL_ARTIFACT'],
+              'archiveSha256': e['FULL_ARCHIVE_SHA256'], 'receiptSha256': e['FULL_RECEIPT_SHA256'],
+              'orchestrationSha': e['ORCHESTRATION_SHA'], 'workspace': e['GITHUB_WORKSPACE'],
+              'runId': int(e['GITHUB_RUN_ID']), 'runAttempt': int(e['GITHUB_RUN_ATTEMPT']),
+              'reports': str(pathlib.Path(e['RUNNER_TEMP']) / f"jones-server-parallel-reports-{e['GITHUB_RUN_ID']}-{e['GITHUB_RUN_ATTEMPT']}"),
+              'scratch': str(pathlib.Path(e['RUNNER_TEMP']) / f"jones-server-parallel-{e['GITHUB_RUN_ID']}-{e['GITHUB_RUN_ATTEMPT']}"),
+          }
+          identity = {'directory': str(root / 'orchestration'), 'head': e['OBS_ORCHESTRATION_HEAD'],
+                      'tree': e['OBS_ORCHESTRATION_TREE'], 'trackedStatus': e['OBS_ORCHESTRATION_STATUS']}
+          for name, value in [('context', context), ('orchestration-identity', identity)]:
+              with (evidence / f'{name}.json').open('x') as output:
+                  json.dump(value, output, indent=2)
+                  output.write('\n')
+          PY_CONTEXT
+          gh api repos/Jones-Systems/Jones-Code/actions/runs/40828828769/attempts/1 > "$CONTROL_ROOT/evidence/run.json"
+          gh api 'repos/Jones-Systems/Jones-Code/actions/runs/40828828769/attempts/1/jobs?per_page=100' > "$CONTROL_ROOT/evidence/jobs.json"
+          gh api 'repos/Jones-Systems/Jones-Code/actions/runs/40828828769/artifacts?per_page=100' > "$CONTROL_ROOT/evidence/artifacts.json"
+          gh api repos/Jones-Systems/Jones-Code/actions/workflows/400014551 > "$CONTROL_ROOT/evidence/workflow.json"
+          python3 -B "$CONTROL_ROOT/orchestration/scripts/jones/ci/server-parallel-observer-control.py" metadata "$CONTROL_ROOT"
+          gh api repos/Jones-Systems/Jones-Code/actions/artifacts/12877931910/zip > "$CONTROL_ROOT/evidence/full.zip"
+          python3 -B "$CONTROL_ROOT/orchestration/scripts/jones/ci/server-parallel-observer-control.py" extract "$CONTROL_ROOT"
+
       - name: Checkout exact public source without vendored gitlinks
         env:
-          SOURCE_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          SOURCE_COMMIT: ${{ steps.source.outputs.commit }}
           GIT_CONFIG_NOSYSTEM: "1"
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_TERMINAL_PROMPT: "0"
@@ -84,6 +194,23 @@ jobs:
           git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          if [[ "$JONES_SP_SCOPE" == observer-control ]]; then
+            test "$GITHUB_WORKSPACE" = /home/runner/work/Jones-Code/Jones-Code
+            test "$(pwd -P)" = "$GITHUB_WORKSPACE"
+            git diff --quiet HEAD --
+            export OBS_HEAD=$(git rev-parse HEAD) OBS_TREE=$(git rev-parse HEAD^{tree})
+            export OBS_STATUS=$(git status --porcelain=v1 --untracked-files=no)
+            python3 -B - <<'PY_CHECKOUT'
+          import json, os, pathlib
+          e = os.environ
+          value = {'directory': str(pathlib.Path.cwd()), 'head': e['OBS_HEAD'],
+                   'tree': e['OBS_TREE'], 'trackedStatus': e['OBS_STATUS']}
+          if value['head'] != '8e20d00f7df1c9f86bc48fcc296f0521a9f6e343' or value['tree'] != '39e18d9e7eba8b51695ae053e35259d7300ca00f' or value['trackedStatus'] != '':
+              raise RuntimeError('Original measured checkout changed before setup')
+          with (pathlib.Path(e['CONTROL_ROOT']) / 'evidence/before-setup.json').open('x') as output:
+              json.dump(value, output)
+          PY_CHECKOUT
+          fi
 
       - name: Admit job storage and create owned scratch
         id: scratch
@@ -126,6 +253,7 @@ jobs:
         run: vp run --filter @t3tools/desktop ensure:electron
 
       - name: Focused qualification regressions and control/checkpoint invariants
+        if: env.JONES_SP_SCOPE != 'observer-control'
         run: >-
           vp test run --maxWorkers=1
           apps/server/src/jones/serverParallelism/diagnosticObservation.test.ts
@@ -179,29 +307,60 @@ jobs:
           mkdir "$TMPDIR/installed"
           tar -xzf "${archives[0]}" -C "$TMPDIR/installed"
 
-      - name: Fetch the separately inspected full diagnostic for one optional control
+      - name: Revalidate original workload and regenerated manifest before control
+        id: control_preflight
         if: env.JONES_SP_SCOPE == 'observer-control'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          FULL_ARTIFACT: ${{ github.event.inputs.observer_full_artifact }}
         run: |
           set -euo pipefail
-          [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]
-          [[ "$FULL_ARTIFACT" =~ ^server-parallel-linux-([0-9]+)-([0-9]+)$ ]]
-          full_run="${BASH_REMATCH[1]}"
-          test "$full_run" != "$GITHUB_RUN_ID"
-          mkdir "$TMPDIR/observer-prior"
-          gh run download "$full_run" --repo "$GITHUB_REPOSITORY" --name "$FULL_ARTIFACT" --dir "$TMPDIR/observer-prior"
-          test -f "$TMPDIR/observer-prior/observer-full.json"
-          test -f "$TMPDIR/observer-prior/baseline-laptop.json"
+          git diff --quiet HEAD --
+          export OBS_HEAD=$(git rev-parse HEAD) OBS_TREE=$(git rev-parse HEAD^{tree})
+          export OBS_STATUS=$(git status --porcelain=v1 --untracked-files=no)
+          export OBS_NODE=$(node -p process.execPath) OBS_NODE_VERSION=$(node -p process.versions.node)
+          test "$OBS_NODE" = /home/runner/.vite-plus/js_runtime/node/26.12.1/bin/node
+          test "$OBS_NODE_VERSION" = 26.12.1
+          node scripts/jones/serverParallelism/source-command.mjs "$GITHUB_WORKSPACE/apps/server/src/bin.ts" "$CONTROL_ROOT/evidence/regenerated-source-command.json"
+          python3 -B - <<'PY_WORKLOAD'
+          import hashlib, json, os, pathlib
+          e = os.environ
+          root = pathlib.Path.cwd()
+          inputs = [
+              'package.json', 'pnpm-lock.yaml', 'patches/@ff-labs__fff-node@0.11.0.patch',
+              'apps/server/src/jones/serverParallelism/diagnosticObservation.ts',
+              'apps/server/src/jones/serverParallelism/resourceSamples.ts',
+              'apps/server/src/jones/serverParallelism/nativeQualification.ts',
+              'apps/server/src/jones/serverParallelism/combinedQualification.ts',
+              'apps/server/src/jones/serverCompute/processSlot.ts',
+              'scripts/jones/serverParallelism/observer-diagnostic.mjs',
+          ]
+          value = {'directory': str(root), 'head': e['OBS_HEAD'], 'tree': e['OBS_TREE'],
+                   'trackedStatus': e['OBS_STATUS'], 'node': e['OBS_NODE'], 'nodeVersion': e['OBS_NODE_VERSION'],
+                   'inputHashes': {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in inputs}}
+          with (pathlib.Path(e['CONTROL_ROOT']) / 'evidence/before-admission.json').open('x') as output:
+              json.dump(value, output)
+          PY_WORKLOAD
+          python3 -B "$CONTROL_ROOT/orchestration/scripts/jones/ci/server-parallel-observer-control.py" preflight "$CONTROL_ROOT"
+          python3 -B - <<'PY_ROUTE'
+          import json, os, pathlib
+          route = json.loads((pathlib.Path(os.environ['CONTROL_ROOT']) / 'evidence/control-route.json').read_text())
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"prior_directory={route['priorDirectory']}\n")
+          PY_ROUTE
 
       - name: Measure selected qualification scope serially
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && (env.JONES_SP_SCOPE != 'observer-control' || steps.control_preflight.outcome == 'success') }}
+        env:
+          CONTROL_PRIOR_DIRECTORY: ${{ steps.control_preflight.outputs.prior_directory }}
         run: |
           set -euo pipefail
           mkdir -p "$TMPDIR/installed"
           if [[ "$JONES_SP_SCOPE" == observer-control ]]; then
-            node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed" "$JONES_SP_SCOPE" "$TMPDIR/observer-prior"
+            test "$(pwd -P)" = /home/runner/work/Jones-Code/Jones-Code
+            test "$(git rev-parse HEAD)" = 8e20d00f7df1c9f86bc48fcc296f0521a9f6e343
+            test "$(git rev-parse HEAD^{tree})" = 39e18d9e7eba8b51695ae053e35259d7300ca00f
+            git diff --quiet HEAD --
+            test "$CONTROL_PRIOR_DIRECTORY" = "$CONTROL_ROOT/observer-prior/jones-server-parallel-reports-40828828769-1"
+            python3 -B "$CONTROL_ROOT/orchestration/scripts/jones/ci/server-parallel-observer-control.py" gate "$CONTROL_ROOT"
+            /home/runner/.vite-plus/js_runtime/node/26.12.1/bin/node "$GITHUB_WORKSPACE/scripts/jones/serverParallelism/ci-run.mjs" "$JONES_SP_REPORTS" "$TMPDIR/installed" observer-control "$CONTROL_PRIOR_DIRECTORY"
           else
             node scripts/jones/serverParallelism/ci-run.mjs "$JONES_SP_REPORTS" "$TMPDIR/installed" "$JONES_SP_SCOPE"
           fi
@@ -214,6 +373,16 @@ jobs:
           path: |
             ${{ steps.scratch.outputs.reports }}/
             ${{ steps.scratch.outputs.scratch }}/**/journal/**
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve control routing custody and admission evidence
+        id: control_preserve
+        if: ${{ always() && steps.control_prepare.outputs.root != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: observer-control-routing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.control_prepare.outputs.root }}/evidence/
           if-no-files-found: error
           retention-days: 7
 
@@ -246,3 +415,21 @@ jobs:
               if target.exists():
                   shutil.rmtree(target)
           PY
+
+      - name: Remove this job's completed orchestration scratch after preservation
+        if: ${{ always() && steps.control_prepare.outputs.root != '' && steps.control_preserve.outcome == 'success' }}
+        env:
+          CONTROL_ROOT: ${{ steps.control_prepare.outputs.root }}
+        run: |
+          python3 -B - <<'PY_CONTROL_CLEANUP'
+          import os, pathlib, shutil
+          root = pathlib.Path(os.environ['CONTROL_ROOT'])
+          parent = pathlib.Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
+          if root.parent != parent or root.resolve(strict=True) != root or root.is_symlink():
+              raise RuntimeError('Unexpected orchestration scratch')
+          if (root / 'OWNER').read_text() != f"{os.environ['GITHUB_RUN_ID']}.{os.environ['GITHUB_RUN_ATTEMPT']}\n":
+              raise RuntimeError('Orchestration scratch ownership mismatch')
+          shutil.rmtree(root)
+          if root.exists():
+              raise RuntimeError('Orchestration scratch removal unproved')
+          PY_CONTROL_CLEANUP

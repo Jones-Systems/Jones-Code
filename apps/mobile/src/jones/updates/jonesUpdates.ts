@@ -1,6 +1,10 @@
 // @effect-diagnostics globalDate:off - Reviews use the client clock; host receipts remain the authority for operation outcomes.
 import {
   createJonesUpdateAtoms,
+  resolveJonesAlternativeAction,
+  jonesExactSourceResultError,
+  shortJonesSource,
+  sameJonesReplacementStep,
   type JonesUpdateObservation,
 } from "@t3tools/client-runtime/jones/updates";
 import {
@@ -28,6 +32,7 @@ import type {
 import { Alert } from "react-native";
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { uuidv4 } from "../../lib/uuid";
+import { AsyncResult } from "effect/reactivity";
 
 export const jonesUpdates = createJonesUpdateAtoms(connectionAtomRuntime);
 
@@ -285,6 +290,102 @@ function buildMobileJonesActions(
     chooseRecovery: chooseJonesHostRecovery,
   };
   return {
+    async replaceDownload() {
+      const saved = session.getSnapshot();
+      if (
+        !saved.ready ||
+        saved.fault !== undefined ||
+        saved.busy ||
+        saved.uncertainty !== undefined
+      )
+        return;
+      const captured = resolveJonesAlternativeAction({ environmentId, ...effective() });
+      if (captured.status !== "ready" || captured.step.kind !== "replace-exact") {
+        session.patch({
+          message:
+            captured.status === "unavailable"
+              ? captured.message
+              : "Check again before replacing the download.",
+        });
+        return;
+      }
+      const step = captured.step;
+      session.patch({ busy: true, message: undefined });
+      try {
+        const confirmed = await new Promise<boolean>((resolve) => {
+          Alert.alert(
+            "Replace download",
+            `Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on this host with ${shortJonesSource(step.targetSource)}? The old download is retired; its files are retained. Install stays separate.`,
+            [
+              { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+              { text: "Replace download", onPress: () => resolve(true) },
+            ],
+            { cancelable: true, onDismiss: () => resolve(false) },
+          );
+        });
+        if (!confirmed) return;
+        const fresh = resolveJonesAlternativeAction({
+          environmentId,
+          ...effective(),
+          alternative: step.replace.alternative,
+        });
+        if (fresh.status !== "ready" || !sameJonesReplacementStep(step, fresh.step)) {
+          session.patch({
+            message:
+              "Nothing was sent: the host, download or alternative changed while confirmation was open.",
+          });
+          return;
+        }
+        const operationId = uuidv4();
+        const before = effective();
+        await journal.reserve({
+          id: operationId,
+          environmentId,
+          kind: "legacy",
+          action: "replace-exact",
+          targetSource: step.targetSource,
+          stagedHandle: step.replace.stagedHandle,
+        });
+        const latest = effective();
+        if (
+          !latest.canOperate ||
+          latest.observation.freshness !== "fresh" ||
+          JSON.stringify(before.observation.state) !== JSON.stringify(latest.observation.state)
+        ) {
+          await journal.notSent(operationId);
+          session.patch({
+            message: "The selected host changed before dispatch. Nothing was sent.",
+          });
+          return;
+        }
+        session.patch({ operationId });
+        try {
+          const result = await transport.legacy({
+            action: "downloadExact",
+            input: { targetSource: step.targetSource, replace: { ...step.replace, operationId } },
+          });
+          if (result === null) throw new Error("Replacement not confirmed");
+          await journal.acknowledge(operationId);
+          session.patch({
+            message:
+              jonesExactSourceResultError(step, AsyncResult.success(result), step.targetSource) ??
+              "Download replaced. Choose Install separately.",
+          });
+        } catch {
+          session.patch({
+            message:
+              "The replacement may have been accepted. Its effect is unknown; nothing will be resent.",
+          });
+        }
+      } catch {
+        session.patch({
+          message:
+            "The replacement could not be confirmed. Read the original outcome before continuing.",
+        });
+      } finally {
+        session.patch({ busy: false });
+      }
+    },
     async run(kind: "download" | "install") {
       const saved = session.getSnapshot();
       if (

@@ -14,6 +14,8 @@ import {
   jonesExactSourceResultError,
   jonesInstallRefusal,
   resolveJonesExactSourceAction,
+  resolveJonesAlternativeAction,
+  sameJonesReplacementStep,
   shortJonesSource,
   type JonesAction,
   type JonesExactSourceStep,
@@ -22,6 +24,7 @@ import {
 import { type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
+  JonesUpdateAlternative,
   JonesUpdateInstallInput,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
@@ -50,8 +53,9 @@ interface ExactSourceSnapshot {
 export interface ExactSourceTarget {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-  /** The verified installed source this action moves a host toward. */
+  /** A verified installed source, or the exact source of the separately captured alternative. */
   readonly targetSource: string;
+  readonly alternative?: JonesUpdateAlternative | undefined;
   /** A laptop target must still come from the same fresh, verified local connection. */
   readonly readTargetSource?: (() => string | undefined) | undefined;
   readonly allowReplace?: boolean | undefined;
@@ -106,14 +110,7 @@ function sameStep(left: JonesExactSourceStep, right: JonesExactSourceStep) {
       left.input.currentVersion === right.input.currentVersion
     );
   if (left.kind === "replace-exact" && right.kind === "replace-exact")
-    return (
-      left.targetSource === right.targetSource &&
-      left.replace.stagedHandle === right.replace.stagedHandle &&
-      left.replace.sourceSha === right.replace.sourceSha &&
-      left.replace.environmentId === right.replace.environmentId &&
-      left.replace.currentVersion === right.replace.currentVersion &&
-      left.replace.expectedInstalledSource === right.replace.expectedInstalledSource
-    );
+    return sameJonesReplacementStep(left, right);
   if (left.kind === "download" && right.kind === "download")
     return left.input.artifactId === right.input.artifactId;
   return true;
@@ -127,6 +124,7 @@ export async function performExactSourceStep({
   environmentId,
   label,
   targetSource,
+  alternative,
   readTargetSource,
   allowReplace,
   allowInstall,
@@ -141,6 +139,11 @@ export async function performExactSourceStep({
   readonly unresolvedInstall?: UnresolvedInstall | undefined;
   readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm" | "executor">;
 }): Promise<ExactSourceOutcome> {
+  if (alternative !== undefined && alternative.provenance.sourceSha !== targetSource)
+    return {
+      kind: "refused",
+      message: "The captured alternative target changed. Nothing was sent.",
+    };
   try {
     await webJonesJournal.load();
   } catch {
@@ -164,15 +167,18 @@ export async function performExactSourceStep({
       ))
     )
       return { kind: "cancelled" };
-    const fresh = resolveJonesExactSourceAction({
-      environmentId,
-      ...host.readLatest(),
-      targetSource,
-      allowReplace,
-      allowInstall,
-      subject,
-      unresolvedInstall,
-    });
+    const fresh =
+      alternative === undefined
+        ? resolveJonesExactSourceAction({
+            environmentId,
+            ...host.readLatest(),
+            targetSource,
+            allowReplace,
+            allowInstall,
+            subject,
+            unresolvedInstall,
+          })
+        : resolveJonesAlternativeAction({ environmentId, ...host.readLatest(), alternative });
     if (readTargetSource !== undefined && readTargetSource() !== targetSource)
       return {
         kind: "refused",
@@ -326,6 +332,7 @@ export function ExactSourceUpdateAction({
   environmentId,
   label,
   targetSource,
+  alternative,
   readTargetSource,
   allowReplace = false,
   allowInstall = true,
@@ -346,14 +353,17 @@ export function ExactSourceUpdateAction({
   const [report, setReport] = useState<Report | null>(null);
   const inFlight = useRef(false);
   const replacementIds = useRef(new Map<string, string>());
-  const decision = resolveJonesExactSourceAction({
-    environmentId,
-    ...host.snapshot,
-    targetSource,
-    allowReplace,
-    allowInstall,
-    subject,
-  });
+  const decision =
+    alternative === undefined
+      ? resolveJonesExactSourceAction({
+          environmentId,
+          ...host.snapshot,
+          targetSource,
+          allowReplace,
+          allowInstall,
+          subject,
+        })
+      : resolveJonesAlternativeAction({ environmentId, ...host.snapshot, alternative });
   const short = shortJonesSource(targetSource);
 
   const unresolved = unresolvedJonesExecution(
@@ -379,6 +389,7 @@ export function ExactSourceUpdateAction({
           environmentId,
           label,
           targetSource,
+          alternative,
           readTargetSource,
           allowReplace,
           allowInstall,
@@ -416,8 +427,8 @@ export function ExactSourceUpdateAction({
           role="status"
           className={
             status.tone === "error"
-              ? "max-w-72 text-end text-destructive text-xs"
-              : "max-w-72 text-end text-muted-foreground text-xs"
+              ? "col-span-full max-w-72 text-end text-destructive text-xs"
+              : "col-span-full max-w-72 text-end text-muted-foreground text-xs"
           }
         >
           {status.text}

@@ -56,6 +56,7 @@ export class MonitorPeerStore {
   private replayDetail: ThreadMonitorDetail | null = null;
   private retired = new Set<string>();
   private assembly: MonitorChunkState | null = null;
+  private requestedRestoreIdentityReplay = false;
   private listeners = new Set<() => void>();
   private snapshot: ReturnType<MonitorPeerStore["readSnapshot"]> | null = null;
   constructor(readonly dispatch: (intent: ThreadMonitorPeerIntent) => Promise<void>) {}
@@ -162,6 +163,7 @@ export class MonitorPeerStore {
       this.actions.clear();
       this.retired.clear();
       this.assembly = null;
+      this.requestedRestoreIdentityReplay = false;
       this.selection = null;
       this.detail = null;
       this.counts = emptyCounts();
@@ -274,6 +276,14 @@ export class MonitorPeerStore {
       this.error = null;
       this.assembly = null;
       this.changed();
+      if (!this.requestedRestoreIdentityReplay) {
+        this.requestedRestoreIdentityReplay = true;
+        // Older brokers reject this optional request; their ordinary ready replay remains usable.
+        void this.dispatch({
+          type: "requestSnapshot",
+          restoreIdentityReplay: { publisherGeneration: frame.publisherGeneration },
+        }).catch(() => undefined);
+      }
       return;
     }
     if (frame.type === "draft") {
@@ -320,12 +330,35 @@ export class MonitorPeerStore {
           prior.environmentEpoch !== frame.environmentEpoch)
       )
         return;
+      const identity = this.actions.get(frame.actionId);
+      if (
+        identity &&
+        (identity.commandId !== frame.commandId ||
+          monitorLifetimeKey(identity) !== monitorLifetimeKey(frame) ||
+          monitorThreadKey(identity) !== monitorThreadKey(frame) ||
+          (frame.restoreIdentity !== undefined &&
+            (identity.type !== "restore" ||
+              (identity.settleCommandId !== undefined &&
+                identity.settleCommandId !== frame.restoreIdentity.settleCommandId))))
+      )
+        return;
+      if (frame.restoreIdentity)
+        this.actions.set(frame.actionId, {
+          ...refOf(frame),
+          type: frame.restoreIdentity.type,
+          actionId: frame.actionId,
+          commandId: frame.commandId,
+          settleCommandId: frame.restoreIdentity.settleCommandId,
+        });
       if (
         prior?.status === "accepted" ||
         prior?.status === "rejected" ||
-        prior?.status === "unavailable"
-      )
+        prior?.status === "unavailable" ||
+        (prior?.status === "unknown" && frame.status === "pending")
+      ) {
+        if (frame.restoreIdentity) this.changed();
         return;
+      }
       this.results.set(frame.actionId, frame);
       if (frame.status === "accepted" && frame.submittedDraftRevision !== undefined) {
         const action = this.actions.get(frame.actionId);
@@ -430,6 +463,7 @@ export class MonitorPeerStore {
       ...("draftRevision" in action && action.draftRevision !== undefined
         ? { draftRevision: action.draftRevision }
         : {}),
+      ...(action.type === "restore" ? { settleCommandId: action.settleCommandId } : {}),
     });
     this.results.set(action.actionId, {
       ...refOf(action),

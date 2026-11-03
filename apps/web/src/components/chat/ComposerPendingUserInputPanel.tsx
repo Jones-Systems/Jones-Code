@@ -139,6 +139,7 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   useEffect(() => {
     if (!activeQuestion || responseDisabled || isCollapsed || backgroundThread) return;
     const handler = (event: globalThis.KeyboardEvent) => {
+      if (event.repeat || event.isComposing) return;
       if (event.metaKey || event.ctrlKey || event.altKey) return;
       const target = event.target;
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
@@ -168,62 +169,66 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   }
 
   return (
-    <Collapsible
-      open={!isCollapsed}
-      onOpenChange={(open) => {
-        setCollapsedQuestionId(open ? null : activeQuestion.id);
-      }}
-    >
-      <ComposerBanner.Row className="flex items-center gap-2 px-4 pt-1.5">
-        <CollapsibleTrigger
-          render={<button type="button" />}
-          title={
-            isCollapsed ? "Show the question and its options" : "Hide the question and its options"
-          }
-          data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-        >
-          <ComposerBanner.Content>
-            <span className="min-w-0 truncate text-muted-foreground">{activeQuestion.header}</span>
-            {isCollapsed ? (
-              <>
-                <ComposerBanner.Separator />
-                <span className="min-w-0 flex-1 truncate text-secondary-label">
-                  {questionSummaryLine(activeQuestion.question)}
-                </span>
-              </>
-            ) : null}
-          </ComposerBanner.Content>
-          <ComposerBanner.ToggleIcon expanded={!isCollapsed} />
-        </CollapsibleTrigger>
-        <QuestionProgress
-          index={progress.questionIndex}
-          answered={progress.answeredByIndex}
-          questionIds={prompt.questions.map((question) => question.id)}
-          disabled={disabled || isResponding}
-          onSelect={
-            onSelectQuestion
-              ? (index) => {
-                  setCollapsedQuestionId(null);
-                  onSelectQuestion(index);
-                }
-              : undefined
-          }
-        />
-        {prompt.dismissible ? (
-          <ComposerBanner.Dismiss
-            aria-label="Dismiss question without answering"
-            title="Dismiss question without answering"
+    <ComposerBanner.Scroll>
+      <Collapsible
+        open={!isCollapsed}
+        onOpenChange={(open) => {
+          setCollapsedQuestionId(open ? null : activeQuestion.id);
+        }}
+      >
+        <ComposerBanner.Row className="flex flex-wrap items-center gap-2 px-4 pt-1.5 @max-[18rem]:px-2">
+          <CollapsibleTrigger
+            render={<button type="button" />}
+            title={
+              isCollapsed
+                ? "Show the question and its options"
+                : "Hide the question and its options"
+            }
+            data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
+            className="flex min-w-0 flex-1 basis-32 items-center gap-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          >
+            <ComposerBanner.Content>
+              <span className="min-w-0 truncate text-muted-foreground">
+                {activeQuestion.header}
+              </span>
+              {isCollapsed ? (
+                <>
+                  <ComposerBanner.Separator />
+                  <span className="min-w-0 flex-1 truncate text-secondary-label">
+                    {questionSummaryLine(activeQuestion.question)}
+                  </span>
+                </>
+              ) : null}
+            </ComposerBanner.Content>
+            <ComposerBanner.ToggleIcon expanded={!isCollapsed} />
+          </CollapsibleTrigger>
+          <QuestionProgress
+            index={progress.questionIndex}
+            answered={progress.answeredByIndex}
+            questionIds={prompt.questions.map((question) => question.id)}
             disabled={disabled || isResponding}
-            data-pending-user-input-dismiss
-            onClick={() => {
-              if (!disabled && !isResponding) onDismiss(prompt.requestId);
-            }}
+            onSelect={
+              onSelectQuestion
+                ? (index) => {
+                    setCollapsedQuestionId(null);
+                    onSelectQuestion(index);
+                  }
+                : undefined
+            }
           />
-        ) : null}
-      </ComposerBanner.Row>
-      <CollapsiblePanel>
-        <ComposerBanner.Scroll>
+          {prompt.dismissible ? (
+            <ComposerBanner.Dismiss
+              aria-label="Dismiss question without answering"
+              title="Dismiss question without answering"
+              disabled={disabled || isResponding}
+              data-pending-user-input-dismiss
+              onClick={() => {
+                if (!disabled && !isResponding) onDismiss(prompt.requestId);
+              }}
+            />
+          ) : null}
+        </ComposerBanner.Row>
+        <CollapsiblePanel>
           <ComposerBanner.Body className="ps-6 pe-4 pb-1 wrap-anywhere sm:ps-5.5">
             <ChatMarkdown
               text={activeQuestion.question}
@@ -282,20 +287,20 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               })}
             </div>
           </ComposerBanner.Body>
-        </ComposerBanner.Scroll>
-        <QuestionAnswerFooter
-          prompt={prompt}
-          progress={progress}
-          threadRef={threadRef}
-          disabled={disabled}
-          isResponding={isResponding}
-          capabilities={attachmentCapabilities}
-          onChangeCustomAnswer={onChangeCustomAnswer}
-          onPrevious={onPrevious}
-          onAdvance={onAdvance}
-        />
-      </CollapsiblePanel>
-    </Collapsible>
+          <QuestionAnswerFooter
+            prompt={prompt}
+            progress={progress}
+            threadRef={threadRef}
+            disabled={disabled}
+            isResponding={isResponding}
+            capabilities={attachmentCapabilities}
+            onChangeCustomAnswer={onChangeCustomAnswer}
+            onPrevious={onPrevious}
+            onAdvance={onAdvance}
+          />
+        </CollapsiblePanel>
+      </Collapsible>
+    </ComposerBanner.Scroll>
   );
 });
 

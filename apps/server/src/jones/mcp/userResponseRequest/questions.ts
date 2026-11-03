@@ -26,7 +26,12 @@ export function normalizeUserResponseQuestions(input: UserResponseRequestInput):
       id: "response",
       header: "Action needed",
       question: input.instruction!,
-      options: (input.choices ?? []).map((label) => ({ label, description: label })),
+      options: (input.choices?.length
+        ? input.choices
+        : input.defaultDone
+          ? ["Done"]
+          : (input.choices ?? [])
+      ).map((label) => ({ label, description: label })),
       allowCustomAnswer: true,
       required: true,
     },

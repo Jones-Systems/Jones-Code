@@ -2,6 +2,8 @@ import { jonesBuildLabels, type JonesBuildRef } from "@t3tools/shared/jones/buil
 import { JonesBuildVersion } from "./JonesBuildVersion";
 import {
   jonesCandidatePresentation,
+  jonesAlternativePresentation,
+  resolveJonesAlternativeAction,
   jonesFollowerHold,
   jonesFollowerSummary,
   jonesUpdatePresentation,
@@ -141,6 +143,12 @@ export function JonesUpdateControls({
   const followerHold = state === null ? undefined : jonesFollowerHold(state);
   const followerSummary = state === null ? undefined : jonesFollowerSummary(state);
   const candidate = state === null ? undefined : jonesCandidatePresentation(state);
+  const alternative = state === null ? undefined : jonesAlternativePresentation(state);
+  const replacement = resolveJonesAlternativeAction({
+    environmentId,
+    observation,
+    canOperate: allowed,
+  });
   const builds: Array<{ title: string; build: JonesBuildRef }> = [];
   if (state?.currentVersion !== undefined)
     builds.push({
@@ -158,6 +166,15 @@ export function JonesUpdateControls({
         version: candidate.version ?? "Version not reported",
         startedAt: candidate.buildStartedAt,
         sourceSha: candidate.sourceSha,
+      },
+    });
+  if (alternative !== undefined)
+    builds.push({
+      title: alternative.label,
+      build: {
+        version: alternative.version ?? "Version not reported",
+        startedAt: alternative.buildStartedAt,
+        sourceSha: alternative.sourceSha,
       },
     });
   const labels = jonesBuildLabels(builds.map(({ build }) => build));
@@ -229,8 +246,14 @@ export function JonesUpdateControls({
         ) : null}
         {state?.migrationPlan ? (
           <Text className="text-sm text-foreground-muted">
-            Pending migrations: {state.migrationPlan.pendingUpstream.length} upstream,{" "}
+            {alternative === undefined ? "Pending migrations" : "Downloaded migrations"}:{" "}
+            {state.migrationPlan.pendingUpstream.length} upstream,{" "}
             {state.migrationPlan.pendingJones.length} Jones
+          </Text>
+        ) : null}
+        {alternative !== undefined ? (
+          <Text className="text-sm text-foreground-muted">
+            Alternative migrations checked after download
           </Text>
         ) : null}
         {state?.recovery ? (
@@ -295,6 +318,14 @@ export function JonesUpdateControls({
           label="Download"
           disabled={busy || !status.actions.download || followerHold !== undefined}
           onPress={() => void actions.run("download")}
+        />
+      ) : null}
+      {alternative !== undefined ? (
+        <SettingsActionRow
+          icon="arrow.down.circle"
+          label="Replace download"
+          disabled={busy || replacement.status !== "ready"}
+          onPress={() => void actions.replaceDownload()}
         />
       ) : null}
     </SettingsSection>

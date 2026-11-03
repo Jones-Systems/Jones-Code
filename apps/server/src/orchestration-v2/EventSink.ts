@@ -14,6 +14,7 @@ import * as CodexFailoverStore from "../jones/codexFailover/CodexFailoverStore.t
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
+import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
@@ -178,6 +179,7 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Store;
   readonly writeHistoricalTerminal?: (
     input: HistoricalTerminalHistory.HistoricalTerminalInput,
   ) => Effect.Effect<
@@ -363,6 +365,7 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Intent | undefined;
     readonly codexFailover?: CodexFailoverCommitContext | undefined;
     readonly taskContinuation?: TaskContinuationCommitContext | undefined;
     readonly resultRequest?: OpenRequest | undefined;
@@ -488,6 +491,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const idleWorktreeAdmission = IdleWorktreeAdmission.makeIdleWorktreeAdmission(sql);
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
     // Jones: keeps new provider work out of a process that is handing off to an update.
     const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
@@ -1370,6 +1374,11 @@ const layerBase: Layer.Layer<
           };
           yield* commandReceipts.upsert(receipt);
           yield* captureSettlementProof(receipt, storedEvents);
+          if (input.idleWorktreeAdmission !== undefined)
+            yield* idleWorktreeAdmission.accept({
+              ...input,
+              intent: input.idleWorktreeAdmission,
+            });
           if (Option.isSome(checkoutIntent)) {
             if (ordinary !== undefined)
               yield* checkoutIntent.value.accept(ordinary, {
@@ -2116,6 +2125,7 @@ const layerBase: Layer.Layer<
 
     const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     return EventSinkV2.of({
+      idleWorktreeAdmission,
       writeHistoricalTerminal: (input) => {
         const attempt = commitThenPublish(
           Effect.gen(function* () {

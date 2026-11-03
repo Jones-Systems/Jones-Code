@@ -17,6 +17,7 @@ it("uses one machine hook across fresh worktrees without modifying Vite+", async
     firstExit = resolve;
   });
   let completedReports = 0;
+  const failures: unknown[] = [];
   let notified: (() => void) | undefined;
   let firstDisconnected = false;
   const report = (count: number) =>
@@ -132,8 +133,10 @@ it("uses one machine hook across fresh worktrees without modifying Vite+", async
       }),
     );
     const originalEntrypoint = await NodeFSP.readFile(entrypoint, "utf8");
+    let invocation = 0;
     const run = (task: string, cwd = root, ci = false, cache = "--cache") =>
       new Promise<number | null>((resolve, reject) => {
+        const sequence = ++invocation;
         const child = NodeChildProcess.spawn(
           process.execPath,
           [entrypoint, "run", ...(task === "--last-details" ? [] : [cache]), task],
@@ -152,17 +155,29 @@ it("uses one machine hook across fresh worktrees without modifying Vite+", async
               VP_REMOTE_CACHE: undefined,
               VP_REMOTE_CACHE_URL: undefined,
             },
-            stdio: ["ignore", "ignore", "pipe"],
+            stdio: ["ignore", "pipe", "pipe"],
           },
         );
+        let stdout = "";
         let stderr = "";
-        child.stderr.on("data", (chunk) => {
-          stderr += chunk;
+        const context = () => JSON.stringify({ sequence, task, cwd, ci, cache, pid: child.pid });
+        child.stdout.on("data", (chunk) => {
+          stdout = (stdout + chunk).slice(-8192);
         });
-        child.once("error", reject);
-        child.once("close", (code) => {
+        child.stderr.on("data", (chunk) => {
+          stderr = (stderr + chunk).slice(-8192);
+        });
+        child.once("error", (error) => {
+          reject(new Error(`Machine-hook command failed to spawn: ${context()}`, { cause: error }));
+        });
+        child.once("close", (code, signal) => {
           firstExit();
-          if (code !== 0 && task !== "fail") reject(new Error(stderr));
+          if (code !== 0 && task !== "fail")
+            reject(
+              new Error(
+                `Machine-hook command failed: ${context()}, code=${code}, signal=${signal}\nstdout:\n${stdout}\nstderr:\n${stderr}`,
+              ),
+            );
           else resolve(code);
         });
       });
@@ -200,35 +215,64 @@ it("uses one machine hook across fresh worktrees without modifying Vite+", async
     expect(events[1].tasks[0].source).toBe("local");
     expect(events[3].tasks[0].source).toBe("executed");
     expect(new Set(events.map((event) => event.id)).size).toBe(5);
+  } catch (error) {
+    failures.push(error);
   } finally {
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
+    const cleanup = async (action: () => Promise<void>) => {
+      try {
+        await action();
+      } catch (error) {
+        failures.push(error);
+      }
+    };
+    await cleanup(
+      () =>
+        new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        ),
     );
-    const captured = await NodeFSP.readFile(flusherPids, "utf8").catch((error: unknown) => {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
-      throw error;
+    let flushersQuiescent = false;
+    await cleanup(async () => {
+      const captured = await NodeFSP.readFile(flusherPids, "utf8").catch((error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+        throw error;
+      });
+      const pids = [...new Set(captured.trim().split("\n").filter(Boolean).map(Number))];
+      if (completedReports > 0) expect(pids.length).toBeGreaterThan(0);
+      await expect
+        .poll(
+          () =>
+            pids.every((pid) => {
+              if (!Number.isSafeInteger(pid) || pid <= 1)
+                throw new Error("Invalid captured flusher PID");
+              try {
+                process.kill(pid, 0);
+                return false;
+              } catch (error) {
+                return (error as NodeJS.ErrnoException).code === "ESRCH";
+              }
+            }),
+          { timeout: 5000, interval: 25 },
+        )
+        .toBe(true);
+      flushersQuiescent = true;
     });
-    const pids = [...new Set(captured.trim().split("\n").filter(Boolean).map(Number))];
-    if (completedReports > 0) expect(pids.length).toBeGreaterThan(0);
-    await expect
-      .poll(
-        () =>
-          pids.every((pid) => {
-            if (!Number.isSafeInteger(pid) || pid <= 1)
-              throw new Error("Invalid captured flusher PID");
-            try {
-              process.kill(pid, 0);
-              return false;
-            } catch (error) {
-              return (error as NodeJS.ErrnoException).code === "ESRCH";
-            }
-          }),
-        { timeout: 5000, interval: 25 },
-      )
-      .toBe(true);
-    await NodeFSP.rm(root, { recursive: true, force: true });
-    await NodeFSP.rm(unrelated, { recursive: true, force: true });
+    if (flushersQuiescent) {
+      await cleanup(async () => {
+        await NodeFSP.rm(root, { recursive: true, force: true });
+        await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+      });
+    } else {
+      failures.push(new Error(`Retained fixture with unresolved flusher lifecycle: ${root}`));
+    }
+    await cleanup(async () => {
+      await NodeFSP.rm(unrelated, { recursive: true, force: true });
+      await expect(NodeFSP.lstat(unrelated)).rejects.toMatchObject({ code: "ENOENT" });
+    });
   }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "Machine-hook fixture and cleanup failures");
 });
 
 it("rejects invalid setup credentials before installing anything and never prints the token", async () => {

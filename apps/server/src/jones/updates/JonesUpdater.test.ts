@@ -499,6 +499,150 @@ describe("caller-bound exact-source replacement", () => {
     f.newer();
     return f;
   }
+
+  it("publishes a separate generic alternative while retaining the exact download and migrations", async () => {
+    const prepare = vi.fn(async () => ({
+      stagedHandle: "fixed-handle",
+      version: candidate.version,
+      payloadSha256: "e".repeat(64),
+      migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+    }));
+    const f = await staged({ prepare });
+    const retained = f.updater.snapshot();
+    const checked = await f.updater.check();
+    expect(checked).toMatchObject({
+      phase: "staged",
+      stagedHandle: retained.stagedHandle,
+      provenance: retained.provenance,
+      alternativeCandidate: {
+        checkedAt: checked.checkedAt,
+        provenance: { sourceSha: target, artifactId: 5 },
+      },
+    });
+    expect(checked.migrationPlan).toEqual({ pendingUpstream: [42], pendingJones: [7] });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a captured generic offer once through native retirement, without Install", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    const selected = { ...replace, alternative: offer };
+    expect(await f.updater.stageExact(target, selected)).toMatchObject({
+      phase: "staged",
+      provenance: { sourceSha: target },
+    });
+    expect(f.updater.snapshot().alternativeCandidate).toBeUndefined();
+    await f.updater.stageExact(target, selected);
+    expect(retireStaged).toHaveBeenCalledTimes(1);
+    expect(f.effects).toEqual(["stage", "stage"]);
+  });
+
+  it("invalidates offers on failed or inapplicable discovery, policy and installed-source changes", async () => {
+    let installed = "a".repeat(40);
+    let fail = false;
+    const f = await staged({
+      installedSource: async () => {
+        if (fail) throw new Error("Synthetic discovery failure");
+        return installed;
+      },
+    });
+    const retained = f.updater.snapshot().provenance;
+    for (const result of [
+      { state: "no-new" },
+      { state: "building", retryAfterMs: 1000 },
+      { state: "blocked", reason: "unqualified", retryAfterMs: 1000 },
+    ] as const) {
+      expect((await f.updater.check()).alternativeCandidate).toBeDefined();
+      f.setCheckResult(result);
+      expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+      f.setCheckResult({
+        state: "available",
+        candidate: { ...candidate, source: target, artifactId: 5 },
+      });
+    }
+    await f.updater.check();
+    fail = true;
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    fail = false;
+    await f.updater.check();
+    installed = "9".repeat(40);
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    installed = "a".repeat(40);
+    await f.updater.check();
+    f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+    expect(f.updater.snapshot().alternativeCandidate).toBeUndefined();
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    expect(f.updater.snapshot().provenance).toEqual(retained);
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("refuses changed, expired and restart-retained offers before retirement", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    const selected = { ...replace, alternative: offer };
+    expect((await f.updater.stageExact("9".repeat(40), selected)).message).toContain(
+      "target changed",
+    );
+    f.setCheckResult({
+      state: "available",
+      candidate: { ...candidate, source: target, artifactId: 99 },
+    });
+    expect((await f.updater.stageExact(target, selected)).message).toContain("alternative changed");
+    const current = (await f.updater.check()).alternativeCandidate!;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2100-01-01T00:00:00Z"));
+    try {
+      expect(
+        (await f.updater.stageExact(target, { ...replace, alternative: current })).message,
+      ).toContain("expired");
+    } finally {
+      clock.mockRestore();
+    }
+    const restarted = replacement({ initialState: f.updater.snapshot(), retireStaged });
+    expect(restarted.updater.snapshot().alternativeCandidate).toBeUndefined();
+    expect(
+      (await restarted.updater.stageExact(target, { ...replace, alternative: current })).message,
+    ).toContain("changed or expired");
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
+
+  it("revalidates the offer after awaiting native installed-source evidence", async () => {
+    const entered = gate(),
+      release = gate();
+    let hold = false,
+      reads = 0;
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({
+      retireStaged,
+      installedSource: async () => {
+        if (hold && ++reads === 2) {
+          entered.release();
+          await release.promise;
+        }
+        return replace.expectedInstalledSource;
+      },
+    });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    hold = true;
+    const replacing = f.updater.stageExact(target, { ...replace, alternative: offer });
+    await entered.promise;
+    f.updater.recordOperation({
+      protocol: 1,
+      operationId: "22222222-2222-4222-8222-222222222222",
+      environmentId: replace.environmentId,
+      expectedInstalledSource: replace.expectedInstalledSource,
+      action: { kind: "download-exact", targetSource: target },
+      phase: "accepted",
+      acceptedAt: "2026-10-29T00:00:00Z",
+      updatedAt: "2026-10-29T00:00:00Z",
+    });
+    release.release();
+    expect((await replacing).message).toContain("changed or expired");
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
   function gate() {
     let release!: () => void;
     const promise = new Promise<void>((resolve) => {
@@ -1437,4 +1581,37 @@ it("reports a typed exact refusal only before invoking the install adapter", asy
   expect((await f.updater.install(request)).phase).toBe("blocked");
   expect(native).toHaveBeenCalledOnce();
   expect(proof).not.toHaveBeenCalled();
+});
+
+it("emits the exact bound refusal when its host proves preparation stopped before dispatch", async () => {
+  const f = fixture({
+    install: async (_request, _step, onPreparationRefused) => {
+      onPreparationRefused?.();
+      throw new Error("Qualified runtime payload changed.");
+    },
+  });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
+  expect((await f.updater.install(request)).message).toContain(
+    "Qualified runtime payload changed.",
+  );
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    stagedHandle: request.stagedHandle,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
+  });
 });

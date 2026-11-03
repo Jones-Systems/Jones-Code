@@ -135,6 +135,12 @@ status and explicitly download again if the earlier download is gone.
 Offline, unsupported, or newer servers show why the action is unavailable; the
 notice does not substitute the latest build.
 
+When a download is retained, **Check** in Connections or **Check for builds** on
+mobile can show a separate **Alternative**. **Replace download** asks you to
+confirm that exact pair, then retires the old download before downloading the
+alternative. Checking never replaces the retained download, and **Install**
+remains separate. If the offer changes or expires, check again before replacing.
+
 ## Update a connected server
 
 The offered action depends on how the server runs:

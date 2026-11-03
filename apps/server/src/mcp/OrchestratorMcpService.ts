@@ -2765,6 +2765,7 @@ const make = Effect.gen(function* () {
         const parentNodeId = parentRun.rootNodeId;
         const providers = yield* loadProviders;
         const key = yield* requestKey(input.clientRequestId);
+        const inheritedDispatchLimit = yield* DispatchModeLimit;
         const created = yield* Effect.forEach(
           input.threads,
           (request, index) =>
@@ -2858,6 +2859,9 @@ const make = Effect.gen(function* () {
                 .getThreadRecords(threadId, [])
                 .pipe(Effect.mapError(threadManagementFailure))).thread.modelSelection;
               if (request.prompt !== undefined) {
+                const refused =
+                  inheritedDispatchLimit?.refused ??
+                  (yield* Ref.make<DispatchModeRefusal | undefined>(undefined));
                 yield* threadManagement
                   .dispatch({
                     type: "message.dispatch",
@@ -2882,13 +2886,45 @@ const make = Effect.gen(function* () {
                     dispatchMode: { type: "start_immediately" },
                   })
                   .pipe(
+                    // Replayed creation retains saved modes; only the locked dispatch can admit new work.
+                    Effect.provideService(DispatchModeLimit, {
+                      runtimeMode:
+                        inheritedDispatchLimit !== undefined &&
+                        runtimeModeRank(inheritedDispatchLimit.runtimeMode) <
+                          runtimeModeRank(runtimeMode)
+                          ? inheritedDispatchLimit.runtimeMode
+                          : runtimeMode,
+                      interactionMode:
+                        inheritedDispatchLimit !== undefined &&
+                        interactionModeRank(inheritedDispatchLimit.interactionMode) <
+                          interactionModeRank(interactionMode)
+                          ? inheritedDispatchLimit.interactionMode
+                          : interactionMode,
+                      refused,
+                    }),
+                    Effect.catch((error) =>
+                      Effect.flatMap(Ref.get(refused), (refusal) =>
+                        Effect.fail(
+                          refusal === undefined
+                            ? error
+                            : failure(
+                                refusal.mode === "runtime"
+                                  ? "runtime_mode_escalation_denied"
+                                  : "interaction_mode_escalation_denied",
+                                `Thread ${refusal.threadId} runs in ${refusal.runtimeMode}/${refusal.interactionMode} mode, above the modes allowed for this request.`,
+                              ),
+                        ),
+                      ),
+                    ),
                     Effect.mapError((error) =>
-                      error._tag === "ThreadManagementProviderInstanceDisabledError"
-                        ? threadManagementFailure(error)
-                        : failure(
-                            "orchestration_error",
-                            `Unable to start thread ${index + 1}: ${errorMessage(error)}`,
-                          ),
+                      error._tag === "OrchestratorMcpFailure"
+                        ? error
+                        : error._tag === "ThreadManagementProviderInstanceDisabledError"
+                          ? threadManagementFailure(error)
+                          : failure(
+                              "orchestration_error",
+                              `Unable to start thread ${index + 1}: ${errorMessage(error)}`,
+                            ),
                     ),
                   );
               }

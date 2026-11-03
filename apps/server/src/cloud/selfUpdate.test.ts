@@ -160,6 +160,44 @@ const makeHarness = Effect.fn("test.make_self_update_harness")(function* (
 });
 
 it.layer(NodeServices.layer)("server self update", (it) => {
+  it.effect(
+    "forwards a real verification refusal through continuation cleanup before native dispatch",
+    () =>
+      Effect.gen(function* () {
+        const { selfUpdate, order } = yield* makeHarness({ qualified: true });
+        const marked = [ThreadId.make("preparation-refusal-thread")];
+        const cleared: Array<ReadonlyArray<ThreadId>> = [];
+        const wrapped = yield* ServerSelfUpdate.withRunningThreadContinuation({
+          mode: "web",
+          selfUpdate,
+          prepare: Effect.succeed(marked),
+          clear: (ids) =>
+            Effect.sync(() => {
+              cleared.push(ids);
+            }),
+        });
+        let proofs = 0;
+        const failure = yield* wrapped.installQualified!(
+          {
+            stagedHandle: "12345678-1234-4234-8234-123456789abc",
+            continueRunningThreads: true,
+            verifyStaged: () => Promise.reject(new Error("Qualified runtime payload changed.")),
+          },
+          undefined,
+          undefined,
+          undefined,
+          () =>
+            Effect.sync(() => {
+              proofs++;
+            }),
+        ).pipe(Effect.flip);
+        expect(failure.reason).toBe("Qualified runtime payload changed.");
+        expect(proofs).toBe(1);
+        expect(order).toEqual([]);
+        expect(cleared).toEqual([marked]);
+      }),
+  );
+
   it.effect("refuses old launcher or candidate recovery support before capture and handoff", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -786,4 +824,28 @@ it.effect("does not time out or interrupt launcher handoff after preparation suc
     yield* Fiber.join(interrupted);
     expect(events).toEqual(["accepted"]);
   }),
+);
+
+it.effect.each(["prepare", "handoff"] as const)(
+  "proves no dispatch only when qualified %s fails before handoff",
+  (phase) =>
+    Effect.gen(function* () {
+      const failure = new ServerSelfUpdateError({ reason: "synthetic qualified failure" });
+      let refusals = 0;
+      let handoffs = 0;
+      const failed = yield* ServerSelfUpdate.runQualifiedInstallPhases({
+        prepare: phase === "prepare" ? Effect.fail(failure) : Effect.succeed("ready"),
+        handoff: () =>
+          Effect.sync(() => {
+            handoffs++;
+          }).pipe(Effect.andThen(Effect.fail(failure))),
+        onPreparationRefused: () =>
+          Effect.sync(() => {
+            refusals++;
+          }),
+      }).pipe(Effect.flip);
+      expect(failed).toBe(failure);
+      expect(refusals).toBe(phase === "prepare" ? 1 : 0);
+      expect(handoffs).toBe(phase === "prepare" ? 0 : 1);
+    }),
 );

@@ -704,6 +704,14 @@ async function discardDatabaseBackup(baseDir: string, updateId: string): Promise
   await syncDirectory(NodePath.dirname(backupDir));
 }
 
+function recoveryCleanupCategory(cause: unknown): string {
+  const category =
+    cause instanceof Error
+      ? /^recovery-cleanup: ([a-z][a-z-]{0,63})$/.exec(cause.message)?.[1]
+      : undefined;
+  return category === undefined ? "" : ` (${category})`;
+}
+
 async function cleanupTerminalDatabaseBackup(
   baseDir: string,
   pending: PendingServiceUpdate,
@@ -723,7 +731,7 @@ async function cleanupTerminalDatabaseBackup(
   } catch (cause) {
     if (required) throw cause;
     process.stderr.write(
-      "[service-launcher] Recovery payload cleanup did not finish; the durable update outcome is unchanged and remaining recovery files were retained.\n",
+      `[service-launcher] Recovery payload cleanup did not finish${recoveryCleanupCategory(cause)}; the durable update outcome is unchanged and remaining recovery files were retained.\n`,
     );
   }
 }
@@ -1934,9 +1942,9 @@ export class Launcher {
           { transactionId: previous.id, qualified: previous.qualified },
           previous.status,
         );
-      } catch {
+      } catch (cause) {
         await reject(
-          "recovery-cleanup-required: Previous qualified recovery payload could not be safely removed; the current server remains active.",
+          `recovery-cleanup-required: Previous qualified recovery payload could not be safely removed${recoveryCleanupCategory(cause)}; the current server remains active.`,
         );
         return;
       }

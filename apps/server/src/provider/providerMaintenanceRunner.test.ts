@@ -6,11 +6,14 @@ import {
   type ServerProviderUpdateState,
 } from "@t3tools/contracts";
 import { ServerProviderUpdateError } from "@t3tools/contracts";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
@@ -26,8 +29,12 @@ import * as ProviderMaintenanceRunner from "./providerMaintenanceRunner.ts";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
 import {
   enrichProviderSnapshotWithVersionAdvisory,
+  makePackageManagedProviderMaintenanceResolver,
   makeProviderMaintenanceCapabilities,
+  resolvePackageManagedProviderMaintenance,
+  resolveProviderMaintenanceCapabilitiesEffect,
   type ProviderMaintenanceCapabilities,
+  type ProviderMaintenanceResolverServices,
 } from "@t3tools/provider-core/server/maintenanceResolver";
 const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
@@ -129,7 +136,7 @@ function layerMockSpawner(
   handler: (
     command: string,
     args: ReadonlyArray<string>,
-    options: { readonly env?: NodeJS.ProcessEnv | undefined },
+    options: { readonly env?: NodeJS.ProcessEnv | undefined; readonly extendEnv?: boolean },
   ) => {
     readonly stdout?: string;
     readonly stderr?: string;
@@ -143,7 +150,10 @@ function layerMockSpawner(
       const childProcess = command as unknown as {
         readonly command: string;
         readonly args: ReadonlyArray<string>;
-        readonly options: { readonly env?: NodeJS.ProcessEnv | undefined };
+        readonly options: {
+          readonly env?: NodeJS.ProcessEnv | undefined;
+          readonly extendEnv?: boolean;
+        };
       };
       return Effect.succeed(
         mockHandle(handler(childProcess.command, childProcess.args, childProcess.options)),
@@ -335,40 +345,80 @@ describe("providerMaintenanceRunner", () => {
     ),
   );
 
-  it.effect("spawns the updater with the environment its capabilities declare", () => {
-    const seen: Array<NodeJS.ProcessEnv | undefined> = [];
-    return Effect.gen(function* () {
-      const { registry } = yield* makeRegistry(baseProvider);
-      const updater = yield* makeTestRunner({
-        ...registry,
-        getProviderMaintenanceCapabilitiesForInstance: (_instanceId, provider) =>
-          Effect.succeed({
-            ...lifecycleFor(provider),
-            update: {
-              command: "codex update",
-              executable: "/work/codex-home/packages/standalone/bin/codex",
-              args: ["update"],
-              lockKey: "codex-native",
-              env: { CODEX_HOME: "/work/codex-home" },
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "resolves and spawns the instance's Bun updater under a different ambient installation",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-updater-instance-env-" });
+        const envFor = (instance: string) => {
+          const home = path.join(directory, instance);
+          const bunHome = path.join(home, ".bun");
+          return { PATH: path.join(bunHome, "bin"), HOME: home, BUN_INSTALL: bunHome };
+        };
+        const instanceEnv = envFor("a");
+        const ambientEnv = envFor("b");
+        for (const env of [instanceEnv, ambientEnv]) {
+          yield* fs.makeDirectory(env.PATH, { recursive: true });
+          for (const command of ["codex", "bun"]) {
+            const executable = path.join(env.PATH, command);
+            yield* fs.writeFileString(executable, "#!/bin/sh\n");
+            yield* fs.chmod(executable, 0o755);
+          }
+        }
+        const fresh: boolean[] = [];
+        const calls: Array<{
+          readonly command: string;
+          readonly args: ReadonlyArray<string>;
+          readonly env: NodeJS.ProcessEnv | undefined;
+          readonly extendEnv: boolean | undefined;
+        }> = [];
+        yield* Effect.gen(function* () {
+          const services = yield* Effect.context<ProviderMaintenanceResolverServices>();
+          const resolver = makePackageManagedProviderMaintenanceResolver({
+            provider: CODEX_DRIVER,
+            npmPackageName: "@openai/codex",
+            nativeUpdate: null,
+          });
+          const { registry } = yield* makeRegistry(baseProvider);
+          const updater = yield* makeTestRunner({
+            ...registry,
+            getProviderMaintenanceCapabilitiesForInstance: (_instanceId, _provider, options) => {
+              fresh.push(options?.fresh === true);
+              return resolveProviderMaintenanceCapabilitiesEffect(resolver, {
+                binaryPath: "codex",
+                env: instanceEnv,
+              }).pipe(Effect.provideContext(services));
             },
-          }),
-      });
-
-      yield* updater.updateProvider(CODEX_DRIVER);
-      assert.deepStrictEqual(seen, [{ CODEX_HOME: "/work/codex-home" }]);
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          layerNonWindowsPlatform,
-          layerLatestVersionHttpClient("0.0.0"),
-          layerMockSpawner((_command, _args, options) => {
-            seen.push(options.env);
-            return { stdout: "updated" };
-          }),
-        ),
-      ),
-    );
-  });
+          });
+          const result = yield* updater.updateProvider(CODEX_DRIVER);
+          assert.deepStrictEqual(fresh, [false, true, true]);
+          assert.deepStrictEqual(calls, [
+            {
+              command: "bun",
+              args: ["i", "-g", "@openai/codex@latest"],
+              env: instanceEnv,
+              extendEnv: true,
+            },
+          ]);
+          assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+          assert.notInclude(JSON.stringify(result), instanceEnv.HOME);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              layerNonWindowsPlatform,
+              Layer.succeed(HostProcess.Environment, ambientEnv),
+              layerLatestVersionHttpClient("0.0.0"),
+              layerMockSpawner((command, args, options) => {
+                calls.push({ command, args, env: options.env, extendEnv: options.extendEnv });
+                return { stdout: "updated" };
+              }),
+            ),
+          ),
+        );
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 
   it.effect("re-resolves ownership before running and executes the fresh command", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
@@ -938,6 +988,75 @@ describe("providerMaintenanceRunner", () => {
       ),
     );
   });
+
+  it.effect(
+    "resolves Windows updater shims with the same effective environment as the child",
+    () => {
+      const instanceEnv = {
+        PATH: "C:\\instance-a\\.bun\\bin",
+        PATHEXT: ".EXE;.CMD",
+        HOME: "C:\\instance-a",
+        BUN_INSTALL: "C:\\instance-a\\.bun",
+      };
+      const ambientEnv = {
+        PATH: "C:\\instance-b\\.bun\\bin",
+        PATHEXT: ".BAT",
+        HOME: "C:\\instance-b",
+        AMBIENT_ONLY: "inherited",
+      };
+      const resolutionEnvironments: Array<NodeJS.ProcessEnv> = [];
+      const children: Array<{
+        readonly command: string;
+        readonly env: NodeJS.ProcessEnv | undefined;
+        readonly extendEnv: boolean | undefined;
+      }> = [];
+      return Effect.gen(function* () {
+        const services = yield* Effect.context<ProviderMaintenanceResolverServices>();
+        const { registry } = yield* makeRegistry(baseProvider);
+        const updater = yield* makeTestRunner({
+          ...registry,
+          getProviderMaintenanceCapabilitiesForInstance: () =>
+            resolvePackageManagedProviderMaintenance(
+              { provider: CODEX_DRIVER, npmPackageName: "@openai/codex", nativeUpdate: null },
+              {
+                binaryPath: "codex",
+                resolvedCommandPath: `${instanceEnv.PATH}\\codex.exe`,
+                realCommandPath: `${instanceEnv.PATH}\\codex.exe`,
+                env: instanceEnv,
+                platform: "win32",
+              },
+            ).pipe(Effect.provideContext(services)),
+        });
+        yield* updater.updateProvider(CODEX_DRIVER);
+        assert.deepStrictEqual(resolutionEnvironments, [{ ...ambientEnv, ...instanceEnv }]);
+        assert.strictEqual(children.length, 1);
+        const child = children[0]!;
+        assert.include(child.command, "C:\\instance-a\\.bun\\bin\\bun.cmd");
+        assert.notInclude(child.command, "instance-b");
+        assert.deepStrictEqual(child.env, instanceEnv);
+        assert.strictEqual(child.extendEnv, true);
+        assert.deepStrictEqual({ ...ambientEnv, ...child.env }, resolutionEnvironments[0]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Layer.succeed(HostProcess.Platform, "win32"),
+            Layer.succeed(HostProcess.Environment, ambientEnv),
+            Layer.succeed(SpawnExecutableResolution, (command, platform, env) => {
+              assert.strictEqual(command, "bun");
+              assert.strictEqual(platform, "win32");
+              resolutionEnvironments.push(env);
+              return `${env.PATH}\\bun.cmd`;
+            }),
+            layerLatestVersionHttpClient("0.0.0"),
+            layerMockSpawner((command, _args, options) => {
+              children.push({ command, env: options.env, extendEnv: options.extendEnv });
+              return { stdout: "updated" };
+            }),
+          ).pipe(Layer.provideMerge(NodeServices.layer)),
+        ),
+      );
+    },
+  );
 
   it.effect("reports unchanged when the binary is present but its version is unreadable", () => {
     return Effect.gen(function* () {

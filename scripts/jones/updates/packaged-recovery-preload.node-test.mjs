@@ -400,9 +400,27 @@ function observerPlan(f, patch = {}) {
   };
 }
 
-test("observes the real captured child IPC pair and callback without recording unrelated data", () => {
+const retainedUpdate = {
+  id: operationId,
+  status: "failed",
+  reason: "launcher-restarted",
+  fromVersion: "1.0.0",
+  targetVersion: "1.0.1",
+  qualified: { binding: { activeSourceSha: "a".repeat(40) } },
+};
+
+function retainedNativeState(f) {
+  NodeFS.writeFileSync(
+    NodePath.join(f.home, "runtime", "service-state.json"),
+    JSON.stringify({ protocol: 4, activeVersion: "1.0.0", update: retainedUpdate }),
+    { mode: 0o600 },
+  );
+}
+
+test("observes the exact retained failed child IPC pair without recording unrelated data", () => {
   fixture((f) => {
-    const extra = observerPlan(f);
+    retainedNativeState(f);
+    const extra = observerPlan(f, { retainedUpdate });
     NodeFS.writeFileSync(
       NodePath.join(f.root, "serve"),
       `
@@ -424,7 +442,8 @@ test("observes the real captured child IPC pair and callback without recording u
       const ids=${JSON.stringify(observationIds)}, operationId=${JSON.stringify(operationId)};
       const c=spawn(process.execPath,["serve"],{env:{...process.env,
         NODE_OPTIONS:${JSON.stringify("--require " + preload)},
-        T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({protocol:4,childVersion:"1.0.0"})},
+        T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({protocol:4,childVersion:"1.0.0",
+          update:Object.fromEntries(Object.entries(${JSON.stringify(retainedUpdate)}).reverse())})},
         stdio:["inherit","inherit","inherit","ipc"]});
       let callbacks=0;
       c.on("message",m=>{if(m.type==="reconcile-failed-update")
@@ -473,6 +492,44 @@ test("observes the real captured child IPC pair and callback without recording u
   });
 });
 
+test("excludes missing, foreign and trial update contexts from retained-failure observation", () => {
+  for (const update of [
+    undefined,
+    { ...retainedUpdate, id: observationIds[0] },
+    { ...retainedUpdate, status: "pending", phase: "trial" },
+    { ...retainedUpdate, qualified: { binding: { activeSourceSha: "b".repeat(40) } } },
+  ]) {
+    fixture((f) => {
+      retainedNativeState(f);
+      const extra = observerPlan(f, { retainedUpdate });
+      NodeFS.writeFileSync(
+        NodePath.join(f.root, "serve"),
+        `
+        process.send({type:"reconcile-failed-update",operationId:${JSON.stringify(operationId)},
+          requestId:${JSON.stringify(observationIds[0])}});
+        process.disconnect();`,
+        { mode: 0o600 },
+      );
+      passed(
+        run(
+          f,
+          `
+        import {spawn} from "node:child_process";import {once} from "node:events";
+        const child=spawn(process.execPath,["serve"],{env:{...process.env,
+          T3_SERVICE_LAUNCHER_CONTEXT:JSON.stringify({protocol:4,childVersion:"1.0.0",
+            update:${JSON.stringify(update)}})},stdio:["inherit","inherit","inherit","ipc"]});
+        const [code,signal]=await once(child,"close");
+        if(code!==0||signal!==null)throw Error("foreign child failed");`,
+          extra,
+        ),
+      );
+      NodeAssert.deepEqual(NodeFS.readdirSync(NodePath.join(f.root, "ipc-observations")), [
+        "ready.json",
+      ]);
+    });
+  }
+});
+
 test("refuses invalid observer bindings before entry or child execution", () => {
   for (const patch of [
     { requestIds: [observationIds[0], observationIds[0]] },
@@ -481,6 +538,7 @@ test("refuses invalid observer bindings before entry or child execution", () => 
     { childIdentity: { ...identity, ino: "0" } },
     { fixtureId: "0".repeat(32) },
     { extra: true },
+    { retainedUpdate },
   ])
     fixture((f) => {
       const env = observerPlan(f, patch);

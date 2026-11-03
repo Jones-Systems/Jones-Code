@@ -38,7 +38,14 @@ export function v2BenchmarkClosureKnown(child, report, evidencePreserved) {
 }
 
 export function validateV2BenchmarkRequest(request) {
-  NodeAssert.deepEqual(Object.keys(request).sort(), ["candidate", "parentPath", "workload"]);
+  NodeAssert.deepEqual(
+    Object.keys(request)
+      .filter((key) => key !== "failureMode")
+      .sort(),
+    ["candidate", "parentPath", "workload"],
+  );
+  if (Object.hasOwn(request, "failureMode"))
+    NodeAssert.equal(request.failureMode, "after-workload");
   NodeAssert.deepEqual(Object.keys(request.workload).sort(), [
     "commands",
     "intervalMs",

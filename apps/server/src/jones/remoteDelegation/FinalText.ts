@@ -36,6 +36,7 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
       limit: 100,
       ...(afterPosition === undefined ? {} : { afterPosition }),
     });
+    if (read.thread.threadId !== threadId) return yield* incomplete;
     reply =
       read.items.findLast((item) => item.type === "assistant_message" && item.runId === runId) ??
       reply;
@@ -70,6 +71,7 @@ export const lastReply = Effect.fn("RemoteDelegation.lastReply")(function* (
     });
     const next = rest.items[0];
     if (
+      rest.thread.threadId !== threadId ||
       rest.items.length !== 1 ||
       next === undefined ||
       next.itemId !== reply.itemId ||
