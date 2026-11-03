@@ -40,6 +40,12 @@ export function useThreadStatusSelection(
   now?: string,
   activeThreadKey: string | null = null,
 ) {
+  const topLevelThreads = scopedThreads.filter(
+    (thread) =>
+      thread.lineage.parentThreadId === null &&
+      thread.lineage.relationshipToParent === null &&
+      thread.delegatedFrom == null,
+  );
   const enabled = useClientSettings((settings) => settings.threadActivityWindowEnabled);
   const amount = useClientSettings((settings) => settings.threadActivityWindowAmount);
   const unit = useClientSettings((settings) => settings.threadActivityWindowUnit);
@@ -84,7 +90,8 @@ export function useThreadStatusSelection(
         observedNowMs,
       );
     };
-    const result = selectThreadStatus(scopedThreads, statusFilter, classify);
+    const result = selectThreadStatus(topLevelThreads, statusFilter, classify);
+    if (statusFilter === "all") return { ...result, threads: scopedThreads };
     return statusFilter === "hide-working"
       ? {
           counts: result.counts,
@@ -94,7 +101,7 @@ export function useThreadStatusSelection(
   })();
   const activeIsInScope =
     activeThreadKey !== null &&
-    scopedThreads.some(
+    topLevelThreads.some(
       (thread) =>
         scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)) === activeThreadKey &&
         threadIsInActivityWindow(thread, activityWindow, observedNowMs),
