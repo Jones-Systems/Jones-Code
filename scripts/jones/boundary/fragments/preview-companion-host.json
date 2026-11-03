@@ -37,6 +37,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/preview/ServerBrowser.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/RenderPlacement.ts"
+    },
+    {
+      "from": "apps/server/src/preview/ServerBrowser.test.ts",
+      "to": "apps/server/src/jones/previewCompanion/CompanionHostRegistry.ts"
+    },
+    {
       "from": "apps/desktop/src/app/DesktopApp.ts",
       "to": "apps/desktop/src/jones/previewCompanion/CompanionConfig.ts"
     },

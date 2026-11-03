@@ -102,6 +102,7 @@ import {
 import { installPdfDocumentNavigation, isPdfAssetUrl } from "./PdfDocumentNavigation.ts";
 
 const SERVER_HOST_CLIENT_ID = SERVER_BROWSER_AUTOMATION_CLIENT_ID;
+const isCompanionHostUnavailable = Schema.is(CompanionHostUnavailable);
 const RENDER_SCALE = 2;
 // Chromium allows three unacked frames, so 100 ms pacing caps viewers near 30 fps.
 const SCREENCAST_ACK_PACE_MS = 100;
@@ -488,7 +489,10 @@ const make = Effect.gen(function* () {
   const setupCommand = yield* resolveRootCliCommand(PreviewBrowserHost.SETUP_SUBCOMMAND);
 
   const tabs = new Map<string, ServerTab>();
-  const pendingTabs = new Map<string, Promise<ServerTab>>();
+  const pendingTabs = new Map<
+    string,
+    { readonly agentId: string | null; promise?: Promise<ServerTab> }
+  >();
 
   const closedPendingTabs = new Set<string>();
   const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
@@ -590,8 +594,10 @@ const make = Effect.gen(function* () {
     const url = tab.page.url();
     // Chromium's error page loads after `requestfailed` and must not clear LoadFailed.
     if (url === "about:blank" || url.startsWith("chrome-error://")) return;
+    // A navigation that starts and fails during the title read leaves the URL unchanged.
+    const generation = tab.navigationGeneration;
     const title = (await tab.page.title().catch(() => "")).slice(0, 512);
-    if (tab.loading || tab.page.url() !== url) return;
+    if (tab.navigationGeneration !== generation || tab.loading || tab.page.url() !== url) return;
     report(tab, { _tag: "Success", url: url.slice(0, 2048), title });
   };
 
@@ -703,7 +709,7 @@ const make = Effect.gen(function* () {
   };
 
   const desktopRenders = (snapshot: PreviewSessionSnapshot) =>
-    desktopChannel.available
+    desktopChannel.available && !snapshot.headless
       ? Effect.runPromise(
           desktopChannel.awaitAttached(
             { threadId: snapshot.threadId, tabId: snapshot.tabId },
@@ -772,6 +778,14 @@ const make = Effect.gen(function* () {
         : adopted === undefined && host._tag === "local" && (await desktopRenders(snapshot))
           ? await connectDesktop(snapshot)
           : null;
+    // A late desktop attachment must stream the server's page instead of mounting another.
+    if (!desktop) {
+      await Effect.runPromise(
+        manager
+          .markHeadless({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
+          .pipe(Effect.ignore),
+      );
+    }
     const isolatedContext =
       adopted === undefined &&
       desktop === null &&
@@ -948,6 +962,8 @@ const make = Effect.gen(function* () {
     page.on("crash", () => dropTab(tab, true));
     tabs.set(key, tab);
     reportLiveTabs();
+    // Desktop pages can finish loading before these listeners attach.
+    if (desktop) void page.waitForLoadState("load").then(() => reportLoaded(tab), constVoid);
     // Existing desktop and popup PDFs can start loading before interception attaches.
     if (
       snapshot.navStatus._tag === "Loading" &&
@@ -1251,8 +1267,7 @@ const make = Effect.gen(function* () {
   };
 
   const adoptPopup = async (opener: ServerTab, popup: Page) => {
-    const agentId = opener.control.agentId;
-    if (opener.closing || (agentId !== null && atTabLimit(agentId))) {
+    if (opener.closing) {
       await popup.close().catch(constVoid);
       return;
     }
@@ -1262,7 +1277,7 @@ const make = Effect.gen(function* () {
       (viewer) => viewer.id === opener.control.controller,
     );
     await Effect.runPromise(
-      manager.open({
+      openTab({
         threadId: opener.threadId,
         ...(/^https?:/i.test(url) ? { url } : {}),
         runtime: "server",
@@ -1277,9 +1292,8 @@ const make = Effect.gen(function* () {
           }),
       }),
     ).then(
-      (snapshot) => {
-        if (opener.control.agentId === null)
-          controller?.push({ _tag: "popup", tabId: snapshot.tabId });
+      (tab) => {
+        if (opener.control.agentId === null) controller?.push({ _tag: "popup", tabId: tab.tabId });
       },
       async () => {
         await popup.close().catch(constVoid);
@@ -1290,7 +1304,7 @@ const make = Effect.gen(function* () {
   const ensureTab = (snapshot: PreviewSessionSnapshot): Promise<ServerTab> => {
     const key = tabKey(snapshot.threadId, snapshot.tabId);
     const pending = pendingTabs.get(key);
-    if (pending) return pending;
+    if (pending?.promise) return pending.promise;
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
     const opening = createTab(snapshot)
@@ -1307,7 +1321,7 @@ const make = Effect.gen(function* () {
         pendingTabs.delete(key);
         closedPendingTabs.delete(key);
       });
-    pendingTabs.set(key, opening);
+    pendingTabs.set(key, { agentId: snapshot.automationOwner ?? null, promise: opening });
     return opening;
   };
 
@@ -1325,10 +1339,15 @@ const make = Effect.gen(function* () {
     });
   });
 
-  const atTabLimit = (agentSessionId: string) =>
-    tabs.size + pendingTabs.size >= SERVER_TAB_LIMIT ||
-    [...tabs.values()].filter((tab) => tab.control.agentId === agentSessionId).length >=
-      AGENT_TAB_LIMIT;
+  const atTabLimit = (agentSessionId: string) => {
+    const opening = [...pendingTabs.entries()].filter(([key]) => !tabs.has(key));
+    return (
+      tabs.size + opening.length >= SERVER_TAB_LIMIT ||
+      [...tabs.values()].filter((tab) => tab.control.agentId === agentSessionId).length +
+        opening.filter(([, pending]) => pending.agentId === agentSessionId).length >=
+        AGENT_TAB_LIMIT
+    );
+  };
 
   const assertTabCapacity = (agentSessionId: string) => {
     if (atTabLimit(agentSessionId))
@@ -1337,6 +1356,55 @@ const make = Effect.gen(function* () {
         "tabLimit",
       );
   };
+
+  // A Playwright launch must settle before its capacity can be released.
+  const openTab = Effect.fn("ServerBrowser.openTab")(function* (
+    input: Parameters<typeof manager.open>[0],
+  ) {
+    let key: string = NodeCrypto.randomUUID();
+    const reservation = { agentId: input.automationOwner ?? null };
+    return yield* Effect.acquireUseRelease(
+      Effect.try({
+        try: () => {
+          if (input.automationOwner !== undefined) assertTabCapacity(input.automationOwner);
+          pendingTabs.set(key, reservation);
+        },
+        catch: ServerBrowserPage.toOperationError,
+      }),
+      () =>
+        manager
+          .open({
+            ...input,
+            beforePublish: (snapshot) => {
+              pendingTabs.delete(key);
+              key = tabKey(snapshot.threadId, snapshot.tabId);
+              pendingTabs.set(key, reservation);
+              input.beforePublish?.(snapshot);
+            },
+          })
+          .pipe(
+            Effect.flatMap((snapshot) =>
+              Effect.tryPromise({
+                try: () => ensureTab(snapshot),
+                catch: (cause) =>
+                  isCompanionHostUnavailable(cause)
+                    ? cause
+                    : ServerBrowserPage.toOperationError(cause),
+              }).pipe(
+                Effect.onError(() =>
+                  manager
+                    .close({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
+                    .pipe(Effect.ignore),
+                ),
+              ),
+            ),
+          ),
+      () =>
+        Effect.sync(() => {
+          pendingTabs.delete(key);
+        }),
+    );
+  }, Effect.uninterruptible);
 
   // Desktop browsing bypasses streamed viewers and server input tracking,
   // so these idle signals only apply to headless tabs.
@@ -1886,17 +1954,15 @@ const make = Effect.gen(function* () {
         if (!existing) onStart();
         const tab =
           existing ??
-          (await ensureTab(
-            await Effect.runPromise(
-              manager.open({
-                threadId: request.threadId,
-                ...(url ? { url } : {}),
-                ...(profileId === undefined ? {} : { profileId }),
-                runtime: "server",
-                reveal: false,
-                automationOwner: request.agentSessionId,
-              }),
-            ),
+          (await Effect.runPromise(
+            openTab({
+              threadId: request.threadId,
+              ...(url ? { url } : {}),
+              ...(profileId === undefined ? {} : { profileId }),
+              runtime: "server",
+              reveal: false,
+              automationOwner: request.agentSessionId,
+            }),
           ));
         if (existing?.dialog)
           throw new BrowserControlInterrupted(
@@ -2318,7 +2384,9 @@ const make = Effect.gen(function* () {
   const mirrorManagerEvent = (event: PreviewEvent) =>
     Effect.promise(async () => {
       if (event.type === "opened" && event.snapshot.runtime === "server") {
-        await ensureTab(event.snapshot).catch(constVoid);
+        const key = tabKey(event.snapshot.threadId, event.snapshot.tabId);
+        if (event.snapshot.automationOwner === undefined || pendingTabs.has(key) || tabs.has(key))
+          await ensureTab(event.snapshot).catch(constVoid);
         return;
       }
       const key = tabKey(event.threadId, event.tabId);

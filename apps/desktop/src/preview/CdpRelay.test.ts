@@ -213,3 +213,61 @@ describe("CDP relay downloads", () => {
     ]);
   });
 });
+
+describe("CDP relay payload budget", () => {
+  // 2,048 references to one 40 KiB string: about 80 MiB once serialized, little memory here.
+  const oversized = Array(2048).fill("x".repeat(40 * 1024));
+
+  it("fails only an oversized reply and still returns a large screenshot", async () => {
+    const screenshot = "A".repeat(16 * 1024 * 1024);
+    const send = vi.fn(async (method: string) =>
+      method === "DOM.getDocument" ? { nodes: oversized } : { data: screenshot },
+    );
+    const written: Array<Record<string, unknown>> = [];
+    const relay = createCdpRelayConnection(makeTarget(send), (raw) =>
+      written.push(JSON.parse(raw)),
+    );
+    relay.receive(
+      JSON.stringify({ id: 1, method: "DOM.getDocument", sessionId: "t3-preview-page" }),
+    );
+    relay.receive(
+      JSON.stringify({ id: 2, method: "Page.captureScreenshot", sessionId: "t3-preview-page" }),
+    );
+    await settle();
+
+    const replies = written.map(({ id, error, result }) => ({
+      id,
+      error,
+      size: (result as { data?: string } | undefined)?.data?.length,
+    }));
+    expect(replies).toEqual([
+      { id: 1, error: { code: -32000, message: "CDP payload too large" }, size: undefined },
+      { id: 2, error: undefined, size: screenshot.length },
+    ]);
+  });
+
+  it.each([
+    { args: oversized },
+    { args: "\u0001".repeat(12 * 1024 * 1024) },
+    { args: Array(2_700_000).fill(-0.0000010000000000000002) },
+  ])("closes instead of dropping an oversized event (%#)", async ({ args }) => {
+    const written: Array<Record<string, unknown>> = [];
+    const close = vi.fn();
+    const relay = createCdpRelayConnection(
+      makeTarget(vi.fn()),
+      (raw) => written.push(JSON.parse(raw)),
+      undefined,
+      close,
+    );
+    relay.receive(JSON.stringify({ id: 1, method: "Target.setAutoAttach", params: {} }));
+    await settle();
+    written.length = 0;
+
+    relay.event("Runtime.consoleAPICalled", { args }, "");
+    relay.event("Page.loadEventFired", { timestamp: 1 }, "");
+
+    relay.receive(JSON.stringify({ id: 2, method: "Target.setAutoAttach" }));
+    expect(close).toHaveBeenCalledOnce();
+    expect(written.map((message) => message["method"])).toEqual([]);
+  });
+});

@@ -26,14 +26,14 @@ export function nativeCompanionRendering(input: {
   readonly environmentId: EnvironmentId;
   readonly primaryEnvironmentId: EnvironmentId | null;
   readonly snapshot:
-    | Pick<PreviewSessionSnapshot, "runtime" | "threadId" | "tabId">
+    | Pick<PreviewSessionSnapshot, "runtime" | "threadId" | "tabId" | "headless">
     | null
     | undefined;
   readonly binding: CompanionQuery<PreviewCompanionThreadSelectionResponse> | null;
   readonly companion: DesktopCompanionState | null;
 }): boolean {
   const { snapshot, binding, companion, environmentId, primaryEnvironmentId } = input;
-  if (snapshot?.runtime !== "server") return false;
+  if (snapshot?.runtime !== "server" || snapshot.headless) return false;
   if (binding?.status === "unsupported") return environmentId === primaryEnvironmentId;
   if (binding?.status !== "ready") return false;
   const tab = binding.value.tabs.find((tab) => tab.tabId === snapshot.tabId);

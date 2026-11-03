@@ -7,9 +7,26 @@ import {
   PreviewAutomationHostIdentity,
   PreviewAutomationRuntimeIdentity,
 } from "../previewAutomation.ts";
+import { PreviewSessionSnapshot } from "../preview.ts";
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
+const { headless: _headless, ...legacySnapshotFields } = PreviewSessionSnapshot.fields;
+const decodeLegacySnapshot = Schema.decodeUnknownSync(Schema.Struct(legacySnapshotFields));
+const decodeSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
 
 describe("preview resilience mixed-version wire compatibility", () => {
+  it("lets an old snapshot reader ignore the additive headless flag", () => {
+    const legacy = {
+      threadId: "thread",
+      tabId: "tab",
+      runtime: "server",
+      navStatus: { _tag: "Idle" },
+      canGoBack: false,
+      canGoForward: false,
+      updatedAt: "2026-11-03T00:00:00.000Z",
+    };
+    expect(decodeLegacySnapshot({ ...legacy, headless: true })).toEqual(legacy);
+    expect(decodeSnapshot(legacy)).toEqual(legacy);
+  });
   it("keeps ping outside the baseline operations array accepted by legacy servers", () => {
     const LegacyHost = Schema.Struct({
       ...PreviewAutomationHostIdentity.fields,
