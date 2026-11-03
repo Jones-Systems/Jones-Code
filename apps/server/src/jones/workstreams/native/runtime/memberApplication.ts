@@ -1,3 +1,4 @@
+import * as MemberExport from "../read/memberExport.ts";
 import * as Context from "effect/Context";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
@@ -37,6 +38,7 @@ import * as Startup from "./startup.ts";
 export class MemberApplication extends Context.Service<
   MemberApplication,
   {
+    readonly export: MemberExport.MemberExport["Service"]["read"];
     readonly access: MemberAccess.MemberAccess["Service"]["current"];
     readonly commandReceipt: CommandReceipts.MemberCommandReceipts["Service"]["lookup"];
     readonly registration: Registration.MemberRegistration["Service"]["read"];
@@ -165,6 +167,11 @@ const make = Effect.gen(function* () {
     ),
   );
   return MemberApplication.of({
+    export: (pageSize) =>
+      run(
+        Integration.nativeMemberExportRequestLayer,
+        Effect.flatMap(MemberExport.MemberExport, (exporter) => exporter.read(pageSize)),
+      ),
     commandReceipt: (input) =>
       run(
         CommandReceipts.layer.pipe(

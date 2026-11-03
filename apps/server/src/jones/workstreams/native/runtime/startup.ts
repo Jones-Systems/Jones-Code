@@ -1,3 +1,4 @@
+import * as HomeExportProtocol from "../forwarding/homeExportProtocol.ts";
 import * as MemberSelection from "./memberStartup.ts";
 import * as MemberPreparation from "./memberPreparation.ts";
 import * as MemberEnrollments from "./memberEnrollment.ts";
@@ -455,7 +456,7 @@ export const homeServicesLayer = (
     Effect.map(Effect.serviceOption(PeerReadBoundary.PeerReadBoundary), (boundary) =>
       Option.isNone(boundary)
         ? Layer.empty
-        : HomeReadProtocol.layer.pipe(
+        : Layer.merge(HomeReadProtocol.layer, HomeExportProtocol.layer).pipe(
             Layer.provide(PeerReadBoundary.homeAdmissionLayer),
             Layer.provide(Layer.succeed(PeerReadBoundary.PeerReadBoundary, boundary.value)),
           ),

@@ -1,3 +1,8 @@
+import {
+  WorkstreamsHomeReadExportRequest,
+  WorkstreamsHomeReadExportResult,
+} from "@t3tools/contracts/jones/workstreamsNativeExport";
+import * as ExportProtocol from "../../workstreams/native/forwarding/homeExportProtocol.ts";
 import { McpCapabilityUnavailableError, OrchestratorMcpFailure } from "@t3tools/contracts";
 import {
   WorkstreamsHomeReadResult,
@@ -42,6 +47,45 @@ export const handlers = Access.toLayer(
                 new OrchestratorMcpFailure({
                   code: "orchestration_error",
                   message: `Native Workstreams read refused: ${cause.code}.`,
+                }),
+            ),
+          );
+        }),
+      ),
+    };
+  }),
+);
+
+/** Original home JSONL only. The qualified home service supplies current peer admission. */
+export const exportToolkit = Toolkit.make(
+  Tool.make("jones_workstreams_home_read_export", {
+    description:
+      "Export one coherent live Workstreams home snapshot through the authenticated bound peer session. Return the original bounded JSONL with complete trailer and digest, plus current principal and grant revision. The expected home and page size are the only inputs. No relay, state change, caller selection or credential issuance.",
+    parameters: WorkstreamsHomeReadExportRequest,
+    success: WorkstreamsHomeReadExportResult,
+    failure: Schema.Union([McpCapabilityUnavailableError, OrchestratorMcpFailure]),
+    failureMode: "return",
+    dependencies: [Invocation.McpInvocationContext, ThreadManagementService],
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
+);
+export const exportHandlers = Access.toLayer(
+  exportToolkit,
+  Effect.gen(function* () {
+    const protocol = yield* ExportProtocol.HomeExportProtocol;
+    return {
+      jones_workstreams_home_read_export: Access.reads((request) =>
+        Effect.gen(function* () {
+          yield* Invocation.requireMcpCapability("orchestration");
+          return yield* protocol.read(request).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestratorMcpFailure({
+                  code: "orchestration_error",
+                  message: "Native Workstreams export refused: " + cause.code + ".",
                 }),
             ),
           );

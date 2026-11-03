@@ -1,3 +1,4 @@
+import * as MemberExport from "./read/memberExport.ts";
 import * as MemberPreparation from "./runtime/memberPreparation.ts";
 import * as MemberSourcePorts from "./runtime/memberSourcePorts.ts";
 import * as MemberForwarder from "./forwarding/forwarder.ts";
@@ -287,7 +288,7 @@ export const nativeMemberAdmissionRequestLayer = Layer.unwrap(
 );
 const nativeMemberFixedClientLayer = Layer.unwrap(
   Effect.sync(() =>
-    PeerHomeReadClient.layer.pipe(
+    Layer.merge(PeerHomeReadClient.layer, PeerHomeReadClient.exportLayer).pipe(
       Layer.provideMerge(
         MemberHomeReadRouting.layer.pipe(Layer.provideMerge(nativeMemberAdmissionRequestLayer)),
       ),
@@ -311,6 +312,17 @@ export const nativeMemberReadRequestLayer = Layer.unwrap(
       ),
     );
   }),
+);
+
+/** @public Every export captures its original member caller before requesting complete home bytes. */
+export const nativeMemberExportRequestLayer = Layer.unwrap(
+  Effect.sync(() =>
+    MemberExport.layer.pipe(
+      Layer.provideMerge(
+        HomeReadProtocol.homeReadPortLayer.pipe(Layer.provideMerge(nativeMemberFixedClientLayer)),
+      ),
+    ),
+  ),
 );
 
 /** @public Separate exact-own-thread read; requires the private-proof fixed-client hook. */

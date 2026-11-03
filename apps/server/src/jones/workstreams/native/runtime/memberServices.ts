@@ -1,3 +1,5 @@
+import * as ReadExport from "../read/export.ts";
+import * as Stream from "effect/Stream";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Integration from "../integration.ts";
@@ -60,6 +62,12 @@ export const layer = (
           ),
         ),
         Recovery.layer,
+        Layer.effect(
+          ReadExport.ReadExport,
+          Effect.map(Application.MemberApplication, (app) => ({
+            stream: (pageSize) => Stream.fromEffect(app.export(pageSize)),
+          })),
+        ),
         Layer.effect(
           Reads.AuthorizedReads,
           Effect.map(Application.MemberApplication, (app) => ({ read: app.read })),

@@ -1,3 +1,5 @@
+import { WORKSTREAMS_HOME_READ_EXPORT_CONTRACT } from "@t3tools/contracts/jones/workstreamsNativeExport";
+import * as ExportProtocol from "./homeExportProtocol.ts";
 import { expect, it } from "@effect/vitest";
 import * as MemberAdmission from "../runtime/memberAdmission.ts";
 import * as CurrentMemberRead from "../read/memberReadAdmission.ts";
@@ -116,6 +118,7 @@ const fixture = (
     admissions: () => admissions,
     checks: () => checks,
     layer: Client.layer.pipe(Layer.provide(ports)),
+    exportLayer: Client.exportLayer.pipe(Layer.provide(ports)),
   };
 };
 
@@ -519,6 +522,66 @@ it.effect.each(["own-thread", "generic-metadata", "revoked-before-dispatch"] as 
     }).pipe(
       Effect.provide(CurrentMemberRead.ownPlacementLayer.pipe(Layer.provideMerge(client))),
       Effect.provideService(Mcp.McpInvocationContext, ownScope),
+    );
+  },
+);
+
+const exportRequest = {
+  contract: WORKSTREAMS_HOME_READ_EXPORT_CONTRACT,
+  expected_home: home,
+  page_size: 1,
+};
+it.effect(
+  "negotiates only the independent fixed export with captured original generation and narrowed limits",
+  () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      expect(yield* (yield* ExportProtocol.HomeExportClient).read(home, exportRequest)).toBe(f.raw);
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0]).toMatchObject({
+        environmentId: home.home_environment_id,
+        tool: "jones_workstreams_home_read_export",
+        arguments: exportRequest,
+        expectedGeneration: f.route.link_generation,
+        limits,
+      });
+      expect(f.checks()).toBe(2);
+    }).pipe(Effect.provide(f.exportLayer));
+  },
+);
+it.effect.each(["before", "after"] as const)(
+  "refuses export %s-dispatch drift without retry",
+  (when) => {
+    const f = fixture({
+      check: (n) =>
+        n === (when === "before" ? 1 : 2)
+          ? Effect.fail(new RegistryError({ code: "generation_conflict" }))
+          : Effect.void,
+    });
+    return Effect.gen(function* () {
+      expect(
+        yield* (yield* ExportProtocol.HomeExportClient).read(home, exportRequest).pipe(refused),
+      ).toMatchObject({ code: "generation_conflict" });
+      expect(f.calls).toHaveLength(when === "before" ? 0 : 1);
+    }).pipe(Effect.provide(f.exportLayer));
+  },
+);
+it.effect(
+  "export refuses recursive linked callers before routing and does not borrow own-placement authority",
+  () => {
+    const f = fixture();
+    return Effect.gen(function* () {
+      expect(
+        yield* (yield* ExportProtocol.HomeExportClient).read(home, exportRequest).pipe(refused),
+      ).toMatchObject({ code: "home_route_required" });
+      expect(f.calls).toHaveLength(0);
+      expect(f.admissions()).toBe(0);
+    }).pipe(
+      Effect.provideService(Mcp.McpInvocationContext, {
+        ...scope,
+        client: { sessionId: "peer", label: "peer", access: "read-only", linked: true },
+      }),
+      Effect.provide(f.exportLayer),
     );
   },
 );

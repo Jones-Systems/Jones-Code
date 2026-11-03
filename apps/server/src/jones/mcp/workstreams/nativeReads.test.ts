@@ -1,3 +1,5 @@
+import { WORKSTREAMS_HOME_READ_EXPORT_CONTRACT } from "@t3tools/contracts/jones/workstreamsNativeExport";
+import * as ExportProtocol from "../../workstreams/native/forwarding/homeExportProtocol.ts";
 import { expect, it } from "@effect/vitest";
 import { EnvironmentId } from "@t3tools/contracts";
 import {
@@ -206,6 +208,100 @@ it.effect(
         );
       expect(reply.isError).toBe(false);
       expect(reply.structuredContent).toEqual(result);
+      expect(calls).toBe(1);
+    }).pipe(Effect.provide(registration));
+  },
+);
+
+const exportHome = {
+  registry_instance_id: result.envelope.registry.registry_instance_id,
+  owner_id: context.owner_id,
+  home_environment_id: "home:test",
+  server_generation: 1,
+};
+const exportRequest = {
+  contract: WORKSTREAMS_HOME_READ_EXPORT_CONTRACT,
+  expected_home: exportHome,
+  page_size: 1,
+};
+const exportResult = {
+  contract: WORKSTREAMS_HOME_READ_EXPORT_CONTRACT,
+  home: exportHome,
+  principal_id: "principal:test",
+  authorization_revision: 1,
+  jsonl: "original bytes\n",
+};
+const decodeExport = Schema.decodeUnknownSync(
+  NativeReads.exportToolkit.tools.jones_workstreams_home_read_export.parametersSchema,
+);
+it("advertises export as a distinct closed read-only invocation without arbitrary forwarding fields", () => {
+  const tool = NativeReads.exportToolkit.tools.jones_workstreams_home_read_export;
+  expect(Tool.getJsonSchema(tool)).toMatchObject({ type: "object" });
+  expect(decodeExport(exportRequest)).toEqual(exportRequest);
+  for (const change of [
+    { url: "another" },
+    { caller: {} },
+    { tool: "arbitrary" },
+    { contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT },
+  ])
+    expect(() => decodeExport({ ...exportRequest, ...change })).toThrow();
+});
+it.effect(
+  "production registration uses only the genuine selected export service and original invocation",
+  () => {
+    let calls = 0;
+    const registration = McpHttpServer.layerNativeHomeReadToolkit.pipe(
+      Layer.provideMerge(McpServer.McpServer.layer),
+      Layer.provide(
+        Layer.succeed(ExportProtocol.HomeExportProtocol, {
+          read: (input) =>
+            Effect.gen(function* () {
+              const invocation = yield* Effect.serviceOption(Invocation.McpInvocationContext);
+              expect(invocation._tag === "Some" ? invocation.value : null).toBe(scope);
+              expect(input).toEqual(exportRequest);
+              calls++;
+              return exportResult;
+            }),
+        }),
+      ),
+      Layer.provide(threads),
+    );
+    const client = McpSchema.McpServerClient.of({
+      clientId: 2,
+      clientCapabilities: {},
+      clientInfo: { name: "export-test", version: "1.0.0" },
+      protocolVersion: "2025-06-18",
+      initializePayload: {
+        protocolVersion: "2025-06-18",
+        capabilities: {},
+        clientInfo: { name: "export-test", version: "1.0.0" },
+      },
+      getClient: Effect.die("unused"),
+    });
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      expect(server.tools.map(({ tool }) => tool.name)).toEqual([
+        "jones_workstreams_home_read_export",
+      ]);
+      const reply = yield* server
+        .callTool({ name: "jones_workstreams_home_read_export", arguments: exportRequest })
+        .pipe(
+          Effect.provideService(Invocation.McpInvocationContext, scope),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(reply.isError).toBe(false);
+      expect(reply.structuredContent).toEqual(exportResult);
+      expect(calls).toBe(1);
+      const denied = yield* server
+        .callTool({ name: "jones_workstreams_home_read_export", arguments: exportRequest })
+        .pipe(
+          Effect.provideService(Invocation.McpInvocationContext, {
+            ...scope,
+            capabilities: new Set<never>(),
+          }),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+      expect(denied.isError).toBe(true);
       expect(calls).toBe(1);
     }).pipe(Effect.provide(registration));
   },

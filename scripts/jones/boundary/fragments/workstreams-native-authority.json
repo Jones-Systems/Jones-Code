@@ -76,6 +76,10 @@
     {
       "from": "packages/contracts/src/environmentHttp.ts",
       "to": "packages/contracts/src/jones/workstreamsNativeExport.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/McpHttpServer.ts",
+      "to": "apps/server/src/jones/workstreams/native/forwarding/homeExportProtocol.ts"
     }
   ]
 }

@@ -1,3 +1,8 @@
+import * as HomeExport from "../forwarding/homeExportProtocol.ts";
+import {
+  WORKSTREAMS_HOME_READ_EXPORT_CONTRACT,
+  WorkstreamsHomeReadExportRequest,
+} from "@t3tools/contracts/jones/workstreamsNativeExport";
 import * as NativeExportCli from "../read/exportCli.ts";
 import * as Stdio from "effect/Stdio";
 import * as Sink from "effect/Sink";
@@ -179,6 +184,7 @@ class MemberPlacementTestApi extends HttpApi.make("environment").add(
 const decodeNativePlacement = Schema.decodeUnknownEffect(
   NativePlacement.WorkstreamsNativePlacementResult,
 );
+const decodeExportArgs = Schema.decodeUnknownEffect(WorkstreamsHomeReadExportRequest);
 const decodeReadArgs = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResultRequest);
 const decodePublicReadResult = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResult);
 const isPublicOperation = Schema.is(OperationWire.WorkstreamOperationResult);
@@ -1531,19 +1537,50 @@ it.effect(
           ),
           Layer.provide(Layer.succeed(Placements.PlacementTrust, f.H.live.trustProvider)),
         );
-        const homeRead = yield* HomeRead.HomeReadProtocol.pipe(
-          Effect.provide(
-            HomeRead.layer.pipe(
-              Layer.provide(PeerRead.homeAdmissionLayer),
-              Layer.provideMerge(
-                ReadRoutes.layer.pipe(
-                  Layer.provideMerge(ReadProjection.layer),
-                  Layer.provideMerge(localReads),
-                ),
+        const peerReadContext = yield* Layer.build(
+          Layer.merge(HomeRead.layer, HomeExport.layer).pipe(
+            Layer.provide(PeerRead.homeAdmissionLayer),
+            Layer.provideMerge(
+              ReadRoutes.layer.pipe(
+                Layer.provideMerge(ReadProjection.layer),
+                Layer.provideMerge(localReads),
               ),
-              Layer.provideMerge(Integration.nativePeerReadBoundaryLayer),
-              Layer.provide(homeBase),
             ),
+            Layer.provideMerge(Integration.nativePeerReadBoundaryLayer),
+            Layer.provide(homeBase),
+          ),
+        );
+        const homeRead = Context.get(peerReadContext, HomeRead.HomeReadProtocol);
+        const homeExporter = Context.get(peerReadContext, HomeExport.HomeExportProtocol);
+        const exportedHomeBytes: string[] = [];
+        const exportBox = yield* NativeReadTools.exportToolkit.pipe(
+          Effect.provide(
+            Access.HandlersLayer.layer(NativeReadTools.exportHandlers).pipe(
+              Layer.provide(
+                Layer.succeed(HomeExport.HomeExportProtocol, {
+                  read: (request) =>
+                    homeExporter.read(request).pipe(
+                      Effect.tap((result) =>
+                        Effect.sync(() => {
+                          exportedHomeBytes.push(result.jsonl);
+                        }),
+                      ),
+                    ),
+                }),
+              ),
+            ),
+          ),
+        );
+        f.mountTool(f.H.env, "jones_workstreams_home_read_export", (args) =>
+          decodeExportArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              exportBox.handle("jones_workstreams_home_read_export", decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
           ),
         );
         const readBox = yield* NativeReadTools.toolkit.pipe(
@@ -2433,21 +2470,115 @@ it.effect(
         expect(yield* homeAuth.revokeSession(exportSession.sessionId)).toBe(true);
         expect((yield* exportRequest(exportSession.token)).status).toBe(401);
         expect(f.calls).toHaveLength(exportCalls);
-        // A member has no exporter mounted; successful reads do not imply export support.
+        // Refresh the independent client context after the preceding home binding/grant fixture changes.
+        const memberExportBinding = (yield* gateway
+          .readMetadata()
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal))).binding;
+        const memberExportScope = { ...readScope, binding: memberExportBinding };
+        const memberExportCalls = f.calls.length;
+        // The selected member now exports the original home bytes under genuine current peer admission.
         const memberExport = yield* Effect.promise(() =>
           placementHttp.handler(
-            new Request("https://member.invalid/api/workstreams/native/v1/export", {
+            new Request("https://member.invalid/api/workstreams/native/v1/export?page_size=1", {
               headers: { authorization: "Bearer " + nextSession.token },
             }),
           ),
         );
-        expect(memberExport.status).toBe(409);
-        expect(yield* Effect.promise(() => memberExport.json())).toEqual({
-          _tag: "EnvironmentHttpConflictError",
-          message: "workstreams_native_unavailable",
+        expect(memberExport.status).toBe(200);
+        expect(memberExport.headers.get("cache-control")).toBe("private, no-store");
+        const memberExportBytes = yield* Effect.promise(
+          async () => new Uint8Array(await memberExport.arrayBuffer()),
+        );
+        expect(memberExportBytes).toEqual(new TextEncoder().encode(exportedHomeBytes.at(-1)!));
+        const memberExportCompleted = yield* Effect.promise(() =>
+          validateNativeReadExport(
+            (async function* () {
+              for (let i = 0; i < memberExportBytes.length; i += 7)
+                yield memberExportBytes.slice(i, i + 7);
+            })(),
+            { scope: memberExportScope, sha256: async (bytes) => sha256Bytes(bytes) },
+          ),
+        );
+        expect(memberExportCompleted.complete).toBe(true);
+        expect(
+          f.calls
+            .slice(memberExportCalls)
+            .find((call) => call.tool === "jones_workstreams_home_read_export")?.args,
+        ).toMatchObject({
+          contract: WORKSTREAMS_HOME_READ_EXPORT_CONTRACT,
+          page_size: 1,
         });
-        expect(f.calls).toHaveLength(exportCalls);
-
+        expect(memberExportCompleted.pages).toHaveLength(3);
+        expect(f.calls.slice(memberExportCalls).map((call) => call.tool)).toEqual([
+          "jones_workstreams_home_read_result",
+          "jones_workstreams_home_read_export",
+          "jones_workstreams_home_read_result",
+        ]);
+        const readOnlyExport = yield* Effect.promise(() =>
+          placementHttp.handler(
+            new Request("https://member.invalid/api/workstreams/native/v1/export", {
+              headers: { authorization: "Bearer " + readOnlySession.token },
+            }),
+          ),
+        );
+        expect(readOnlyExport.status).toBe(200);
+        yield* Effect.promise(() => readOnlyExport.arrayBuffer());
+        // The same CLI byte validator also consumes a selected member using genuine read-only issuance.
+        const memberCliSessions = Context.get(
+          yield* Layer.build(Cli.existingReadExportCliSessionsLayer).pipe(Effect.provide(f.M.all)),
+          Cli.PeerSetupCliSessions,
+        );
+        const memberCliIssued = yield* memberCliSessions.issue();
+        const memberCliOutput: Uint8Array[] = [];
+        expect(
+          (yield* Context.get(f.M.all, Sessions.SessionStore).verify(memberCliIssued.token)).scopes,
+        ).toEqual(["orchestration:read"]);
+        const memberCliHttp = HttpClient.make((request) =>
+          Effect.gen(function* () {
+            const response = yield* Effect.promise(() =>
+              placementHttp.handler(
+                new Request(request.url, {
+                  method: request.method,
+                  headers: request.headers,
+                  ...(request.body._tag === "Uint8Array"
+                    ? { body: Buffer.from(request.body.body) }
+                    : {}),
+                }),
+              ),
+            );
+            return HttpResponse.fromWeb(request, response);
+          }),
+        );
+        yield* NativeExportCli.runNativeReadExportCli(
+          "http://127.0.0.1:1111",
+          { authorization: "Bearer " + memberCliIssued.token },
+          1,
+        ).pipe(
+          Effect.provideService(HttpClient.HttpClient, memberCliHttp),
+          Effect.provideService(
+            Stdio.Stdio,
+            Stdio.make({
+              args: Effect.succeed([]),
+              stdin: Stream.empty,
+              stderr: () => Sink.drain,
+              stdout: () =>
+                Sink.forEach((part: string | Uint8Array) =>
+                  Effect.sync(() => {
+                    memberCliOutput.push(
+                      typeof part === "string" ? new TextEncoder().encode(part) : part.slice(),
+                    );
+                  }),
+                ),
+            }),
+          ),
+          Effect.ensuring(memberCliSessions.revoke(memberCliIssued.sessionId).pipe(Effect.orDie)),
+        );
+        expect(Buffer.concat(memberCliOutput)).toEqual(Buffer.from(exportedHomeBytes.at(-1)!));
+        expect(
+          (yield* Context.get(f.M.all, Sessions.SessionStore)
+            .verify(memberCliIssued.token)
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
         expect((yield* requestNativeRead(readOnlySession.token, countsRequest)).status).toBe(200);
         expect((yield* requestNativeRead(undefined, countsRequest)).status).toBe(401);
         expect(

@@ -144,18 +144,17 @@ that runtime. Existing legacy installations continue to use
 [legacy activation](./workstreams-activation.md) until a separately authorized
 transition changes their authority.
 
-A selected home exposes its authenticated read export at
+A selected home or member exposes its authenticated read export at
 `GET /api/workstreams/native/v1/export`, with optional `page_size=1..100`.
 It requires the current orchestration read scope and streams the existing JSONL
 format as `application/x-ndjson`. Retain the original UTF-8 bytes through EOF:
 only the final complete trailer and its matching digest establish a completed
 export. Revocation, drift, interruption or cancellation leaves the stream incomplete.
-A mode without a selected exporter, including the current member composition,
-refuses with `workstreams_native_unavailable`; it never falls back to a local
+A mode without a qualified selected exporter refuses with `workstreams_native_unavailable`; it never falls back to a local
 registry or legacy export. This transport does not advertise native capability.
 
 Use `t3 workstream export --home /absolute/existing/server-home` for a selected
-local home, optionally with `--page-size 1..100`. It requires the already running
+local home or member, optionally with `--page-size 1..100`. It requires the already running
 server, existing database and signing key. It creates only a five-minute
 orchestration-read session and revokes that session when finished; it never
 starts a server, migrates storage or creates a key. The CLI checks the original
@@ -163,5 +162,13 @@ JSONL bytes, complete trailer, digest and current read binding before writing
 anything to stdout. Failed downloads or validation produce no export output.
 An interrupted or failed stdout write can leave partial bytes; only EOF and the
 matching trailer establish completion. Redirects, remote origins,
-legacy fallback and automatic retries are unsupported. Member export still
-refuses until its transport is qualified.
+legacy fallback and automatic retries are unsupported.
+
+Member export requires the independently negotiated fixed home-export tool. It
+pins the original local caller and outbound link generation, checks current home
+read permission before and after the transfer, validates the original complete
+JSONL and digest, and releases those exact bytes as one bounded result. It holds
+no disk cache and creates no local registry or home grant. Missing tool support,
+changed permission, incomplete bytes or home drift refuse without output or a
+legacy fallback. The fixed result is bounded to 16 MiB plus the completion trailer;
+capability advertisement remains withheld.

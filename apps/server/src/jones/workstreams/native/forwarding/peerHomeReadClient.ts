@@ -1,3 +1,6 @@
+import { WorkstreamsHomeReadExportRequest } from "@t3tools/contracts/jones/workstreamsNativeExport";
+import * as ExportProtocol from "./homeExportProtocol.ts";
+import { canonicalJson } from "../domain/validation.ts";
 import { EnvironmentId, ProviderInteractionMode, RuntimeMode } from "@t3tools/contracts";
 import { WorkstreamsHomeReadResultRequest } from "@t3tools/contracts/jones/workstreamsHomeReadResult";
 import { WorkstreamsNativeHomeTarget } from "@t3tools/contracts/jones/workstreamsNative";
@@ -43,7 +46,7 @@ const decodeLimits = Schema.decodeUnknownEffect(
 // This check supplies no admission. Non-MCP callers still require the routing producer.
 const refuseRecursiveCaller = Effect.fn("PeerHomeReadClient.refuseRecursiveCaller")(function* (
   home: WorkstreamsNativeHomeTarget,
-  request: WorkstreamsHomeReadResultRequest,
+  request?: WorkstreamsHomeReadResultRequest,
 ) {
   const invocation = yield* Effect.serviceOption(Mcp.McpInvocationContext);
   if (Option.isNone(invocation)) return;
@@ -59,63 +62,114 @@ const refuseRecursiveCaller = Effect.fn("PeerHomeReadClient.refuseRecursiveCalle
     Effect.mapError((cause) => new RegistryError({ code: "caller_unavailable", cause })),
   );
   // Generic linked reads stay refused; the private original-thread placement proof is request-local.
-  if (callerLinkOrigin(caller) !== undefined)
+  if (callerLinkOrigin(caller) !== undefined) {
+    if (request === undefined) return yield* new RegistryError({ code: "home_route_required" });
     yield* checkOwnPlacementForwarding(home, request).pipe(
       Effect.mapError(() => new RegistryError({ code: "home_route_required" })),
     );
+  }
 });
 
-/** Fixed-tool invocation plus strict downstream decoding is invocation negotiation only.
- * There is no tools/list preflight, legacy fallback, retry or general forwarding bypass.
- */
+const decodeExportRequest = Schema.decodeUnknownEffect(WorkstreamsHomeReadExportRequest);
+const makeCall = Effect.gen(function* () {
+  const peer = yield* Peer.PeerMcpClient;
+  const routing = yield* MemberHomeReadRouting;
+  // Shared fixed-call work stays inside the public read/export operation span.
+  return Effect.fnUntraced(function* (
+    home: WorkstreamsNativeHomeTarget,
+    request: Record<string, unknown>,
+    tool: "jones_workstreams_home_read_result" | "jones_workstreams_home_read_export",
+    validate: Effect.Effect<unknown, RegistryError>,
+    ownPlacementRequest?: WorkstreamsHomeReadResultRequest,
+  ) {
+    yield* refuseRecursiveCaller(home, ownPlacementRequest);
+    const admitted = yield* routing.current();
+    const target = yield* decodeHome(admitted.home, { onExcessProperty: "error" }).pipe(
+      Effect.mapError((cause) => new RegistryError({ code: "registry_mismatch", cause })),
+    );
+    if (
+      target.registry_instance_id !== home.registry_instance_id ||
+      target.owner_id !== home.owner_id ||
+      target.home_environment_id !== home.home_environment_id
+    )
+      return yield* new RegistryError({ code: "registry_mismatch" });
+    if (target.server_generation !== home.server_generation)
+      return yield* new RegistryError({ code: "generation_mismatch" });
+    const environmentId = yield* decodeEnvironment(target.home_environment_id).pipe(
+      Effect.mapError((cause) => new RegistryError({ code: "invalid_home_environment", cause })),
+    );
+    if (
+      typeof admitted.link_generation !== "string" ||
+      admitted.link_generation.trim().length === 0
+    )
+      return yield* new RegistryError({ code: "link_generation_required" });
+    yield* decodeLimits(admitted.limits, { onExcessProperty: "error" }).pipe(
+      Effect.mapError((cause) => new RegistryError({ code: "invalid_limits", cause })),
+    );
+    yield* validate;
+    yield* admitted.checkCurrent();
+    const result = yield* peer
+      .call({
+        environmentId,
+        tool,
+        arguments: request,
+        limits: admitted.limits,
+        expectedGeneration: admitted.link_generation,
+        success: Schema.Unknown,
+      })
+      .pipe(Effect.mapError((cause) => new RegistryError({ code: cause.code, cause })));
+    yield* admitted.checkCurrent();
+    return result;
+  });
+});
+
+/** Fixed invocation is negotiation only, with no list preflight, fallback, retry or relay bypass. */
 export const layer = Layer.effect(
   Protocol.HomeReadResultClient,
   Effect.gen(function* () {
-    const peer = yield* Peer.PeerMcpClient;
-    const routing = yield* MemberHomeReadRouting;
+    const call = yield* makeCall;
     return Protocol.HomeReadResultClient.of({
-      read: Effect.fn("PeerHomeReadClient.read")(function* (home, request) {
-        yield* refuseRecursiveCaller(home, request);
-        const admitted = yield* routing.current();
-        const target = yield* decodeHome(admitted.home, { onExcessProperty: "error" }).pipe(
-          Effect.mapError((cause) => new RegistryError({ code: "registry_mismatch", cause })),
-        );
-        if (
-          target.registry_instance_id !== home.registry_instance_id ||
-          target.owner_id !== home.owner_id ||
-          target.home_environment_id !== home.home_environment_id
-        )
-          return yield* new RegistryError({ code: "registry_mismatch" });
-        if (target.server_generation !== home.server_generation)
-          return yield* new RegistryError({ code: "generation_mismatch" });
-        const environmentId = yield* decodeEnvironment(target.home_environment_id).pipe(
-          Effect.mapError(
-            (cause) => new RegistryError({ code: "invalid_home_environment", cause }),
+      read: Effect.fn("PeerHomeReadClient.read")(
+        (home: WorkstreamsNativeHomeTarget, request: WorkstreamsHomeReadResultRequest) =>
+          call(
+            home,
+            request,
+            "jones_workstreams_home_read_result",
+            decodeRequest(request, { onExcessProperty: "error" }).pipe(
+              Effect.mapError((cause) => new RegistryError({ code: "invalid_request", cause })),
+            ),
+            request,
           ),
-        );
-        const generation = admitted.link_generation;
-        if (typeof generation !== "string" || generation.trim().length === 0)
-          return yield* new RegistryError({ code: "link_generation_required" });
-        yield* decodeLimits(admitted.limits, { onExcessProperty: "error" }).pipe(
-          Effect.mapError((cause) => new RegistryError({ code: "invalid_limits", cause })),
-        );
-        yield* decodeRequest(request, { onExcessProperty: "error" }).pipe(
-          Effect.mapError((cause) => new RegistryError({ code: "invalid_request", cause })),
-        );
-        yield* admitted.checkCurrent();
-        const result = yield* peer
-          .call({
-            environmentId,
-            tool: "jones_workstreams_home_read_result",
-            arguments: request,
-            limits: admitted.limits,
-            expectedGeneration: generation,
-            success: Schema.Unknown,
-          })
-          .pipe(Effect.mapError((cause) => new RegistryError({ code: cause.code, cause })));
-        yield* admitted.checkCurrent();
-        return result;
-      }),
+      ),
     });
   }),
+);
+/** Independently negotiated export; it never inherits the own-placement forwarding exception. */
+export const exportLayer = Layer.unwrap(
+  Effect.sync(() =>
+    Layer.effect(
+      ExportProtocol.HomeExportClient,
+      Effect.gen(function* () {
+        const call = yield* makeCall;
+        return ExportProtocol.HomeExportClient.of({
+          read: Effect.fn("PeerHomeReadClient.export")(
+            (home: WorkstreamsNativeHomeTarget, request: WorkstreamsHomeReadExportRequest) =>
+              call(
+                home,
+                request,
+                "jones_workstreams_home_read_export",
+                decodeExportRequest(request, { onExcessProperty: "error" }).pipe(
+                  Effect.mapError((cause) => new RegistryError({ code: "invalid_request", cause })),
+                  Effect.flatMap((decoded) =>
+                    canonicalJson(decoded.expected_home) === canonicalJson(home)
+                      ? Effect.void
+                      : Effect.fail(new RegistryError({ code: "registry_mismatch" })),
+                  ),
+                ),
+              ),
+          ),
+        });
+      }),
+    ),
+  ),
 );

@@ -1,3 +1,4 @@
+import * as NativeExportProtocol from "../jones/workstreams/native/forwarding/homeExportProtocol.ts";
 import * as NativePeerMcpAuthentication from "../jones/workstreams/native/runtime/peerMcpAuthentication.ts";
 import * as NativeReadMcp from "../jones/mcp/workstreams/nativeReads.ts";
 import * as NativeBindMcp from "../jones/mcp/workstreams/nativeBinds.ts";
@@ -1199,7 +1200,7 @@ export const layerWorkstreamToolkit = toolkitRegistration(
   workstreamHandlers,
 ).pipe(Layer.provide(workstreamBackendLayer));
 
-export const layerNativeHomeReadToolkit = // Register only when selected native composition supplies qualified peer admission and reads.
+export const layerNativeHomeReadToolkit = Layer.merge(
   Layer.unwrap(
     Effect.map(Effect.serviceOption(NativeReadProtocol.HomeReadProtocol), (protocol) =>
       Option.isNone(protocol)
@@ -1208,7 +1209,17 @@ export const layerNativeHomeReadToolkit = // Register only when selected native 
             Layer.provide(Layer.succeed(NativeReadProtocol.HomeReadProtocol, protocol.value)),
           ),
     ),
-  );
+  ),
+  Layer.unwrap(
+    Effect.map(Effect.serviceOption(NativeExportProtocol.HomeExportProtocol), (protocol) =>
+      Option.isNone(protocol)
+        ? Layer.empty
+        : toolkitRegistration(NativeReadMcp.exportToolkit, NativeReadMcp.exportHandlers).pipe(
+            Layer.provide(Layer.succeed(NativeExportProtocol.HomeExportProtocol, protocol.value)),
+          ),
+    ),
+  ),
+);
 
 /** Only a qualified application composition may supply this producer. No default is installed. */
 export const layerNativeHomeBindToolkit = Layer.unwrap(
