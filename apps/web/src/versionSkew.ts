@@ -107,6 +107,8 @@ export function resolveServerConfigClientUpdateNotice(
     serverConfig?.environment.serverVersion,
     APP_VERSION,
     {
+      clientBuildStartedAt: APP_BUILD_STARTED_AT,
+      serverBuildStartedAt: serverConfig?.environment.jonesBuildStartedAt,
       clientSourceSha: APP_SOURCE_SHA,
       serverSourceSha: serverConfig?.environment.jonesSource?.sha,
     },

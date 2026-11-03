@@ -2,15 +2,16 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { EnvironmentId } from "@t3tools/contracts";
 import "../../../index.css";
-import { APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
+import { APP_BUILD_STARTED_AT, APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
 import { ComposerBannerStack } from "../../../components/chat/ComposerBannerStack";
 import { useClientUpdateBanners } from "../clientUpdateBanner";
+import { jonesBuildLabel } from "../buildVersion";
 import { useSyntheticExactSource } from "./exact-source-fixture";
 
 function Fixture() {
   const [selected, setSelected] = useState("Laptop");
   const [automatic, setAutomatic] = useState(false);
-  const [scenario, setScenario] = useState("different");
+  const [scenario, setScenario] = useState("older");
   const source =
     scenario === "equal"
       ? APP_SOURCE_SHA
@@ -26,7 +27,20 @@ function Fixture() {
         label,
         platform: { os: "linux", arch: "x64" } as const,
         capabilities: { repositoryIdentity: true },
-        serverVersion: scenario === "newer" ? "9.0.0" : APP_VERSION,
+        serverVersion:
+          scenario === "stable"
+            ? "9.0.0"
+            : scenario === "newer"
+              ? "0.1.2-preview.20261030.40652017133.1"
+              : scenario === "identity"
+                ? APP_VERSION
+                : "0.1.2-preview.20261028.40652016025.1",
+        jonesBuildStartedAt:
+          scenario === "identity" || scenario === "equal"
+            ? APP_BUILD_STARTED_AT
+            : scenario === "newer" || scenario === "stable"
+              ? "2026-10-31T00:43:00Z"
+              : "2026-10-28T15:26:00Z",
         ...(source
           ? {
               jonesSource: {
@@ -52,7 +66,13 @@ function Fixture() {
       <h1 className="text-xl font-semibold">Client version notice fixture</h1>
       <p>Synthetic environment descriptors; production notice hook and composer banner stack.</p>
       <p>
-        Client {APP_VERSION}, source {APP_SOURCE_SHA ?? "unknown"}
+        Client build{" "}
+        {
+          jonesBuildLabel(
+            { version: APP_VERSION, sourceSha: APP_SOURCE_SHA, startedAt: APP_BUILD_STARTED_AT },
+            "day",
+          ).text
+        }
       </p>
       <section className="flex flex-wrap gap-3" aria-label="Fixture inputs">
         <label>
@@ -73,10 +93,12 @@ function Fixture() {
         <label>
           Pair{" "}
           <select value={scenario} onChange={(event) => setScenario(event.target.value)}>
-            <option value="different">Different preview sources</option>
+            <option value="older">Older preview server</option>
+            <option value="newer">Newer preview server</option>
+            <option value="identity">Same version, different sources</option>
             <option value="changed">Changed full source, same abbreviation</option>
             <option value="equal">Equal sources</option>
-            <option value="newer">Newer stable server</option>
+            <option value="stable">Newer stable server</option>
           </select>
         </label>
       </section>

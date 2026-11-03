@@ -8,7 +8,7 @@ import type {
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
-import { APP_SOURCE_SHA, APP_VERSION } from "../../../branding";
+import { APP_SOURCE_SHA } from "../../../branding";
 import { ComposerBannerStack } from "../../../components/chat/ComposerBannerStack";
 import { requestConfirmDialog } from "../../../confirmDialog";
 import { useClientUpdateBanners } from "../clientUpdateBanner";
@@ -355,7 +355,7 @@ export function ExactSourcePreview({ runId }: { readonly runId: string }) {
         label: "Mac Mini",
         platform: { os: "darwin", arch: "arm64" } as const,
         capabilities: { repositoryIdentity: true },
-        serverVersion: APP_VERSION,
+        serverVersion: snapshot.state?.currentVersion ?? HOST_VERSION,
         jonesSource: {
           repository: "Jones-Systems/Jones-Code" as const,
           sha: hostSource,

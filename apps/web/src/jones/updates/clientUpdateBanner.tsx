@@ -21,7 +21,7 @@ export interface ClientUpdateBannerInput {
   readonly activeEnvironment: NoticeEnvironment | null | undefined;
   readonly automaticEnvironment: boolean;
   readonly eligibleEnvironments: readonly NoticeEnvironment[];
-  /** Renders the exact-source action of a preview-source notice; fixtures inject a synthetic host. */
+  /** Renders the qualified action for an older preview server; fixtures inject a synthetic host. */
   readonly renderExactSourceAction?: (target: ExactSourceTarget) => ReactNode;
 }
 
@@ -45,7 +45,7 @@ export function useClientUpdateBanners({
     const notice = resolveServerConfigClientUpdateNotice(environment.serverConfig);
     if (!notice) return [];
     const key = JSON.stringify([
-      "jones-client-notice-v1",
+      "jones-client-notice-v2",
       environment.environmentId,
       notice.kind,
       notice.clientVersion,
@@ -60,14 +60,14 @@ export function useClientUpdateBanners({
         variant: "default",
         priority: "notice",
         icon: <InfoIcon />,
-        title: `${environment.label}: ${notice.kind === "server-newer" ? "Client update available" : "Different preview sources"}`,
+        title: `${environment.label}: ${notice.kind === "server-newer" ? "Client update available" : notice.kind === "client-newer" ? "Server update available" : "Preview build identity mismatch"}`,
         description: (
           <span className="break-words">
-            {notice.hint} <ClientServerBuildLabels builds={notice} />.
+            <ClientServerBuildLabels builds={notice} />. {notice.hint}
           </span>
         ),
-        // The target is always this app's own source; a newer-server notice has no exact action.
-        ...(notice.kind === "preview-source-difference" && notice.clientSourceSha
+        // Only an older server gets an action toward this app's verified source.
+        ...(notice.kind === "client-newer" && notice.clientSourceSha
           ? {
               actions: renderExactSourceAction({
                 environmentId: environment.environmentId,

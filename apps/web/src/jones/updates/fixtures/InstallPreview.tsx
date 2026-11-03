@@ -69,7 +69,7 @@ function ClientNoticePreview({ runId }: { readonly runId: string }) {
         : pair === "changed"
           ? differentSource.slice(0, -1) + "c"
           : differentSource;
-  const serverVersion = pair === "stable" ? "0.1.0" : APP_VERSION;
+  const serverVersion = pair === "stable" ? "9.0.0" : "0.0.44-preview.20261009.1.1";
   const environments = ["Laptop", "Remote", "Excluded"].map((label) => {
     const environmentId = EnvironmentId.make(`client-notice-${runId}-${label}`);
     return {
