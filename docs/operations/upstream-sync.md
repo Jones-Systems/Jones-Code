@@ -199,6 +199,31 @@ the reference candidate as part of this separation.
 
 Sync regularly during active development and before a large feature branch diverges far from upstream. A monthly check is a reasonable idle cadence; a security or compatibility fix may justify an earlier sync. A sync is a source integration, not a deployment or an update of any running laptop or VPS installation.
 
+### Owner choices for conflicting UI changes
+
+When an upstream UI change conflicts with UI M Jones explicitly requested,
+first check the recorded direction and established patterns. Continue without
+an extra decision when those settle how to integrate it. When they do not,
+present the affected UI before choosing a resolution that drops or materially
+changes either approach. This applies to interaction as well as appearance,
+and to semantic conflicts even when Git merges the files cleanly.
+
+Show the upstream UI and current Jones UI with their exact source revisions,
+then only the applicable alternatives: adopt upstream, retain Jones, or a
+recommended blend when it has a clear purpose. Use the same meaningful data,
+viewport and state, including the opened control or menu when affected. Label
+actual captures and proposed prototypes distinctly. Explain what each option
+keeps, changes or loses, recommend a direction with its reason, and request
+M Jones's choice. Do not add variants merely to fill a quota.
+
+Record the conflict, source evidence, alternatives and owner decision in the
+sync's PR or task-owned repair ledger. Keep that UI decision unresolved until
+M Jones answers; continue independent integration and verification. Green
+checks do not select a UI direction. A change introduced after the previous
+sync's pinned upstream commit is new work, not evidence that it was omitted.
+This decision step does not apply to routine compatible UI updates or impose
+owner review on ordinary backend conflict resolution.
+
 ## Fork-only migrations
 
 Keep upstream and Jones migration histories in separate loaders and tracking
