@@ -6,7 +6,9 @@
     "apps/server/src/jones/previewRecordingOperation/projection.ts",
     "apps/server/src/jones/previewRecordingOperation/broker.test.ts",
     "apps/server/src/jones/previewRecordingOperation/mcp.ts",
-    "apps/server/src/jones/previewRecordingOperation/mcp.test.ts"
+    "apps/server/src/jones/previewRecordingOperation/mcp.test.ts",
+    "apps/server/src/jones/previewTabAffinity/tabAffinity.ts",
+    "apps/server/src/jones/previewTabAffinity/tabAffinity.test.ts"
   ],
   "hookPaths": [
     "apps/desktop/src/preview/DesktopBrowserHost.ts",
@@ -42,6 +44,10 @@
     {
       "from": "apps/server/src/mcp/toolkits/preview/handlers.ts",
       "to": "apps/server/src/jones/previewRecordingOperation/mcp.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/PreviewAutomationBroker.ts",
+      "to": "apps/server/src/jones/previewTabAffinity/tabAffinity.ts"
     }
   ]
 }
