@@ -2,9 +2,9 @@ import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 const branding = vi.hoisted(() => ({
-  APP_VERSION: "0.0.45-preview.20261010.38048764253.1",
+  APP_VERSION: "0.1.2-preview.20261029.40652017132.1",
   APP_SOURCE_SHA: "a".repeat(40),
-  APP_BUILD_STARTED_AT: undefined,
+  APP_BUILD_STARTED_AT: "2026-10-29T18:36:00Z",
 }));
 vi.mock("../../branding", () => branding);
 
@@ -14,151 +14,182 @@ import {
   resolveVersionMismatch,
 } from "../../versionSkew";
 import {
+  compareJonesPreviewVersions,
   isJonesPreviewBuildPair,
   JONES_CLIENT_UPDATE_HINT,
   resolveJonesClientUpdateNotice,
 } from "./versionSkew";
 
-describe("Jones preview version skew", () => {
+const older = "0.1.2-preview.20261028.40652016025.1";
+const sources = { clientSourceSha: "a".repeat(40), serverSourceSha: "b".repeat(40) };
+const environment = (serverVersion: string, sha?: string) => ({
+  environment: {
+    environmentId: EnvironmentId.make("environment-version-skew"),
+    label: "VPS",
+    platform: { os: "linux", arch: "x64" } as const,
+    serverVersion,
+    capabilities: { repositoryIdentity: true, serverSelfUpdate: "respawn" as const },
+    ...(sha === undefined
+      ? {}
+      : { jonesSource: { repository: "Jones-Systems/Jones-Code" as const, sha, tree: sha } }),
+  },
+});
+
+describe("Jones preview build ordering", () => {
   it.each([
-    "0.0.45-preview.20261008.37762212791.1",
-    "0.0.45-preview.20261010.38048764252.1",
-    "0.0.45-preview.20261010.38048764253",
-  ])("does not infer source order from preview artifact %s", (serverVersion) => {
-    expect(resolveVersionMismatch(serverVersion)).toBeNull();
-    expect(resolveVersionMismatch(serverVersion, branding.APP_VERSION, "behind")).toMatchObject({
+    [branding.APP_VERSION, older],
+    ["0.1.3-preview.20261001.1.1", "0.1.2-preview.20261029.999.9"],
+    ["0.1.2-preview.20261101.1.1", "0.1.2-preview.20261031.999.9"],
+    ["0.1.2-preview.20261029.10.1", "0.1.2-preview.20261029.9.9"],
+    ["0.1.2-preview.20261029.10.10", "0.1.2-preview.20261029.10.9"],
+  ])("orders %s after %s in both directions", (client, server) => {
+    expect(compareJonesPreviewVersions(client, server)).toBeGreaterThan(0);
+    expect(compareJonesPreviewVersions(server, client)).toBeLessThan(0);
+    expect(resolveJonesClientUpdateNotice(server, client, sources)?.kind).toBe("client-newer");
+    expect(resolveJonesClientUpdateNotice(client, server, sources)).toMatchObject({
+      kind: "server-newer",
+      hint: JONES_CLIENT_UPDATE_HINT,
+    });
+  });
+
+  it("ignores metadata and treats a legacy run as its first attempt", () => {
+    expect(
+      compareJonesPreviewVersions(
+        " 0.1.2-preview.20261029.10+client ",
+        "0.1.2-preview.20261029.10.1+server",
+      ),
+    ).toBe(0);
+  });
+
+  it.each([
+    "dev",
+    "dev-preview.20261029.1",
+    "0.1.2-preview.unqualified",
+    "",
+    "0.1.2-nightly.20261029.1",
+  ])("does not order an unrecognized preview pair containing %s", (version) => {
+    expect(compareJonesPreviewVersions(branding.APP_VERSION, version)).toBeNull();
+    expect(isJonesPreviewBuildPair(branding.APP_VERSION, version)).toBe(false);
+  });
+
+  it("does not turn a build comparison into an unqualified upstream server update", () => {
+    expect(resolveVersionMismatch(older, branding.APP_VERSION)).toBeNull();
+    expect(
+      resolveServerConfigVersionMismatch(environment(older, sources.serverSourceSha)),
+    ).toBeNull();
+    expect(
+      resolveServerConfigClientUpdateNotice(environment(older, sources.serverSourceSha)),
+    ).toMatchObject({
+      kind: "client-newer",
       clientVersion: branding.APP_VERSION,
-      serverVersion,
+      serverVersion: older,
+      clientSourceSha: branding.APP_SOURCE_SHA,
     });
-  });
-
-  it("ignores artifact ordering for a source that is equal, ahead, or unknown", () => {
-    const lowerRun = "0.0.45-preview.20261008.37762212791.1";
-    for (const currency of ["current", "ahead", "unknown", "diverged"] as const) {
-      expect(resolveVersionMismatch(lowerRun, branding.APP_VERSION, currency)).toBeNull();
-    }
-    const higherRun = "0.0.45-preview.20261011.38048764299.2";
-    expect(resolveVersionMismatch(higherRun, branding.APP_VERSION, "behind")).toMatchObject({
-      serverVersion: higherRun,
-    });
-  });
-
-  it.each([
-    "0.0.45-preview.20261010.38048764253.1",
-    "0.0.45-preview.20261010.38048764253.2",
-    "0.0.45-preview.20261010.38048764254.1",
-    "0.0.45-preview.20261011.38048764253.1",
-  ])("does not offer a downgrade for current or newer preview %s", (serverVersion) => {
-    expect(resolveVersionMismatch(serverVersion)).toBeNull();
-  });
-
-  it("keeps stable and upstream nightly channel comparisons unchanged", () => {
-    expect(resolveVersionMismatch("0.0.45")).toBeNull();
-    expect(resolveVersionMismatch("0.0.45-nightly.20261008.2801")).toBeNull();
-    expect(isJonesPreviewBuildPair(branding.APP_VERSION, "0.0.45-preview.unqualified")).toBe(false);
   });
 });
 
-describe("Jones client update notice", () => {
-  const environment = (serverVersion: string, sha?: string) => ({
-    environment: {
-      environmentId: EnvironmentId.make("environment-newer-server"),
-      label: "Remote",
-      platform: { os: "darwin", arch: "arm64" } as const,
-      serverVersion,
-      capabilities: { repositoryIdentity: true },
-      ...(sha === undefined
-        ? {}
-        : { jonesSource: { repository: "Jones-Systems/Jones-Code" as const, sha, tree: sha } }),
-    },
+describe("Jones version notices", () => {
+  it("identifies an older VPS build even without source metadata", () => {
+    expect(resolveJonesClientUpdateNotice(older, branding.APP_VERSION)).toMatchObject({
+      kind: "client-newer",
+      hint: "This app has a newer Jones preview build than this server. Update this server to catch up.",
+    });
   });
+
+  it("uses recorded build time to order a later rebuild of an earlier workflow run", () => {
+    const stamps = {
+      ...sources,
+      clientBuildStartedAt: "2026-10-30T00:43:00Z",
+      serverBuildStartedAt: "2026-10-29T18:36:00Z",
+    };
+    expect(resolveJonesClientUpdateNotice(branding.APP_VERSION, older, stamps)?.kind).toBe(
+      "client-newer",
+    );
+    expect(
+      resolveJonesClientUpdateNotice(older, branding.APP_VERSION, {
+        ...sources,
+        clientBuildStartedAt: stamps.serverBuildStartedAt,
+        serverBuildStartedAt: stamps.clientBuildStartedAt,
+      })?.kind,
+    ).toBe("server-newer");
+  });
+
+  it("orders recorded instants across the repeated Eastern daylight-saving hour", () => {
+    expect(
+      resolveJonesClientUpdateNotice(older, branding.APP_VERSION, {
+        ...sources,
+        clientBuildStartedAt: "2026-11-01T05:59:00Z",
+        serverBuildStartedAt: "2026-11-01T06:01:00Z",
+      })?.kind,
+    ).toBe("server-newer");
+  });
+
+  it.each([undefined, "invalid", "2026-10-28T15:26:00Z"])(
+    "falls back to numeric preview ordering for absent, invalid or tied build times: %s",
+    (serverBuildStartedAt) => {
+      expect(
+        resolveJonesClientUpdateNotice(older, branding.APP_VERSION, {
+          ...sources,
+          clientBuildStartedAt: "2026-10-28T15:26:00Z",
+          serverBuildStartedAt,
+        })?.kind,
+      ).toBe("client-newer");
+    },
+  );
+
+  it("passes build times from the actual server descriptor into the comparison", () => {
+    const config = environment("0.1.2-preview.20261030.999.1", sources.serverSourceSha);
+    expect(
+      resolveServerConfigClientUpdateNotice({
+        environment: { ...config.environment, jonesBuildStartedAt: "2026-10-28T15:26:00Z" },
+      })?.kind,
+    ).toBe("client-newer");
+  });
+
+  it("keeps rebuilds from the same verified source quiet", () => {
+    for (const server of [older, "0.1.2-preview.20261030.999.2"])
+      expect(
+        resolveJonesClientUpdateNotice(server, branding.APP_VERSION, {
+          clientSourceSha: "a".repeat(40),
+          serverSourceSha: "A".repeat(40),
+        }),
+      ).toBeNull();
+  });
+
+  it("reports equal versions with conflicting source identities without choosing an update direction", () => {
+    expect(
+      resolveJonesClientUpdateNotice(branding.APP_VERSION, branding.APP_VERSION, sources),
+    ).toMatchObject({
+      kind: "preview-identity-mismatch",
+      hint: "Client and server report the same Jones preview version but different sources. Check the build identities before updating.",
+    });
+  });
+
+  it.each([undefined, "", "abc", "g".repeat(40), "a".repeat(40), "A".repeat(40)])(
+    "does not report an identity conflict for equal versions and source %s",
+    (serverSourceSha) => {
+      expect(
+        resolveJonesClientUpdateNotice(branding.APP_VERSION, branding.APP_VERSION, {
+          clientSourceSha: "a".repeat(40),
+          serverSourceSha,
+        }),
+      ).toBeNull();
+    },
+  );
 
   it.each([
     ["0.0.46", "0.0.45"],
     ["0.0.46+server", "0.0.45+client"],
     ["0.1.0", "0.0.45-preview.20261010.38048764253.1"],
     ["0.0.45-nightly.20261009.2", "0.0.45-nightly.20261009.1"],
-  ])(
-    "tells the user to update this app when server %s is newer than client %s",
-    (server, client) => {
-      expect(resolveJonesClientUpdateNotice(server, client)).toEqual({
-        clientVersion: client,
-        serverVersion: server,
-        kind: "server-newer",
-        hint: JONES_CLIENT_UPDATE_HINT,
-      });
-    },
-  );
-
-  it("reports unequal preview sources without claiming source order", () => {
-    for (const server of ["0.0.45-preview.20261008.1", "0.0.45-preview.20261011.999"]) {
-      expect(
-        resolveJonesClientUpdateNotice(server, branding.APP_VERSION, {
-          clientSourceSha: "a".repeat(40),
-          serverSourceSha: "b".repeat(40),
-        }),
-      ).toMatchObject({
-        kind: "preview-source-difference",
-        serverVersion: server,
-        hint: "Client and server use different Jones preview sources. Which source is newer is unknown.",
-      });
-    }
+  ])("retains client guidance for newer stable or nightly server %s", (server, client) => {
+    expect(resolveJonesClientUpdateNotice(server, client)).toEqual({
+      clientVersion: client,
+      serverVersion: server,
+      kind: "server-newer",
+      hint: JONES_CLIENT_UPDATE_HINT,
+    });
   });
-
-  it.each([
-    ["0.0.45-preview.20261010.1+client", "0.0.45-preview.20261011.2+server"],
-    ["0.0.45-preview.20261010.1+client", "0.1.0-preview.20261011.2+server"],
-    ["0.1.0-preview.20261010.1+client", "0.0.45-preview.20261011.2+server"],
-    ["0.0.45-preview.20261010.1", "0.1.0-preview.20261011.2+server"],
-  ])(
-    "keeps preview source policy for client %s and server %s with build metadata",
-    (client, server) => {
-      expect(isJonesPreviewBuildPair(client, server)).toBe(true);
-      expect(
-        resolveJonesClientUpdateNotice(server, client, {
-          clientSourceSha: "a".repeat(40),
-          serverSourceSha: "b".repeat(40),
-        }),
-      ).toMatchObject({
-        kind: "preview-source-difference",
-        clientVersion: client,
-        serverVersion: server,
-        hint: "Client and server use different Jones preview sources. Which source is newer is unknown.",
-      });
-      for (const sources of [
-        { clientSourceSha: "a".repeat(40), serverSourceSha: "a".repeat(40) },
-        { clientSourceSha: "a".repeat(40), serverSourceSha: undefined },
-        { clientSourceSha: undefined, serverSourceSha: "b".repeat(40) },
-      ]) {
-        expect(resolveJonesClientUpdateNotice(server, client, sources)).toBeNull();
-      }
-      expect(resolveVersionMismatch(server, client)).toBeNull();
-      expect(resolveVersionMismatch(server, client, "ahead")).toBeNull();
-      expect(resolveVersionMismatch(server, client, "behind")).toMatchObject({
-        clientVersion: client,
-        serverVersion: server,
-        hint: "A newer Jones source is available. Use the qualified update controls for this host.",
-      });
-    },
-  );
-
-  it.each([undefined, "", "abc", "g".repeat(40), "a".repeat(40), "A".repeat(40)])(
-    "keeps equal or invalid preview source %s quiet",
-    (serverSourceSha) => {
-      expect(
-        resolveJonesClientUpdateNotice("0.0.45-preview.20261011.999", branding.APP_VERSION, {
-          clientSourceSha: "a".repeat(40),
-          serverSourceSha,
-        }),
-      ).toBeNull();
-      expect(
-        resolveJonesClientUpdateNotice("0.0.45-preview.20261011.999", branding.APP_VERSION, {
-          clientSourceSha: undefined,
-          serverSourceSha: "b".repeat(40),
-        }),
-      ).toBeNull();
-    },
-  );
 
   it.each([
     ["0.0.45", "0.0.45"],
@@ -170,22 +201,7 @@ describe("Jones client update notice", () => {
     ["dev-preview.20261010.1", "0.0.45-preview.20261010.1"],
     ["0.0.46", "dev"],
     ["", "0.0.45"],
-  ])("does not warn for equal, older, or unordered server %s and client %s", (server, client) => {
+  ])("keeps equal, older or unordered non-preview server %s quiet", (server, client) => {
     expect(resolveJonesClientUpdateNotice(server, client)).toBeNull();
-  });
-
-  it("never offers both a server update and a client update for one pair", () => {
-    expect(resolveServerConfigVersionMismatch(environment("0.0.46"))).toBeNull();
-    expect(resolveServerConfigClientUpdateNotice(environment("0.0.46"))).toMatchObject({
-      serverVersion: "0.0.46",
-      clientVersion: branding.APP_VERSION,
-      hint: JONES_CLIENT_UPDATE_HINT,
-    });
-    expect(resolveServerConfigClientUpdateNotice(environment("0.0.44"))).toBeNull();
-    expect(
-      resolveServerConfigClientUpdateNotice(
-        environment("0.0.45-preview.20261011.38048764299.2", branding.APP_SOURCE_SHA),
-      ),
-    ).toBeNull();
   });
 });
