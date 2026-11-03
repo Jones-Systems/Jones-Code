@@ -470,8 +470,9 @@ it.effect("retires real stale requests overlapping a pending truncate acknowledg
       const { sql, worker, traffic, journal } = fixture;
       const { releasePin } = yield* pinSmallWal(fixture);
       const initial = traffic.next();
-      // Advance the parent's generation while its first real request is queued.
-      yield* sql.unsafe("INSERT INTO pages(payload) VALUES (x'00')").unprepared;
+      // A failed rollback still checks the WAL and advances the generation.
+      // A new mutation would correctly wait behind the held checkpoint traffic.
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(sql.unsafe("ROLLBACK").unprepared)));
       assert.equal(traffic.sendNext(), initial);
       const initialReply = yield* checkpointReply(fixture, initial);
       assert.equal(initialReply.blocked, true);
@@ -480,7 +481,7 @@ it.effect("retires real stale requests overlapping a pending truncate acknowledg
       assert.equal(overlapping.type, "check");
       assert.isAbove(Number(overlapping.id), Number(initial.id));
       assert.isAbove(Number(overlapping.generation), Number(initial.generation));
-      yield* sql.unsafe("INSERT INTO pages(payload) VALUES (x'01')").unprepared;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(sql.unsafe("ROLLBACK").unprepared)));
       const truncate = holdMessage(worker, (message) => message.type === "truncate-request");
       fixture.own(truncate.release);
       releasePin();

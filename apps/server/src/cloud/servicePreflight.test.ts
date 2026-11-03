@@ -41,6 +41,31 @@ it("advertises only the supplied bundled startup gate capability", () => {
   });
 });
 
+it("requires historical-receipt capability only for the additional stage format", () => {
+  const ready = {
+    status: "ready",
+    version: "1.2.3",
+    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+    startupGateProtocol: 1,
+  };
+  const input = { code: 0, stdout: JSON.stringify(ready), version: "1.2.3" };
+  expect(qualifiedServicePreflightFailure(input)).toBeUndefined();
+  expect(
+    qualifiedServicePreflightFailure({ ...input, requiredQualifiedRecoveryProtocol: 1 }),
+  ).toContain("qualified-recovery-unsupported");
+  const supported = { ...ready, qualifiedRecoveryProtocol: 1 };
+  expect(decodeServicePreflightResult(supported)).toEqual(supported);
+  expect(
+    qualifiedServicePreflightFailure({
+      ...input,
+      stdout: JSON.stringify(supported),
+      requiredQualifiedRecoveryProtocol: 1,
+    }),
+  ).toBeUndefined();
+  for (const qualifiedRecoveryProtocol of [null, undefined, 0, 2, "1", true])
+    expect(decodeServicePreflightResult({ ...ready, qualifiedRecoveryProtocol })).toBeUndefined();
+});
+
 it("preserves ordinary preflight without inferring qualified support", () => {
   const ready = { status: "ready", version: "1.2.3", launcherProtocol: SERVICE_LAUNCHER_PROTOCOL };
   expect(decodeServicePreflightResult(ready)).toEqual(ready);

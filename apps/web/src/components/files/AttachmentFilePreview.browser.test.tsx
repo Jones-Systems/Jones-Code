@@ -1,8 +1,9 @@
 import DocumentPages, { sanitizeDocumentHtml } from "./DocumentPages";
 import { act, render, stubGlobal, type Screen } from "../../../test/render";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
-import { describe, expect, it, vi } from "vite-plus/test";
-import { page, userEvent } from "vite-plus/test/browser";
+import { describe, expect, it, onTestFinished, vi } from "vite-plus/test";
+import { commands, page, userEvent } from "vite-plus/test/browser";
+import type { WordWorkerEvidence } from "~/jones/wordCiTrace";
 import "~/index.css";
 
 const { refresh, assetUrlState } = vi.hoisted(() => ({
@@ -31,6 +32,97 @@ import { boundedZip } from "./boundedZip";
 import BinaryViewer from "./BinaryViewer";
 import { decodeImagePreview } from "./decodeImagePreview";
 import type { BinaryWorkerResult } from "./binaryPreviewProtocol";
+
+function observeOfficeViewerWorker(kind: "rtf" | "epub" | "ods", holdOpen = false) {
+  let markOpened!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    markOpened = resolve;
+  });
+  let releaseOpen: (() => void) | undefined;
+  let resolveReply!: (result: OfficeWorkerResult) => void;
+  let rejectReply!: (error: Error) => void;
+  const reply = new Promise<OfficeWorkerResult>((resolve, reject) => {
+    resolveReply = resolve;
+    rejectReply = reject;
+  });
+  const listeners = new AbortController();
+  const opening = new WeakSet<Worker>();
+  const observed = new WeakSet<Worker>();
+  const stub = stubGlobal(
+    "Worker",
+    class extends Worker {
+      constructor(...args: ConstructorParameters<typeof Worker>) {
+        super(...args);
+        if (!new URL(String(args[0]), document.baseURI).pathname.includes("officePreview.worker"))
+          return;
+        observed.add(this);
+        this.addEventListener(
+          "message",
+          (event: MessageEvent<OfficeWorkerResult>) => {
+            if (!opening.has(this)) {
+              rejectReply(new Error("Office viewer replied before its open request"));
+            } else if (event.data.type === "error") {
+              rejectReply(new Error(event.data.message));
+            } else {
+              resolveReply(event.data);
+            }
+          },
+          { once: true, signal: listeners.signal },
+        );
+        this.addEventListener(
+          "error",
+          () => rejectReply(new Error("Office viewer worker failed")),
+          {
+            once: true,
+            signal: listeners.signal,
+          },
+        );
+      }
+      override postMessage(
+        message: unknown,
+        options?: Transferable[] | StructuredSerializeOptions,
+      ) {
+        const forward = () => {
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        };
+        if (
+          observed.has(this) &&
+          typeof message === "object" &&
+          message !== null &&
+          "type" in message &&
+          message.type === "open"
+        ) {
+          if (!("kind" in message) || message.kind !== kind) {
+            rejectReply(new Error("Office viewer opened an unexpected document kind"));
+          }
+          markOpened();
+          const sendOpen = () => {
+            opening.add(this);
+            forward();
+          };
+          if (holdOpen) releaseOpen = sendOpen;
+          else sendOpen();
+          return;
+        }
+        forward();
+      }
+    },
+  );
+  return {
+    reply,
+    opened,
+    release() {
+      if (!releaseOpen) throw new Error("Office viewer has not requested its document yet");
+      releaseOpen();
+      releaseOpen = undefined;
+    },
+    [Symbol.dispose]() {
+      listeners.abort();
+      stub[Symbol.dispose]();
+    },
+  };
+}
 
 function officePreviewState(screen: Screen) {
   const root = screen.container.querySelector<HTMLElement>(
@@ -1882,27 +1974,64 @@ it("keeps spreadsheet dates on their calendar day west of UTC", async () => {
 });
 
 it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (pages) => {
+  const capture: WordWorkerEvidence = { marks: [], disposed: false, capped: false };
+  if (pages === 100) {
+    onTestFinished(async (context) => {
+      Object.assign(context.task.meta, {
+        jonesWordCiTrace: await commands.wordCiTrace("finish", capture),
+      });
+    });
+    await commands.wordCiTrace("start");
+  }
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only clock origin; does not control pass/fail or waits.
+  const testStartedAt = performance.now();
+  // oxlint-disable-next-line t3code/no-wall-clock-in-tests -- Diagnostic-only timestamps correlate browser and worker events; assertions and timeouts remain unchanged.
+  const mainElapsedMs = () => Math.round(performance.now() - testStartedAt);
   const workerTrace: unknown[] = [];
-  const record = (entry: unknown) => {
-    workerTrace.push(entry);
-    if (workerTrace.length > 48) workerTrace.shift();
+  const record = (entry: Record<string, unknown>) => {
+    workerTrace.push({ mainElapsedMs: mainElapsedMs(), ...entry });
+    if (workerTrace.length > 128) workerTrace.shift();
   };
+  using _trace = {
+    [Symbol.dispose]() {
+      capture.disposed = true;
+      console.info("Word CI timing", JSON.stringify({ pages, workerTrace }));
+    },
+  };
+  record({ event: "fixture-start" });
+  const workerNames = new WeakMap<Worker, string>();
+  let workerCount = 0;
   const NativeWorker = Worker;
   using _workers = stubGlobal(
     "Worker",
     class extends NativeWorker {
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options);
-        const name = String(url).split("/").pop();
+        const name = String(++workerCount) + ":" + String(url).split("/").pop();
+        workerNames.set(this, name);
         record({ worker: name, event: "started" });
         this.addEventListener("message", (event) => {
           const data = event.data;
+          if (pages === 100 && data?.type === "jones-word-open-phase") {
+            if (capture.marks.length < 128) {
+              capture.marks.push({
+                worker: name,
+                traceId: data.traceId,
+                mark: data.mark,
+                phase: data.phase,
+              });
+            } else capture.capped = true;
+          }
           record({
             worker: name,
             event: "reply",
             type: data?.type,
             phase: data?.phase,
-            elapsedMs: data?.elapsedMs,
+            traceId: data?.traceId,
+            phaseId: data?.phaseId,
+            mark: data?.mark,
+            workerPerformanceNowMs: data?.elapsedMs,
+            openElapsedMs: data?.openElapsedMs,
             id: data?.id,
             ok: data?.ok,
             pages: data?.value?.pages?.length,
@@ -1912,6 +2041,13 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         this.addEventListener("error", (event) =>
           record({ worker: name, event: "error", message: event.message }),
         );
+        this.addEventListener("messageerror", () =>
+          record({ worker: name, event: "messageerror" }),
+        );
+      }
+      override terminate() {
+        record({ worker: workerNames.get(this), event: "terminated" });
+        super.terminate();
       }
       override postMessage(
         message: unknown,
@@ -1925,7 +2061,13 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
         };
         if (data.method === "open" && data.input)
           message = { ...data, input: { ...data.input, traceOpen: true } };
-        record({ event: "request", method: data.method, type: data.type, id: data.id });
+        record({
+          worker: workerNames.get(this),
+          event: "request",
+          method: data.method,
+          type: data.type,
+          id: data.id,
+        });
         if (Array.isArray(options)) super.postMessage(message, options);
         else super.postMessage(message, options);
       }
@@ -1950,6 +2092,8 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
   // Binary media must not consume the document's markup budget.
   archive.file("word/media/image.png", new Uint8Array(2_500_000));
   const file = await archive.generateAsync({ type: "blob", compression: "DEFLATE" });
+  record({ event: "fixture-ready", bytes: file.size });
+  record({ event: "render-start" });
   await using screen = await render(
     <div style={{ display: "flex", height: 400, width: 600 }}>
       <AttachmentFilePreview
@@ -1960,6 +2104,25 @@ it.each([60, 100])("renders all %i pages of a table-heavy Word report", async (p
       />
     </div>,
   );
+  record({ event: "render-ready" });
+  const prefixDeadlineMainElapsedMs = mainElapsedMs() + 10_000;
+  record({ event: "prefix-wait-start", deadlineMainElapsedMs: prefixDeadlineMainElapsedMs });
+  // Wait for the visible prefix before awaiting full pagination, so engine and
+  // font startup belong to opening. The project timeout still caps the whole test.
+  await vi.waitFor(
+    () =>
+      expect(
+        screen.container.querySelector("[data-office-pages]"),
+        JSON.stringify({
+          viewer: officePreviewState(screen),
+          mainElapsedMs: mainElapsedMs(),
+          prefixDeadlineMainElapsedMs,
+          workerTrace,
+        }),
+      ).not.toBeNull(),
+    { timeout: 10_000 },
+  );
+  record({ event: "visible-prefix-observed" });
   await vi.waitFor(
     () =>
       expect(
@@ -2078,13 +2241,20 @@ it("reloads a workspace Word file after a preview remount", async () => {
 
 it("clears an Office metadata error when the same URL becomes previewable", async () => {
   const src = "data:application/octet-stream,invalid-office-file";
-  let resolveResponse!: (response: Response) => void;
-  const response = new Promise<Response>((resolve) => {
+  const discoveryUrl = new URL("/.well-known/t3/environment", window.location.origin).href;
+  let resolveResponse!: () => void;
+  const response = new Promise<void>((resolve) => {
     resolveResponse = resolve;
   });
   using _fetch = stubGlobal(
     "fetch",
-    vi.fn(() => response),
+    vi.fn<typeof fetch>(async (input) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === discoveryUrl) return new Response(null, { status: 503 });
+      if (url !== src) throw new Error(`Unexpected preview request: ${url}`);
+      await response;
+      return new Response("invalid-office-file");
+    }),
   );
   await using screen = await render(
     <OfficeFilePreview src={src} name="report.docx" kind="docx" sizeBytes={51 * 1024 * 1024} />,
@@ -2097,7 +2267,7 @@ it("clears an Office metadata error when the same URL becomes previewable", asyn
     expect(screen.container.querySelector('[aria-label="Loading file"]')).not.toBeNull(),
   );
   expect(screen.container.textContent).not.toContain("under 50 MB");
-  resolveResponse(new Response("invalid-office-file"));
+  resolveResponse();
   await vi.waitFor(() => expect(screen.container.textContent).toContain("not a readable ZIP"), {
     timeout: 10_000,
   });
@@ -2106,6 +2276,30 @@ it("clears an Office metadata error when the same URL becomes previewable", asyn
 describe("attachment HTML preview recovery", () => {
   const originalUrl = "data:text/html,original";
   const renewedUrl = "data:text/html,renewed";
+  const discoveryUrl = new URL("/.well-known/t3/environment", window.location.origin).href;
+  const discoveryOptions = { method: "GET", credentials: "include" } as const;
+
+  function remoteHtmlFetchRecorder() {
+    const discovery = vi.fn<typeof fetch>(async () => new Response(null, { status: 503 }));
+    const nonDiscovery = vi.fn<typeof fetch>(async () => new Response("<p>Captured HTML</p>"));
+    const fetchStub = vi.fn<typeof fetch>((input, init) => {
+      const request = input instanceof Request ? input : undefined;
+      const url = request?.url ?? String(input);
+      const method = init?.method ?? request?.method ?? "GET";
+      const credentials = init?.credentials ?? request?.credentials;
+      const headers = new Headers(init?.headers ?? request?.headers);
+      if (
+        url === discoveryUrl &&
+        method === "GET" &&
+        credentials === "include" &&
+        !headers.has("Range")
+      ) {
+        return discovery(input, init);
+      }
+      return nonDiscovery(input, init);
+    });
+    return { fetchStub, discovery, nonDiscovery };
+  }
 
   function setup() {
     refresh.mockReset().mockResolvedValueOnce(originalUrl).mockResolvedValue(renewedUrl);
@@ -2134,18 +2328,21 @@ describe("attachment HTML preview recovery", () => {
     setup();
     let now = 0;
     using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
-    using _fetch = stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("<p>Captured HTML</p>")),
-    );
+    const recorder = remoteHtmlFetchRecorder();
+    using _fetch = stubGlobal("fetch", recorder.fetchStub);
     await using screen = await openRemote();
     expect(screen.container.querySelector("iframe")?.getAttribute("src")).toBe(originalUrl);
+    const discoveryCount = recorder.discovery.mock.calls.length;
+    expect((await fetch(discoveryUrl, discoveryOptions)).status).toBe(503);
+    expect(recorder.discovery).toHaveBeenCalledTimes(discoveryCount + 1);
+    expect(recorder.discovery).toHaveBeenLastCalledWith(discoveryUrl, discoveryOptions);
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
     now = 61 * 60_000;
     await toggleMode(screen, "Show HTML source");
     await act(async () => {
       await import("./ReadOnlySourcePreview");
     });
-    expect(fetch).toHaveBeenCalledExactlyOnceWith(renewedUrl, expect.any(Object));
+    expect(recorder.nonDiscovery).toHaveBeenCalledExactlyOnceWith(renewedUrl, expect.any(Object));
     await vi.waitFor(() =>
       expect(screen.container.querySelector("pre")?.textContent).toBe("<p>Captured HTML</p>"),
     );
@@ -2154,28 +2351,31 @@ describe("attachment HTML preview recovery", () => {
     expect(screen.container.querySelector("iframe")?.getAttribute("src")).toBe(renewedUrl);
     await toggleMode(screen, "Show HTML source");
     expect(refresh).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([renewedUrl, renewedUrl]);
+    expect(recorder.nonDiscovery.mock.calls.map(([url]) => url)).toEqual([renewedUrl, renewedUrl]);
   });
 
   it("does not fetch or mark an expired URL fresh when reauthorization is unavailable", async () => {
     setup();
     let now = 0;
     using _now = vi.spyOn(Date, "now").mockImplementation(() => now);
-    using _fetch = stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("<p>Captured HTML</p>")),
-    );
+    const recorder = remoteHtmlFetchRecorder();
+    using _fetch = stubGlobal("fetch", recorder.fetchStub);
     await using screen = await openRemote();
+    const discoveryCount = recorder.discovery.mock.calls.length;
+    expect((await fetch(discoveryUrl, discoveryOptions)).status).toBe(503);
+    expect(recorder.discovery).toHaveBeenCalledTimes(discoveryCount + 1);
+    expect(recorder.discovery).toHaveBeenLastCalledWith(discoveryUrl, discoveryOptions);
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
     now = 61 * 60_000;
     refresh.mockResolvedValue(null);
     await toggleMode(screen, "Show HTML source");
-    expect(fetch).not.toHaveBeenCalled();
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
     expect(alert(screen)?.textContent).toContain("Reconnect to the environment and try again.");
 
     await toggleMode(screen, "Show rendered page");
     await toggleMode(screen, "Show HTML source");
     expect(refresh).toHaveBeenCalledTimes(3);
-    expect(fetch).not.toHaveBeenCalled();
+    expect(recorder.nonDiscovery).not.toHaveBeenCalled();
   });
 
   it("can return to rendered HTML after local source decoding fails", async () => {
@@ -2760,6 +2960,7 @@ it.each(["rtf", "epub", "ods"] as const)(
     } finally {
       worker.terminate();
     }
+    using viewer = observeOfficeViewerWorker(kind, kind === "ods");
     await using screen = await render(
       <div style={{ display: "flex", height: 400, width: 600 }}>
         <AttachmentFilePreview
@@ -2770,6 +2971,13 @@ it.each(["rtf", "epub", "ods"] as const)(
         />
       </div>,
     );
+    if (kind === "ods") {
+      await viewer.opened;
+      expect(screen.container.textContent).not.toContain("North");
+      viewer.release();
+    }
+    const viewerResult = await viewer.reply;
+    expect(viewerResult.type).toBe(kind === "ods" ? "ods" : "document");
     if (kind === "rtf") {
       await vi.waitFor(
         () => expect(screen.container.textContent, officePreviewState(screen)).toContain("1 page"),

@@ -1,23 +1,34 @@
 import {
+  prepareReviewedInstall,
+  type JonesExecutorHost,
+} from "@t3tools/client-runtime/jones/updates/executor";
+import {
+  executeWebJonesAction,
+  unresolvedJonesExecution,
+  executeWebJonesReplacement,
+  reconcileJonesExecution,
+} from "../installStatus/execution";
+import { useJonesExecutionJournal, webJonesJournal } from "../installStatus/executionJournal";
+import { legacyConnectionsGate } from "../installStatus/entrypoints";
+import {
   jonesExactSourceResultError,
   jonesInstallRefusal,
-  jonesUpdateActionError,
   resolveJonesExactSourceAction,
+  resolveJonesAlternativeAction,
+  sameJonesReplacementStep,
   shortJonesSource,
   type JonesAction,
   type JonesExactSourceStep,
   type JonesUpdateObservation,
 } from "@t3tools/client-runtime/jones/updates";
-import {
-  isAtomCommandInterrupted,
-  type AtomCommandResult,
-} from "@t3tools/client-runtime/state/runtime";
+import { type AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type {
+  JonesUpdateAlternative,
   JonesUpdateInstallInput,
   JonesUpdateState,
 } from "@t3tools/contracts/jones/jonesUpdates";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { Button } from "../../components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../../components/ui/tooltip";
 import { randomUUID } from "../../lib/utils";
@@ -31,6 +42,7 @@ export interface ExactSourceHost {
     request: JonesAction,
   ) => Promise<AtomCommandResult<JonesUpdateState | null, unknown>>;
   readonly confirm: (message: string) => Promise<boolean>;
+  readonly executor?: JonesExecutorHost;
 }
 
 interface ExactSourceSnapshot {
@@ -41,8 +53,9 @@ interface ExactSourceSnapshot {
 export interface ExactSourceTarget {
   readonly environmentId: EnvironmentId;
   readonly label: string;
-  /** The verified installed source this action moves a host toward. */
+  /** A verified installed source, or the exact source of the separately captured alternative. */
   readonly targetSource: string;
+  readonly alternative?: JonesUpdateAlternative | undefined;
   /** A laptop target must still come from the same fresh, verified local connection. */
   readonly readTargetSource?: (() => string | undefined) | undefined;
   readonly allowReplace?: boolean | undefined;
@@ -97,14 +110,7 @@ function sameStep(left: JonesExactSourceStep, right: JonesExactSourceStep) {
       left.input.currentVersion === right.input.currentVersion
     );
   if (left.kind === "replace-exact" && right.kind === "replace-exact")
-    return (
-      left.targetSource === right.targetSource &&
-      left.replace.stagedHandle === right.replace.stagedHandle &&
-      left.replace.sourceSha === right.replace.sourceSha &&
-      left.replace.environmentId === right.replace.environmentId &&
-      left.replace.currentVersion === right.replace.currentVersion &&
-      left.replace.expectedInstalledSource === right.replace.expectedInstalledSource
-    );
+    return sameJonesReplacementStep(left, right);
   if (left.kind === "download" && right.kind === "download")
     return left.input.artifactId === right.input.artifactId;
   return true;
@@ -118,6 +124,7 @@ export async function performExactSourceStep({
   environmentId,
   label,
   targetSource,
+  alternative,
   readTargetSource,
   allowReplace,
   allowInstall,
@@ -130,73 +137,148 @@ export async function performExactSourceStep({
   readonly step: JonesExactSourceStep;
   readonly operationId?: string | undefined;
   readonly unresolvedInstall?: UnresolvedInstall | undefined;
-  readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm">;
+  readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm" | "executor">;
 }): Promise<ExactSourceOutcome> {
-  const short = shortJonesSource(targetSource);
-  if (step.kind === "install") {
-    const confirmed = await host.confirm(
-      `Install source ${short} on ${label}? The host restarts to apply it and disconnects briefly.`,
-    );
-    if (!confirmed) return { kind: "cancelled" };
-  } else if (step.kind === "replace-exact") {
-    const confirmed = await host.confirm(
-      `Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on ${label} with ${short}? The old download is retired; its files are retained. Nothing installs until you choose Install.`,
-    );
-    if (!confirmed) return { kind: "cancelled" };
+  if (alternative !== undefined && alternative.provenance.sourceSha !== targetSource)
+    return {
+      kind: "refused",
+      message: "The captured alternative target changed. Nothing was sent.",
+    };
+  try {
+    await webJonesJournal.load();
+  } catch {
+    return { kind: "refused", message: "Update request history is unavailable. Nothing was sent." };
   }
+  if (unresolvedJonesExecution(environmentId) !== undefined)
+    return {
+      kind: "refused",
+      message:
+        "The previous request is not confirmed. Read its exact receipt before another action.",
+    };
   if (readTargetSource !== undefined && readTargetSource() !== targetSource)
     return {
       kind: "refused",
-      message:
-        "Nothing was sent: the laptop's verified installed build changed or is unavailable. Review its current build and try again.",
+      message: "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
     };
-  const latest = host.readLatest();
-  const fresh = resolveJonesExactSourceAction({
-    environmentId,
-    ...latest,
-    targetSource,
-    allowReplace,
-    allowInstall,
-    subject,
-    unresolvedInstall,
-  });
-  if (fresh.status !== "ready")
-    return { kind: "refused", message: `Nothing was sent. ${fresh.message}` };
-  if (!sameStep(step, fresh.step))
+  if (step.kind === "replace-exact") {
+    if (
+      !(await host.confirm(
+        `Replace downloaded source ${shortJonesSource(step.replace.sourceSha)} on ${label} with ${shortJonesSource(targetSource)}? The old download is retired; its files are retained. Nothing installs until you choose Install.`,
+      ))
+    )
+      return { kind: "cancelled" };
+    const fresh =
+      alternative === undefined
+        ? resolveJonesExactSourceAction({
+            environmentId,
+            ...host.readLatest(),
+            targetSource,
+            allowReplace,
+            allowInstall,
+            subject,
+            unresolvedInstall,
+          })
+        : resolveJonesAlternativeAction({ environmentId, ...host.readLatest(), alternative });
+    if (readTargetSource !== undefined && readTargetSource() !== targetSource)
+      return {
+        kind: "refused",
+        message:
+          "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
+      };
+    if (fresh.status !== "ready" || !sameStep(step, fresh.step))
+      return {
+        kind: "refused",
+        message: `Nothing was sent: ${label} changed while this was pending.`,
+      };
+    const gate = await legacyConnectionsGate(targetSource);
+    if (gate !== null) return { kind: "refused", message: gate };
+    const reply: { value: Awaited<ReturnType<ExactSourceHost["run"]>> | null } = { value: null };
+    const acknowledged = await executeWebJonesReplacement({
+      environmentId,
+      operationId,
+      targetSource,
+      stagedHandle: step.replace.stagedHandle,
+      host,
+      send: async () => {
+        reply.value = await host.run(request(fresh.step, operationId));
+        return reply.value._tag === "Success" && reply.value.value !== null;
+      },
+    });
+    const result = reply.value;
+    if (!acknowledged || result === null || result._tag === "Failure") {
+      const message =
+        "The replacement request may have been accepted. Its effect is unknown. Read the exact outcome; nothing is resent automatically.";
+      return { kind: "failed", message };
+    }
+    const problem = jonesExactSourceResultError(fresh.step, result, targetSource);
+    return problem === null
+      ? {
+          kind: "done",
+          message: `Source ${shortJonesSource(targetSource)} replacement requested on ${label}.`,
+        }
+      : { kind: "refused", message: problem };
+  }
+  const executor: JonesExecutorHost = host.executor ?? {
+    readLatest: host.readLatest,
+    confirm: host.confirm,
+    legacy: async (input) => {
+      const result = await host.run(input);
+      if (result._tag !== "Success") throw new Error("Request not confirmed.");
+      return result.value;
+    },
+    start: async () => {
+      throw new Error("This control has no durable operation transport.");
+    },
+  };
+  const reviewed =
+    step.kind === "install"
+      ? await prepareReviewedInstall({
+          environmentId,
+          targetSource,
+          label,
+          host: executor,
+          now: Date.now,
+        })
+      : undefined;
+  if (reviewed?.kind === "refused")
+    return reviewed.code === "cancelled"
+      ? { kind: "cancelled" }
+      : { kind: "refused", message: reviewed.message };
+  if (readTargetSource !== undefined && readTargetSource() !== targetSource)
     return {
       kind: "refused",
-      message: `Nothing was sent: ${label} changed while this was pending. Review the notice and try again.`,
+      message: "Nothing was sent: the laptop's verified installed build changed or is unavailable.",
     };
-  const result = await host.run(request(fresh.step, operationId)).catch(() => null);
-  if (result === null || result._tag === "Failure") {
-    if (result !== null && isAtomCommandInterrupted(result)) return { kind: "cancelled" };
-    if (fresh.step.kind !== "install")
-      return {
-        kind: "failed",
-        message:
-          fresh.step.kind === "replace-exact"
-            ? "The replacement request was sent but no response arrived. Its effect is unknown. Check the host's current status before trying again; nothing is resent automatically."
-            : "The download request did not finish. Check the host's status and try again.",
-      };
+  const action =
+    reviewed?.kind === "ready"
+      ? reviewed.action
+      : step.kind === "download-exact"
+        ? { kind: "download-exact" as const, targetSource: step.targetSource }
+        : step.kind === "download"
+          ? { kind: "download" as const, ...step.input }
+          : undefined;
+  if (action === undefined)
+    return { kind: "refused", message: "Review the downloaded build again." };
+  const result = await executeWebJonesAction({
+    environmentId,
+    targetSource,
+    action,
+    operationId,
+    host: executor,
+    ...(reviewed?.kind === "ready" ? { review: reviewed.review } : {}),
+  });
+  if (result.kind === "unknown")
     return {
       kind: "unknown",
-      message:
-        "The install request was sent but no response arrived. The host may be restarting; its reported outcome will appear here and the request will not be sent again.",
+      message: result.message,
       unresolvedInstall: {
-        stagedHandle: fresh.step.input.stagedHandle,
-        revision: latest.observation.state?.revision,
+        stagedHandle: step.kind === "install" ? step.input.stagedHandle : operationId,
+        revision: host.readLatest().observation.state?.revision,
       },
     };
-  }
-  const problem = jonesExactSourceResultError(fresh.step, result, targetSource);
-  if (problem !== null) return { kind: "refused", message: problem };
-  return {
-    kind: "done",
-    message:
-      fresh.step.kind === "install"
-        ? `Install requested on ${label}. Waiting for the host to restart and report the outcome.`
-        : `Source ${short} download requested on ${label}.`,
-  };
+  return result.kind === "accepted"
+    ? { kind: "done", message: result.message }
+    : { kind: "refused", message: result.message };
 }
 
 /** Confirms a Connections install and revalidates its host binding before sending. */
@@ -207,19 +289,23 @@ export async function performConfirmedInstall({
 }: {
   readonly input: JonesUpdateInstallInput;
   readonly label: string;
-  readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm">;
+  readonly host: Pick<ExactSourceHost, "readLatest" | "run" | "confirm" | "executor">;
 }): Promise<string | null> {
-  if (
-    !(await host.confirm(
-      `Install the downloaded build on ${label}? The host restarts and disconnects briefly.`,
-    ))
-  )
-    return null;
   const latest = host.readLatest();
+  const source = latest.observation.state?.provenance?.sourceSha;
   const refusal = jonesInstallRefusal(input, latest.observation);
-  if (refusal !== undefined || !latest.canOperate)
-    return `Nothing was sent. ${refusal ?? "Your session can no longer change updates on this host."}`;
-  return jonesUpdateActionError(await host.run({ action: "install", input }));
+  if (refusal !== undefined || !latest.canOperate || source === undefined)
+    return `Nothing was sent. ${refusal ?? "Fresh downloaded source and permission are required."}`;
+  const outcome = await performExactSourceStep({
+    environmentId: input.environmentId,
+    label,
+    targetSource: source,
+    step: { kind: "install", input },
+    host,
+  });
+  return outcome.kind === "cancelled" || outcome.kind === "done"
+    ? null
+    : `Nothing was sent or confirmed. ${outcome.message}`;
 }
 
 type Report = { readonly tone: "error" | "info"; readonly text: string };
@@ -246,6 +332,7 @@ export function ExactSourceUpdateAction({
   environmentId,
   label,
   targetSource,
+  alternative,
   readTargetSource,
   allowReplace = false,
   allowInstall = true,
@@ -254,24 +341,38 @@ export function ExactSourceUpdateAction({
   compact = false,
   host,
 }: ExactSourceTarget & { readonly host: ExactSourceHost }) {
+  const journal = useJonesExecutionJournal();
+  const observedReceipt = host.snapshot.observation.state?.operation;
+  const observedFreshness = host.snapshot.observation.freshness;
+  // oxlint-disable-next-line t3code/react-effect-budget -- A fresh exact receipt can settle only its persisted duty; rendering and source changes grant no settlement authority.
+  useEffect(() => {
+    if (observedFreshness === "fresh" && observedReceipt !== undefined)
+      void reconcileJonesExecution(environmentId, observedReceipt).catch(() => undefined);
+  }, [environmentId, observedFreshness, observedReceipt]);
   const [working, setWorking] = useState<"download" | "install" | null>(null);
   const [report, setReport] = useState<Report | null>(null);
-  const [unresolvedInstall, setUnresolvedInstall] = useState<UnresolvedInstall | undefined>();
   const inFlight = useRef(false);
   const replacementIds = useRef(new Map<string, string>());
-  const decision = resolveJonesExactSourceAction({
-    environmentId,
-    ...host.snapshot,
-    targetSource,
-    allowReplace,
-    allowInstall,
-    subject,
-    unresolvedInstall,
-  });
+  const decision =
+    alternative === undefined
+      ? resolveJonesExactSourceAction({
+          environmentId,
+          ...host.snapshot,
+          targetSource,
+          allowReplace,
+          allowInstall,
+          subject,
+        })
+      : resolveJonesAlternativeAction({ environmentId, ...host.snapshot, alternative });
   const short = shortJonesSource(targetSource);
 
+  const unresolved = unresolvedJonesExecution(
+    environmentId,
+    host.snapshot.observation.state?.operation,
+    journal,
+  );
   const start = async () => {
-    if (decision.status !== "ready" || inFlight.current) return;
+    if (unresolved !== undefined || decision.status !== "ready" || inFlight.current) return;
     const step = decision.step;
     let operationId: string | undefined;
     if (step.kind === "replace-exact") {
@@ -288,17 +389,17 @@ export function ExactSourceUpdateAction({
           environmentId,
           label,
           targetSource,
+          alternative,
           readTargetSource,
           allowReplace,
           allowInstall,
           subject,
           operationId,
           step,
-          unresolvedInstall,
           host,
         });
-        // An unknown install is explained by the resolver's "reconciling" state until the host moves.
-        if (outcome.kind === "unknown") setUnresolvedInstall(outcome.unresolvedInstall);
+        // Unknown work is also retained outside the notice, independent of target and revision.
+        if (outcome.kind === "unknown") setReport({ tone: "info", text: outcome.message });
         else if (outcome.kind === "done") setReport({ tone: "info", text: outcome.message });
         else if (outcome.kind !== "cancelled") setReport({ tone: "error", text: outcome.message });
       },
@@ -312,11 +413,13 @@ export function ExactSourceUpdateAction({
   const status =
     working !== null
       ? null
-      : report?.tone === "error"
-        ? report
-        : decision.status === "unavailable"
-          ? ({ tone: "info", text: decision.message } as const)
-          : report;
+      : unresolved !== undefined
+        ? { tone: "info" as const, text: unresolved.message }
+        : report?.tone === "error"
+          ? report
+          : decision.status === "unavailable"
+            ? ({ tone: "info", text: decision.message } as const)
+            : report;
   return (
     <>
       {status && (!compact || report !== null) ? (
@@ -324,8 +427,8 @@ export function ExactSourceUpdateAction({
           role="status"
           className={
             status.tone === "error"
-              ? "max-w-72 text-end text-destructive text-xs"
-              : "max-w-72 text-end text-muted-foreground text-xs"
+              ? "col-span-full max-w-72 text-end text-destructive text-xs"
+              : "col-span-full max-w-72 text-end text-muted-foreground text-xs"
           }
         >
           {status.text}
@@ -334,11 +437,13 @@ export function ExactSourceUpdateAction({
       {working !== null || decision.status === "ready" || buttonLabel !== undefined ? (
         <ExactActionButton
           reason={
-            working !== null
-              ? "An update request is in progress."
-              : decision.status === "unavailable"
-                ? decision.message
-                : undefined
+            unresolved !== undefined
+              ? unresolved.message
+              : working !== null
+                ? "An update request is in progress."
+                : decision.status === "unavailable"
+                  ? decision.message
+                  : undefined
           }
           onClick={() => void start()}
           label={
@@ -372,19 +477,42 @@ function ExactActionButton({
   return (
     <Tooltip disabled={reason === undefined}>
       <TooltipTrigger
-        render={
+        onClick={() => {
+          if (reason === undefined) onClick();
+        }}
+        render={(triggerProps) => (
           <Button
+            {...triggerProps}
             size="xs"
             variant="outline"
-            aria-disabled={reason === undefined ? undefined : true}
-            aria-describedby={reason === undefined ? undefined : reasonId}
-            onClick={() => {
-              if (reason === undefined) onClick();
-            }}
-          >
-            {label}
-          </Button>
-        }
+            render={(buttonProps) => (
+              <button
+                {...buttonProps}
+                type="button"
+                disabled={false}
+                tabIndex={0}
+                aria-disabled={reason === undefined ? undefined : true}
+                aria-describedby={reason === undefined ? undefined : reasonId}
+                onClick={(event) => {
+                  if (reason !== undefined) {
+                    event.preventDefault();
+                    return;
+                  }
+                  buttonProps.onClick?.(event);
+                }}
+                onKeyDown={(event) => {
+                  if (reason !== undefined && (event.key === "Enter" || event.key === " ")) {
+                    event.preventDefault();
+                    return;
+                  }
+                  buttonProps.onKeyDown?.(event);
+                }}
+              >
+                {label}
+              </button>
+            )}
+          />
+        )}
       />
       <TooltipPopup side="top" role="tooltip" id={reasonId}>
         {reason}

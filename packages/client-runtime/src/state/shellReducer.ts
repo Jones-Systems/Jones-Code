@@ -5,8 +5,13 @@ import {
   type OrchestrationProjectShell,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ShellStreamItem,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
+import {
+  applyThreadRefresh,
+  isThreadReplayBehindRefresh,
+} from "../jones/threadResultDependencies/shellRefresh.ts";
 
 const sameThreadShell = Schema.toEquivalence(OrchestrationV2ThreadShell);
 const sameLinks = Schema.toEquivalence(Schema.UndefinedOr(Schema.Array(ThreadPullRequestLink)));
@@ -134,8 +139,16 @@ export function applyShellStreamEvent(
     OrchestrationV2ShellStreamItem,
     { readonly kind: "snapshot" } | { readonly kind: "synchronized" }
   >,
+  removedAt?: ReadonlyMap<ThreadId, number>,
+  refreshedAt?: ReadonlyMap<ThreadId, number>,
 ): OrchestrationV2ShellSnapshot {
+  if (event.kind === "thread.refreshed" || event.kind === "thread.omitted") {
+    return applyThreadRefresh(snapshot, event, removedAt, refreshedAt);
+  }
   if (event.sequence <= snapshot.snapshotSequence) return snapshot;
+  if (isThreadReplayBehindRefresh(event, refreshedAt)) {
+    return { ...snapshot, snapshotSequence: event.sequence };
+  }
 
   switch (event.kind) {
     case "project.updated": {

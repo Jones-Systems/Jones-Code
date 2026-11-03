@@ -28,6 +28,9 @@ import {
   observeJonesUpdateSnapshot,
   observeJonesUpdateState,
   resolveJonesExactSourceAction,
+  resolveJonesAlternativeAction,
+  sameJonesReplacementStep,
+  jonesAlternativePresentation,
   type JonesExactSourceInput,
   type JonesUpdateObservation,
 } from "./jonesUpdates.ts";
@@ -35,6 +38,7 @@ import { EnvironmentRegistry } from "../../connection/registry.ts";
 import { EnvironmentSupervisor } from "../../connection/supervisor.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
+  PrimaryConnectionTarget,
   RelayConnectionTarget,
   type PreparedConnection,
 } from "../../connection/model.ts";
@@ -549,6 +553,108 @@ const offered: JonesUpdateProvenance = {
   version: "0.0.45-preview.20261011.2.1",
 };
 
+describe("generic alternative selection", () => {
+  const environmentId = EnvironmentId.make("generic-alternative-host");
+  const offer = {
+    provenance: { ...offered, sourceSha: "f".repeat(40), artifactId: 5 },
+    checkedAt: "2026-10-29T00:00:00Z",
+    expiresAt: "2099-01-01T00:00:00Z",
+  };
+  const state: JonesUpdateState = {
+    ...staged,
+    environmentId,
+    currentVersion: "installed",
+    installedSource: {
+      repository: "Jones-Systems/Jones-Code",
+      sha: "a".repeat(40),
+      tree: "c".repeat(40),
+    },
+    provenance: offered,
+    capability: {
+      check: true,
+      download: true,
+      install: true,
+      exactSource: true,
+      replaceStaged: true,
+    },
+    alternativeCandidate: offer,
+    migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+  };
+  const resolve = (
+    patch: Partial<JonesUpdateState> = {},
+    freshness: JonesUpdateObservation["freshness"] = "fresh",
+  ) =>
+    resolveJonesAlternativeAction({
+      environmentId,
+      observation: { state: { ...state, ...patch }, freshness },
+      canOperate: true,
+      alternative: offer,
+    });
+
+  it("captures the installed binding, retained handle/source and distinct exact target without offering Install", () => {
+    const decision = resolve();
+    expect(decision).toEqual({
+      status: "ready",
+      step: {
+        kind: "replace-exact",
+        targetSource: offer.provenance.sourceSha,
+        replace: {
+          stagedHandle: "fixed-stage",
+          sourceSha: offered.sourceSha,
+          environmentId,
+          currentVersion: "installed",
+          expectedInstalledSource: "a".repeat(40),
+          alternative: offer,
+        },
+      },
+    });
+    expect(jonesAlternativePresentation(state)).toEqual({
+      label: "Alternative",
+      version: offered.version,
+      buildStartedAt: undefined,
+      sourceSha: offer.provenance.sourceSha,
+    });
+    const changed = resolve({ stagedHandle: "competing-client-stage" });
+    expect(
+      decision.status === "ready" &&
+        changed.status === "ready" &&
+        sameJonesReplacementStep(decision.step, changed.step),
+    ).toBe(false);
+  });
+
+  it("refuses stale, absent, changed and expired offers, follower policy and unsupported hosts", () => {
+    for (const patch of [
+      { alternativeCandidate: { ...offer, provenance: { ...offer.provenance, artifactId: 99 } } },
+      { alternativeCandidate: { ...offer, expiresAt: "2000-01-01T00:00:00Z" } },
+      { environmentId: EnvironmentId.make("other") },
+      { policy: { role: "follower", leaderSource: offer.provenance.sourceSha } },
+      { capability: { check: true, download: true, install: true, exactSource: true } },
+      { phase: "preparing" },
+      { phase: "installing" },
+    ] satisfies Array<Partial<JonesUpdateState>>)
+      expect(resolve(patch).status).toBe("unavailable");
+    const { alternativeCandidate: _offer, ...withoutOffer } = state;
+    const { stagedHandle: _handle, ...withoutStage } = state;
+    const { installedSource: _source, ...withoutInstalled } = state;
+    for (const missing of [withoutOffer, withoutStage, withoutInstalled])
+      expect(
+        resolveJonesAlternativeAction({
+          environmentId,
+          observation: { state: missing, freshness: "fresh" },
+          canOperate: true,
+        }).status,
+      ).toBe("unavailable");
+    expect(resolve({}, "stale").status).toBe("unavailable");
+    expect(
+      resolveJonesAlternativeAction({
+        environmentId,
+        observation: { state, freshness: "fresh" },
+        canOperate: false,
+      }).status,
+    ).toBe("unavailable");
+  });
+});
+
 it("presents an offered build's version before download and leaves an older host's absent", () => {
   const { stagedHandle: _handle, ...unstaged } = staged;
   const available = { ...unstaged, phase: "available" as const };
@@ -1027,3 +1133,157 @@ it("presents same-minute outcomes with exact-version stamps without changing ide
     }).outcomeMessage,
   ).toBe(`Blocked: ${fromVersion}0 → ${targetVersion}0`);
 });
+
+it.effect(
+  "Stop bypasses a long operation request while later operation reads remain serialized",
+  () =>
+    Effect.gen(function* () {
+      const environmentId = EnvironmentId.make("operation-lanes");
+      const target = new PrimaryConnectionTarget({
+        environmentId,
+        label: "Synthetic primary",
+        httpBaseUrl: "http://updates.example.test",
+        wsBaseUrl: "ws://updates.example.test/ws",
+      });
+      const prepared: PreparedConnection = {
+        environmentId,
+        label: target.label,
+        target,
+        httpBaseUrl: "http://updates.example.test",
+        socketUrl: "ws://updates.example.test/ws",
+        httpAuthorization: null,
+      };
+      const supervisor = EnvironmentSupervisor.of({
+        target,
+        state: yield* SubscriptionRef.make(AVAILABLE_CONNECTION_STATE),
+        session: yield* SubscriptionRef.make<Option.Option<RpcSession.RpcSession>>(Option.none()),
+        prepared: yield* SubscriptionRef.make(Option.some(prepared)),
+        connect: Effect.void,
+        disconnect: Effect.void,
+        retryNow: Effect.void,
+      });
+      const run: EnvironmentRegistry["Service"]["run"] = (_id, effect) =>
+        Effect.provideService(effect, EnvironmentSupervisor, supervisor);
+      const environmentRegistry = EnvironmentRegistry.of({
+        run,
+      } as unknown as EnvironmentRegistry["Service"]);
+      const entered = yield* Deferred.make<void>();
+      let release = () => {};
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const calls: string[] = [];
+      const payloads: unknown[] = [];
+      const operationId = "11111111-1111-4111-8111-111111111111";
+      const stopId = "22222222-2222-4222-8222-222222222222";
+      const input = {
+        operationId,
+        environmentId,
+        expectedInstalledSource: "a".repeat(40),
+        action: { kind: "download-exact" as const, targetSource: "b".repeat(40) },
+      };
+      const stopInput = { environmentId, operationId, stopId };
+      const readInput = { environmentId, operationIds: [operationId] };
+      const receipt = {
+        ...input,
+        protocol: 1,
+        phase: "accepted",
+        acceptedAt: "2026-10-27T05:00:00Z",
+        updatedAt: "2026-10-27T05:00:00Z",
+      };
+      const stopReceipt = {
+        ...receipt,
+        phase: "stop-requested",
+        stop: { stopId, requestedAt: receipt.updatedAt },
+      };
+      const fetchFn: typeof fetch = async (request, init) => {
+        const path = new URL(String(request)).pathname;
+        calls.push(path);
+        expect(init?.credentials).toBe("include");
+        if (path.includes("/operations/")) payloads.push(JSON.parse(String(init?.body)));
+        if (path.endsWith("/operations/start")) {
+          Deferred.doneUnsafe(entered, Effect.void);
+          await released;
+          return Response.json(receipt);
+        }
+        if (path.endsWith("/operations/stop")) return Response.json(stopReceipt);
+        if (path.endsWith("/operations/read"))
+          return Response.json({ receipts: [{ operationId, receipt }] });
+        return Response.json(staged);
+      };
+      const runtime = Atom.runtime(
+        Layer.mergeAll(
+          Layer.succeed(EnvironmentRegistry, environmentRegistry),
+          layerRemoteHttpClient(fetchFn),
+        ),
+      );
+      const registry = AtomRegistry.make();
+      const pending: Array<Promise<unknown>> = [];
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          release();
+          try {
+            await Promise.allSettled(pending);
+          } finally {
+            registry.dispose();
+          }
+        }),
+      );
+      const updates = createJonesUpdateAtoms(runtime);
+      const started = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationStart", input },
+      });
+      pending.push(started);
+      yield* Effect.raceFirst(
+        Deferred.await(entered),
+        Effect.promise(() => started).pipe(
+          Effect.flatMap((result) =>
+            Effect.die(
+              new Error("operationStart settled before entering the held fetch", { cause: result }),
+            ),
+          ),
+        ),
+      );
+      const read = updates.operation.run(registry, {
+        environmentId,
+        input: { action: "operationRead", input: readInput },
+      });
+      pending.push(read);
+      const stopped = updates.stop.run(registry, {
+        environmentId,
+        input: { action: "operationStop", input: stopInput },
+      });
+      pending.push(stopped);
+      expect(yield* Effect.promise(() => stopped)).toMatchObject({
+        _tag: "Success",
+        value: stopReceipt,
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+      ]);
+      const checked = updates.action.run(registry, { environmentId, input: { action: "check" } });
+      pending.push(checked);
+      expect(yield* Effect.promise(() => checked)).toMatchObject({
+        _tag: "Success",
+        value: staged,
+      });
+      release();
+      expect(yield* Effect.promise(() => started)).toMatchObject({
+        _tag: "Success",
+        value: receipt,
+      });
+      expect(yield* Effect.promise(() => read)).toMatchObject({
+        _tag: "Success",
+        value: { receipts: [{ operationId, receipt }] },
+      });
+      expect(calls).toEqual([
+        "/api/jones-updates/operations/start",
+        "/api/jones-updates/operations/stop",
+        "/api/jones-updates/check",
+        "/api/jones-updates/operations/read",
+      ]);
+      expect(payloads).toEqual([input, stopInput, readInput]);
+    }).pipe(Effect.scoped),
+);

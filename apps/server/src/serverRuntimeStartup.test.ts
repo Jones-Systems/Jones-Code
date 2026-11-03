@@ -30,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
 import * as ServerConfig from "./config.ts";
+import { resolveServerParallelismProfile } from "./jones/serverParallelism/config.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
@@ -173,6 +174,7 @@ it.effect.each([
           devAllowedOrigins: [],
           desktopBootstrapToken: undefined,
           logWebSocketEvents: false,
+          serverParallelism: resolveServerParallelismProfile(undefined),
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
           mode: "web",

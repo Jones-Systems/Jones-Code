@@ -54,6 +54,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { getServerOwners } from "./telemetry/Identify.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as JonesTrialStartup from "./jones/updates/trialStartup.ts";
+import { startLauncherHandoff } from "./jones/updates/launcherHandoff.ts";
 import {
   logStartupPairingIssued,
   maybeOpenBrowser as maybeOpenJonesBrowser,
@@ -782,6 +783,8 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     );
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;
+    yield* launcher.markRuntimeReady ?? Effect.void;
+    yield* startLauncherHandoff(launcher);
   }).pipe(
     Effect.withSpan("server.startup", {
       kind: "server",

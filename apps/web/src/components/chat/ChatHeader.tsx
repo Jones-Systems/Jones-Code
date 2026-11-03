@@ -1,4 +1,5 @@
 import { MachineRouteBadge } from "../../jones/remoteAgentLineage/MachineIdentity";
+import { useHeaderControlsClearance } from "../../jones/hostStatus/useHeaderControlsClearance";
 import { GlobalHostStatusIndicators } from "../../jones/hostStatus/GlobalHostStatusIndicators";
 import {
   AuthOrchestrationOperateScope,
@@ -38,7 +39,6 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { observeResize } from "~/lib/observeResize";
-import { cn } from "~/lib/utils";
 import { textDirection } from "~/textDirection";
 import { useClientSettings } from "../../hooks/useSettings";
 import { GuestShareIndicator } from "./GuestShareControls";
@@ -57,6 +57,7 @@ interface ChatHeaderProps {
   } | null;
   onOpenThread: (threadId: ThreadId) => void;
   rightPanelOpen: boolean;
+  titlebarControlsElement: HTMLDivElement | null;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
 }
@@ -82,6 +83,7 @@ export const ChatHeader = memo(function ChatHeader({
   parentThreadLink,
   onOpenThread,
   rightPanelOpen,
+  titlebarControlsElement,
   onNewThreadInProject,
   onOpenProjectSettings,
 }: ChatHeaderProps) {
@@ -89,6 +91,11 @@ export const ChatHeader = memo(function ChatHeader({
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
   const breadcrumbContainerRef = useRef<HTMLDivElement>(null);
+  const controlsClearance = useHeaderControlsClearance(
+    breadcrumbContainerRef,
+    titlebarControlsElement,
+    rightPanelOpen ? 40 : 0,
+  );
   const [collapseParentTitle, setCollapseParentTitle] = useState(false);
   const activeThreadRef = scopeThreadRef(activeThreadEnvironmentId, activeThreadId);
   const canOperateThread = useEnvironmentScope(
@@ -277,10 +284,8 @@ export const ChatHeader = memo(function ChatHeader({
   return (
     <div
       ref={breadcrumbContainerRef}
-      className={cn(
-        "flex min-w-0 flex-1 items-center gap-2 sm:gap-3",
-        rightPanelOpen ? "pr-10" : "pr-24",
-      )}
+      className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3"
+      style={{ paddingInlineEnd: controlsClearance }}
       onContextMenu={handleHeaderContextMenu}
     >
       <WorkspaceBreadcrumb

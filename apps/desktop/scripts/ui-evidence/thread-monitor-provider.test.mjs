@@ -88,6 +88,35 @@ function peer() {
   };
 }
 NodeTest.test(
+  "overlapping approval resolves independently and leaves the exact input callback pending",
+  () => {
+    const p = peer();
+    p.start(fixture.overlap);
+    const input = p.request();
+    NodeAssert.equal(input.params.isBlocking, false);
+    p.protocol.startApproval();
+    const approval = p.request();
+    NodeAssert.equal(approval.params.startedAtMs, 1700000000000);
+    NodeAssert.notEqual(input.id, approval.id);
+    p.respond({ decision: "accept" });
+    NodeAssert.equal(p.ledger.filter((e) => e.event === "completed").length, 0);
+    p.protocol.handle({
+      id: input.id,
+      result: {
+        answers: {
+          route: { answers: ["Isolated route"] },
+          note: { answers: [fixture.custom] },
+        },
+      },
+    });
+    NodeAssert.equal(p.ledger.filter((e) => e.event === "completed").length, 1);
+    NodeAssert.deepEqual(
+      p.ledger.filter((e) => e.event === "response").map((e) => e.rpcId),
+      [approval.id, input.id],
+    );
+  },
+);
+NodeTest.test(
   "only the bound private namespace admits installation, before any scratch mutation",
   async () => {
     await NodeAssert.rejects(

@@ -380,7 +380,6 @@ export const pinSmallWal = Effect.fn("sqliteWriterAdmission.pinSmallWal")(functi
   fixture: Fixture,
 ) {
   const { sql, filename } = fixture;
-  yield* sql.unsafe("PRAGMA journal_size_limit = 1").unprepared;
   yield* sql.unsafe("CREATE TABLE entries(value INTEGER PRIMARY KEY)").unprepared;
   yield* sql.unsafe("CREATE TABLE pages(payload BLOB)").unprepared;
   const reader = yield* Effect.acquireRelease(
@@ -398,10 +397,18 @@ export const pinSmallWal = Effect.fn("sqliteWriterAdmission.pinSmallWal")(functi
   reader.exec("BEGIN");
   pinned = true;
   reader.prepare("SELECT COUNT(*) FROM entries").get();
-  yield* sql.unsafe(`
-    WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
-    INSERT INTO pages(payload) SELECT randomblob(4000) FROM n
-  `).unprepared;
+  // Checkpoint traffic is held by this fixture. Build the pinned WAL in one
+  // transaction so the one-byte limit cannot gate a setup write before the
+  // intended large-WAL checkpoint request is available to the test.
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      yield* sql.unsafe("PRAGMA journal_size_limit = 1").unprepared;
+      yield* sql.unsafe(`
+        WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 1200)
+        INSERT INTO pages(payload) SELECT randomblob(4000) FROM n
+      `).unprepared;
+    }),
+  );
   return { releasePin };
 });
 

@@ -18,8 +18,10 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Environment from "../../environment/ServerEnvironment.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { authorize, assertedBy, type LinkActor } from "./authorization.ts";
 import { linkedThreadIdentity, sameEndpoint } from "./identity.ts";
 import * as Repository from "./repository.ts";
@@ -29,7 +31,10 @@ const encodeEndpointKey = Schema.encodeSync(
 );
 const encodeHandoff = Schema.encodeSync(Schema.fromJsonString(LinkedThreadHandoff));
 const isLinkedThreadsError = Schema.is(LinkedThreadsError);
-type ServiceRequirements = SqlClient.SqlClient | Threads.ThreadManagementService;
+type ServiceRequirements =
+  | SqlClient.SqlClient
+  | Threads.ThreadManagementService
+  | ProjectionStore.ProjectionStoreV2;
 
 type LinkInput = LinkThreadsInput & {
   readonly basis: "manual" | "handoff";
@@ -85,6 +90,7 @@ export class LinkedThreads extends Context.Service<
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const threads = yield* Threads.ThreadManagementService;
+  const projections = yield* ProjectionStore.ProjectionStoreV2;
   const environment = yield* Environment.ServerEnvironment;
   const here = yield* environment.getEnvironmentId;
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
@@ -251,7 +257,7 @@ const make = Effect.gen(function* () {
       }
     }
     return { environmentId: here, links, siblings, truncated };
-  });
+  }, NodeSqliteClient.readOnly);
   const link = Effect.fn("LinkedThreads.link")(function* (
     actor: LinkActor,
     input: LinkInput,
@@ -482,6 +488,7 @@ const make = Effect.gen(function* () {
     effect.pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
       Effect.provideService(Threads.ThreadManagementService, threads),
+      Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
     );
   return LinkedThreads.of({
     claimLaunch: (input: Claim) => provide(claimLaunch(input)),
@@ -495,4 +502,4 @@ const make = Effect.gen(function* () {
       provide(recover(actor, input)),
   });
 });
-export const layer = Layer.effect(LinkedThreads, make);
+export const layer = Layer.effect(LinkedThreads, make).pipe(Layer.provide(ProjectionStore.layer));

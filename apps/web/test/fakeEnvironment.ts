@@ -3,6 +3,7 @@
 // stay pending so nothing retries on timers. Everything above the wire is the app's own.
 import {
   AuthStandardClientScopes,
+  OrchestrationDispatchCommandError,
   EnvironmentId,
   EventId,
   ExecutionEnvironmentDescriptor,
@@ -18,6 +19,9 @@ import {
   WS_METHODS,
   WsRpcGroup,
   type OrchestrationProjectShell,
+  type OrchestrationV2Command,
+  type OrchestrationV2ThreadLaunchInput,
+  type OrchestrationV2ThreadLaunchResult,
   type OrchestrationV2ProjectedTurnItem,
   type OrchestrationV2Run,
   type OrchestrationV2ShellStreamItem,
@@ -44,7 +48,7 @@ import * as Stream from "effect/Stream";
 import { RpcSchema } from "effect/rpc";
 
 export const ENVIRONMENT_ID = EnvironmentId.make("environment-render");
-const PROJECT_ID = ProjectId.make("project-render");
+export const PROJECT_ID = ProjectId.make("project-render");
 const CODEX = ProviderInstanceId.make("codex");
 const MODEL = { instanceId: CODEX, model: "gpt-5.4" };
 const AT = DateTime.makeUnsafe("2026-03-17T19:12:28.000Z");
@@ -56,7 +60,11 @@ const descriptor = {
   // A matching version, since a mismatch adds an update banner a typical user never sees.
   serverVersion: APP_VERSION,
   orchestrationProtocolVersion: ORCHESTRATION_PROTOCOL_VERSION,
-  capabilities: { repositoryIdentity: true },
+  capabilities: {
+    repositoryIdentity: true,
+    serverResolvedCommandContext: true,
+    worktreeDefaultBase: true,
+  },
 };
 const auth = {
   policy: "loopback-browser",
@@ -228,9 +236,9 @@ function shellOf(thread: FakeThread): OrchestrationV2ThreadShell {
     createdBy: "user",
     creationSource: "web",
     latestRunId: latest?.id ?? null,
-    activeRunId: null,
+    activeRunId: latest?.status === "running" ? latest.id : null,
     // Idle reads as waiting on the user, which shows a per-second duration in the sidebar.
-    status: latest ? "completed" : "idle",
+    status: latest?.status ?? "idle",
     pendingRuntimeRequest: null,
     latestVisibleMessage: null,
     latestUserMessageAt: AT,
@@ -306,6 +314,7 @@ const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 // Keyed by thread id: a live thread subscription's queue, for pushing events to it.
+const shellSubscribers = new Set<Queue.Queue<OrchestrationV2ShellStreamItem>>();
 const threadSubscribers = new Map<string, Queue.Queue<OrchestrationV2ThreadStreamItem>>();
 let threads: ReadonlyArray<FakeThread> = [];
 let sequence = 1;
@@ -323,21 +332,48 @@ const subscribe = <A>(first: ReadonlyArray<A>, register?: (queue: Queue.Queue<A>
     }),
   );
 
+let sendHandler:
+  | ((
+      method: string,
+      payload: OrchestrationV2Command | OrchestrationV2ThreadLaunchInput,
+    ) => Effect.Effect<unknown, OrchestrationDispatchCommandError>)
+  | null = null;
+
 const handlers: Record<string, (input: never) => unknown> = {
+  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (input: OrchestrationV2Command) =>
+    input.type === "message.dispatch"
+      ? (sendHandler?.(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, input) ?? Effect.never)
+      : Effect.succeed({ sequence: ++sequence }),
+  [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: OrchestrationV2ThreadLaunchInput) =>
+    sendHandler?.(ORCHESTRATION_V2_WS_METHODS.launchThread, input) ?? Effect.never,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input: { readonly threadId: ThreadId }) =>
+    Effect.sync(() => {
+      const thread = threads.find((thread) => thread.id === input.threadId);
+      if (!thread) throw new Error("Unknown synthetic thread");
+      return projectionOf(thread);
+    }),
   [ORCHESTRATION_V2_WS_METHODS.subscribeShell]: () =>
-    subscribe<OrchestrationV2ShellStreamItem>([
-      {
-        kind: "snapshot",
-        snapshot: {
-          schemaVersion: 1,
-          snapshotSequence: sequence,
-          projects: [project],
-          threads: threads.map(shellOf),
-          archivedThreads: [],
+    subscribe<OrchestrationV2ShellStreamItem>(
+      [
+        {
+          kind: "snapshot",
+          snapshot: {
+            schemaVersion: 1,
+            snapshotSequence: sequence,
+            projects: [project],
+            threads: threads.map(shellOf),
+            archivedThreads: [],
+          },
         },
+        { kind: "synchronized" },
+      ],
+      (queue) => {
+        shellSubscribers.add(queue);
+        return () => {
+          shellSubscribers.delete(queue);
+        };
       },
-      { kind: "synchronized" },
-    ]),
+    ),
   [ORCHESTRATION_V2_WS_METHODS.subscribeThread]: (input: { readonly threadId: ThreadId }) => {
     const thread = threads.find((candidate) => candidate.id === input.threadId);
     if (!thread) return Stream.never;
@@ -430,6 +466,7 @@ export function installFakeEnvironment(fixtures: ReadonlyArray<FakeThread>): Dis
     [Symbol.dispose]: () => {
       globalThis.fetch = realFetch;
       threads = [];
+      sendHandler = null;
     },
   };
 }
@@ -467,3 +504,125 @@ export function runningRun(threadId: ThreadId, id: string, ordinal: number, user
 }
 
 export { userItem };
+
+export interface DeferredFakeSend {
+  readonly method: string;
+  readonly payload: OrchestrationV2Command | OrchestrationV2ThreadLaunchInput;
+  readonly commit: () => Promise<void>;
+  readonly acknowledge: () => void;
+  readonly loseAcknowledgement: () => void;
+  readonly reject: () => void;
+}
+
+// Test-only controls, held by the fixture instead of a production global or endpoint.
+// Commit and acknowledgement are independent: a lost ACK never invents committed evidence.
+export function deferFakeSends(): {
+  readonly requests: DeferredFakeSend[];
+  [Symbol.dispose]: () => void;
+} {
+  const requests: DeferredFakeSend[] = [];
+  const previous = sendHandler;
+  sendHandler = (method, payload) =>
+    Effect.callback<unknown, OrchestrationDispatchCommandError>((resume) => {
+      let committed: FakeThread | undefined;
+      const commit = async () => {
+        if (committed) return;
+        if ("type" in payload && payload.type !== "message.dispatch")
+          throw new OrchestrationDispatchCommandError({
+            message: "Expected a synthetic message dispatch",
+          });
+        const threadId = payload.threadId;
+        if (!threadId)
+          throw new OrchestrationDispatchCommandError({
+            message: "The prepared request must supply its target thread ID",
+          });
+        const initial = "initialMessage" in payload ? payload.initialMessage : undefined;
+        const messageId = "messageId" in payload ? payload.messageId : initial?.messageId;
+        const text = "text" in payload ? payload.text : initial?.text;
+        if (!messageId || text === undefined)
+          throw new OrchestrationDispatchCommandError({
+            message: "Expected captured message identity",
+          });
+        const prior = threads.find((thread) => thread.id === threadId);
+        if (prior?.runs.some((run) => run.userMessageId === messageId)) {
+          committed = prior;
+          return;
+        }
+        const runId = RunId.make(`synthetic-${messageId}`);
+        const nextRun = runningRun(threadId, runId, (prior?.runs.length ?? 0) + 1, messageId);
+        const nextItem = {
+          ...userItem(threadId, runId, messageId, prior?.items.length ?? 0, text),
+          messageId,
+        };
+        committed = {
+          id: threadId,
+          title: prior?.title ?? ("title" in payload ? payload.title : "Synthetic send"),
+          runs: [...(prior?.runs ?? []), nextRun],
+          items: [...(prior?.items ?? []), nextItem],
+        };
+        threads = [...threads.filter((thread) => thread.id !== threadId), committed];
+        sequence += 1;
+        const queue = threadSubscribers.get(threadId);
+        if (queue)
+          await Effect.runPromise(
+            Queue.offer(queue, {
+              kind: "snapshot",
+              snapshotSequence: sequence,
+              projection: projectionOf(committed),
+            }),
+          );
+        for (const shellQueue of shellSubscribers)
+          await Effect.runPromise(
+            Queue.offer(shellQueue, {
+              kind: "thread.updated",
+              location: "active",
+              sequence,
+              thread: { ...shellOf(committed), status: "running", activeRunId: runId },
+            }),
+          );
+      };
+      requests.push({
+        method,
+        payload,
+        commit,
+        acknowledge: () => {
+          if (method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
+            if (!committed)
+              throw new OrchestrationDispatchCommandError({
+                message: "Commit the synthetic launch before acknowledging it",
+              });
+            resume(
+              Effect.succeed({
+                threadId: committed.id,
+                projection: projectionOf(committed),
+                resumed: false,
+              } satisfies OrchestrationV2ThreadLaunchResult),
+            );
+          } else resume(Effect.succeed({ sequence }));
+        },
+        loseAcknowledgement: () =>
+          resume(
+            Effect.fail(
+              new OrchestrationDispatchCommandError({
+                message: "Synthetic reply lost after dispatch",
+              }),
+            ),
+          ),
+        reject: () =>
+          resume(
+            Effect.fail(
+              new OrchestrationDispatchCommandError({
+                message: "Synthetic rejection; no committed evidence",
+              }),
+            ),
+          ),
+      });
+    });
+  return {
+    requests,
+    [Symbol.dispose]: () => {
+      for (const request of requests) request.reject();
+      sendHandler = previous;
+    },
+  };
+}

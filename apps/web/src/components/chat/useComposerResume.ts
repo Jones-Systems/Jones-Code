@@ -15,6 +15,8 @@ import { newMessageId } from "~/lib/utils";
 import type { ComposerHandleRef } from "../../composerHandleContext";
 import { threadEnvironment } from "../../state/threads";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
 import type { makeThreadErrorSetter } from "../ChatView.logic";
 import { draftSendState } from "./chatViewSend";
 import type { useTimelineFollow } from "./useTimelineFollow";
@@ -75,9 +77,7 @@ export function useComposerResume(input: ComposerResumeInput) {
     scrollToEnd,
     setThreadError,
   } = input;
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = usePendingTurn();
   const resumeThreadQueue = useOrchestrationCommand(threadEnvironment.resumeThreadQueue, {
     reportFailure: false,
   });
@@ -118,6 +118,17 @@ export function useComposerResume(input: ComposerResumeInput) {
         return resumeThreadQueue({ environmentId, input: { threadId } });
       }
       const createdAt = new Date().toISOString();
+      const messageId = newMessageId();
+      const message = {
+        id: messageId,
+        role: "user" as const,
+        text: "Continue where you left off.",
+        runId: null,
+        createdAt,
+        updatedAt: createdAt,
+        streaming: false,
+      };
+      pendingSends.admit(environmentId, threadId, message);
       const settingsResult = await persistThreadSettingsForNextTurn({
         threadId,
         createdAt,
@@ -127,18 +138,22 @@ export function useComposerResume(input: ComposerResumeInput) {
         runtimeMode,
         interactionMode,
       });
-      if (settingsResult._tag === "Failure") return settingsResult;
+      if (settingsResult._tag === "Failure") {
+        pendingSends.failBeforeDispatch(environmentId, threadId, messageId);
+        return settingsResult;
+      }
       const modelSelection = composerRef.current?.getSendContext().selectedModelSelection;
       const turnResult = await startThreadTurn({
         environmentId,
         input: {
           threadId,
+          createdAt,
           manualContinuationOfRunId: resumableRunId,
           ...(modelSelection ? { modelSelection } : {}),
           message: {
-            messageId: newMessageId(),
+            messageId,
             role: "user",
-            text: "Continue where you left off.",
+            text: message.text,
             attachments: [],
           },
           runtimeMode,

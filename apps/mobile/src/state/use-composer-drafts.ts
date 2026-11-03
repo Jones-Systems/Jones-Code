@@ -38,6 +38,11 @@ import type {
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
 import { draftModelPickMatchesThread } from "@t3tools/shared/model";
+import {
+  captureComposerModelSelectionSnapshot,
+  composerModelSelectionSnapshotIsCurrent,
+  recordComposerModelSelectionInteraction,
+} from "../jones/threadConfiguration/outboxSelection";
 
 import { writeFileAtomically } from "../lib/atomic-file";
 import { createComposerContextHistory, referencedComposerContext } from "../lib/composerContext";
@@ -556,7 +561,9 @@ function normalizeDraft(draft: ComposerDraft | undefined): ComposerDraft {
 }
 
 export function getComposerDraftSnapshot(draftKey: string): ComposerDraft {
-  return normalizeDraft(appAtomRegistry.get(composerDraftsAtom)[draftKey]);
+  return captureComposerModelSelectionSnapshot(draftKey, {
+    ...normalizeDraft(appAtomRegistry.get(composerDraftsAtom)[draftKey]),
+  });
 }
 
 export function isComposerDraftEmpty(draft: ComposerDraft): boolean {
@@ -1442,14 +1449,17 @@ export function setComposerDraftAttachmentUpload(
 export function updateComposerDraftSettings(
   draftKey: string,
   settings: Partial<ComposerDraftSettingsUpdate>,
-): void {
-  updateComposerDrafts((current) => {
-    const draft = {
-      ...normalizeDraft(current[draftKey]),
-      ...settings,
-    };
-    return withComposerDraft(current, draftKey, draft);
+): ComposerDraft {
+  if (Object.hasOwn(settings, "modelSelection")) {
+    recordComposerModelSelectionInteraction(draftKey);
+  }
+  // Bind before publishing: subscribers may synchronously clear or reselect a model.
+  const draft = captureComposerModelSelectionSnapshot(draftKey, {
+    ...normalizeDraft(appAtomRegistry.get(composerDraftsAtom)[draftKey]),
+    ...settings,
   });
+  updateComposerDrafts((current) => withComposerDraft(current, draftKey, draft));
+  return draft;
 }
 
 export function consumeSubmittedComposerModelPick(
@@ -1460,7 +1470,9 @@ export function consumeSubmittedComposerModelPick(
     const draft = current[draftKey];
     if (!draft) return current;
     const next = consumeSubmittedModelPick(draft, submittedPick);
-    return next === draft ? current : withComposerDraft(current, draftKey, next);
+    if (next === draft) return current;
+    recordComposerModelSelectionInteraction(draftKey);
+    return withComposerDraft(current, draftKey, next);
   });
 }
 
@@ -1515,6 +1527,7 @@ export function subscribeComposerDraftModelReconciliation(input: {
         let next = current;
         for (const [key, matchedDraft] of matches) {
           if (next[key] !== matchedDraft) continue;
+          recordComposerModelSelectionInteraction(key);
           const { modelSelection: _modelSelection, ...draft } = matchedDraft;
           next = withComposerDraft(next, key, draft);
         }
@@ -1746,7 +1759,8 @@ export function undoComposerDraftMergeState(
   merged: ComposerDraft,
 ): Record<string, ComposerDraft> {
   const existing = normalizeDraft(current[draftKey]);
-  if (sameComposerDraftState(existing, merged)) {
+  const modelSelectionUntouched = composerModelSelectionSnapshotIsCurrent(draftKey, merged);
+  if (modelSelectionUntouched && sameComposerDraftState(existing, merged)) {
     return restoreComposerDraftSnapshotState(current, draftKey, snapshot);
   }
   const insertedText = merged.text.startsWith(snapshot.text)
@@ -1776,7 +1790,9 @@ export function undoComposerDraftMergeState(
     attachments: existing.attachments.filter(
       (attachment) => !insertedAttachmentIds.has(attachment.id),
     ),
-    modelSelection: undoSetting("modelSelection"),
+    modelSelection: modelSelectionUntouched
+      ? undoSetting("modelSelection")
+      : existing.modelSelection,
     runtimeMode: undoSetting("runtimeMode"),
     interactionMode: undoSetting("interactionMode"),
     workspaceSelection: undoSetting("workspaceSelection"),
@@ -1818,6 +1834,7 @@ export function clearComposerDraftContent(
     readonly deferAttachmentCleanup?: boolean;
   },
 ): void {
+  if (options?.clearModelSelection) recordComposerModelSelectionInteraction(draftKey);
   const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => clearComposerDraftContentState(current, draftKey, options));
   if (!options?.deferAttachmentCleanup) {
@@ -1829,6 +1846,7 @@ export function clearComposerDraft(
   draftKey: string,
   options?: { readonly deferAttachmentCleanup?: boolean },
 ): void {
+  recordComposerModelSelectionInteraction(draftKey);
   const previousAttachments = getComposerDraftSnapshot(draftKey).attachments;
   updateComposerDrafts((current) => {
     if (!current[draftKey]) {

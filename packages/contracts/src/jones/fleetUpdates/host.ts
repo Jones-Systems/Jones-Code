@@ -75,6 +75,26 @@ export const FleetLeaderInput = Schema.Struct({
 });
 export type FleetLeaderInput = typeof FleetLeaderInput.Type;
 
+export const FleetPlanDirective = Schema.Struct({
+  directiveId: FleetOperationId,
+  targetSource: FleetSourceSha,
+  targetTree: FleetSourceSha,
+  mode: Schema.Literal("manual-review"),
+  issuedAt: Schema.String,
+});
+export type FleetPlanDirective = typeof FleetPlanDirective.Type;
+
+export const FleetPlanDirectiveInput = Schema.Struct({
+  directiveId: FleetOperationId,
+  enrollmentId: FleetOperationId,
+  environmentId: EnvironmentId,
+  repository: Schema.Literal("Jones-Systems/Jones-Code"),
+  targetSource: FleetSourceSha,
+  targetTree: FleetSourceSha,
+  expectedDirectiveId: Schema.NullOr(FleetOperationId),
+});
+export type FleetPlanDirectiveInput = typeof FleetPlanDirectiveInput.Type;
+
 /** Work that a restart would cut or lose, so an automatic activation waits for it. */
 export const FleetFollowerBlocker = Schema.Struct({
   kind: Schema.Literals([
@@ -92,9 +112,10 @@ export const FleetFollowerBlocker = Schema.Struct({
 export type FleetFollowerBlocker = typeof FleetFollowerBlocker.Type;
 
 /**
- * A host that follows the laptop prepares and activates the laptop's committed source itself.
- * Activation waits for a quiet window: no recent input from any client and no work a restart
- * would cut. Older hosts omit this and are driven by the laptop's campaigns.
+ * Without a plan directive, a following host prepares and activates the laptop's committed source
+ * itself. Activation waits for a quiet window: no recent input from any client and no work a
+ * restart would cut. A plan directive holds automatic following for its target. Older hosts omit
+ * this and use laptop campaigns.
  */
 export const FleetFollowerStatus = Schema.Struct({
   protocol: Schema.Literal(1),
@@ -122,11 +143,13 @@ export const FleetFollowerStatus = Schema.Struct({
   /** The earliest time the next automatic activation may start. */
   notBefore: Schema.optionalKey(Schema.String),
   operationId: Schema.optionalKey(FleetOperationId),
+  planDirective: Schema.optionalKey(FleetPlanDirective),
 });
 export type FleetFollowerStatus = typeof FleetFollowerStatus.Type;
 
 export const FleetHostStatus = Schema.Struct({
   operationProtocol: Schema.NullOr(Schema.Literal(1)),
+  planDirectiveProtocol: Schema.optionalKey(Schema.Literal(1)),
   environmentId: EnvironmentId,
   enrollment: Schema.NullOr(FleetEnrollment),
   operation: Schema.NullOr(FleetHostOperation),

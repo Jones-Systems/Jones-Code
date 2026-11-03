@@ -17,6 +17,92 @@ function setup() {
   return { peer, intents };
 }
 describe("monitor peer atomic snapshots and retirement", () => {
+  it("keeps a legacy sender replay usable when an older broker rejects the opt-in request", async () => {
+    const peer = new MonitorPeerStore(async () => {
+      throw new Error("Legacy strict decoder rejects the optional request");
+    });
+    peer.receive({ type: "reset", publisherGeneration: "generation" });
+    for (const frame of monitorSnapshot({
+      publisherGeneration: "generation",
+      revision: 1,
+      environments: [testEnvironment],
+      rows: [testRow()],
+      counts: { needsYou: 0, working: 0, waiting: 1, done: 0 },
+    }))
+      peer.receive(frame);
+    await Promise.resolve();
+    expect(peer.countsReady).toBe(true);
+    expect(peer.rows.size).toBe(1);
+    expect(peer.error).toBeNull();
+  });
+  it("hydrates exact replayed Restore identity without inferring old unknown results or regressing outcomes", () => {
+    const { peer, intents } = setup();
+    const row = testRow();
+    const snapshot = (environment = testEnvironment) => {
+      for (const frame of monitorSnapshot({
+        publisherGeneration: "generation",
+        revision: peer.viewRevision + 1,
+        environments: [environment],
+        rows: [],
+        counts: { needsYou: 0, working: 0, waiting: 0, done: 0 },
+      }))
+        peer.receive(frame);
+    };
+    snapshot();
+    expect(intents).toContainEqual({
+      type: "requestSnapshot",
+      restoreIdentityReplay: { publisherGeneration: "generation" },
+    });
+    const result = {
+      ...refOf(row),
+      type: "actionResult" as const,
+      actionId: "restore",
+      commandId: CommandId.make("restore-command"),
+      status: "unknown" as const,
+      reason: null,
+    };
+    const restoreIdentity = {
+      type: "restore" as const,
+      settleCommandId: CommandId.make("settle-command"),
+    };
+    peer.receive(result);
+    expect(peer.actions.size).toBe(0);
+    peer.receive({ ...result, restoreIdentity });
+    const expected = {
+      ...refOf(row),
+      type: "restore",
+      actionId: result.actionId,
+      commandId: result.commandId,
+      settleCommandId: restoreIdentity.settleCommandId,
+    };
+    expect(peer.actions.get(result.actionId)).toEqual(expected);
+    expect(peer.retainedRows.size).toBe(0);
+    for (const patch of [
+      { commandId: CommandId.make("other-command") },
+      { threadId: ThreadId.make("other-thread") },
+      { environmentEpoch: 1 },
+      { publisherGeneration: "other-generation" },
+      { restoreIdentity: { ...restoreIdentity, settleCommandId: CommandId.make("other-settle") } },
+    ])
+      peer.receive({ ...result, restoreIdentity, ...patch });
+    expect(peer.actions.get(result.actionId)).toEqual(expected);
+    expect(peer.results.get(result.actionId)).toEqual({ ...result, restoreIdentity });
+    peer.receive({ ...result, status: "pending", restoreIdentity });
+    expect(peer.results.get(result.actionId)?.status).toBe("unknown");
+    peer.receive({ ...result, status: "accepted" });
+    peer.receive({ ...result, restoreIdentity });
+    expect(peer.results.get(result.actionId)?.status).toBe("accepted");
+    peer.receive({ ...testEnvironment, type: "invalidateEnvironment", requestId: "retire" });
+    peer.receive({ ...result, restoreIdentity });
+    expect(peer.actions.size).toBe(0);
+    expect(peer.results.size).toBe(0);
+    snapshot({ ...testEnvironment, environmentEpoch: 1 });
+    peer.receive({ ...result, restoreIdentity });
+    expect(peer.actions.size).toBe(0);
+    peer.receive({ type: "reset", publisherGeneration: "next-generation" });
+    peer.receive({ ...result, restoreIdentity });
+    expect(peer.actions.size).toBe(0);
+  });
   it("retains an active expired row outside the cohort until handoff or authoritative retirement", () => {
     const { peer } = setup();
     const row = testRow({ group: "done", status: "completed" });

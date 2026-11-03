@@ -1,5 +1,6 @@
 import {
   jonesCandidatePresentation,
+  jonesAlternativePresentation,
   jonesFollowerHold,
   jonesFollowerSummary,
   jonesUpdatePresentation,
@@ -31,6 +32,7 @@ import {
 } from "./disclosure";
 import { BuildVersion, CopyableValue } from "./updateDisplay";
 import { randomUUID } from "../../lib/utils";
+import { ProductionExactSourceUpdateAction } from "./ProductionExactSourceUpdateAction";
 
 export type JonesBuildRequest =
   | { readonly action: "check" }
@@ -188,6 +190,7 @@ export function JonesBuildStatus({
 
   const presentation = jonesUpdatePresentation(state);
   const candidate = jonesCandidatePresentation(state);
+  const alternative = jonesAlternativePresentation(state);
   const busy = pending || presentation.busy || freshness !== "fresh";
   const provenance = state.provenance;
   const outcome = state.outcome;
@@ -201,7 +204,15 @@ export function JonesBuildStatus({
     startedAt: provenance?.buildStartedAt,
     sourceSha: candidate?.sourceSha,
   };
-  const [installedLabel, offeredLabel] = jonesBuildLabels([installedRef, offeredRef], "day");
+  const alternativeRef = {
+    version: alternative?.version ?? "",
+    startedAt: alternative?.buildStartedAt,
+    sourceSha: alternative?.sourceSha,
+  };
+  const [installedLabel, offeredLabel, alternativeLabel] = jonesBuildLabels(
+    [installedRef, offeredRef, alternativeRef],
+    "day",
+  );
   const outcomeLabels = outcome === undefined ? [] : jonesBuildLabels(outcomeBuildRefs(state));
   const outcomeText =
     outcome === undefined
@@ -286,6 +297,17 @@ export function JonesBuildStatus({
           detail={`${candidateLabel}: ${badge.detail}`}
         />
       ) : null}
+      {alternative !== undefined ? (
+        <span className="inline-flex items-baseline gap-1.5">
+          <span className="text-muted-foreground">Alternative</span>
+          <BuildVersion
+            label="alternative version"
+            version={alternative.version ?? "Version not reported"}
+            sourceSha={alternative.sourceSha}
+            buildLabel={alternativeLabel}
+          />
+        </span>
+      ) : null}
     </div>
   ) : null;
 
@@ -318,6 +340,17 @@ export function JonesBuildStatus({
         </div>
         <div className={styles.actions}>
           {extraAction}
+          {alternative !== undefined && state.alternativeCandidate !== undefined ? (
+            <ProductionExactSourceUpdateAction
+              environmentId={environmentId}
+              label="this host"
+              targetSource={alternative.sourceSha}
+              alternative={state.alternativeCandidate}
+              allowInstall={false}
+              buttonLabel="Replace download"
+              compact
+            />
+          ) : null}
           {presentation.canReconcile ? (
             <Button
               size={styles.button}
@@ -508,10 +541,26 @@ export function JonesBuildStatus({
                 </DetailItem>
               ) : null}
               {state.migrationPlan !== undefined ? (
-                <DetailItem label="Migrations">
+                <DetailItem
+                  label={alternative === undefined ? "Migrations" : "Downloaded migrations"}
+                >
                   {state.migrationPlan.pendingUpstream.length} upstream,{" "}
                   {state.migrationPlan.pendingJones.length} Jones pending
                 </DetailItem>
+              ) : null}
+              {alternative !== undefined ? (
+                <>
+                  <DetailItem label="Alternative source">
+                    <CopyableValue
+                      label="alternative source commit"
+                      value={alternative.sourceSha}
+                    />
+                  </DetailItem>
+                  <DetailItem label="Alternative built">
+                    {jonesBuildLabel(alternativeRef).detail}
+                  </DetailItem>
+                  <DetailItem label="Alternative migrations">Checked after download</DetailItem>
+                </>
               ) : null}
               {state.recovery !== undefined ? (
                 <DetailItem label="Recovery">

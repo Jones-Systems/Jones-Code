@@ -235,6 +235,7 @@ type DelegateTaskInput = {
   clientRequestId?: string;
   runtimeMode?: "inherit" | "approval-required" | "auto-accept-edits" | "full-access";
   interactionMode?: "inherit" | "plan" | "default";
+  supervisionRequestedByUser?: boolean;
 };
 ```
 
@@ -518,10 +519,16 @@ results use the latest assistant content from the final work turn.
 
 ## Policy And Idempotency
 
-- A child runtime mode may stay equal to or become narrower than the parent
-  mode. It may not escalate privileges.
-- A child interaction mode may stay equal to or narrow from `default` to
-  `plan`. It may not escalate from `plan` to `default`.
+- Omit `runtimeMode` and `interactionMode` to inherit the parent's modes. An
+  explicit narrower runtime mode or `plan` from `default` requires
+  `supervisionRequestedByUser: true`, only when the user asked for a supervised
+  child. A role or read-only scope is not a reason. Do not add the flag
+  automatically after a refusal. The flag is a self-attested accident guard,
+  not authenticated proof of user intent. Broader modes remain rejected.
+- Authenticated linked delegation inherits the parent's modes within the link's
+  ceiling without applying destination project mode defaults. Ordinary
+  top-level launches keep those defaults. Older destinations may still narrow
+  delegated modes to their project defaults.
 - Thread tools take any thread in the environment as a target. For a thread
   caller, list and search cover one project: its own unless `projectId` is given.
 - A tool that changes another thread needs the calling thread's live run, and

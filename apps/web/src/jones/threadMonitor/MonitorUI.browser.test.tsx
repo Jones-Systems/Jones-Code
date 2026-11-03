@@ -1,4 +1,4 @@
-import { RuntimeRequestId, ThreadId } from "@t3tools/contracts";
+import { CommandId, RuntimeRequestId, ThreadId } from "@t3tools/contracts";
 import { monitorThreadKey } from "@t3tools/client-runtime/jones/thread-monitor";
 import type {
   ThreadMonitorPeerIntent,
@@ -63,6 +63,107 @@ async function expand(container: HTMLElement) {
   await userEvent.click(notch);
 }
 describe("real monitor renderer interactions", () => {
+  it("reconciles an unknown rowless Restore after connection recovery without replaying a stale row", async () => {
+    const { store: oldPeer, rows, container } = setup();
+    const row = rows[2]!;
+    const receipt = {
+      ...refOf(row),
+      type: "actionResult" as const,
+      actionId: "settled-waiting",
+      commandId: CommandId.make("original-settle"),
+      settleCommandId: CommandId.make("original-settle"),
+      status: "accepted" as const,
+      reason: null,
+    };
+    oldPeer.receive(receipt);
+    const intents: ThreadMonitorPeerIntent[] = [];
+    const store = new MonitorPeerStore(async (intent) => {
+      intents.push(intent);
+      if (intent.type === "restore") throw new Error("Synthetic lost delivery");
+    });
+    store.receive({ type: "reset", publisherGeneration: "generation" });
+    const replayView = (revision: number, connected: boolean) => {
+      for (const frame of monitorSnapshot({
+        publisherGeneration: "generation",
+        revision,
+        environments: [
+          {
+            ...testEnvironment,
+            transport: connected ? "connected" : "disconnected",
+            freshness: connected ? "live" : "cached",
+          },
+        ],
+        rows: [],
+        counts: { needsYou: 0, working: 0, waiting: 0, done: 0 },
+      }))
+        store.receive(frame);
+    };
+    replayView(1, false);
+    for (const result of oldPeer.results.values()) store.receive(result);
+    expect(store.retainedRows.size).toBe(0);
+    await using screen = await render(<MonitorUI store={store} />, { container, router: false });
+    await expand(container);
+    const restore = screen.getByRole("button", { name: "Restore thread", exact: true });
+    await expect.element(restore).toBeVisible();
+    await expect.element(restore).toHaveAttribute("aria-disabled", "true");
+    await restore.click({ force: true });
+    expect(intents.filter((intent) => intent.type === "restore")).toHaveLength(0);
+    await act(() => replayView(2, true));
+    await expect.element(restore).toHaveAttribute("aria-disabled", "false");
+    expect(container.querySelectorAll("[data-monitor-thread-id]")).toHaveLength(0);
+    await restore.click();
+    expect(intents.filter((intent) => intent.type === "restore")).toEqual([
+      expect.objectContaining({
+        ...refOf(row),
+        type: "restore",
+        settleCommandId: receipt.commandId,
+      }),
+    ]);
+    const originalRestore = intents.find(
+      (intent): intent is Extract<ThreadMonitorAction, { type: "restore" }> =>
+        intent.type === "restore",
+    )!;
+    await expect.poll(() => store.results.get(originalRestore.actionId)?.status).toBe("unknown");
+    await act(() => replayView(3, false));
+    const reconcile = screen.getByRole("button", { name: "Reconcile", exact: true });
+    await expect.element(reconcile).toBeVisible();
+    await expect.element(reconcile).toHaveAttribute("aria-disabled", "true");
+    await reconcile.click({ force: true });
+    expect(intents.filter((intent) => intent.type === "reconcile")).toHaveLength(0);
+    await expect.element(restore).toHaveAttribute("aria-disabled", "true");
+    await restore.click({ force: true });
+    expect(intents.filter((intent) => intent.type === "restore")).toHaveLength(1);
+    await act(() => replayView(4, true));
+    await expect.element(reconcile).toHaveAttribute("aria-disabled", "false");
+    expect(store.retainedRows.size).toBe(0);
+    await reconcile.click();
+    const reconciliations = intents.filter((intent) => intent.type === "reconcile");
+    expect(reconciliations).toEqual([
+      expect.objectContaining({
+        ...refOf(row),
+        type: "reconcile",
+        originalActionId: originalRestore.actionId,
+        originalCommandId: originalRestore.commandId,
+      }),
+    ]);
+    expect(store.selection).toBeNull();
+    expect(intents.filter((intent) => intent.type === "restore")).toHaveLength(1);
+    await act(() => {
+      store.receive({ ...testEnvironment, type: "invalidateEnvironment", requestId: "retired" });
+      store.receive(receipt);
+      store.receive({
+        ...refOf(originalRestore),
+        type: "actionResult",
+        actionId: originalRestore.actionId,
+        commandId: originalRestore.commandId,
+        status: "unknown",
+        reason: "Late unknown result from retired lifetime",
+      });
+    });
+    await expect.element(reconcile).not.toBeInTheDocument();
+    await expect.element(restore).not.toBeInTheDocument();
+    expect(store.results.size).toBe(0);
+  });
   it("keeps the actual aggregate label and number text inside each tile at 320px and 200% text", async () => {
     using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
     const { store, container } = setup();
@@ -315,6 +416,51 @@ describe("real monitor renderer interactions", () => {
     expect(sends).toHaveLength(1);
     expect(sends[0]).toMatchObject({ type: "send", threadId: "done", text: "composed reply" });
   });
+  it("submits standard single-choice input rows immediately after the final answer", async () => {
+    using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
+    const { store, intents, rows, container } = setup();
+    await using screen = await render(<MonitorUI store={store} />, { container, router: false });
+    await expand(container);
+    await act(() => {
+      store.select(rows[0]!);
+      store.receive({
+        type: "detail",
+        detail: {
+          ...refOf(rows[0]!),
+          selectionId: store.selection!.selectionId,
+          revision: 1,
+          entries: [],
+          plan: null,
+          unavailableReason: null,
+          request: {
+            kind: "user_input",
+            requestId: RuntimeRequestId.make("quick-input"),
+            availability: { available: true, reason: null },
+            questions: ["one", "two"].map((id) => ({
+              id,
+              header: id,
+              question: `Confirm ${id}`,
+              allowCustomAnswer: true,
+              multiSelect: false,
+              options: [{ label: `Done ${id}`, value: id }],
+            })),
+          },
+        },
+      });
+    });
+    await screen.getByRole("textbox", { name: "Custom answer: one" }).fill("Verified workspace B");
+    await screen.getByRole("radio", { name: "Done one" }).click();
+    expect(intents.filter((intent) => intent.type === "respondToUserInput")).toHaveLength(0);
+    await screen.getByRole("radio", { name: "Done two" }).click();
+    expect(intents.filter((intent) => intent.type === "respondToUserInput")).toMatchObject([
+      {
+        requestId: "quick-input",
+        answers: { one: "one\nNote: Verified workspace B", two: "two" },
+        draftRevision: 3,
+      },
+    ]);
+  });
+
   it("renders actual offered decisions/questions and purges visible private content on retirement", async () => {
     using _now = vi.spyOn(Date, "now").mockReturnValue(NOW);
     const { store, intents, rows, container } = setup();

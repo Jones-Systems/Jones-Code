@@ -18,6 +18,7 @@ import * as Settings from "../../serverSettings.ts";
 import * as Guard from "../nativeCreation/NativeCreationProviderGuard.ts";
 import * as Admission from "../orchestration/ControlAdmission.ts";
 import * as Restart from "../orchestration/RestartPreparation.ts";
+import * as ContinuityAdmissionTestkit from "../goals/continuity/admission.testkit.ts";
 import * as Boundary from "./NativeBoundary.ts";
 import { fixture } from "./ManagedConsumer.testkit.ts";
 import { nativeStartFixture } from "./NativeStart.testkit.ts";
@@ -42,6 +43,7 @@ it.effect.each(["current", "revoked", "retired"] as const)(
           });
           if (mode === "revoked") f.state.afterResume = native.revoke;
           const startLayer = Layer.fresh(Start.layer).pipe(
+            Layer.provide(ContinuityAdmissionTestkit.layerAbsent),
             Layer.provide(Admission.layer),
             Layer.provide(IdAllocator.layer),
             Layer.provide(f.configured),

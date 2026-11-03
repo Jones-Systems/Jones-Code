@@ -1,5 +1,7 @@
 /* eslint-disable shadcn/no-unknown-classes -- This isolated native peer uses the dedicated monitor.css stylesheet instead of Tailwind utilities. */
 import { randomUUID } from "../../lib/utils";
+import { formatUserResponseChoiceWithNote } from "@t3tools/contracts/jones/userResponseRequest";
+import { monitorInputChoice, monitorInputDraft } from "./answers";
 import { useStableCallback } from "../../hooks/useStableCallback";
 import {
   useLayoutEffect,
@@ -20,6 +22,7 @@ import {
 import {
   THREAD_MONITOR_LIMITS,
   type ThreadMonitorAction,
+  type ThreadMonitorRef,
   type ThreadMonitorRow,
   type ThreadMonitorStatus,
 } from "@t3tools/contracts/jones/desktopThreadMonitor";
@@ -80,7 +83,7 @@ function Icon({ children }: { children: ReactNode }) {
     </svg>
   );
 }
-const idFor = (row: ThreadMonitorRow) => ({
+const idFor = (row: ThreadMonitorRef) => ({
   ...refOf(row),
   actionId: randomUUID(),
   commandId: CommandId.make(randomUUID()),
@@ -212,13 +215,13 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
   const draft = activeRow
     ? (snapshot.drafts.get(monitorDraftKey(activeRow)) ?? store.draft(activeRow))
     : null;
-  const busy = (row: ThreadMonitorRow, state = snapshot) =>
+  const busy = (row: ThreadMonitorRef, state = snapshot) =>
     [...state.results.values()].some(
       (result) =>
         sameThread(row, result) && (result.status === "pending" || result.status === "unknown"),
     );
   const currentRow = (row: ThreadMonitorRow) => store.rows.get(monitorThreadKey(row)) ?? row;
-  const unavailable = (row: ThreadMonitorRow, state = snapshot) =>
+  const unavailable = (row: ThreadMonitorRef, state = snapshot) =>
     !store.live(row)
       ? "This environment lifetime has ended"
       : busy(row, state)
@@ -227,7 +230,7 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
             state.environments.get(row.environmentId)?.freshness !== "live"
           ? "Waiting for current environment data"
           : null;
-  const dispatch = (row: ThreadMonitorRow, action: ThreadMonitorAction) => {
+  const dispatch = (row: ThreadMonitorRef, action: ThreadMonitorAction) => {
     const reason = unavailable(row, store.getSnapshot());
     if (reason && action.type !== "open" && action.type !== "reconcile") {
       setAnnouncement(reason);
@@ -896,6 +899,20 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
             {latestResults.map((result) => {
               const original = snapshot.actions.get(result.actionId);
               const row = snapshot.retainedRows.get(monitorThreadKey(result));
+              const reconcileRef = row ?? (original?.type === "restore" ? result : null);
+              const canReconcile = () => {
+                const environment = store.getSnapshot().environments.get(result.environmentId);
+                return (
+                  store.live(result) &&
+                  environment?.transport === "connected" &&
+                  environment.freshness === "live"
+                );
+              };
+              const restoreReason =
+                unavailable(result) ??
+                (row && !row.actions.restore.available
+                  ? (row.actions.restore.reason ?? "Exact settlement restoration is unavailable")
+                  : null);
               return (
                 <div className="receipt" key={result.actionId}>
                   <span>
@@ -905,13 +922,15 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
                         : "Command accepted. Work may still be pending."
                       : result.reason}
                   </span>
-                  {result.status === "unknown" && row ? (
+                  {result.status === "unknown" && reconcileRef ? (
                     <button
                       type="button"
+                      aria-disabled={!canReconcile()}
                       onClick={() => {
-                        store.select(row);
+                        if (!canReconcile()) return;
+                        if (row) store.select(row);
                         store.action({
-                          ...idFor(row),
+                          ...idFor(reconcileRef),
                           type: "reconcile",
                           originalActionId: result.actionId,
                           originalCommandId: result.commandId,
@@ -924,20 +943,20 @@ export function MonitorUI({ store }: { readonly store: MonitorPeerStore }) {
                       Reconcile
                     </button>
                   ) : null}
-                  {result.status === "accepted" && result.settleCommandId && row ? (
+                  {result.status === "accepted" && result.settleCommandId ? (
                     <MonitorTooltip
                       content={
-                        row.actions.restore.reason ??
+                        restoreReason ??
                         "Restores supported thread placement only; execution effects are not reversed"
                       }
                     >
                       <button
                         type="button"
-                        aria-disabled={!row.actions.restore.available}
+                        aria-disabled={restoreReason !== null}
                         onClick={() => {
-                          if (row.actions.restore.available)
-                            dispatch(row, {
-                              ...idFor(row),
+                          if (restoreReason === null)
+                            dispatch(result, {
+                              ...idFor(result),
                               type: "restore",
                               settleCommandId: result.settleCommandId!,
                             });
@@ -1046,18 +1065,39 @@ function RequestControls({
     const answer = answers[question.id];
     return typeof answer === "string" ? true : Array.isArray(answer) && answer.length > 0;
   });
-  const edit = (id: string, answer: string | ReadonlyArray<string>) =>
-    store.edit({ ...draft, revision: draft.revision + 1, answers: { ...answers, [id]: answer } });
+  const edit = (id: string, answer: string | ReadonlyArray<string>) => {
+    const next = { ...draft, revision: draft.revision + 1, answers: { ...answers, [id]: answer } };
+    store.edit(next);
+    return next;
+  };
   return (
     <section className="request" data-status="input">
       <div className="request-label">Awaiting input</div>
       {request.questions.map((question) => {
         const answer = answers[question.id];
-        const selected = typeof answer === "string" ? [answer] : (answer ?? []);
-        const custom =
-          typeof answer === "string" && !question.options.some((option) => option.value === answer)
-            ? answer
-            : "";
+        // This peer has no response-mode metadata. When free text is offered, keep it
+        // in the submitted answer rather than losing it on an immediate choice.
+        const notes = question.allowCustomAnswer && !question.multiSelect;
+        const { selected, custom } = monitorInputDraft(question, answer, notes);
+        const choose = (value: string) => {
+          const next = edit(question.id, monitorInputChoice(question, answer, value, notes));
+          if (
+            !question.multiSelect &&
+            !reason &&
+            request.availability.available &&
+            request.questions.every((entry) => {
+              const answer = next.answers[entry.id];
+              return typeof answer === "string" || (Array.isArray(answer) && answer.length > 0);
+            })
+          )
+            dispatch({
+              ...idFor(row),
+              type: "respondToUserInput",
+              requestId: request.requestId,
+              answers: next.answers,
+              draftRevision: next.revision,
+            });
+        };
         return (
           <fieldset key={`${request.requestId}:${question.id}`}>
             <legend>{question.header}</legend>
@@ -1070,21 +1110,12 @@ function RequestControls({
                     name={`${request.requestId}:${question.id}`}
                     checked={selected.includes(option.value)}
                     disabled={!!reason || !request.availability.available}
-                    onChange={() =>
-                      edit(
-                        question.id,
-                        question.multiSelect
-                          ? selected.includes(option.value)
-                            ? selected.filter((value) => value !== option.value)
-                            : [
-                                ...selected.filter((value) =>
-                                  question.options.some((option) => option.value === value),
-                                ),
-                                option.value,
-                              ]
-                          : option.value,
-                      )
-                    }
+                    onChange={() => {
+                      if (question.multiSelect) choose(option.value);
+                    }}
+                    onClick={() => {
+                      if (!question.multiSelect) choose(option.value);
+                    }}
                   />
                   <span>
                     {option.label}
@@ -1099,7 +1130,14 @@ function RequestControls({
                 aria-label={`Custom answer: ${question.header}`}
                 value={custom}
                 disabled={!!reason || !request.availability.available}
-                onChange={(event) => edit(question.id, event.target.value)}
+                onChange={(event) =>
+                  edit(
+                    question.id,
+                    notes && !question.multiSelect && selected[0] !== undefined
+                      ? formatUserResponseChoiceWithNote(selected[0], event.target.value)
+                      : event.target.value,
+                  )
+                }
                 placeholder="Your answer…"
               />
             ) : null}

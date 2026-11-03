@@ -126,6 +126,26 @@ internal command reuses the parent half of a local finalize, so the parent
 wakes the same way. Open remote tasks are followed again at startup, which is
 also what keeps restart recovery from treating them as abandoned provider work.
 
+The source persists a delegation intent before launch, while the receiver owns
+admission and dispatch. Recovery retains that intent's original key and task:
+an unanswered launch may already have executed. A conflicting admission returns
+`request_conflict` without changing its original binding. An unrecognized RPC
+error is an uncertain outcome, not evidence that the request was rejected.
+
+Failed recovery attempts have a finite budget per activation. Permanent errors
+stop automatic attempts; exhausted or otherwise uncertain work keeps its pending
+intent and reconciliation guidance instead of becoming a fabricated failure.
+Valid owner-approval holds remain actionable and do not consume that failure
+budget. Startup, identical-key replay and cancellation can reopen a recovery
+window without creating a replacement launch. The policy lives in
+[`remoteDelegation/Lifecycle`](../../apps/server/src/jones/remoteDelegation/Lifecycle.ts).
+
+Withdrawal cannot cancel an admission whose dispatch was already claimed. After
+checking the originating client and binding, the withdrawal adapter returns the
+existing dispatch or denial status. The source can then recover the original
+child binding and pass its cancellation obligation to the follower. A local
+cancellation alone never proves that remote execution stopped.
+
 The link is routing, not isolation: an agent the link starts runs as the
 receiving environment's user. **A full-access link is therefore not fenced**:
 its agents can already do anything that user can, so the fence would only stop

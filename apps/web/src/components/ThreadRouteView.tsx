@@ -18,6 +18,7 @@ import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import { useEnvironmentThreadRefs, useThreadRefs, useQuietThreadShell } from "../state/entities";
 import { useEnvironmentShellStatus } from "../state/shell";
 import { useEnvironmentThread } from "../state/threads";
+import { usePendingSends } from "../jones/pendingSends/hooks";
 import {
   buildThreadRouteParams,
   isThreadRouteSnapshotAuthoritative,
@@ -67,6 +68,16 @@ export function ThreadRouteView({
 
   const shellStatus = useEnvironmentShellStatus(serverThreadRef?.environmentId ?? null);
   const serverThreadShell = serverThread;
+  const pendingSends = usePendingSends();
+  const pendingThreadExists =
+    target.kind === "server" &&
+    serverThreadShell === null &&
+    pendingSends.some(
+      (entry) =>
+        entry.environmentId === target.threadRef.environmentId &&
+        entry.threadId === target.threadRef.threadId &&
+        entry.sidebarThread !== undefined,
+    );
   const environmentThreadRefs = useEnvironmentThreadRefs(serverThreadRef?.environmentId ?? null);
   const bootstrapComplete = isThreadRouteSnapshotAuthoritative(shellStatus);
   const draftThread = useComposerDraftStore((store) =>
@@ -103,13 +114,15 @@ export function ThreadRouteView({
     unlistedThreadRef?.environmentId ?? null,
     unlistedThreadRef?.threadId ?? null,
   );
-  const renderState = resolveThreadRouteRenderState({
-    bootstrapComplete,
-    serverThreadExists: serverThreadShell !== null,
-    serverThreadDeleted: serverThreadShell?.deletedAt != null,
-    unlistedThreadDetail,
-    draftThreadExists: draftThread !== null,
-  });
+  const renderState = pendingThreadExists
+    ? "ready"
+    : resolveThreadRouteRenderState({
+        bootstrapComplete,
+        serverThreadExists: serverThreadShell !== null,
+        serverThreadDeleted: serverThreadShell?.deletedAt != null,
+        unlistedThreadDetail,
+        draftThreadExists: draftThread !== null,
+      });
   const serverThreadStarted = threadHasStarted(serverThreadShell);
   const environmentHasAnyThreads = environmentThreadRefs.length > 0 || environmentHasDraftThreads;
 

@@ -1,0 +1,157 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "server-parallel-workers",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/serverCompute/",
+    "apps/server/src/jones/serverParallelism/",
+    "packages/shared/src/jones/sqliteReaders/",
+    "packages/shared/src/jones/sqliteReadPriority.ts",
+    "packages/shared/src/jones/sqliteReadPriority.test.ts",
+    "packages/shared/src/jones/sqliteReaderContracts.ts",
+    "apps/server/src/jones/workspace/nativeSearchRuntime.ts",
+    "apps/server/src/jones/workspace/nativeSearchRuntime.test.ts",
+    "apps/server/src/jones/workspace/searchWorkerProxy.ts",
+    "apps/server/src/jones/workspace/searchWorkerProxy.test.ts",
+    ".github/workflows/server-parallel-qualification.yml"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/serverCompute/worker.ts"
+    },
+    {
+      "from": "apps/server/src/cli/config.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/config.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/serverParallelism/readClassification.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProjectionMaintenance.ts",
+      "to": "apps/server/src/jones/serverParallelism/readClassification.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/PullRequestSyncReactor.ts",
+      "to": "apps/server/src/jones/serverParallelism/readClassification.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/serverParallelism/readClassification.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/serverParallelism/persistenceOptions.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "apps/server/src/jones/serverParallelism/metrics.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
+      "to": "apps/server/src/jones/serverParallelism/readClassification.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/serverCompute/ServerCompute.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/serverParallelism/metrics.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.ts",
+      "to": "apps/server/src/jones/serverParallelism/readClassification.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceEntries.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/nativeWorkspace.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceFileSystem.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/nativeWorkspace.testkit.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/computeContract.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+      "to": "apps/server/src/jones/serverCompute/failure.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.test.ts",
+      "to": "apps/server/src/jones/serverCompute/ServerCompute.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.ts",
+      "to": "apps/server/src/jones/serverCompute/workspaceErrors.ts"
+    },
+    {
+      "from": "apps/server/src/workspace/WorkspaceSearchIndex.ts",
+      "to": "apps/server/src/jones/workspace/searchWorkerProxy.ts"
+    },
+    {
+      "from": "apps/server/vite.config.ts",
+      "to": "scripts/jones/serverParallelism/buildIdentity.ts"
+    },
+    {
+      "from": "packages/shared/src/nodeSqliteClient.test.ts",
+      "to": "packages/shared/src/jones/sqliteReadPriority.ts"
+    },
+    {
+      "from": "packages/shared/src/nodeSqliteClient.test.ts",
+      "to": "packages/shared/src/jones/sqliteReaderContracts.ts"
+    },
+    {
+      "from": "packages/shared/src/nodeSqliteClient.ts",
+      "to": "packages/shared/src/jones/sqliteReaders/lifecycle.ts"
+    },
+    {
+      "from": "packages/shared/src/nodeSqliteClient.ts",
+      "to": "packages/shared/src/jones/sqliteReadPriority.ts"
+    },
+    {
+      "from": "packages/shared/src/nodeSqliteClient.ts",
+      "to": "packages/shared/src/jones/sqliteReaderContracts.ts"
+    },
+    {
+      "from": "packages/shared/src/nodeSqliteClient.ts",
+      "to": "packages/shared/src/jones/sqliteReaders/admission.ts"
+    },
+    {
+      "from": "apps/server/src/persistence/Sqlite.ts",
+      "to": "packages/shared/src/jones/sqliteReaderContracts.ts"
+    },
+    {
+      "from": "apps/server/src/cli/project.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.testkit.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.autoPull.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    },
+    {
+      "from": "apps/server/src/serverRuntimeStartup.test.ts",
+      "to": "apps/server/src/jones/serverParallelism/config.ts"
+    }
+  ]
+}

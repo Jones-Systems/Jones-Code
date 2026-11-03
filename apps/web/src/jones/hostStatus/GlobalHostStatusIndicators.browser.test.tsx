@@ -196,13 +196,18 @@ it.each(["upstream_unavailable", "invalid_response", "stale"] as const)(
   },
 );
 
-it("retains a disconnected source on failure and recovers its values without probing other gateways", async () => {
+it("retains fresh values through disconnect, expires them, and recovers without probing other gateways", async () => {
   await using _fixture = await setupTest();
   await render();
   connections.connectedEnvironmentIds = [local];
   fetchStatus.mockRejectedValue(new Error("disconnected"));
   await render();
   await advance(10_000);
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  expect(requests(local)).toHaveLength(1);
+  await advance(19_999);
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  await advance(1);
   expect(vps()?.textContent).toBe("VPS · — · —");
   expect(requests(local)).toHaveLength(1);
   fetchStatus.mockResolvedValue(available(41));

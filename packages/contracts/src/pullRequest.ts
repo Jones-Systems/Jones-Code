@@ -13,6 +13,8 @@ import {
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
 import { SourceControlProviderKind } from "./sourceControl.ts";
+import { PullRequestCheckObservation } from "./jones/pullRequestCheckObservation.ts";
+export { PullRequestCheckObservation } from "./jones/pullRequestCheckObservation.ts";
 
 export const PullRequestInvolvement = Schema.Literals(["all", "reviewing", "authored"]);
 export type PullRequestInvolvement = typeof PullRequestInvolvement.Type;
@@ -582,6 +584,7 @@ export const PullRequestDetail = Schema.Struct({
   labels: Schema.Array(PullRequestLabel),
   checks: Schema.Array(PullRequestCheck),
   mergeCapabilities: PullRequestMergeCapabilities,
+  jonesCheckObservation: Schema.optional(PullRequestCheckObservation),
   viewer: Schema.optional(TrimmedNonEmptyString),
   baseComparison: Schema.optional(PullRequestBaseComparison),
   behindBy: Schema.optional(NonNegativeInt),
@@ -596,6 +599,7 @@ export const PullRequestChecks = Schema.Struct({
   observedAt: Schema.optional(Schema.Finite),
   state: PullRequestState,
   checks: Schema.Array(PullRequestCheck),
+  jonesCheckObservation: Schema.optional(PullRequestCheckObservation),
 });
 export type PullRequestChecks = typeof PullRequestChecks.Type;
 

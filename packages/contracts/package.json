@@ -51,6 +51,14 @@
       "types": "./src/jones/jonesUpdates.ts",
       "import": "./src/jones/jonesUpdates.ts"
     },
+    "./jones/jonesOperations": {
+      "types": "./src/jones/jonesOperations.ts",
+      "import": "./src/jones/jonesOperations.ts"
+    },
+    "./jones/installPlan": {
+      "types": "./src/jones/installPlan.ts",
+      "import": "./src/jones/installPlan.ts"
+    },
     "./jones/designRequests": {
       "types": "./src/jones/designRequests.ts",
       "import": "./src/jones/designRequests.ts"

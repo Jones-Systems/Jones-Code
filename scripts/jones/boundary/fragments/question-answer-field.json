@@ -17,7 +17,8 @@
     "apps/web/src/jones/questionAnswer/QuestionProgress.tsx",
     "apps/mobile/src/jones/questionAnswer/QuestionProgress.tsx",
     "apps/mobile/src/jones/questionAnswer/sequentialQuestions.ts",
-    "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts"
+    "apps/mobile/src/jones/questionAnswer/sequentialQuestions.test.ts",
+    "apps/web/src/jones/questionAnswer/QuickResponseSubmission.browser.test.tsx"
   ],
   "hookPaths": [
     "apps/web/src/components/chat/ComposerPendingUserInputPanel.tsx",

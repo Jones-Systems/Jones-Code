@@ -32,6 +32,7 @@
         "setup-worktree.ts",
         "smoke-cli-archive.ts",
         "jones/ci-test-progress-reporter.ts",
+        "jones/serverParallelism/*.mjs",
         "jones/ci/chromium-setup.mjs",
         "jones/ci/chromium-setup.node-test.mjs",
         "jones/server-shard-weights/select.ts",
@@ -62,6 +63,9 @@
       // Vite+ pack entries and the launcher used by installed background services.
       "entry": [
         "src/bin.ts!",
+        "src/jones/serverCompute/worker.ts",
+        "src/jones/serverParallelism/nativeQualification.ts",
+        "src/jones/serverParallelism/snapshotQualification.ts",
         "scripts/jones/v2Benchmark.mjs",
         "scripts/jones/v2Benchmark.worker.mjs",
         "src/jones/orchestration/*.bench.ts",

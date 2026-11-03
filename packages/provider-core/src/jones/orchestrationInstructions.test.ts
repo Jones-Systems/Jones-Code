@@ -15,6 +15,10 @@ it("routes actual owner actions to durable open input without plan mode or dupli
     "put involved context in chat first",
     "Free text is always available",
     "omit choices unless real alternatives exist",
+    'suffix its label with "(Recommended)"',
+    "Apply this to native input tools too",
+    "Do not invent a recommendation for action-status or action-result choices",
+    "or a request with only one option",
     "Only claim it was created after acceptance",
     "Do not create a request for finished results",
     "never enter app/provider Plan mode",
@@ -159,4 +163,14 @@ it("keeps compatible upstream delivery and cancellation rules", () => {
     "Use a PNG file and its path",
   ])
     assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, text);
+});
+
+it("inherits delegated modes unless the user explicitly asks for supervision", () => {
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "Omit `runtimeMode` and `interactionMode`");
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "`supervisionRequestedByUser: true`");
+  assert.include(T3_CODE_ORCHESTRATION_INSTRUCTIONS, "A role or read-only scope is not a reason");
+  assert.include(
+    T3_CODE_ORCHESTRATION_INSTRUCTIONS,
+    "never add the flag automatically after a refusal",
+  );
 });

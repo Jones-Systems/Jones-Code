@@ -162,3 +162,38 @@ it("replaces an owned prior child receipt without trusting it as live evidence",
     await retractLauncherCapabilityReceipt(base, 101, 103);
   });
 });
+
+it("projects pointer and handoff evidence only through a strictly decoded additional capability", async () => {
+  await fixture(async (base, receipt) => {
+    const guard = { uid: owner, isOwnedLive: async () => true };
+    const projection = {
+      ...receipt,
+      launcherHandoffProtocol: 1 as const,
+      launcherPointer: { currentVersion: "0.1.2-preview.20261027.100", attempts: 0 },
+      lastHandoff: {
+        schema: 1 as const,
+        requestId: "11111111-1111-4111-8111-111111111111",
+        fromVersion: "0.1.2-preview.20261027.99",
+        targetVersion: "0.1.2-preview.20261027.100",
+        fromSha256: "a".repeat(64),
+        targetSha256: "b".repeat(64),
+        status: "committed" as const,
+      },
+    };
+    await publishLauncherCapabilityReceipt(projection);
+    assert.deepEqual(await readLauncherCapabilityReceipt(base, receipt, guard), projection);
+    const file = NodePath.join(base, "runtime/jones-launcher-capability.json");
+    for (const change of [
+      { launcherHandoffProtocol: 2 },
+      { launcherHandoffProtocol: null },
+      { launcherHandoffProtocol: undefined },
+      { launcherPointer: { ...projection.launcherPointer, attempts: 4 } },
+      { launcherPointer: { ...projection.launcherPointer, pendingVersion: "../outside" } },
+      { lastHandoff: { ...projection.lastHandoff, targetSha256: "invalid" } },
+      { lastHandoff: { ...projection.lastHandoff, status: "unknown" } },
+    ]) {
+      await NodeFSP.writeFile(file, JSON.stringify({ ...projection, ...change }));
+      await NodeAssert.rejects(readLauncherCapabilityReceipt(base, receipt, guard), /malformed/);
+    }
+  });
+});

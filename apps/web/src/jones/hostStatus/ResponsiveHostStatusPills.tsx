@@ -30,7 +30,7 @@ export interface HostStatusDisplay {
   label: string;
   metrics: Pick<
     ReturnType<typeof hostStatusMetrics>,
-    "cpu" | "ram" | "health" | "cpuHealth" | "ramHealth"
+    "cpu" | "ram" | "health" | "cpuHealth" | "ramHealth" | "tooltipLines"
   >;
 }
 
@@ -183,7 +183,13 @@ export function ResponsiveHostStatusPills({ hosts }: { hosts: HostStatusDisplay[
                     </span>
                   </span>
                 </TooltipTrigger>
-                <TooltipPopup>{label}</TooltipPopup>
+                <TooltipPopup>
+                  <ul className={styles["host-status-tooltip"]}>
+                    {metrics.tooltipLines.map((line) => (
+                      <li key={line}>{line}</li>
+                    ))}
+                  </ul>
+                </TooltipPopup>
               </Tooltip>
             );
           })}

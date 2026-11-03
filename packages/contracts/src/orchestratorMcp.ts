@@ -1,3 +1,9 @@
+import {
+  ThreadResultRequestDescriptor,
+  ThreadResultDependencyBinding,
+  ThreadResultDependency,
+  ThreadResultRequest,
+} from "./jones/threadResultDependency.ts";
 import { LinkedMessagePolicy, RemoteTaskObservation } from "./jones/remoteTaskObservation.ts";
 import { RemoteAdmissionDigest, RemoteAdmissionStatus } from "./jones/remoteAdmission.ts";
 import { SettlementProjectRemaining } from "./jones/settlementOrigins.ts";
@@ -46,6 +52,7 @@ import {
 import { ProviderOptionSelection, ProviderOptionSelectionValue } from "./model.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { DelegatedTaskWorkspaceFields } from "./jones/delegatedTaskWorkspace.ts";
+import { DelegatedTaskSupervisionFields } from "./jones/delegatedTaskSupervision.ts";
 import { DelegatedTaskNativeSession } from "./jones/delegatedTaskNativeSession.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
@@ -189,10 +196,15 @@ export const OrchestratorMcpDelegateTaskInput = Schema.Struct({
   runtimeMode: Schema.optional(
     OrchestratorMcpRuntimeMode.annotate({
       description:
-        "Omit unless the user asks for a supervised child. Narrow modes pause for human approval, not read-only. Above yours is rejected.",
+        "Omit to inherit yours. Narrower modes pause the child for human approval and need supervisionRequestedByUser. Above yours is rejected.",
     }),
   ),
-  interactionMode: Schema.optional(OrchestratorMcpInteractionMode),
+  interactionMode: Schema.optional(
+    OrchestratorMcpInteractionMode.annotate({
+      description: "Omit to inherit yours. plan from default needs supervisionRequestedByUser.",
+    }),
+  ),
+  ...DelegatedTaskSupervisionFields,
 });
 export type OrchestratorMcpDelegateTaskInput = typeof OrchestratorMcpDelegateTaskInput.Type;
 
@@ -362,6 +374,7 @@ export const OrchestratorMcpThreadPullRequest = Schema.Struct({
 export type OrchestratorMcpThreadPullRequest = typeof OrchestratorMcpThreadPullRequest.Type;
 
 export const OrchestratorMcpThreadListItem = Schema.Struct({
+  waitingOn: Schema.optional(Schema.Array(ThreadResultDependency)),
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
   goalSource: Schema.optional(Schema.Literal("provider_projection")),
   activityObservation: Schema.optional(OrchestratorMcpThreadActivityObservation),
@@ -435,6 +448,8 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
+  waitingOn: Schema.optional(Schema.Array(ThreadResultDependency)),
+  owedRequests: Schema.optional(Schema.Array(ThreadResultRequest)),
   goal: Schema.optional(Schema.NullOr(OrchestrationV2ProviderGoal)),
   goalSource: Schema.optional(Schema.Literal("provider_projection")),
   threadId: ThreadId,
@@ -516,6 +531,8 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  awaitResult: Schema.optional(Schema.Boolean),
+  resultRequest: Schema.optional(ThreadResultRequestDescriptor),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
@@ -525,6 +542,7 @@ export const OrchestratorMcpThreadSendInput = Schema.Struct({
 export type OrchestratorMcpThreadSendInput = typeof OrchestratorMcpThreadSendInput.Type;
 
 export const OrchestratorMcpThreadSendResult = Schema.Struct({
+  dependency: Schema.optional(ThreadResultDependencyBinding),
   threadId: ThreadId,
   link: Schema.optional(Schema.String),
   messageId: MessageId,
@@ -658,6 +676,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   features: Schema.Struct({
     remoteTaskObservationVersion: Schema.optional(Schema.String),
+    threadResultRequestVersion: Schema.optional(Schema.String),
     appOwnedSubagents: Schema.Boolean,
     asyncPolling: Schema.Boolean,
     cancellation: Schema.Boolean,
@@ -820,6 +839,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "target_required",
     ]),
     message: Schema.String,
+    dependency: Schema.optionalKey(ThreadResultDependencyBinding),
     remoteAdmission: Schema.optionalKey(
       Schema.Struct({
         id: Schema.NonEmptyString,

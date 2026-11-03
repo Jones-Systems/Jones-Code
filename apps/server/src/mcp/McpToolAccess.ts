@@ -226,6 +226,25 @@ export const writesThreads = <P, A, E, R>(
     () => writingCaller,
   );
 
+/** Operation-aware tools keep inspection available to read-only clients while
+ * every mutation passes the same caller, mode and link checks as writesThreads.
+ * The domain still checks the target and its exact binding at commit.
+ */
+export const readsOrWritesThreads = <P, A, E, R>(
+  isRead: (params: P) => boolean,
+  threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) => {
+  const write = checkedHandler(writesThreads(threads, handle));
+  return declare(
+    (
+      params: P,
+    ): Effect.Effect<A, E | OrchestratorMcpFailure, R | Effect.Services<typeof writingCaller>> =>
+      isRead(params) ? handle(params) : write(params),
+    (params: P) => (isRead(params) ? Effect.void : writingCaller),
+  );
+};
+
 const escalationDenied = (refusal: DispatchModeRefusal) =>
   new OrchestratorMcpFailure({
     code:

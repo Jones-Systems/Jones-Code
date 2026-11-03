@@ -1,5 +1,4 @@
 import { buildQueuedFollowUpStartTurnInput } from "../jones/threadConfiguration/queuedFollowUp";
-import { queuedModelSelectionForDraft } from "../jones/threadConfiguration/modelSelection";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import * as Dialog from "../components/ui/Dialog";
 import { useAtomValue } from "@effect/atom-react";
@@ -29,6 +28,11 @@ import { buildProjectThreadStartTurnInput } from "../lib/projectThreadStartTurn"
 import { serializeComposerMessageForServer, uploadedComposerContext } from "../lib/composerContext";
 import { prepareTurnAttachments, type PreparedTurnAttachments } from "../lib/attachmentUpload";
 import { randomHex } from "../lib/uuid";
+import {
+  outboxSelectionRestoreSettings,
+  retainComposerModelSelectionSnapshot,
+  trackComposerModelSelectionInteractions,
+} from "../jones/threadConfiguration/outboxSelection";
 import {
   describeUnavailableModelSelection,
   isModelSelectionUnavailable,
@@ -376,7 +380,10 @@ export async function recoverEditedCreationAfterDelivery(
     return true;
   }
   const draftKey = scopedThreadKey(kept.environmentId, kept.threadId);
+  const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
   try {
+    await waitForComposerDraftsLoaded();
+    const originalDraft = getComposerDraftSnapshot(draftKey);
     // Merge before removal to retain file ownership; allow overflow and let send guards require trimming.
     await mergeComposerDraftContent(draftKey, {
       text: kept.text,
@@ -398,7 +405,12 @@ export async function recoverEditedCreationAfterDelivery(
       { allowOverflow: true },
     );
     updateComposerDraftSettings(draftKey, {
-      ...(kept.modelSelection !== undefined ? { modelSelection: kept.modelSelection } : {}),
+      ...outboxSelectionRestoreSettings(
+        kept,
+        draftKey,
+        originalDraft,
+        getComposerDraftSnapshot(draftKey),
+      ),
       ...(kept.runtimeMode !== undefined ? { runtimeMode: kept.runtimeMode } : {}),
       ...(kept.interactionMode !== undefined ? { interactionMode: kept.interactionMode } : {}),
     });
@@ -407,6 +419,8 @@ export async function recoverEditedCreationAfterDelivery(
   } catch (error) {
     console.warn("[thread-outbox] could not hand an edited pending task to the composer", error);
     return false;
+  } finally {
+    releaseSelectionTracking();
   }
   if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[kept.messageId]) {
     return true;
@@ -430,6 +444,7 @@ export async function restoreRejectedQueuedMessage(
   const draftKey = recoveryDraftKey(queuedMessage);
   const threadKey = scopedThreadKey(queuedMessage.environmentId, queuedMessage.threadId);
   let rollback: { readonly snapshot: ComposerDraft; readonly merged: ComposerDraft } | null = null;
+  const releaseSelectionTracking = trackComposerModelSelectionInteractions(draftKey);
   try {
     if (
       appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId] ||
@@ -474,7 +489,10 @@ export async function restoreRejectedQueuedMessage(
       });
     } finally {
       // Capture rollback in finally because merge publishes even on persistence failure; undo must preserve concurrent edits.
-      mergedDraft = getComposerDraftSnapshot(draftKey);
+      mergedDraft = retainComposerModelSelectionSnapshot(
+        getComposerDraftSnapshot(draftKey),
+        originalDraft,
+      );
       rollback = { snapshot: originalDraft, merged: mergedDraft };
     }
     if (appAtomRegistry.get(editingQueuedMessageIdsAtom)[queuedMessage.messageId]) {
@@ -482,12 +500,14 @@ export async function restoreRejectedQueuedMessage(
       await undoComposerDraftMerge(draftKey, originalDraft, mergedDraft);
       return "deferred";
     }
-    const restoredModelSelection = queuedModelSelectionForDraft(queuedMessage);
-    updateComposerDraftSettings(draftKey, {
-      ...(restoredModelSelection !== undefined &&
-      getComposerDraftSnapshot(draftKey).modelSelection === originalDraft.modelSelection
-        ? { modelSelection: restoredModelSelection }
-        : {}),
+    const selectionSettings = outboxSelectionRestoreSettings(
+      queuedMessage,
+      draftKey,
+      originalDraft,
+      getComposerDraftSnapshot(draftKey),
+    );
+    const restoredDraft = updateComposerDraftSettings(draftKey, {
+      ...selectionSettings,
       ...(queuedMessage.runtimeMode ? { runtimeMode: queuedMessage.runtimeMode } : {}),
       ...(queuedMessage.interactionMode ? { interactionMode: queuedMessage.interactionMode } : {}),
       ...(queuedMessage.creation
@@ -504,7 +524,9 @@ export async function restoreRejectedQueuedMessage(
           }
         : {}),
     });
-    const restoredDraft = getComposerDraftSnapshot(draftKey);
+    if (selectionSettings.modelSelection === undefined) {
+      retainComposerModelSelectionSnapshot(restoredDraft, originalDraft);
+    }
     rollback = { snapshot: originalDraft, merged: restoredDraft };
     await flushComposerDrafts();
     if (
@@ -553,6 +575,8 @@ export async function restoreRejectedQueuedMessage(
       queuedMessage.messageId,
     );
     return "retry";
+  } finally {
+    releaseSelectionTracking();
   }
 }
 

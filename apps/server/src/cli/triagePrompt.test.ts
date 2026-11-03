@@ -4,7 +4,30 @@ import * as NodePath from "node:path";
 
 import { assert, it } from "@effect/vitest";
 
-import { buildTriageContext, buildTriageLaunchPrompt, TRIAGE_PLAYBOOK } from "./triagePrompt.ts";
+import {
+  buildTriageContext,
+  buildTriageLaunchPrompt,
+  buildTriageSeedPrompt,
+  TRIAGE_PLAYBOOK,
+} from "./triagePrompt.ts";
+
+it("emits Jones source and issue bindings while keeping the t3 compatibility command", () => {
+  const seed = buildTriageSeedPrompt("/synthetic/triage/context.md");
+  assert.include(seed, "Jones Code triage playbook");
+  assert.include(seed, "https://github.com/Jones-Systems/Jones-Code");
+  assert.include(seed, "https://github.com/Jones-Systems/Jones-Code/issues/new");
+  assert.include(seed, "raw.githubusercontent.com/Jones-Systems/Jones-Code/main/");
+  assert.include(seed, "`t3 triage`");
+  assert.notInclude(seed, "pingdotgg/t3code");
+  assert.include(buildTriageLaunchPrompt("/synthetic/prompt.md"), "Jones Code triage playbook");
+});
+
+it("keeps diagnostic inspection bounded and private uploads opt-in", () => {
+  assert.include(TRIAGE_PLAYBOOK, "Never upload raw diagnostic files automatically");
+  assert.include(TRIAGE_PLAYBOOK, "explicit permission for the exact paths and time range");
+  assert.include(TRIAGE_PLAYBOOK, "Do not delete existing cache entries");
+  assert.notInclude(TRIAGE_PLAYBOOK, "Read it freely");
+});
 
 it("stays byte-identical to .github/triage/PLAYBOOK.md", () => {
   // Older releases fetch the repository playbook.
@@ -50,4 +73,6 @@ it("context file labels the CLI version as the CLI's, not the user's build", () 
   assert.notInclude(context, "Release tag");
   assert.include(context, "- Triage CLI version: 0.0.42 (");
   assert.include(context, "version 0.0.43-nightly.20260923.2173");
+  assert.include(context, "# Jones Code triage context");
+  assert.include(context, "- Repo: https://github.com/Jones-Systems/Jones-Code");
 });

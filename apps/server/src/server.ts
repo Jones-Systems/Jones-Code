@@ -1,3 +1,6 @@
+import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
+import * as DependencyReactor from "./jones/threadResultDependencies/DependencyReactor.ts";
+import * as ThreadResultMcpDependencies from "./jones/threadResultDependencies/McpDependencies.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as HandoffLaunch from "./jones/linkedThreads/launchTransport.ts";
 import * as ThreadHandoff from "./jones/linkedThreads/handoff.ts";
@@ -137,6 +140,8 @@ import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
 import * as T3ProjectFileLoader from "./project/T3ProjectFileLoader.ts";
 import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolver.ts";
+import * as ServerCompute from "./jones/serverCompute/ServerCompute.ts";
+import { makePoolObservers } from "./jones/serverParallelism/metrics.ts";
 import * as WorkspaceEntries from "./workspace/WorkspaceEntries.ts";
 import * as KnownWorkspaces from "./workspace/KnownWorkspaces.ts";
 import * as WorkspaceFileSystem from "./workspace/WorkspaceFileSystem.ts";
@@ -496,7 +501,23 @@ const layerDevice = DeviceService.layer.pipe(
   Layer.provide(NetService.layer),
 );
 
-const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(Layer.provide(WorkspacePaths.layer));
+// One layer identity for every HTTP/RPC/MCP/scheduled workspace consumer. Placement
+// comes from the same outer ProcessPlacementRuntime context as provider processes.
+const layerServerCompute = ServerCompute.layer.pipe(
+  Layer.provide(
+    Layer.effect(
+      ServerCompute.ComputeObserver,
+      Effect.gen(function* () {
+        const config = yield* ServerConfig.ServerConfig;
+        return (yield* makePoolObservers(config.serverParallelism.profile)).compute;
+      }),
+    ),
+  ),
+);
+const layerWorkspaceEntries = WorkspaceEntries.layer.pipe(
+  Layer.provide(WorkspacePaths.layer),
+  Layer.provide(layerServerCompute),
+);
 
 const layerWorkspaceFileSystem = WorkspaceFileSystem.layer.pipe(
   Layer.provide(WorkspacePaths.layer),
@@ -804,12 +825,17 @@ const layerMakeRoutes = Layer.mergeAll(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
   ),
+  Layer.effectDiscard(
+    DependencyReactor.DependencyReactor.pipe(Effect.flatMap((reactor) => reactor.start())),
+  ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
 )
   .pipe(
+    Layer.provide(DependencyReactor.layer),
+    Layer.provide(ThreadResultMcpDependencies.layer),
     Layer.provide(ShellMaterialization.layer),
     Layer.provide(
       PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
@@ -1181,6 +1207,7 @@ const layerMakeServer = Layer.unwrap(
     return layerServerApplication.pipe(
       Layer.provide(CloudLink.layer.pipe(Layer.provideMerge(ConnectReachability.layer))),
       Layer.provideMerge(layerRuntimeServices),
+      Layer.provide(DependencyChanges.layer),
       Layer.provideMerge(
         McpSessionRegistry.layer.pipe(
           Layer.provide(ServerEnvironment.layer.pipe(Layer.provide(ServerSecretStore.layer))),

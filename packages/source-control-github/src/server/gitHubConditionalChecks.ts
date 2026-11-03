@@ -69,6 +69,7 @@ export const makeChecksRevalidator = Effect.gen(function* () {
     read: Effect.Effect<
       Pick<GitHubPullRequestDetail, "state" | "checks" | "headSha"> & {
         workflowApprovalsRequired?: number;
+        jonesCheckObservation?: PullRequestChecks["jonesCheckObservation"];
       },
       GitHubPullRequestApiError
     >,
@@ -172,7 +173,13 @@ export const makeChecksRevalidator = Effect.gen(function* () {
           );
           if (!available) return yield* read;
           const now = yield* Clock.currentTimeMillis;
-          if (entry.value !== null && now - entry.readAt < 5 * 60_000) return entry.value;
+          // These validators do not cover the Jones reader's full workflow observation.
+          if (
+            entry.value !== null &&
+            entry.value.jonesCheckObservation === undefined &&
+            now - entry.readAt < 5 * 60_000
+          )
+            return entry.value;
           const pages = runPages.map((endpoint) =>
             decodeWorkflowRuns(entry.validators.get(endpoint)?.body ?? ""),
           );
@@ -189,6 +196,9 @@ export const makeChecksRevalidator = Effect.gen(function* () {
           const value = {
             state: fresh.state,
             checks: fresh.checks,
+            ...(fresh.jonesCheckObservation === undefined
+              ? {}
+              : { jonesCheckObservation: fresh.jonesCheckObservation }),
           };
           entry.value =
             fresh.workflowApprovalsRequired !== undefined && fresh.headSha === head.head.sha

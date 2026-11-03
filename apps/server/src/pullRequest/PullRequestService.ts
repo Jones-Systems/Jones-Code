@@ -1759,6 +1759,9 @@ export const make = Effect.gen(function* () {
             reviewers: changeRequest.reviewers,
             labels: changeRequest.labels,
             checks: changeRequest.checks,
+            ...(changeRequest.jonesCheckObservation === undefined
+              ? {}
+              : { jonesCheckObservation: changeRequest.jonesCheckObservation }),
             mergeCapabilities: changeRequest.mergeCapabilities,
             viewerPermissions: changeRequest.viewerPermissions,
             ...(viewer === null || viewer.trim().length === 0 ? {} : { viewer }),
@@ -3059,6 +3062,9 @@ export const make = Effect.gen(function* () {
               yield* Cache.set(checksCache, key, {
                 state: value.state,
                 checks: value.checks,
+                ...(value.jonesCheckObservation === undefined
+                  ? {}
+                  : { jonesCheckObservation: value.jonesCheckObservation }),
                 observedAt: value.observedAt,
               });
             }

@@ -393,6 +393,73 @@ it.effect("preserves the peer's typed failure from structuredContent", () =>
   ),
 );
 
+it.effect.each(["JSON-RPC", "structuredContent", "text"] as const)(
+  "preserves request_conflict from %s without replaying the mutation",
+  (encoding) => {
+    const refusal = {
+      code: "request_conflict",
+      message: "The request key is already bound to different content.",
+    };
+    let calls = 0;
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const failure = yield* client.call(input).pipe(Effect.flip);
+      expect(failure.code).toBe(refusal.code);
+      expect(failure.message).toBe(refusal.message);
+      expect(calls).toBe(1);
+    }).pipe(
+      Effect.provide(
+        fixture((body) => {
+          calls++;
+          return encoding === "JSON-RPC"
+            ? Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                error: { code: -32000, message: "RPC wrapper", data: refusal },
+              })
+            : answer(
+                body.id,
+                encoding === "structuredContent"
+                  ? {
+                      content: [{ type: "text", text: "fallback" }],
+                      structuredContent: refusal,
+                      isError: true,
+                    }
+                  : { content: content(refusal), isError: true },
+              );
+        }),
+      ),
+    );
+  },
+);
+
+it.effect.each([undefined, { code: "unrecognized_failure", message: "private detail" }])(
+  "keeps an untyped RPC internal error uncertain without replay (data: %s)",
+  (data) => {
+    let calls = 0;
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const failure = yield* client.call(input).pipe(Effect.flip);
+      expect(failure.code).toBe("orchestration_error");
+      expect(failure.message).toBe(
+        "The linked environment reported an unrecognized RPC error. The call was not replayed; its outcome remains uncertain.",
+      );
+      expect(calls).toBe(1);
+    }).pipe(
+      Effect.provide(
+        fixture((body) => {
+          calls++;
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            error: { code: -32603, message: "private internal diagnostic".repeat(100), data },
+          });
+        }),
+      ),
+    );
+  },
+);
+
 it.effect("disables fetch redirects before sending the bearer", () => {
   let redirectsFollowed = 0;
   const requestOptions: Array<RequestInit | undefined> = [];

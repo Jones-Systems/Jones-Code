@@ -73,3 +73,41 @@ it.effect("cannot change the persisted namespace, link or payload after reservat
     assert.deepEqual((yield* store.get(commandId))?.envelope, envelope);
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("preserves legacy supervision fingerprints and distinguishes explicit opt-ins", () =>
+  Effect.gen(function* () {
+    const store = yield* Store.make;
+    const request = { task: "Inspect fixture", runtimeMode: "approval-required" };
+    yield* store.prepare(commandId, request, envelope);
+    assert.isDefined(yield* store.find(commandId, request));
+    assert.isDefined(
+      yield* store.find(commandId, {
+        ...request,
+        supervisionRequestedByUser: undefined,
+      }),
+    );
+    for (const supervisionRequestedByUser of [false, true]) {
+      const changed = yield* store
+        .find(commandId, {
+          ...request,
+          supervisionRequestedByUser,
+        })
+        .pipe(Effect.result);
+      assert.equal(changed._tag, "Failure");
+      if (changed._tag === "Failure") {
+        assert.equal(changed.failure.code, "invalid_request");
+        assert.include(changed.failure.message, "already used with a different request");
+      }
+    }
+    assert.equal((yield* store.pending).length, 1);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("replays an explicitly supervised intent with the same flag", () =>
+  Effect.gen(function* () {
+    const store = yield* Store.make;
+    const request = { task: "Inspect fixture", supervisionRequestedByUser: true };
+    yield* store.prepare(commandId, request, envelope);
+    assert.deepEqual((yield* store.find(commandId, request))?.envelope, envelope);
+  }).pipe(Effect.provide(layer)),
+);

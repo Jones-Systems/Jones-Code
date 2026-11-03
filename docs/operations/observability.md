@@ -105,11 +105,13 @@ For a foreground delay, identify both the target environment and the server
 receiving the renderer's traces:
 
 - Thread open: cold opens normally use HTTP. Follow renderer
-  `environment.orchestration.threadBoundedSnapshot` to server
-  `http.orchestration.loadThreadSnapshotWindow`; older history uses
+  `clientRuntime.state.fetchEnvironmentBoundedThreadSnapshot` and
+  `clientRuntime.state.executeAuthenticatedEnvironmentHttpRequest` to server
+  `environment.orchestration.threadBoundedSnapshot` and its child
+  `http.orchestration.loadThreadSnapshotWindow`; older history uses server
   `environment.orchestration.threadHistoryPage`. Inspect child `db.connection`
   and `db.lock_wait_ms`. Socket resume and fallback use
-  `ws.orchestrationV2.subscribeThread` and `threadSnapshotThenLive`, which measure
+  `ws.orchestrationV2.subscribeThread` and `ws.orchestrationV2.threadSnapshotThenLive`, which measure
   setup; `ws.rpc.orchestration.subscribeThread` measures the stream lifetime.
 - Send: pair server `ws.rpc.orchestration.dispatchCommand` with renderer
   `orchestration.dispatchCommand` by method and time. WebSocket client and server
@@ -138,6 +140,43 @@ Metrics are not written to a local file.
 - current definitions: `apps/server/src/observability/Metrics.ts`
 
 If OTLP is not configured, metrics still exist in-process, but you will not have a local artifact to inspect.
+
+Pool timings use the existing metric registry through the Jones pool adapter.
+Reader queue, startup, checkpoint admission, worker execution, estimated reply and
+lease duration are separate. Compute admission, queue, startup, job and
+`request_round_trip` are parent-local intervals. The roundtrip includes guardian
+arm/disarm, execution and result delivery. Child-local `execute` timestamps bracket
+open, list, path/content search, refresh and close, including awaited failure or
+cancellation cleanup. `reply` measures chunk preparation, serialization, credit
+waits and writes up to terminal-envelope preparation, separately from execution.
+`parent_continuation` covers post-validation terminal credit/disarm completion and the
+supervisor's result fence/readiness update; it excludes later caller work.
+
+Each request optionally exchanges parent-send, child-receive, child-terminal and
+parent-receive monotonic timestamps. Different clock origins and asymmetric
+latency are allowed. `reply_delivery` is the midpoint of a nonnegative interval,
+with lower/upper bounds and half-width uncertainty; it includes terminal encoding
+and pipe scheduling through parent frame decode/validation, and is never exact
+network transfer. The clock-offset interval
+allows 1 ms resolution plus 1000 ppm relative drift over the bounded exchange.
+Out-of-envelope clock evidence makes the estimate unavailable. Roundtrip minus
+execution is never reported as exact transfer. Missing timing is `null` in
+observations and qualification reports; the metric adapter sets
+`jones_server_pool_timing_available` to zero without inserting a zero duration.
+
+Validated guardian RSS samples flow through the same nonthrowing observer to
+`jones_server_compute_resident_bytes`, preserving bytes exactly. RSS is sampled
+independently on FD3; it is not a hard memory cap. Qualification retains raw
+timing/bounds/RSS observations alongside separate aggregate OS samples. Generation
+is a per-slot gauge instead of an ever-growing metric label; PIDs and clock values
+are not labels.
+
+Native scan/warmup gauges are incomplete readiness samples. Zero does not prove
+native quiescence. `activeForegroundOpenRefresh`, `chargedAllocations` and
+`retiringGenerations` measure different lifetimes; only captured exit followed by
+durable retirement releases a generation's charges. Keep paths, SQL, content and
+credentials out of all pool metric labels. The adapter swallows sink failure and
+retains no observation queue.
 
 ### Event Loop Stalls
 
@@ -193,9 +232,10 @@ diagnostics. Enabling export needs an approved receiver and agreement on the
 data sent, and changing startup configuration requires its own operational scope.
 
 Use the installed Jones build, not `npx t3`: the npm package belongs to upstream
-T3 Code. The current `t3 triage` playbook also targets upstream source and its
-issue tracker, so it is not the Jones investigation route. Use bounded local
-trace summaries and this guide instead; see
+T3 Code. The installed Jones build's `t3 triage` playbook targets Jones source and the Jones issue tracker,
+keeps server and client build attribution separate, and requires explicit permission
+for bounded private-state inspection and diagnostic uploads. Start with bounded local
+trace summaries and this guide; see
 [`triagePrompt.ts`](../../apps/server/src/cli/triagePrompt.ts).
 
 ### Option 1: Local Traces Only
@@ -813,13 +853,14 @@ T3CODE_NETDATA_MINI_NODE='<mini-machine-guid>'
 T3CODE_NETDATA_HOME_NODE='<home-machine-guid>'
 ```
 
-| Variable                    | Meaning                                                                                       |
-| --------------------------- | --------------------------------------------------------------------------------------------- |
-| `T3CODE_NETDATA_URL`        | Shared parent base URL reachable from the serving environment.                                |
-| `T3CODE_NETDATA_TOKEN`      | Optional bearer token for the shared parent, supplied through protected server configuration. |
-| `T3CODE_NETDATA_<ID>_NODE`  | Exact machine GUID for a fixed slot.                                                          |
-| `T3CODE_NETDATA_<ID>_URL`   | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                 |
-| `T3CODE_NETDATA_<ID>_TOKEN` | Per-slot bearer token. A URL override never inherits the shared token.                        |
+| Variable                                  | Meaning                                                                                                   |
+| ----------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `T3CODE_NETDATA_URL`                      | Shared parent base URL reachable from the serving environment.                                            |
+| `T3CODE_NETDATA_TOKEN`                    | Optional bearer token for the shared parent, supplied through protected server configuration.             |
+| `T3CODE_NETDATA_<ID>_NODE`                | Exact machine GUID for a fixed slot.                                                                      |
+| `T3CODE_NETDATA_<ID>_URL`                 | Per-slot endpoint override; without `_NODE`, it must report exactly one node.                             |
+| `T3CODE_NETDATA_<ID>_TOKEN`               | Per-slot bearer token. A URL override never inherits the shared token.                                    |
+| `T3CODE_NETDATA_<ID>_STORAGE_MOUNT_POINT` | Optional exact filesystem mount; defaults to `/` on Linux and `/System/Volumes/Data`, then `/`, on macOS. |
 
 Tokens authenticate API reads; they are not Netdata streaming keys. Keep collector
 configuration out of browser build variables. Changing process launch settings
@@ -848,9 +889,20 @@ Missing or invalid available-memory data leaves CPU usable and available RAM
 unavailable; free RAM is never relabeled as available RAM. Every reported byte
 value is integral and bounded by total RAM.
 
+Optional storage fields report one exact `disk.space` filesystem on the selected
+node, never a sum of mounts or physical disks. Free space is `avail`; total is
+`avail + used + reserved_for_root`, including blocks reserved for root.
+The gateway validates the returned node, mount label, individual dimension
+freshness and GiB units. Missing, malformed or stale storage leaves the other
+metrics available. Mount overrides accept absolute paths using letters, digits,
+underscores, dots, slashes and hyphens; pattern syntax is rejected. The Mac
+collector must publish a matching chart; source changes cannot enable it.
+
 The header shows compact whole numbers such as `VPS · 24% · 41`: total-host CPU
-percentage and available RAM in GiB. Tooltips retain units and collector-estimate
-meaning. CPU and RAM colors use their unrounded utilization, and either can raise
+percentage and available RAM in GiB. Hover and keyboard focus show one bullet per
+CPU, available/total RAM, Mac swap I/O and free/total main-filesystem storage
+reading, with units. Available RAM on macOS remains a collector estimate.
+CPU and RAM colors use their unrounded utilization, and either can raise
 the badge background; the RAM color is not a direct measurement of memory
 pressure. The breadcrumb receives its natural width first; complete badges fit
 into the remaining space in VPS, Test, Mini, Home order, with hidden badges

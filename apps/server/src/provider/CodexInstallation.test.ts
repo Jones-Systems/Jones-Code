@@ -187,6 +187,55 @@ it.effect.each([
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.effect.each(["--version", "app-server --help"])(
+  "recovers from a transient local %s probe failure without replacing the executable",
+  (failedProbe) =>
+    Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const probes: Array<string> = [];
+      let failed = false;
+      const h = yield* makeHarness({
+        local: { version: "0.156.1" },
+        spawner: ChildProcessSpawner.make((command) =>
+          Effect.suspend(() => {
+            if (command._tag !== "StandardCommand") return spawner.spawn(command);
+            const probe = command.args.join(" ");
+            probes.push(probe);
+            if (!failed && probe === failedProbe) {
+              failed = true;
+              return Effect.fail(
+                PlatformError.systemError({
+                  _tag: "PermissionDenied",
+                  module: "ChildProcess",
+                  method: "spawn",
+                  pathOrDescriptor: command.command,
+                }),
+              );
+            }
+            return spawner.spawn(command);
+          }),
+        ),
+      });
+      expect(failed).toBe(true);
+      expect((yield* h.installation.state).installedVersion).toBeNull();
+      for (let attempt = 0; attempt < 2; attempt++) {
+        expect(yield* h.installation.resolve()).toMatchObject({
+          source: "local",
+          executablePath: h.localBinaryPath,
+          managedVersionDirectory: null,
+          version: "0.156.1",
+        });
+      }
+      expect(probes).toEqual([
+        ...(failedProbe === "--version" ? ["--version"] : ["--version", "app-server --help"]),
+        "--version",
+        "app-server --help",
+      ]);
+      expect(h.downloads()).toBe(0);
+      expect(yield* h.fs.exists(h.installation.managedDirectory)).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 const compileNative = Effect.fn("test.compileNative")(function* (
   executablePath: string,
   source: string,

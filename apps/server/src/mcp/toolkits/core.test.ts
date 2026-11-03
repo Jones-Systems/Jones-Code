@@ -34,6 +34,7 @@ import {
   OrchestratorCommandRejectedError,
   OrchestratorDispatchError,
   OrchestratorProjectionError,
+  OrchestratorV2,
 } from "../../orchestration-v2/Orchestrator.ts";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
@@ -60,6 +61,7 @@ import * as AttachmentHandlers from "./attachment/handlers.ts";
 import * as PeerForwarding from "../../peer/PeerForwarding.ts";
 
 const layerOrchestratorToolkit = McpHttpServer.layerOrchestratorToolkit.pipe(
+  Layer.provide(Layer.mock(OrchestratorV2)({})),
   Layer.provide(SqlitePersistence.layerMemory),
   Layer.provide(Layer.mock(EventSink.EventSinkV2)({})),
   Layer.provide(Layer.mock(ThreadLaunchService.ThreadLaunchService)({})),

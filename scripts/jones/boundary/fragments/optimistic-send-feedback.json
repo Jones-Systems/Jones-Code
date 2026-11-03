@@ -1,0 +1,108 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "optimistic-send-feedback",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/pendingSends/",
+    "packages/client-runtime/src/operations/jonesPreparedTurn.ts"
+  ],
+  "hookPaths": ["apps/web/src/components/ThreadRouteView.tsx"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/pendingSends/hooks.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    },
+    {
+      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "to": "apps/web/src/jones/pendingSends/sidebar.ts"
+    },
+    {
+      "from": "apps/web/src/components/Sidebar.tsx",
+      "to": "apps/web/src/jones/pendingSends/sidebar.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/QueuedRunsControl.tsx",
+      "to": "apps/web/src/jones/pendingSends/PendingSendStatus.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/TimelineUserMessageRow.tsx",
+      "to": "apps/web/src/jones/pendingSends/PendingSendStatus.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useAttachmentPreviewHandoff.ts",
+      "to": "apps/web/src/jones/pendingSends/previews.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/pendingSends/store.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useMultipleModelSend.ts",
+      "to": "apps/web/src/jones/pendingSends/store.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useMultipleModelSend.ts",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useMultipleModelSend.ts",
+      "to": "apps/web/src/jones/pendingSends/newThread.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
+      "to": "apps/web/src/jones/pendingSends/store.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
+      "to": "apps/web/src/jones/pendingSends/newThread.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useThreadLifecycle.tsx",
+      "to": "apps/web/src/jones/pendingSends/store.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useThreadLifecycle.tsx",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarDraftBlock.tsx",
+      "to": "apps/web/src/jones/pendingSends/hooks.ts"
+    },
+    {
+      "from": "apps/web/src/components/sidebar/SidebarThreadRow.tsx",
+      "to": "apps/web/src/jones/pendingSends/sidebar.ts"
+    },
+    {
+      "from": "apps/web/src/routes/__root.tsx",
+      "to": "apps/web/src/jones/pendingSends/PendingSendsCoordinator.tsx"
+    },
+    {
+      "from": "packages/client-runtime/src/operations/commands.ts",
+      "to": "packages/client-runtime/src/operations/jonesPreparedTurn.ts"
+    },
+    {
+      "from": "apps/web/src/components/ThreadRouteView.tsx",
+      "to": "apps/web/src/jones/pendingSends/hooks.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerResume.ts",
+      "to": "apps/web/src/jones/pendingSends/store.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerResume.ts",
+      "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
+    }
+  ]
+}

@@ -1126,11 +1126,10 @@ describe("orchestrator MCP toolkit", () => {
           );
           const waitForContinuationOffers = (count: number) =>
             Effect.gen(function* () {
-              if ((yield* Ref.get(continuationOffers)).length < count) {
-                yield* Stream.fromQueue(continuationOfferCounts).pipe(
-                  Stream.filter((observed) => observed >= count),
-                  Stream.runHead,
-                );
+              // Counts queued before a scenario resets the offers are only wakeups.
+              // Recheck current state so an old count cannot satisfy this scenario's barrier.
+              while ((yield* Ref.get(continuationOffers)).length < count) {
+                yield* Queue.take(continuationOfferCounts);
               }
               return yield* Ref.get(continuationOffers);
             });

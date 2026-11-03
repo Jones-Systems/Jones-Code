@@ -13,7 +13,10 @@ import * as Layer from "effect/Layer";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
-import { prepareExecutionSession } from "./prepareExecutionSession.ts";
+import {
+  ExecutionSessionRevalidationError,
+  prepareExecutionSession,
+} from "./prepareExecutionSession.ts";
 
 it.effect(
   "retirement persists the released identity before returning for restart and handoff; retries keep event IDs",
@@ -67,8 +70,9 @@ it.effect(
 );
 
 function makeFixture(
-  transition: "restart_and_resume" | "create_with_handoff",
-  fault?: "detach" | "persist" | "stale",
+  transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session",
+  fault?: "detach" | "persist" | "stale" | "selection",
+  continuation = false,
 ) {
   const projection = {
     thread: { id: ThreadId.make("retirement-thread") },
@@ -79,6 +83,7 @@ function makeFixture(
         activeAttemptId: RunAttemptId.make("retirement-attempt"),
         providerInstanceId: ProviderInstanceId.make("target"),
         modelSelection: { instanceId: ProviderInstanceId.make("target"), model: "synthetic" },
+        ...(continuation ? { restartContinuationOfRunId: RunId.make("crashed-source") } : {}),
       },
     ],
     providerThreads: [{ providerSessionId: ProviderSessionId.make("target-session") }],
@@ -96,6 +101,14 @@ function makeFixture(
     projection.runs[0]!,
     projection.providerThreads[0]!,
     projection,
+    fault === "selection"
+      ? Effect.fail(
+          new ExecutionSessionRevalidationError({
+            runId: projection.runs[0]!.id,
+            cause: "Selection changed while retirement was pending.",
+          }),
+        )
+      : Effect.void,
   ).pipe(
     Effect.andThen(
       Effect.sync(() => {
@@ -110,7 +123,10 @@ function makeFixture(
               instanceChanged: true,
               modelChanged: true,
               targetProviderThreadId: null,
-              releaseProviderSessionIds: [projection.providerSessions[0]!.id],
+              releaseProviderSessionIds:
+                transition === "switch_model_in_session"
+                  ? []
+                  : [projection.providerSessions[0]!.id],
               transition: { type: transition },
             }),
         }),
@@ -118,7 +134,9 @@ function makeFixture(
           detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
             providerSessionId,
             threadId,
+            requireWriterRetirement,
           }) {
+            assert.isTrue(requireWriterRetirement);
             assert.equal(threadId, projection.thread.id);
             assert.equal(providerSessionId, projection.providerSessions[0]!.id);
             order.push("detach");
@@ -142,3 +160,39 @@ function makeFixture(
   );
   return { projection, start, order, writes };
 }
+
+it.effect.each(["switch_model_in_session", "create_with_handoff"] as const)(
+  "a %s owner continuation reserves a fresh logical session",
+  (transition) =>
+    Effect.gen(function* () {
+      const fixture = makeFixture(transition, undefined, true);
+      yield* fixture.start;
+      const update = fixture.writes[0]!.events.find(
+        (event) => event.type === "provider-thread.updated",
+      );
+      assert.isDefined(update);
+      if (update?.type === "provider-thread.updated") {
+        assert.notEqual(
+          update.payload.providerSessionId,
+          fixture.projection.providerThreads[0]!.providerSessionId,
+        );
+        assert.equal(
+          update.payload.providerSessionId,
+          `self-configure:${fixture.projection.runs[0]!.id}:${fixture.projection.runs[0]!.activeAttemptId}`,
+        );
+      }
+      assert.equal(fixture.writes[0]!.expectedStatus, "starting");
+    }),
+);
+
+it.effect(
+  "a selection changed during retirement prevents replacement persistence and opening",
+  () =>
+    Effect.gen(function* () {
+      const fixture = makeFixture("restart_and_resume", "selection");
+      const result = yield* Effect.exit(fixture.start);
+      assert.equal(result._tag, "Failure");
+      assert.deepEqual(fixture.order, ["detach"]);
+      assert.deepEqual(fixture.writes, []);
+    }),
+);

@@ -7,6 +7,7 @@ import type {
   ProviderGoalControlResult,
 } from "./jones/runtimeTypes.ts";
 import type { ProviderEventProducerOrigin } from "./jones/ProviderEventOrigin.ts";
+import type { GoalContinuityContext } from "./jones/GoalContinuityContext.ts";
 import { classifyProviderRuntimeBindingFailure } from "./jones/ProviderRuntimeBindingDiagnostics.ts";
 import type { OrchestrationV2HistoricalMessage } from "@t3tools/contracts";
 import {
@@ -588,6 +589,8 @@ export interface ProviderAdapterV2TurnInput {
   readonly configuredReasoningEffort?: string;
   readonly runtimePolicy: ProviderAdapterV2RuntimePolicy;
   readonly appContext?: ReadonlyArray<{ readonly key: string; readonly text: string }>;
+  /** Jones-owned recovery callbacks; user checkpoint data remains untrusted context. */
+  readonly goalContinuityContext?: GoalContinuityContext;
 }
 
 export interface ProviderAdapterV2SteerInput {
@@ -793,6 +796,18 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly unloadThread?: (input: {
     readonly providerThread: OrchestrationV2ProviderThread;
   }) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Confirms writer release for the captured binding; an unsubscribe acknowledgement is insufficient. */
+  readonly retireThreadForTransfer?: (input: {
+    readonly providerThread: OrchestrationV2ProviderThread;
+    /** The manager must fence new attachments while granting exclusive producer retirement. */
+    readonly allowProducerRetirement: boolean;
+  }) => Effect.Effect<
+    {
+      readonly binding: ProviderRuntimeBinding;
+      readonly evidence: "thread_closed" | "producer_exited";
+    },
+    ProviderAdapterV2Error
+  >;
   readonly respondToRuntimeRequest: (
     input: ProviderAdapterV2RuntimeRequestResponseInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

@@ -1,5 +1,10 @@
 import { removeAgentCredits } from "@t3tools/source-control-core/server/mergeMessage";
 import { KnownWorkflowRuns, makeChecksRevalidator } from "./gitHubConditionalChecks.ts";
+import {
+  makeCheckObservationReader,
+  type CheckObservationInput,
+  type CheckObservationResult,
+} from "../jones/pullRequestCheckObservation.ts";
 import { runGitHubStackAction, type GitHubStackActionError } from "./githubStackActions.ts";
 import * as Cache from "effect/Cache";
 import * as Context from "effect/Context";
@@ -488,6 +493,9 @@ export class GitHubPullRequestApi extends Context.Service<
     }) => Effect.Effect<GitHubPullRequestWatchFingerprint | null, GitHubPullRequestApiError>;
 
     readonly revalidateChecks: Effect.Success<typeof makeChecksRevalidator>;
+    readonly getPullRequestCheckObservation: (
+      input: CheckObservationInput & { readonly cwd: string },
+    ) => Effect.Effect<CheckObservationResult, GitHubPullRequestApiError>;
 
     readonly getPullRequestDetail: (input: {
       readonly cwd: string;
@@ -916,6 +924,7 @@ export const make = Effect.gen(function* () {
   const sourceControlHost = yield* SourceControlHost.SourceControlHost;
   const fileSystem = yield* FileSystem.FileSystem;
   const revalidateChecks = yield* makeChecksRevalidator;
+  const readCheckObservation = yield* makeCheckObservationReader;
   const client = yield* GraphQLClient.make(PullRequestGraphQLGroup).pipe(
     Effect.provide(GitHubGraphQlClient.layer),
   );
@@ -1709,6 +1718,15 @@ export const make = Effect.gen(function* () {
   return GitHubPullRequestApi.of({
     withVerifiedCredential,
     revalidateChecks,
+    getPullRequestCheckObservation: (input) =>
+      readCheckObservation(input).pipe(
+        Effect.mapError((cause) =>
+          cause._tag === "GitHubApiRateLimitError" ||
+          cause._tag === "SourceControlRateLimitPausedError"
+            ? cause
+            : readError(input.cwd, "getPullRequestCheckObservation", cause),
+        ),
+      ),
     getRoutingIdentity,
     getViewerLogin: (input) =>
       getRoutingIdentity(input).pipe(Effect.map((identity) => identity.viewer)),

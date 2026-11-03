@@ -1,3 +1,4 @@
+import { readRemoteTaskOwnerIds } from "../jones/remoteDelegation/ShellRetention.ts";
 import { makeThreadAttentionQuery } from "../jones/threadAttention.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import { makeProviderGoalState } from "./ProviderGoalState.ts";
@@ -90,16 +91,19 @@ export const layer = HttpApiBuilder.group(
         readonly omitIdleSubagents: boolean;
         readonly omitOlderSettled: boolean;
       }) {
-        const base = buildActiveShellSnapshot(
-          yield* loadShellSnapshotParts({
-            sql,
-            readThreads: threadManagement.readShellSnapshot({ location: "active" }),
-            listProjects: projectStore.listShells(),
-            latestSequence: applicationEvents.latestApplicationSequence,
-          }),
-        );
+        const parts = yield* loadShellSnapshotParts({
+          sql,
+          readThreads: threadManagement.readShellSnapshot({ location: "active" }),
+          listProjects: projectStore.listShells(),
+          latestSequence: applicationEvents.latestApplicationSequence,
+          ...(options.omitIdleSubagents || options.omitOlderSettled
+            ? { readRetainedThreadIds: readRemoteTaskOwnerIds(sql) }
+            : {}),
+        });
+        const base = buildActiveShellSnapshot(parts);
         const { snapshot } = shellSnapshotForSubscriber(base, {
           ...options,
+          retainedThreadIds: parts.retainedThreadIds,
           now: yield* DateTime.now,
         });
         const projects = yield* enrichProjectShells(base.projects);

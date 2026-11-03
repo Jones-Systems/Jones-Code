@@ -7,9 +7,12 @@ import {
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
+  type ProviderSessionId,
+  type ThreadId,
   TurnItemId,
   MessageId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
@@ -46,8 +49,28 @@ export interface RestartAdapterState {
     readonly selection: ModelSelection;
     readonly cwd: string | null;
     readonly attemptId: string;
+    readonly sessionId: ProviderSessionId;
+    readonly instanceId: ProviderInstanceId;
+    readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
   }>;
+  readonly steered?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2SteerInput>;
+  readonly interrupted?: ReadonlyArray<ProviderAdapter.ProviderAdapterV2InterruptInput>;
+  readonly resumed?: ReadonlyArray<{
+    readonly sessionId: ProviderSessionId;
+    readonly selection: ModelSelection | undefined;
+  }>;
+  readonly rejectSelection?: boolean;
+  readonly handoffSelection?: boolean;
+  readonly failInterrupt?: boolean;
+  readonly openGate?: {
+    readonly entered: Deferred.Deferred<void>;
+    readonly release: Deferred.Deferred<void>;
+  };
   readonly closedSessionCount: number;
+  readonly detached?: ReadonlyArray<{
+    readonly providerSessionId: ProviderSessionId;
+    readonly threadId: ThreadId;
+  }>;
   readonly failedReplacementOpen: boolean;
 }
 
@@ -66,10 +89,16 @@ export function makeRestartAdapter(
     driver,
     getCapabilities: () => Effect.succeed(sessionCapabilities),
     planSelectionTransition: ({ current, target }) =>
-      Effect.succeed(
-        !restartRequired || current.model === target.model
-          ? ({ type: "apply_on_next_turn" } as const)
-          : ({ type: "restart_session" } as const),
+      Ref.get(state).pipe(
+        Effect.map((value) =>
+          value.rejectSelection
+            ? { type: "reject" as const, reason: "Synthetic selection refusal" }
+            : value.handoffSelection
+              ? { type: "create_with_handoff" as const }
+              : !restartRequired || current.model === target.model
+                ? { type: "apply_on_next_turn" as const }
+                : { type: "restart_session" as const },
+        ),
       ),
     openSession: Effect.fn("ThreadConfigurationTest.openSession")(function* (sessionInput) {
       const failThisOpen = yield* Ref.modify(state, (current) => {
@@ -100,6 +129,11 @@ export function makeRestartAdapter(
         });
       }
 
+      const gate = (yield* Ref.get(state)).openGate;
+      if (gate !== undefined) {
+        yield* Deferred.succeed(gate.entered, undefined);
+        yield* Deferred.await(gate.release);
+      }
       const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
       const now = yield* DateTime.now;
       const providerSession: OrchestrationV2ProviderSession = {
@@ -157,6 +191,32 @@ export function makeRestartAdapter(
         });
       });
 
+      const runtimeGeneration =
+        sessionInput.runtimeLifecycle === undefined
+          ? `synthetic:${sessionInput.providerSessionId}`
+          : yield* sessionInput.runtimeLifecycle.reserve(sessionInput.threadId);
+      if (sessionInput.runtimeLifecycle !== undefined)
+        yield* sessionInput.runtimeLifecycle.admit({
+          runtimeGeneration,
+          threadId: sessionInput.threadId,
+        });
+      const bindThread = Effect.fn("ThreadConfigurationTest.bindThread")(function* (
+        providerThread: OrchestrationV2ProviderThread,
+      ) {
+        const requested = ProviderAdapter.requestedRuntimeIdentity(
+          sessionInput.modelSelection,
+          driver,
+        );
+        const observed = ProviderAdapter.unobservedRuntimeIdentity();
+        return sessionInput.runtimeLifecycle === undefined
+          ? { ...providerThread, runtimeIdentity: { runtimeGeneration, requested, observed } }
+          : yield* sessionInput.runtimeLifecycle.bind({
+              providerThread,
+              runtimeGeneration,
+              requested,
+              observed,
+            });
+      });
       return {
         instanceId: providerInstanceId,
         driver,
@@ -165,10 +225,11 @@ export function makeRestartAdapter(
         events: Stream.fromQueue(events),
         ensureThread: Effect.fn("ThreadConfigurationTest.ensureThread")(function* (threadInput) {
           const createdAt = yield* DateTime.now;
-          return {
-            id:
-              threadInput.existingProviderThread?.id ??
-              ProviderThreadId.make(`provider-thread:${threadInput.threadId}`),
+          const id =
+            threadInput.existingProviderThread?.id ??
+            ProviderThreadId.make(`provider-thread:${threadInput.threadId}`);
+          return yield* bindThread({
+            id,
             driver,
             providerInstanceId,
             providerSessionId: sessionInput.providerSessionId,
@@ -176,7 +237,7 @@ export function makeRestartAdapter(
             ownerNodeId: null,
             nativeThreadRef: {
               driver,
-              nativeId: `native-thread:${threadInput.threadId}`,
+              nativeId: `native-thread:${id}`,
               strength: "strong",
             },
             nativeConversationHeadRef: null,
@@ -187,9 +248,45 @@ export function makeRestartAdapter(
             forkedFrom: null,
             createdAt,
             updatedAt: createdAt,
-          } satisfies OrchestrationV2ProviderThread;
+          } satisfies OrchestrationV2ProviderThread);
         }),
-        resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
+        retireThreadForTransfer: Effect.fn("ThreadConfigurationTest.retireThreadForTransfer")(
+          function* ({ providerThread, allowProducerRetirement }) {
+            const binding = ProviderAdapter.runtimeBinding(providerThread, runtimeGeneration);
+            if (
+              binding === undefined ||
+              providerThread.runtimeIdentity?.runtimeGeneration !== runtimeGeneration
+            )
+              return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                driver,
+                detail: "Synthetic writer binding changed.",
+              });
+            return {
+              binding,
+              evidence:
+                allowProducerRetirement &&
+                !sessionCapabilities.sessions.supportsMultipleProviderThreadsPerSession
+                  ? ("producer_exited" as const)
+                  : ("thread_closed" as const),
+            };
+          },
+        ),
+        resumeThread: ({ providerThread, modelSelection }) =>
+          Ref.update(state, (current) => ({
+            ...current,
+            resumed: [
+              ...(current.resumed ?? []),
+              { sessionId: sessionInput.providerSessionId, selection: modelSelection },
+            ],
+          })).pipe(
+            Effect.andThen(
+              bindThread({
+                ...providerThread,
+                providerInstanceId,
+                providerSessionId: sessionInput.providerSessionId,
+              }),
+            ),
+          ),
         startTurn: Effect.fn("ThreadConfigurationTest.startTurn")(function* (input) {
           yield* Ref.update(state, (current) => ({
             ...current,
@@ -200,6 +297,9 @@ export function makeRestartAdapter(
                 selection: input.modelSelection,
                 cwd: input.runtimePolicy.cwd,
                 attemptId: input.attemptId,
+                sessionId: sessionInput.providerSessionId,
+                instanceId: providerInstanceId,
+                input,
               },
             ],
           }));
@@ -234,8 +334,23 @@ export function makeRestartAdapter(
           }
           yield* publishTerminal(active, "completed");
         }),
-        steerTurn: () => Effect.void,
-        interruptTurn: Effect.fn("ThreadConfigurationTest.interruptTurn")(function* () {
+        steerTurn: (input) =>
+          Ref.update(state, (current) => ({
+            ...current,
+            steered: [...(current.steered ?? []), input],
+          })),
+        interruptTurn: Effect.fn("ThreadConfigurationTest.interruptTurn")(function* (input) {
+          yield* Ref.update(state, (current) => ({
+            ...current,
+            interrupted: [...(current.interrupted ?? []), input],
+          }));
+          if ((yield* Ref.get(state)).failInterrupt)
+            return yield* new ProviderAdapter.ProviderAdapterInterruptError({
+              driver,
+              providerThreadId: input.providerThread.id,
+              providerTurnId: input.providerTurnId,
+              cause: "Synthetic interrupt failure",
+            });
           const active = (yield* Ref.get(state)).activeTurn;
           if (active !== null) {
             const updatedAt = yield* DateTime.now;

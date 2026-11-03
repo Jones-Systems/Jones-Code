@@ -326,6 +326,20 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
   setJonesBackgroundPreparation: (enabled) =>
     ipcRenderer.invoke(JonesUpdateChannels.SET_BACKGROUND_PREPARATION, enabled),
+  ...(ipcRenderer.sendSync("desktop:jones-install-plan-available") === true
+    ? {
+        installPlan: (request: Parameters<NonNullable<DesktopBridge["installPlan"]>>[0]) =>
+          ipcRenderer.invoke("desktop:jones-install-plan", request),
+        onInstallPlan: (listener: Parameters<NonNullable<DesktopBridge["onInstallPlan"]>>[0]) => {
+          const wrapped = (
+            _event: Electron.IpcRendererEvent,
+            state: Parameters<typeof listener>[0],
+          ) => listener(state);
+          ipcRenderer.on("desktop:jones-install-plan-state", wrapped);
+          return () => ipcRenderer.removeListener("desktop:jones-install-plan-state", wrapped);
+        },
+      }
+    : {}),
   fleetUpdates: (request) => ipcRenderer.invoke(IpcChannels.FLEET_UPDATES_CHANNEL, request),
   installUpdate: (stagedHandle, campaignId) =>
     campaignId !== undefined

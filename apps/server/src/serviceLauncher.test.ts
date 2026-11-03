@@ -1155,3 +1155,88 @@ setInterval(() => {}, 1_000);
     }),
   );
 });
+
+it("round-trips the historical stage explicitly and refuses legacy or malformed capability claims", () => {
+  const binding = {
+    baseDir: "/synthetic",
+    dbPath: "/synthetic/userdata/statev2.sqlite",
+    environmentId: "synthetic-environment",
+    activeVersion: "0.0.0-preview.20261002.100",
+    activeSourceSha: "a".repeat(40),
+  };
+  const qualified = {
+    protocol: 2,
+    stagedHandle: "12345678-1234-4234-8234-123456789abc",
+    binding,
+    receipt: {
+      protocol: 1,
+      repository: "Jones-Systems/Jones-Code",
+      channel: "jones-main",
+      version: "0.0.0-preview.20261002.101.1",
+      sourceSha: "b".repeat(40),
+      sourceTree: "c".repeat(40),
+      installedSourceSha: "9".repeat(40),
+      workflow: ".github/workflows/artifact-cli-linux.yml",
+      runId: 101,
+      runAttempt: 1,
+      artifactId: 102,
+      artifactDigest: `sha256:${"d".repeat(64)}`,
+      archiveSha256: "e".repeat(64),
+      payloadSha256: "f".repeat(64),
+      platform: "linux",
+      architecture: "x64",
+    },
+  };
+  const update = {
+    id: qualified.stagedHandle,
+    fromVersion: "0.0.0-preview.20261002.100",
+    targetVersion: "0.0.0-preview.20261002.101.1",
+    dbPath: binding.dbPath,
+    status: "pending",
+    phase: "accepted",
+    qualified,
+  };
+  const state = {
+    protocol: SERVICE_LAUNCHER_PROTOCOL,
+    activeVersion: "0.0.0-preview.20261002.100",
+    update,
+  };
+  assert.deepEqual<unknown>(decodeServiceState(state), state);
+  const context = {
+    protocol: SERVICE_LAUNCHER_PROTOCOL,
+    childVersion: update.targetVersion,
+    qualifiedUpdatesProtocol: 1,
+    qualifiedRecoveryProtocol: 1,
+    update: { ...update, phase: "trial-ready" },
+  };
+  assert.deepEqual<unknown>(decodeServiceLauncherContext(JSON.stringify(context)), context);
+  assert.isUndefined(decodeServiceLauncherContext(JSON.stringify({ ...context, update })));
+  assert.isUndefined(
+    decodeServiceLauncherContext(
+      JSON.stringify({ ...context, qualifiedRecoveryProtocol: undefined }),
+    ),
+  );
+  assert.isUndefined(
+    decodeServiceState({
+      ...state,
+      update: { ...update, qualified: { ...qualified, protocol: 1 } },
+    }),
+  );
+  const request = {
+    type: "request-update",
+    targetVersion: "0.0.0-preview.20261002.101.1",
+    dbPath: binding.dbPath,
+    stagedHandle: qualified.stagedHandle,
+    qualifiedRecoveryProtocol: 1,
+  };
+  assert.deepEqual<unknown>(decodeServiceLauncherChildMessage(request), request);
+  for (const qualifiedRecoveryProtocol of [undefined, null, 0, 2, "1", true]) {
+    assert.isUndefined(
+      decodeServiceLauncherContext(JSON.stringify({ ...context, qualifiedRecoveryProtocol })),
+    );
+    assert.isUndefined(
+      decodeServiceLauncherChildMessage({ ...request, qualifiedRecoveryProtocol }),
+    );
+  }
+  assert.isUndefined(decodeServiceLauncherChildMessage({ ...request, stagedHandle: undefined }));
+});

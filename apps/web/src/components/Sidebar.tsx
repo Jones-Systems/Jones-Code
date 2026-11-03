@@ -1,3 +1,4 @@
+import { usePendingSidebarThreads } from "../jones/pendingSends/sidebar";
 import { publishWorkQueueLocalNames } from "@t3tools/client-runtime/work-queue-metadata";
 import { nextThreadStatusWakeAt } from "../jones/threadStatusFilter/model";
 import { useThreadStatusFilter } from "../jones/threadStatusFilter/useThreadStatusFilter";
@@ -402,7 +403,7 @@ function useSidebarThreads(input: {
 }) {
   const { projectScopeKey, scopedProjectKeys, serverConfigs, optimisticDrop, routeThreadRef } =
     input;
-  const threads = useQuietThreadShells();
+  const threads = usePendingSidebarThreads(useQuietThreadShells());
   const routeRowThreadKey =
     routeThreadRef === null
       ? null

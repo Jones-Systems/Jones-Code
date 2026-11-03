@@ -1,3 +1,5 @@
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { Dispatch } from "react";
@@ -39,6 +41,7 @@ import { useUiStateStore } from "../../uiStateStore";
 import { type ChatMessage } from "../../types";
 import { AlarmClockIcon, CheckCircle2Icon } from "lucide-react";
 import { stackedThreadToast, toastManager } from "../ui/toast";
+import { useDescendantApprovalBanner } from "../../jones/descendantApproval/useDescendantApprovalBanner";
 import { newMessageId } from "~/lib/utils";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { composerDraftHasUserContent, useComposerDraftStore } from "../../composerDraftStore";
@@ -156,9 +159,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
-  const startThreadTurn = useOrchestrationCommand(threadEnvironment.startTurn, {
-    reportFailure: false,
-  });
+  const startThreadTurn = usePendingTurn();
   const interruptThreadTurn = useOrchestrationCommand(threadEnvironment.interruptTurn, {
     reportFailure: false,
   });
@@ -167,15 +168,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
   const supportsSnooze = serverConfig?.environment.capabilities.threadSnooze === true;
   const supportsPinning = serverConfig?.environment.capabilities.threadPinning === true;
   const activeThreadPinned = supportsPinning && activeThreadShell?.pinnedAt != null;
-  // The compiler caches render results on their inputs, so a clock read in render
-  // stays frozen until the shell changes. The clock is state: reset with the shell,
-  // and moved by the wake timer.
+  // The compiler caches render results on their inputs. Reset from the subscribed
+  // minute snapshot when the shell changes; the wake timer supplies the precise time.
   const [snoozeClockState, setSnoozeClockState] = useState(() => ({
     shell: activeThreadShell,
     now: new Date().toISOString(),
   }));
   if (snoozeClockState.shell !== activeThreadShell) {
-    setSnoozeClockState({ shell: activeThreadShell, now: new Date().toISOString() });
+    setSnoozeClockState({ shell: activeThreadShell, now: `${nowMinute}:00.000Z` });
   }
   const snoozeClock = snoozeClockState.now;
   const activeThreadSnoozed =
@@ -451,8 +451,14 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     });
   });
   const childThreadInputs = useChildThreadInputs(activeThreadRef);
+  const descendantApprovalBanner = useDescendantApprovalBanner({
+    parentRef: activeThreadRef,
+    onOpenThread: onOpenChildInput,
+  });
   const childInputBanner = childInputBannerItem({
-    childThreadInputs,
+    childThreadInputs: descendantApprovalBanner
+      ? childThreadInputs.filter((child) => !child.hasPendingApprovals)
+      : childThreadInputs,
     parentAwaitingUser: Boolean(
       activePendingApproval || activePendingUserInput || activeThreadShell?.hasPendingUserInput,
     ),
@@ -506,9 +512,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
             },
           });
     if (result._tag === "Failure") {
-      setOptimisticUserMessages((messages) =>
-        messages.filter((message) => message.id !== messageId),
-      );
+      pendingSends.failBeforeDispatch(environmentId, threadId, messageId);
       resetLocalDispatch();
       if (!isAtomCommandInterrupted(result)) {
         const error = squashAtomCommandFailure(result);
@@ -611,6 +615,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     activeBranchMismatchKey,
     backgroundWorkBanner,
     childInputBanner,
+    descendantApprovalBanner,
     goalBanner,
     handleSwitchCheckoutToThread,
     handleSwitchCheckoutToThreadStable,

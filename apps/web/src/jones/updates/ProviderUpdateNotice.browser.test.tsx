@@ -1,6 +1,6 @@
 import { act, render, fakeTimers } from "../../../test/render";
 import "~/index.css";
-import { page } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   EnvironmentId,
@@ -11,7 +11,7 @@ import {
 import { collectProviderUpdateCandidates } from "@t3tools/client-runtime/jones/provider-updates";
 import { AsyncResult } from "effect/reactivity";
 import type { useJonesProviderUpdates } from "./useProviderUpdates";
-import { toastManager } from "~/components/ui/toast";
+import { ToastProvider, toastManager } from "~/components/ui/toast";
 
 const state = vi.hoisted(() => ({
   updates: null as ReturnType<typeof useJonesProviderUpdates> | null,
@@ -91,9 +91,149 @@ function publishGroups(group: ReturnType<typeof useJonesProviderUpdates>["groups
 }
 
 describe("current provider update notice rows", () => {
+  it("collapses devices independently and keeps update, retry and settings actions separate", async () => {
+    state.updates = updates();
+    state.updateEnvironment.mockClear();
+    state.navigate.mockReset();
+    await using screen = await render(<ProviderUpdateEnvironmentRows />, { router: false });
+    const toggle = page.getByRole("button", { name: "Provider updates on WSL", exact: true });
+    const row = page.getByRole("region", { name: "Provider updates on WSL", exact: true });
+    await toggle.click();
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect.element(page.getByText("Codex · personal", { exact: true })).not.toBeVisible();
+    await expect.element(page.getByText("Codex · manual", { exact: true })).toBeVisible();
+    await expect
+      .element(row.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
+    await row.getByRole("button", { name: "Update", exact: true }).click();
+    expect(state.updateEnvironment).toHaveBeenCalledWith(wsl);
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    const group = state.updates.groups[0]!;
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "failed",
+        runs: [],
+        message: "Long diagnostic that should stay hidden when this device is collapsed.",
+      },
+    });
+    await screen.rerender(<ProviderUpdateEnvironmentRows />);
+    await expect.element(row.getByRole("status")).toHaveTextContent("Update needs attention");
+    await expect
+      .element(
+        row.getByText("Long diagnostic that should stay hidden when this device is collapsed."),
+      )
+      .not.toBeVisible();
+    await row.getByRole("button", { name: "Retry", exact: true }).click();
+    expect(state.updateEnvironment).toHaveBeenCalledTimes(2);
+    toggle.element().focus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect
+      .element(
+        row.getByText("Long diagnostic that should stay hidden when this device is collapsed."),
+      )
+      .toBeVisible();
+    await row.getByRole("button", { name: "Settings", exact: true }).click();
+    expect(state.navigate).toHaveBeenCalledWith({
+      to: "/settings/providers",
+      search: { machine: wsl },
+    });
+  });
+
+  it("fully collapses the toast while retaining device choices through progress and refreshed targets", async () => {
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    state.updates = { ...updates(), noticeKey: "collapse-first" };
+    const notice = () => (
+      <ToastProvider>
+        <ProviderUpdateNotice />
+      </ToastProvider>
+    );
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(notice());
+    const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
+    const device = page.getByRole("button", { name: "Provider updates on WSL", exact: true });
+    await expect.element(toggle).toBeVisible();
+    await device.click();
+    await toggle.click();
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect.element(device).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Settings", exact: true }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole("button", { name: "Dismiss notification", exact: true }))
+      .toBeVisible();
+    const group = state.updates.groups[0]!;
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "running",
+        runs: [],
+        message: "Updating providers…",
+      },
+    });
+    await screen.rerender(notice());
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    publishGroups({
+      ...group,
+      attempt: {
+        generation: 1,
+        machine: group,
+        phase: "succeeded",
+        runs: [],
+        message: "Synthetic update finished",
+      },
+    });
+    state.updates = { ...state.updates!, noticeKey: "collapse-refreshed" };
+    await screen.rerender(notice());
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "false");
+    toggle.element().focus();
+    await userEvent.keyboard(" ");
+    await expect.element(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect.element(device).toHaveAttribute("aria-expanded", "false");
+    await expect.element(page.getByText("Providers updated", { exact: true })).toBeVisible();
+    await expect
+      .element(page.getByText("Synthetic update finished", { exact: true }))
+      .not.toBeVisible();
+    await toggle.click();
+    await page.getByRole("button", { name: "Dismiss notification", exact: true }).click();
+    await expect.element(toggle).not.toBeInTheDocument();
+    expect(
+      JSON.parse(localStorage.getItem("t3code:provider-update-dismissals:v1") ?? "{}").keys,
+    ).toContain("collapse-refreshed");
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+  });
+
+  it("keeps a single-device notice collapsible and preserves its global Settings action", async () => {
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+    state.updates = updates();
+    state.updates.groups = state.updates.groups.slice(0, 1);
+    state.updates.noticeKey = "collapse-primary";
+    state.navigate.mockReset();
+    await using screen = await render(<ToastProvider />);
+    await screen.rerender(
+      <ToastProvider>
+        <ProviderUpdateNotice />
+      </ToastProvider>,
+    );
+    const toggle = page.getByRole("button", { name: "Provider updates available", exact: true });
+    await toggle.click();
+    await expect.element(page.getByText("Codex · personal", { exact: true })).not.toBeVisible();
+    await toggle.click();
+    await page.elementLocator(document.querySelector('[data-slot="toast-action"]')!).click();
+    expect(state.navigate).toHaveBeenCalledWith({ to: "/settings/providers" });
+    localStorage.removeItem("t3code:provider-update-dismissals:v1");
+  });
+
   it("gives each new settling period its own grace timer and retires the old timer", async () => {
     using _timers = fakeTimers();
     using addToast = vi.spyOn(toastManager, "add").mockReturnValue("provider-update-toast");
+    using updateToast = vi.spyOn(toastManager, "update").mockImplementation(() => {});
     using closeToast = vi.spyOn(toastManager, "close").mockImplementation(() => {});
     state.updates = { ...updates(), noticeKey: "grace-first", isAnySettling: true };
     {
@@ -110,7 +250,8 @@ describe("current provider update notice rows", () => {
       await act(() => vi.advanceTimersByTimeAsync(29_999));
       expect(addToast).toHaveBeenCalledTimes(1);
       await act(() => vi.advanceTimersByTimeAsync(1));
-      expect(addToast).toHaveBeenCalledTimes(2);
+      expect(addToast).toHaveBeenCalledTimes(1);
+      expect(updateToast).toHaveBeenCalledTimes(1);
 
       state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
       await screen.rerender(<ProviderUpdateNotice />);
@@ -120,7 +261,8 @@ describe("current provider update notice rows", () => {
       state.updates = { ...state.updates!, noticeKey: "", isAnySettling: false };
       await screen.rerender(<ProviderUpdateNotice />);
       await act(() => vi.advanceTimersByTimeAsync(30_000));
-      expect(addToast).toHaveBeenCalledTimes(2);
+      expect(addToast).toHaveBeenCalledTimes(1);
+      expect(updateToast).toHaveBeenCalledTimes(1);
     }
     expect(closeToast).toHaveBeenCalled();
   });

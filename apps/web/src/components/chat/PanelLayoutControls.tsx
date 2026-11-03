@@ -2,7 +2,7 @@ import { MonitorToggle } from "../../jones/threadMonitor/MonitorToggle";
 import { PanelBottomIcon, PanelRightIcon, SquareMenuIcon } from "lucide-react";
 import { Maximize2, Minimize2 } from "lucide";
 import { MorphIcon } from "~/components/MorphIcon";
-import { memo, type ReactElement, type ReactNode } from "react";
+import { memo, type ReactElement, type ReactNode, type Ref } from "react";
 
 import { cn } from "~/lib/utils";
 
@@ -185,7 +185,11 @@ export function ThreadPanelHeaderControl(props: PanelLayoutControlsProps) {
 }
 
 /** The window's top-right panel controls, with the maximize toggle while the panel is open. */
-export function WorkspaceTitlebarControls(props: {
+export function WorkspaceTitlebarControls({
+  ref,
+  ...props
+}: {
+  readonly ref?: Ref<HTMLDivElement>;
   readonly showMaximizeControl: boolean;
   readonly rightPanelOpen: boolean;
   readonly animationsActive: boolean;
@@ -197,6 +201,7 @@ export function WorkspaceTitlebarControls(props: {
     <div
       className="pointer-events-none fixed top-[var(--workspace-controls-top)] right-[var(--workspace-controls-right)] z-50 mr-px flex h-[var(--workspace-topbar-height)] items-center gap-1 [-webkit-app-region:no-drag]"
       data-workspace-titlebar-controls
+      ref={ref}
     >
       {props.showMaximizeControl ? (
         <span

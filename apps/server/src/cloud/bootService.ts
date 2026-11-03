@@ -1,3 +1,4 @@
+import { readLauncherPointer } from "../jones/cloud/launcherPointer.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SERVICE_MANAGER_STOP_TIMEOUT_SECONDS } from "../jones/cloud/shutdownBudget.ts";
 import * as Config from "effect/Config";
@@ -675,8 +676,24 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         );
       }),
     ).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
+  const launcherPointer = yield* Effect.tryPromise({
+    try: async () => {
+      const pointer = await readLauncherPointer(input.baseDir);
+      if (pointer !== undefined) {
+        for (const version of [pointer.currentVersion, pointer.pendingVersion]) {
+          if (version !== undefined)
+            await readQualifiedRuntimeReceipt(input.baseDir, version, {
+              platform,
+              architecture: arch,
+            });
+        }
+      }
+      return pointer;
+    },
+    catch: (cause) => new BootServiceInstallError({ cause }),
+  });
   const plan: BootServicePlan = {
-    program: [runtimePaths.entryPath, "__service-launcher"],
+    program: [launcherPointer?.program ?? runtimePaths.entryPath, "__service-launcher"],
     baseDir: input.baseDir,
     logPath,
     unitPath,

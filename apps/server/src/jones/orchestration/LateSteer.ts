@@ -23,7 +23,6 @@ export const verifyCodexProcessExit = Effect.fn("LateSteer.verifyCodexProcessExi
         cause: "The captured child has no confirmed exit.",
       });
   },
-  Effect.timeout("3 seconds"),
   Effect.mapError(
     (cause) =>
       new CodexErrors.CodexAppServerTransportError({

@@ -149,6 +149,16 @@ start no Codex turn settle on a provider turn without a native ref, which native
 not count. Claude's SDK mode emits no goal events; its adapter reads goal state from the
 synthetic command output and Stop hook feedback in the transcript.
 
+Jones [goal continuity](../../apps/server/src/jones/goals/continuity/GoalContinuity.ts)
+stores semantic progress separately from native goal lifecycle. Its durable owner names the exact
+environment and provider conversation; a live execution witness authorizes agent writes, while
+authenticated owner administration can work without starting a provider. Recovery delivery history
+fences continuation even after the current record is detached or retired. A prepared capsule grants
+no send authority: dispatch requires a durably committed, single-use permit for the captured producer.
+Compaction recovery reads fresh persisted state and injects it as untrusted context. Injection and
+bound pause/interrupt remain asynchronous; they do not establish a strict barrier before every
+post-compaction token or tool. Native successors need the same continuity check as ordinary starts.
+
 Capabilities must describe what the provider can actually do. Antigravity can capture workspace
 checkpoints but cannot roll back its conversation. The [checkpoint boundary](./overview.md#turn-completion-and-checkpoints)
 therefore rejects revert before touching files. Native permission and question option IDs must

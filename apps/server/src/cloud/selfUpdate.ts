@@ -30,7 +30,11 @@ import { HttpClient } from "effect/http";
 import { CLI_RELEASE_BASE_URL_ENV } from "@t3tools/shared/cliRelease";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import type { StagedQualifiedRuntime } from "../jones/cloud/qualifiedRuntime.ts";
+import {
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
+  type StagedQualifiedRuntime,
+} from "../jones/cloud/qualifiedRuntime.ts";
 
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerConfig from "../config.ts";
@@ -95,6 +99,7 @@ export class ServerSelfUpdate extends Context.Service<
       reportStep?: (
         step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
       ) => Effect.Effect<void>,
+      onPreparationRefused?: () => Effect.Effect<void>,
     ) => Effect.Effect<ServerSelfUpdateResult, ServerSelfUpdateError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -128,6 +133,7 @@ const timedQualifiedStep = Effect.fn("ServerSelfUpdate.timedQualifiedStep")(func
 export function runQualifiedInstallPhases<A, B, R, R2>(input: {
   readonly prepare: Effect.Effect<A, ServerSelfUpdateError, R>;
   readonly handoff: (prepared: A) => Effect.Effect<B, ServerSelfUpdateError, R2>;
+  readonly onPreparationRefused?: () => Effect.Effect<void>;
 }): Effect.Effect<B, ServerSelfUpdateError, R | R2> {
   return Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
@@ -144,7 +150,7 @@ export function runQualifiedInstallPhases<A, B, R, R2>(input: {
               ),
           }),
         ),
-      );
+      ).pipe(Effect.onError(() => input.onPreparationRefused?.() ?? Effect.void));
       return yield* input.handoff(prepared);
     }),
   );
@@ -282,6 +288,7 @@ export const withRunningThreadContinuation = Effect.fn(
             reportStep?: (
               step: "marking" | "verifying" | "preflight" | "capturing" | "handoff",
             ) => Effect.Effect<void>,
+            onPreparationRefused?: () => Effect.Effect<void>,
           ) => {
             let handoffAccepted = false;
             let continuationThreadIds: ReadonlyArray<ThreadId> = [];
@@ -316,6 +323,7 @@ export const withRunningThreadContinuation = Effect.fn(
                       }).pipe(Effect.andThen(onAccepted?.() ?? Effect.void)),
                     onPrepared,
                     reportStep,
+                    onPreparationRefused,
                   );
                 }),
                 () => continuationThreadIds,
@@ -582,7 +590,12 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     return launcher.currentVersion;
   };
   const validateQualifiedCandidate = Effect.fn("ServerSelfUpdate.validateQualifiedCandidate")(
-    function* (entryPath: string, databasePath: string, version: string) {
+    function* (
+      entryPath: string,
+      databasePath: string,
+      version: string,
+      requiredQualifiedRecoveryProtocol?: 1,
+    ) {
       const result = yield* runner
         .run({
           command: entryPath,
@@ -611,6 +624,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         code: result.code,
         stdout: result.stdout,
         version,
+        ...(requiredQualifiedRecoveryProtocol === undefined
+          ? {}
+          : { requiredQualifiedRecoveryProtocol }),
       });
       if (reason !== undefined) return yield* failWith(reason);
       const parsed = yield* decodePreflightJson(result.stdout.trim()).pipe(
@@ -630,8 +646,10 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     onHandoffAccepted = () => Effect.void,
     onPrepared = () => Effect.void,
     reportStep = () => Effect.void,
+    onPreparationRefused = () => Effect.void,
   ) =>
     runQualifiedInstallPhases({
+      onPreparationRefused,
       prepare: Effect.gen(function* () {
         yield* reportStep("verifying");
         const staged = yield* timedQualifiedStep(
@@ -651,6 +669,13 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               ),
           }),
         );
+        if (
+          staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL &&
+          launcher.qualifiedRecovery !== true
+        )
+          return yield* failWith(
+            "bootstrap-required: The launcher cannot activate historical enrollment receipts. Refresh it on this host first.",
+          );
         const actualDatabase = yield* Effect.tryPromise({
           try: () => NodeFSP.realpath(serverConfig.dbPath),
           catch: (cause) => failWith("Could not bind the running database.", cause),
@@ -671,6 +696,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
             ),
             staged.binding.dbPath,
             staged.receipt.version,
+            staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+              ? QUALIFIED_RECOVERY_PROTOCOL
+              : undefined,
           ),
         );
         yield* reportStep("capturing");
@@ -689,6 +717,9 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
               targetVersion: staged.receipt.version,
               dbPath: staged.binding.dbPath,
               stagedHandle: staged.stagedHandle,
+              ...(staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
+                ? { qualifiedRecoveryProtocol: QUALIFIED_RECOVERY_PROTOCOL }
+                : {}),
               ...(input.operationId === undefined ? {} : { operationId: input.operationId }),
             })
             .pipe(

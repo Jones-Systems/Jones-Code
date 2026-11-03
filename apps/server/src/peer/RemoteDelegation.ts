@@ -45,6 +45,7 @@ import * as RemoteLifecycle from "../jones/remoteDelegation/Lifecycle.ts";
 import * as PeerMonitor from "../jones/remoteDelegation/PeerMonitor.ts";
 import * as FinalText from "../jones/remoteDelegation/FinalText.ts";
 import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
+import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 50_000;
@@ -251,6 +252,7 @@ const make = Effect.gen(function* () {
           message: "Delegated tasks require an active run owned by this MCP provider session.",
         });
       }
+      yield* refuseUnsolicitedSupervision(parent.thread, input);
       const parentNodeId = parentRun.rootNodeId;
       const { target } = input;
       if (input.isolation !== undefined && input.workspaceStrategy !== undefined)
@@ -604,6 +606,12 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
+    if (waited.threadId !== remote.threadId)
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message:
+          "The remote wait returned a mismatched task thread; reconciliation remains pending.",
+      });
     if (
       waited.remoteObservation === undefined &&
       (waited.timedOut ||
@@ -640,6 +648,12 @@ const make = Effect.gen(function* () {
         message: "The remote task's run could not be attributed; reconciliation remains pending.",
       });
     if (!isTerminal(waited.status)) return false;
+    if (waited.resultRun !== undefined && !isTerminal(waited.resultRun.status))
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message:
+          "The remote wait selected an unfinished result run; reconciliation remains pending.",
+      });
     const resultRun = waited.resultRun ?? {
       runId: remote.runId ?? waited.runId,
       status: waited.status,

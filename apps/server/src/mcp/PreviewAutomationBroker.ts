@@ -587,14 +587,17 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     "PreviewAutomationBroker.respond",
   )(function* (response) {
     const now = yield* Clock.currentTimeMillis;
-    const pending = yield* SynchronizedRef.modify(state, (current) => {
-      const entry =
-        current.pending.get(response.requestId) ?? current.tombstones.get(response.requestId);
+    const reply = yield* SynchronizedRef.modify(state, (current) => {
+      const live = current.pending.get(response.requestId);
+      const tombstone = current.tombstones.get(response.requestId);
+      const retained =
+        live ?? (tombstone !== undefined && tombstone.expiresAt > now ? tombstone : undefined);
+      // Quarantine outlives tombstone retention; only the original host may settle it.
+      const entry = retained ?? current.quarantine.get(response.requestId);
       if (
         !entry ||
         entry.context.clientId !== response.clientId ||
-        entry.context.connectionId !== response.connectionId ||
-        ("expiresAt" in entry && typeof entry.expiresAt === "number" && entry.expiresAt <= now)
+        entry.context.connectionId !== response.connectionId
       )
         return [undefined, current] as const;
       const next = new Map(current.pending);
@@ -606,12 +609,12 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       const validReply = response.ok || response.error !== undefined;
       if (validReply && response.error?.outcome !== "unknown")
         tombstones.delete(response.requestId);
-      else {
+      else if (retained !== undefined) {
         tombstones.set(response.requestId, {
-          ...entry,
+          ...retained,
           expiresAt:
-            "expiresAt" in entry && typeof entry.expiresAt === "number"
-              ? entry.expiresAt
+            "expiresAt" in retained && typeof retained.expiresAt === "number"
+              ? retained.expiresAt
               : now + 60_000,
         });
         while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
@@ -653,7 +656,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         });
       }
       return [
-        entry,
+        [entry, live === undefined] as const,
         {
           ...current,
           pending: next,
@@ -664,8 +667,9 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         },
       ] as const;
     });
-    if (!pending) return;
-    if ("expiresAt" in pending) {
+    if (!reply) return;
+    const [pending, late] = reply;
+    if (late) {
       yield* Effect.logInfo("Late preview automation reply", {
         requestId: response.requestId,
         connectionId: response.connectionId,
@@ -962,14 +966,16 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
       pending.delete(requestId);
       return { ...next, pending };
     });
+    // Only offered requests reach the host; every other result leaves the request unstarted.
+    type Dispatch = "offered" | "superseded" | "held" | "expired" | "closed";
     const awaitResponse = Effect.fn("PreviewAutomationBroker.awaitResponse")(function* () {
-      const offered = yield* SynchronizedRef.modifyEffect(state, (current) => {
+      const dispatch = yield* SynchronizedRef.modifyEffect(state, (current) => {
         // Serialize generation checks and offers with queue closure; routes can outlive eviction.
         if (
           current.clients.get(connection.clientId)?.queue !== connection.queue ||
           !current.pending.has(requestId)
         ) {
-          return Effect.succeed([false, current] as const);
+          return Effect.succeed(["superseded" as Dispatch, current] as const);
         }
         return Effect.gen(function* () {
           const runtimeEvidence =
@@ -993,7 +999,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
               ...assignment,
               affinityUntil: assignment.affinityUntil ?? now + 30_000,
             });
-            return [false, { ...current, assignments }] as const;
+            return ["held" as Dispatch, { ...current, assignments }] as const;
           }
           if (assignment && runtimeEvidence?.runtimeIdentity != null) {
             const { affinityUntil: _expiredHold, ...liveAssignment } = assignment;
@@ -1004,7 +1010,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           }
           const dispatchAt = yield* Clock.currentTimeMillis;
           const remainingTimeoutMs = Math.max(1, timeoutMs - (dispatchAt - now));
-          if (dispatchAt - now >= timeoutMs) return [false, current] as const;
+          if (dispatchAt - now >= timeoutMs) return ["expired" as Dispatch, current] as const;
           const offered = yield* Queue.offer(connection.queue, {
             type: "request",
             connectionId: connection.connectionId,
@@ -1036,17 +1042,39 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
                   dispatched: true,
                   replySequenceAtDispatch: current.replySequence,
                 });
-              return [offered, { ...current, pending, assignments }] as const;
+              return [
+                (offered ? "offered" : "closed") as Dispatch,
+                { ...current, pending, assignments },
+              ] as const;
             }),
           );
           return offered;
         });
       });
-      if (!offered) {
+      if (dispatch !== "offered") {
         const completion = yield* Deferred.poll(deferred);
         if (Option.isSome(completion)) {
           return (yield* completion.value) as A;
         }
+        if (dispatch === "held")
+          return yield* new PreviewAutomationNoAvailableHostError({
+            operation: requestContext.operation,
+            environmentId: requestContext.environmentId,
+            threadId: requestContext.threadId,
+            providerSessionId: requestContext.providerSessionId,
+            providerInstanceId: requestContext.providerInstanceId,
+            reconnecting: true,
+            clientId: requestContext.clientId,
+            connectionId: requestContext.connectionId,
+            requestId: requestContext.requestId,
+            ...(requestContext.tabId === undefined ? {} : { tabId: requestContext.tabId }),
+            timeoutMs: requestContext.timeoutMs,
+          });
+        if (dispatch === "expired")
+          return yield* new PreviewAutomationTimeoutError({
+            ...requestContext,
+            outcome: "not_started",
+          });
         return yield* new PreviewAutomationRequestQueueClosedError({
           ...requestContext,
           outcome: "not_started",

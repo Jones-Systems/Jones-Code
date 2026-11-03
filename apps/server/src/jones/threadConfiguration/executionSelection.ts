@@ -1,4 +1,8 @@
-import type { ModelSelection, OrchestrationV2ThreadProjection } from "@t3tools/contracts";
+import type {
+  ModelSelection,
+  OrchestrationV2ProviderSession,
+  OrchestrationV2ThreadProjection,
+} from "@t3tools/contracts";
 type Projection = Pick<OrchestrationV2ThreadProjection, "thread" | "providerThreads"> &
   Partial<Pick<OrchestrationV2ThreadProjection, "runs">>;
 /** Captured root execution owns the conversation; saved defaults describe future admission. */
@@ -28,4 +32,16 @@ export function executionProjection<P extends Projection>(projection: P): P {
       activeProviderThreadId: provider?.id ?? projection.thread.activeProviderThreadId,
     },
   };
+}
+
+export function executionWorkspace(
+  worktreePath: string | null,
+  session: Pick<OrchestrationV2ProviderSession, "cwd" | "capabilities"> | undefined,
+): string {
+  // A pooled process keeps its opener's cwd; each conversation supplies its own workspace.
+  return (
+    (session?.capabilities.sessions.supportsMultipleProviderThreadsPerSession
+      ? (worktreePath ?? session.cwd)
+      : (session?.cwd ?? worktreePath)) ?? "<unresolved-workspace>"
+  );
 }

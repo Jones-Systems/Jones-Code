@@ -280,6 +280,9 @@ export const ThreadMonitorActionResult = Schema.Struct({
   reason: Schema.NullOr(text(512)),
   submittedDraftRevision: Schema.optional(NonNegativeInt),
   settleCommandId: Schema.optional(CommandId),
+  restoreIdentity: Schema.optional(
+    Schema.Struct({ type: Schema.Literal("restore"), settleCommandId: CommandId }),
+  ),
 });
 export type ThreadMonitorActionResult = typeof ThreadMonitorActionResult.Type;
 export const ThreadMonitorInvalidation = Schema.Struct({
@@ -388,7 +391,10 @@ export const ThreadMonitorPeerIntent = Schema.Union([
   Schema.Struct({ type: Schema.Literal("setExpanded"), expanded: Schema.Boolean }),
   Schema.Struct({ type: Schema.Literal("hide") }),
   Schema.Struct({ type: Schema.Literal("requestMore"), group: ThreadMonitorGroup }),
-  Schema.Struct({ type: Schema.Literal("requestSnapshot") }),
+  Schema.Struct({
+    type: Schema.Literal("requestSnapshot"),
+    restoreIdentityReplay: Schema.optional(Schema.Struct({ publisherGeneration: id })),
+  }),
   Schema.Struct({ type: Schema.Literal("ready") }),
 ]);
 export type ThreadMonitorPeerIntent = typeof ThreadMonitorPeerIntent.Type;

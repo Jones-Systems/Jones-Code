@@ -459,6 +459,10 @@
       "types": "./src/markdownPipeline.ts",
       "import": "./src/markdownPipeline.ts"
     },
+    "./jones/documentMarkdownAst": {
+      "types": "./src/jones/documentMarkdownAst.ts",
+      "import": "./src/jones/documentMarkdownAst.ts"
+    },
     "./threadFindText": {
       "types": "./src/threadFindText.ts",
       "import": "./src/threadFindText.ts"
@@ -506,6 +510,14 @@
     "./jones/shutdownBudget": {
       "types": "./src/jones/shutdownBudget.ts",
       "import": "./src/jones/shutdownBudget.ts"
+    },
+    "./jones/sqliteReadPriority": {
+      "types": "./src/jones/sqliteReadPriority.ts",
+      "import": "./src/jones/sqliteReadPriority.ts"
+    },
+    "./jones/sqliteReaderContracts": {
+      "types": "./src/jones/sqliteReaderContracts.ts",
+      "import": "./src/jones/sqliteReaderContracts.ts"
     },
     "./jones/workstreamsRegistryBinding": {
       "types": "./src/jones/workstreamsRegistryBinding.ts",
@@ -570,6 +582,10 @@
     "./jones/linkedThreads/handoffText": {
       "types": "./src/jones/linkedThreads/handoffText.ts",
       "import": "./src/jones/linkedThreads/handoffText.ts"
+    },
+    "./jones/packaging/pnpmProjectLockfile": {
+      "types": "./src/jones/packaging/pnpmProjectLockfile.ts",
+      "import": "./src/jones/packaging/pnpmProjectLockfile.ts"
     },
     "./githubMarkdownLinks": {
       "types": "./src/githubMarkdownLinks.ts",

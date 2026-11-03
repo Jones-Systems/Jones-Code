@@ -73,14 +73,25 @@ const opened: Lazy<Opened> = { value: undefined };
 
 serveWorker<WordMethods>({
   open: async (input) => {
+    const openStartedAt = input.traceOpen === true ? performance.now() : undefined;
+    // @effect-diagnostics-next-line cryptoRandomUUID:off -- Diagnostic-only worker token; no Effect runtime or production identity is involved.
+    const traceId = input.traceOpen === true ? crypto.randomUUID() : undefined;
+    let phaseId = 0;
     const trace =
       input.traceOpen === true
-        ? (phase: string) =>
+        ? (phase: string) => {
+            const mark = `jones-word:${traceId}:${++phaseId}:${phase}`;
+            performance.mark(mark);
             postMessage({
               type: "jones-word-open-phase",
+              traceId,
+              phaseId,
+              mark,
               phase,
               elapsedMs: Math.round(performance.now()),
-            })
+              openElapsedMs: Math.round(performance.now() - openStartedAt!),
+            });
+          }
         : undefined;
     trace?.("open-received");
     if (opened.value) throw new Error("The worker already holds a document");
@@ -145,12 +156,17 @@ async function open(bytes: Uint8Array, trace?: (phase: string) => void) {
   });
 
   trace?.("request-ready");
-  const requirements = decodeFontRequirements(
-    session.layoutFontRequirementsJson(JSON.stringify(request)),
-  ).map(({ scripts, ...requirement }) => ({
-    ...requirement,
-    ...(scripts ? { scripts: [...scripts] } : {}),
-  }));
+  trace?.("font-requirements-start");
+  const requirementsJson = session.layoutFontRequirementsJson(JSON.stringify(request));
+  trace?.("font-requirements-ready");
+  trace?.("font-requirements-decode-start");
+  const requirements = decodeFontRequirements(requirementsJson).map(
+    ({ scripts, ...requirement }) => ({
+      ...requirement,
+      ...(scripts ? { scripts: [...scripts] } : {}),
+    }),
+  );
+  trace?.("font-requirements-decode-ready");
 
   trace?.("fonts-start");
   await measure.prepareFontRequirements(requirements);
@@ -173,10 +189,16 @@ async function open(bytes: Uint8Array, trace?: (phase: string) => void) {
   // The session keeps the layout it last ran and builds display frames from it: only the display extras go in, and a
   // binary frame comes back with the window's pages built and every other page a placeholder carrying its geometry.
   const display = (previous: RetainedFrame | null, reply: string) => {
+    const traceInitial = previous === null ? trace : undefined;
+    traceInitial?.("layout-computation-start");
     const layout = workerLayoutComputation(reply).layout;
+    traceInitial?.("layout-computation-ready");
 
+    traceInitial?.("display-window-start");
     session.setDisplayWindow(0, firstPages);
+    traceInitial?.("display-window-ready");
 
+    traceInitial?.("display-extras-start");
     const extras = encodeDisplayListFrameExtras({
       measured: [],
       options: {},
@@ -188,10 +210,17 @@ async function open(bytes: Uint8Array, trace?: (phase: string) => void) {
       resolvedCommentIds,
     });
 
-    return applyFrameDelta(
-      previous,
-      decodeFrameDelta(session.buildDisplayListFrame(extras, previous?.frameEpoch ?? 0)),
-    );
+    traceInitial?.("display-extras-ready");
+    traceInitial?.("display-frame-start");
+    const bytes = session.buildDisplayListFrame(extras, previous?.frameEpoch ?? 0);
+    traceInitial?.("display-frame-ready");
+    traceInitial?.("display-decode-start");
+    const delta = decodeFrameDelta(bytes);
+    traceInitial?.("display-decode-ready");
+    traceInitial?.("display-apply-start");
+    const frame = applyFrameDelta(previous, delta);
+    traceInitial?.("display-apply-ready");
+    return frame;
   };
 
   // Only as much of the body as fills the first pages; a long document goes on past it.

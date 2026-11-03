@@ -121,9 +121,11 @@ Linux CLI artifacts run on main pushes, packaging-filtered pull requests and
 manual dispatch. Mac desktop artifacts run nightly, on desktop/packaging-filtered
 pull requests and by manual dispatch; PR bases remain `main` and
 `work/jones-rebuild/staging`. The separate Mac CLI workflow remains manual only.
-Desktop update discovery accepts authenticated nightly artifacts; exact-source
-CI qualification remains a successful canonical main push. These trial artifacts
-do not publish a Release or install an application.
+Desktop update discovery accepts authenticated nightly and manually dispatched
+Mac artifacts from canonical `main`; production artifacts retain signing and
+notarization qualification. Exact-source CI qualification remains a successful
+canonical main push. These trial artifacts do not publish a Release or install
+an application.
 
 Jones update qualification keeps unique native startup, macOS lifecycle and
 Preview evidence behind their path gates; the duplicate Linux Vitest batch and

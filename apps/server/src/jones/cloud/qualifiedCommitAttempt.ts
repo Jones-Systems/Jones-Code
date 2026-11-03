@@ -90,12 +90,30 @@ export function launcherFailureMessage(cause: unknown): string {
       }`;
 }
 
-/** Child updates leave the service manager's launcher executable unchanged. */
+/** Pointer hosts report automatic handoff; older manager definitions retain explicit refresh advice. */
 export function launcherDriftNotice(
   launcherVersion: string,
   childVersion: string,
+  handoff?: "waiting" | "requested" | "rejected",
 ): string | undefined {
   if (launcherVersion === childVersion) return undefined;
+  if (handoff !== undefined) {
+    const status =
+      handoff === "rejected"
+        ? "The automatic launcher handoff exhausted three starts; the retained launcher remains current."
+        : handoff === "requested"
+          ? "The automatic launcher handoff is requested; the replacement must become healthy before promotion."
+          : "The automatic launcher handoff is waiting for fenced quiet work and manager membership.";
+    return (
+      "[service-launcher] Launcher " +
+      launcherVersion +
+      " is supervising server " +
+      childVersion +
+      ". " +
+      status +
+      "\n"
+    );
+  }
   return (
     `[service-launcher] Launcher ${launcherVersion} is supervising server ${childVersion}. ` +
     "Server updates do not replace the launcher; refresh it to the server's version with " +

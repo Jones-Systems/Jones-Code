@@ -41,6 +41,8 @@ export interface PendingUserInputCardProps {
   readonly pendingUserInput: PendingUserInput;
   readonly maxHeight: DerivedValue<number>;
   readonly collapsed: boolean;
+  /** Use within a bounded scrolling request stack instead of an upward iOS overlay. */
+  readonly expandedInFlow?: boolean;
   readonly onToggleCollapsed: () => void;
   readonly onStopThread?: () => void;
   readonly cardProgress?: SharedValue<number>;
@@ -53,7 +55,7 @@ export interface PendingUserInputCardProps {
     requestId: RuntimeRequestId,
     question: ThreadUserInputQuestion,
     value: string,
-  ) => void;
+  ) => number | undefined;
   readonly onChangeCustomAnswer: (
     requestId: RuntimeRequestId,
     questionId: string,
@@ -79,6 +81,7 @@ function QuestionText(props: { readonly markdown: string }) {
 }
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
+  const expandedCardIsOverlay = EXPANDED_CARD_IS_OVERLAY && props.expandedInFlow !== true;
   const questionCount = props.pendingUserInput.questions.length;
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
@@ -166,8 +169,8 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
   const overlayHeightStyle = useAnimatedStyle(() => ({ height: maxHeight.value }));
 
   // Keep the iOS card mounted so expansion starts on the UI thread without waiting for React layout.
-  const renderCard = EXPANDED_CARD_IS_OVERLAY || !props.collapsed;
-  const showBar = props.collapsed || EXPANDED_CARD_IS_OVERLAY;
+  const renderCard = expandedCardIsOverlay || !props.collapsed;
+  const showBar = props.collapsed || expandedCardIsOverlay;
   const bar = showBar ? (
     <View
       onLayout={handleBarLayout}
@@ -218,17 +221,17 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       accessibilityElementsHidden={props.collapsed}
       importantForAccessibility={props.collapsed ? "no-hide-descendants" : "auto"}
       entering={
-        EXPANDED_CARD_IS_OVERLAY
+        expandedCardIsOverlay
           ? undefined
           : FadeInUp.duration(USER_INPUT_TOGGLE_DURATION_MS).easing(Easing.out(Easing.cubic))
       }
       exiting={
-        EXPANDED_CARD_IS_OVERLAY
+        expandedCardIsOverlay
           ? undefined
           : FadeOutDown.duration(USER_INPUT_TOGGLE_DURATION_MS).easing(Easing.out(Easing.cubic))
       }
       className="overflow-hidden gap-2.5 rounded-[20px] border border-border bg-card-alt p-4"
-      style={EXPANDED_CARD_IS_OVERLAY ? cardAnimatedStyle : cardMaxHeightStyle}
+      style={expandedCardIsOverlay ? cardAnimatedStyle : cardMaxHeightStyle}
     >
       <Pressable
         accessibilityRole="button"
@@ -295,13 +298,14 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         "min-h-12 w-full rounded-2xl border px-3.5 py-3",
                         selected ? "border-primary bg-primary/10" : "border-border bg-input",
                       )}
-                      onPress={() =>
-                        props.onSelectOption(
+                      onPress={() => {
+                        const nextIndex = props.onSelectOption(
                           props.pendingUserInput.requestId,
                           question,
                           optionValue,
-                        )
-                      }
+                        );
+                        if (nextIndex !== undefined) selectQuestion(nextIndex);
+                      }}
                     >
                       <View className="min-w-0 flex-1 gap-0.5">
                         <Text
@@ -341,20 +345,6 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               ) : null}
               {notes ? (
                 <>
-                  {!question.multiSelect && draft?.selectedOptionValues?.[0] ? (
-                    <Button
-                      label="Clear choice"
-                      tone="text"
-                      disabled={responseDisabled}
-                      onPress={() =>
-                        props.onSelectOption(
-                          props.pendingUserInput.requestId,
-                          question,
-                          draft.selectedOptionValues![0]!,
-                        )
-                      }
-                    />
-                  ) : null}
                   <Text numberOfLines={3} className="font-sans text-xs text-foreground-muted">
                     Sends:{" "}
                     {resolvePendingUserInputAnswer(question, draft, { notes }) ??
@@ -418,7 +408,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
   return (
     <View className="relative">
       {bar}
-      {EXPANDED_CARD_IS_OVERLAY ? (
+      {expandedCardIsOverlay ? (
         <Animated.View
           pointerEvents={props.collapsed ? "none" : "box-none"}
           className="absolute inset-x-0 bottom-0 justify-end overflow-hidden"

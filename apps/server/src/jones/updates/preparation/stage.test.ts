@@ -37,129 +37,140 @@ afterEach(async () => {
   for (const home of homes.splice(0)) await home.remove();
 });
 
-it("preserves bounded Darwin cleanup and diagnostic streams after preparation cancellation", async () => {
-  const fixture = await home();
-  const actions = await actionsFixture(fixture);
-  const controller = new AbortController();
-  const cleanup = new AbortController();
-  const primary = new Error("Synthetic preparation cancellation.");
-  const mount = NodePath.join(fixture.base, "runtime", "owned-mount", "volume");
-  const written: string[] = [];
-  let sequence = 0;
-  const spawn = vi.fn(() => {
-    const index = ++sequence;
-    const child = Object.assign(new NodeEvents.EventEmitter(), {
-      stdin: new NodeStream.PassThrough(),
-      stdout: new NodeStream.PassThrough(),
-      stderr: new NodeStream.PassThrough(),
-      pid: 12345,
-      kill: vi.fn(),
+it.each([false, true])(
+  "preserves bounded Darwin cancellation cleanup evidence (proved: %s)",
+  async (cleanupProved) => {
+    const fixture = await home();
+    const actions = await actionsFixture(fixture);
+    const controller = new AbortController();
+    const cleanup = new AbortController();
+    const primary = new Error("Synthetic preparation cancellation.");
+    const mount = NodePath.join(fixture.base, "runtime", "owned-mount", "volume");
+    const written: string[] = [];
+    const effects: string[] = [];
+    let sequence = 0;
+    const spawn = vi.fn(() => {
+      const index = ++sequence;
+      const child = Object.assign(new NodeEvents.EventEmitter(), {
+        stdin: new NodeStream.PassThrough(),
+        stdout: new NodeStream.PassThrough(),
+        stderr: new NodeStream.PassThrough(),
+        pid: 12345,
+        kill: vi.fn(),
+      });
+      child.stdin.on("data", (data: Buffer) => written.push(data.toString("utf8")));
+      queueMicrotask(() => {
+        child.stdout.end('{"images":[]}');
+        child.stderr.end(
+          index === 3
+            ? Buffer.alloc(64 * 1024 + 1, 120)
+            : index === 4
+              ? Buffer.from([0xff])
+              : Buffer.from("native command diagnostic"),
+        );
+        if (index === 5) child.stdin.emit("error", new Error("Synthetic EPIPE"));
+        child.emit("close", 0);
+      });
+      return child;
     });
-    child.stdin.on("data", (data: Buffer) => written.push(data.toString("utf8")));
-    queueMicrotask(() => {
-      child.stdout.end('{"images":[]}');
-      child.stderr.end(
-        index === 3
-          ? Buffer.alloc(64 * 1024 + 1, 120)
-          : index === 4
-            ? Buffer.from([0xff])
-            : Buffer.from("native command diagnostic"),
-      );
-      if (index === 5) child.stdin.emit("error", new Error("Synthetic EPIPE"));
-      child.emit("close", 0);
-    });
-    return child;
-  });
-  vi.resetModules();
-  vi.doMock("node:child_process", () => ({ spawn }));
-  vi.doMock("@t3tools/shared/jones/jonesActions", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("@t3tools/shared/jones/jonesActions")>()),
-    validateJonesStagedArtifact: async () => ({
-      payloadPath: NodePath.join(fixture.cacheRoot, "candidate.dmg"),
-      candidate: { ...actions.candidate, platform: "darwin", architecture: "arm64" },
-    }),
-  }));
-  vi.doMock("../../cloud/qualifiedRuntime.ts", async (importOriginal) => ({
-    ...(await importOriginal<typeof import("../../cloud/qualifiedRuntime.ts")>()),
-    currentQualifiedRuntimeBinding: async () => ({ baseDir: fixture.base, dbPath: fixture.dbPath }),
-  }));
-  vi.doMock("../../cloud/qualifiedDarwinRuntime.ts", () => ({
-    extractQualifiedDarwinRuntime: async (
-      input: Parameters<typeof extractQualifiedDarwinRuntime>[0],
-    ) => {
-      controller.abort(primary);
-      const detached = await input.run({
-        command: "/usr/bin/hdiutil",
-        args: ["detach", mount],
-        signal: cleanup.signal,
-      });
-      expect(detached.stderr).toBe("native command diagnostic");
-      const converted = await input.run({
-        command: "/usr/bin/plutil",
-        args: ["-convert", "json", "-o", "-", "-"],
-        stdin: "synthetic plist",
-        signal: cleanup.signal,
-      });
-      expect(converted.stdout).toBe('{"images":[]}');
-      const limited = await input.run({
-        command: "/usr/bin/hdiutil",
-        args: ["info", "-plist"],
-        signal: cleanup.signal,
-      });
-      expect(limited.truncated).toBe(true);
-      expect(Buffer.byteLength(limited.stderr ?? "")).toBe(64 * 1024);
-      const invalid = await input.run({
-        command: "/usr/bin/hdiutil",
-        args: ["info", "-plist"],
-        signal: cleanup.signal,
-      });
-      expect(invalid.invalidUtf8).toBe(true);
-      const pipe = await input.run({
-        command: "/usr/bin/plutil",
-        args: ["-convert", "json", "-o", "-", "-"],
-        stdin: "synthetic plist",
-        signal: cleanup.signal,
-      });
-      expect(pipe.inputFailed).toBe(true);
-      throw primary;
-    },
-  }));
-  try {
-    const { stageQualifiedArtifact } = await import("./stageArtifact.ts");
-    await expect(
-      stageQualifiedArtifact({
-        artifact: { payloadPath: NodePath.join(fixture.cacheRoot, "candidate.dmg") } as Parameters<
-          typeof stageQualifiedArtifact
-        >[0]["artifact"],
+    vi.resetModules();
+    vi.doMock("node:child_process", () => ({ spawn }));
+    vi.doMock("@t3tools/shared/jones/jonesActions", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("@t3tools/shared/jones/jonesActions")>()),
+      validateJonesStagedArtifact: async () => ({
+        payloadPath: NodePath.join(fixture.cacheRoot, "candidate.dmg"),
+        candidate: { ...actions.candidate, platform: "darwin", architecture: "arm64" },
+      }),
+    }));
+    vi.doMock("../../cloud/qualifiedRuntime.ts", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("../../cloud/qualifiedRuntime.ts")>()),
+      currentQualifiedRuntimeBinding: async () => ({
         baseDir: fixture.base,
         dbPath: fixture.dbPath,
-        activeVersion: BASELINE,
-        host: { platform: "darwin", architecture: "arm64" },
-        scratchParent: fixture.root,
-        signal: controller.signal,
       }),
-    ).rejects.toBe(primary);
-    expect(spawn).toHaveBeenCalledTimes(5);
-    expect(spawn.mock.calls[0]).toEqual([
-      "/usr/bin/hdiutil",
-      ["detach", mount],
-      {
-        stdio: ["ignore", "pipe", "pipe"],
+    }));
+    vi.doMock("../../cloud/qualifiedDarwinRuntime.ts", () => ({
+      extractQualifiedDarwinRuntime: async (
+        input: Parameters<typeof extractQualifiedDarwinRuntime>[0],
+      ) => {
+        controller.abort(primary);
+        const detached = await input.run({
+          command: "/usr/bin/hdiutil",
+          args: ["detach", mount],
+          signal: cleanup.signal,
+        });
+        expect(detached.stderr).toBe("native command diagnostic");
+        const converted = await input.run({
+          command: "/usr/bin/plutil",
+          args: ["-convert", "json", "-o", "-", "-"],
+          stdin: "synthetic plist",
+          signal: cleanup.signal,
+        });
+        expect(converted.stdout).toBe('{"images":[]}');
+        const limited = await input.run({
+          command: "/usr/bin/hdiutil",
+          args: ["info", "-plist"],
+          signal: cleanup.signal,
+        });
+        expect(limited.truncated).toBe(true);
+        expect(Buffer.byteLength(limited.stderr ?? "")).toBe(64 * 1024);
+        const invalid = await input.run({
+          command: "/usr/bin/hdiutil",
+          args: ["info", "-plist"],
+          signal: cleanup.signal,
+        });
+        expect(invalid.invalidUtf8).toBe(true);
+        const pipe = await input.run({
+          command: "/usr/bin/plutil",
+          args: ["-convert", "json", "-o", "-", "-"],
+          stdin: "synthetic plist",
+          signal: cleanup.signal,
+        });
+        expect(pipe.inputFailed).toBe(true);
+        if (!cleanupProved) throw primary;
       },
-    ]);
-    expect(written).toEqual(["synthetic plist", "synthetic plist"]);
-    expect(spawn.mock.results[0]!.value.kill).not.toHaveBeenCalled();
-    expect(
-      (await NodeFSP.readdir(fixture.root)).filter((name) => name.startsWith(".jones-extract-")),
-    ).toEqual([]);
-  } finally {
-    vi.doUnmock("node:child_process");
-    vi.doUnmock("@t3tools/shared/jones/jonesActions");
-    vi.doUnmock("../../cloud/qualifiedRuntime.ts");
-    vi.doUnmock("../../cloud/qualifiedDarwinRuntime.ts");
-    vi.resetModules();
-  }
-});
+    }));
+    try {
+      const { stageQualifiedArtifact } = await import("./stageArtifact.ts");
+      await expect(
+        stageQualifiedArtifact({
+          artifact: {
+            payloadPath: NodePath.join(fixture.cacheRoot, "candidate.dmg"),
+          } as Parameters<typeof stageQualifiedArtifact>[0]["artifact"],
+          baseDir: fixture.base,
+          dbPath: fixture.dbPath,
+          activeVersion: BASELINE,
+          host: { platform: "darwin", architecture: "arm64" },
+          scratchParent: fixture.root,
+          signal: controller.signal,
+          onNativeEffects: async (phase) => {
+            effects.push(phase);
+          },
+        }),
+      ).rejects.toBe(primary);
+      expect(effects).toEqual(["native-effects", ...(cleanupProved ? ["clean"] : [])]);
+      expect(spawn).toHaveBeenCalledTimes(5);
+      expect(spawn.mock.calls[0]).toEqual([
+        "/usr/bin/hdiutil",
+        ["detach", mount],
+        {
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      ]);
+      expect(written).toEqual(["synthetic plist", "synthetic plist"]);
+      expect(spawn.mock.results[0]!.value.kill).not.toHaveBeenCalled();
+      expect(
+        (await NodeFSP.readdir(fixture.root)).filter((name) => name.startsWith(".jones-extract-")),
+      ).toEqual([]);
+    } finally {
+      vi.doUnmock("node:child_process");
+      vi.doUnmock("@t3tools/shared/jones/jonesActions");
+      vi.doUnmock("../../cloud/qualifiedRuntime.ts");
+      vi.doUnmock("../../cloud/qualifiedDarwinRuntime.ts");
+      vi.resetModules();
+    }
+  },
+);
 async function home(): Promise<PreparationHome> {
   const created = await makePreparationHome();
   homes.push(created);
@@ -285,6 +296,50 @@ describe("off-process stage job", () => {
         staged: outcome.staged,
       }),
     ).rejects.toSatisfy(blocked("invalid-artifact", /verified a different handle/));
+  });
+
+  it("round-trips historical enrollment through the worker and rebinds to the current source", async () => {
+    const fixture = await home();
+    const actions = await actionsFixture(fixture);
+    const supervisor = makePreparationSupervisor({
+      baseDir: fixture.base,
+      cacheRoot: fixture.cacheRoot,
+      command: sourceWorkerCommand,
+      env: actions.env,
+    });
+    const first = await supervisor.run(stageJob(fixture, actions));
+    if (first.kind !== "stage") throw new Error("Expected initial stage.");
+    const receiptPath = NodePath.join(
+      fixture.base,
+      "runtime",
+      "versions",
+      VERSION,
+      ".jones-runtime-receipt.json",
+    );
+    const historical = JSON.stringify({
+      ...first.staged.receipt,
+      installedSourceSha: "9".repeat(40),
+    });
+    await NodeFSP.writeFile(receiptPath, historical);
+    const recovered = await supervisor.run(stageJob(fixture, actions));
+    if (recovered.kind !== "stage") throw new Error("Expected recovered stage.");
+    expect(recovered.staged.protocol).toBe(2);
+    const adoption = {
+      baseDir: fixture.base,
+      dbPath: fixture.dbPath,
+      activeVersion: BASELINE,
+      candidate: actions.candidate,
+      host: fixtureHost,
+      staged: recovered.staged,
+    };
+    await expect(adoptPreparedStage(adoption)).resolves.toEqual(recovered.staged);
+    await expect(
+      adoptPreparedStage({
+        ...adoption,
+        candidate: { ...actions.candidate, installedSource: "9".repeat(40) },
+      }),
+    ).rejects.toSatisfy(blocked("invalid-artifact", /selected candidate's provenance/));
+    expect(await NodeFSP.readFile(receiptPath, "utf8")).toBe(historical);
   });
 
   it("refuses a candidate whose packaged preparation worker cannot start and stages nothing", async () => {

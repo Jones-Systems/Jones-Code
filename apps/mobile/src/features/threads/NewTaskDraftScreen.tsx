@@ -1259,7 +1259,7 @@ export function NewTaskDraftScreen(props: {
         onUpdateThreadRuntimeMode={flow.setRuntimeMode}
         onUpdateThreadInteractionMode={flow.planModeEnabled ? flow.setInteractionMode : undefined}
         onRespondToApproval={async () => {}}
-        onSelectUserInputOption={() => {}}
+        onSelectUserInputOption={() => undefined}
         onChangeUserInputCustomAnswer={() => {}}
         onSubmitUserInput={async () => {}}
         onDismissUserInput={async () => {}}

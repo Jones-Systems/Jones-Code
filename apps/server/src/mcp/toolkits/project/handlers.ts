@@ -1,6 +1,7 @@
 import type { Tool } from "effect/ai";
 import { claimForCaller } from "../../../jones/linkedThreads/launch.ts";
 import * as ClientLaunch from "../../../jones/mcp/clientLaunch/ClientLaunchService.ts";
+import { inheritsLinkedDelegationModes } from "../../../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 import {
   CommandId,
   MessageId,
@@ -187,7 +188,13 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
         "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
     });
   const startedRuntimeMode =
-    projectDefaults !== undefined && input.runtimeMode === undefined
+    projectDefaults !== undefined &&
+    input.runtimeMode === undefined &&
+    !inheritsLinkedDelegationModes({
+      delegatedFrom: input.delegatedFrom,
+      linkOrigin,
+      narrowedTo: scope.client?.narrowedTo,
+    })
       ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
           Effect.orElseSucceed(() => runtimeMode),
         )

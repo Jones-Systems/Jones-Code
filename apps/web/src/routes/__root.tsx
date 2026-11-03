@@ -1,3 +1,4 @@
+import { PendingSendsCoordinator } from "../jones/pendingSends/PendingSendsCoordinator";
 import { ProviderUpdateNotice } from "../jones/updates/ProviderUpdateNotice";
 import { PermissionUpdateNotice } from "../components/PermissionUpdateNotice";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
@@ -244,6 +245,7 @@ function RootRouteView() {
           <ThreadNotificationCoordinator />
           <ProviderUpdateNotice />
           <SettlementNotificationCoordinator />
+          <PendingSendsCoordinator />
           <RemoteAdmissionNotifications />
           <ReopenClosedViewShortcut />
           <ConfirmDialogHost />

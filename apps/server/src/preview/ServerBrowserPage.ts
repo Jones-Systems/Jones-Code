@@ -236,6 +236,7 @@ const tooBusy = () =>
   new ServerBrowserOperationError(
     "PreviewAutomationTimeoutError",
     "The page was too busy to capture a snapshot in time. Wait for it to settle and take another snapshot.",
+    { timeoutMs: SNAPSHOT_TIMEOUT_MS },
   );
 
 const VALUE_TOO_LONG = "A password field holds a value too long to hide, so no snapshot was taken.";

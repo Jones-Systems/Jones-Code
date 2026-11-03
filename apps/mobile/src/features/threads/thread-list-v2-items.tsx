@@ -1,3 +1,6 @@
+import { useAtomValue } from "@effect/atom-react";
+import { environmentServerConfigsAtom } from "../../state/server";
+import { settlementRestoreMenuItems } from "../../jones/settlementRestore/menu";
 import * as Dialog from "../../components/ui/Dialog";
 import type { ThreadRowProviderInstance } from "./thread-provider-instance";
 import {
@@ -616,6 +619,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   readonly onSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onSnoozeThread: (thread: EnvironmentThreadShell, snoozedUntil: string) => void;
   readonly onUnsnoozeThread: (thread: EnvironmentThreadShell) => void;
+  readonly onUndoSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly onUnsettleThread: (thread: EnvironmentThreadShell) => void;
   readonly onArchiveThread: (thread: EnvironmentThreadShell) => void;
   readonly onPinThread: (thread: EnvironmentThreadShell) => void;
@@ -655,6 +659,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     onSnoozeThread,
     onUnsnoozeThread,
     onUnsettleThread,
+    onUndoSettleThread,
     onArchiveThread,
     onPinThread,
     onUnpinThread,
@@ -721,6 +726,8 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   const handleDelete = useCallback(() => onDeleteThread(thread), [onDeleteThread, thread]);
   const handleRename = useCallback(() => onRenameThread(thread), [onRenameThread, thread]);
   const canOperateThread = useEnvironmentScope(thread.environmentId, AuthOrchestrationOperateScope);
+  const restoreCapabilities = useAtomValue(environmentServerConfigsAtom).get(thread.environmentId)
+    ?.environment.capabilities;
   const handleRegenerateTitle = useCallback(
     () => onRegenerateThreadTitle(thread),
     [onRegenerateThreadTitle, thread],
@@ -889,6 +896,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
   );
   const slimMenuActions = useMemo<MenuAction[]>(
     () => [
+      ...settlementRestoreMenuItems({
+        settled: thread.settledOverride === "settled",
+        canOperate: canOperateThread,
+        capabilities: restoreCapabilities,
+      }),
       SLIM_MENU_ACTIONS[0]!,
       ...arrangementMenuItems.filter(
         (action) => action.id !== "move-up" && action.id !== "move-down",
@@ -898,7 +910,14 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       LEGACY_MENU_ACTIONS[0]!,
       SLIM_MENU_ACTIONS[1]!,
     ],
-    [arrangementMenuItems, autoSettleMenuItems, titleMenuItems],
+    [
+      arrangementMenuItems,
+      autoSettleMenuItems,
+      titleMenuItems,
+      thread.settledOverride,
+      canOperateThread,
+      restoreCapabilities,
+    ],
   );
   const snoozedMenuActions = useMemo<MenuAction[]>(
     () => [
@@ -924,6 +943,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "workstreams") onOpenWorkstreams?.(thread);
       if (nativeEvent.event === "new-thread-on-branch") onNewThreadOnBranch(thread);
       if (nativeEvent.event === "settle") handleSettle();
+      if (nativeEvent.event === "undo-settle") void onUndoSettleThread(thread);
       if (nativeEvent.event === "unsettle") handleUnsettle();
       if (nativeEvent.event === "unsnooze") handleUnsnooze();
       if (nativeEvent.event === "pin") handlePin();
@@ -974,6 +994,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleSetAutoSettle,
       handleUnpin,
       handleUnsettle,
+      onUndoSettleThread,
       handleUnsnooze,
       setCustomSnoozeOpen,
       snoozePresets,

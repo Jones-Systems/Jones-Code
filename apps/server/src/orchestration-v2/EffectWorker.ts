@@ -1,3 +1,4 @@
+import { interactiveRead } from "../jones/serverParallelism/readClassification.ts";
 import {
   GoalNotificationDeliveryUnknown,
   isGoalNotificationDeliveryUnknown,
@@ -502,6 +503,14 @@ export const layerExecutor: Layer.Layer<
                     : providerSessions.detach({
                         providerSessionId: request.providerSessionId,
                         threadId: effect.threadId,
+                        requireWriterRetirement: true,
+                        providerThreadId: request.providerThreadId,
+                        ...(request.sessionTransition.type === "replace"
+                          ? {
+                              replacementProviderSessionId:
+                                request.sessionTransition.replacementProviderSessionId,
+                            }
+                          : {}),
                         detail:
                           request.sessionTransition.type === "replace"
                             ? "Selection change requires a provider session restart."
@@ -1056,6 +1065,7 @@ export const layerWithOptions = (
           _urgentOnly?: boolean,
         ) =>
           effect.pipe(
+            interactiveRead,
             Effect.mapError((cause) =>
               isOrchestrationEffectWorkerError(cause)
                 ? cause
@@ -1066,6 +1076,7 @@ export const layerWithOptions = (
 
       const nextClaimableAt = (excludeTitleGeneration = false, urgentOnly = false) =>
         outbox.nextClaimableAt({ excludeTitleGeneration, urgentOnly }).pipe(
+          interactiveRead,
           Effect.mapError(
             (cause) =>
               new OrchestrationEffectWorkerError({

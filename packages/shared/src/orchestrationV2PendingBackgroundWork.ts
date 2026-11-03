@@ -232,6 +232,7 @@ export function derivePendingBackgroundWork(input: {
   /** Excludes rolled-back runs; optional only when the caller already filtered them, as SQL shell reads do. */
   readonly runs?: ReadonlyArray<PendingBackgroundWorkRun>;
   readonly pullRequests?: ReadonlyArray<PendingBackgroundWorkPullRequest> | undefined;
+  readonly dependencies?: ReadonlyArray<PendingBackgroundWorkTask> | undefined;
 }): ReadonlyArray<PendingBackgroundWorkTask> {
   const hasActiveRun =
     input.hasActiveRun ??
@@ -243,7 +244,7 @@ export function derivePendingBackgroundWork(input: {
     return [];
   }
   if (input.latestRun == null) {
-    return pullRequestWatchTasks(input.pullRequests);
+    return mergeDependencyTasks(pullRequestWatchTasks(input.pullRequests), input.dependencies);
   }
   if (!isLatestRunSettledForBackgroundWait(input.latestRun)) {
     return [];
@@ -284,7 +285,19 @@ export function derivePendingBackgroundWork(input: {
 
   for (const task of pullRequestWatchTasks(input.pullRequests)) byTaskId.set(task.taskId, task);
 
-  return Array.from(byTaskId.values());
+  return mergeDependencyTasks(Array.from(byTaskId.values()), input.dependencies);
+}
+
+function mergeDependencyTasks(
+  tasks: ReadonlyArray<PendingBackgroundWorkTask>,
+  dependencies: ReadonlyArray<PendingBackgroundWorkTask> = [],
+): ReadonlyArray<PendingBackgroundWorkTask> {
+  if (dependencies.length === 0) return tasks;
+  const byId = new Map(tasks.map((task) => [task.taskId, task]));
+  for (const task of dependencies) {
+    if (task.taskId.length > 0 && !byId.has(task.taskId)) byId.set(task.taskId, task);
+  }
+  return Array.from(byId.values());
 }
 
 function pullRequestWatchTasks(

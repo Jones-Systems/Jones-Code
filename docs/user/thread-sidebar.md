@@ -135,11 +135,18 @@ completion times cannot include those completions in the recent Done view.
 
 Threads that are working or waiting on work they will resume from move into a collapsed
 **Working** section below the active list.
-That includes subagents, watched pull requests, and background commands or monitors the agent
+That includes subagents, watched pull requests, requested responses from other threads,
+and background commands or monitors the agent
 says it is waiting on. A dev server or other process an agent leaves running does not keep a thread
 there. A thread returns to the top of the active list when it finishes, fails, or needs an approval or
 answer. The Working section lists the thread you last sent work to first. Pinned threads stay in
 the pinned section.
+
+When an agent explicitly requests a result from another thread, **Waiting** remains
+visible after its turn ends. The pending-work description identifies the expected
+response. The other thread finishing a turn does not count as answering; the
+request stays pending until it is answered or released. Sending an ordinary message
+or linking a thread does not create this wait.
 
 This is on by default. Turn it off with **Settings → Beta → Working section** on web and desktop,
 or **Settings → Thread behavior → Working section** on iOS and Android. Each device keeps its own
@@ -288,8 +295,11 @@ fill the screen; close the full-screen view to return to the parent and inspecto
 Stop on a thread also stops the subagents it delegated to.
 
 Subagent threads started by the agent can't take messages; message the parent
-thread instead. When such a subagent needs an approval or an answer, the parent
-thread asks for it.
+thread instead. When a subagent needs approval, the parent shows the request
+and its offered options. Use **Next** to move between waiting subagents or
+**Open** to visit the selected subagent. Questions link to the subagent for
+your answer. If current data or response permission is unavailable, approval
+options stay disabled with a reason; **Open** remains available.
 
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it

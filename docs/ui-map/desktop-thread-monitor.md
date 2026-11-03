@@ -59,7 +59,8 @@ to prove minimize, focus and stacking on Linux.
    request before activation and ensure the old answer cannot target the next
    request. Plain reply must never imply approval or an input response.
 5. Verify guarded Settle rejects any unresolved request, queued/active work,
-   actionable plan, active goal, background/child work or stale source revision,
+   actionable plan, active goal, background/child work, expected-result duty or
+   stale source revision,
    including a race after the control becomes available. On a valid completed
    thread, verify actual settlement. Restore thread uses its real settlement ID
    and restores supported placement only; it cannot reverse execution, terminal
