@@ -8,6 +8,8 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import { it } from "@effect/vitest";
 import {
   type BrowserRecordingFrameRate,
+  type CompanionDown,
+  type CompanionUp,
   EnvironmentId,
   PreviewTabId,
   ProviderInstanceId,
@@ -2301,4 +2303,370 @@ it.live("failed client placement releases its binding and cannot retry on a chan
     expect(desktopConnections).toEqual([]);
     expect((yield* manager.list({ threadId: scope.thread.threadId })).sessions).toEqual([]);
   }).pipe(Effect.scoped, Effect.provide(placementLayer)),
+);
+
+// Keep placement/channel seams synthetic while exercising the real manager mirror and tab lifecycle.
+const companionFixture = Effect.gen(function* () {
+  const registry = yield* CompanionRegistry.CompanionHostRegistry;
+  const placement = yield* Placement.RenderPlacement;
+  let online = true;
+  const status = vi.spyOn(registry, "status").mockImplementation((hostId) =>
+    Effect.sync(() => ({
+      hostId,
+      label: "Mini",
+      platform: "synthetic",
+      online,
+      lastSeenAt: 0,
+      runtimeIdentity: desktopRuntimeIdentity,
+      connectionGeneration: 1,
+      capabilities: {
+        cdp: true,
+        clipboardText: true,
+        uploads: false,
+        downloads: false,
+        recording: false,
+      },
+    })),
+  );
+  const mount = vi.spyOn(placement, "awaitCompanion").mockReturnValue(Effect.void);
+  const endpoint = vi
+    .spyOn(placement.channel, "endpoint")
+    .mockImplementation((key) => Effect.succeed(`ws://companion/${key.tabId}`));
+  const evidence = vi
+    .spyOn(placement.channel, "runtimeEvidence")
+    .mockReturnValue(
+      Effect.succeed({ runtimeIdentity: desktopRuntimeIdentity, attachmentGeneration: 1 }),
+    );
+  yield* Effect.addFinalizer(() =>
+    Effect.sync(() => {
+      status.mockRestore();
+      mount.mockRestore();
+      endpoint.mockRestore();
+      evidence.mockRestore();
+    }),
+  );
+  return {
+    mount,
+    setOnline: (value: boolean) => {
+      online = value;
+    },
+  };
+});
+
+it.live.each(["client", "human popup"] as const)(
+  "failed initial %s admission stays inert behind a held production mirror",
+  (kind) =>
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const manager = yield* Manager.PreviewManager;
+      const selection = yield* Selection.RenderHostSelection;
+      const placement = yield* Placement.RenderPlacement;
+      const companion = yield* companionFixture;
+      const openClient = () =>
+        manager.open({
+          threadId: scope.thread.threadId,
+          runtime: "server",
+          beforePublish: (snapshot) => {
+            placement.bindAtOpen(snapshot);
+          },
+        });
+      let opener: Awaited<Effect.Success<ReturnType<typeof openClient>>> | undefined;
+      if (kind === "human popup") {
+        yield* selection.setDefault({ _tag: "companion", hostId: "mini" });
+        opener = yield* openClient();
+        yield* browser.attachViewer(viewerInput(opener.tabId, false));
+      }
+      yield* selection.setDefault({ _tag: "server" });
+      const held = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const drained = Promise.withResolvers<void>();
+      let first = true;
+      let markerId: string | undefined;
+      const realPlace = placement.place;
+      const places = vi.spyOn(placement, "place").mockImplementation((snapshot) => {
+        if (first) {
+          first = false;
+          return Effect.promise(() => {
+            held.resolve();
+            return resume.promise;
+          }).pipe(Effect.andThen(realPlace(snapshot)));
+        }
+        if (snapshot.tabId === markerId) drained.resolve();
+        return realPlace(snapshot);
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          resume.resolve();
+          places.mockRestore();
+        }),
+      );
+      const releases = vi.spyOn(placement, "release");
+      const closes = vi.spyOn(manager, "close");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          releases.mockRestore();
+          closes.mockRestore();
+        }),
+      );
+      yield* openClient();
+      yield* Effect.promise(() => held.promise);
+      yield* selection.setDefault({ _tag: "companion", hostId: "mini" });
+      const events = yield* manager.subscribeEvents;
+      let failedId: string;
+      if (kind === "client") {
+        companion.setOnline(false);
+        const failed = yield* openClient();
+        failedId = failed.tabId;
+        const errors = yield* Effect.all(
+          [
+            browser.attachViewer(viewerInput(failedId, false)).pipe(Effect.flip),
+            browser.attachViewer(viewerInput(failedId, false)).pipe(Effect.flip),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(errors).toEqual([
+          expect.objectContaining({ _tag: "ServerBrowserLaunchError" }),
+          expect.objectContaining({ _tag: "ServerBrowserLaunchError" }),
+        ]);
+      } else {
+        const popup = makeContext();
+        const closed = Promise.withResolvers<void>();
+        popup.page.on("close", () => closed.resolve());
+        desktopConnections[0]!.context.page.emit("popup", popup.page);
+        let event = yield* PubSub.take(events);
+        while (event.type !== "opened") event = yield* PubSub.take(events);
+        failedId = event.tabId;
+        yield* Effect.promise(() => closed.promise);
+        expect(popup.sessions).toEqual([]);
+      }
+      let event = yield* PubSub.take(events);
+      while (event.type !== "closed" || event.tabId !== failedId)
+        event = yield* PubSub.take(events);
+      expect(
+        yield* selection.binding({ threadId: scope.thread.threadId, tabId: failedId }),
+      ).toBeUndefined();
+      yield* selection.setDefault({ _tag: "server" });
+      const marker = yield* openClient();
+      markerId = marker.tabId;
+      resume.resolve();
+      yield* Effect.promise(() => drained.promise);
+      yield* browser.attachViewer(viewerInput(markerId, false));
+      expect(places.mock.calls.filter(([s]) => s.tabId === failedId)).toHaveLength(1);
+      expect(contextRequests).toHaveLength(2);
+      expect(desktopConnections).toHaveLength(opener ? 1 : 0);
+      expect(companion.mount).toHaveBeenCalledTimes(opener ? 1 : 0);
+      expect(closes.mock.calls.filter(([s]) => s.tabId === failedId)).toHaveLength(1);
+      expect(releases.mock.calls.filter(([s]) => s.tabId === failedId)).toHaveLength(1);
+      expect(
+        (yield* manager.list({ threadId: scope.thread.threadId })).sessions.some(
+          (s) => s.tabId === failedId,
+        ),
+      ).toBe(false);
+      expect(
+        (yield* selection.thread(scope.thread.threadId)).tabs.some((s) => s.tabId === failedId),
+      ).toBe(false);
+    }).pipe(Effect.scoped, Effect.provide(placementLayer)),
+);
+
+const companionTransport = Effect.gen(function* () {
+  const registry = yield* CompanionRegistry.CompanionHostRegistry;
+  const input = yield* Queue.unbounded<ReadonlyArray<string>>();
+  const output = yield* Queue.unbounded<CompanionDown>();
+  const connection = yield* registry
+    .connect({
+      read: Queue.take(input).pipe(
+        Effect.mapError((cause) => new CompanionRegistry.CompanionTransportError({ cause })),
+      ),
+      write: (text) => Queue.offer(output, JSON.parse(text) as CompanionDown).pipe(Effect.asVoid),
+      close: () => Effect.void,
+      writableLength: () => 0,
+    })
+    .pipe(Effect.scoped, Effect.forkScoped);
+  const send = (message: CompanionUp) => Queue.offer(input, [JSON.stringify(message)]);
+  yield* send({
+    type: "hello",
+    protocol: 1,
+    hostId: "mini",
+    label: "Mini",
+    platform: "synthetic",
+    runtimeIdentity: desktopRuntimeIdentity,
+    capabilities: {
+      cdp: true,
+      clipboardText: true,
+      uploads: false,
+      downloads: false,
+      recording: false,
+    },
+  });
+  expect((yield* Queue.take(output)).type).toBe("welcome");
+  const assignments = yield* Queue.take(output);
+  if (assignments.type !== "assignments") throw new Error("Expected reconnect assignments");
+  const attach = (key: { threadId: string; tabId: string }) =>
+    send({
+      type: "browser",
+      event: {
+        ...key,
+        type: "attached",
+        runtimeIdentity: desktopRuntimeIdentity,
+      },
+    });
+  yield* Effect.forEach(assignments.tabs, attach);
+  yield* Stream.fromQueue(output).pipe(
+    Stream.runForEach((message) =>
+      message.type === "mount" ? attach(message).pipe(Effect.asVoid) : Effect.void,
+    ),
+    Effect.forkScoped,
+  );
+  return { disconnect: Fiber.interrupt(connection), assignments: assignments.tabs };
+});
+
+it.live(
+  "established companion tab survives an offline viewer retry and reconnects on its pinned host",
+  () =>
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const manager = yield* Manager.PreviewManager;
+      const registry = yield* CompanionRegistry.CompanionHostRegistry;
+      const selection = yield* Selection.RenderHostSelection;
+      const placement = yield* Placement.RenderPlacement;
+      const endpoint = vi
+        .spyOn(placement.channel, "endpoint")
+        .mockImplementation((key) => Effect.succeed(`ws://companion/${key.tabId}`));
+      yield* Effect.addFinalizer(() => Effect.sync(() => endpoint.mockRestore()));
+      const companion = yield* companionTransport;
+      yield* selection.setDefault({ _tag: "companion", hostId: "mini" });
+      const opened = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        beforePublish: (snapshot) => {
+          placement.bindAtOpen(snapshot);
+        },
+      });
+      const viewer = yield* browser.attachViewer(viewerInput(opened.tabId, false));
+      const release = vi.spyOn(placement, "release");
+      const unassign = vi.spyOn(registry, "unassign");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          release.mockRestore();
+          unassign.mockRestore();
+        }),
+      );
+      yield* companion.disconnect;
+      let output = yield* Queue.take(viewer.output);
+      while (output._tag !== "reconnect") output = yield* Queue.take(viewer.output);
+      yield* selection.setDefault({ _tag: "server" });
+      const retries = yield* Effect.all(
+        [
+          browser.attachViewer(viewerInput(opened.tabId, false)).pipe(Effect.flip),
+          browser.attachViewer(viewerInput(opened.tabId, false)).pipe(Effect.flip),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const error of retries)
+        expect(error).toMatchObject({
+          _tag: "ServerBrowserLaunchError",
+          cause: { _tag: "CompanionHostUnavailable", state: "offline", outcome: "not_started" },
+        });
+      expect(
+        (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map((s) => s.tabId),
+      ).toEqual([opened.tabId]);
+      expect(yield* selection.binding(opened)).toEqual({ _tag: "companion", hostId: "mini" });
+      expect((yield* selection.thread(scope.thread.threadId)).tabs.map((s) => s.tabId)).toEqual([
+        opened.tabId,
+      ]);
+      expect(release).not.toHaveBeenCalled();
+      expect(unassign).not.toHaveBeenCalled();
+      const returned = yield* companionTransport;
+      expect(returned.assignments).toEqual([{ threadId: opened.threadId, tabId: opened.tabId }]);
+      yield* browser.attachViewer(viewerInput(opened.tabId, false));
+      expect(desktopConnections.map((c) => c.endpoint)).toEqual([
+        `ws://companion/${opened.tabId}`,
+        `ws://companion/${opened.tabId}`,
+      ]);
+      expect(contextRequests).toEqual([]);
+      expect(
+        (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map((s) => s.tabId),
+      ).toEqual([opened.tabId]);
+    }).pipe(Effect.scoped, Effect.provide(placementLayer)),
+);
+
+it.live.each([true, false])(
+  "closing a pending reconnect releases once after settlement (host online %s)",
+  (online) =>
+    Effect.gen(function* () {
+      const browser = yield* ServerBrowser.ServerBrowser;
+      const manager = yield* Manager.PreviewManager;
+      const selection = yield* Selection.RenderHostSelection;
+      const placement = yield* Placement.RenderPlacement;
+      const companion = yield* companionFixture;
+      yield* selection.setDefault({ _tag: "companion", hostId: "mini" });
+      const opened = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        beforePublish: (snapshot) => {
+          placement.bindAtOpen(snapshot);
+        },
+      });
+      const viewer = yield* browser.attachViewer(viewerInput(opened.tabId, false));
+      yield* Effect.promise(() => desktopDetachSubscribed.promise);
+      desktopDetaches.emit("detach", opened);
+      let output = yield* Queue.take(viewer.output);
+      while (output._tag !== "reconnect") output = yield* Queue.take(viewer.output);
+      companion.setOnline(online);
+      const held = Promise.withResolvers<void>();
+      const resume = Promise.withResolvers<void>();
+      const drained = Promise.withResolvers<void>();
+      const realPlace = placement.place;
+      const places = vi.spyOn(placement, "place").mockImplementation((snapshot) =>
+        snapshot.tabId === opened.tabId
+          ? Effect.promise(() => {
+              held.resolve();
+              return resume.promise;
+            }).pipe(Effect.andThen(realPlace(snapshot)))
+          : realPlace(snapshot).pipe(Effect.tap(() => Effect.sync(() => drained.resolve()))),
+      );
+      const releases = vi.spyOn(placement, "release");
+      const closes = vi.spyOn(manager, "close");
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          resume.resolve();
+          places.mockRestore();
+          releases.mockRestore();
+          closes.mockRestore();
+        }),
+      );
+      const retry = yield* browser
+        .attachViewer(viewerInput(opened.tabId, false))
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Effect.promise(() => held.promise);
+      yield* manager.close({
+        threadId: scope.thread.threadId,
+        tabId: PreviewTabId.make(opened.tabId),
+      });
+      yield* selection.setDefault({ _tag: "server" });
+      const replacement = yield* manager.open({
+        threadId: scope.thread.threadId,
+        runtime: "server",
+        beforePublish: (snapshot) => {
+          placement.bindAtOpen(snapshot);
+        },
+      });
+      yield* Effect.promise(() => drained.promise);
+      expect(releases.mock.calls.filter(([s]) => s.tabId === opened.tabId)).toHaveLength(0);
+      resume.resolve();
+      expect(yield* Fiber.join(retry)).toMatchObject({ _tag: "Failure" });
+      yield* browser.attachViewer(viewerInput(replacement.tabId, false));
+      expect(releases.mock.calls.filter(([s]) => s.tabId === opened.tabId)).toHaveLength(1);
+      expect(closes.mock.calls.filter(([s]) => s.tabId === opened.tabId)).toHaveLength(1);
+      expect(yield* selection.binding(opened)).toBeUndefined();
+      expect(yield* selection.binding(replacement)).toEqual({ _tag: "server" });
+      expect(
+        (yield* manager.list({ threadId: scope.thread.threadId })).sessions.map((s) => s.tabId),
+      ).toEqual([replacement.tabId]);
+      expect((yield* selection.thread(scope.thread.threadId)).tabs.map((s) => s.tabId)).toEqual([
+        replacement.tabId,
+      ]);
+      expect(contextRequests).toHaveLength(1);
+      if (online) expect(desktopConnections[1]!.context.page.goto).not.toHaveBeenCalled();
+    }).pipe(Effect.scoped, Effect.provide(placementLayer)),
 );
