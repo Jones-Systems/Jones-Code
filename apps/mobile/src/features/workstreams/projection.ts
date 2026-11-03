@@ -1,6 +1,7 @@
 import type { PreparedConnection } from "@t3tools/client-runtime/connection";
 import {
   nativeWorkstreamGroupKey,
+  liveT3PlacementsCurrent,
   assertNativeWorkstreamBinding,
   nativeWorkstreamsBlock,
   type NativeWorkstreamsCapability,
@@ -230,7 +231,8 @@ export function projectMobileWorkstreams(
 function currentProof(snapshot: MobileWorkstreamSnapshot): LiveT3Placements | null {
   const placements = snapshot.placements;
   const binding = snapshot.data.binding;
-  if (!placements || placements.readiness !== "ready") return null;
+  if (!placements || !liveT3PlacementsCurrent(placements) || placements.readiness !== "ready")
+    return null;
   const context = placements.context;
   return context.owner_id === binding.ownerId &&
     context.principal_id === binding.principalId &&

@@ -104,6 +104,28 @@ class NativeReadStore {
         sha256,
         run: (effect, signal) =>
           runEnvironmentWorkstreamsEffect(connection.prepared, effect, signal),
+        placementConnection: (environmentId) => {
+          const id = EnvironmentId.make(environmentId);
+          const prepared = scope.registry.get(environmentSession.preparedConnectionValueAtom(id));
+          const state = scope.registry.get(environmentCatalog.stateAtom(id));
+          const session = scope.registry.get(environmentSession.sessionStateAtom(id));
+          const config = scope.registry.get(environmentSession.initialConfigValueAtom(id));
+          if (
+            Option.isNone(prepared) ||
+            !config ||
+            !AsyncResult.isSuccess(state) ||
+            state.value.phase !== "connected" ||
+            !AsyncResult.isSuccess(session) ||
+            !session.value.authenticated
+          )
+            return null;
+          return {
+            prepared: prepared.value,
+            generation: state.value.generation,
+            session: session.value,
+            config,
+          };
+        },
         isCurrent: () => this.#scope === scope && scope.registry.get(scope.atom) === connection,
       });
     } catch {

@@ -4,7 +4,6 @@ import { nativeReadRequest, NativeReadError } from "@t3tools/client-runtime/stat
 import type { EnvironmentNativeCompletedExport } from "@t3tools/client-runtime/jones/workstreams/native-http";
 import type { RetainedOperation } from "@t3tools/client-runtime/jones/workstreams/operations";
 import type {
-  T3PlacementResult,
   T3WorkstreamListResult,
   T3PlacementIdentity,
   WorkstreamDeclarationPage,
@@ -40,6 +39,8 @@ import {
   orderWorkstreamMetadata,
   type WorkstreamDtoPage,
   loadLiveT3Placements,
+  liveT3PlacementsCurrent,
+  nativePlacementWitness,
   type LiveT3Placements,
   type WorkstreamAssignmentIndex,
   type WorkstreamAssignmentIndexFetchers,
@@ -569,7 +570,24 @@ const sameTrustedEnvironments = (left: LiveT3Placements, right: LiveT3Placements
  */
 export function mergeLivePlacements(batches: readonly LiveT3Placements[]): LiveT3Placements | null {
   const [first, ...rest] = batches;
-  if (first === undefined) return null;
+  if (first === undefined || !batches.every(liveT3PlacementsCurrent)) return null;
+  const nativeAuthority = (proof: LiveT3Placements) =>
+    proof.native
+      ? JSON.stringify(
+          proof.native.observations
+            .map((value) => [
+              value.authority,
+              value.registry_instance_id,
+              value.home_environment_id,
+              value.home_generation,
+              value.served_by_environment_id,
+            ])
+            .filter(
+              (value, index, all) =>
+                index === 0 || JSON.stringify(value) !== JSON.stringify(all[index - 1]),
+            ),
+        )
+      : null;
   for (const batch of rest) {
     if (
       batch.context.owner_id !== first.context.owner_id ||
@@ -578,11 +596,23 @@ export function mergeLivePlacements(batches: readonly LiveT3Placements[]): LiveT
       batch.context.server_generation !== first.context.server_generation ||
       batch.context.registry_version !== first.context.registry_version ||
       batch.readiness !== first.readiness ||
-      !sameTrustedEnvironments(first, batch)
+      !sameTrustedEnvironments(first, batch) ||
+      nativeAuthority(first) !== nativeAuthority(batch)
     )
       return null;
   }
-  return { ...first, items: batches.flatMap((batch) => batch.items) };
+  return {
+    ...first,
+    items: batches.flatMap((batch) => batch.items),
+    ...(first.native
+      ? {
+          native: nativePlacementWitness(
+            batches.flatMap((batch) => batch.native!.observations),
+            () => batches.every(liveT3PlacementsCurrent),
+          ),
+        }
+      : {}),
+  };
 }
 
 interface LoadedPlacementProofs {
@@ -598,7 +628,7 @@ interface LoadedPlacementProofs {
 async function loadPlacementProofs(
   list: T3WorkstreamListResult,
   batches: readonly (readonly T3PlacementIdentity[])[],
-  load: (identities: readonly T3PlacementIdentity[]) => Promise<T3PlacementResult>,
+  load: (identities: readonly T3PlacementIdentity[]) => Promise<LiveT3Placements>,
   signal: AbortSignal,
 ): Promise<LoadedPlacementProofs> {
   const key = JSON.stringify(batches);
@@ -611,9 +641,11 @@ async function loadPlacementProofs(
   for (const identities of batches) {
     throwIfAborted(signal);
     try {
+      if (list.source !== "live" || list.stale || list.nextCursor !== null)
+        throw new Error("Placement metadata is not current.");
       proven.push({
         identities,
-        result: await loadLiveT3Placements(list, identities, () => load(identities)),
+        result: await load(identities),
       });
     } catch (cause) {
       throwIfAborted(signal);
@@ -720,6 +752,7 @@ export function useWorkstreams(
   const listRequest = useRef<AbortController | null>(null);
   const proofRequest = useRef<AbortController | null>(null);
   const requestedProofKey = useRef<string | null>(null);
+  const requestedProofReader = useRef<ReturnType<typeof useNativeWorkstreamReads>>(null);
   const commandRequests = useRef(new Set<BindingOperationRequest>());
   const currentBindingKey = data ? workstreamBindingKey(data.binding) : null;
   const currentBindingKeyRef = useRef(currentBindingKey);
@@ -807,11 +840,36 @@ export function useWorkstreams(
     }),
   );
   const requestPlacements = useStableCallback(
-    (identities: readonly T3PlacementIdentity[], signal: AbortSignal) =>
-      request(
-        (client) => client.workstreams.threadPlacements({ headers: {}, payload: { identities } }),
-        signal,
-      ),
+    (
+      list: T3WorkstreamListResult,
+      identities: readonly T3PlacementIdentity[],
+      signal?: AbortSignal,
+    ) => {
+      if (
+        isNativeWorkstreams(nativeCapability) &&
+        nativeCapability?.reads.includes("workstreams-read/1.0.0") &&
+        nativeCapability.placement_proofs.includes("workstreams-t3-placement/2.0.0")
+      ) {
+        if (!nativeReads)
+          return Promise.reject(
+            new NativeReadError("incomplete", "Native placement access is unavailable."),
+          );
+        return nativeReads.placements(list, identities, signal);
+      }
+      if (
+        isNativeWorkstreams(nativeCapability) &&
+        !nativeCapability?.placement_proofs.includes("workstreams-t3-placement/1.0.0")
+      )
+        return Promise.reject(
+          new NativeReadError("incomplete", "No native placement contract was negotiated."),
+        );
+      return loadLiveT3Placements(list, identities, () =>
+        request(
+          (client) => client.workstreams.threadPlacements({ headers: {}, payload: { identities } }),
+          signal,
+        ),
+      );
+    },
   );
 
   useEffect(() => {
@@ -939,7 +997,7 @@ export function useWorkstreams(
           : await loadPlacementProofs(
               core.list,
               batches,
-              (identities) => requestPlacements(identities, controller.signal),
+              (identities) => requestPlacements(core.list, identities, controller.signal),
               controller.signal,
             );
       if (superseded()) return;
@@ -1009,7 +1067,11 @@ export function useWorkstreams(
       include: (key) => assignmentIndex.entries.has(key),
       preferred: preferredThread,
     });
-    if (JSON.stringify(batches) === requestedProofKey.current) return;
+    if (
+      JSON.stringify(batches) === requestedProofKey.current &&
+      requestedProofReader.current === nativeReads
+    )
+      return;
     proofRequest.current?.abort();
     const controller = new AbortController();
     proofRequest.current = controller;
@@ -1019,13 +1081,15 @@ export function useWorkstreams(
       generation.current === startedGeneration &&
       assignmentIndexRef.current === assignmentIndex;
     const previousKey = requestedProofKey.current;
+    const previousReader = requestedProofReader.current;
     const key = JSON.stringify(batches);
     let settled = false;
     requestedProofKey.current = key;
+    requestedProofReader.current = nativeReads;
     void loadPlacementProofs(
       data,
       batches,
-      (identities) => requestPlacements(identities, controller.signal),
+      (identities) => requestPlacements(data, identities, controller.signal),
       controller.signal,
     ).then(
       (proofs) => {
@@ -1051,7 +1115,10 @@ export function useWorkstreams(
       controller.abort();
       if (proofRequest.current === controller) proofRequest.current = null;
       // An interrupted request did not prove anything; let the next run request it again.
-      if (!settled && requestedProofKey.current === key) requestedProofKey.current = previousKey;
+      if (!settled && requestedProofKey.current === key) {
+        requestedProofKey.current = previousKey;
+        requestedProofReader.current = previousReader;
+      }
     };
   }, [
     placementsEnabled,
@@ -1059,6 +1126,7 @@ export function useWorkstreams(
     assignmentIndex,
     stableNativeThreads,
     preferredThread,
+    nativeReads,
     purgeAuthorizedState,
     requestPlacements,
     refresh,
@@ -1337,14 +1405,7 @@ export function useWorkstreams(
       );
       check();
       const selected = [{ source_instance_id: thread.environmentId, native_thread_id: thread.id }];
-      const projection = await loadLiveT3Placements(live, selected, () =>
-        load((client) =>
-          client.workstreams.threadPlacements({
-            headers: {},
-            payload: { identities: selected },
-          }),
-        ),
-      );
+      const projection = await requestPlacements(live, selected, options.signal);
       check();
       const referenceIds = new Set(projection.items.map((item) => item.native_reference_id));
       if (
@@ -1740,7 +1801,7 @@ export function useWorkstreams(
     loadActionSnapshot,
     retry,
     placementInventory: nativeHidden ? EMPTY_PLACEMENT_INVENTORY : placementInventory,
-    placements: nativeHidden ? null : placements,
+    placements: nativeHidden || !liveT3PlacementsCurrent(placements) ? null : placements,
     assignmentIndex: nativeHidden ? null : assignmentIndex,
     stale: stale || nativeBlock !== null,
     verificationNow,

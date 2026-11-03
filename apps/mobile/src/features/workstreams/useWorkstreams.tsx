@@ -593,6 +593,28 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 },
                 run: (effect, signal) =>
                   runtime.runPromise(effect.pipe(Effect.provide(context.value)), { signal }),
+                placementConnection: (sourceEnvironmentId) => {
+                  const id = EnvironmentId.make(sourceEnvironmentId);
+                  const prepared = registry.get(environmentSession.preparedConnectionValueAtom(id));
+                  const state = registry.get(environmentCatalog.stateAtom(id));
+                  const session = registry.get(environmentSession.sessionStateAtom(id));
+                  const config = registry.get(environmentSession.initialConfigValueAtom(id));
+                  if (
+                    Option.isNone(prepared) ||
+                    !config ||
+                    !AsyncResult.isSuccess(state) ||
+                    state.value.phase !== "connected" ||
+                    !AsyncResult.isSuccess(session) ||
+                    !session.value.authenticated
+                  )
+                    return null;
+                  return {
+                    prepared: prepared.value,
+                    generation: state.value.generation,
+                    session: session.value,
+                    config,
+                  };
+                },
                 isCurrent: () => {
                   const prepared = registry.get(
                     environmentSession.preparedConnectionValueAtom(environmentId),
@@ -662,6 +684,27 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             });
             let placements: LiveT3Placements | null = null;
             await (async () => {
+              if (
+                isNativeWorkstreams(capability) &&
+                capability?.reads.includes("workstreams-read/1.0.0") &&
+                capability.placement_proofs.includes("workstreams-t3-placement/2.0.0")
+              ) {
+                if (!nativeReader)
+                  throw new NativeReadError(
+                    "incomplete",
+                    "Native placement access is unavailable.",
+                  );
+                placements = await nativeReader.placements(data, identities, controller.signal);
+                return;
+              }
+              if (
+                isNativeWorkstreams(capability) &&
+                !capability?.placement_proofs.includes("workstreams-t3-placement/1.0.0")
+              )
+                throw new NativeReadError(
+                  "incomplete",
+                  "No native placement contract was negotiated.",
+                );
               placements = await loadLiveT3Placements(
                 data,
                 identities,

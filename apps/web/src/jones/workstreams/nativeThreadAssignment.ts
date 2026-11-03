@@ -9,6 +9,7 @@ import type {
 } from "@t3tools/contracts";
 import {
   workstreamBindingKey,
+  liveT3PlacementsCurrent,
   type LiveT3Placements,
 } from "@t3tools/client-runtime/state/workstreams";
 import {
@@ -97,6 +98,7 @@ export async function assignNativeThread(
       fresh.registrationContext.state !== "ready" ||
       sources.length !== 1 ||
       fresh.placements.readiness !== "ready" ||
+      !liveT3PlacementsCurrent(fresh.placements) ||
       !trust ||
       sources[0]?.authority_namespace !== trust.authorityNamespace ||
       sources[0]?.store_generation !== trust.storeGeneration

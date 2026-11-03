@@ -2546,9 +2546,10 @@
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
         "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
         "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
-        "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx"
+        "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx",
+        "packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts"
       ],
-      "scope": "Shared authenticated closed native read/export and application-owned read lifetimes. Web detail/reference and mobile appearance use the original prepared connection/session/generation and independently authenticated public-list binding; replacement/disposal cancels pending work and withholds late results. Snapshot-scoped exports are callable from both application controllers. Existing cookie/Bearer/DPoP renewal remains the sole owner. Placement-v2 local trust, explicit export UI and capability advertisement remain separately gated."
+      "scope": "Shared authenticated closed native read/export and application-owned read lifetimes. Web detail/reference and mobile appearance use the original prepared connection/session/generation and independently authenticated public-list binding; replacement/disposal cancels pending work and withholds late results. Negotiated placement-v2 consumers retain native evidence and home observations, validate complete snapshots and inventory, and independently capture the original live source descriptors; replaced source connections invalidate memory-only proof witnesses used by grouping and action planning. Explicit placement-v1 loading remains separate, with no v2 failure fallback. Snapshot-scoped exports are callable from both application controllers. Existing cookie/Bearer/DPoP renewal remains the sole owner. Explicit export UI and capability advertisement remain separately gated."
     }
   ]
 }

@@ -1,7 +1,13 @@
+import { liveT3PlacementsCurrent } from "@t3tools/client-runtime/state/workstreams";
 import { it } from "@effect/vitest";
 import { makeNativeWorkstreamsTestRunner } from "@t3tools/client-runtime/jones/workstreams/native-lifetime-testing";
 import { RegistryContext } from "@effect/atom-react";
-import { EnvironmentId, type ServerConfig, type AuthSessionState } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  t3PlacementInventoryJson,
+  type ServerConfig,
+  type AuthSessionState,
+} from "@t3tools/contracts";
 import type {
   NativeWorkstreamsRequestError,
   NativeWorkstreamsEffectRunner,
@@ -14,6 +20,8 @@ import type {
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Option from "effect/Option";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
 import { act, useLayoutEffect } from "react";
@@ -169,8 +177,9 @@ let latest: MobileWorkstreams;
 let nativeReply: () => Response | Promise<Response>;
 let httpLayer: ReturnType<typeof layerRemoteHttpClient>;
 const calls: { path: string; init: RequestInit }[] = [];
+let probeThreads: Parameters<typeof useMobileWorkstreams>[0] = [];
 function Probe() {
-  const value = useMobileWorkstreams([]);
+  const value = useMobileWorkstreams(probeThreads);
   useLayoutEffect(() => {
     latest = value;
   }, [value]);
@@ -193,7 +202,9 @@ async function mount(settle = true) {
     throw new Error("The mounted Workstreams load did not settle.");
   }
 }
+const placementNow = Date.parse("2026-11-03T00:00:00Z");
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"], now: placementNow });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   registry = AtomRegistry.make();
   registry.set(connection, AsyncResult.success(connected));
@@ -203,6 +214,7 @@ beforeEach(() => {
   calls.length = 0;
   pendingJobs.length = 0;
   nativeReply = nativeAppearance;
+  probeThreads = [];
   httpLayer = layerRemoteHttpClient(async (url, init) => {
     const path = new URL(String(url)).pathname;
     calls.push({ path, init: init ?? {} });
@@ -221,6 +233,7 @@ afterEach(async () => {
   root = undefined;
   container.remove();
   registry.dispose();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 caseEffect(
@@ -287,7 +300,8 @@ let run: NativeWorkstreamsEffectRunner;
 const underTest = (use: () => Promise<void>) =>
   Effect.gen(function* () {
     const bridge = yield* makeNativeWorkstreamsTestRunner;
-    run = (effect, signal) => bridge(effect.pipe(Effect.provide(httpLayer)), signal);
+    run = (effect, signal) =>
+      bridge(effect.pipe(Effect.provide(Layer.merge(httpLayer, NodeCrypto.layer))), signal);
     yield* Effect.promise(use).pipe(
       Effect.ensuring(
         Effect.promise(async () => {
@@ -310,3 +324,143 @@ async function drainRequests() {
   }
   throw new Error("Owned application requests did not drain.");
 }
+
+async function nativePlacementResponse(
+  identities: readonly { readonly source_instance_id: string; readonly native_thread_id: string }[],
+  namespace = "namespace:source",
+) {
+  const observed = new Date(placementNow).toISOString();
+  const bytes = new TextEncoder().encode(t3PlacementInventoryJson(identities));
+  const inventory = Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  const provenance = {
+    authority: "native-home",
+    registry_instance_id: capability.registry.registry_instance_id,
+    home_environment_id: "env:home",
+    home_generation: 7,
+    served_by_environment_id: "env:home",
+    observed_at: observed,
+  };
+  return Response.json({
+    contract: "workstreams-native-home-read-result/1.0.0",
+    route: "placements",
+    placement_contract: "workstreams-t3-placement/2.0.0",
+    authorization_revision: 1,
+    value: {
+      inventory_sha256: inventory,
+      context: {
+        owner_id: "owner",
+        principal_id: "principal",
+        authorization_revision: 1,
+        server_generation: 7,
+        registry_version: 11,
+      },
+      items: identities.map((identity) => ({
+        ...identity,
+        membership_id: "membership:a",
+        native_reference_id: "reference:a",
+        workstream_id: "alpha",
+        kind: "primary",
+        authority_namespace: namespace,
+        store_generation: 3,
+        source_binding_version: 1,
+        attestation_version: 1,
+        evidence_sha256: "a".repeat(64),
+        attestation_source: "native",
+        evidence_contract: "workstreams-t3-provider/2.0.0",
+        attested_at: new Date(placementNow - 1000).toISOString(),
+        expires_at: new Date(placementNow + 300000).toISOString(),
+      })),
+      next_cursor: null,
+      provenance,
+    },
+    envelope: {
+      contract: "workstreams-read/1.0.0",
+      registry: {
+        registry_instance_id: capability.registry.registry_instance_id,
+        owner_id: "owner",
+        canonical_origin: "https://registry.invalid",
+        server_generation: 7,
+        registry_version: 11,
+      },
+      provenance: {
+        authority: "native-home",
+        home_environment_id: "env:home",
+        served_by_environment_id: "env:home",
+        observed_at: observed,
+        source: "live",
+        stale: false,
+      },
+      coverage: {
+        registry: "complete",
+        sources: identities.map((identity) => ({
+          source_instance_id: identity.source_instance_id,
+          mapping: "mapped",
+          attestation: "current",
+          observed_at: observed,
+        })),
+      },
+    },
+  });
+}
+
+caseEffect(
+  "loads native v2 proof through the mounted mobile registry without a v1 request",
+  async () => {
+    probeThreads = [{ environmentId: id, id: "thread:a" }];
+    registry.set(config, {
+      ...configFor(),
+      nativeStoreAuthority: {
+        environmentId: id,
+        authorityNamespace: "namespace:source",
+        storeGeneration: 3,
+      },
+    });
+    nativeReply = () => {
+      const payload = JSON.parse(String(calls.at(-1)!.init.body)) as { request: { route: string } };
+      return payload.request.route === "placements"
+        ? nativePlacementResponse([{ source_instance_id: id, native_thread_id: "thread:a" }])
+        : nativeAppearance();
+    };
+    await mount();
+    const proof = latest.snapshots[0]!.placements;
+    expect(proof?.items).toHaveLength(1);
+    expect(proof!.items[0]).toMatchObject({
+      attestation_source: "native",
+      evidence_contract: "workstreams-t3-provider/2.0.0",
+    });
+    expect(liveT3PlacementsCurrent(proof)).toBe(true);
+    expect(calls.some((call) => call.path.includes("thread-placements"))).toBe(false);
+    await act(() => registry.set(session, AsyncResult.success({ ...authenticated })));
+    expect(liveT3PlacementsCurrent(proof)).toBe(false);
+  },
+);
+caseEffect(
+  "keeps the mounted mobile snapshot display-only when native placement trust disagrees",
+  async () => {
+    probeThreads = [{ environmentId: id, id: "thread:a" }];
+    registry.set(config, {
+      ...configFor(),
+      nativeStoreAuthority: {
+        environmentId: id,
+        authorityNamespace: "namespace:source",
+        storeGeneration: 3,
+      },
+    });
+    nativeReply = () => {
+      const payload = JSON.parse(String(calls.at(-1)!.init.body)) as { request: { route: string } };
+      return payload.request.route === "placements"
+        ? nativePlacementResponse(
+            [{ source_instance_id: id, native_thread_id: "thread:a" }],
+            "namespace:forged",
+          )
+        : nativeAppearance();
+    };
+    await mount();
+    expect(latest.snapshots).toHaveLength(1);
+    expect(latest.snapshots[0]!.placements).toBeNull();
+    expect(calls.some((call) => call.path.includes("thread-placements"))).toBe(false);
+  },
+);

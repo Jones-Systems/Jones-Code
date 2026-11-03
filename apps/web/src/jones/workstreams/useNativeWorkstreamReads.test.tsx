@@ -4,6 +4,7 @@ import { act } from "../testing/nodeRenderer";
 import { RegistryContext } from "@effect/atom-react";
 import {
   EnvironmentId,
+  t3PlacementInventoryJson,
   type ServerConfig,
   type AuthSessionState,
   type T3WorkstreamBinding,
@@ -17,7 +18,10 @@ import type {
   EnvironmentNativeWorkstreamsLifetime,
 } from "@t3tools/client-runtime/jones/workstreams/native-lifetime";
 import { layerRemoteHttpClient } from "@t3tools/client-runtime/rpc";
-import { nativeReadRequest } from "@t3tools/client-runtime/state/workstreams";
+import {
+  nativeReadRequest,
+  liveT3PlacementsCurrent,
+} from "@t3tools/client-runtime/state/workstreams";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { Atom, AtomRegistry, AsyncResult } from "effect/reactivity";
@@ -25,7 +29,31 @@ import { StrictMode, useLayoutEffect } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 import { afterEach, beforeEach, expect, vi } from "vite-plus/test";
 import { useNativeWorkstreamReads } from "./useNativeWorkstreamReads";
+import { useWorkstreams, type WorkstreamListView } from "../../state/workstreams";
+import { data } from "../../components/workstreams/nativeWorkstreamActions.fixtures";
+import { routeWorkstreamsHttp, syntheticWorkstreams } from "./workstreamsHttp.fixtures";
 
+vi.mock("../../lib/runtime", () => ({
+  runPrimaryHttp: (effect: unknown, options?: { readonly signal?: AbortSignal }) => {
+    const job = publicHttp(effect, options);
+    pendingJobs.push(job);
+    return job;
+  },
+}));
+vi.mock("./useWorkstreamOperations", () => ({
+  useWorkstreamOperations: () => ({
+    entries: [],
+    error: null,
+    supports: () => false,
+    capability,
+    capabilityFor: () => capability,
+  }),
+}));
+vi.mock("../../state/primaryEnvironment", async () => {
+  const { Atom } = await import("effect/reactivity");
+  const { EnvironmentId } = await import("@t3tools/contracts");
+  return { primaryEnvironmentIdAtom: Atom.make(EnvironmentId.make("env:member")) };
+});
 vi.mock("../../connection/catalog", () => ({
   environmentCatalog: { stateAtom: () => connection },
 }));
@@ -43,7 +71,9 @@ vi.mock("./environmentWorkstreamsRequest", () => ({
     signal: AbortSignal,
   ) => {
     sent.push(p);
-    return run(effect, signal);
+    const job = run(effect, signal);
+    pendingJobs.push(job);
+    return job;
   },
 }));
 
@@ -144,8 +174,19 @@ const response = () =>
 let registry: ReturnType<typeof AtomRegistry.make>;
 let renderer: ReactTestRenderer | undefined;
 let latest: EnvironmentNativeWorkstreamsLifetime | null;
+let application: WorkstreamListView;
+let publicHttp: ReturnType<typeof routeWorkstreamsHttp>;
+const applicationThreads = [{ environmentId: id, id: "thread:a" }];
+function ApplicationProbe() {
+  const value = useWorkstreams(true, applicationThreads);
+  useLayoutEffect(() => {
+    application = value;
+  }, [value]);
+  return null;
+}
 let binding: T3WorkstreamBinding;
 let run: NativeWorkstreamsEffectRunner;
+const pendingJobs: Promise<unknown>[] = [];
 const sent: PreparedConnection[] = [];
 const calls: RequestInit[] = [];
 let reply: () => Response | Promise<Response>;
@@ -167,7 +208,17 @@ async function mount() {
     );
   });
 }
+const placementNow = Date.parse("2026-11-03T00:00:00Z");
 beforeEach(() => {
+  vi.stubGlobal("window", globalThis);
+  vi.useFakeTimers({ toFake: ["Date"], now: placementNow });
+  pendingJobs.length = 0;
+  const digest = crypto.subtle.digest.bind(crypto.subtle);
+  vi.spyOn(crypto.subtle, "digest").mockImplementation((algorithm, bytes) => {
+    const job = digest(algorithm, bytes);
+    pendingJobs.push(job);
+    return job;
+  });
   registry = AtomRegistry.make();
   binding = structuredClone(originalBinding);
   latest = null;
@@ -188,6 +239,9 @@ afterEach(async () => {
   await act(() => renderer?.unmount());
   renderer = undefined;
   registry.dispose();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 caseEffect("uses the actual mounted registry and survives StrictMode lifetime replay", async () => {
   await mount();
@@ -278,8 +332,240 @@ const underTest = (use: () => Promise<void>) =>
   Effect.gen(function* () {
     const bridge = yield* makeNativeWorkstreamsTestRunner;
     run = (effect, signal) => bridge(effect.pipe(Effect.provide(httpLayer)), signal);
-    yield* Effect.promise(use);
+    yield* Effect.promise(use).pipe(
+      Effect.ensuring(
+        Effect.promise(async () => {
+          await act(() => renderer?.unmount());
+          renderer = undefined;
+        }),
+      ),
+    );
   });
 function caseEffect(name: string, use: () => Promise<void>) {
   return it.effect(name, () => underTest(use));
 }
+
+async function nativePlacementResponse(
+  identities: readonly { readonly source_instance_id: string; readonly native_thread_id: string }[],
+  namespace = "namespace:source",
+) {
+  const observed = new Date(placementNow).toISOString();
+  const bytes = new TextEncoder().encode(t3PlacementInventoryJson(identities));
+  const inventory = Array.from(
+    new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes))),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  const provenance = {
+    authority: "native-home",
+    registry_instance_id: capability.registry.registry_instance_id,
+    home_environment_id: "env:home",
+    home_generation: 7,
+    served_by_environment_id: "env:home",
+    observed_at: observed,
+  };
+  return Response.json({
+    contract: "workstreams-native-home-read-result/1.0.0",
+    route: "placements",
+    placement_contract: "workstreams-t3-placement/2.0.0",
+    authorization_revision: 1,
+    value: {
+      inventory_sha256: inventory,
+      context: {
+        owner_id: "owner",
+        principal_id: "principal",
+        authorization_revision: 1,
+        server_generation: 7,
+        registry_version: 11,
+      },
+      items: identities.map((identity) => ({
+        ...identity,
+        membership_id: "membership-00000",
+        native_reference_id: "reference-00000",
+        workstream_id: "alpha",
+        kind: "primary",
+        authority_namespace: namespace,
+        store_generation: 3,
+        source_binding_version: 1,
+        attestation_version: 1,
+        evidence_sha256: "a".repeat(64),
+        attestation_source: "native",
+        evidence_contract: "workstreams-t3-provider/2.0.0",
+        attested_at: new Date(placementNow - 1000).toISOString(),
+        expires_at: new Date(placementNow + 300000).toISOString(),
+      })),
+      next_cursor: null,
+      provenance,
+    },
+    envelope: {
+      contract: "workstreams-read/1.0.0",
+      registry: {
+        registry_instance_id: capability.registry.registry_instance_id,
+        owner_id: "owner",
+        canonical_origin: "https://registry.invalid",
+        server_generation: 7,
+        registry_version: 11,
+      },
+      provenance: {
+        authority: "native-home",
+        home_environment_id: "env:home",
+        served_by_environment_id: "env:home",
+        observed_at: observed,
+        source: "live",
+        stale: false,
+      },
+      coverage: {
+        registry: "complete",
+        sources: identities.map((identity) => ({
+          source_instance_id: identity.source_instance_id,
+          mapping: "mapped",
+          attestation: "current",
+          observed_at: observed,
+        })),
+      },
+    },
+  });
+}
+
+caseEffect("loads native placement v2 using the original mounted source descriptor", async () => {
+  registry.set(config, {
+    ...initial(),
+    nativeStoreAuthority: {
+      environmentId: id,
+      authorityNamespace: "namespace:source",
+      storeGeneration: 3,
+    },
+  });
+  await mount();
+  const identities = [{ source_instance_id: id, native_thread_id: "thread:a" }];
+  reply = () => nativePlacementResponse(identities);
+  const proof = await latest!.placements(
+    { binding, items: [], nextCursor: null, source: "live", stale: false },
+    identities,
+  );
+  expect(proof.items).toHaveLength(1);
+  expect(proof.items[0]).toMatchObject({
+    attestation_source: "native",
+    evidence_contract: "workstreams-t3-provider/2.0.0",
+  });
+  expect(liveT3PlacementsCurrent(proof)).toBe(true);
+  expect(new Headers(calls[0]!.headers).get("authorization")).toBe("Bearer fixture");
+  await act(() => registry.set(config, initial()));
+  expect(liveT3PlacementsCurrent(proof)).toBe(false);
+});
+caseEffect(
+  "refuses native placements before HTTP when the live descriptor is missing",
+  async () => {
+    await mount();
+    await expect(
+      latest!.placements({ binding, items: [], nextCursor: null, source: "live", stale: false }, [
+        { source_instance_id: id, native_thread_id: "thread:a" },
+      ]),
+    ).rejects.toMatchObject({ code: "scope_changed" });
+    expect(calls).toHaveLength(0);
+  },
+);
+caseEffect(
+  "does not accept a placement response as the source's authority descriptor",
+  async () => {
+    registry.set(config, {
+      ...initial(),
+      nativeStoreAuthority: {
+        environmentId: id,
+        authorityNamespace: "namespace:source",
+        storeGeneration: 3,
+      },
+    });
+    await mount();
+    const identities = [{ source_instance_id: id, native_thread_id: "thread:a" }];
+    reply = () => nativePlacementResponse(identities, "namespace:forged");
+    await expect(
+      latest!.placements(
+        { binding, items: [], nextCursor: null, source: "live", stale: false },
+        identities,
+      ),
+    ).rejects.toMatchObject({ code: "invalid_response" });
+    expect(calls).toHaveLength(1);
+  },
+);
+
+async function mountApplication(namespace = "namespace:source") {
+  const server = syntheticWorkstreams({
+    now: () => placementNow,
+    assignments: [{ environmentId: id, threadId: "thread:a", workstreamId: "alpha" }],
+  });
+  server.state.intercept = (call) =>
+    call.route === "list" ? { ...data, binding: originalBinding } : undefined;
+  publicHttp = routeWorkstreamsHttp(server.handle);
+  registry.set(config, {
+    ...initial(),
+    nativeStoreAuthority: {
+      environmentId: id,
+      authorityNamespace: "namespace:source",
+      storeGeneration: 3,
+    },
+  });
+  reply = () =>
+    nativePlacementResponse([{ source_instance_id: id, native_thread_id: "thread:a" }], namespace);
+  await act(() => {
+    renderer = create(
+      <RegistryContext.Provider value={registry}>
+        <ApplicationProbe />
+      </RegistryContext.Provider>,
+    );
+  });
+  return server;
+}
+async function settleApplication(check: () => void) {
+  for (let turn = 0; ; turn++) {
+    await act(async () => {
+      for (let round = 0; round < 20; round++) {
+        const jobs = pendingJobs.splice(0);
+        if (jobs.length === 0) return;
+        await Promise.allSettled(jobs);
+      }
+      throw new Error("Owned application requests and genuine digest jobs did not drain.");
+    });
+    try {
+      check();
+      return;
+    } catch (cause) {
+      if (turn === 199) throw cause;
+    }
+  }
+}
+caseEffect(
+  "the mounted web controller bootstraps metadata then loads native placements without a v1 request",
+  async () => {
+    const server = await mountApplication();
+    await settleApplication(() => {
+      expect(application.loading).toBe(false);
+      expect(application.data?.items).toHaveLength(2);
+      expect(application.placements?.items).toHaveLength(1);
+    });
+    const proof = application.placements!;
+    expect(proof.items[0]).toMatchObject({
+      attestation_source: "native",
+      evidence_contract: "workstreams-t3-provider/2.0.0",
+    });
+    expect(liveT3PlacementsCurrent(proof)).toBe(true);
+    expect(server.state.placementRequests).toHaveLength(0);
+    expect(calls.length).toBeGreaterThan(0);
+    await act(() => registry.set(session, AsyncResult.success({ ...authenticated })));
+    expect(liveT3PlacementsCurrent(proof)).toBe(false);
+  },
+);
+caseEffect(
+  "the mounted web controller retains stored assignments when native source trust disagrees",
+  async () => {
+    const server = await mountApplication("namespace:forged");
+    await settleApplication(() => {
+      expect(application.loading).toBe(false);
+      expect(application.data?.items).toHaveLength(2);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(application.placementInventory.coverage).toBe("partial");
+    });
+    expect(application.placements).toBeNull();
+    expect(application.assignmentIndex?.entries.size).toBe(1);
+    expect(server.state.placementRequests).toHaveLength(0);
+  },
+);

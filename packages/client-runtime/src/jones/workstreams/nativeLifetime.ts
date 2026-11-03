@@ -1,3 +1,5 @@
+import { loadNativePlacements, type NativePlacementConnectionLookup } from "./nativePlacements.ts";
+import type { T3PlacementIdentity, T3WorkstreamListResult } from "@t3tools/contracts";
 import type { PreparedConnection } from "../../connection/model.ts";
 import { RemoteEnvironmentAuthorization } from "../../authorization/service.ts";
 import { ManagedRelayDpopSigner } from "../../relay/managedRelay.ts";
@@ -37,6 +39,7 @@ export interface EnvironmentNativeWorkstreamsLifetimeOptions {
   /** Checks the application's original connection, session, generation and binding. */
   readonly isCurrent: () => boolean;
   readonly signal?: AbortSignal;
+  readonly placementConnection?: NativePlacementConnectionLookup;
 }
 
 /** One application lifetime. Disposal purges memory and aborts every owned read and export. */
@@ -127,6 +130,34 @@ export class EnvironmentNativeWorkstreamsLifetime {
     signal?: AbortSignal,
   ): Promise<NativeCompleteRead<R>> {
     return this.#guard((owned) => this.#reader.complete<R>(request, owned), signal);
+  }
+
+  placements(
+    metadata: T3WorkstreamListResult,
+    identities: readonly T3PlacementIdentity[],
+    signal?: AbortSignal,
+  ) {
+    return this.#guard((owned) => {
+      const lookup = this.#options.placementConnection;
+      if (!lookup)
+        throw new NativeReadError("incomplete", "Live native source trust is unavailable.");
+      return loadNativePlacements({
+        scope: this.#scope,
+        metadata,
+        identities,
+        lookup,
+        servedByEnvironmentId: this.#options.prepared.environmentId,
+        sha256: this.#options.sha256,
+        complete: (request, currentSignal) =>
+          this.#reader.complete<"placements">(request, currentSignal),
+        checkCurrent: () => {
+          this.#check();
+          if (signal?.aborted)
+            throw new NativeReadError("cancelled", "Native placements were cancelled.");
+        },
+        signal: owned,
+      });
+    }, signal);
   }
 
   export(signal?: AbortSignal, pageSize?: number): Promise<EnvironmentNativeCompletedExport> {
