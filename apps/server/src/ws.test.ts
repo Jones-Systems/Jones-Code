@@ -13,6 +13,12 @@ import {
   ProviderInstanceId,
   WS_METHODS,
   WsServerRefreshProvidersRpc,
+  WsRpcGroup,
+  type CompanionDown,
+  type PreviewOpenInput,
+  type PreviewSessionSnapshot,
+  type PreviewError,
+  type EnvironmentAuthorizationError,
   WsSubscribeServerConfigRpc,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadShell,
@@ -21,7 +27,9 @@ import {
   type ServerConfigStreamEvent,
   type ServerProvider,
 } from "@t3tools/contracts";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -30,7 +38,7 @@ import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import { Headers } from "effect/http";
-import { RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
+import { Rpc, RpcGroup, RpcMessage, RpcServer } from "effect/rpc";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
@@ -61,6 +69,11 @@ import * as OtlpEndpointCheck from "./observability/OtlpEndpointCheck.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as PortScanner from "./preview/PortScanner.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import * as DesktopBrowserChannel from "./preview/DesktopBrowserChannel.ts";
+import * as JonesHttp from "./jones/http/registration.ts";
+import * as CompanionHostRegistry from "./jones/previewCompanion/CompanionHostRegistry.ts";
+import * as RenderHostSelection from "./jones/previewCompanion/RenderHostSelection.ts";
+import * as RenderPlacement from "./jones/previewCompanion/RenderPlacement.ts";
 import * as ProcessDiagnostics from "./diagnostics/ProcessDiagnostics.ts";
 import * as ProcessResourceMonitor from "./diagnostics/ProcessResourceMonitor.ts";
 import * as ProjectCloneTracker from "./project/ProjectCloneTracker.ts";
@@ -1272,4 +1285,153 @@ it.effect("thread resume across compacted history keeps message order and final 
       ),
     ),
   ),
+);
+
+it.effect(
+  "previewOpen freezes the production render-host selection before the held mirror runs",
+  () =>
+    Effect.gen(function* () {
+      const companionServices = yield* Layer.build(
+        JonesHttp.previewCompanionServicesLayer.pipe(
+          Layer.provide(DesktopBrowserChannel.layer),
+          Layer.provide(
+            Layer.mock(ServerEnvironment.ServerEnvironment)({
+              getEnvironmentId: Effect.succeed(EnvironmentId.make("open-binding-test")),
+            }),
+          ),
+        ),
+      );
+      const selection = Context.get(companionServices, RenderHostSelection.RenderHostSelection);
+      const placement = Context.get(companionServices, RenderPlacement.RenderPlacement);
+      const registry = Context.get(companionServices, CompanionHostRegistry.CompanionHostRegistry);
+      const managerContext = yield* Layer.build(PreviewManager.layer);
+      const manager = Context.get(managerContext, PreviewManager.PreviewManager);
+      const services = Layer.mergeAll(
+        layerUnusedConfigRpcServices,
+        Layer.succeedContext(companionServices),
+        Layer.succeedContext(managerContext),
+        Layer.mock(ExternalLauncher.ExternalLauncher)({}),
+        Layer.mock(RemoteOpenTargets.RemoteOpenTargets)({}),
+        Layer.mock(DirectEndpoints.DirectEndpoints)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({}),
+        Layer.mock(UsageLimitSources.UsageLimitSources)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
+          namedProjectsRoot: process.cwd(),
+        }),
+        Layer.mock(ServerEnvironment.ServerEnvironment)({}),
+        Layer.mock(EnvironmentAuth.EnvironmentAuth)({}),
+      );
+      const handlers = yield* Effect.all({
+        open: WsRpcGroup.accessHandler(WS_METHODS.previewOpen),
+        close: WsRpcGroup.accessHandler(WS_METHODS.previewClose),
+      }).pipe(
+        Effect.provide(
+          layerWsRpc(
+            {
+              sessionId: AuthSessionId.make("open-binding-test"),
+              subject: "open-binding-test",
+              method: "browser-session-cookie",
+              scopes: [],
+            },
+            {},
+            {},
+            yield* PreviewAutomationBroker.PreviewAutomationBroker,
+            yield* ServerBrowser.ServerBrowser,
+            () => Effect.succeed({}),
+          ).pipe(Layer.provide(services)),
+        ),
+      );
+      const options = {
+        client: new Rpc.ServerClient(0),
+        requestId: RpcMessage.RequestId("open-binding-test"),
+        headers: Headers.empty,
+      };
+      const open = (input: PreviewOpenInput) =>
+        handlers
+          .open(input, options)
+          .pipe(
+            Effect.flatMap((result) =>
+              Deferred.isDeferred<
+                PreviewSessionSnapshot,
+                PreviewError | EnvironmentAuthorizationError
+              >(result)
+                ? Deferred.await(result)
+                : Effect.succeed(result),
+            ),
+          );
+      // Subscribe without consuming: placement cannot race ahead and hide a missing WS hook.
+      const mirror = yield* manager.subscribeEvents;
+      const threadId = ThreadId.make("thread");
+      const first = yield* open({ threadId, runtime: "server" });
+      assert.deepEqual(yield* selection.binding(first), { _tag: "server" });
+      yield* selection.setDefault({ _tag: "companion", hostId: "mini" });
+      const firstEvent = yield* PubSub.take(mirror);
+      assert.equal(firstEvent.type, "opened");
+      assert.equal(firstEvent.tabId, first.tabId);
+      if (firstEvent.type !== "opened") return yield* Effect.die("Missing opened event");
+      assert.deepEqual(yield* placement.place(firstEvent.snapshot), { _tag: "headless" });
+
+      const second = yield* open({ threadId, runtime: "server" });
+      assert.deepEqual(yield* selection.binding(second), { _tag: "companion", hostId: "mini" });
+      yield* PubSub.take(mirror);
+
+      // A real companion handshake followed by disconnect leaves a known offline host.
+      const input = yield* Queue.unbounded<ReadonlyArray<string>>();
+      const output = yield* Queue.unbounded<CompanionDown>();
+      const connection = yield* registry
+        .connect({
+          read: Queue.take(input).pipe(
+            Effect.mapError(
+              (cause) => new CompanionHostRegistry.CompanionTransportError({ cause }),
+            ),
+          ),
+          write: (text) =>
+            Queue.offer(output, JSON.parse(text) as CompanionDown).pipe(Effect.asVoid),
+          close: () => Effect.void,
+          writableLength: () => 0,
+        })
+        .pipe(Effect.scoped, Effect.forkScoped);
+      yield* Queue.offer(input, [
+        JSON.stringify({
+          type: "hello",
+          protocol: 1,
+          hostId: "mini",
+          label: "Mini",
+          platform: "test",
+          runtimeIdentity: {
+            schemaVersion: 1,
+            runtimeKind: "electron",
+            runtimeInstanceId: "synthetic-mini",
+            appVersion: "test",
+            buildCommit: null,
+          },
+          capabilities: {
+            cdp: true,
+            clipboardText: true,
+            uploads: false,
+            downloads: false,
+            recording: false,
+          },
+        }),
+      ]);
+      assert.equal((yield* Queue.take(output)).type, "welcome");
+      assert.equal((yield* Queue.take(output)).type, "assignments");
+      yield* Fiber.interrupt(connection);
+      assert.isFalse((yield* registry.status("mini"))?.online);
+      yield* selection.setDefault({ _tag: "server" });
+      const unavailable = yield* placement.place(second).pipe(Effect.flip);
+      assert.equal(unavailable._tag, "CompanionHostUnavailable");
+      assert.equal(unavailable.hostId, "mini");
+      assert.equal(unavailable.state, "offline");
+      assert.equal(unavailable.outcome, "not_started");
+
+      yield* handlers.close({ threadId, tabId: second.tabId }, options);
+      const closed = yield* PubSub.take(mirror);
+      assert.equal(closed.type, "closed");
+      assert.equal(closed.tabId, second.tabId);
+      // Resume the close consumer at the same placement-release seam used by ServerBrowser.
+      yield* placement.release(closed);
+      assert.isUndefined(yield* selection.binding(second));
+      assert.equal((yield* manager.list({ threadId })).sessions.length, 1);
+    }).pipe(Effect.scoped, Effect.provide(layerConfigDiscoveryTest)),
 );

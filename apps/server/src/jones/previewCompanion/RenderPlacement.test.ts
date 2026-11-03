@@ -107,3 +107,28 @@ it.live("preserves the typed not_started failure at the existing Promise boundar
     await expect(runPlacement(Effect.fail(error))).rejects.toBe(error);
   }),
 );
+
+it.effect(
+  "synchronous admission freezes ordinary opens and inherits only recorded popup selection",
+  () =>
+    Effect.gen(function* () {
+      const placement = yield* Placement.RenderPlacement;
+      const selection = yield* Selection.RenderHostSelection;
+      expect(placement.bindAtOpen(snapshot)).toEqual({ _tag: "server" });
+      yield* selection.setDefault({ _tag: "companion", hostId: "later" });
+      expect(placement.bindAtOpen({ ...snapshot, tabId: "popup" }, snapshot)).toEqual({
+        _tag: "server",
+      });
+      expect(
+        placement.bindAtOpen({ ...snapshot, tabId: "orphan" }, { ...snapshot, tabId: "missing" }),
+      ).toEqual({ _tag: "server" });
+      expect(yield* placement.place(snapshot)).toEqual({ _tag: "headless" });
+      const next = { ...snapshot, tabId: "next" };
+      expect(placement.bindAtOpen(next)).toEqual({ _tag: "companion", hostId: "later" });
+      expect(placement.bindAtOpen({ ...snapshot, tabId: "companion-popup" }, next)).toEqual({
+        _tag: "companion",
+        hostId: "later",
+      });
+      expect(() => placement.bindAtOpen(next, snapshot)).toThrow();
+    }).pipe(Effect.scoped, Effect.provide(dependencies)),
+);

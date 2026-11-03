@@ -494,6 +494,8 @@ const make = Effect.gen(function* () {
     { readonly agentId: string | null; promise?: Promise<ServerTab> }
   >();
 
+  // Runtime detach keeps this logical-session provenance until the ordered close event.
+  const admissions = new Map<string, { established: boolean; failed: boolean; closed: boolean }>();
   const closedPendingTabs = new Set<string>();
   const adoptedPages = new Map<string, { readonly page: Page; readonly openerTabId: string }>();
   const closedSessions = new Set<string>();
@@ -756,6 +758,9 @@ const make = Effect.gen(function* () {
     const host = placement
       ? await runPlacement(placement.place(snapshot))
       : { _tag: "local" as const };
+    // An adopted page already belongs to its opener's browser; never mount a second attachment.
+    if (adopted && host._tag === "companion")
+      throw new Error("Companion popup adoption is unavailable without the opener's attachment.");
     const desktop =
       host._tag === "companion" && placement
         ? await (async () => {
@@ -961,6 +966,8 @@ const make = Effect.gen(function* () {
     page.on("close", () => dropTab(tab, true));
     page.on("crash", () => dropTab(tab, true));
     tabs.set(key, tab);
+    const admission = admissions.get(key);
+    if (admission) admission.established = true;
     reportLiveTabs();
     // Desktop pages can finish loading before these listeners attach.
     if (desktop) void page.waitForLoadState("load").then(() => reportLoaded(tab), constVoid);
@@ -1303,12 +1310,32 @@ const make = Effect.gen(function* () {
 
   const ensureTab = (snapshot: PreviewSessionSnapshot): Promise<ServerTab> => {
     const key = tabKey(snapshot.threadId, snapshot.tabId);
+    const admission = admissions.get(key) ?? { established: false, failed: false, closed: false };
+    if (admission.failed || admission.closed)
+      return Promise.reject(
+        new ServerBrowserTabNotFoundError({ threadId: snapshot.threadId, tabId: snapshot.tabId }),
+      );
     const pending = pendingTabs.get(key);
     if (pending?.promise) return pending.promise;
     const existing = tabs.get(key);
     if (existing) return Promise.resolve(existing);
+    admissions.set(key, admission);
     const opening = createTab(snapshot)
-      .catch((cause: unknown) => {
+      .catch(async (cause: unknown) => {
+        if (placement && (admission.closed || !admission.established)) {
+          // Fence queued opens before release can let them bind to a different default.
+          admission.failed = true;
+          await Effect.runPromise(placement.release(snapshot));
+          if (!admission.closed)
+            await Effect.runPromise(
+              manager
+                .close({
+                  threadId: ThreadId.make(snapshot.threadId),
+                  tabId: snapshot.tabId,
+                })
+                .pipe(Effect.ignore),
+            );
+        }
         runFork(
           Effect.logWarning(
             isHostSetupError(cause) ? cause.message : "server preview tab failed to start",
@@ -1317,9 +1344,14 @@ const make = Effect.gen(function* () {
         );
         throw cause;
       })
-      .finally(() => {
+      .finally(async () => {
+        if (pendingTabs.get(key)?.promise !== opening) return;
+        if (placement && admission.closed && !admission.failed)
+          await Effect.runPromise(placement.release(snapshot));
+        if (pendingTabs.get(key)?.promise !== opening) return;
         pendingTabs.delete(key);
         closedPendingTabs.delete(key);
+        if (admission.closed && admissions.get(key) === admission) admissions.delete(key);
       });
     pendingTabs.set(key, { agentId: snapshot.automationOwner ?? null, promise: opening });
     return opening;
@@ -1362,6 +1394,8 @@ const make = Effect.gen(function* () {
     input: Parameters<typeof manager.open>[0],
   ) {
     let key: string = NodeCrypto.randomUUID();
+    let admitted: PreviewSessionSnapshot | undefined;
+    let placementStarted = false;
     const reservation = { agentId: input.automationOwner ?? null };
     return yield* Effect.acquireUseRelease(
       Effect.try({
@@ -1376,32 +1410,55 @@ const make = Effect.gen(function* () {
           .open({
             ...input,
             beforePublish: (snapshot) => {
+              admitted = snapshot;
               pendingTabs.delete(key);
               key = tabKey(snapshot.threadId, snapshot.tabId);
               pendingTabs.set(key, reservation);
               input.beforePublish?.(snapshot);
+              const adopted = adoptedPages.get(key);
+              placement?.bindAtOpen(
+                snapshot,
+                adopted && {
+                  threadId: snapshot.threadId,
+                  tabId: adopted.openerTabId,
+                },
+              );
             },
           })
           .pipe(
             Effect.flatMap((snapshot) =>
               Effect.tryPromise({
-                try: () => ensureTab(snapshot),
+                try: () => {
+                  placementStarted = true;
+                  return ensureTab(snapshot);
+                },
                 catch: (cause) =>
                   isCompanionHostUnavailable(cause)
                     ? cause
                     : ServerBrowserPage.toOperationError(cause),
               }).pipe(
                 Effect.onError(() =>
-                  manager
-                    .close({ threadId: ThreadId.make(snapshot.threadId), tabId: snapshot.tabId })
-                    .pipe(Effect.ignore),
+                  placement
+                    ? Effect.void
+                    : manager
+                        .close({
+                          threadId: ThreadId.make(snapshot.threadId),
+                          tabId: snapshot.tabId,
+                        })
+                        .pipe(Effect.ignore),
                 ),
               ),
+            ),
+            Effect.onError(() =>
+              Effect.gen(function* () {
+                adoptedPages.delete(key);
+                if (placement && admitted && !placementStarted) yield* placement.release(admitted);
+              }),
             ),
           ),
       () =>
         Effect.sync(() => {
-          pendingTabs.delete(key);
+          if (pendingTabs.get(key) === reservation) pendingTabs.delete(key);
         }),
     );
   }, Effect.uninterruptible);
@@ -2392,9 +2449,15 @@ const make = Effect.gen(function* () {
       const key = tabKey(event.threadId, event.tabId);
       const tab = tabs.get(key);
       if (event.type === "closed") {
-        if (!tab && pendingTabs.has(key)) closedPendingTabs.add(key);
+        const pending = pendingTabs.get(key)?.promise;
+        if (!tab && pending) closedPendingTabs.add(key);
         closedSessions.add(key);
-        if (placement) await Effect.runPromise(placement.release(event));
+        const admission = admissions.get(key);
+        if (admission) admission.closed = true;
+        // Pending creation owns release after it settles, including a late placement bind.
+        if (placement && !pending && !admission?.failed)
+          await Effect.runPromise(placement.release(event));
+        if (!pending && admissions.get(key) === admission) admissions.delete(key);
         if (tab) dropTab(tab, false);
         closedSessions.delete(key);
         return;

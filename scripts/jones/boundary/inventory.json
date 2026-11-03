@@ -2524,7 +2524,9 @@
     "apps/server/src/mcp/toolkits/preview/tools.ts": "hook",
     "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts": "jones-tests-in-upstream",
     "apps/server/src/provider/ProviderAuthService.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/provider/providerInstallation.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/provider/providerInstallation.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/jones/previewCompanion/openBinding.ts": "jones-owned",
+    "apps/server/src/jones/previewCompanion/openBinding.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
