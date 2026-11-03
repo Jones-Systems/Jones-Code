@@ -635,3 +635,32 @@ it("deduplicates an inconsistent snapshot in favor of unresolved evidence", () =
   );
   expect(result.result.status).toBe("unknown");
 });
+
+it.effect(
+  "a new capture refusal cannot settle the original explicit unknown or retain it as #824 settlement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const target = yield* host(broker);
+        const original = yield* start(broker, target);
+        const newRequest = yield* start(broker, target, { operation: "recordingStop" });
+        yield* broker.respond({ ...original.handle, ...unknownReply });
+        yield* Fiber.join(original.caller);
+        yield* broker.respond({
+          ...newRequest.handle,
+          ok: false,
+          error: {
+            _tag: "PreviewAutomationExecutionError",
+            outcome: "not_started",
+            message: "This request did not start",
+          },
+        });
+        yield* Fiber.join(newRequest.caller);
+        expect(yield* read(broker, original.handle)).toMatchObject({
+          result: { status: "unknown" },
+        });
+        yield* fence(broker);
+      }),
+    ),
+);
