@@ -78,6 +78,10 @@ and qualify the complete stack before merging any layer. A similar upstream
 feature is not an accepted replacement without behavior evidence and M Jones's
 explicit decision.
 
+For an upstream UI conflict with an explicit owner request that existing
+direction does not settle, follow [owner UI choices](./upstream-sync.md#owner-choices-for-conflicting-ui-changes)
+before selecting what to retain, adopt or blend.
+
 ### Jones database boundary
 
 T3 Code can open a database that Jones Code has used, and upstream migrations

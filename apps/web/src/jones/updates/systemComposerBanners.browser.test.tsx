@@ -91,7 +91,7 @@ function isolateDismissals(): Disposable {
 it("shows the local draft's source notice through the extracted system hook and dismisses only that source pair", async () => {
   using _dismissals = isolateDismissals();
   await using screen = await render(<Harness selected={environment("Local draft")} />);
-  expect(screen.container.textContent).toContain("Local draft: Different preview sources");
+  expect(screen.container.textContent).toContain("Local draft: Preview build identity mismatch");
   const sourceDetails = () =>
     [...screen.container.querySelectorAll("[aria-label]")].map((element) =>
       element.getAttribute("aria-label"),
@@ -104,7 +104,7 @@ it("shows the local draft's source notice through the extracted system hook and 
   expect(screen.container.textContent).toBe("");
   const changedSource = "b".repeat(39) + "c";
   await screen.rerender(<Harness selected={environment("Local draft", changedSource)} />);
-  expect(screen.container.textContent).toContain("Local draft: Different preview sources");
+  expect(screen.container.textContent).toContain("Local draft: Preview build identity mismatch");
   expect(sourceDetails()).toEqual([
     expect.stringContaining(`source ${branding.APP_SOURCE_SHA}`),
     expect.stringContaining(`source ${changedSource}`),
@@ -122,7 +122,7 @@ it("shows every eligible automatic environment while excluding the manual select
       automatic
     />,
   );
-  expect(screen.container.textContent).toContain("Eligible: Different preview sources");
+  expect(screen.container.textContent).toContain("Eligible: Preview build identity mismatch");
   expect(screen.container.textContent).not.toContain("Manual");
   expect(screen.container.textContent).not.toContain("Equal");
 });
