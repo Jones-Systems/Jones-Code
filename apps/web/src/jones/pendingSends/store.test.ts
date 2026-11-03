@@ -3,10 +3,13 @@ import {
   EnvironmentId,
   MessageId,
   ThreadId,
+  CommandId,
+  ProjectId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import type { ChatMessage } from "../../types";
 import { createPendingSendStore } from "./store";
+import { initialMessageCommandId } from "@t3tools/contracts/jones/deliveryEvidence";
 
 const env = EnvironmentId.make("env");
 const thread = ThreadId.make("thread");
@@ -43,6 +46,40 @@ function projection(
 }
 
 describe("pending sends", () => {
+  it("retains accepted creation independently through later uncertain replies and rejected first-message recovery", () => {
+    const store = createPendingSendStore();
+    const key = store.admit(env, thread, message);
+    const commandId = CommandId.make("launch");
+    const initialMessage = {
+      status: "unknown" as const,
+      commandId: initialMessageCommandId(commandId),
+      messageId: message.id,
+    };
+    store.issuing(key);
+    store.finish(key, {
+      kind: "launch", commandId, projectId: ProjectId.make("project"),
+      creation: { status: "accepted", threadId: thread }, initialMessage,
+    });
+    store.finish(key, {
+      kind: "launch", commandId, projectId: ProjectId.make("project"),
+      creation: { status: "unknown" }, initialMessage,
+    });
+    expect(store.getSnapshot()[0]).toMatchObject({ delivery: "uncertain", working: true,
+      deliveryEvidence: { creation: { status: "accepted", threadId: thread } } });
+    store.finish(key, {
+      kind: "launch", commandId, projectId: ProjectId.make("project"),
+      creation: { status: "unknown" }, initialMessage: { ...initialMessage, status: "rejected" },
+    });
+    expect(store.getSnapshot()[0]).toMatchObject({ delivery: "failed", working: false,
+      deliveryEvidence: { creation: { status: "accepted", threadId: thread } } });
+    store.finish(key, {
+      kind: "launch", commandId, projectId: ProjectId.make("project"),
+      creation: { status: "unknown" }, initialMessage,
+    });
+    expect(store.getSnapshot()[0]).toMatchObject({ delivery: "failed", working: false, retry: undefined });
+    store.reconcile(env, thread, projection({ message: true }));
+    expect(store.getSnapshot()[0]?.delivery).toBe("accepted");
+  });
   it("keeps an optimistic row on run completion or projection acknowledgement until its visible replacement", () => {
     const store = createPendingSendStore();
     const key = store.admit(env, thread, message);

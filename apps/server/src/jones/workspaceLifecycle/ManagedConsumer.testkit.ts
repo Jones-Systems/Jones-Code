@@ -371,6 +371,7 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(Layer.succeed(Git.GitVcsDriver, git)),
     Layer.provide(
       Layer.succeed(Registry.ProviderInstanceRegistry, {
+        getCatalogSource: (id) => (id === selection.instanceId ? instance : undefined),
         getInstance: (id) => Effect.succeed(id === selection.instanceId ? instance : undefined),
         listInstances: Effect.succeed([instance]),
         listUnavailable: Effect.succeed([]),

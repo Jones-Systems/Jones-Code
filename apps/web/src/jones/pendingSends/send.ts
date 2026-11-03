@@ -2,6 +2,8 @@ import { AsyncResult } from "effect/reactivity";
 import type { PreparedThreadTurn, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import type { AtomCommandResult } from "@t3tools/client-runtime/state/runtime";
 import type { EnvironmentId } from "@t3tools/contracts";
+import { readPreparedThreadTurnDeliveryEvidence } from "@t3tools/client-runtime/jones/deliveryEvidence";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { pendingSends, type createPendingSendStore } from "./store";
 
 export async function sendPendingTurn<A, P, D>(args: {
@@ -29,17 +31,25 @@ export async function sendPendingTurn<A, P, D>(args: {
     store.finish(key, false);
     return AsyncResult.failure<A, P | D>(prepared.cause);
   }
+  const finish = (result: AtomCommandResult<A, D>) => {
+    store.finish(
+      key,
+      result._tag === "Success"
+        ? "accepted"
+        : readPreparedThreadTurnDeliveryEvidence(squashAtomCommandFailure(result), prepared.value),
+    );
+  };
   const send = async () => {
     const entry = store.get(environmentId, input.threadId, input.message.messageId);
-    if (!entry || entry.inFlight || entry.delivery === "accepted") return;
+    if (!entry || entry.inFlight || entry.delivery === "accepted" || entry.delivery === "failed") return;
     store.issuing(key);
     const result = await args.dispatch(prepared.value);
-    store.finish(key, result._tag === "Success");
+    finish(result);
     return result;
   };
   store.prepared(key, prepared.value, send);
   store.issuing(key);
   const result = await args.dispatch(prepared.value);
-  store.finish(key, result._tag === "Success");
+  finish(result);
   return result;
 }

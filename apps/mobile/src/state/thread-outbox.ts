@@ -17,7 +17,10 @@ export async function flushThreadOutbox(): Promise<void> {
 }
 
 export function enqueueThreadOutboxMessage(message: QueuedThreadMessage): Promise<void> {
-  return threadOutboxManager.enqueue(message);
+  return threadOutboxManager.enqueue({
+    ...message,
+    issuance: message.issuance ?? { state: "unissued" },
+  });
 }
 
 export function confirmThreadOutboxMessageQueued(message: QueuedThreadMessage): Promise<boolean> {

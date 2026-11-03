@@ -1,7 +1,7 @@
 import type { Tool } from "effect/ai";
 import { claimForCaller } from "../../../jones/linkedThreads/launch.ts";
 import * as ClientLaunch from "../../../jones/mcp/clientLaunch/ClientLaunchService.ts";
-import { inheritsLinkedDelegationModes } from "../../../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
+import { resolveLaunchDefaults } from "../../../jones/mcp/clientLaunch/launchDefaults.ts";
 import {
   CommandId,
   MessageId,
@@ -20,10 +20,7 @@ import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.t
 import * as Repositories from "../../../sourceControl/SourceControlRepositoryService.ts";
 import * as GitVcsDriver from "../../../vcs/GitVcsDriver.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
-import * as ServerSettings from "../../../serverSettings.ts";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import { formatThreadLink } from "@t3tools/shared/threadLinks";
-import { resolveRuntimeMode } from "../../delegatedTaskModes.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { newCommandId, readCaller, resolveProjectId, unavailable } from "../../threadAccess.ts";
 import { ProjectToolkit } from "./tools.ts";
@@ -83,7 +80,7 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
       input.delegatedFrom !== undefined,
     );
   }
-  const { runtimeMode, interactionMode, linkOrigin } = modes;
+  const { interactionMode, linkOrigin } = modes;
   const scope = yield* McpInvocationContext.McpInvocationContext;
   const context = yield* readCaller();
   const { caller } = context;
@@ -160,45 +157,13 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
           }),
       ),
     );
-  // A caller outside a thread has nothing to inherit, so it starts with the
-  // project's effective defaults, as the composer does. Its mode stays
-  // within the ceiling it was approved with.
-  const projectDefaults =
-    caller === undefined
-      ? yield* ServerSettings.ServerSettingsService.pipe(
-          Effect.flatMap((settings) => settings.getSettings),
-          Effect.mapError(unavailable),
-          Effect.flatMap((settings) =>
-            Effect.map(
-              readProject,
-              (project) => resolveProjectSettings(settings, projectId, project).settings,
-            ),
-          ),
-        )
-      : undefined;
-  const modelSelection =
-    input.modelSelection ??
-    caller?.modelSelection ??
-    projectDefaults?.defaultModelSelection ??
-    undefined;
-  if (modelSelection === undefined)
-    return yield* new OrchestratorMcpFailure({
-      code: "invalid_request",
-      message:
-        "Pass modelSelection: the project has no default model. orchestrator_capabilities lists providers and models.",
-    });
-  const startedRuntimeMode =
-    projectDefaults !== undefined &&
-    input.runtimeMode === undefined &&
-    !inheritsLinkedDelegationModes({
-      delegatedFrom: input.delegatedFrom,
-      linkOrigin,
-      narrowedTo: scope.client?.narrowedTo,
-    })
-      ? yield* resolveRuntimeMode(runtimeMode, projectDefaults.defaultRuntimeMode).pipe(
-          Effect.orElseSucceed(() => runtimeMode),
-        )
-      : runtimeMode;
+  const { modelSelection, runtimeMode: startedRuntimeMode } = yield* resolveLaunchDefaults(
+    input,
+    context,
+    projectId,
+    modes,
+    readProject,
+  );
   const originLink = yield* claimForCaller(
     context,
     threadId,

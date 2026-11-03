@@ -2964,6 +2964,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const nextActiveProvider = normalized?.instanceId ?? base.activeProvider;
             if (
+              opts?.explicit !== true &&
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider &&
               (base.modelSelectionExplicit ?? false) === (opts?.explicit === true)
@@ -3104,15 +3105,6 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextStickyActiveProvider = options.instanceId
                 ? instanceKey
                 : (base.activeProvider ?? instanceKey);
-            }
-
-            if (
-              Equal.equals(base.modelSelectionByProvider, nextMap) &&
-              Equal.equals(state.stickyModelSelectionByProvider, nextStickyMap) &&
-              Equal.equals(state.stickyOptionsByModelByProvider, nextOptionsByModel) &&
-              state.stickyActiveProvider === nextStickyActiveProvider
-            ) {
-              return state;
             }
 
             const { modelSelectionExplicit: _previousExplicit, ...restBase } = base;
@@ -4179,7 +4171,13 @@ export function subscribeComposerDraftModelReconciliation(input: {
     const matches: Array<readonly [string, ComposerThreadDraftState]> = [];
     for (const [key, draft] of Object.entries(state.draftsByThreadKey)) {
       // Local drafts can materialize a shell before their first turn is submitted.
-      if (state.draftThreadsByThreadKey[key] || draft.activeProvider === null) continue;
+      if (
+        state.draftThreadsByThreadKey[key] ||
+        draft.activeProvider === null ||
+        draft.modelSelectionExplicit === true
+      ) {
+        continue;
+      }
       const ref = parseScopedThreadKey(key);
       const pick = draft.modelSelectionByProvider[draft.activeProvider];
       if (!ref || !pick || !threadKeys.has(key)) continue;

@@ -1,5 +1,9 @@
 import { pendingSends } from "../../jones/pendingSends/store";
 import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
+import {
+  acknowledgeComposerSelection,
+  composerSelectionForDispatch,
+} from "../../jones/threadConfiguration/composerSelection";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { Dispatch } from "react";
@@ -469,6 +473,8 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     if (!activeThread || !clientSettingsHydrated || sendInFlightRef.current) return;
     const context = composerRef.current?.getSendContext();
     if (!context?.providerAvailable) return;
+    const submittedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+    const selection = composerSelectionForDispatch(context.selectedModelSelection, submittedDraft);
 
     const threadId = activeThread.id;
     const messageId = newMessageId();
@@ -489,6 +495,12 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       },
     ]);
     scrollToEnd();
+    let accepted = false;
+    pendingSends.whenAccepted(environmentId, threadId, messageId, () => {
+      accepted = true;
+      acknowledgeComposerSelection(composerDraftTarget, submittedDraft);
+      clearUsageLimitsFor(routeThreadKey);
+    });
     // Commands settle into a result, so this always runs.
     const settingsResult = await persistThreadSettingsForNextTurn({
       threadId,
@@ -505,13 +517,13 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
             input: {
               threadId,
               message: { messageId, role: "user", text, attachments: [] },
-              modelSelection: context.selectedModelSelection,
+              ...selection,
               runtimeMode,
               interactionMode: context.interactionMode,
               createdAt,
             },
           });
-    if (result._tag === "Failure") {
+    if (result._tag === "Failure" && !accepted) {
       pendingSends.failBeforeDispatch(environmentId, threadId, messageId);
       resetLocalDispatch();
       if (!isAtomCommandInterrupted(result)) {

@@ -1,6 +1,23 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import type { ModelSelection, ThreadId } from "@t3tools/contracts";
+import type { EnvironmentId, ModelSelection, ThreadId } from "@t3tools/contracts";
+import type { PendingSend } from "./store";
 import { buildLocalDraftThread } from "../../components/ChatView.logic";
+
+export function provenPendingThread(
+  entries: readonly PendingSend[],
+  environmentId: EnvironmentId,
+  threadId: ThreadId,
+): EnvironmentThreadShell | undefined {
+  return entries.find(
+    (entry) =>
+      entry.environmentId === environmentId && entry.threadId === threadId &&
+      (entry.creationAccepted === true || (
+        entry.deliveryEvidence?.kind === "launch" &&
+        entry.deliveryEvidence.creation.status === "accepted" &&
+        entry.deliveryEvidence.creation.threadId === threadId
+      )),
+  )?.sidebarThread;
+}
 
 export function pendingNewThread(
   template: EnvironmentThreadShell,

@@ -5,10 +5,17 @@ import type {
   ThreadId,
 } from "@t3tools/contracts";
 import type { PreparedThreadTurn } from "@t3tools/client-runtime/operations";
+import type {
+  CommandDeliveryStatus,
+  DispatchDeliveryEvidence,
+  LaunchDeliveryEvidence,
+} from "@t3tools/contracts/jones/deliveryEvidence";
+import { threadTurnDeliveryStatus } from "@t3tools/client-runtime/jones/deliveryEvidence";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ChatMessage } from "../../types";
 
 export type Delivery = "sending" | "uncertain" | "failed" | "accepted";
+export type DeliveryEvidence = DispatchDeliveryEvidence | LaunchDeliveryEvidence;
 export interface PendingSend {
   readonly key: string;
   readonly environmentId: EnvironmentId;
@@ -18,11 +25,14 @@ export interface PendingSend {
   readonly issued: boolean;
   readonly working: boolean;
   readonly prepared?: PreparedThreadTurn;
-  readonly retry?: () => Promise<unknown>;
+  readonly retry?: (() => Promise<unknown>) | undefined;
   readonly inFlight: boolean;
   readonly visible: boolean;
   readonly sidebarThread?: EnvironmentThreadShell;
   readonly onAccepted?: (() => void) | undefined;
+  readonly onRejected?: ((entry: PendingSend) => void) | undefined;
+  readonly deliveryEvidence?: DeliveryEvidence | undefined;
+  readonly creationAccepted?: boolean;
 }
 
 export function createPendingSendStore(revoke = (url: string) => URL.revokeObjectURL(url)) {
@@ -61,10 +71,57 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
   };
   const accept = (entryKey: string) => {
     const entry = entries.find((entry) => entry.key === entryKey);
-    if (!entry || (entry.delivery === "accepted" && !entry.onAccepted)) return;
+    if (
+      !entry ||
+      (entry.delivery === "accepted" && !entry.onAccepted && !entry.retry && !entry.onRejected)
+    ) return;
     const callback = entry.onAccepted;
-    update(entryKey, (entry) => ({ ...entry, delivery: "accepted", onAccepted: undefined }));
+    update(entryKey, (entry) => ({
+      ...entry,
+      delivery: "accepted",
+      retry: undefined,
+      onAccepted: undefined,
+      onRejected: undefined,
+    }));
     callback?.();
+  };
+  const finish = (entryKey: string, outcome: boolean | CommandDeliveryStatus | DeliveryEvidence) => {
+    const evidence = typeof outcome === "object" ? outcome : undefined;
+    update(entryKey, (entry) => {
+      // Creation is durable independently of its first message and of later lost replies.
+      const deliveryEvidence =
+        evidence?.kind === "launch" &&
+        evidence.creation.status !== "accepted" &&
+        entry.deliveryEvidence?.kind === "launch" &&
+        entry.deliveryEvidence.creation.status === "accepted"
+          ? { ...evidence, creation: entry.deliveryEvidence.creation }
+          : evidence ?? entry.deliveryEvidence;
+      const status: CommandDeliveryStatus =
+        typeof outcome === "object"
+          ? threadTurnDeliveryStatus(deliveryEvidence ?? outcome)
+          : typeof outcome === "boolean"
+            ? outcome ? "accepted" : "unknown"
+            : outcome;
+      const accepted = entry.delivery === "accepted" || status === "accepted";
+      const rejected = !accepted && (
+        status === "rejected" || entry.delivery === "failed" || !entry.issued
+      );
+      return {
+        ...entry,
+        deliveryEvidence,
+        inFlight: false,
+        delivery: accepted ? "accepted" : rejected ? "failed" : "uncertain",
+        working: entry.working && !rejected,
+        ...(rejected ? { retry: undefined } : {}),
+      };
+    });
+    const entry = entries.find((entry) => entry.key === entryKey);
+    if (entry?.delivery === "accepted") accept(entryKey);
+    else if (entry?.delivery === "failed" && entry.onRejected) {
+      const callback = entry.onRejected;
+      update(entryKey, (entry) => ({ ...entry, onRejected: undefined }));
+      callback(entry);
+    }
   };
   return {
     subscribe: (listener: () => void) => {
@@ -111,6 +168,10 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
     prepared(entryKey: string, prepared: PreparedThreadTurn, retry: () => Promise<unknown>) {
       update(entryKey, (entry) => ({ ...entry, prepared, retry }));
     },
+    confirmThreadCreation(environmentId: EnvironmentId, threadId: ThreadId, messageId: MessageId) {
+      const entry = get(environmentId, threadId, messageId);
+      if (entry) update(entry.key, (entry) => ({ ...entry, creationAccepted: true }));
+    },
     issuing(entryKey: string) {
       update(entryKey, (entry) => ({
         ...entry,
@@ -119,24 +180,11 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
         delivery: entry.delivery === "accepted" ? "accepted" : "sending",
       }));
     },
-    finish(entryKey: string, success: boolean) {
-      if (success) accept(entryKey);
-      update(entryKey, (entry) => ({
-        ...entry,
-        inFlight: false,
-        delivery:
-          entry.delivery === "accepted" || success
-            ? "accepted"
-            : entry.issued
-              ? "uncertain"
-              : "failed",
-        working: entry.working && (success || entry.issued),
-      }));
-    },
+    finish,
     failBeforeDispatch(environmentId: EnvironmentId, threadId: ThreadId, messageId: MessageId) {
       const entry = get(environmentId, threadId, messageId);
       if (entry && !entry.issued && entry.delivery !== "accepted")
-        update(entry.key, (entry) => ({ ...entry, delivery: "failed", working: false }));
+        finish(entry.key, "rejected");
     },
     whenAccepted(
       environmentId: EnvironmentId,
@@ -147,7 +195,23 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
       const entry = get(environmentId, threadId, messageId);
       if (!entry) return;
       if (entry.delivery === "accepted") callback();
-      else update(entry.key, (entry) => ({ ...entry, onAccepted: callback }));
+      else update(entry.key, (entry) => ({
+        ...entry,
+        onAccepted: entry.onAccepted
+          ? () => { entry.onAccepted?.(); callback(); }
+          : callback,
+      }));
+    },
+    whenRejected(
+      environmentId: EnvironmentId,
+      threadId: ThreadId,
+      messageId: MessageId,
+      callback: (entry: PendingSend) => void,
+    ) {
+      const entry = get(environmentId, threadId, messageId);
+      if (!entry || entry.delivery === "accepted") return;
+      if (entry.delivery === "failed") callback(entry);
+      else update(entry.key, (entry) => ({ ...entry, onRejected: callback }));
     },
     dismiss,
     reconcile(

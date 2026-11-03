@@ -1,5 +1,10 @@
 import type { ModelSelection } from "@t3tools/contracts";
 
+export function captureExplicitComposerModelPick(selection: ModelSelection): ModelSelection {
+  // Picker callbacks may hand back the same catalog object on an equal re-selection.
+  return structuredClone(selection);
+}
+
 interface QueuedModelSelection {
   readonly modelSelection?: ModelSelection;
   readonly modelSelectionExplicit?: boolean;

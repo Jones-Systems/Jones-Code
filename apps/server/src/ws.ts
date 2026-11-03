@@ -2231,16 +2231,23 @@ export const layerWsRpc = (
                           result.replayed ? Effect.void : recordClientCommandAnalytics(command),
                         ),
                         Effect.map((result) => ({ sequence: result.sequence })),
-                        Effect.mapError((cause) => {
-                          const detail = userFacingDispatchErrorMessage(cause);
-                          return new OrchestrationV2DispatchCommandError({
-                            commandId: command.commandId,
-                            commandType: command.type,
-                            message: detail ?? "Failed to dispatch orchestration V2 command",
-                            ...(detail === undefined ? {} : { detail }),
-                            cause,
-                          });
-                        }),
+                        Effect.catch((cause) =>
+                          threadManagement.getDispatchDeliveryEvidence(command).pipe(
+                            Effect.flatMap((deliveryEvidence) => {
+                              const detail = userFacingDispatchErrorMessage(cause);
+                              return Effect.fail(
+                                new OrchestrationV2DispatchCommandError({
+                                  commandId: command.commandId,
+                                  commandType: command.type,
+                                  message: detail ?? "Failed to dispatch orchestration V2 command",
+                                  ...(detail === undefined ? {} : { detail }),
+                                  deliveryEvidence,
+                                  cause,
+                                }),
+                              );
+                            }),
+                          ),
+                        ),
                       ),
                   ),
                 ),
@@ -2420,36 +2427,25 @@ export const layerWsRpc = (
                     ...result,
                     projection: projectThreadProjectionForWire(result.projection),
                   })),
-                  Effect.catchTags({
-                    AttachmentClaimError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ServerRuntimeStartupError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ThreadManagementProviderInstanceDisabledError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                  }),
+                  Effect.catch((cause) =>
+                    threadLaunch.getDeliveryEvidence(input).pipe(
+                      Effect.flatMap((deliveryEvidence) =>
+                        Effect.fail(
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message:
+                              cause._tag === "AttachmentClaimError" ||
+                              cause._tag === "ThreadManagementProviderInstanceDisabledError"
+                                ? cause.message
+                                : "Failed to launch thread",
+                            deliveryEvidence,
+                            cause,
+                          }),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
             ),
           ),
