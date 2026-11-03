@@ -291,7 +291,8 @@ describe("mobile durable request delivery", () => {
           observed.push({ method, payload: structuredClone(payload) });
           const saved = (await expoThreadOutboxStorage.load()).messages[0]!;
           expect(saved.issuance?.state).toBe("issued");
-          if (observed.length === 1) throw new Error("Response lost after synthetic receipt commit");
+          if (observed.length === 1)
+            throw new Error("Response lost after synthetic receipt commit");
           return { sequence: 1, threadId: original.threadId };
         });
         yield* Effect.promise(async () => {

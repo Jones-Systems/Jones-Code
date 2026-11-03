@@ -2967,7 +2967,7 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               opts?.explicit !== true &&
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider &&
-              (base.modelSelectionExplicit ?? false) === (opts?.explicit === true)
+              base.modelSelectionExplicit !== true
             ) {
               return state;
             }

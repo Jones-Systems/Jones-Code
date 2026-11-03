@@ -39,9 +39,7 @@ describe("catalog publication ownership (Audit 4.4 / R4)", () => {
       const stale = yield* harness.registry.refreshInstance(instanceA).pipe(Effect.forkScoped);
       yield* Deferred.await(refresh.started);
       const changed = yield* nextCatalog(harness.registry, (providers) =>
-        replacement
-          ? versionOf(providers) === "replacement"
-          : versionOf(providers) === undefined,
+        replacement ? versionOf(providers) === "replacement" : versionOf(providers) === undefined,
       );
       const reconcile = yield* harness
         .reconcile(replacement ? configuration([instanceA, "replacement"]) : configuration())
@@ -280,9 +278,7 @@ describe("catalog publication ownership (Audit 4.4 / R4)", () => {
       yield* Effect.addFinalizer(() => rename.release);
       yield* Deferred.await(rename.started);
       const changed = yield* nextCatalog(harness.registry, (providers) =>
-        replacement
-          ? versionOf(providers) === "replacement"
-          : versionOf(providers) === undefined,
+        replacement ? versionOf(providers) === "replacement" : versionOf(providers) === undefined,
       );
       yield* harness.reconcile(
         replacement ? configuration([instanceA, "replacement"]) : configuration(),

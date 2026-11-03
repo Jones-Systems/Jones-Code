@@ -211,7 +211,7 @@ it.each([false, true])(
     await vi.waitFor(() => expect(delivery.requests).toHaveLength(2));
     const corrected = delivery.requests[1]!;
     expect(corrected.method).toBe("orchestration.dispatchCommand");
-    expect(corrected.payload.threadId).toBe(targetId);
+    expect(corrected.payload).toMatchObject({ threadId: targetId });
     expect(corrected.payload.commandId).not.toBe(original.payload.commandId);
     if ("messageId" in corrected.payload) {
       expect(corrected.payload.messageId).not.toBe(originalMessageId);
@@ -251,26 +251,26 @@ it.each(["failed", "superseded"] as const)(
     const draftId = DraftId.make(`recovery-navigation-${outcome}`);
     const targetId = ThreadId.make(`recovery-navigation-target-${outcome}`);
     const targetRef = scopeThreadRef(ENVIRONMENT_ID, targetId);
-    useComposerDraftStore.getState().setLogicalProjectDraftThreadId(
-      `recovery-navigation-${outcome}`,
-      scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID),
-      draftId,
-      {
-        threadId: targetId,
-        envMode: "local",
-        environmentSelection: "manual",
-        runtimeMode: "full-access",
-        interactionMode: "default",
-      },
-    );
+    useComposerDraftStore
+      .getState()
+      .setLogicalProjectDraftThreadId(
+        `recovery-navigation-${outcome}`,
+        scopeProjectRef(ENVIRONMENT_ID, PROJECT_ID),
+        draftId,
+        {
+          threadId: targetId,
+          envMode: "local",
+          environmentSelection: "manual",
+          runtimeMode: "full-access",
+          interactionMode: "default",
+        },
+      );
     useComposerDraftStore.getState().setModelSelection(draftId, {
       instanceId: ProviderInstanceId.make("codex"),
       model: "gpt-5.4",
     });
     await page.viewport(1400, 900);
-    const router = getRouter(
-      createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }),
-    );
+    const router = getRouter(createMemoryHistory({ initialEntries: [`/draft/${draftId}`] }));
     await router.load();
     const container = document.createElement("div");
     container.style.cssText = "height: 900px; width: 1400px;";

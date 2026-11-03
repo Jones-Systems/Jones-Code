@@ -31,8 +31,8 @@ function disabledSavedProvider(config: ServerConfig): ServerConfig {
     settings: {
       ...config.settings,
       providerInstances: {
-        codex: { driver: codex.driver, enabled: false },
-        "codex-replacement": { driver: codex.driver, enabled: true },
+        [codex.instanceId]: { driver: codex.driver, enabled: false },
+        [ProviderInstanceId.make("codex-replacement")]: { driver: codex.driver, enabled: true },
       },
     },
   };

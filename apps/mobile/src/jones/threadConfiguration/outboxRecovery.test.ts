@@ -1,8 +1,5 @@
 import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
-import {
-  EMPTY_SHELL_STATE,
-  type EnvironmentShellState,
-} from "@t3tools/client-runtime/state/shell";
+import { EMPTY_SHELL_STATE, type EnvironmentShellState } from "@t3tools/client-runtime/state/shell";
 import {
   ChatAttachmentId,
   CommandId,
