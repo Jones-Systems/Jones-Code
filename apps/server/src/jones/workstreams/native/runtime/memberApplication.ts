@@ -16,6 +16,7 @@ import * as Integration from "../integration.ts";
 import * as Reads from "../read/memberRead.ts";
 import * as MemberAccess from "../read/memberAccess.ts";
 import * as Operations from "../operations/memberOperations.ts";
+import * as PublicRead from "../operations/memberOperationRead.ts";
 import * as Forwarder from "../forwarding/forwarder.ts";
 import * as Transport from "../forwarding/memberTransport.ts";
 import * as HomeClient from "../forwarding/homeClient.ts";
@@ -42,6 +43,8 @@ export class MemberApplication extends Context.Service<
     readonly submitOperationBody: Operations.MemberOperations["Service"]["submitBody"];
     readonly readOperation: Operations.MemberOperations["Service"]["read"];
     readonly openOperations: Operations.MemberOperations["Service"]["open"];
+    readonly readPublicOperation: PublicRead.MemberOperationRead["Service"]["read"];
+    readonly openPublicOperations: PublicRead.MemberOperationRead["Service"]["open"];
     readonly recoverOpen: Forwarder.MemberForwarder["Service"]["recoverOpen"];
     readonly lookupParent: SourceReadmission.SourceReadmission["Service"]["lookupParent"];
     readonly lookupRaw: SourceReadmission.SourceReadmission["Service"]["lookupRaw"];
@@ -201,6 +204,16 @@ const make = Effect.gen(function* () {
       run(
         Integration.nativeMemberForwardRequestLayer,
         Effect.flatMap(Operations.MemberOperations, (operations) => operations.open()),
+      ),
+    readPublicOperation: (id) =>
+      run(
+        PublicRead.layer.pipe(Layer.provideMerge(Integration.nativeMemberForwardRequestLayer)),
+        Effect.flatMap(PublicRead.MemberOperationRead, (operations) => operations.read(id)),
+      ),
+    openPublicOperations: () =>
+      run(
+        PublicRead.layer.pipe(Layer.provideMerge(Integration.nativeMemberForwardRequestLayer)),
+        Effect.flatMap(PublicRead.MemberOperationRead, (operations) => operations.open()),
       ),
     recoverOpen: (options) =>
       run(

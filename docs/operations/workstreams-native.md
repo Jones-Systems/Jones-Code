@@ -94,8 +94,16 @@ Native callers use current HTTP session scopes, MCP authentication and caller
 limits, or an application-owned trusted CLI context. Request bodies cannot select
 another origin or actor. A qualified member can read the home through its
 request-authenticated public Gateway. Its session and appearance views expose read
-permission; public mutations and command receipt recovery remain unavailable until
-their adapters are qualified. Native placement v2 keeps its separate negotiated
+permission. The public operation service forwards create and primary-placement
+requests through the selected member owner, preserving the original caller, ID,
+request digest and bound home. Its reads expose only that caller's accepted
+operations after fresh home access checks. A null operation is a local unknown,
+never proof of home absence or permission to redispatch. Setup reports current
+home access; thread assignments remain unverified until native placement proof
+consumers are qualified. The frozen operation codec uses the bound native registry UUID; the Gateway
+session uses its canonical-origin identity. Neither selects a transport destination. Public
+Gateway mutations and command receipt recovery remain unavailable until their
+adapters are qualified. Native placement v2 keeps its separate negotiated
 route; the frozen v1 Gateway cannot erase native proof fields to accept it. Linked
 metadata requests remain refused. Scheduled MCP calls retain their authenticated agent origin; a queue origin
 requires separate trusted queue-request evidence and is not accepted from a body.

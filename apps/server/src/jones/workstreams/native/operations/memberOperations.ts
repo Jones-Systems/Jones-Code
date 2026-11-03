@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 import type { WorkstreamsNativeSuppliedAttestation } from "@t3tools/contracts/jones/workstreamsNative";
 import {
   WorkstreamOperationRequest as RequestSchema,
+  WorkstreamOperationResult as WorkstreamOperationResultSchema,
   type WorkstreamSetPrimaryRequest,
 } from "@t3tools/contracts/jones/workstreamOperations";
 import { canonicalJson } from "../../operations/encoding.ts";
@@ -41,6 +42,53 @@ export class MemberOperations extends Context.Service<
     readonly open: () => Effect.Effect<readonly Forwarder.ForwardView[], RegistryError>;
   }
 >()("t3/jones/workstreams/native/operations/memberOperations") {}
+const decodeResult = Schema.decodeUnknownEffect(WorkstreamOperationResultSchema, {
+  onExcessProperty: "error",
+});
+/** Project only an actually accepted native intent; null replies never become absence authority. */
+export const projectOperation = Effect.fn("MemberOperations.projectOperation")(function* (
+  request: WorkstreamOperationRequest,
+  view: Forwarder.ForwardView,
+) {
+  const digest = NodeCrypto.createHash("sha256").update(canonicalJson(request)).digest("hex");
+  if (
+    view.operation_id !== request.operation_id ||
+    (view.result !== null && view.result.kind !== "operation")
+  )
+    return yield* new RegistryError({ code: "invalid_response" });
+  if (view.result?.kind === "operation") {
+    const result = yield* decodeResult(view.result.result).pipe(
+      Effect.mapError(() => new RegistryError({ code: "invalid_response" })),
+    );
+    if (
+      result.operation_id !== request.operation_id ||
+      result.kind !== request.kind ||
+      canonicalJson(result.origin) !== canonicalJson(request.origin) ||
+      result.request_sha256 !== digest
+    )
+      return yield* new RegistryError({ code: "invalid_response" });
+    if (result.state !== "unavailable") return result;
+  }
+  if (!["accepted", "dispatching", "in_progress", "reconciling"].includes(view.state))
+    return yield* new RegistryError({ code: "invalid_response" });
+  return yield* decodeResult({
+    contract: "workstream-operations/1.0.0",
+    operation_id: request.operation_id,
+    kind: request.kind,
+    origin: request.origin,
+    request_sha256: digest,
+    observed: null,
+    children: [],
+    accepted_at: view.accepted_at,
+    updated_at: view.updated_at,
+    result: null,
+    detail: null,
+    state: "reconciling",
+    reason:
+      request.kind === "create_workstream" ? "create_effect_unknown" : "membership_effect_unknown",
+    poll_after_ms: 30_000,
+  }).pipe(Effect.mapError(() => new RegistryError({ code: "invalid_response" })));
+});
 const make = Effect.gen(function* () {
   const forwarder = yield* Forwarder.MemberForwarder;
   const evidence = yield* Effect.serviceOption(MemberOperationEvidence);
@@ -66,31 +114,7 @@ const make = Effect.gen(function* () {
       if (!Number.isInteger(input.wait_ms) || input.wait_ms < 0 || input.wait_ms > 3000)
         return yield* new RegistryError({ code: "invalid_request" });
       const view = yield* submitBody(canonicalJson(input.request));
-      if (view.result?.kind === "operation" && view.result.result.state !== "unavailable")
-        return view.result.result;
-      // Existing public clients get a pollable state; raw transport consumers retain the native ForwardView.
-      const request: WorkstreamOperationRequest = input.request;
-      return {
-        contract: "workstream-operations/1.0.0",
-        operation_id: request.operation_id,
-        kind: request.kind,
-        origin: request.origin,
-        request_sha256: NodeCrypto.createHash("sha256")
-          .update(canonicalJson(request))
-          .digest("hex"),
-        observed: null,
-        children: [],
-        accepted_at: view.accepted_at,
-        updated_at: view.updated_at,
-        result: null,
-        detail: null,
-        state: "reconciling",
-        reason:
-          request.kind === "create_workstream"
-            ? "create_effect_unknown"
-            : "membership_effect_unknown",
-        poll_after_ms: 30_000,
-      } satisfies WorkstreamOperationResult;
+      return yield* projectOperation(input.request, view);
     }),
   });
 });

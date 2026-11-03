@@ -60,6 +60,8 @@ import m128 from "../../../persistence/Migrations/128_JonesWorkstreamsPeerSessio
 import m129 from "../../../persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts";
 import m130 from "../../../persistence/Migrations/130_JonesWorkstreamsForwardReceipts.ts";
 import * as MemberApp from "../runtime/memberApplication.ts";
+import * as PublicOperations from "../../operations/service.ts";
+import * as OperationWire from "@t3tools/contracts/jones/workstreamOperations";
 import * as MemberServices from "../runtime/memberServices.ts";
 import * as MemberRecovery from "../runtime/memberRecovery.ts";
 import * as ReadRoutes from "../read/routes.ts";
@@ -146,6 +148,7 @@ const mode = Schema.decodeUnknownSync(
 );
 
 const decodeReadArgs = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResultRequest);
+const isPublicOperation = Schema.is(OperationWire.WorkstreamOperationResult);
 const decodeAccessArgs = Schema.decodeUnknownEffect(AccessWire.WorkstreamsHomeAccessRequest);
 const decodeForwardArgs = Schema.decodeUnknownEffect(ForwardWire.WorkstreamsForwardRequest);
 const decodeReadbackArgs = Schema.decodeUnknownEffect(
@@ -1604,18 +1607,43 @@ it.effect(
             .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal), Effect.flip),
         ).toMatchObject({ code: "preparation_in_transaction" });
         expect(f.calls).toHaveLength(before);
-        const result = yield* app
-          .submitOperation({ request, wait_ms: 0 })
+        const operations = Context.get(selectedServices, PublicOperations.WorkstreamOperations);
+        const result = yield* operations
+          .submit({ request, wait_ms: 0 })
           .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
         expect(result).toMatchObject({
           state: "committed",
           kind: "create_workstream",
           operation_id: request.operation_id,
         });
-        const repeated = yield* app
-          .submitOperation({ request, wait_ms: 0 })
+        expect(isPublicOperation(result)).toBe(true);
+        expect(result.request_sha256).toBe(sha256Bytes(canonicalSnapshot(request)));
+        const repeated = yield* operations
+          .submit({ request, wait_ms: 0 })
           .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
         expect(repeated).toEqual(result);
+        expect(
+          yield* operations
+            .read({ operation_id: request.operation_id })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toEqual({ operation: result });
+        expect(
+          yield* operations.read({ operation_id: request.operation_id }).pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+              ...readOnlyAuth,
+              scopes: new Set(readOnlyAuth.scopes),
+            }),
+          ),
+        ).toEqual({ operation: null });
+        expect(
+          yield* operations
+            .setupStatus()
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toMatchObject({
+          activation: { state: "enabled" },
+          registry: { state: "ready", registry_id: home.registry_instance_id, can_write: true },
+          authority_effect: "none",
+        });
         const hsql = Context.get(f.H.all, SqlClient.SqlClient),
           msql = Context.get(f.M.all, SqlClient.SqlClient);
         expect(yield* hsql`SELECT workstream_id FROM jones_workstreams_records`).toHaveLength(1);
@@ -1653,10 +1681,46 @@ it.effect(
         expect(yield* app.recoverOpen()).toEqual([]);
         const lostRequest = { ...request, operation_id: "operation:composed-lost-reply-01" };
         f.state.loseForwardReply = true;
-        const lost = yield* app
-          .submitOperation({ request: lostRequest, wait_ms: 0 })
+        const lost = yield* operations
+          .submit({ request: lostRequest, wait_ms: 0 })
           .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
         expect(lost.state).toBe("reconciling");
+        expect(
+          yield* operations
+            .read({ operation_id: lostRequest.operation_id })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toEqual({ operation: lost });
+        expect(
+          yield* operations
+            .read({ open: true })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toEqual({ operations: [lost] });
+        const otherSession = yield* auth.issueSession({
+          subject: "other-member-reader",
+          scopes: ["orchestration:read", "orchestration:operate"],
+        });
+        const otherAuth = yield* auth.authenticateHttpRequest(
+          HttpRequest.fromWeb(
+            new Request("https://member.invalid/api/workstreams", {
+              headers: { authorization: "Bearer " + otherSession.token },
+            }),
+          ),
+        );
+        const otherPrincipal = { ...otherAuth, scopes: new Set(otherAuth.scopes) };
+        const visibleCalls = f.calls.length;
+        expect(
+          yield* operations
+            .read({ operation_id: lostRequest.operation_id })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, otherPrincipal)),
+        ).toEqual({ operation: null });
+        expect(
+          yield* operations
+            .read({ open: true })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, otherPrincipal)),
+        ).toEqual({ operations: [] });
+        expect(
+          f.calls.slice(visibleCalls).every((call) => call.tool === HomePort.HOME_ACCESS_TOOL),
+        ).toBe(true);
         expect(yield* hsql`SELECT state FROM jones_workstreams_forward_receipts`).toEqual([
           { state: "completed" },
           { state: "completed" },
@@ -1682,6 +1746,16 @@ it.effect(
           forwards,
         );
         expect(yield* app.recoverOpen()).toEqual([]);
+        expect(
+          yield* operations
+            .read({ operation_id: lostRequest.operation_id })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toMatchObject({ operation: { state: "committed" } });
+        expect(
+          yield* operations
+            .read({ open: true })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal)),
+        ).toEqual({ operations: [] });
         f.state.forwardOffline = true;
         expect(
           (yield* app

@@ -2490,6 +2490,16 @@
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "scope": "Selected-member public Gateway reads use the original request caller, fresh home access before and after each read, coherent closed result validation and purge fencing. Public session and appearance permissions are read-only. Frozen placement v1 never strips native v2 proofs; command recovery and writes remain unavailable. Runtime adoption, capability advertisement and client acceptance remain separate."
+    },
+    {
+      "id": "workstreams-native-member-public-operations",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/operations/memberPublicOperations.test.ts",
+        "apps/server/src/jones/workstreams/native/operations/memberOperations.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/memberSourcePorts.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Selected-member public-v1 operation submit/read/open/setup use current request authentication, fresh home observations, exact original request digests, the frozen bound native registry UUID and conservative pending projection. Request bytes and historical codecs remain unchanged. Public command receipt recovery, Gateway write advertising, native placement consumers and installed/runtime acceptance remain separate."
     }
   ]
 }
