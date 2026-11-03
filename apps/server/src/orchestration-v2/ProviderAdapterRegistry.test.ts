@@ -68,6 +68,8 @@ const instances = [
   makeInstance(workId, workAdapter),
 ] as const;
 const layerInstanceRegistry = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+  getCatalogSource: (instanceId) =>
+    instances.find((instance) => instance.instanceId === instanceId),
   getInstance: (instanceId) =>
     Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
   listInstances: Effect.succeed(instances),
@@ -198,6 +200,7 @@ it.effect(
           ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
             Layer.provide(
               Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+                getCatalogSource: (id) => related.find((instance) => instance.instanceId === id),
                 getInstance: (id) =>
                   Effect.succeed(related.find((instance) => instance.instanceId === id)),
                 listInstances: Effect.succeed(related),
@@ -260,6 +263,7 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
         ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
           Layer.provide(
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+              getCatalogSource: (id) => related.find((instance) => instance.instanceId === id),
               getInstance: (id) =>
                 Effect.succeed(related.find((instance) => instance.instanceId === id)),
               listInstances: Effect.succeed(related),

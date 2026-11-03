@@ -19,10 +19,6 @@
     {
       "from": "apps/server/src/peer/RemoteDelegation.ts",
       "to": "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts"
-    },
-    {
-      "from": "apps/server/src/mcp/toolkits/project/handlers.ts",
-      "to": "apps/server/src/jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts"
     }
   ]
 }

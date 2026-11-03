@@ -1,0 +1,138 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-core-reliability",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/deliveryEvidence.ts",
+    "packages/client-runtime/src/jones/deliveryEvidence.test.ts",
+    "packages/client-runtime/src/jones/preparedThreadTurn.ts",
+    "packages/client-runtime/src/jones/preparedThreadTurn.test.ts",
+    "apps/server/src/jones/provider/catalog/cachePublication.test.ts",
+    "apps/server/src/jones/provider/catalog/cachePublication.ts",
+    "apps/server/src/jones/provider/catalog/catalog.testkit.ts",
+    "apps/server/src/jones/provider/catalog/modelOptions.integration.test.ts",
+    "apps/server/src/jones/provider/catalog/modelOptions.ts",
+    "apps/server/src/jones/provider/catalog/publication.integration.test.ts",
+    "apps/server/src/jones/mcp/acceptedReplay.ts",
+    "apps/server/src/jones/mcp/admissionReplay.integration.test.ts",
+    "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts",
+    "apps/mobile/src/jones/threadConfiguration/outboxDelivery.test.ts",
+    "apps/mobile/src/jones/threadConfiguration/outboxDrainReplay.test.ts",
+    "apps/mobile/src/jones/threadConfiguration/outboxRecovery.test.ts",
+    "apps/web/src/jones/threadConfiguration/providerAvailability.browser.test.tsx",
+    "apps/web/src/jones/threadConfiguration/sendPaths.browser.test.tsx",
+    "apps/mobile/src/jones/threadConfiguration/outboxDeliveryContract.ts",
+    "apps/mobile/src/jones/threadConfiguration/legacyOutbox.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/deliveryEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/provider/ProviderRegistry.ts",
+      "to": "apps/server/src/jones/provider/catalog/cachePublication.ts"
+    },
+    {
+      "from": "apps/server/src/provider/ProviderRegistry.ts",
+      "to": "apps/server/src/jones/provider/catalog/modelOptions.ts"
+    },
+    {
+      "from": "apps/server/src/provider/providerStatusCache.ts",
+      "to": "apps/server/src/jones/provider/catalog/cachePublication.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/acceptedReplay.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox-model.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDeliveryContract.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox-manager.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/pending-thread-creation.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/recover-failed-thread-draft.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/pendingSends/newThread.ts"
+    },
+    {
+      "from": "apps/web/src/components/ChatView.tsx",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/ChatComposer.tsx",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useComposerSend.ts",
+      "to": "apps/web/src/jones/pendingSends/composerRecovery.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
+      "to": "apps/web/src/jones/pendingSends/composerRecovery.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useThreadLifecycle.tsx",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
+    {
+      "from": "apps/web/src/composerDraftStore.test.ts",
+      "to": "apps/web/src/jones/threadConfiguration/composerSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts",
+      "to": "packages/client-runtime/src/jones/preparedThreadTurn.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/orchestration/deliveryEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "packages/contracts/src/jones/deliveryEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "apps/server/src/jones/orchestration/deliveryEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadManagementService.ts",
+      "to": "packages/contracts/src/jones/deliveryEvidence.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/legacyOutbox.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/edit-pending-thread-message.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/edit-pending-thread-message.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadFeed.tsx",
+      "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    }
+  ]
+}

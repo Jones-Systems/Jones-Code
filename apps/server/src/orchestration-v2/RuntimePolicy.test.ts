@@ -76,6 +76,7 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
 const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(
     Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+      getCatalogSource: providerInstanceFor,
       getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
       listInstances: Effect.succeed([]),
       listUnavailable: Effect.succeed([]),

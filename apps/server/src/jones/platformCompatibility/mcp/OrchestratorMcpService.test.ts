@@ -10,12 +10,15 @@ import {
   RunId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
   type OrchestrationV2ServerCommand,
   type OrchestratorMcpDelegateTaskInput,
   type RuntimeMode,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -226,7 +229,7 @@ describe("Jones MCP provider compatibility", () => {
         const layerDependencies = Layer.mergeAll(
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
-            hasReceipt: () => Effect.succeed(false),
+            getCommandReceipt: () => Effect.succeedNone,
             assertProviderInstanceEnabled: () => Effect.void,
             getThreadRecords: (threadId) =>
               Effect.succeed(
@@ -325,7 +328,7 @@ describe("Jones MCP provider compatibility", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          getCommandReceipt: () => Effect.succeedNone,
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>
@@ -451,7 +454,27 @@ describe("Jones MCP provider compatibility", () => {
         NodeServices.layer,
         ServerSettings.layerTest(),
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(accepted),
+          getCommandReceipt: (commandId) =>
+            accepted
+              ? Effect.map(DateTime.now, (acceptedAt) =>
+                  Option.some({
+                    commandId,
+                    threadId: parentThreadId,
+                    commandType: "delegated_task.request",
+                    acceptedAt,
+                    resultSequence: 1,
+                    status: "accepted" as const,
+                    error: null,
+                  }),
+                )
+              : Effect.succeedNone,
+          getThreadShell: () =>
+            Effect.succeed({
+              ...childProjection.thread,
+              projectId,
+              deletedAt: null,
+            } as OrchestrationV2ThreadShell),
+          getProjectThreadRecords: () => Effect.succeed(childProjection),
           getThreadRecords: (threadId) =>
             Effect.succeed(threadId === parentThreadId ? parent() : childProjection),
           dispatch: (command) =>
@@ -463,8 +486,23 @@ describe("Jones MCP provider compatibility", () => {
                 storedEvents: [
                   {
                     sequence: 1,
-                    commandId: null,
-                    event: { type: "subagent.updated", payload: task },
+                    commandId: command.commandId,
+                    event: { type: "subagent.updated", threadId: parentThreadId, payload: task },
+                  },
+                  {
+                    sequence: 1,
+                    commandId: command.commandId,
+                    event: {
+                      type: "thread.created",
+                      threadId: childThreadId,
+                      payload: {
+                        ...childProjection.thread,
+                        projectId,
+                        modelSelection: { instanceId: task.providerInstanceId, model: task.model },
+                        lineage: { parentThreadId, relationshipToParent: "subagent" },
+                        forkedFrom: { type: "node", nodeId: task.id },
+                      },
+                    },
                   },
                 ],
               } as never;

@@ -59,6 +59,7 @@ const makeStubRegistry = (
 ): ProviderInstanceRegistry.ProviderInstanceRegistry["Service"] => {
   const byId = new Map(instances.map((instance) => [instance.instanceId, instance] as const));
   return {
+    getCatalogSource: (id) => byId.get(id),
     getInstance: (id) => Effect.succeed(byId.get(id)),
     listInstances: Effect.succeed(instances),
     listUnavailable: Effect.succeed([]),

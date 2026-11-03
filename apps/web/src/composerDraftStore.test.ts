@@ -8,6 +8,7 @@ import {
   type EnvironmentShellStatus,
 } from "@t3tools/client-runtime/state/shell";
 import { makeThreadProjectionFixture } from "./test-fixtures";
+import { acknowledgeComposerSelection } from "./jones/threadConfiguration/composerSelection";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
@@ -1314,10 +1315,10 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
-  it("retains a pick matching cached state until the live shell confirms it", () => {
+  it("retains a passive seed matching cached state until the live shell confirms it", () => {
     const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId, "cached");
     const pick = h.model();
-    useComposerDraftStore.getState().setModelSelection(threadRef, pick, { explicit: true });
+    useComposerDraftStore.getState().setModelSelection(threadRef, pick);
     h.flush();
     const before = draftFor(threadId, TEST_ENVIRONMENT_ID);
     expect(before?.modelSelectionByProvider[pick.instanceId]).toEqual(pick);
@@ -1398,6 +1399,7 @@ describe("composerDraftStore modelSelection", () => {
 
     h.update({ status: "queued" });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    acknowledgeComposerSelection(threadRef, before);
     h.update({ status: "running", modelSelection: modelSelection(CODEX_DRIVER, "gpt-5.5") });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual({
       ...before,
@@ -1476,6 +1478,9 @@ describe("composerDraftStore modelSelection", () => {
       h.update({ modelSelection });
       expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
     }
+    h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    acknowledgeComposerSelection(threadRef, before);
     h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
   });

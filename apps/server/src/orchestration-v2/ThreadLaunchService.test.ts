@@ -3533,7 +3533,7 @@ it.effect("schedules an accepted preparing message exactly once across concurren
         message: "Resume preparation",
         workspace: { type: "worktree", baseRef: "main" },
       });
-      const messageId = MessageId.make("message:launch:accepted-before-fork");
+      const messageId = input.initialMessage!.messageId;
 
       yield* threads.dispatch({
         type: "thread.create",
@@ -3570,6 +3570,9 @@ it.effect("schedules an accepted preparing message exactly once across concurren
       yield* Deferred.await(setupEntered);
       assert.isTrue(first.resumed);
       assert.isTrue(second.resumed);
+      assert.equal(first.projection.messages[0]?.id, messageId);
+      assert.equal(second.projection.messages[0]?.id, messageId);
+      assert.equal(first.projection.runs[0]?.id, second.projection.runs[0]?.id);
       assert.equal(harness.runSetup.mock.calls.length, 1);
       yield* Deferred.succeed(allowSetup, undefined);
     }).pipe(Effect.provide(harness.layer));
@@ -3672,6 +3675,7 @@ it.effect("shared intake preserves durable attachment bytes after a lost launch 
     const failed = yield* ThreadMessageIntake.launchThread(input).pipe(
       Effect.provideService(ThreadLaunch.ThreadLaunchService, {
         preflightLegacyBootstrap: launches.preflightLegacyBootstrap,
+        getDeliveryEvidence: launches.getDeliveryEvidence,
         launch: (request) =>
           launches.launch(request).pipe(
             Effect.andThen(
