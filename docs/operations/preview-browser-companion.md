@@ -1,5 +1,10 @@
 # Preview companion setup and qualification
 
+The companion is optional: ordinary Preview defaults to the environment-server
+browser, with native rendering available from a colocated desktop. Use this
+variant only for a separately paired render machine. Preserve saved host choices
+and existing tab bindings; an offline selected companion must fail visibly.
+
 Build the fixed companion variant rather than renaming an ordinary desktop
 artifact. It has product name **Jones Preview Companion**, application ID
 `com.jonessystems.jonespreviewcompanion`, no OS URL schemes and no automatic
@@ -62,10 +67,11 @@ one dedicated label and the exact companion executable. Inventory collisions
 first, preserve existing launch agents, and make no pre-login availability
 claim. A verified launch must precede autostart adoption.
 
-For recovery, stop only the captured companion process. Preserve its isolated
-profile and unknown-action evidence. Restore only a previously verified
-companion bundle at its dedicated destination, after checking profile/version
-compatibility. Never downgrade shared server state, delete a browser profile,
+During authorized recovery, stop only the captured companion process. Preserve
+its isolated profile and unknown-action evidence. A snapshot, reconnect or restart
+does not by itself resolve an interrupted action or authorize replay. Restore
+only a previously verified companion bundle at its dedicated destination, after
+checking profile/version compatibility. Never downgrade shared server state, delete a browser profile,
 or replace proxy/queue ownership to recover the companion.
 
 Installing the companion does not update the VPS. Server adoption requires its
