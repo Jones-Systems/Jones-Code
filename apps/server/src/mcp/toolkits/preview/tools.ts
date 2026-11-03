@@ -35,6 +35,8 @@ import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import * as ServerConfig from "../../../config.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 
+import { PreviewRecordingOperationTool } from "../../../jones/previewRecordingOperation/mcp.ts";
+
 const dependencies = [
   McpInvocationContext.McpInvocationContext,
   ThreadManagementService.ThreadManagementService,
@@ -314,6 +316,7 @@ export const PreviewToolkit = Toolkit.make(
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
+  PreviewRecordingOperationTool,
 );
 
 export const PreviewStandardToolkit = Toolkit.make(
@@ -335,6 +338,7 @@ export const PreviewStandardToolkit = Toolkit.make(
   PreviewWaitForTool,
   PreviewRecordingStartTool,
   PreviewRecordingStopTool,
+  PreviewRecordingOperationTool,
 );
 
 export const PreviewSnapshotToolkit = Toolkit.make(PreviewSnapshotTool);

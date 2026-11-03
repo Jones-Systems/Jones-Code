@@ -2512,7 +2512,8 @@
     "apps/server/src/orchestration-v2/RuntimePolicy.test.ts": "jones-tests-in-upstream",
     "apps/server/src/provider/ProviderInstanceRegistry.ts": "accepted-shared",
     "apps/server/src/provider/providerCompatibility.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/provider/providerStatusCache.ts": "accepted-shared"
+    "apps/server/src/provider/providerStatusCache.ts": "accepted-shared",
+    "apps/server/src/mcp/toolkits/preview/tools.ts": "hook"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

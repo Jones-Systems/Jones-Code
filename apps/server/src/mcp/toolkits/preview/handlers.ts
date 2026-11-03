@@ -32,6 +32,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
 import { PreviewSnapshotToolkit, PreviewStandardToolkit, PreviewToolkit } from "./tools.ts";
+import { handlers as recordingOperationHandlers } from "../../../jones/previewRecordingOperation/mcp.ts";
 
 /** Whether a preview the agent
  * said nothing about surfaces is the user's `browserAutoShowFloatingPreview`
@@ -186,6 +187,7 @@ export const claimPreviewRecording = Effect.fn("PreviewToolkit.claimRecording")(
 });
 
 const handlers = {
+  ...recordingOperationHandlers,
   preview_dialog: McpToolAccess.actsAsCaller((input) =>
     invokeTargeted<PreviewAutomationStatus>("dialog", input),
   ),
