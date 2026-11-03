@@ -843,9 +843,12 @@
         "apps/server/src/preview/ServerBrowser.test.ts",
         "apps/server/src/preview/SessionControl.test.ts",
         "packages/contracts/src/preview.test.ts",
-        "packages/contracts/src/jones/previewCompatibility.test.ts"
+        "packages/contracts/src/jones/previewCompatibility.test.ts",
+        "packages/contracts/src/jones/previewRecordingOperation.test.ts",
+        "apps/server/src/jones/previewRecordingOperation/broker.test.ts",
+        "apps/server/src/jones/previewRecordingOperation/mcp.test.ts"
       ],
-      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified."
+      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified. Additive caller-scoped recording-operation reads expose only retained broker evidence; completed quarantine replies retain a bounded projection without changing fences or recorder lifecycle."
     },
     {
       "id": "persistent-private-services",
