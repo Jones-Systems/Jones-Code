@@ -139,6 +139,66 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
   });
 
 describe("DesktopBrowserHost", () => {
+  it.effect.each(["release", "tab-detach", "page-detach", "child-detach"] as const)(
+    "drops pointer input awaiting host capture or a prior press after %s",
+    (revocation) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        const captureStarted = Promise.withResolvers<void>();
+        const finishCapture = Promise.withResolvers<void>();
+        const executeJavaScript = vi.fn(async () => {
+          captureStarted.resolve();
+          await finishCapture.promise;
+        });
+        Object.assign(debuggee.tab.webContents, {
+          id: 7,
+          hostWebContents: { isDestroyed: () => false, executeJavaScript },
+        });
+        const pointer = vi.fn(async () => ({}));
+        const originalSend = debuggee.tab.debugger.sendCommand.bind(debuggee.tab.debugger);
+        vi.spyOn(debuggee.tab.debugger, "sendCommand").mockImplementation(
+          (method, params, sessionId) =>
+            method === "Input.dispatchMouseEvent"
+              ? pointer()
+              : originalSend(method, params, sessionId),
+        );
+        host.attach(key, debuggee.tab);
+        const replies = yield* watchReplies(host);
+        const raw = (message: Record<string, unknown>) =>
+          host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
+        yield* raw({ id: 1, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
+        expect(yield* Queue.take(replies)).toBe(1);
+        const sessionId = revocation === "child-detach" ? "child-frame" : "t3-preview-page-1";
+        yield* raw({
+          id: 2,
+          method: "Input.dispatchMouseEvent",
+          params: { type: "mousePressed" },
+          sessionId,
+        });
+        yield* Effect.promise(() => captureStarted.promise);
+        yield* raw({
+          id: 3,
+          method: "Input.dispatchMouseEvent",
+          params: { type: "mouseReleased" },
+          sessionId,
+        });
+        yield* settle;
+        if (revocation === "release") {
+          yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+        } else if (revocation === "tab-detach") {
+          host.detach(key);
+        } else {
+          yield* raw({ id: 4, method: "Target.detachFromTarget", params: { sessionId } });
+          expect(yield* Queue.take(replies)).toBe(4);
+        }
+        finishCapture.resolve();
+        yield* settle;
+        expect(pointer).not.toHaveBeenCalled();
+        expect(executeJavaScript).toHaveBeenCalledTimes(2);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect.each([
     { method: "Input.dispatchMouseEvent", params: { type: "mousePressed", x: 10, y: 10 } },
     {
