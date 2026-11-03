@@ -3,6 +3,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as NodeURL from "node:url";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
@@ -33,6 +34,31 @@ const bounds = {
   maxProcesses: 32,
   estimatedPeakBytes: 10 * 1024 ** 3,
 };
+const fixtureCapacitySamples = new WeakMap();
+function mockFixtureCapacity(t, base) {
+  let samples = fixtureCapacitySamples.get(t);
+  if (!samples) {
+    samples = new Map();
+    fixtureCapacitySamples.set(t, samples);
+    const actualStatfs = NodeFS.statfsSync;
+    const mockedStatfs = t.mock.method(NodeFS.default, "statfsSync", (path, options) => {
+      const info = actualStatfs(path, options);
+      if (!options?.bigint) return info;
+      const sample = [...samples].find(
+        ([root]) => path === root || String(path).startsWith(`${root}${NodePath.sep}`),
+      )?.[1];
+      return sample ? { ...info, bsize: 1n, bavail: sample.availableBytes } : info;
+    });
+    NodeModule.syncBuiltinESMExports();
+    t.after(() => {
+      mockedStatfs.mock.restore();
+      NodeModule.syncBuiltinESMExports();
+    });
+  }
+  const capacity = { availableBytes: 40n * 1024n ** 3n };
+  samples.set(base, capacity);
+  return capacity;
+}
 function fixture(t, overrides = {}) {
   const base = NodeFS.mkdtempSync(
     NodePath.join(NodeFS.realpathSync(process.env.TMPDIR ?? NodeOS.tmpdir()), "hp-"),
@@ -41,6 +67,7 @@ function fixture(t, overrides = {}) {
     evidenceParent = NodePath.join(base, "evidence");
   NodeFS.mkdirSync(parentPath, { mode: 0o700 });
   NodeFS.mkdirSync(evidenceParent, { mode: 0o700 });
+  const capacity = mockFixtureCapacity(t, base);
   const owner = createHistoricalPreparation({
     parentPath,
     evidenceParent,
@@ -61,7 +88,7 @@ function fixture(t, overrides = {}) {
     }
     if (!retained) NodeFS.rmSync(base, { recursive: true });
   });
-  return { owner, root: owner.creation.root, base, parentPath, evidenceParent };
+  return { owner, root: owner.creation.root, base, parentPath, evidenceParent, capacity };
 }
 const run = (owner, program, signal) =>
   runPreparationProcess(owner, {
@@ -103,8 +130,22 @@ NodeTest.test(
 NodeTest.test(
   "fresh reserve/aggregate admission refuses a producer without touching its output",
   async (t) => {
-    const { owner, root } = fixture(t, { estimatedPeakBytes: Number.MAX_SAFE_INTEGER });
-    NodeAssert.throws(() => admitPreparation(owner), { code: "storage_refused" });
+    for (const [estimatedPeakBytes, availableBytes] of [
+      [bounds.estimatedPeakBytes, 40n * 1024n ** 3n - 1n],
+      [Number.MAX_SAFE_INTEGER, 40n * 1024n ** 3n],
+    ]) {
+      const { owner, root, capacity } = fixture(t, { estimatedPeakBytes });
+      capacity.availableBytes = availableBytes;
+      NodeAssert.throws(() => admitPreparation(owner), { code: "storage_refused" });
+      await NodeAssert.rejects(run(owner, "open('unexpected','w').write('bad')"), {
+        code: "storage_refused",
+      });
+      NodeAssert.equal(NodeFS.existsSync(NodePath.join(root, "unexpected")), false);
+    }
+    const { owner, root, capacity } = fixture(t);
+    const admitted = admitPreparation(owner);
+    NodeAssert.equal(admitted.filesystems[0].availableBytes, String(40n * 1024n ** 3n));
+    capacity.availableBytes -= 1n;
     await NodeAssert.rejects(run(owner, "open('unexpected','w').write('bad')"), {
       code: "storage_refused",
     });
