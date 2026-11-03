@@ -1,4 +1,8 @@
 import { WorkstreamsHttpResponseContractHeaders } from "./jones/workstreamsHttp.ts";
+import {
+  WorkstreamsHomeReadResult,
+  WorkstreamsHomeReadResultRequest,
+} from "./jones/workstreamsHomeReadResult.ts";
 import { ThreadAttention } from "./jones/threadAttention.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
 import { MessageId } from "./baseSchemas.ts";
@@ -906,6 +910,14 @@ class EnvironmentWorkstreamsHttpApi extends EnvironmentWorkstreamAppearanceHttpA
     error: EnvironmentWorkstreamPagedSnapshotErrors,
   }).middleware(EnvironmentAuthenticatedAuth),
 )
+  .add(
+    HttpApiEndpoint.post("nativeRead", "/api/workstreams/native/v1/read", {
+      headers: OptionalBearerHeaders,
+      payload: WorkstreamsHomeReadResultRequest,
+      success: WorkstreamsHomeReadResult,
+      error: EnvironmentWorkstreamPagedSnapshotErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
   .add(
     HttpApiEndpoint.post("legacyReceiptLookup", "/api/workstreams/legacy-receipts/v1/lookup", {
       headers: OptionalBearerHeaders,

@@ -86,6 +86,10 @@ import * as HomeRead from "../forwarding/homeReadProtocol.ts";
 import * as PeerRead from "../forwarding/peerReadAdmission.ts";
 import * as NativeReadTools from "../../../mcp/workstreams/nativeReads.ts";
 import * as ReadWire from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import {
+  NativeWorkstreamReader,
+  nativeReadRequest,
+} from "../../../../../../../packages/client-runtime/src/state/workstreams/nativeRead.ts";
 import * as PublicGateway from "../../../../workstreams/WorkstreamGateway.ts";
 import * as LocalReads from "../registry/localTransport.ts";
 import * as RegistryService from "../registry/service.ts";
@@ -170,6 +174,7 @@ const decodeNativePlacement = Schema.decodeUnknownEffect(
   NativePlacement.WorkstreamsNativePlacementResult,
 );
 const decodeReadArgs = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResultRequest);
+const decodePublicReadResult = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResult);
 const isPublicOperation = Schema.is(OperationWire.WorkstreamOperationResult);
 const decodeAccessArgs = Schema.decodeUnknownEffect(AccessWire.WorkstreamsHomeAccessRequest);
 const decodeRegistrationArgs = Schema.decodeUnknownEffect(
@@ -2067,6 +2072,191 @@ it.effect(
         expect(yield* msql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
         expect(yield* msql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
 
+        const requestNativeRead = (token: string | undefined, payload: unknown) =>
+          Effect.promise(() =>
+            placementHttp.handler(
+              new Request("https://member.invalid/api/workstreams/native/v1/read", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  ...(token === undefined ? {} : { authorization: "Bearer " + token }),
+                },
+                body: JSON.stringify(payload),
+              }),
+            ),
+          );
+        const countsRequest = nativeReadRequest({ route: "counts", params: {} });
+        const countsResponse = yield* requestNativeRead(nextSession.token, countsRequest);
+        expect(countsResponse.status).toBe(200);
+        expect(countsResponse.headers.get("cache-control")).toBe("private, no-store");
+        expect(countsResponse.headers.get("x-content-type-options")).toBe("nosniff");
+        const countsResult = yield* decodePublicReadResult(
+          yield* Effect.promise(() => countsResponse.json()),
+        );
+        expect(countsResult).toMatchObject({
+          route: "counts",
+          envelope: {
+            registry: { registry_instance_id: home.registry_instance_id },
+            provenance: {
+              home_environment_id: f.H.env,
+              served_by_environment_id: f.H.env,
+              authority: "native-home",
+              source: "live",
+              stale: false,
+            },
+          },
+          value: { active: 3, total: 3 },
+        });
+
+        // Two separate public requests must retain the same real home snapshot lease.
+        const firstPageResponse = yield* requestNativeRead(
+          nextSession.token,
+          nativeReadRequest({ route: "workstreams", params: { limit: 1 } }),
+        );
+        expect(firstPageResponse.status).toBe(200);
+        const firstPage = yield* decodePublicReadResult(
+          yield* Effect.promise(() => firstPageResponse.json()),
+        );
+        if (firstPage.route !== "workstreams" || firstPage.value.next_cursor === null)
+          return yield* Effect.die("Expected a genuine multi-page home collection");
+        const continuation = nativeReadRequest({
+          route: "workstreams",
+          params: { limit: 1, cursor: firstPage.value.next_cursor },
+        });
+        yield* TestClock.adjust(1);
+        const secondPageResponse = yield* requestNativeRead(nextSession.token, continuation);
+        expect(secondPageResponse.status).toBe(200);
+        const secondPage = yield* decodePublicReadResult(
+          yield* Effect.promise(() => secondPageResponse.json()),
+        );
+        expect(secondPage.envelope).toEqual(firstPage.envelope);
+        expect(secondPage.authorization_revision).toBe(firstPage.authorization_revision);
+
+        // Exercise the unchanged shared client through actual authentication/HTTP/member/peer/home layers.
+        // This explicit test scope is not an environment capability advertisement.
+        const publicReadBinding = (yield* gateway
+          .readMetadata()
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal))).binding;
+        const { registry_version: _registryVersion, ...httpReadRegistry } =
+          countsResult.envelope.registry;
+        const readScope = {
+          capability: {
+            contract: "workstreams-native/1.0.0" as const,
+            mode: "native-member" as const,
+            registry: {
+              ...httpReadRegistry,
+              home_environment_id: countsResult.envelope.provenance.home_environment_id,
+            },
+            home_link: "ok" as const,
+            reads: ["workstreams-read/1.0.0" as const],
+            placement_proofs: ["workstreams-t3-placement/2.0.0" as const],
+          },
+          binding: publicReadBinding,
+        };
+        const readQueries: ReadWire.WorkstreamsHomeReadResultRequest["request"][] = [
+          { route: "workstreams", params: { limit: 1 } },
+          { route: "references", params: { limit: 1 } },
+          { route: "read-projection", params: { limit: 1 } },
+          { route: "memberships", params: { workstream_id: publicId, limit: 1 } },
+          { route: "declarations", params: { workstream_id: publicId, limit: 1 } },
+          { route: "lifecycle-declarations", params: { workstream_id: publicId, limit: 1 } },
+          { route: "edges", params: { workstream_id: publicId, limit: 1 } },
+          { route: "history", params: { workstream_id: publicId, limit: 1 } },
+          {
+            route: "placements",
+            params: {
+              limit: 1,
+              identities: [
+                { source_instance_id: f.M.env, native_thread_id: "thread:retained-source" },
+              ],
+            },
+          },
+        ];
+        const readBodies: ReadWire.WorkstreamsHomeReadResultRequest[] = [];
+        const reader = new NativeWorkstreamReader({
+          scope: readScope,
+          sha256: async (bytes) => sha256Bytes(bytes),
+          read: async (body, signal) => {
+            readBodies.push(body);
+            const response = await placementHttp.handler(
+              new Request("https://member.invalid/api/workstreams/native/v1/read", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  authorization: "Bearer " + nextSession.token,
+                },
+                body: JSON.stringify(body),
+                ...(signal === undefined ? {} : { signal }),
+              }),
+            );
+            if (!response.ok)
+              throw Object.assign(new Error("Native HTTP read refused."), {
+                status: response.status,
+              });
+            return response.json();
+          },
+        });
+        yield* Effect.promise(async () => {
+          for (const query of readQueries) {
+            const complete = await reader.complete(
+              nativeReadRequest(
+                query,
+                query.route === "placements" ? "workstreams-t3-placement/2.0.0" : undefined,
+              ),
+            );
+            expect(complete.stale).toBe(false);
+            expect(complete.envelope.coverage.registry).toBe("complete");
+            expect(
+              complete.pages.every(
+                (page) =>
+                  page.envelope.provenance.observed_at === complete.envelope.provenance.observed_at,
+              ),
+            ).toBe(true);
+            if (query.route === "workstreams" || query.route === "read-projection") {
+              expect(complete.items).toHaveLength(3);
+              expect(complete.pages).toHaveLength(3);
+            }
+            if (query.route === "placements")
+              expect(complete.items).toMatchObject([
+                {
+                  membership_id: placementOperation.result.membership_id,
+                  attestation_source: "native",
+                  evidence_contract: "workstreams-t3-provider/2.0.0",
+                },
+              ]);
+          }
+        });
+        expect(readBodies.some((body) => "cursor" in body.request.params)).toBe(true);
+        expect((yield* requestNativeRead(readOnlySession.token, countsRequest)).status).toBe(200);
+        expect((yield* requestNativeRead(undefined, countsRequest)).status).toBe(401);
+        expect(
+          (yield* requestNativeRead(nextSession.token, {
+            ...countsRequest,
+            contract: "workstreams-native-home-read-result/2.0.0",
+          })).status,
+        ).toBe(400);
+        expect(
+          (yield* requestNativeRead(nextSession.token, {
+            ...countsRequest,
+            caller: { principal_id: "forged" },
+          })).status,
+        ).toBe(400);
+        expect(
+          (yield* requestNativeRead(nextSession.token, {
+            ...countsRequest,
+            placement_contract: "workstreams-t3-placement/2.0.0",
+          })).status,
+        ).toBe(400);
+        expect(
+          (yield* requestNativeRead(nextSession.token, {
+            ...countsRequest,
+            request: { route: "counts", params: { home: "forged" } },
+          })).status,
+        ).toBe(400);
+        expect(f.calls.filter((c) => c.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
+          beforePlacementReads,
+        );
+
         const retained = yield* Context.get(resources, MemberPreparation.MemberPreparation)
           .withPrepared((members) =>
             Effect.flatMap(Effect.context<never>(), (requestContext) =>
@@ -2441,6 +2631,10 @@ it.effect(
           WHERE operation_id=${lostCommand.command_id}`,
         ).toEqual([{ state: "reconciling" }]);
         expect(yield* auth.revokeSession(nextSession.sessionId)).toBe(true);
+        expect((yield* requestNativeRead(nextSession.token, continuation)).status).toBe(401);
+        yield* Effect.promise(async () => {
+          await expect(reader.read(countsRequest)).rejects.toMatchObject({ status: 401 });
+        });
         expect(
           (yield* requestPlacements(nextSession.token, "workstreams-t3-placement/2.0.0")).status,
         ).toBe(401);

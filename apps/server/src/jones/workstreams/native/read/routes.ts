@@ -341,7 +341,10 @@ export const layer = Layer.effect(
 export class AuthorizedReads extends Context.Service<
   AuthorizedReads,
   {
-    readonly read: (request: WorkstreamsNativeHomeRead) => Effect.Effect<ReadResult, RegistryError>;
+    readonly read: (
+      request: WorkstreamsNativeHomeRead,
+      placementContract?: PlacementContract,
+    ) => Effect.Effect<ReadResult, RegistryError>;
   }
 >()("t3/jones/workstreams/native/read/routes/AuthorizedReads") {}
 export const authorizedLayer = Layer.effect(
@@ -352,11 +355,11 @@ export const authorizedLayer = Layer.effect(
       homeReads = yield* HomeReads,
       session = yield* Session.Session;
     return AuthorizedReads.of({
-      read: Effect.fn("NativeRead.authorized")(function* (request) {
+      read: Effect.fn("NativeRead.authorized")(function* (request, placementContract) {
         const evidence = yield* boundary.current().pipe(Effect.mapError(Projection.readFailure));
         return yield* Effect.gen(function* () {
           const caller = yield* admission.admit("workstreams:read");
-          const result = yield* homeReads.read(caller, request);
+          const result = yield* homeReads.read(caller, request, placementContract);
           yield* evidence.check("workstreams:read", null);
           const current = yield* session.authorize(caller, "workstreams:read");
           if (current.authorization.grant.grant_version !== result.authorization_revision)

@@ -4,6 +4,12 @@ import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
 import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
 import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
 import * as MemberPlacements from "../jones/workstreams/native/read/memberPlacements.ts";
+import * as NativeReads from "../jones/workstreams/native/read/routes.ts";
+import {
+  WORKSTREAMS_HOME_READ_RESULT_CONTRACT,
+  WorkstreamsHomeReadResult,
+} from "@t3tools/contracts/jones/workstreamsHomeReadResult";
+import * as Schema from "effect/Schema";
 import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
 import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
@@ -51,6 +57,8 @@ import {
   makeWorkstreamsRegistrationContext,
 } from "../jones/workstreams/registrationContext/service.ts";
 
+const decodeNativeReadResult = Schema.decodeUnknownEffect(WorkstreamsHomeReadResult);
+
 export const WORKSTREAM_RESPONSE_HEADERS = {
   "cache-control": "private, no-store",
   "x-content-type-options": "nosniff",
@@ -79,7 +87,8 @@ export const withWorkstreamBodyLimit = <A, E, R>(
   request: { readonly originalUrl: string; readonly method: string },
 ): Effect.Effect<A, E, R> =>
   request.method === "POST" &&
-  workstreamHttpPath(request.originalUrl) === "/api/workstreams/thread-placements"
+  (workstreamHttpPath(request.originalUrl) === "/api/workstreams/thread-placements" ||
+    workstreamHttpPath(request.originalUrl) === "/api/workstreams/native/v1/read")
     ? effect.pipe(
         Effect.provideService(
           HttpIncomingMessage.MaxBodySize,
@@ -333,6 +342,22 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
           yield* annotateEnvironmentRequest(args.endpoint.name);
           yield* requireEnvironmentScope(AuthOrchestrationOperateScope);
           return yield* internal("appearanceSave", gateway.saveAppearance(args.payload));
+        }),
+      )
+      .handle("nativeRead", (args) =>
+        Effect.gen(function* () {
+          yield* read(args.endpoint.name);
+          const native = yield* Effect.serviceOption(NativeReads.AuthorizedReads);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isNone(native)) return yield* unavailable();
+          const result = yield* native.value
+            .read(args.payload.request, args.payload.placement_contract)
+            .pipe(Effect.mapError(unavailable));
+          return yield* decodeNativeReadResult(
+            { contract: WORKSTREAMS_HOME_READ_RESULT_CONTRACT, ...result },
+            { onExcessProperty: "error" },
+          ).pipe(Effect.mapError(unavailable));
         }),
       )
       .handle("threadPlacements", (args) =>

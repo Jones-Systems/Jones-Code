@@ -64,6 +64,9 @@ describe("Workstream HTTP response containment", () => {
         const limit = (method: string, originalUrl: string) =>
           withWorkstreamBodyLimit(HttpIncomingMessage.MaxBodySize, { method, originalUrl });
         expect(yield* limit("POST", "/api/workstreams/thread-placements")).toBe(262_144n);
+        expect(yield* limit("POST", "/api/workstreams/native/v1/read")).toBe(262_144n);
+        expect(yield* limit("POST", "/api/workstreams/native/v1/read?extra=x")).toBe(262_144n);
+        expect(yield* limit("GET", "/api/workstreams/native/v1/read")).toBeUndefined();
         expect(yield* limit("POST", "/api/workstreams/thread-placements?extra=x")).toBe(262_144n);
         expect(
           yield* limit("POST", "http://fixture/api/workstreams/thread-placements?extra=x"),
@@ -222,6 +225,33 @@ const withHttpFixture = Effect.fn(function* (
     (app) => Effect.promise(() => app.dispose()),
   );
 });
+
+it.effect(
+  "refuses native reads without a selected reader instead of using the legacy Gateway",
+  () =>
+    withHttpFixture([AuthOrchestrationReadScope], async ({ handler, calls, submissions }) => {
+      const request = (headers: Record<string, string>) =>
+        new Request("http://fixture/api/workstreams/native/v1/read", {
+          method: "POST",
+          headers: { "content-type": "application/json", ...headers },
+          body: JSON.stringify({
+            contract: "workstreams-native-home-read-result/1.0.0",
+            request: { route: "counts", params: {} },
+          }),
+        });
+      const unauthenticated = await handler(request({}));
+      expect(unauthenticated.status).toBe(401);
+      const unavailable = await handler(request({ authorization: "Bearer synthetic-token" }));
+      expect(unavailable.status).toBe(409);
+      expect(await unavailable.json()).toEqual({
+        _tag: "EnvironmentHttpConflictError",
+        message: "workstreams_native_unavailable",
+      });
+      expect(unavailable.headers.get("cache-control")).toBe("private, no-store");
+      expect(calls).toEqual({ reads: 0, writes: 0 });
+      expect(submissions.count).toBe(0);
+    }),
+);
 
 const credentials: readonly {
   readonly kind: string;

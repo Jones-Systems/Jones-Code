@@ -252,8 +252,7 @@ it.effect(
         expect(yield* read(placementRequest).pipe(Effect.flip)).toMatchObject({
           code: "contract_mismatch",
         });
-        const placements = yield* (yield* Routes.HomeReads).read(
-          caller,
+        const placements = yield* (yield* Routes.AuthorizedReads).read(
           placementRequest,
           "workstreams-t3-placement/2.0.0",
         );

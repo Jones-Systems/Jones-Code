@@ -122,9 +122,17 @@ route; the frozen v1 Gateway cannot erase native proof fields to accept it. Link
 metadata requests remain refused. Scheduled MCP calls retain their authenticated agent origin; a queue origin
 requires separate trusted queue-request evidence and is not accepted from a body.
 
-The current optional native capability is withheld until the complete native read
-projection is mounted: its frozen contract requires that read capability. The
-placement header can still negotiate the mounted v2 route explicitly. Rollups are
+Authenticated clients can explicitly query the selected home or member at
+`POST /api/workstreams/native/v1/read` using the existing closed
+`workstreams-native-home-read-result/1.0.0` request. It returns the route-specific
+value, native envelope and authorization revision; continuation pages retain one
+home observation and require current permission on every request. Placement v2
+requires the explicit `placement_contract` field. Missing native support refuses
+without a legacy fallback. Responses are private and not cacheable by HTTP caches.
+
+The current optional native capability remains withheld pending complete client
+read/export integration. The placement header can still negotiate the mounted
+v2 route explicitly. Rollups are
 not advertised. Setup uses the existing closed status shape without CP enrollment
 instructions. Recovery must be composed with the owning Effect worker and current
 retained-caller admission; constructing a service is not recovery authorization.
