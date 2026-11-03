@@ -10,6 +10,7 @@ import {
   ProviderInstanceId,
   ProviderSessionId,
   type RuntimeMode,
+  type ServerProvider,
   ThreadId,
 } from "@t3tools/contracts";
 import { GrokSettings } from "@t3tools/provider-grok/settings";
@@ -300,8 +301,12 @@ describe("Grok launch permission mode", () => {
 
   it.effect("launches a thread stored as Auto-accept edits asking", () =>
     Effect.gen(function* () {
-      const snapshot = yield* buildInitialGrokProviderSnapshot(LAUNCH_TEST_GROK_SETTINGS);
       const instanceId = ProviderInstanceId.make("grok-launch-test");
+      const snapshot = {
+        ...(yield* buildInitialGrokProviderSnapshot(LAUNCH_TEST_GROK_SETTINGS)),
+        instanceId,
+        driver: GROK_PROVIDER,
+      } satisfies ServerProvider;
       const instance: ProviderInstance = {
         instanceId,
         driverKind: snapshot.driver,

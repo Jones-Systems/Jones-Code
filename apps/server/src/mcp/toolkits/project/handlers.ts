@@ -124,10 +124,9 @@ export const launchThread = Effect.fn("mcp.launchThread")(function* (
         )).projectId
       : yield* resolveProjectId(context, input.projectId);
   const projects = yield* Project.ProjectService;
-  const readProject = projects.getById(projectId).pipe(
-    Effect.mapError(unavailable),
-    Effect.map(Option.getOrUndefined),
-  );
+  const readProject = projects
+    .getById(projectId)
+    .pipe(Effect.mapError(unavailable), Effect.map(Option.getOrUndefined));
   if (input.workspaceStrategy?.type === "existing_worktree") {
     const project = yield* readProject;
     if (project === undefined)

@@ -2317,7 +2317,8 @@ it.effect.each(["pass", "hold"] as const)(
               supportsRemoteRequestEvaluation: true,
             } satisfies ServerProvider),
             refresh: Effect.die("Admission fixtures must not refresh the provider."),
-            resolveMaintenance: () => Effect.die("Admission fixtures must not resolve maintenance."),
+            resolveMaintenance: () =>
+              Effect.die("Admission fixtures must not resolve maintenance."),
             streamChanges: Stream.empty,
             applyUsageLimits: () => Effect.die("Admission fixtures must not apply usage limits."),
           },
@@ -2332,7 +2333,8 @@ it.effect.each(["pass", "hold"] as const)(
           Layer.provide(
             Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
               getCatalogSource: (id) => (id === instanceId ? admissionInstance : undefined),
-              getInstance: (id) => Effect.succeed(id === instanceId ? admissionInstance : undefined),
+              getInstance: (id) =>
+                Effect.succeed(id === instanceId ? admissionInstance : undefined),
             }),
           ),
           Layer.provide(

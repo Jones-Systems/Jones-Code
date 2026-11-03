@@ -518,28 +518,26 @@ const fixture = (runEffectWorker: boolean) =>
         ),
       ),
     );
-    const layer = Layer.mergeAll(
-      runtime,
-      external,
-      receipts,
-      threads,
-      launches,
-      eventStore,
-    );
-    const launch = (key: string) => ({
-      commandId: CommandId.make(`launch:${key}`),
-      threadId: ThreadId.make(`thread:${key}`),
-      projectId,
-      title: "Synthetic delivery",
-      modelSelection: selection,
-      runtimeMode: "full-access",
-      interactionMode: "default",
-      workspaceStrategy: { type: "root" },
-      runSetupScript: false,
-      initialMessage: { messageId: MessageId.make(`${key}:first`), text: "First", attachments: [] },
-      createdBy: "user",
-      creationSource: "web",
-    } satisfies Launch.ThreadLaunchInput);
+    const layer = Layer.mergeAll(runtime, external, receipts, threads, launches, eventStore);
+    const launch = (key: string) =>
+      ({
+        commandId: CommandId.make(`launch:${key}`),
+        threadId: ThreadId.make(`thread:${key}`),
+        projectId,
+        title: "Synthetic delivery",
+        modelSelection: selection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        workspaceStrategy: { type: "root" },
+        runSetupScript: false,
+        initialMessage: {
+          messageId: MessageId.make(`${key}:first`),
+          text: "First",
+          attachments: [],
+        },
+        createdBy: "user",
+        creationSource: "web",
+      }) satisfies Launch.ThreadLaunchInput;
     return {
       layer,
       launch,
