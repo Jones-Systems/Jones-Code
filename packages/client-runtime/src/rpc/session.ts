@@ -405,8 +405,11 @@ export const make = Effect.fn("RpcSessionFactory.make")(function* (
         ),
       );
     const probe = initialConfig.pipe(
-      Effect.flatMap(() =>
-        protocolClient[WS_METHODS.serverProbe]({}).pipe(Effect.mapError(mapRpcError)),
+      Effect.flatMap((config) =>
+        (config.environment.capabilities.connectionProbe === true
+          ? protocolClient[WS_METHODS.serverProbe]({})
+          : protocolClient[WS_METHODS.serverGetConfig]({})
+        ).pipe(Effect.mapError(mapRpcError)),
       ),
       Effect.asVoid,
       Effect.withSpan("clientRuntime.connection.rpcSession.probe", {

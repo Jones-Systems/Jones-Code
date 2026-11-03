@@ -50,12 +50,14 @@ function equal(left: unknown, right: unknown): boolean {
   );
 }
 
+const isReceipt = Schema.is(ReceiptSchema);
+
 /** Validate against the original request first, then against the last accepted receipt. */
 export function validateReceipt(
   prev: JonesOperationStartInput | JonesOperationReceipt,
   next: JonesOperationReceipt,
 ): boolean {
-  if (!Schema.is(ReceiptSchema)(next)) return false;
+  if (!isReceipt(next)) return false;
   if (!Number.isFinite(Date.parse(next.updatedAt))) return false;
   if (!["refused", "fenced"].includes(next.phase) && next.acceptedAt === undefined) return false;
   for (const key of [

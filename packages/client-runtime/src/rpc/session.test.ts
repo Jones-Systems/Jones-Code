@@ -1461,3 +1461,78 @@ describe("RpcSessionFactory", () => {
     }),
   );
 });
+const LEGACY_SERVER_CONFIG = {
+  ...ENCODED_SERVER_CONFIG,
+  environment: {
+    ...ENCODED_SERVER_CONFIG.environment,
+    capabilities: {
+      repositoryIdentity: true,
+    },
+  },
+};
+
+it.effect.each([
+  { capability: true, outcome: "success" },
+  { capability: true, outcome: "failure" },
+  { capability: false, outcome: "success" },
+  { capability: false, outcome: "failure" },
+])(
+  "identifies the environment on a parentless $outcome probe span with capability=$capability",
+  ({ capability, outcome }) =>
+    Effect.gen(function* () {
+      const spans: Tracer.NativeSpan[] = [];
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          spans.push(span);
+          return span;
+        },
+      });
+      const { factory, sockets } = yield* makeFactory();
+      const session = yield* factory.connect(PREPARED);
+      const readyFiber = yield* Effect.forkChild(session.ready);
+      const socket = yield* awaitSocket(sockets);
+      socket.open();
+      yield* completeInitialConfig(
+        socket,
+        capability ? ENCODED_SERVER_CONFIG : LEGACY_SERVER_CONFIG,
+      );
+      yield* Fiber.join(readyFiber);
+
+      const probeFiber = yield* session.probe.pipe(
+        Effect.withTracer(tracer),
+        Effect.exit,
+        Effect.forkChild,
+      );
+      const probeRequest = yield* awaitRequest(socket, 1);
+      expect(probeRequest.tag).toBe(
+        capability ? WS_METHODS.serverProbe : WS_METHODS.serverGetConfig,
+      );
+      if (outcome === "success") {
+        socket.serverMessage(
+          encodeJson({
+            _tag: "Exit",
+            requestId: probeRequest.id,
+            exit: { _tag: "Success", value: capability ? {} : LEGACY_SERVER_CONFIG },
+          }),
+        );
+      } else {
+        socket.close(1006, "Probe transport failure");
+      }
+
+      const result = yield* Fiber.join(probeFiber);
+      expect(result._tag).toBe(outcome === "success" ? "Success" : "Failure");
+      const probeSpans = spans.filter(
+        (span) => span.name === "clientRuntime.connection.rpcSession.probe",
+      );
+      expect(probeSpans).toHaveLength(1);
+      const span = probeSpans[0]!;
+      expect(Option.isNone(span.parent)).toBe(true);
+      expect(span.status).toMatchObject({
+        _tag: "Ended",
+        exit: { _tag: result._tag },
+      });
+      expect(span.attributes.get("connection.environment.id")).toBe(PREPARED.environmentId);
+      expect(Array.from(span.attributes.values())).not.toContain(PREPARED.socketUrl);
+    }).pipe(Effect.scoped),
+);

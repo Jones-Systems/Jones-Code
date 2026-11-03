@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Hex from "effect/encoding/Hex";
 
@@ -28,9 +28,9 @@ export const workstreamChildId = Effect.fn("WorkstreamOperations.childId")(funct
   ) {
     throw new Error("Invalid workstream child ID input.");
   }
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const bytes = yield* crypto.digest(
-    "SHA-256",
+    Digest.sha256,
     new TextEncoder().encode(
       `jwo/1\0${input.environment_id}\0${input.operation_id}\0${input.request_sha256}`,
     ),

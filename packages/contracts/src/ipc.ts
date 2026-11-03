@@ -310,6 +310,8 @@ export interface DesktopUpdateState {
   notAppliedVersion?: string;
   /** Off only because a managed policy rules out this channel; switching channels turns it on. */
   channelBlockedByPolicy?: true;
+  jones?: JonesUpdateState;
+  jonesPreparation?: JonesDesktopPreparationState;
 }
 
 export interface DesktopUpdateReleaseNote {
@@ -1054,10 +1056,61 @@ export const DesktopMediaReadSchema = Schema.Struct({
 });
 export type DesktopMediaRead = typeof DesktopMediaReadSchema.Type;
 
+export const DesktopPreviewAutomationClickInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationClickInput,
+});
+
+export const DesktopPreviewAutomationTypeInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationTypeInput,
+});
+
+export const DesktopPreviewAutomationPressInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationPressInput,
+});
+
+export const DesktopPreviewAutomationScrollInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationScrollInput,
+});
+
+export const DesktopPreviewAutomationEvaluateInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationEvaluateInput,
+});
+
+export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
+  tabId: DesktopPreviewTabIdSchema,
+  deadlineMs: Schema.optional(Schema.Number),
+  input: PreviewAutomationWaitForInput,
+});
+
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
 export interface DesktopBridge {
+  getPreviewAutomationRuntimeIdentity?: () => Promise<PreviewAutomationRuntimeIdentity>;
+  getConnectionCatalogSnapshot?: () => Promise<string | null>;
+  listConnectionCompatibilityHints?: () => Promise<
+    ReadonlyArray<{
+      readonly environmentId: EnvironmentId;
+      readonly routeBinding: string;
+      readonly kind: "outdated-update";
+    }>
+  >;
+  setConnectionCompatibilityHint?: (input: {
+    readonly environmentId: EnvironmentId;
+    readonly routeBinding: string;
+    readonly kind: "outdated-update" | null;
+  }) => Promise<boolean>;
+
   threadMonitor?: DesktopThreadMonitorMainBridge;
   previewCompanion?: DesktopCompanionBridge;
   getAppBranding: () => DesktopAppBranding | null;
@@ -1167,9 +1220,15 @@ export interface DesktopBridge {
     minimumVersion?: string,
   ) => Promise<DesktopUpdateState>;
   checkForUpdate: () => Promise<DesktopUpdateCheckResult>;
-  downloadUpdate: () => Promise<DesktopUpdateActionResult>;
-  /** With a version, installs only that downloaded build. */
-  installUpdate: (expectedVersion?: string) => Promise<DesktopUpdateActionResult>;
+  downloadUpdate: (selection?: JonesUpdateDownloadInput) => Promise<DesktopUpdateActionResult>;
+  discardUpdate?: (stagedHandle: string) => Promise<DesktopUpdateActionResult>;
+  /** Optional: older desktop builds cannot prepare Jones updates in the background. */
+  setJonesBackgroundPreparation?: (enabled: boolean) => Promise<DesktopUpdateState>;
+  installUpdate: (stagedHandle?: string, campaignId?: string) => Promise<DesktopUpdateActionResult>;
+  fleetUpdates?: (request: FleetDesktopRequest) => Promise<FleetDesktopState>;
+  /** Older desktop builds lack install-plan support. */
+  installPlan?: (request: JonesInstallPlanRequest) => Promise<JonesInstallPlanResult>;
+  onInstallPlan?: (listener: (state: JonesInstallPlanState) => void) => () => void;
   onUpdateState: (listener: (state: DesktopUpdateState) => void) => () => void;
   cliCommand: {
     getState: () => Promise<DesktopCliCommandState>;

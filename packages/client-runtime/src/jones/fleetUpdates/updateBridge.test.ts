@@ -146,6 +146,7 @@ describe("qualified update-only connection", () => {
         rejectedAccessToken?: string;
       }> = [];
       const authorization = RemoteEnvironmentAuthorization.of({
+        renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
         authorizeBearer: () => Effect.die("Unexpected bearer authorization"),
         authorizeDpop: () => Effect.die("Update reads must not replace the socket"),
         authorizeDpopHttp: (input) =>

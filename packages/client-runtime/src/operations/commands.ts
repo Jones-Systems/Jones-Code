@@ -1,3 +1,4 @@
+import { resolveDefaultWorktreeBaseBranch } from "@t3tools/shared/git";
 import { requireMonitorGuardedSettle } from "../jones/threadMonitor/guardedSettle.ts";
 import type { GuardedThreadSettlement } from "@t3tools/contracts/jones/guardedThreadSettlement";
 import { requireQueuedRunStart } from "../jones/queue/commands.ts";
@@ -805,28 +806,85 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
     });
   }
 
-  const dispatchMode =
-    requestedMode === "queue"
+  const capabilities = (yield* getInitialServerConfig()).environment.capabilities;
+  const serverResolvesCommandContext = capabilities.serverResolvedCommandContext === true;
+  const creationSource = input.creationSource ?? "web";
+  const queuedToolBoundaryEligible =
+    input.allowQueuedToolBoundaryDelivery !== false &&
+    (creationSource === "web" || creationSource === "mobile") &&
+    (requestedMode === "queue" || requestedMode === "auto") &&
+    capabilities.queuedToolBoundaryDelivery === true;
+  const projection = serverResolvesCommandContext ? null : yield* getProjection(input.threadId);
+  const activeRun = projection?.runs.findLast(
+    (run) =>
+      run.status === "preparing" ||
+      run.status === "starting" ||
+      run.status === "running" ||
+      run.status === "waiting",
+  );
+  const activeProviderThread =
+    activeRun === undefined
+      ? undefined
+      : projection?.providerThreads.find((thread) => thread.id === activeRun.providerThreadId);
+  const activeProviderSession =
+    activeProviderThread?.providerSessionId === null ||
+    activeProviderThread?.providerSessionId === undefined
+      ? undefined
+      : projection?.providerSessions.find(
+          (session) => session.id === activeProviderThread.providerSessionId,
+        );
+  const turnCapabilities = activeProviderSession?.capabilities.turns;
+  const dispatchMode = serverResolvesCommandContext
+    ? requestedMode === "queue"
       ? ({ type: "queue_after_active" } as const)
-      : ({ type: "start_immediately" } as const);
-  return yield* dispatch({
-    type: "message.dispatch",
-    commandId,
-    createdBy: "user",
-    creationSource: input.creationSource ?? "web",
-    threadId: input.threadId,
-    messageId: input.message.messageId,
-    text: input.message.text,
-    ...(context ? { context } : {}),
-    ...(input.message.idleCompaction === undefined
-      ? {}
-      : { idleCompaction: input.message.idleCompaction }),
-    attachments,
-    ...(input.titleSeed === undefined ? {} : { titleSeed: input.titleSeed }),
-    ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
-    ...(input.sourceProposedPlan === undefined ? {} : { sourcePlanRef: input.sourceProposedPlan }),
-    ...(requestedMode !== "queue" ? { deliveryIntent: requestedMode } : {}),
-    dispatchMode,
+      : ({ type: "start_immediately" } as const)
+    : activeRun === undefined
+      ? ({ type: "start_immediately" } as const)
+      : requestedMode === "steer"
+        ? ({ type: "steer_active", targetRunId: activeRun.id } as const)
+        : requestedMode === "restart"
+          ? ({ type: "restart_active", targetRunId: activeRun.id } as const)
+          : requestedMode === "queue"
+            ? ({ type: "queue_after_active" } as const)
+            : turnCapabilities?.supportsActiveSteering === true
+              ? ({ type: "steer_active", targetRunId: activeRun.id } as const)
+              : turnCapabilities?.supportsQueuedMessages === true
+                ? ({ type: "queue_after_active" } as const)
+                : turnCapabilities?.supportsSteeringByInterruptRestart === true
+                  ? ({ type: "restart_active", targetRunId: activeRun.id } as const)
+                  : ({ type: "queue_after_active" } as const);
+  const shouldSendTitleSeed =
+    input.titleSeed !== undefined &&
+    (serverResolvesCommandContext || projection?.messages.length === 0);
+  return freezePreparedTurnRequest({
+    method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+    payload: {
+      type: "message.dispatch",
+      commandId,
+      createdBy: "user",
+      creationSource: input.creationSource ?? "web",
+      threadId: input.threadId,
+      messageId: input.message.messageId,
+      text: input.message.text,
+      ...(context ? { context } : {}),
+      ...(input.message.idleCompaction === undefined
+        ? {}
+        : { idleCompaction: input.message.idleCompaction }),
+      attachments,
+      ...(shouldSendTitleSeed ? { titleSeed: input.titleSeed } : {}),
+      ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
+      ...(input.modelSelectionExplicit === undefined
+        ? {}
+        : { modelSelectionExplicit: input.modelSelectionExplicit }),
+      ...(input.sourceProposedPlan === undefined
+        ? {}
+        : { sourcePlanRef: input.sourceProposedPlan }),
+      ...(serverResolvesCommandContext && requestedMode !== "queue"
+        ? { deliveryIntent: requestedMode }
+        : {}),
+      dispatchMode,
+      ...(queuedToolBoundaryEligible ? { queuedToolBoundaryEligible: true } : {}),
+    },
   });
 });
 

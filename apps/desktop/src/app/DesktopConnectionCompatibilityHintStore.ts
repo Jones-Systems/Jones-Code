@@ -5,7 +5,7 @@ import {
 } from "@t3tools/client-runtime/platform";
 import type { EnvironmentId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Base64 from "effect/encoding/Base64";
 import * as Hex from "effect/encoding/Hex";
@@ -42,14 +42,14 @@ export const make = Effect.fn("desktop.connectionCompatibilityHintStore.make")(f
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* Digest.Digest;
   const filename = path.join(input.directory, "connection-compatibility-hints-v1.sqlite");
   const keyFor = Effect.fn("desktop.connectionCompatibilityHintStore.key")(function* (
     environmentId: EnvironmentId,
     routeBinding: string,
   ) {
     const encoded = yield* encodeKey([environmentId, routeBinding]);
-    return Hex.encode(yield* crypto.digest("SHA-256", new TextEncoder().encode(encoded)));
+    return Hex.encode(yield* crypto.digest(Digest.sha256, new TextEncoder().encode(encoded)));
   });
   const withDatabase = <A, E>(
     operation: "read" | "write",

@@ -302,6 +302,7 @@ const makeAtoms = Effect.fn(function* () {
     initialConfig: Effect.succeed({} as never),
     ready: Effect.void,
     probe: Effect.void,
+    inboundFrames: Effect.succeed(0),
     closed: Effect.never,
   } as unknown as RpcSession.RpcSession;
   const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({

@@ -59,6 +59,10 @@ export class ConnectionDriver extends Context.Service<
       entry: ConnectionCatalogEntry,
       reportProgress: (progress: ConnectionDriverProgress) => Effect.Effect<void>,
     ) => Effect.Effect<EnvironmentConnectionLease, ConnectionAttemptError, Scope.Scope>;
+    readonly preflightForRecovery?: (
+      entry: ConnectionCatalogEntry,
+      route: ConnectionRoute,
+    ) => Effect.Effect<boolean>;
     readonly preflight: (
       entry: ConnectionCatalogEntry,
       route: ConnectionRoute,
@@ -195,28 +199,37 @@ export const make = Effect.gen(function* () {
     return yield* connectOverRoutes(
       entry,
       (route) => checkRoute(entry, route),
-      Effect.fnUntraced(function* (route) {
-        const prepared = yield* resolver.prepare(routeEntry(entry, route));
-        yield* reportProgress({ stage: "opening", prepared });
-        const session = yield* sessions.connect(prepared);
-        yield* reportProgress({ stage: "synchronizing", prepared });
-        yield* session.ready;
-        // The server closes a socket when its session expires, unless the same key renewed it.
-        if (prepared.httpAuthorization?._tag === "Dpop") {
-          yield* remote
-            .renewDpopBeforeExpiry({
-              expectedEnvironmentId: prepared.environmentId,
-              expiresAtEpochMs: prepared.httpAuthorization.expiresAtEpochMs,
-            })
-            .pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("Could not renew the connection's credential.", { error }),
-              ),
-              Effect.forkScoped,
-            );
-        }
-        return { prepared, session } satisfies EnvironmentConnectionLease;
-      }),
+      (route, hasFallback) =>
+        withRouteAttemptBudget(
+          hasFallback,
+          Effect.gen(function* () {
+            const prepared = yield* resolver.prepare(routeEntry(entry, route));
+            yield* reportProgress({ stage: "opening", prepared });
+            const session = yield* sessions.connect(prepared);
+            return { prepared, session } satisfies EnvironmentConnectionLease;
+          }),
+          (lease) =>
+            Effect.gen(function* () {
+              const { prepared, session } = lease;
+              yield* reportProgress({ stage: "synchronizing", prepared });
+              yield* session.ready;
+              // The server closes a socket when its session expires, unless the same key renewed it.
+              if (prepared.httpAuthorization?._tag === "Dpop") {
+                yield* remote
+                  .renewDpopBeforeExpiry({
+                    expectedEnvironmentId: prepared.environmentId,
+                    expiresAtEpochMs: prepared.httpAuthorization.expiresAtEpochMs,
+                  })
+                  .pipe(
+                    Effect.catch((error) =>
+                      Effect.logWarning("Could not renew the connection's credential.", { error }),
+                    ),
+                    Effect.forkScoped,
+                  );
+              }
+              return lease;
+            }),
+        ),
     );
   });
 
@@ -236,7 +249,10 @@ export const make = Effect.gen(function* () {
       Effect.withSpan("ConnectionDriver.preflight"),
     );
 
-  return ConnectionDriver.of({ connect, preflight, checkHost });
+  const preflightForRecovery = (entry: ConnectionCatalogEntry, route: ConnectionRoute) =>
+    preflightBetterRoute(entry, route, checkRoute(entry, route), resolver.prepare);
+
+  return ConnectionDriver.of({ connect, preflight, preflightForRecovery, checkHost });
 });
 
 export const layer = Layer.effect(ConnectionDriver, make);

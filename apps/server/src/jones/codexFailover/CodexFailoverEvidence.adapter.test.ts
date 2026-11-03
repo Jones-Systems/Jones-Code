@@ -19,7 +19,7 @@ import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter"
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as CodexReplay from "effect-codex-app-server/replay";
 import type { ServerNotification__CodexErrorInfo } from "effect-codex-app-server/schema";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -359,7 +359,7 @@ const openHarness = Effect.fn("CodexFailoverEvidence.adapter.openHarness")(funct
     settings: DEFAULT_CODEX_SETTINGS,
     environment: {},
     clientFactory: makeCodexReplayClientFactory({ transcript }),
-    crypto: yield* Crypto.Crypto,
+    digest: yield* Digest.Digest,
     fileSystem,
     idAllocator: yield* IdAllocator.IdAllocatorV2,
     serverConfig,

@@ -151,6 +151,7 @@ it.effect(
         };
         const expectedBase = direct ? prepared.httpBaseUrl : "https://renewed-relay.test";
         const authorization = RemoteEnvironmentAuthorization.of({
+          renewDpopBeforeExpiry: () => Effect.die("Unexpected socket renewal in HTTP fixture"),
           authorizeBearer: () => Effect.die("Unexpected socket authorization"),
           authorizeDpop: () => Effect.die("Unexpected socket authorization"),
           authorizeDpopHttp: ({ expectedEnvironmentId }) => {

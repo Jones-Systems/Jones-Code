@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import * as Scope from "effect/Scope";
 import { configurationInputs } from "../tsrs/config-inputs.ts";
 export { configurationInputs } from "../tsrs/config-inputs.ts";
@@ -27,7 +28,7 @@ export {
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as FileSystem from "effect/FileSystem";
 import type * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
@@ -374,11 +375,11 @@ export async function sharedIdentity(
   // revalidation calls this afresh; no metadata or bindings survive a sweep.
   const path = hostPath();
   const fs = Effect.runSync(Effect.provide(FileSystem.FileSystem, NodeFileSystem.layer));
-  const crypto = Effect.runSync(Effect.provide(Crypto.Crypto, NodeCrypto.layer));
+  const crypto = Effect.runSync(Effect.provide(Digest.Digest, NodeCrypto.layer));
   const hash = (bytes: string | Uint8Array) =>
     Buffer.from(
       Effect.runSync(
-        crypto.digest("SHA-256", typeof bytes === "string" ? Buffer.from(bytes) : bytes),
+        crypto.digest(Digest.sha256, typeof bytes === "string" ? Buffer.from(bytes) : bytes),
       ),
     ).toString("hex");
   const row = (label: string, valueHash: string) => `${JSON.stringify(label)}\0${valueHash}\n`;
@@ -536,7 +537,7 @@ export async function checkProject(options: CheckProjectOptions): Promise<number
   await admitNamespace(root, paths.namespace, RAW_LIMIT + (fresh ? 0 : ENVELOPE_LIMIT));
   await safeDirectory(root, paths.directory, true);
   const nonce = Effect.runSync(
-    Effect.flatMap(Crypto.Crypto, (crypto) => crypto.randomUUIDv4()).pipe(
+    Effect.flatMap(SecureRandom.SecureRandom, (crypto) => crypto.uuidV4()).pipe(
       Effect.provide(NodeCrypto.layer),
     ),
   );

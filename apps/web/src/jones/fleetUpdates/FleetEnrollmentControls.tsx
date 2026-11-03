@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useAtomValue } from "@effect/atom-react";
 import type { EnvironmentId } from "@t3tools/contracts";
 import type { FleetHostStatus } from "@t3tools/contracts/jones/fleet-updates";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import { runtime } from "../../lib/runtime";
 import { FleetEnrollmentStatus, type FleetHostReadiness } from "./FleetEnrollmentStatus";
@@ -78,7 +78,7 @@ export function FleetEnrollmentControls({
         const fresh = await fleetHost(environmentId, { action: "status" });
         const selected = {
           enrollmentId: await runtime.runPromise(
-            Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
+            SecureRandom.SecureRandom.pipe(Effect.flatMap((crypto) => crypto.uuidV4())),
           ),
           environmentId,
           enabled: true,

@@ -8,7 +8,6 @@ import {
   ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
-  RunId,
   ThreadId,
   type OrchestrationV2Command,
   type OrchestrationV2ShellSnapshot,
@@ -119,6 +118,11 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
   const historyController = yield* Effect.service(
     ThreadHistoryController.ThreadHistoryController,
   ).pipe(Effect.provide(ThreadHistoryController.layer));
+  yield* historyController.register(ENVIRONMENT_ID, THREAD_ID, {
+    loadEarlier: () => options?.loadEarlier?.() ?? Effect.die("unused"),
+    reconcilePendingWork: () =>
+      options?.reconcilePendingWork?.(THREAD_ID) ?? Queue.offer(reconciled, THREAD_ID),
+  });
   const runtime = Atom.runtime(
     Layer.mergeAll(
       Layer.succeed(EnvironmentRegistry.EnvironmentRegistry, {
@@ -129,16 +133,7 @@ const makeHarness = Effect.fn("TestThreadCommands.makeHarness")(function* (optio
         SecureRandom.SecureRandom,
         SecureRandom.make((size) => new Uint8Array(size)),
       ),
-      Layer.succeed(
-        ThreadHistoryController.ThreadHistoryController,
-        ThreadHistoryController.ThreadHistoryController.of({
-          register: () => Effect.die("unused"),
-          unregister: () => Effect.void,
-          loadEarlier: () => options?.loadEarlier?.() ?? Effect.die("unused"),
-          reconcilePendingWork: (_environmentId, threadId) =>
-            options?.reconcilePendingWork?.(threadId) ?? Queue.offer(reconciled, threadId),
-        }),
-      ),
+      Layer.succeed(ThreadHistoryController.ThreadHistoryController, historyController),
     ),
   );
   const snapshotAtom = Atom.family((_environmentId: EnvironmentId) => Atom.make(SNAPSHOT));

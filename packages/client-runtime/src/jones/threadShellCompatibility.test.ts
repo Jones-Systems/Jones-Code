@@ -42,7 +42,11 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
     registry: AtomRegistry.make(),
     snapshotAtom,
     catalogValueAtom,
-    threads: createEnvironmentThreadShellAtoms({ catalogValueAtom, snapshotAtom }),
+    threads: createEnvironmentThreadShellAtoms({
+      hiddenThreadTagsAtom: () => Atom.make(null),
+      catalogValueAtom,
+      snapshotAtom,
+    }),
   };
 }
 
@@ -390,7 +394,7 @@ describe("delegated requests remain reachable", () => {
   });
 
   it.each(["settled", null] as const)(
-    "reveals C in an A → B → C remote chain with A %s, without transitive badges",
+    "reveals C in an A → B → C remote chain with A %s, with upstream transitive approval badges",
     (settledOverride) => {
       const thirdId = EnvironmentId.make("third-environment");
       const { registry, threads, snapshotAtom } = makeHarness([
@@ -422,7 +426,7 @@ describe("delegated requests remain reachable", () => {
         expect(
           registry.get(threads.threadShellAtom({ environmentId, threadId: a.id }))
             ?.pendingSubagentRequest,
-        ).toBeNull();
+        ).toBe("approval");
         expect(
           registry.get(
             threads.threadShellAtom({ environmentId: remoteEnvironmentId, threadId: b.id }),
@@ -484,4 +488,42 @@ describe("delegated requests remain reachable", () => {
       }
     },
   );
+  it("propagates a live input through remote ancestors and clears every badge after response", () => {
+    const thirdId = EnvironmentId.make("input-third-environment");
+    const { registry, threads, snapshotAtom } = makeHarness([
+      environmentId,
+      remoteEnvironmentId,
+      thirdId,
+    ]);
+    const a = v2ThreadShell;
+    const b = { ...delegate(environmentId, a), id: ThreadId.make("input-b") };
+    const c = {
+      ...delegate(remoteEnvironmentId, b),
+      id: ThreadId.make("input-c"),
+      pendingRuntimeRequest: { ...approval, kind: "user_input" as const },
+    };
+    registry.set(snapshotAtom(environmentId), { ...v2ShellSnapshot, threads: [a] });
+    registry.set(snapshotAtom(remoteEnvironmentId), { ...v2ShellSnapshot, threads: [b] });
+    registry.set(snapshotAtom(thirdId), { ...v2ShellSnapshot, threads: [c] });
+    const dispose = registry.mount(threads.navigationThreadShellsAtom);
+    const refs = [
+      { environmentId, threadId: a.id },
+      { environmentId: remoteEnvironmentId, threadId: b.id },
+    ];
+    try {
+      for (const ref of refs)
+        expect(registry.get(threads.threadShellAtom(ref))?.pendingSubagentRequest).toBe(
+          "user_input",
+        );
+      registry.set(snapshotAtom(thirdId), {
+        ...v2ShellSnapshot,
+        threads: [{ ...c, pendingRuntimeRequest: null }],
+      });
+      for (const ref of refs)
+        expect(registry.get(threads.threadShellAtom(ref))?.pendingSubagentRequest).toBeNull();
+    } finally {
+      dispose();
+      registry.dispose();
+    }
+  });
 });

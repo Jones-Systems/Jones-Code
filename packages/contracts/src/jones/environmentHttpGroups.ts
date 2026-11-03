@@ -168,6 +168,7 @@ export type EnvironmentConversationLibraryError =
 export const EnvironmentConversationLibraryErrorCode = LibraryErrorCodeSchema;
 
 export const EnvironmentWorkstreamOperationConflictError = WorkstreamOperationConflictError.pipe(
+  (schema) => schema.annotate({ httpApiStatus: 409 }),
   HttpApiSchema.status(409),
 );
 export type EnvironmentWorkstreamOperationConflictError =

@@ -1,3 +1,4 @@
+import * as Digest from "effect/crypto/Digest";
 import {
   WorkstreamOperationsClient,
   supportsWorkstreamOperations,
@@ -33,7 +34,7 @@ import {
   type WorkstreamCommand,
   type WorkstreamReceipt,
 } from "@t3tools/contracts";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -266,7 +267,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
             ),
         },
         () =>
-          runtime.runPromise(Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4()))),
+          runtime.runPromise(
+            SecureRandom.SecureRandom.pipe(Effect.flatMap((crypto) => crypto.uuidV4())),
+          ),
       );
       mobileOperationClients.set(connectionKey, client);
     }
@@ -551,7 +554,9 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
                 Date.now,
                 (bytes) =>
                   runtime.runPromise(
-                    Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.digest("SHA-256", bytes))),
+                    Digest.Digest.pipe(
+                      Effect.flatMap((digest) => digest.digest(Digest.sha256, bytes)),
+                    ),
                   ),
               );
             })().catch((cause: unknown) => {
@@ -848,7 +853,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     return await (async () => {
       for (const action of actions) {
         const command_id = await runtime.runPromise(
-          Crypto.Crypto.pipe(Effect.flatMap((crypto) => crypto.randomUUIDv4())),
+          SecureRandom.SecureRandom.pipe(Effect.flatMap((crypto) => crypto.uuidV4())),
         );
         assertCurrent(snapshot);
         const command: WorkstreamCommand = {

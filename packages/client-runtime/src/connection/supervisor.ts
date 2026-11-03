@@ -334,6 +334,48 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
     routes: new Map(),
   }));
 
+  const recovery = makeBetterRouteRecovery({
+    owner: options?.betterRouteEntryOwner ?? {
+      withCurrentEntry: (use) => use(() => Ref.getUnsafe(currentEntry)),
+    },
+    identity: Option.isSome(cloudSession) ? cloudSession.value.identity : Effect.succeedNone,
+    readState: () => ({
+      lease: currentLease,
+      desired: Ref.getUnsafe(intent).desired,
+      cooldowns: new Map([
+        ...Ref.getUnsafe(routeCooldowns),
+        ...[...Ref.getUnsafe(silentRoutes).routes].map(([id, state]) => [id, state.until] as const),
+      ]),
+    }),
+    preflight: Effect.fn("EnvironmentSupervisor.preflightRecovery")(function* (entry, route) {
+      const generation = Ref.getUnsafe(silentRoutes).generation;
+      const result = yield* driver.preflight(entry, route);
+      const now = yield* Clock.monotonicTimeNanos;
+      yield* Ref.update(silentRoutes, (previous) => {
+        if (previous.generation !== generation) return previous;
+        const routes = new Map(previous.routes);
+        const id = connectionRouteId(route.target);
+        if (result === "silent") routes.set(id, backOffSilentRoute(previous.routes.get(id), now));
+        else routes.delete(id);
+        return { generation, routes };
+      });
+      if (
+        result === "unchecked" &&
+        route.target._tag === "RelayConnectionTarget" &&
+        driver.preflightForRecovery !== undefined
+      ) {
+        return yield* driver.preflightForRecovery(entry, route);
+      }
+      return result === "ready";
+    }),
+    offer: (observation) => {
+      Queue.offerUnsafe(signals, { _tag: "BetterRouteAvailable", observation });
+    },
+    select: (routeId) => {
+      preferredRouteId = Option.some(routeId);
+    },
+  });
+
   const attemptEntry = Effect.gen(function* () {
     const latest = yield* Ref.get(currentEntry);
     const routes = connectionRoutes(latest);
@@ -384,44 +426,6 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           : index;
       }),
     );
-
-  const checkBetterRoutes = Effect.fnUntraced(function* (lease: ConnectedLease) {
-    const latest = yield* Ref.get(currentEntry);
-    const current = yield* routeIndex(lease);
-    if (current <= 0) return;
-    const now = yield* Clock.monotonicTimeNanos;
-    const cooldowns = yield* Ref.get(routeCooldowns);
-    const silent = yield* Ref.get(silentRoutes);
-    const better = connectionRoutes(latest)
-      .slice(0, current)
-      .filter((route) => {
-        const id = connectionRouteId(route.target);
-        return (cooldowns.get(id) ?? 0n) <= now && (silent.routes.get(id)?.until ?? 0n) <= now;
-      });
-    const results = yield* Effect.forEach(
-      better,
-      (route: ConnectionRoute) => driver.preflight(latest, route),
-      { concurrency: "unbounded" },
-    );
-    yield* Ref.update(silentRoutes, (previous) => {
-      if (previous.generation !== silent.generation) return previous;
-      const routes = new Map(previous.routes);
-      for (const [position, route] of better.entries()) {
-        const id = connectionRouteId(route.target);
-        if (results[position] !== "silent") routes.delete(id);
-        else routes.set(id, backOffSilentRoute(previous.routes.get(id), now));
-      }
-      return { generation: previous.generation, routes };
-    });
-    const index = results.indexOf("ready");
-    if (index === -1) return;
-    const live = yield* SubscriptionRef.get(session);
-    if (Option.isNone(live) || live.value !== lease.session) return;
-    yield* signal({
-      _tag: "BetterRouteAvailable",
-      routeId: connectionRouteId(better[index]!.target),
-    });
-  });
 
   const betterRouteChecks = yield* Queue.dropping<ConnectedLease>(1);
   const requestBetterRouteCheck = (lease: ConnectedLease) =>
@@ -973,6 +977,7 @@ export const make = Effect.fn("EnvironmentSupervisor.make")(function* (
           connectionRouteId(route.target) === connectionRouteId(active.lease.prepared.target),
       ),
     };
+    currentLease = connectedLease;
     const connectedAt = yield* Clock.currentTimeMillis;
     yield* SubscriptionRef.set(prepared, Option.some(connectedLease.prepared));
     yield* SubscriptionRef.set(session, Option.some(connectedLease.session));

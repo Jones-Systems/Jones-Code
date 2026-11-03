@@ -1,3 +1,4 @@
+import { AuthAdministrativeScopes } from "@t3tools/contracts";
 import {
   AuthStandardClientScopes,
   EnvironmentId,

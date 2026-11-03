@@ -1,3 +1,5 @@
+import { typecheckTask } from "../../scripts/jones/tsrs/task-cache.ts";
+import packageJson from "./package.json" with { type: "json" };
 import * as NodeModule from "node:module";
 import * as NodeURL from "node:url";
 import { defineConfig, normalizePath } from "vite-plus";

@@ -38,6 +38,9 @@ export type WorkstreamSha256 = (bytes: Uint8Array) => Promise<Uint8Array>;
 const browserSha256: WorkstreamSha256 = async (bytes) =>
   new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes)));
 
+const decodePlacementLoadRequest = Schema.decodeSync(T3PlacementLoadRequest);
+const decodePlacementResult = Schema.decodeSync(T3PlacementResult);
+
 export async function loadLiveT3Placements(
   metadata: T3WorkstreamListResult,
   identities: readonly T3PlacementIdentity[],
@@ -47,13 +50,13 @@ export async function loadLiveT3Placements(
 ): Promise<LiveT3Placements> {
   if (metadata.source !== "live" || metadata.stale || metadata.nextCursor !== null)
     throw new Error("Placement metadata is not current.");
-  Schema.decodeSync(T3PlacementLoadRequest)({ identities }, { onExcessProperty: "error" });
+  decodePlacementLoadRequest({ identities }, { onExcessProperty: "error" });
   const digest = await sha256(new TextEncoder().encode(t3PlacementInventoryJson(identities)));
   if (digest.length !== 32) throw new Error("Invalid SHA-256 digest length.");
   const inventoryDigest = Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join(
     "",
   );
-  const result = Schema.decodeSync(T3PlacementResult)(await load(), {
+  const result = decodePlacementResult(await load(), {
     onExcessProperty: "error",
   });
   if (new TextEncoder().encode(JSON.stringify(result)).length > WORKSTREAM_MAX_RESPONSE_BYTES)

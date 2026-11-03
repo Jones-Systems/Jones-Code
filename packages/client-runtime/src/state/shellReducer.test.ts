@@ -1,3 +1,4 @@
+import type { OrchestrationV2ShellSnapshot } from "@t3tools/contracts";
 import { ProjectId, ThreadId, type ThreadPullRequestLink } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -387,7 +388,10 @@ describe("applyShellStreamEvents", () => {
       { kind: "project.removed", sequence: 18, projectId: v2Project.id },
       { kind: "project.updated", sequence: 19, project: v2Project },
     ];
-    const sequential = events.reduce(applyShellStreamEvent, seed);
+    const sequential = events.reduce<OrchestrationV2ShellSnapshot>(
+      (snapshot, event) => applyShellStreamEvent(snapshot, event),
+      seed,
+    );
     const next = applyShellStreamEvents(seed, events);
     expect(next).toEqual(sequential);
     expect(next.threads.map((row) => row.id)).toEqual([unchanged.id, a.id, archived.id, added.id]);
@@ -410,7 +414,10 @@ describe("applyShellStreamEvents", () => {
     const seed = { ...v2ShellSnapshot, threads: [a, b], snapshotSequence: 4 };
     const next = applyShellStreamEvents(seed, [update(5, { ...a }), update(6, { ...b })]);
     expect(next).toEqual(
-      [update(5, { ...a }), update(6, { ...b })].reduce(applyShellStreamEvent, seed),
+      [update(5, { ...a }), update(6, { ...b })].reduce<OrchestrationV2ShellSnapshot>(
+        (snapshot, event) => applyShellStreamEvent(snapshot, event),
+        seed,
+      ),
     );
     expect(next.threads).toBe(seed.threads);
     expect(next.projects).toBe(seed.projects);
@@ -426,7 +433,10 @@ describe("applyShellStreamEvents", () => {
       update(1, { ...a, title: "Changed" }),
     ];
     expect(applyShellStreamEvents(v2ShellSnapshot, events)).toEqual(
-      events.reduce(applyShellStreamEvent, v2ShellSnapshot),
+      events.reduce<OrchestrationV2ShellSnapshot>(
+        (snapshot, event) => applyShellStreamEvent(snapshot, event),
+        v2ShellSnapshot,
+      ),
     );
   });
 });

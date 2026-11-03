@@ -540,6 +540,8 @@ export const OrchestratorMcpThreadReadResult = Schema.Struct({
 export type OrchestratorMcpThreadReadResult = typeof OrchestratorMcpThreadReadResult.Type;
 
 export const OrchestratorMcpThreadSendInput = Schema.Struct({
+  awaitResult: Schema.optional(Schema.Boolean),
+  resultRequest: Schema.optional(ThreadResultRequestDescriptor),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   message: OrchestratorMcpPrompt,
@@ -561,6 +563,9 @@ export const OrchestratorMcpThreadSendResult = Schema.Struct({
 export type OrchestratorMcpThreadSendResult = typeof OrchestratorMcpThreadSendResult.Type;
 
 export const OrchestratorMcpThreadWaitInput = Schema.Struct({
+  childProgressForRunId: Schema.optional(RunId),
+  observeBlockingQuestions: Schema.optional(Schema.Boolean),
+  questionResumeToken: Schema.optional(Schema.String.check(Schema.isMaxLength(16_384))),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
   runId: Schema.optional(RunId),

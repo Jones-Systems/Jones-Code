@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import {
   ChatAttachmentId,
   CheckpointId,
@@ -63,6 +64,11 @@ const layerTestRandom = Layer.succeed(
   SecureRandom.make((size) => new Uint8Array(size)),
 );
 
+const layerTestCrypto = Layer.succeed(
+  SecureRandom.SecureRandom,
+  SecureRandom.make((size) => new Uint8Array(size)),
+);
+
 const TARGET = new PrimaryConnectionTarget({
   environmentId: EnvironmentId.make("environment-1"),
   label: "Test environment",
@@ -82,6 +88,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
   readonly launches?: OrchestrationV2ThreadLaunchInput[];
   readonly projection?: OrchestrationV2ThreadProjection;
   readonly projectionRequests?: ThreadId[];
+  readonly advertiseServerResolvedCommandContext?: boolean;
   readonly advertiseThreadStop?: boolean;
   readonly advertiseQueuedRunStart?: boolean;
   readonly advertiseQueuedToolBoundaryDelivery?: boolean;
@@ -136,6 +143,7 @@ const makeSupervisor = Effect.fn("TestEnvironmentCommands.makeSupervisor")(funct
       environment: {
         capabilities: {
           repositoryIdentity: true,
+          serverResolvedCommandContext: input.advertiseServerResolvedCommandContext === true,
           ...(input.advertiseQueuedRunStart === undefined
             ? {}
             : { queuedRunStart: input.advertiseQueuedRunStart }),
@@ -384,7 +392,12 @@ describe("V2 environment commands", () => {
     Effect.gen(function* () {
       const commands: OrchestrationV2Command[] = [];
       const projectionRequests: ThreadId[] = [];
-      const supervisor = yield* makeSupervisor({ commands, projects: [], projectionRequests });
+      const supervisor = yield* makeSupervisor({
+        commands,
+        projects: [],
+        projectionRequests,
+        advertiseServerResolvedCommandContext: true,
+      });
 
       for (const [mode, expectedType] of [
         ["queue", "queue_after_active"],
