@@ -53,12 +53,12 @@ export function rendersServerTabNatively(
   environmentId: EnvironmentId,
   primaryEnvironmentId: EnvironmentId | null,
   snapshot:
-    | (Pick<PreviewSessionSnapshot, "runtime"> &
+    | (Pick<PreviewSessionSnapshot, "runtime" | "headless"> &
         Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
     | null
     | undefined,
 ): boolean {
-  if (!isElectron || snapshot?.runtime !== "server") return false;
+  if (!isElectron || snapshot?.runtime !== "server" || snapshot.headless) return false;
   if (!snapshot.threadId || !snapshot.tabId) return environmentId === primaryEnvironmentId;
   return nativeCompanionRendering({
     environmentId,
@@ -72,7 +72,7 @@ export function rendersServerTabNatively(
 export function useRendersServerTabNatively(
   environmentId: EnvironmentId,
   snapshot:
-    | (Pick<PreviewSessionSnapshot, "runtime"> &
+    | (Pick<PreviewSessionSnapshot, "runtime" | "headless"> &
         Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
     | null
     | undefined,
@@ -84,6 +84,7 @@ export function useRendersServerTabNatively(
       ? bindingsQuery({ environmentId, input: { threadId: ThreadId.make(snapshot.threadId) } })
       : emptyBinding,
   );
+  if (snapshot?.headless) return false;
   if (!isElectron || !snapshot?.threadId || !snapshot.tabId)
     return rendersServerTabNatively(environmentId, primaryEnvironmentId, snapshot);
   return nativeCompanionRendering({
