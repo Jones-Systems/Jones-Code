@@ -44,7 +44,7 @@ const distinct = (...taken: ReadonlyArray<string | undefined>) =>
   ["b", "c", "d", "e", "f", "1"].find((digit) => !taken.some((sha) => sha?.startsWith(digit)))!;
 const INSTALLED_SOURCE = distinct(APP_SOURCE_SHA).repeat(39) + "9";
 const OFFERED_SOURCE = distinct(APP_SOURCE_SHA, INSTALLED_SOURCE).repeat(39) + "8";
-const HOST_VERSION = "0.1.0-preview.20261019.39341000929.1";
+const HOST_VERSION = "0.0.44-preview.20261009.1.1";
 
 const build = (sourceSha: string, artifactId: number, version: string): JonesUpdateProvenance => ({
   repository: "Jones-Systems/Jones-Code",
