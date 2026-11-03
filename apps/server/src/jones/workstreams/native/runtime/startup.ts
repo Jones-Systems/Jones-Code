@@ -1,3 +1,6 @@
+import * as MemberSelection from "./memberStartup.ts";
+import * as MemberPreparation from "./memberPreparation.ts";
+import * as MemberEnrollments from "./memberEnrollment.ts";
 import * as PeerPins from "./peerSessionPins.ts";
 import * as PeerReadBoundary from "../forwarding/peerReadAdmission.ts";
 import * as HomeReadProtocol from "../forwarding/homeReadProtocol.ts";
@@ -94,7 +97,21 @@ export const select = Effect.fn("NativeStartup.select")(function* (input: {
   if (mode === "legacy" || mode === "disabled")
     return { mode, config, home: null, sourceSessionId: null, problem: null };
   if (mode === "transition-fenced") return blocked(new StartupError({ code: "authority_fenced" }));
-  if (mode === "native-member") return blocked(new StartupError({ code: "member_not_supported" }));
+  if (mode === "native-member") {
+    const preparation = yield* Effect.serviceOption(MemberPreparation.MemberPreparation);
+    if (Option.isNone(preparation))
+      return blocked(new StartupError({ code: "member_not_supported" }));
+    const selected = yield* preparation.value
+      .withPrepared((members) =>
+        MemberSelection.selectMember(input).pipe(
+          Effect.provideService(MemberEnrollments.MemberEnrollments, members),
+        ),
+      )
+      .pipe(Effect.result);
+    return selected._tag === "Success"
+      ? selected.success
+      : blocked(new StartupError({ code: "authority_fenced" }));
+  }
   if (!config?.registry || !config.bootstrap)
     return blocked(new StartupError({ code: "explicit_selection_required" }));
   const registry = config.registry,
@@ -217,20 +234,49 @@ export const layer = Layer.effect(
 );
 
 /** Startup owns the branch before either transport factory can be constructed. */
-export const chooseLayer = <L, LE, LR, H, HE, HR, U, UE, UR>(factories: {
+export const chooseLayer = <
+  L,
+  LE,
+  LR,
+  H,
+  HE,
+  HR,
+  U,
+  UE,
+  UR,
+  M = unknown,
+  ME = never,
+  MR = never,
+>(factories: {
   readonly legacy: () => Layer.Layer<L, LE, LR>;
   readonly home: (
     selection: Selection & { readonly home: NativeHome["Service"] },
   ) => Layer.Layer<H, HE, HR>;
+  readonly member?: (
+    selection: Selection & { readonly mode: "native-member"; readonly sourceSessionId: string },
+  ) => Layer.Layer<M, ME, MR>;
   readonly unavailable: (selection: Selection) => Layer.Layer<U, UE, UR>;
 }) =>
   Layer.unwrap(
-    Effect.map(Startup, (selection): Layer.Layer<L & H & U, LE | HE | UE, LR | HR | UR> =>
-      selection.mode === "legacy" || (selection.mode === "disabled" && selection.config === null)
-        ? factories.legacy()
-        : selection.mode === "native-home" && selection.home
-          ? factories.home({ ...selection, home: selection.home })
-          : factories.unavailable(selection),
+    Effect.map(
+      Startup,
+      (selection): Layer.Layer<L & H & U & M, LE | HE | UE | ME, LR | HR | UR | MR> =>
+        selection.mode === "legacy" || (selection.mode === "disabled" && selection.config === null)
+          ? factories.legacy()
+          : selection.mode === "native-home" && selection.home
+            ? factories.home({ ...selection, home: selection.home })
+            : selection.mode === "native-member" &&
+                selection.problem === null &&
+                selection.sourceSessionId !== null &&
+                selection.config?.mode === "native-member" &&
+                selection.config.registry !== null &&
+                factories.member
+              ? factories.member({
+                  ...selection,
+                  mode: "native-member",
+                  sourceSessionId: selection.sourceSessionId,
+                })
+              : factories.unavailable(selection),
     ),
   );
 

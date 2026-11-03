@@ -27,7 +27,9 @@ const registry = {
   server_generation: 1,
 };
 const fresh = () => {
-  const parent = NodePath.resolve("node_modules/.cache/nw-startup-fixtures");
+  const parent = NodePath.resolve(
+    process.env.NW_SELECTED_MEMBER_EVIDENCE_DIR ?? "node_modules/.cache/nw-startup-fixtures",
+  );
   NodeFS.mkdirSync(parent, { recursive: true });
   const home = NodeFS.mkdtempSync(NodePath.join(parent, "startup-")),
     database = NodePath.join(home, "statev2.sqlite"),
@@ -238,5 +240,72 @@ it.effect(
         "transition-fenced",
       );
     }).pipe(Effect.provide(f.layer));
+  },
+);
+
+it.effect(
+  "selects only an explicitly supplied member factory for a qualified member selection",
+  () => {
+    const f = fresh();
+    class Branch extends Context.Service<Branch, string>()(
+      "t3/jones/workstreams/native/runtime/startup.test/Branch",
+    ) {}
+    const selection: Startup.Selection = {
+      mode: "native-member",
+      config: decodeNativeConfig(JSON.stringify({ ...f.config, mode: "native-member" })),
+      home: null,
+      sourceSessionId: "session:member",
+      problem: null,
+    };
+    const constructed: string[] = [];
+    const factories = {
+      legacy: () => {
+        constructed.push("legacy");
+        return Layer.succeed(Branch, "legacy");
+      },
+      home: () => {
+        constructed.push("home");
+        return Layer.succeed(Branch, "home");
+      },
+      member: () => {
+        constructed.push("member");
+        return Layer.succeed(Branch, "member");
+      },
+      unavailable: () => {
+        constructed.push("unavailable");
+        return Layer.succeed(Branch, "unavailable");
+      },
+    };
+    const read = (value: Startup.Selection, member = true) =>
+      Branch.pipe(
+        Effect.provide(
+          Startup.chooseLayer(
+            member
+              ? factories
+              : {
+                  legacy: factories.legacy,
+                  home: factories.home,
+                  unavailable: factories.unavailable,
+                },
+          ).pipe(Layer.provide(Layer.succeed(Startup.Startup, value))),
+        ),
+      );
+    return Effect.gen(function* () {
+      expect(yield* read(selection)).toBe("member");
+      for (const invalid of [
+        { ...selection, sourceSessionId: null },
+        { ...selection, problem: new Startup.StartupError({ code: "authority_fenced" }) },
+        { ...selection, config: null },
+      ])
+        expect(yield* read(invalid)).toBe("unavailable");
+      expect(yield* read(selection, false)).toBe("unavailable");
+      expect(constructed).toEqual([
+        "member",
+        "unavailable",
+        "unavailable",
+        "unavailable",
+        "unavailable",
+      ]);
+    });
   },
 );

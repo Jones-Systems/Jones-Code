@@ -23,6 +23,7 @@ import { canonicalWorkstreamsSnapshotJson as canonicalSnapshot } from "@t3tools/
 import * as RetainedPort from "../forwarding/retainedSourceEffectPort.ts";
 import * as Integration from "../integration.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
@@ -58,6 +59,8 @@ import m128 from "../../../persistence/Migrations/128_JonesWorkstreamsPeerSessio
 import m129 from "../../../persistence/Migrations/129_JonesWorkstreamsMemberBindings.ts";
 import m130 from "../../../persistence/Migrations/130_JonesWorkstreamsForwardReceipts.ts";
 import * as MemberApp from "../runtime/memberApplication.ts";
+import * as MemberServices from "../runtime/memberServices.ts";
+import * as ReadRoutes from "../read/routes.ts";
 import * as Forwarder from "../forwarding/forwarder.ts";
 import * as SourcePort from "../forwarding/sourceReadmissionPort.ts";
 import * as HomePort from "../forwarding/homeForwardPort.ts";
@@ -1280,27 +1283,47 @@ it.effect(
             Forwarder.locksLayer,
           ).pipe(Layer.provideMerge(sourceAuthority), Layer.provideMerge(sourceBase)),
         );
-        const selected = yield* Context.get(resources, MemberPreparation.MemberPreparation)
-          .withPrepared((members) =>
-            selectMember({
-              text: JSON.stringify({
-                mode: "native-member",
-                registry: { ...home, canonical_origin: "https://native.workstreams.invalid" },
-                bootstrap: {
-                  home: f.M.f.baseDir,
-                  database: f.M.f.dbPath,
-                  key_provider: "server-secret-store",
-                  source_session_id: bind.source.enrollment.session.session_id,
-                },
-              }),
-              legacyActivationPresent: false,
+        const selectedInput = {
+          text: JSON.stringify({
+            mode: "native-member",
+            registry: { ...home, canonical_origin: "https://native.workstreams.invalid" },
+            bootstrap: {
               home: f.M.f.baseDir,
               database: f.M.f.dbPath,
-              environmentId: f.M.env,
-            }).pipe(Effect.provideService(Members.MemberEnrollments, members)),
-          )
-          .pipe(Effect.provide(resources));
+              key_provider: "server-secret-store",
+              source_session_id: bind.source.enrollment.session.session_id,
+            },
+          }),
+          legacyActivationPresent: false,
+          home: f.M.f.baseDir,
+          database: f.M.f.dbPath,
+          environmentId: f.M.env,
+        };
+        const selectedSql = Context.get(resources, SqlClient.SqlClient);
+        const selectedCalls = f.calls.length;
+        const changesBefore = yield* selectedSql<{ n: number }>`SELECT total_changes() AS n`;
+        yield* selectedSql`PRAGMA query_only = ON`;
+        NodeFS.writeFileSync(
+          NodePath.join(f.M.f.baseDir, "workstreams-native.json"),
+          selectedInput.text,
+        );
+        const selected = yield* Startup.Startup.pipe(
+          Effect.provide(Startup.layer),
+          Effect.provide(resources),
+          Effect.provideService(HostProcess.Environment, {}),
+        );
         expect(selected).toMatchObject({ mode: "native-member", problem: null });
+        expect(yield* selectedSql`SELECT total_changes() AS n`).toEqual(changesBefore);
+        expect(yield* selectedSql`PRAGMA query_only`).toEqual([{ query_only: 1 }]);
+        expect(f.calls).toHaveLength(selectedCalls);
+        expect(yield* selectedSql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
+        expect(yield* selectedSql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
+        yield* selectedSql`PRAGMA query_only = OFF`;
+        expect(
+          (yield* selectedSql
+            .withTransaction(Startup.select(selectedInput))
+            .pipe(Effect.provide(resources))).problem?.code,
+        ).toBe("authority_fenced");
         const providerPorts = {
           ...ProviderTest.makeProviderFixture().ports,
           authority: { readCurrent: f.M.live.readCurrent },
@@ -1310,24 +1333,27 @@ it.effect(
           providerV2: makeWorkstreamsNativeProvider(providerPorts, "v2"),
           enrollments: { getBySessionId: () => Effect.fail(new NativeProviderEnrollmentError()) },
         });
-        const app = yield* MemberApp.MemberApplication.pipe(
-          Effect.provide(
-            MemberApp.layer.pipe(
-              Layer.provide(Layer.succeed(Startup.Startup, selected)),
-              Layer.provide(Layer.succeed(Runtime.NativeWorkstreamsRuntime, runtime)),
-              Layer.provide(Layer.succeedContext(resources)),
-            ),
+        if (selected.mode !== "native-member" || !selected.sourceSessionId)
+          throw new Error("Genuine member selection failed.");
+        const selectedServices = yield* Layer.build(
+          MemberServices.layer({
+            ...selected,
+            mode: "native-member",
+            sourceSessionId: selected.sourceSessionId,
+          }).pipe(
+            Layer.provide(Layer.succeed(Runtime.NativeWorkstreamsRuntime, runtime)),
+            Layer.provide(Layer.succeedContext(resources)),
           ),
         );
+        const app = Context.get(selectedServices, MemberApp.MemberApplication);
+        expect(Option.isSome(Context.getOption(selectedServices, ReadRoutes.AuthorizedReads))).toBe(
+          true,
+        );
+        expect(Option.isNone(Context.getOption(selectedServices, NativeHome))).toBe(true);
         const sourceTools = yield* NativeForwards.sourceToolkit.pipe(
           Effect.provide(
             Access.HandlersLayer.layer(NativeForwards.sourceHandlers).pipe(
-              Layer.provide(
-                Layer.succeed(SourcePort.SourceReadmission, {
-                  lookupParent: app.lookupParent,
-                  lookupRaw: app.lookupRaw,
-                }),
-              ),
+              Layer.provide(Layer.succeedContext(selectedServices)),
             ),
           ),
         );
@@ -1536,7 +1562,7 @@ it.effect(
         ]);
 
         // Seed one exact raw source intent through genuine admission and encrypted storage.
-        // The receiving home's raw PEER reservation/runner is a separate, still-fenced gate.
+        // This harness qualifies the member-side producer; initial raw home dispatch has separate evidence.
         const nextSession = yield* auth.issueSession({
           subject: "retained-source-application",
           scopes: ["orchestration:read", "orchestration:operate"],
@@ -1684,11 +1710,7 @@ it.effect(
         const retainedToolkit = yield* NativeForwards.retainedSourceToolkit.pipe(
           Effect.provide(
             Access.HandlersLayer.layer(NativeForwards.retainedSourceHandlers).pipe(
-              Layer.provide(
-                Layer.succeed(RetainedPort.RetainedSourceEffects, {
-                  invoke: app.invokeRetainedEffect,
-                }),
-              ),
+              Layer.provide(Layer.succeedContext(selectedServices)),
             ),
           ),
         );

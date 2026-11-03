@@ -2204,7 +2204,8 @@
     "apps/server/src/jones/workstreams/native/forwarding/peerEffectRecovery.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/store/peerEffectCompletion.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/forwarding/peerEffectAdmission.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/runtime/memberServices.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

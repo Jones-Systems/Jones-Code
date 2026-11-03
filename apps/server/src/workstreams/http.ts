@@ -1,3 +1,5 @@
+import * as NativeMemberServices from "../jones/workstreams/native/runtime/memberServices.ts";
+import { nativeMemberPreparationLayer } from "../jones/workstreams/native/integration.ts";
 import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
 import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
 import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
@@ -199,7 +201,10 @@ const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
 );
 
 // Resolve explicit native selection before constructing any Control Plane service.
-const workstreamStartupLayer = NativeStartup.layer.pipe(Layer.provide(nativePersistenceLayer));
+const workstreamStartupLayer = NativeStartup.layer.pipe(
+  Layer.provide(nativeMemberPreparationLayer),
+  Layer.provide(nativePersistenceLayer),
+);
 export const workstreamSelectedServicesLayer = NativeStartup.chooseLayer({
   legacy: () =>
     Layer.mergeAll(
@@ -211,6 +216,7 @@ export const workstreamSelectedServicesLayer = NativeStartup.chooseLayer({
       ),
     ),
   home: NativeStartup.homeServicesLayer,
+  member: NativeMemberServices.layer,
   unavailable: NativeStartup.unavailableServicesLayer,
 }).pipe(
   Layer.provideMerge(workstreamStartupLayer),
