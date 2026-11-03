@@ -3,7 +3,7 @@ import { isElectron } from "../../env";
 import { useEnvironment } from "../../state/environments";
 import { isClientLocalMachine, resolveMachineIdentity } from "./model";
 
-export function useMachineLocation(environmentId: EnvironmentId, fallbackLabel?: string) {
+export function useMachineLocation(environmentId: EnvironmentId, fallbackLabel?: string | null) {
   const environment = useEnvironment(environmentId);
   return isClientLocalMachine(environment?.entry?.target, isElectron)
     ? null
