@@ -27,6 +27,8 @@ import {
   type PreviewAutomationHostFocus,
   type PreviewAutomationResponse,
   type PreviewAutomationStreamEvent,
+  type PreviewRecordingOperationInput,
+  type PreviewRecordingOperationResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import type * as Cause from "effect/Cause";
@@ -43,6 +45,11 @@ import * as Stream from "effect/Stream";
 import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import * as McpInvocationContext from "./McpInvocationContext.ts";
+import {
+  retainRecordingSettlement,
+  selectRecordingOperation,
+  type CompletedRecordingOperation,
+} from "../jones/previewRecordingOperation/projection.ts";
 
 const HOST_RESPONSE_GRACE_MS = 1_000;
 
@@ -88,6 +95,10 @@ export class PreviewAutomationBroker extends Context.Service<
     readonly respond: (
       response: PreviewAutomationResponse,
     ) => Effect.Effect<void, PreviewAutomationError>;
+    readonly readRecordingOperation: (request: {
+      readonly scope: McpInvocationContext.McpThreadInvocationScope;
+      readonly input: PreviewRecordingOperationInput;
+    }) => Effect.Effect<PreviewRecordingOperationResult>;
     readonly invoke: <A = unknown>(
       request: PreviewAutomationInvokeInput,
     ) => Effect.Effect<A, PreviewAutomationError>;
@@ -164,6 +175,7 @@ interface BrokerState {
     PendingRequest & { readonly expiresAt: number; readonly reconciled?: boolean }
   >;
   readonly quarantine: ReadonlyMap<string, PendingRequest>;
+  readonly completedRecordingOperations: ReadonlyMap<string, CompletedRecordingOperation>;
   readonly liveness: ReadonlySet<string>;
 }
 
@@ -443,6 +455,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     replySequence: 0,
     tombstones: new Map(),
     quarantine: new Map(),
+    completedRecordingOperations: new Map(),
     liveness: new Set(),
   });
 
@@ -619,8 +632,16 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
         });
         while (tombstones.size > 256) tombstones.delete(tombstones.keys().next().value!);
       }
-      if (validReply && response.error?.outcome !== "unknown")
+      let completedRecordingOperations = current.completedRecordingOperations;
+      if (validReply && response.error?.outcome !== "unknown") {
+        completedRecordingOperations = retainRecordingSettlement(
+          completedRecordingOperations,
+          current.quarantine.get(response.requestId),
+          response,
+          now,
+        );
         quarantine.delete(response.requestId);
+      }
       if (
         (!validReply || response.error?.outcome === "unknown") &&
         !("reconciled" in entry && entry.reconciled === true) &&
@@ -662,6 +683,7 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
           pending: next,
           tombstones,
           quarantine,
+          completedRecordingOperations,
           clients,
           replySequence: current.replySequence + Number(validReply),
         },
@@ -1146,7 +1168,19 @@ export const make = Effect.gen(function* PreviewAutomationBrokerMake() {
     return result;
   });
 
-  return PreviewAutomationBroker.of({ connect, focusHost, respond, invoke });
+  const readRecordingOperation: PreviewAutomationBroker["Service"]["readRecordingOperation"] =
+    Effect.fn("PreviewAutomationBroker.readRecordingOperation")(function* ({ scope, input }) {
+      const snapshot = yield* SynchronizedRef.get(state);
+      return selectRecordingOperation(snapshot, scope, input);
+    });
+
+  return PreviewAutomationBroker.of({
+    connect,
+    focusHost,
+    respond,
+    invoke,
+    readRecordingOperation,
+  });
 }).pipe(Effect.withSpan("PreviewAutomationBroker.make"));
 
 export const layer = Layer.effect(PreviewAutomationBroker, make);
