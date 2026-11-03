@@ -30,13 +30,8 @@ const state = vi.hoisted(() => ({
   toast: vi.fn(),
   navigate: vi.fn(),
   copy: vi.fn(),
-  desktop: false,
 }));
-vi.mock(import("../../env"), () => ({
-  get isElectron() {
-    return state.desktop;
-  },
-}));
+vi.mock(import("../../env"), () => ({ isElectron: true }));
 vi.mock(import("./state"), async () => {
   const { Atom, AsyncResult } = await import("effect/reactivity");
   const { endpointKey } = await import("@t3tools/client-runtime/jones/linked-threads");
@@ -180,7 +175,6 @@ function setup() {
   state.command.mockReset();
   state.toast.mockClear();
   state.navigate.mockClear();
-  state.desktop = false;
   state.copy.mockReset().mockResolvedValue(true);
   state.environments = [
     env("origin", "Laptop"),
@@ -607,7 +601,6 @@ it.each([
   "uses the desktop machine rather than the subject for continuation locations (%j)",
   async (subject, destination, title, label) => {
     using fixture = setup();
-    state.desktop = true;
     state.environments = state.environments.map((environment) => ({
       ...environment,
       entry: {

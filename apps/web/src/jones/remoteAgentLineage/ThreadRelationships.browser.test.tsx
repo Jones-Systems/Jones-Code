@@ -26,14 +26,9 @@ const state = vi.hoisted(() => ({
   command: vi.fn().mockResolvedValue({ _tag: "Success" }),
   workflowCommand: vi.fn().mockResolvedValue({ _tag: "Success" }),
   toast: vi.fn(),
-  desktop: false,
 }));
 
-vi.mock(import("../../env"), () => ({
-  get isElectron() {
-    return state.desktop;
-  },
-}));
+vi.mock(import("../../env"), () => ({ isElectron: true }));
 
 vi.mock(import("../linkedThreads/useLinkedThreads"), () => ({
   useLinkedThreads: () => ({
@@ -183,7 +178,6 @@ async function setup() {
   state.workflowCommand.mockReset().mockResolvedValue({ _tag: "Success" });
   state.toast.mockClear();
   state.projection = null;
-  state.desktop = false;
   state.environments.set("test", { label: "VPS", connection: { phase: "connected" } });
   root = await renderTest(null, { router: false });
   container = root.container as HTMLDivElement;
@@ -240,7 +234,6 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(allByLabel("Stop subagent Checker")).toHaveLength(0);
   await click(linkedToggle());
   expect(text()).toContain("Checker");
-  state.desktop = true;
   state.environments.set("test", {
     label: "Laptop",
     connection: { phase: "connected" },
@@ -616,7 +609,6 @@ it("keeps a long remote title ellipsized and full on hover beside unknown enviro
 
 it("hides the client-local location for tasks delegated back from another server", async () => {
   await using _screen = await setup();
-  state.desktop = true;
   state.environments.set("laptop", {
     label: "Laptop",
     connection: { phase: "connected" },
