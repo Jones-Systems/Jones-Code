@@ -1552,11 +1552,13 @@
         "apps/server/src/preview/ServerBrowser.test.ts",
         "apps/server/src/preview/SessionControl.test.ts",
         "packages/contracts/src/preview.test.ts",
-        "packages/contracts/src/jones/previewCompatibility.test.ts"
+        "packages/contracts/src/jones/previewCompatibility.test.ts",
+        "apps/server/src/preview/ServerBrowserContexts.test.ts"
       ],
       "commands": [
         "vp test run apps/desktop/src/ipc/methods/preview.test.ts apps/desktop/src/preview/DesktopBrowserHost.test.ts apps/desktop/src/preview/Manager.test.ts apps/server/src/mcp/PreviewAutomationBroker.test.ts apps/server/src/mcp/toolkits/preview/handlers.test.ts apps/server/src/jones/platformCompatibility/preview/DesktopBrowserChannel.test.ts apps/server/src/preview/ServerBrowser.test.ts apps/server/src/preview/SessionControl.test.ts packages/contracts/src/preview.test.ts",
-        "vp test run packages/contracts/src/jones/previewCompatibility.test.ts --maxWorkers=1 --no-file-parallelism"
+        "vp test run packages/contracts/src/jones/previewCompatibility.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/server/src/preview/ServerBrowserContexts.test.ts --maxWorkers=1 --no-file-parallelism"
       ]
     },
     {
