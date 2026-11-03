@@ -92,6 +92,7 @@ describe("Jones environment HTTP registration", () => {
       ["operationRead", "POST", "/api/workstreams/operations/read"],
       ["setupStatus", "GET", "/api/workstreams/setup-status"],
       ["threadPlacements", "POST", "/api/workstreams/thread-placements"],
+      ["nativeRead", "POST", "/api/workstreams/native/v1/read"],
       ["legacyReceiptLookup", "POST", "/api/workstreams/legacy-receipts/v1/lookup"],
       ["list", "GET", "/api/workstreams"],
       ["references", "GET", "/api/workstreams/references"],
