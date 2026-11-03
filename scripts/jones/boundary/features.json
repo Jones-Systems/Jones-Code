@@ -872,6 +872,8 @@
     {
       "id": "preview-companion-host",
       "tests": [
+        "apps/web/src/browser/previewRuntime.test.ts",
+        "apps/desktop/src/preview/CdpRelay.test.ts",
         "apps/desktop/scripts/main-process-bundle.test.mjs",
         "apps/desktop/src/app/DesktopClerk.test.ts",
         "apps/desktop/src/app/DesktopEarlyElectronStartup.test.ts",
@@ -920,7 +922,7 @@
         "apps/server/src/preview/ServerBrowser.test.ts",
         "apps/server/src/mcp/toolkits/preview/handlers.test.ts"
       ],
-      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Native host qualification and runtime adoption remain separate."
+      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Headless fallback rendering, pre-publication tab reservations, bounded CDP events/replies, and navigation generations retain those fences. Companion integration cases stay in ServerBrowser.test.ts and DesktopBrowserHost.test.ts to exercise the real lifecycle harness; previewRuntime.test.ts exercises both renderer entry points against exact assignments. Native host qualification and runtime adoption remain separate."
     },
     {
       "id": "persistence-upstream-isolation",

@@ -442,6 +442,23 @@ export const make = Effect.gen(function* () {
         }
       },
       tab.downloadPolicy === "deny" ? companionCdpPolicy : undefined,
+      // Keep the tab detached so reconnecting cannot replay the oversized event.
+      () => {
+        if (tab.relay !== relay || tabs.get(keyOf(tab.key)) !== tab) return;
+        // Release debugger pauses held by child sessions before detaching.
+        void debuggee
+          .sendCommand("Target.setAutoAttach", {
+            autoAttach: false,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+          })
+          .catch(() => {});
+        if (tab.screencasts.size > 0) {
+          void debuggee.sendCommand("Page.stopScreencast").catch(() => {});
+        }
+        setFocusEmulation(tab, false);
+        detach(tab.key);
+      },
     );
     tab.relay = relay;
     return relay;
