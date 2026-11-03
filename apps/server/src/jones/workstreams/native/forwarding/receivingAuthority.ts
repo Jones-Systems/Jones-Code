@@ -105,6 +105,7 @@ export const layer = Layer.effect(
         Effect.provideService(SqlClient.SqlClient, sql),
       );
     return Home.HomeTools.of({
+      access: (input, invocation) => invoke(invocation, (tools) => tools.access(input, invocation)),
       forward: (input, invocation) =>
         invoke(invocation, (tools) => tools.forward(input, invocation)),
       readback: (input, invocation) =>

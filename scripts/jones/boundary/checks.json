@@ -3856,6 +3856,19 @@
       "commands": [
         "vp test run apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts apps/server/src/jones/workstreams/native/forwarding/forwarder.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
       ]
+    },
+    {
+      "id": "jones-workstreams-native-member-access",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsHomeAccess.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/workstreamsHomeAccess.test.ts apps/server/src/jones/workstreams/native/read/memberAccess.test.ts apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
+      ]
     }
   ]
 }

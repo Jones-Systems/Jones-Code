@@ -15,6 +15,7 @@ import {
 } from "@t3tools/contracts";
 import * as W from "@t3tools/contracts/jones/workstreamsPeerSetup";
 import * as F from "@t3tools/contracts/jones/workstreamsHomeBind";
+import * as AccessWire from "@t3tools/contracts/jones/workstreamsHomeAccess";
 import * as ForwardWire from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as ParentWire from "@t3tools/contracts/jones/workstreamsForwardQualification";
 import * as RawWire from "@t3tools/contracts/jones/workstreamsForwardReadmission";
@@ -132,6 +133,7 @@ const mode = Schema.decodeUnknownSync(
   Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
 );
 
+const decodeAccessArgs = Schema.decodeUnknownEffect(AccessWire.WorkstreamsHomeAccessRequest);
 const decodeForwardArgs = Schema.decodeUnknownEffect(ForwardWire.WorkstreamsForwardRequest);
 const decodeReadbackArgs = Schema.decodeUnknownEffect(
   ForwardWire.WorkstreamsForwardReadbackRequest,
@@ -1406,6 +1408,18 @@ it.effect(
             ),
           ),
         );
+        f.mountTool(f.H.env, HomePort.HOME_ACCESS_TOOL, (args) =>
+          decodeAccessArgs(args).pipe(
+            Effect.flatMap((decoded) =>
+              homeBox.handle(HomePort.HOME_ACCESS_TOOL, decoded).pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.map((replies) => replies.at(-1)),
+              ),
+            ),
+            Effect.orDie,
+          ),
+        );
         f.mountTool(f.H.env, HomePort.HOME_FORWARD_TOOL, (args) =>
           decodeForwardArgs(args).pipe(
             Effect.flatMap((decoded) =>
@@ -1443,6 +1457,37 @@ it.effect(
           ),
         );
         const principal = { ...authenticated, scopes: new Set(authenticated.scopes) };
+        const sessionAccess = yield* app
+          .access()
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+        expect(sessionAccess).toMatchObject({
+          principal_id: (yield* Context.get(f.H.all, SqlClient.SqlClient)<{ principal_id: string }>`
+            SELECT principal_id FROM jones_workstreams_principals
+            WHERE registry_instance_id=${home.registry_instance_id} AND owner_id=${home.owner_id}
+              AND environment_id=${f.M.env}
+          `)[0]?.principal_id,
+          home: { ...home, canonical_origin: "https://native.workstreams.invalid" },
+          capabilities: { permissions: ["workstreams:read", "workstreams:write"] },
+        });
+        const readOnlySession = yield* auth.issueSession({
+          subject: "member-readonly",
+          scopes: ["orchestration:read"],
+        });
+        const readOnlyAuth = yield* auth.authenticateHttpRequest(
+          HttpRequest.fromWeb(
+            new Request("https://member.invalid/api/workstreams", {
+              headers: { authorization: "Bearer " + readOnlySession.token },
+            }),
+          ),
+        );
+        expect(
+          (yield* app.access().pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+              ...readOnlyAuth,
+              scopes: new Set(readOnlyAuth.scopes),
+            }),
+          )).capabilities.permissions,
+        ).toEqual(["workstreams:read"]);
         const request = {
           contract: "workstream-operations/1.0.0" as const,
           operation_id: "operation:composed-member-01",

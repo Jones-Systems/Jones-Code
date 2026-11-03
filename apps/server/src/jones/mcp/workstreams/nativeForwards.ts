@@ -1,4 +1,5 @@
 import { McpCapabilityUnavailableError, OrchestratorMcpFailure } from "@t3tools/contracts";
+import * as HomeAccess from "@t3tools/contracts/jones/workstreamsHomeAccess";
 import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Parent from "@t3tools/contracts/jones/workstreamsForwardQualification";
 import * as Raw from "@t3tools/contracts/jones/workstreamsForwardReadmission";
@@ -54,6 +55,19 @@ const sourceParameters = NativeWire.closedWorkstreamsNative(
 ).pipe(Schema.decodeTo(sourceRequest));
 
 export const homeToolkit = Toolkit.make(
+  Tool.make(Home.HOME_ACCESS_TOOL, {
+    description:
+      "Observe the authenticated peer's current bound Workstreams home, permission ceiling and authorization revision. This read grants no authority and cannot establish or redirect a binding.",
+    parameters: HomeAccess.WorkstreamsHomeAccessRequest,
+    success: HomeAccess.WorkstreamsHomeAccessResult,
+    failure,
+    failureMode: "return",
+    dependencies: [...dependencies],
+  })
+    .annotate(Tool.Readonly, true)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false),
   Tool.make(Home.HOME_FORWARD_TOOL, {
     description:
       "Execute or replay a native Workstreams command, operation, or appearance write at its bound home. Requires the authenticated peer and current original-caller authority. Cannot establish a binding or redirect the request.",
@@ -132,6 +146,9 @@ export const homeHandlers = Access.toLayer(
   Effect.gen(function* () {
     const home = yield* Home.HomeTools;
     return {
+      jones_workstreams_home_access: Access.reads((request) =>
+        invoke((invocation) => home.access(request, invocation)),
+      ),
       jones_workstreams_home_forward: Access.writes(
         (request) => invoke((invocation) => home.forward(request, invocation), true),
         { linkedCallers: "allowed" },

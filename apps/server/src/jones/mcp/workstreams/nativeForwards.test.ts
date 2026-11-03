@@ -136,6 +136,7 @@ const threads = Layer.mock(ThreadManagementService)({ getThreadShell: () => Effe
 const homeService = (
   overrides: Partial<Home.HomeTools["Service"]> = {},
 ): Home.HomeTools["Service"] => ({
+  access: () => Effect.fail(new RegistryError({ code: "not_granted" })),
   forward: () => Effect.succeed(result),
   readback: () => Effect.succeed(unknown),
   ...overrides,
@@ -175,6 +176,7 @@ const decodeSource = Schema.decodeUnknownSync(
 
 it("advertises only fixed closed home tools and the explicit V2 or V3 source lookup", () => {
   expect(Object.keys(ForwardMcp.homeToolkit.tools)).toEqual([
+    Home.HOME_ACCESS_TOOL,
     Home.HOME_FORWARD_TOOL,
     Home.HOME_FORWARD_READBACK_TOOL,
   ]);
@@ -553,4 +555,36 @@ it.effect.each([
       expect(result.at(-1)?.isFailure).toBe(true);
       expect(calls).toBe(0);
     }).pipe(Effect.provide(threads)),
+);
+
+it.effect("fixed home access passes the original invocation and suppresses protected causes", () =>
+  Effect.gen(function* () {
+    let calls = 0;
+    const toolkit = yield* buildHome(
+      homeService({
+        access: (_request, actual) => {
+          expect(actual).toBe(invocation);
+          calls++;
+          return Effect.fail(
+            new RegistryError({
+              code: "not_granted",
+              cause: new Error("protected-access-sentinel"),
+            }),
+          );
+        },
+      }),
+    );
+    const replies = yield* toolkit
+      .handle(Home.HOME_ACCESS_TOOL, {
+        contract: "workstreams-native-home-access/1.0.0",
+        expected_home: home,
+      })
+      .pipe(Stream.unwrap, Stream.runCollect);
+    expect(calls).toBe(1);
+    expect(JSON.stringify(replies)).toContain("not_granted");
+    expect(JSON.stringify(replies)).not.toContain("protected-access-sentinel");
+  }).pipe(
+    Effect.provideService(Invocation.McpInvocationContext, invocation),
+    Effect.provide(threads),
+  ),
 );

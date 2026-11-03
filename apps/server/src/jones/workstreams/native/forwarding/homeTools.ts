@@ -1,5 +1,8 @@
 import { HomeTools } from "./homeForwardPort.ts";
 export { HomeTools } from "./homeForwardPort.ts";
+import * as HomeAccess from "@t3tools/contracts/jones/workstreamsHomeAccess";
+import * as DateTime from "effect/DateTime";
+import { workstreamCapabilities } from "../registry/capabilities.ts";
 import * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Wire from "@t3tools/contracts";
 import * as PeerAdmission from "./peerEffectAdmission.ts";
@@ -34,6 +37,8 @@ import * as Boundary from "./peerWriteAdmission.ts";
 import * as Supplied from "./suppliedEvidence.ts";
 import * as Guard from "./guard.ts";
 
+const decodeAccess = Schema.decodeUnknownEffect(HomeAccess.WorkstreamsHomeAccessRequest);
+const decodeAccessResult = Schema.decodeUnknownEffect(HomeAccess.WorkstreamsHomeAccessResult);
 const decodeForward = Schema.decodeUnknownEffect(Forward.WorkstreamsForwardRequest);
 const decodeCommand = Schema.decodeUnknownEffect(Schema.fromJsonString(Wire.WorkstreamCommand));
 const decodeReadback = Schema.decodeUnknownEffect(Forward.WorkstreamsForwardReadbackRequest);
@@ -257,7 +262,54 @@ const make = Effect.gen(function* () {
     },
     (effect) => effect.pipe(Effect.mapError(Boundary.mapFailure)),
   );
-  return HomeTools.of({ forward, readback });
+  const access = Effect.fn("HomeTools.access")(
+    function* (input: unknown, invocation: Mcp.McpInvocationScope) {
+      const request = yield* decodeAccess(input).pipe(
+        Effect.mapError(() => new Session.RegistryError({ code: "unsupported_protocol" })),
+      );
+      yield* Guard.assertTarget(home, request.expected_home);
+      const { graph, fence } = yield* prepare(invocation);
+      return yield* Effect.gen(function* () {
+        const admitted = yield* (yield* Guard.Guard).authorize("workstreams:read");
+        const qualified = yield* (yield* Pins.PeerSessionPins).forInvocation(invocation, {
+          role: "member_home",
+        });
+        const permissions = admitted.grant.permissions.filter((permission) =>
+          Pins.ceilingAllows(qualified.ceiling, permission),
+        );
+        const result = {
+          contract: HomeAccess.WORKSTREAMS_HOME_ACCESS_CONTRACT,
+          home: {
+            ...Guard.targetOf(home),
+            canonical_origin: home.canonical_origin,
+            registry_version: admitted.context.registry_version,
+          },
+          principal_id: admitted.caller.principal_id,
+          authorization_revision: admitted.grant.grant_version,
+          observed_at: DateTime.formatIso(yield* DateTime.now),
+          capabilities: workstreamCapabilities(
+            {
+              owner_id: home.owner_id,
+              server_generation: home.server_generation,
+              registry_version: admitted.context.registry_version,
+            },
+            permissions,
+          ),
+        };
+        yield* qualified.checkCurrent();
+        yield* admitted.checkCurrent();
+        yield* fence.checkCurrent();
+        return yield* decodeAccessResult(result).pipe(
+          Effect.mapError(() => new Session.RegistryError({ code: "invalid_response" })),
+        );
+      }).pipe(
+        Effect.provide(graph.pipe(Layer.fresh)),
+        Effect.provideService(Mcp.McpInvocationContext, invocation),
+      );
+    },
+    (effect) => effect.pipe(Effect.mapError(Boundary.mapFailure)),
+  );
+  return HomeTools.of({ forward, readback, access });
 });
 /** @public Mount these fixed handlers only in native-home with both current qualification ports. */
 export const layer = Layer.effect(HomeTools, make);

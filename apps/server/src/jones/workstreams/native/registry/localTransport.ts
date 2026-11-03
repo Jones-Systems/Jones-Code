@@ -17,6 +17,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Gateway from "../../../../workstreams/WorkstreamGateway.ts";
 import * as Registry from "./service.ts";
+import { workstreamCapabilities } from "./capabilities.ts";
 import * as Appearance from "./appearance.ts";
 import * as Counts from "./counts.ts";
 import * as Placements from "./placements.ts";
@@ -122,20 +123,7 @@ export const layer = Layer.effect(
         RegistryError
       > {
         const s = yield* registry.snapshot(caller);
-        return {
-          contract_family: Wire.WORKSTREAM_CONTRACT_FAMILY,
-          contract_version: Wire.WORKSTREAM_CONTRACT_VERSION,
-          manifest_sha256: Wire.WORKSTREAM_CONTRACT_MANIFEST_SHA256,
-          context: context(s),
-          permissions: s.authorization.grant.permissions,
-          max_request_bytes: 32768,
-          max_response_bytes: 1048576,
-          max_json_depth: 10,
-          max_page_items: 100,
-          max_pr_response_bytes: 262144,
-          max_pr_request_seconds: 15,
-          cursor_ttl_seconds: 900,
-        };
+        return workstreamCapabilities(context(s), s.authorization.grant.permissions);
       });
       const reference = (s: Registry.Snapshot, id: string, at: string) =>
         referenceForRead(

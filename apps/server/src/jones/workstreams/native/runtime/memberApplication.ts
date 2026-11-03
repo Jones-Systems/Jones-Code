@@ -14,6 +14,7 @@ import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import * as Runtime from "../../runtimeIntegration/native.ts";
 import * as Integration from "../integration.ts";
 import * as Reads from "../read/memberRead.ts";
+import * as MemberAccess from "../read/memberAccess.ts";
 import * as Operations from "../operations/memberOperations.ts";
 import * as Forwarder from "../forwarding/forwarder.ts";
 import * as Transport from "../forwarding/memberTransport.ts";
@@ -33,6 +34,7 @@ import * as Startup from "./startup.ts";
 export class MemberApplication extends Context.Service<
   MemberApplication,
   {
+    readonly access: MemberAccess.MemberAccess["Service"]["current"];
     readonly read: Reads.MemberReads["Service"]["read"];
     readonly submitCommand: Transport.MemberWriteTransport["Service"]["submitCommand"];
     readonly saveAppearance: Transport.MemberWriteTransport["Service"]["saveAppearance"];
@@ -156,6 +158,11 @@ const make = Effect.gen(function* () {
     ),
   );
   return MemberApplication.of({
+    access: () =>
+      run(
+        MemberAccess.layer.pipe(Layer.provide(Integration.nativeMemberAdmissionRequestLayer)),
+        Effect.flatMap(MemberAccess.MemberAccess, (access) => access.current()),
+      ),
     read: (request, placement) =>
       run(
         Integration.nativeMemberReadRequestLayer,

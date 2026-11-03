@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/workstreamsHomeAccess": {
+      "types": "./src/jones/workstreamsHomeAccess.ts",
+      "import": "./src/jones/workstreamsHomeAccess.ts"
+    },
     "./jones/workstreamsPeerSetup": {
       "types": "./src/jones/workstreamsPeerSetup.ts",
       "import": "./src/jones/workstreamsPeerSetup.ts"

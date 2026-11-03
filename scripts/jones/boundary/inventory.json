@@ -2207,7 +2207,12 @@
     "apps/server/src/jones/workstreams/native/forwarding/peerEffectAcceptance.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/memberServices.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/runtime/memberRecovery.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/runtime/memberRecovery.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeAccess.ts": "jones-owned",
+    "packages/contracts/src/jones/workstreamsHomeAccess.test.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/registry/capabilities.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/read/memberAccess.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

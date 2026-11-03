@@ -1,16 +1,22 @@
+import type * as Access from "@t3tools/contracts/jones/workstreamsHomeAccess";
 import type * as Forward from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type { McpInvocationScope } from "../../../../mcp/McpInvocationContext.ts";
 import type { RegistryError } from "../registry/session.ts";
 
-/** Fixed invocation negotiation is the readback contract itself; no tools/list claim. */
+/** Each fixed tool negotiates its closed contract directly; no tools/list claim. */
+export const HOME_ACCESS_TOOL = "jones_workstreams_home_access";
 export const HOME_FORWARD_TOOL = "jones_workstreams_home_forward";
 export const HOME_FORWARD_READBACK_TOOL = "jones_workstreams_home_forward_readback";
 
 export class HomeTools extends Context.Service<
   HomeTools,
   {
+    readonly access: (
+      input: unknown,
+      invocation: McpInvocationScope,
+    ) => Effect.Effect<Access.WorkstreamsHomeAccessResult, RegistryError>;
     readonly forward: (
       input: unknown,
       invocation: McpInvocationScope,

@@ -2471,6 +2471,17 @@
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "scope": "One application-scoped selected-member worker starts at startup, coalesces active sweeps and waits thirty seconds after completion. It selects due retained intents under shared original-ID locks, uses current original-caller admission and original-home lookup only, and cancels with the application. Revocation and unknown absence retain the accepted intent and never authorize redispatch; no member home grants are created."
+    },
+    {
+      "id": "workstreams-native-member-access",
+      "tests": [
+        "packages/contracts/src/jones/workstreamsHomeAccess.test.ts",
+        "apps/server/src/jones/workstreams/native/read/memberAccess.test.ts",
+        "apps/server/src/jones/workstreams/native/forwarding/homeTools.test.ts",
+        "apps/server/src/jones/mcp/workstreams/nativeForwards.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+      ],
+      "scope": "Fixed authenticated home access observes current home grant and receiving peer ceiling within prepared owner/key scope. Fresh member caller/write admission narrows the returned view; no enrollment receipt grants home permission. This is an additive access prerequisite, not public member Gateway enablement or runtime adoption."
     }
   ]
 }

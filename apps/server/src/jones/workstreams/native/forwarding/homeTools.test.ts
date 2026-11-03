@@ -81,318 +81,321 @@ const services = (options: { filename?: string; keys?: Map<string, Uint8Array> }
     ),
     Layer.provideMerge(NodeServices.layer),
   );
-const fixture = Effect.gen(function* () {
-  yield* TestClock.setTime(Date.parse(Test.now));
-  yield* runMigrations({ toMigrationInclusive: 54 });
-  yield* Test.seed;
-  yield* migration;
-  const auth = yield* Auth.EnvironmentAuth,
-    native = yield* Pins.NativePeerSessions,
-    records = yield* Records.PeerSessionPinStore,
-    sql = yield* SqlClient.SqlClient,
-    rows = yield* AuthRows.AuthSessionRepository;
-  const issued = yield* auth.issueMcpClientSession({
-    label: "forged-label-is-not-authority",
-    access: "full-access",
-    peerLink: true,
-    client: { deviceType: "bot" },
-  });
-  const scope: Mcp.McpInvocationScope = {
-    environmentId: EnvironmentId.make("home:test"),
-    issuedAt: Date.parse(Test.now),
-    requestNamespace: "synthetic-request",
-    capabilities: new Set(["orchestration"]),
-    thread: undefined,
-    client: {
-      sessionId: issued.sessionId,
-      label: "different-label",
-      access: "full-access",
-      linked: true,
-    },
-  };
-  const request = {
-    cookies: {},
-    headers: { authorization: `Bearer ${issued.token}` },
-  } as unknown as Parameters<Auth.EnvironmentAuth["Service"]["authenticateMcpClient"]>[0];
-  yield* (yield* Authentication.PeerMcpAuthentication).register(request, scope);
-  const facts = yield* native.current(scope);
-  const assertion = {
-    schema: "jones-workstreams-peer-session-pin/1" as const,
-    pin_id: "pin:test",
-    revision: 1,
-    receiver_authority: {
-      environment_id: receiver.environmentId,
-      authority_namespace: receiver.authorityNamespace,
-      store_generation: 1,
-    },
-    session: facts.session,
-    peer_environment_id: "source:test",
-    roles: ["member_home"] as const,
-    expected_home: home,
-    source_authority: {
-      environment_id: "source:test",
-      authority_namespace: "source-store",
-      store_generation: 1,
-    },
-    source_enrollment_id: "enrollment:test",
-    source_binding_version: null,
-    singleton_binding_version: null,
-    state: "prepared" as const,
-    expires_at: "2026-01-01T00:20:00.000Z",
-    setup_request_id: "setup:test",
-    owner_qualification_digest: "b".repeat(64),
-    bind_receipt: null,
-  };
-  const body = JSON.stringify({
-    schema: "jones-workstreams-peer-pin-setup/1",
-    assertion,
-    expected: { registry_version: 1, grant_id: "grant:test", grant_version: 1 },
-  });
-  const decoded = Records.decodeSetupRequest(body);
-  const registry = yield* Registries.RegistryStore;
-  yield* registry.appendPlain(Test.scope, "principals", {
-    principal_id: "principal:test",
-    kind: "environment",
-    environment_id: "source:test",
-    provenance: "{}",
-  });
-  yield* registry.appendPlain(Test.scope, "grants", {
-    grant_id: "grant:test",
-    principal_id: "principal:test",
-    grant_version: 1,
-    permissions: JSON.stringify(["workstreams:read", "workstreams:write"]),
-    state: "active",
-  });
-  const receipt = {
-    principal_id: "principal:test",
-    binding_version: 1,
-    registry_version: 2,
-    request_sha256: "c".repeat(64),
-  };
-  let current = { ...receiver };
-  const authority = Layer.succeed(Authority.NativeStoreAuthority, {
-    readCurrent: Effect.suspend(() => Effect.succeed(current)),
-    trustProvider: { read: () => Effect.die("unused") },
-  } as unknown as Authority.NativeStoreAuthority["Service"]);
-  const qualifier = Layer.succeed(Setup.PeerPinSetupQualification, {
-    qualify: (exact: string, digest: string) =>
-      exact === body && digest === decoded.pin.setup_request_sha256
-        ? Effect.succeed({
-            invocation: scope,
-            owner_qualification_digest: assertion.owner_qualification_digest,
-            checkCurrent: () => Effect.void,
-          })
-        : Effect.fail(new Pins.PeerSessionError({ code: "owner_unqualified" })),
-    verifyBinding: (_p: unknown, r: unknown, v: number) =>
-      JSON.stringify(r) === JSON.stringify(receipt) && v === 1
-        ? Effect.void
-        : Effect.fail(new Pins.PeerSessionError({ code: "conflict" })),
-  });
-  const nativeHome = {
-    ...home,
-    canonical_origin: "https://native.workstreams.invalid",
-    served_by_environment_id: "home:test",
-  };
-  const originalKeys = yield* Keys.WorkstreamsKeyProvider;
-  let keyCalls = 0,
-    writerKeyViolations = 0,
-    keysUnavailable = false;
-  let nativeCalls = 0,
-    authorityCalls = 0,
-    sourceCalls = 0;
-  let keyWait: Effect.Effect<void> = Effect.void;
-  let sourceWait: Effect.Effect<void> = Effect.void;
-  let authorityWait: Effect.Effect<void> = Effect.void;
-  let beforeWriter: Effect.Effect<void> = Effect.void;
-  const originalSource = new Map<string, string>();
-  const sourceWireBodies = new Map<string, string>();
-  let sourceDigestOverride: string | null = null;
-  const watchedNative = Pins.NativePeerSessions.of({
-    ...native,
-    current: (invocation) =>
-      Effect.sync(() => {
-        nativeCalls++;
-      }).pipe(Effect.andThen(native.current(invocation))),
-  });
-  const outside = () =>
-    Effect.gen(function* () {
-      keyCalls++;
-      if (Option.isSome(yield* Effect.serviceOption(sql.transactionService))) {
-        writerKeyViolations++;
-        throw new Error("External key lookup in writer");
-      }
-      yield* keyWait;
+const fixtureFor = (access: "full-access" | "read-only" = "full-access") =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(Test.now));
+    yield* runMigrations({ toMigrationInclusive: 54 });
+    yield* Test.seed;
+    yield* migration;
+    const auth = yield* Auth.EnvironmentAuth,
+      native = yield* Pins.NativePeerSessions,
+      records = yield* Records.PeerSessionPinStore,
+      sql = yield* SqlClient.SqlClient,
+      rows = yield* AuthRows.AuthSessionRepository;
+    const issued = yield* auth.issueMcpClientSession({
+      label: "forged-label-is-not-authority",
+      access,
+      peerLink: true,
+      client: { deviceType: "bot" },
     });
-  const cachedInput = Keys.WorkstreamsKeyProvider.of({
-    activeKeyId: (scope) => outside().pipe(Effect.andThen(originalKeys.activeKeyId(scope))),
-    get: (id) =>
-      outside().pipe(
-        Effect.andThen(
-          keysUnavailable
-            ? Effect.fail(new Keys.KeyUnavailable({ reason: "missing" }))
-            : originalKeys.get(id),
-        ),
-      ),
-    indexKey: (id) => outside().pipe(Effect.andThen(originalKeys.indexKey(id))),
-  });
-  let sourceRevoked = false,
-    readbackUnqualified = false;
-  let onSourceCurrent: Effect.Effect<void> = Effect.void;
-  const check = () =>
-    Effect.suspend(() =>
-      onSourceCurrent.pipe(
-        Effect.andThen(
-          sourceRevoked
-            ? Effect.fail(new Session.RegistryError({ code: "source_revoked" }))
-            : Effect.void,
-        ),
-      ),
-    );
-  // External current owner/store and original-source lookup are synthetic qualification fixtures.
-  // Auth, NativePeerSessions, pins, Guard, request proof, domain, ledger, crypto and SQLite are real.
-  const mounted = Layer.mergeAll(
-    Setup.layer,
-    Home.layer.pipe(
-      Layer.provide(Layer.succeed(Keys.WorkstreamsKeyProvider, cachedInput)),
-      Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
-      Layer.provide(Layer.succeed(Pins.NativePeerSessions, watchedNative)),
-    ),
-  ).pipe(
-    Layer.provideMerge(Session.layer),
-    Layer.provideMerge(Layer.succeed(NativeHome, nativeHome)),
-    Layer.provideMerge(authority),
-    Layer.provideMerge(qualifier),
-    Layer.provideMerge(Layer.succeed(Owner.SourceSetupOwner, { verifyUnchanged: Effect.void })),
-    Layer.provideMerge(
-      Layer.succeed(Boundary.ReceivingAuthorityFence, {
-        prepare: () =>
-          Effect.sync(() => {
-            authorityCalls++;
-          }).pipe(
-            Effect.andThen(Effect.suspend(() => authorityWait)),
-            Effect.as({
-              authority: receiver,
-              checkCurrent: () =>
-                current.storeGeneration === 1
-                  ? Effect.void
-                  : Effect.fail(new Session.RegistryError({ code: "authority_changed" })),
-            }),
-          ),
-      }),
-    ),
-    Layer.provideMerge(
-      Layer.succeed(Supplied.SourceForwardQualification, {
-        prepare: (request, pin) =>
-          Effect.gen(function* () {
-            sourceCalls++;
-            yield* sourceWait;
-            const prepared = beforeWriter;
-            beforeWriter = Effect.void;
-            yield* prepared;
-            const retained = originalSource.get(request.identity.source_operation_id);
-            if (retained !== undefined && retained !== canonicalJson(request))
-              return yield* new Session.RegistryError({ code: "source_mismatch" });
-            if (!sourceWireBodies.has(request.identity.forward_id))
-              sourceWireBodies.set(request.identity.forward_id, encodeForwardWire(request));
-            return yield* request.identity.source_enrollment_session_id ===
-              "source-enrollment-session" &&
-            request.identity.source_enrollment_id === pin.source_enrollment_id &&
-            request.identity.member_pin_id === "member-pin:test" &&
-            request.identity.member_pin_bound_revision === 2 &&
-            pin.pin_id === "pin:test" &&
-            pin.revision === 2
-              ? Effect.as(check(), {
-                  forward_request_sha256:
-                    sourceDigestOverride ?? digest(encodeForwardWire(request)),
-                  checkCurrent: check,
-                })
-              : Effect.fail(new Session.RegistryError({ code: "source_mismatch" }));
-          }),
-        prepareReadback: (request, pin) =>
-          readbackUnqualified || !sourceWireBodies.has(request.identity.forward_id)
-            ? Effect.succeed({ state: "unknown" as const, reason: "not_found" as const })
-            : request.identity.source_enrollment_session_id === "source-enrollment-session" &&
-                request.identity.source_enrollment_id === pin.source_enrollment_id &&
-                request.identity.member_pin_id === "member-pin:test" &&
-                request.identity.member_pin_bound_revision === 2 &&
-                pin.pin_id === "pin:test" &&
-                pin.revision === 2
-              ? Effect.as(check(), {
-                  state: "authorized" as const,
-                  forward_request_sha256:
-                    sourceDigestOverride ??
-                    digest(sourceWireBodies.get(request.identity.forward_id)!),
-                  checkCurrent: check,
-                })
-              : Effect.fail(new Session.RegistryError({ code: "source_mismatch" })),
-      }),
-    ),
-  );
-  const bind = Effect.gen(function* () {
-    const setup = yield* Setup.PeerSessionPinSetup;
-    yield* registry.appendPlain(Test.scope, "source_bindings", {
-      provider: "t3",
-      source_instance_id: "source:test",
-      binding_version: 1,
-      authority_namespace: "source-store",
-      store_generation: 1,
+    const scope: Mcp.McpInvocationScope = {
+      environmentId: EnvironmentId.make("home:test"),
+      issuedAt: Date.parse(Test.now),
+      requestNamespace: "synthetic-request",
+      capabilities: new Set(["orchestration"]),
+      thread: undefined,
+      client: {
+        sessionId: issued.sessionId,
+        label: "different-label",
+        access,
+        linked: true,
+      },
+    };
+    const request = {
+      cookies: {},
+      headers: { authorization: `Bearer ${issued.token}` },
+    } as unknown as Parameters<Auth.EnvironmentAuth["Service"]["authenticateMcpClient"]>[0];
+    yield* (yield* Authentication.PeerMcpAuthentication).register(request, scope);
+    const facts = yield* native.current(scope);
+    const assertion = {
+      schema: "jones-workstreams-peer-session-pin/1" as const,
+      pin_id: "pin:test",
+      revision: 1,
+      receiver_authority: {
+        environment_id: receiver.environmentId,
+        authority_namespace: receiver.authorityNamespace,
+        store_generation: 1,
+      },
+      session: facts.session,
+      peer_environment_id: "source:test",
+      roles: ["member_home"] as const,
+      expected_home: home,
+      source_authority: {
+        environment_id: "source:test",
+        authority_namespace: "source-store",
+        store_generation: 1,
+      },
+      source_enrollment_id: "enrollment:test",
+      source_binding_version: null,
+      singleton_binding_version: null,
+      state: "prepared" as const,
+      expires_at: "2026-01-01T00:20:00.000Z",
+      setup_request_id: "setup:test",
+      owner_qualification_digest: "b".repeat(64),
+      bind_receipt: null,
+    };
+    const body = JSON.stringify({
+      schema: "jones-workstreams-peer-pin-setup/1",
+      assertion,
+      expected: { registry_version: 1, grant_id: "grant:test", grant_version: 1 },
+    });
+    const decoded = Records.decodeSetupRequest(body);
+    const registry = yield* Registries.RegistryStore;
+    yield* registry.appendPlain(Test.scope, "principals", {
+      principal_id: "principal:test",
+      kind: "environment",
+      environment_id: "source:test",
+      provenance: "{}",
+    });
+    yield* registry.appendPlain(Test.scope, "grants", {
+      grant_id: "grant:test",
+      principal_id: "principal:test",
+      grant_version: 1,
+      permissions: JSON.stringify(["workstreams:read", "workstreams:write"]),
       state: "active",
     });
-    return yield* setup.bind(assertion.pin_id, 1, receipt, 1);
+    const receipt = {
+      principal_id: "principal:test",
+      binding_version: 1,
+      registry_version: 2,
+      request_sha256: "c".repeat(64),
+    };
+    let current = { ...receiver };
+    const authority = Layer.succeed(Authority.NativeStoreAuthority, {
+      readCurrent: Effect.suspend(() => Effect.succeed(current)),
+      trustProvider: { read: () => Effect.die("unused") },
+    } as unknown as Authority.NativeStoreAuthority["Service"]);
+    const qualifier = Layer.succeed(Setup.PeerPinSetupQualification, {
+      qualify: (exact: string, digest: string) =>
+        exact === body && digest === decoded.pin.setup_request_sha256
+          ? Effect.succeed({
+              invocation: scope,
+              owner_qualification_digest: assertion.owner_qualification_digest,
+              checkCurrent: () => Effect.void,
+            })
+          : Effect.fail(new Pins.PeerSessionError({ code: "owner_unqualified" })),
+      verifyBinding: (_p: unknown, r: unknown, v: number) =>
+        JSON.stringify(r) === JSON.stringify(receipt) && v === 1
+          ? Effect.void
+          : Effect.fail(new Pins.PeerSessionError({ code: "conflict" })),
+    });
+    const nativeHome = {
+      ...home,
+      canonical_origin: "https://native.workstreams.invalid",
+      served_by_environment_id: "home:test",
+    };
+    const originalKeys = yield* Keys.WorkstreamsKeyProvider;
+    let keyCalls = 0,
+      writerKeyViolations = 0,
+      keysUnavailable = false;
+    let nativeCalls = 0,
+      authorityCalls = 0,
+      sourceCalls = 0;
+    let keyWait: Effect.Effect<void> = Effect.void;
+    let sourceWait: Effect.Effect<void> = Effect.void;
+    let authorityWait: Effect.Effect<void> = Effect.void;
+    let beforeWriter: Effect.Effect<void> = Effect.void;
+    const originalSource = new Map<string, string>();
+    const sourceWireBodies = new Map<string, string>();
+    let sourceDigestOverride: string | null = null;
+    const watchedNative = Pins.NativePeerSessions.of({
+      ...native,
+      current: (invocation) =>
+        Effect.sync(() => {
+          nativeCalls++;
+        }).pipe(Effect.andThen(native.current(invocation))),
+    });
+    const outside = () =>
+      Effect.gen(function* () {
+        keyCalls++;
+        if (Option.isSome(yield* Effect.serviceOption(sql.transactionService))) {
+          writerKeyViolations++;
+          throw new Error("External key lookup in writer");
+        }
+        yield* keyWait;
+      });
+    const cachedInput = Keys.WorkstreamsKeyProvider.of({
+      activeKeyId: (scope) => outside().pipe(Effect.andThen(originalKeys.activeKeyId(scope))),
+      get: (id) =>
+        outside().pipe(
+          Effect.andThen(
+            keysUnavailable
+              ? Effect.fail(new Keys.KeyUnavailable({ reason: "missing" }))
+              : originalKeys.get(id),
+          ),
+        ),
+      indexKey: (id) => outside().pipe(Effect.andThen(originalKeys.indexKey(id))),
+    });
+    let sourceRevoked = false,
+      readbackUnqualified = false;
+    let onSourceCurrent: Effect.Effect<void> = Effect.void;
+    const check = () =>
+      Effect.suspend(() =>
+        onSourceCurrent.pipe(
+          Effect.andThen(
+            sourceRevoked
+              ? Effect.fail(new Session.RegistryError({ code: "source_revoked" }))
+              : Effect.void,
+          ),
+        ),
+      );
+    // External current owner/store and original-source lookup are synthetic qualification fixtures.
+    // Auth, NativePeerSessions, pins, Guard, request proof, domain, ledger, crypto and SQLite are real.
+    const mounted = Layer.mergeAll(
+      Setup.layer,
+      Home.layer.pipe(
+        Layer.provide(Layer.succeed(Keys.WorkstreamsKeyProvider, cachedInput)),
+        Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
+        Layer.provide(Layer.succeed(Pins.NativePeerSessions, watchedNative)),
+      ),
+    ).pipe(
+      Layer.provideMerge(Session.layer),
+      Layer.provideMerge(Layer.succeed(NativeHome, nativeHome)),
+      Layer.provideMerge(authority),
+      Layer.provideMerge(qualifier),
+      Layer.provideMerge(Layer.succeed(Owner.SourceSetupOwner, { verifyUnchanged: Effect.void })),
+      Layer.provideMerge(
+        Layer.succeed(Boundary.ReceivingAuthorityFence, {
+          prepare: () =>
+            Effect.sync(() => {
+              authorityCalls++;
+            }).pipe(
+              Effect.andThen(Effect.suspend(() => authorityWait)),
+              Effect.as({
+                authority: receiver,
+                checkCurrent: () =>
+                  current.storeGeneration === 1
+                    ? Effect.void
+                    : Effect.fail(new Session.RegistryError({ code: "authority_changed" })),
+              }),
+            ),
+        }),
+      ),
+      Layer.provideMerge(
+        Layer.succeed(Supplied.SourceForwardQualification, {
+          prepare: (request, pin) =>
+            Effect.gen(function* () {
+              sourceCalls++;
+              yield* sourceWait;
+              const prepared = beforeWriter;
+              beforeWriter = Effect.void;
+              yield* prepared;
+              const retained = originalSource.get(request.identity.source_operation_id);
+              if (retained !== undefined && retained !== canonicalJson(request))
+                return yield* new Session.RegistryError({ code: "source_mismatch" });
+              if (!sourceWireBodies.has(request.identity.forward_id))
+                sourceWireBodies.set(request.identity.forward_id, encodeForwardWire(request));
+              return yield* request.identity.source_enrollment_session_id ===
+                "source-enrollment-session" &&
+              request.identity.source_enrollment_id === pin.source_enrollment_id &&
+              request.identity.member_pin_id === "member-pin:test" &&
+              request.identity.member_pin_bound_revision === 2 &&
+              pin.pin_id === "pin:test" &&
+              pin.revision === 2
+                ? Effect.as(check(), {
+                    forward_request_sha256:
+                      sourceDigestOverride ?? digest(encodeForwardWire(request)),
+                    checkCurrent: check,
+                  })
+                : Effect.fail(new Session.RegistryError({ code: "source_mismatch" }));
+            }),
+          prepareReadback: (request, pin) =>
+            readbackUnqualified || !sourceWireBodies.has(request.identity.forward_id)
+              ? Effect.succeed({ state: "unknown" as const, reason: "not_found" as const })
+              : request.identity.source_enrollment_session_id === "source-enrollment-session" &&
+                  request.identity.source_enrollment_id === pin.source_enrollment_id &&
+                  request.identity.member_pin_id === "member-pin:test" &&
+                  request.identity.member_pin_bound_revision === 2 &&
+                  pin.pin_id === "pin:test" &&
+                  pin.revision === 2
+                ? Effect.as(check(), {
+                    state: "authorized" as const,
+                    forward_request_sha256:
+                      sourceDigestOverride ??
+                      digest(sourceWireBodies.get(request.identity.forward_id)!),
+                    checkCurrent: check,
+                  })
+                : Effect.fail(new Session.RegistryError({ code: "source_mismatch" })),
+        }),
+      ),
+    );
+    const bind = Effect.gen(function* () {
+      const setup = yield* Setup.PeerSessionPinSetup;
+      yield* registry.appendPlain(Test.scope, "source_bindings", {
+        provider: "t3",
+        source_instance_id: "source:test",
+        binding_version: 1,
+        authority_namespace: "source-store",
+        store_generation: 1,
+        state: "active",
+      });
+      return yield* setup.bind(assertion.pin_id, 1, receipt, 1);
+    });
+    return {
+      auth,
+      native,
+      records,
+      rows,
+      sql,
+      scope,
+      request,
+      body,
+      pin: decoded.pin,
+      receipt,
+      registry,
+      mounted,
+      nativeHome,
+      bind,
+      revokeKey: () => {
+        keysUnavailable = true;
+      },
+      withholdReadback: (value: boolean) => {
+        readbackUnqualified = value;
+      },
+      keyEvidence: () => ({ keyCalls, writerKeyViolations }),
+      observeSourceCurrent: (effect: Effect.Effect<void>) => {
+        onSourceCurrent = effect;
+      },
+      preparationEvidence: () => ({ nativeCalls, authorityCalls, sourceCalls, keyCalls }),
+      holdKeys: (wait: Effect.Effect<void>) => {
+        keyWait = wait;
+      },
+      holdSource: (wait: Effect.Effect<void>) => {
+        sourceWait = wait;
+      },
+      holdAuthority: (wait: Effect.Effect<void>) => {
+        authorityWait = wait;
+      },
+      afterPrefetch: (effect: Effect.Effect<void>) => {
+        beforeWriter = effect;
+      },
+      sourceDigest: (value: string | null) => {
+        sourceDigestOverride = value;
+      },
+      retainSource: (request: Forward.WorkstreamsForwardRequest) => {
+        originalSource.set(request.identity.source_operation_id, canonicalJson(request));
+        sourceWireBodies.set(request.identity.forward_id, encodeForwardWire(request));
+      },
+      revokeSource: () => {
+        sourceRevoked = true;
+      },
+      restore: () => {
+        current = { ...current, storeGeneration: 2 };
+      },
+    };
   });
-  return {
-    auth,
-    native,
-    records,
-    rows,
-    sql,
-    scope,
-    request,
-    body,
-    pin: decoded.pin,
-    receipt,
-    registry,
-    mounted,
-    nativeHome,
-    bind,
-    revokeKey: () => {
-      keysUnavailable = true;
-    },
-    withholdReadback: (value: boolean) => {
-      readbackUnqualified = value;
-    },
-    keyEvidence: () => ({ keyCalls, writerKeyViolations }),
-    observeSourceCurrent: (effect: Effect.Effect<void>) => {
-      onSourceCurrent = effect;
-    },
-    preparationEvidence: () => ({ nativeCalls, authorityCalls, sourceCalls, keyCalls }),
-    holdKeys: (wait: Effect.Effect<void>) => {
-      keyWait = wait;
-    },
-    holdSource: (wait: Effect.Effect<void>) => {
-      sourceWait = wait;
-    },
-    holdAuthority: (wait: Effect.Effect<void>) => {
-      authorityWait = wait;
-    },
-    afterPrefetch: (effect: Effect.Effect<void>) => {
-      beforeWriter = effect;
-    },
-    sourceDigest: (value: string | null) => {
-      sourceDigestOverride = value;
-    },
-    retainSource: (request: Forward.WorkstreamsForwardRequest) => {
-      originalSource.set(request.identity.source_operation_id, canonicalJson(request));
-      sourceWireBodies.set(request.identity.forward_id, encodeForwardWire(request));
-    },
-    revokeSource: () => {
-      sourceRevoked = true;
-    },
-    restore: () => {
-      current = { ...current, storeGeneration: 2 };
-    },
-  };
-});
+
+const fixture = fixtureFor();
 
 const identityFor = (
   f: Effect.Success<typeof fixture>,
@@ -428,6 +431,12 @@ const encodeAttestationRequest = Schema.encodeEffect(
   Schema.fromJsonString(WorkstreamsNativeAttestationRequest),
 );
 const requestTools = Effect.map(Home.HomeTools, (tools) => ({
+  access: Effect.fn("HomeToolsTest.access")(function* (input: unknown) {
+    const invocation = yield* Mcp.McpInvocationContext;
+    return yield* tools
+      .access(input, invocation)
+      .pipe(Effect.provideService(Layer.CurrentMemoMap, Layer.makeMemoMapUnsafe()));
+  }),
   forward: Effect.fn("HomeToolsTest.forward")(function* (input: unknown) {
     const invocation = yield* Mcp.McpInvocationContext;
     return yield* tools
@@ -492,9 +501,10 @@ type FixtureServices =
 const run = <E>(
   test: (f: Effect.Success<typeof fixture>) => Effect.Effect<void, E, FixtureServices>,
   options: { filename?: string; keys?: Map<string, Uint8Array> } = {},
+  access: "full-access" | "read-only" = "full-access",
 ) =>
   Effect.gen(function* () {
-    const f = yield* fixture;
+    const f = yield* fixtureFor(access);
     yield* Effect.gen(function* () {
       yield* (yield* Setup.PeerSessionPinSetup).apply(f.body, 0);
       yield* f.bind;
@@ -1562,6 +1572,104 @@ it.effect("source envelope digest binds new publication and retained result rele
       ]);
       f.sourceDigest(null);
       expect(yield* tools.readback(read)).toMatchObject({ state: "present", result });
+    }),
+  ),
+);
+
+it.effect("home access observes current bound home permission without creating authority", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* Effect.gen(function* () {
+      yield* (yield* Setup.PeerSessionPinSetup).apply(f.body, 0);
+      yield* f.bind;
+      const tools = yield* requestTools;
+      const before = yield* f.sql<{ n: number }>`SELECT total_changes() AS n`;
+      const access = yield* tools.access({
+        contract: "workstreams-native-home-access/1.0.0",
+        expected_home: home,
+      });
+      expect(access).toMatchObject({
+        home: { ...home, canonical_origin: f.nativeHome.canonical_origin, registry_version: 2 },
+        principal_id: "principal:test",
+        authorization_revision: 1,
+        capabilities: { permissions: ["workstreams:read", "workstreams:write"] },
+      });
+      expect(yield* f.sql`SELECT total_changes() AS n`).toEqual(before);
+      expect(f.keyEvidence().writerKeyViolations).toBe(0);
+      expect(f.preparationEvidence().sourceCalls).toBe(0);
+    }).pipe(Effect.provide(f.mounted), Effect.provideService(Mcp.McpInvocationContext, f.scope));
+  }).pipe(Effect.provide(services())),
+);
+
+it.effect.each(["read-only", "plan", "grant-narrowed"] as const)(
+  "home access intersects the current %s ceiling and grant",
+  (narrowing) =>
+    run(
+      (f) =>
+        Effect.gen(function* () {
+          if (narrowing === "plan")
+            Object.assign(f.scope.client!, {
+              narrowedTo: { runtimeMode: "approval-required", interactionMode: "plan" },
+            });
+          if (narrowing === "plan")
+            yield* (yield* Authentication.PeerMcpAuthentication).register(f.request, f.scope);
+          if (narrowing === "grant-narrowed")
+            yield* f.registry.appendPlain(Test.scope, "grants", {
+              grant_id: "grant:test",
+              principal_id: "principal:test",
+              grant_version: 2,
+              permissions: JSON.stringify(["workstreams:read"]),
+              state: "active",
+            });
+          const result = yield* (yield* requestTools).access({
+            contract: "workstreams-native-home-access/1.0.0",
+            expected_home: home,
+          });
+          expect(result.capabilities.permissions).toEqual(["workstreams:read"]);
+          expect(result.authorization_revision).toBe(narrowing === "grant-narrowed" ? 2 : 1);
+          expect(f.keyEvidence().writerKeyViolations).toBe(0);
+        }),
+      {},
+      narrowing === "read-only" ? "read-only" : "full-access",
+    ),
+);
+it.effect("home access refuses an ambient writer or another target before preparation", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const tools = yield* requestTools;
+      const input = { contract: "workstreams-native-home-access/1.0.0", expected_home: home };
+      const before = f.preparationEvidence();
+      expect(yield* f.sql.withTransaction(tools.access(input)).pipe(Effect.flip)).toMatchObject({
+        code: "preparation_in_transaction",
+      });
+      expect(
+        yield* tools
+          .access({ ...input, expected_home: { ...home, server_generation: 2 } })
+          .pipe(Effect.flip),
+      ).toMatchObject({ code: "generation_mismatch" });
+      expect(f.preparationEvidence()).toEqual(before);
+      expect(yield* f.sql`SELECT * FROM jones_workstreams_forward_receipts`).toEqual([]);
+    }),
+  ),
+);
+it.effect("home access refuses revoked grants and current owner drift", () =>
+  run((f) =>
+    Effect.gen(function* () {
+      const tools = yield* requestTools;
+      const input = { contract: "workstreams-native-home-access/1.0.0", expected_home: home };
+      yield* f.registry.appendPlain(Test.scope, "grants", {
+        grant_id: "grant:test",
+        principal_id: "principal:test",
+        grant_version: 2,
+        permissions: JSON.stringify(["workstreams:read"]),
+        state: "revoked",
+      });
+      expect((yield* tools.access(input).pipe(Effect.result))._tag).toBe("Failure");
+      f.restore();
+      expect(yield* tools.access(input).pipe(Effect.flip)).toMatchObject({
+        code: "authority_changed",
+      });
+      expect(yield* f.sql`SELECT * FROM jones_workstreams_forward_receipts`).toEqual([]);
     }),
   ),
 );
