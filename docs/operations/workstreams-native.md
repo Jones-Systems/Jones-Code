@@ -71,6 +71,13 @@ store generation. Unsupported versions are rejected. Historical references
 without verified native attestation must be verified before producing a native
 placement proof; historical CP evidence is not relabeled native.
 
+A qualified selected member serves this same explicit v2 HTTP route through its
+original authenticated caller and bound home. It completes coherent bounded pages
+and preserves native proof fields; local trust still comes independently from the
+member server's authority provider. Changed home access, inconsistent pages, expired
+proofs or changed trust refuse the whole load. The default v1 route is unchanged
+and does not strip native proof to force compatibility.
+
 The explicit admin command is:
 
 ```sh

@@ -3,6 +3,7 @@ import { nativeMemberPreparationLayer } from "../jones/workstreams/native/integr
 import * as HttpCompatibility from "../jones/workstreams/native/compat/http.ts";
 import * as NativeStartup from "../jones/workstreams/native/runtime/startup.ts";
 import * as NativeRuntimeEntry from "../jones/workstreams/native/runtime/entry.ts";
+import * as MemberPlacements from "../jones/workstreams/native/read/memberPlacements.ts";
 import { nativePersistenceLayer } from "../jones/workstreams/native/integration.ts";
 import { decodeRegistryBinding } from "@t3tools/shared/jones/workstreamsRegistryBinding";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
@@ -341,18 +342,18 @@ export const workstreamHttpApiLayer = HttpApiBuilder.group(
           if (contract === undefined)
             return yield* internal("threadPlacements", gateway.readThreadPlacements(args.payload));
           const native = yield* Effect.serviceOption(NativeRuntimeEntry.Entry);
-          if (Option.isNone(native))
-            return yield* new EnvironmentHttpConflictError({
-              message: "workstreams_native_unavailable",
-            });
-          return yield* native.value
-            .placementResponse(args.payload, contract)
-            .pipe(
-              Effect.mapError(
-                () =>
-                  new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" }),
-              ),
-            );
+          const member = yield* Effect.serviceOption(MemberPlacements.MemberPlacements);
+          const unavailable = () =>
+            new EnvironmentHttpConflictError({ message: "workstreams_native_unavailable" });
+          if (Option.isSome(native))
+            return yield* native.value
+              .placementResponse(args.payload, contract)
+              .pipe(Effect.mapError(unavailable));
+          if (Option.isSome(member))
+            return yield* member.value
+              .load(args.payload, contract)
+              .pipe(Effect.mapError(unavailable));
+          return yield* unavailable();
         }),
       )
       .handle("legacyReceiptLookup", (args) =>

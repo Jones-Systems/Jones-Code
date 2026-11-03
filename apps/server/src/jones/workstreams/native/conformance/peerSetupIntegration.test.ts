@@ -10,6 +10,8 @@ import { vi } from "vite-plus/test";
 import {
   EnvironmentId,
   EnvironmentAuthenticatedPrincipal,
+  EnvironmentAuthenticatedAuth,
+  EnvironmentHttpApi,
   RuntimeMode,
   ProviderInteractionMode,
 } from "@t3tools/contracts";
@@ -30,6 +32,18 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
+import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpPlatform from "effect/http/HttpPlatform";
+import * as Etag from "effect/http/Etag";
+import * as NativePlacement from "@t3tools/contracts/jones/workstreamsNativePlacement";
+import * as AuthHttp from "../../../../auth/http.ts";
+import {
+  workstreamHttpApiLayer,
+  workstreamResponseHeadersLayer,
+} from "../../../../workstreams/http.ts";
 import * as Layer from "effect/Layer";
 import * as Context from "effect/Context";
 import * as Option from "effect/Option";
@@ -149,6 +163,12 @@ const mode = Schema.decodeUnknownSync(
   Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
 );
 
+class MemberPlacementTestApi extends HttpApi.make("environment").add(
+  EnvironmentHttpApi.groups.workstreams,
+) {}
+const decodeNativePlacement = Schema.decodeUnknownEffect(
+  NativePlacement.WorkstreamsNativePlacementResult,
+);
 const decodeReadArgs = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResultRequest);
 const isPublicOperation = Schema.is(OperationWire.WorkstreamOperationResult);
 const decodeAccessArgs = Schema.decodeUnknownEffect(AccessWire.WorkstreamsHomeAccessRequest);
@@ -1907,6 +1927,146 @@ it.effect(
           ),
         );
         const nextPrincipal = { ...nextAuth, scopes: new Set(nextAuth.scopes) };
+        const placementOperation = yield* operations
+          .submit({
+            request: {
+              contract: "workstream-operations/1.0.0",
+              operation_id: "operation:member-placement-application-01",
+              origin: { kind: "app" },
+              kind: "set_primary",
+              thread: { environment_id: f.M.env, thread_id: "thread:retained-source" },
+              target: {
+                kind: "workstream",
+                registry_id: home.registry_instance_id,
+                owner_id: home.owner_id,
+                workstream_id: publicId,
+              },
+              expected: { kind: "unassigned" },
+            },
+            wait_ms: 0,
+          })
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal));
+        expect(placementOperation).toMatchObject({
+          state: "committed",
+          kind: "set_primary",
+          result: { membership_id: expect.any(String) },
+        });
+        if (placementOperation.state !== "committed")
+          return yield* Effect.die("Genuine member primary placement did not commit");
+        const currentSourceBindings = yield* hsql<{ binding_version: number }>`
+          SELECT binding_version FROM jones_workstreams_source_bindings
+          WHERE provider='t3' AND source_instance_id=${f.M.env}
+          ORDER BY binding_version DESC LIMIT 1
+        `;
+
+        // Mount the real public group and real bearer middleware over the selected member graph.
+        // Requests run in-process; no listener or installed application is started.
+        const httpClock = yield* Clock.Clock;
+        const httpAuthentication = yield* Layer.build(
+          AuthHttp.layerAuthenticatedAuth.pipe(
+            Layer.provide(Layer.succeed(Auth.EnvironmentAuth, auth)),
+          ),
+        );
+        const authenticate = Context.get(httpAuthentication, EnvironmentAuthenticatedAuth);
+        const placementRoutes = HttpApiBuilder.layer(MemberPlacementTestApi).pipe(
+          Layer.provide(workstreamHttpApiLayer),
+          Layer.provide(Layer.succeedContext(selectedServices)),
+          Layer.provide(
+            Layer.succeed(EnvironmentAuthenticatedAuth, (effect, endpoint) =>
+              authenticate(effect, endpoint).pipe(Effect.provideService(Clock.Clock, httpClock)),
+            ),
+          ),
+          Layer.provide(workstreamResponseHeadersLayer),
+          Layer.provideMerge(
+            HttpPlatform.layer.pipe(
+              Layer.provideMerge(NodeServices.layer),
+              Layer.provideMerge(Etag.layerWeak),
+            ),
+          ),
+          Layer.provide(NodeServices.layer),
+        );
+        const placementHttp = yield* Effect.acquireRelease(
+          Effect.sync(() => HttpRouter.toWebHandler(placementRoutes, { disableLogger: true })),
+          (value) => Effect.promise(() => value.dispose()),
+        );
+        const requestPlacements = (token: string | undefined, contract?: string) =>
+          Effect.promise(() =>
+            placementHttp.handler(
+              new Request("https://member.invalid/api/workstreams/thread-placements", {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  ...(token === undefined ? {} : { authorization: "Bearer " + token }),
+                  ...(contract === undefined
+                    ? {}
+                    : { "x-t3-workstreams-placement-contract": contract }),
+                },
+                body: JSON.stringify({
+                  identities: [
+                    { source_instance_id: f.M.env, native_thread_id: "thread:retained-source" },
+                  ],
+                }),
+              }),
+            ),
+          );
+        const beforePlacementReads = f.calls.filter(
+          (c) => c.tool === HomePort.HOME_FORWARD_TOOL,
+        ).length;
+        const placementResponse = yield* requestPlacements(
+          nextSession.token,
+          "workstreams-t3-placement/2.0.0",
+        );
+        expect(placementResponse.status).toBe(200);
+        expect(placementResponse.headers.get("cache-control")).toBe("private, no-store");
+        const nativePlacement = yield* decodeNativePlacement(
+          yield* Effect.promise(() => placementResponse.json()),
+        );
+        expect(nativePlacement.page.items).toHaveLength(1);
+        expect(nativePlacement.page.items[0]).toMatchObject({
+          membership_id: placementOperation.result.membership_id,
+          workstream_id: publicId,
+          source_instance_id: f.M.env,
+          native_thread_id: "thread:retained-source",
+          kind: "primary",
+          attestation_source: "native",
+          evidence_contract: "workstreams-t3-provider/2.0.0",
+          authority_namespace: bind.source.authority.authority_namespace,
+          store_generation: bind.source.authority.store_generation,
+          source_binding_version: currentSourceBindings[0]?.binding_version,
+        });
+        expect(nativePlacement.page.provenance).toMatchObject({
+          authority: "native-home",
+          registry_instance_id: home.registry_instance_id,
+          home_environment_id: f.H.env,
+          home_generation: home.server_generation,
+          served_by_environment_id: f.H.env,
+        });
+        expect(nativePlacement.page.next_cursor).toBeNull();
+        // This fixture's independent local trust provider is empty. Remote evidence must not fill it.
+        expect(nativePlacement.trustedEnvironments).toEqual([]);
+        const readOnlyPlacement = yield* requestPlacements(
+          readOnlySession.token,
+          "workstreams-t3-placement/2.0.0",
+        );
+        expect(readOnlyPlacement.status).toBe(200);
+        expect(
+          (yield* decodeNativePlacement(yield* Effect.promise(() => readOnlyPlacement.json()))).page
+            .items,
+        ).toEqual(nativePlacement.page.items);
+        expect((yield* requestPlacements(undefined, "workstreams-t3-placement/2.0.0")).status).toBe(
+          401,
+        );
+        expect(
+          (yield* requestPlacements(nextSession.token, "workstreams-t3-placement/3.0.0")).status,
+        ).toBe(400);
+        // The old Gateway codec remains unchanged and cannot erase this native proof to accept it.
+        expect((yield* requestPlacements(nextSession.token)).status).toBe(500);
+        expect(f.calls.filter((c) => c.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
+          beforePlacementReads,
+        );
+        expect(yield* msql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
+        expect(yield* msql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
+
         const retained = yield* Context.get(resources, MemberPreparation.MemberPreparation)
           .withPrepared((members) =>
             Effect.flatMap(Effect.context<never>(), (requestContext) =>
@@ -2281,6 +2441,9 @@ it.effect(
           WHERE operation_id=${lostCommand.command_id}`,
         ).toEqual([{ state: "reconciling" }]);
         expect(yield* auth.revokeSession(nextSession.sessionId)).toBe(true);
+        expect(
+          (yield* requestPlacements(nextSession.token, "workstreams-t3-placement/2.0.0")).status,
+        ).toBe(401);
         expect(yield* invokeRetained()).toMatchObject({
           state: "denied",
           reason: "caller_changed",

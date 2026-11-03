@@ -2521,6 +2521,16 @@
         "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
       ],
       "scope": "Selected-member public Gateway commands and appearance mutations use exact durable source intent, original caller and immutable home; fresh effective permissions and post-call fences preserve ambiguity. Public receipt/resubmit is original-intent lookup only, including when local/home absence is unknown. No new dispatch, fallback or absence authority from recovery. Isolated application qualification only; physical/client/installed acceptance separate."
+    },
+    {
+      "id": "workstreams-native-member-placements",
+      "tests": [
+        "apps/server/src/jones/workstreams/native/read/memberPlacements.test.ts",
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/workstreams/http.test.ts"
+      ],
+      "scope": "Explicit existing placement-v2 HTTP negotiation over genuine selected-member request admission, bounded coherent pages and independent local authority trust. Preserve complete native proof, original home/principal/grant context, v1 behavior and no-write reader semantics. Isolated synthetic authenticated H/M HTTP proof does not establish physical/runtime/client acceptance."
     }
   ]
 }

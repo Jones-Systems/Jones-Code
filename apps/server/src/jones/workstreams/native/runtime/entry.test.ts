@@ -649,7 +649,14 @@ it.effect(
           }),
         ),
         Layer.provideMerge(Layer.succeed(AuthSessions.AuthSessionRepository, prepared.sessions)),
-        Layer.provide(Config.layerTest(f.home, { prefix: "nw-peer-entry-" })),
+        Layer.provide(
+          Config.layerTest(
+            f.home,
+            process.env.NW_MEMBER_PLACEMENTS_EVIDENCE_DIR === undefined
+              ? { prefix: "nw-peer-entry-" }
+              : NodePath.join(f.home, "peer-entry-config"),
+          ),
+        ),
         Layer.provide(
           Layer.succeed(Environment.ServerEnvironmentIdentity, {
             getEnvironmentId: Effect.succeed(Wire.EnvironmentId.make(registry.home_environment_id)),

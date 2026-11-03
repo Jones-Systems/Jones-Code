@@ -570,7 +570,8 @@ it.effect("both live consumers share one file snapshot and keep it until the nex
           vi.restoreAllMocks();
           vi.unstubAllGlobals();
           vi.unstubAllEnvs();
-          NodeFS.rmSync(path, { recursive: true, force: true });
+          if (process.env.NW_MEMBER_PLACEMENTS_EVIDENCE_DIR === undefined)
+            NodeFS.rmSync(path, { recursive: true, force: true });
         }),
     );
     const environment = {

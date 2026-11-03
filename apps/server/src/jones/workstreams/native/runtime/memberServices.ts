@@ -6,6 +6,7 @@ import * as Readmission from "../forwarding/sourceReadmissionPort.ts";
 import * as Retained from "../forwarding/retainedSourceEffectPort.ts";
 import * as Reads from "../read/routes.ts";
 import * as MemberGateway from "../read/memberGateway.ts";
+import * as MemberPlacements from "../read/memberPlacements.ts";
 import * as PublicOperations from "../operations/memberPublicOperations.ts";
 import * as Registration from "../../registrationContext/service.ts";
 import * as Application from "./memberApplication.ts";
@@ -37,6 +38,7 @@ export const layer = (
           Startup.unavailableServicesLayer(selection),
           Layer.mergeAll(
             MemberGateway.layer,
+            MemberPlacements.layer,
             PublicOperations.layer,
             Layer.effect(
               Registration.WorkstreamsRegistrationContext,
