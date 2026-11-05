@@ -9,6 +9,8 @@ import {
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
@@ -70,9 +72,10 @@ it.effect(
 );
 
 function makeFixture(
-  transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session",
+  transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session" | "reuse",
   fault?: "detach" | "persist" | "stale" | "selection",
   continuation = false,
+  retirement?: { readonly marked: boolean; readonly wait: Effect.Effect<void> },
 ) {
   const projection = {
     thread: { id: ThreadId.make("retirement-thread") },
@@ -110,7 +113,7 @@ function makeFixture(
         )
       : Effect.void,
   ).pipe(
-    Effect.andThen(
+    Effect.tap(
       Effect.sync(() => {
         order.push("open");
       }),
@@ -124,13 +127,15 @@ function makeFixture(
               modelChanged: true,
               targetProviderThreadId: null,
               releaseProviderSessionIds:
-                transition === "switch_model_in_session"
+                transition === "switch_model_in_session" || transition === "reuse"
                   ? []
                   : [projection.providerSessions[0]!.id],
               transition: { type: transition },
             }),
         }),
         Layer.mock(Sessions.ProviderSessionManagerV2)({
+          awaitThreadRetirement: () => retirement?.wait ?? Effect.void,
+          hasRetiredWriter: () => Effect.succeed(retirement?.marked ?? false),
           detach: Effect.fn("PrepareExecutionSessionTest.detach")(function* ({
             providerSessionId,
             threadId,
@@ -195,4 +200,49 @@ it.effect(
       assert.deepEqual(fixture.order, ["detach"]);
       assert.deepEqual(fixture.writes, []);
     }),
+);
+
+it.effect(
+  "a cancelled transfer's source stays non-reusable; preparation waits before revalidation and persists the fresh key",
+  () =>
+    Effect.gen(function* () {
+      for (const stale of [false, true]) {
+        const entered = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        const fixture = makeFixture("reuse", stale ? "selection" : undefined, false, {
+          marked: true,
+          wait: Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(released))),
+        });
+        const preparing = yield* fixture.start.pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.await(entered);
+        assert.deepEqual(fixture.order, []);
+        assert.deepEqual(fixture.writes, []);
+        yield* Deferred.succeed(released, undefined);
+        const result = yield* Fiber.join(preparing);
+        assert.equal(result._tag, stale ? "Failure" : "Success");
+        if (stale) assert.deepEqual(fixture.writes, []);
+        else {
+          assert.equal(fixture.writes[0]!.expectedStatus, "starting");
+          const update = fixture.writes[0]!.events.find(
+            (event) => event.type === "provider-thread.updated",
+          );
+          assert.equal(update?.type, "provider-thread.updated");
+          if (update?.type === "provider-thread.updated")
+            assert.equal(
+              update.payload.providerSessionId,
+              `self-configure:${fixture.projection.runs[0]!.id}:${fixture.projection.runs[0]!.activeAttemptId}`,
+            );
+        }
+      }
+    }),
+);
+
+it.effect("an unmarked reusable runtime keeps its logical session and writes no replacement", () =>
+  Effect.gen(function* () {
+    const fixture = makeFixture("reuse");
+    const result = yield* fixture.start;
+    assert.strictEqual(result, fixture.projection.providerThreads[0]);
+    assert.deepEqual(fixture.writes, []);
+    assert.deepEqual(fixture.order, ["open"]);
+  }),
 );
