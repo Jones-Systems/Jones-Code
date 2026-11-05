@@ -2,6 +2,18 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-dev-proxy-cookie-auth",
+      "tests": ["apps/server/src/jones/auth/devProxy.test.ts"],
+      "commands": [
+        "vp test run apps/server/src/jones/auth/devProxy.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/shared/src/devProxy.ts apps/server/src/jones/auth/devProxy.test.ts",
+        "vp run --filter @t3tools/shared typecheck",
+        "vp run --filter t3 typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-thread-content-evidence",
       "tests": [
         "packages/contracts/src/jones/threadContentEvidence.test.ts",
