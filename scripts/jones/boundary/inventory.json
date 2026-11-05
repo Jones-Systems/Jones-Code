@@ -2535,7 +2535,14 @@
     "apps/server/src/provider/providerInstallation.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/previewCompanion/openBinding.ts": "jones-owned",
     "apps/server/src/jones/previewCompanion/openBinding.test.ts": "jones-owned",
-    "apps/server/src/mcp/toolkits/previewControls/handlers.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/mcp/toolkits/previewControls/handlers.test.ts": "jones-tests-in-upstream",
+    "scripts/jones/updates/packaged-desktop-helper-preload.py": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-helper-fault.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-pair.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-pair.node-test.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-dialog-observer.m": "jones-owned",
+    "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
