@@ -315,7 +315,12 @@ const scenario = (
       predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean,
     ) {
       return yield* Effect.gen(function* () {
-        const probe = yield* fs.makeTempFileScoped({ directory: stateDir, prefix: "watch-ready-" });
+        const crypto = yield* Crypto.Crypto;
+        const probe = path.join(stateDir, `watch-ready-${yield* crypto.randomUUIDv4}`);
+        yield* Effect.acquireRelease(
+          fs.writeFileString(probe, "", { flag: "wx" }),
+          () => fs.remove(probe).pipe(Effect.orDie),
+        );
         const changes = yield* Stream.toQueue(fs.watch(stateDir), {
           capacity: 1,
           strategy: "sliding",
