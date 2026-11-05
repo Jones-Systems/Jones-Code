@@ -54,8 +54,15 @@ function notify(changes: ReadonlyArray<Deferred.Deferred<void>>): void {
   for (const changed of changes) Deferred.doneUnsafe(changed, Effect.void);
 }
 
+interface SegmentBufferOptions {
+  readonly maxBufferedRecords: number;
+  readonly maxBufferedBytes: number;
+  readonly batchWindowMs: number;
+}
+
 /** All methods are synchronous; callers wrap transitions in Effect.sync, never disk I/O. */
 export class SegmentBuffer {
+  private readonly options: SegmentBufferOptions;
   private readonly segments = new Map<string, LogSegment>();
   private readonly removals = new Map<string, Deferred.Deferred<void>>();
   private capacityChanged = Deferred.makeUnsafe<void>();
@@ -64,13 +71,9 @@ export class SegmentBuffer {
   private closed = false;
   private flushScheduled = false;
 
-  constructor(
-    private readonly options: {
-      readonly maxBufferedRecords: number;
-      readonly maxBufferedBytes: number;
-      readonly batchWindowMs: number;
-    },
-  ) {}
+  constructor(options: SegmentBufferOptions) {
+    this.options = options;
+  }
 
   get usage(): { readonly records: number; readonly bytes: number } {
     return { records: this.records, bytes: this.bytes };
