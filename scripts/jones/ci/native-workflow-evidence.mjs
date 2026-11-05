@@ -1,9 +1,9 @@
-import assert from "node:assert/strict";
-import fs from "node:fs/promises";
-import { readSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
+import * as NodeAssert from "node:assert";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
+import * as NodeChildProcess from "node:child_process";
 import { sha256 } from "../../../apps/desktop/scripts/ui-evidence/provenance.mjs";
 import {
   readNativeEvidence,
@@ -45,11 +45,11 @@ export const nativeVariants = [
 
 const variantFor = (id) => {
   const variant = nativeVariants.find((value) => value.id === id);
-  assert.ok(variant, "Unknown native workflow variant");
+  NodeAssert.strict.ok(variant, "Unknown native workflow variant");
   return variant;
 };
 const save = (file, value) =>
-  fs.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, {
+  NodeFSP.writeFile(file, `${JSON.stringify(value, null, 2)}\n`, {
     flag: "wx",
     mode: 0o600,
     flush: true,
@@ -58,7 +58,7 @@ const save = (file, value) =>
 export function nativeAdmission(id, rows, cancelled = false) {
   if (cancelled) return "cancelled";
   const index = nativeVariants.findIndex((value) => value.id === id);
-  assert.ok(index >= 0, "Unknown native workflow variant");
+  NodeAssert.strict.ok(index >= 0, "Unknown native workflow variant");
   if (rows.some((row) => row.id === id)) return "first-attempt-already-recorded";
   for (const previous of nativeVariants.slice(0, index)) {
     const row = rows.find((value) => value.id === previous.id);
@@ -75,29 +75,29 @@ export function nativeAdmission(id, rows, cancelled = false) {
 
 async function sampleNativeResources(id, output) {
   const cpu = async () => {
-    const fields = (await fs.readFile("/proc/stat", "utf8"))
+    const fields = (await NodeFSP.readFile("/proc/stat", "utf8"))
       .split("\n")[0]
       .trim()
       .split(/\s+/)
       .slice(1, 9)
       .map(Number);
-    assert.equal(fields.length, 8);
-    assert.ok(fields.every(Number.isFinite));
+    NodeAssert.strict.equal(fields.length, 8);
+    NodeAssert.strict.ok(fields.every(Number.isFinite));
     return { total: fields.reduce((a, b) => a + b, 0), idle: fields[3] + fields[4] };
   };
   const before = await cpu();
   await new Promise((resolve) => setTimeout(resolve, 1000));
   const after = await cpu();
-  assert.ok(after.total > before.total, "CPU sample unavailable");
+  NodeAssert.strict.ok(after.total > before.total, "CPU sample unavailable");
   const cpuUsedPercent = 100 * (1 - (after.idle - before.idle) / (after.total - before.total));
-  const memory = await fs.readFile("/proc/meminfo", "utf8");
+  const memory = await NodeFSP.readFile("/proc/meminfo", "utf8");
   const availableKiB = Number(memory.match(/^MemAvailable:\s+(\d+)/m)?.[1]);
-  const logicalCores = (await fs.readFile("/proc/stat", "utf8"))
+  const logicalCores = (await NodeFSP.readFile("/proc/stat", "utf8"))
     .split("\n")
     .filter((line) => /^cpu\d+\s/.test(line)).length;
   const sample = { cpuUsedPercent, logicalCores, oneCorePercent: 100 / logicalCores, availableKiB };
-  await save(path.join(output, `${id}-admission.json`), sample);
-  assert.ok(
+  await save(NodePath.join(output, `${id}-admission.json`), sample);
+  NodeAssert.strict.ok(
     logicalCores > 0 &&
       Number.isFinite(cpuUsedPercent) &&
       cpuUsedPercent >= 0 &&
@@ -108,12 +108,12 @@ async function sampleNativeResources(id, output) {
 }
 
 async function childIdentity(pid) {
-  const raw = await fs.readFile(`/proc/${pid}/stat`, "utf8");
+  const raw = await NodeFSP.readFile(`/proc/${pid}/stat`, "utf8");
   const fields = raw
     .slice(raw.lastIndexOf(")") + 2)
     .trim()
     .split(/\s+/);
-  assert.match(fields[19] ?? "", /^\d+$/);
+  NodeAssert.strict.match(fields[19] ?? "", /^\d+$/);
   return { pid, pgid: Number(fields[2]), startTicks: fields[19] };
 }
 function groupAbsent(pgid) {
@@ -133,7 +133,7 @@ export async function runOwnedNative({
   output,
   id,
   signals = process,
-  launch = spawn,
+  launch = NodeChildProcess.spawn,
   captureIdentity = childIdentity,
   absent = groupAbsent,
   signalGroup = (pgid, signal) => process.kill(-pgid, signal),
@@ -148,7 +148,7 @@ export async function runOwnedNative({
     signalWork = signalWork
       .then(async () => {
         if (!child || child.exitCode !== null || child.signalCode !== null) return;
-        assert.deepEqual(
+        NodeAssert.strict.deepEqual(
           await captureIdentity(child.pid),
           identity,
           "Captured child identity changed",
@@ -159,7 +159,7 @@ export async function runOwnedNative({
           signalWork = signalWork
             .then(async () => {
               if (child.exitCode !== null || child.signalCode !== null) return;
-              assert.deepEqual(await captureIdentity(child.pid), identity);
+              NodeAssert.strict.deepEqual(await captureIdentity(child.pid), identity);
               signalGroup(identity.pgid, "SIGKILL");
               forwarded.push("SIGKILL");
             })
@@ -178,12 +178,12 @@ export async function runOwnedNative({
   signals.on("SIGTERM", terminate);
   let stdout, stderr;
   try {
-    stdout = await fs.open(path.join(output, `${id}-result.json`), "wx", 0o600);
-    stderr = await fs.open(path.join(output, `${id}-stderr.log`), "wx", 0o600);
+    stdout = await NodeFSP.open(NodePath.join(output, `${id}-result.json`), "wx", 0o600);
+    stderr = await NodeFSP.open(NodePath.join(output, `${id}-stderr.log`), "wx", 0o600);
     if (cancelled) return { code: cancelled === "SIGINT" ? 130 : 143, cancelled, started: false };
     child = launch(
       process.execPath,
-      [fileURLToPath(import.meta.url), "child", JSON.stringify(argv)],
+      [NodeURL.fileURLToPath(import.meta.url), "child", JSON.stringify(argv)],
       { detached: true, stdio: ["ignore", stdout.fd, stderr.fd, "pipe"], env: process.env },
     );
     child.stdio[3].on?.("error", (error) => {
@@ -197,8 +197,8 @@ export async function runOwnedNative({
     closed.catch(() => {});
     try {
       identity = await captureIdentity(child.pid);
-      assert.equal(identity.pgid, child.pid);
-      await journal(path.join(output, `${id}-started.json`), { identity, argv, attempts: 1 });
+      NodeAssert.strict.equal(identity.pgid, child.pid);
+      await journal(NodePath.join(output, `${id}-started.json`), { identity, argv, attempts: 1 });
       if (cancelled) {
         forward(cancelled);
         child.stdio[3].end();
@@ -280,7 +280,7 @@ export async function attemptNativeVariant({
       "--scenario",
       expected.scenario,
       "--build-receipt",
-      path.join(expected.output, "build/receipt.json"),
+      NodePath.join(expected.output, "build/receipt.json"),
       "--out",
       expected.artifacts,
       ...(variant.queueCase ? ["--queue-case", variant.queueCase] : []),
@@ -298,10 +298,10 @@ export async function attemptNativeVariant({
       row.reason = "cancelled";
       return row;
     }
-    assert.equal(controller.groupAbsent, true, "Owned controller group closure unproved");
-    assert.equal(controller.signalError, undefined);
+    NodeAssert.strict.equal(controller.groupAbsent, true, "Owned controller group closure unproved");
+    NodeAssert.strict.equal(controller.signalError, undefined);
     const proof = await validate({ ...expected, exitCode: controller.code });
-    assert.equal(proof.safe, true);
+    NodeAssert.strict.equal(proof.safe, true);
     row.safe = true;
     row.evidence = proof.evidence ?? row.evidence;
     row.runId = proof.runId;
@@ -315,8 +315,8 @@ export async function attemptNativeVariant({
 }
 
 export function finishNativeVariant(variant, attempt, oracleCode) {
-  assert.equal(attempt.id, variant.id);
-  assert.ok(Number.isInteger(oracleCode) && oracleCode >= 0);
+  NodeAssert.strict.equal(attempt.id, variant.id);
+  NodeAssert.strict.ok(Number.isInteger(oracleCode) && oracleCode >= 0);
   const passed =
     attempt.attempted === true &&
     attempt.safe === true &&
@@ -366,36 +366,36 @@ export async function readNativeWorkflowRows(output) {
     for (const suffix of ["attempt", "outcome"]) {
       let captured;
       try {
-        const value = await readNativeEvidence(path.join(output, `${variant.id}-${suffix}.json`));
+        const value = await readNativeEvidence(NodePath.join(output, `${variant.id}-${suffix}.json`));
         captured = value;
-        assert.equal(value.id, variant.id);
+        NodeAssert.strict.equal(value.id, variant.id);
         if (suffix === "outcome") {
-          assert.ok(attempt, "Outcome without first attempt");
-          assert.deepEqual(value, finishNativeVariant(variant, attempt, value.oracleCode));
+          NodeAssert.strict.ok(attempt, "Outcome without first attempt");
+          NodeAssert.strict.deepEqual(value, finishNativeVariant(variant, attempt, value.oracleCode));
         } else if (value.safe === true) {
-          assert.equal(value.attempted, true);
-          assert.ok([0, 1].includes(value.nativeCode));
-          assert.equal(value.oracleCode, null);
-          assert.equal(value.controller.groupAbsent, true);
-          assert.equal(value.controller.signalError, undefined);
-          assert.equal(value.controller.identity.pid, value.controller.identity.pgid);
-          assert.match(value.controller.identity.startTicks, /^\d+$/);
-          assert.match(value.runId, /^[a-f0-9-]{36}$/);
+          NodeAssert.strict.equal(value.attempted, true);
+          NodeAssert.strict.ok([0, 1].includes(value.nativeCode));
+          NodeAssert.strict.equal(value.oracleCode, null);
+          NodeAssert.strict.equal(value.controller.groupAbsent, true);
+          NodeAssert.strict.equal(value.controller.signalError, undefined);
+          NodeAssert.strict.equal(value.controller.identity.pid, value.controller.identity.pgid);
+          NodeAssert.strict.match(value.controller.identity.startTicks, /^\d+$/);
+          NodeAssert.strict.match(value.runId, /^[a-f0-9-]{36}$/);
           for (const [key, file] of Object.entries({
             result: `${variant.id}-result.json`,
             manifest: `${variant.id}/manifest.json`,
             inner: `${variant.id}/inner.json`,
             registry: `${variant.id}-boundary/registry.json`,
           })) {
-            assert.equal(value.evidence[key].file, file);
-            await readNativeEvidence(path.join(output, file));
-            assert.equal(
-              sha256(await fs.readFile(path.join(output, file))),
+            NodeAssert.strict.equal(value.evidence[key].file, file);
+            await readNativeEvidence(NodePath.join(output, file));
+            NodeAssert.strict.equal(
+              sha256(await NodeFSP.readFile(NodePath.join(output, file))),
               value.evidence[key].sha256,
             );
           }
-          assert.equal(
-            sha256(await fs.readFile(path.join(output, "build/receipt.json"))),
+          NodeAssert.strict.equal(
+            sha256(await NodeFSP.readFile(NodePath.join(output, "build/receipt.json"))),
             value.evidence.buildReceiptSha256,
           );
         }
@@ -417,7 +417,7 @@ export async function readNativeWorkflowRows(output) {
     }
     if (!attempt) {
       for (const suffix of ["started.json", "result.json", "admission.json", "exit-code.txt"]) {
-        const exists = await fs.lstat(path.join(output, `${variant.id}-${suffix}`)).then(
+        const exists = await NodeFSP.lstat(NodePath.join(output, `${variant.id}-${suffix}`)).then(
           () => true,
           (error) => {
             if (error.code === "ENOENT") return false;
@@ -444,65 +444,65 @@ export async function readNativeWorkflowRows(output) {
 }
 
 async function expectedVariant(variant) {
-  const output = path.resolve(process.env.JCUE_OUTPUT);
-  const source = path.resolve(process.env.GITHUB_WORKSPACE);
+  const output = NodePath.resolve(process.env.JCUE_OUTPUT);
+  const source = NodePath.resolve(process.env.GITHUB_WORKSPACE);
   const scenario =
     variant.id === "negative"
-      ? path.join(output, variant.scenario)
-      : path.join(source, "apps/desktop/scripts/ui-evidence/scenarios", variant.scenario);
+      ? NodePath.join(output, variant.scenario)
+      : NodePath.join(source, "apps/desktop/scripts/ui-evidence/scenarios", variant.scenario);
   return {
     ...variant,
     output,
     source,
     scenario,
-    artifacts: path.join(output, variant.id),
-    scenarioSha256: sha256(await fs.readFile(scenario)),
+    artifacts: NodePath.join(output, variant.id),
+    scenarioSha256: sha256(await NodeFSP.readFile(scenario)),
     head: process.env.JCUE_HARNESS_OID,
     electron: process.env.JCUE_ELECTRON_VERSION,
-    stateHome: path.resolve(process.env.XDG_STATE_HOME),
+    stateHome: NodePath.resolve(process.env.XDG_STATE_HOME),
   };
 }
 
 async function main([command, id, value]) {
   if (command === "child") {
     const gate = Buffer.alloc(1);
-    if (readSync(3, gate, 0, 1, null) !== 1 || gate[0] !== 49) return 125;
+    if (NodeFS.readSync(3, gate, 0, 1, null) !== 1 || gate[0] !== 49) return 125;
     const { main: run } = await import("../../../apps/desktop/scripts/ui-evidence.mjs");
     const result = await run(JSON.parse(id));
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return result.code;
   }
-  const output = path.resolve(process.env.JCUE_OUTPUT);
+  const output = NodePath.resolve(process.env.JCUE_OUTPUT);
   const rows = await readNativeWorkflowRows(output);
   if (command === "aggregate") {
-    const cleanup = await readNativeEvidence(path.join(output, "cleanup.json")).catch((error) => ({
+    const cleanup = await readNativeEvidence(NodePath.join(output, "cleanup.json")).catch((error) => ({
       outcome: "unknown",
       reason: error.message,
     }));
     const report = aggregateNative(rows, process.env.JCUE_CANCELLED === "true", cleanup);
-    await save(path.join(output, "native-aggregate.json"), report);
+    await save(NodePath.join(output, "native-aggregate.json"), report);
     return report.status === "passed" ? 0 : 1;
   }
   if (command === "gate") {
     const selected = nativeVariants.filter((variant) => variant.group === id);
-    assert.ok(selected.length > 0);
+    NodeAssert.strict.ok(selected.length > 0);
     const safe = selected.every((variant) =>
       rows.some(
         (row) => row.id === variant.id && row.safe === true && Number.isInteger(row.oracleCode),
       ),
     );
-    await fs.appendFile(process.env.GITHUB_OUTPUT, `safe=${safe}\n`);
+    await NodeFSP.appendFile(process.env.GITHUB_OUTPUT, `safe=${safe}\n`);
     return 0;
   }
   const variant = variantFor(id);
   if (command === "ready") {
-    assert.equal(nativeAdmission(id, rows), null);
+    NodeAssert.strict.equal(nativeAdmission(id, rows), null);
     return 0;
   }
   if (command === "finish") {
-    const attempt = await readNativeEvidence(path.join(output, `${id}-attempt.json`));
+    const attempt = await readNativeEvidence(NodePath.join(output, `${id}-attempt.json`));
     await save(
-      path.join(output, `${id}-outcome.json`),
+      NodePath.join(output, `${id}-outcome.json`),
       finishNativeVariant(variant, attempt, Number(value)),
     );
     return 0;
@@ -514,20 +514,20 @@ async function main([command, id, value]) {
       variant,
       rows,
       expected,
-      persist: (row) => save(path.join(output, `${id}-attempt.json`), row),
+      persist: (row) => save(NodePath.join(output, `${id}-attempt.json`), row),
     });
     if (attempt.nativeCode !== null)
-      await fs.writeFile(path.join(output, `${id}-exit-code.txt`), `${attempt.nativeCode}\n`, {
+      await NodeFSP.writeFile(NodePath.join(output, `${id}-exit-code.txt`), `${attempt.nativeCode}\n`, {
         flag: "wx",
         mode: 0o600,
       });
   } else if (command === "external") {
-    assert.equal(id, "two-servers");
-    const controller = await readNativeEvidence(path.join(output, `${id}-controller.json`));
-    const started = await readNativeEvidence(path.join(output, `${id}-started.json`));
-    assert.deepEqual(controller.identity, started.identity);
-    assert.equal(started.wholeRunCapSeconds, 390);
-    assert.equal(started.argv[6], expected.scenario);
+    NodeAssert.strict.equal(id, "two-servers");
+    const controller = await readNativeEvidence(NodePath.join(output, `${id}-controller.json`));
+    const started = await readNativeEvidence(NodePath.join(output, `${id}-started.json`));
+    NodeAssert.strict.deepEqual(controller.identity, started.identity);
+    NodeAssert.strict.equal(started.wholeRunCapSeconds, 390);
+    NodeAssert.strict.equal(started.argv[6], expected.scenario);
     // JE03's retained Python controller already made this one attempt. Adopt
     // that exact journal for validation only; this command never starts native work.
     const preceding = rows.filter(
@@ -546,17 +546,17 @@ async function main([command, id, value]) {
         signalError: controller.cleanupError,
         identity: controller.identity,
       }),
-      persist: (row) => save(path.join(output, `${id}-attempt.json`), row),
+      persist: (row) => save(NodePath.join(output, `${id}-attempt.json`), row),
     });
     await save(
-      path.join(output, `${id}-outcome.json`),
+      NodePath.join(output, `${id}-outcome.json`),
       finishNativeVariant(variant, attempt, controller.status === "passed" ? 0 : 1),
     );
   } else throw new Error("Unknown native workflow evidence command");
   return attempt.safe ? 0 : attempt.nativeCode || 1;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === NodeURL.pathToFileURL(process.argv[1]).href) {
   try {
     process.exitCode = await main(process.argv.slice(2));
   } catch (error) {

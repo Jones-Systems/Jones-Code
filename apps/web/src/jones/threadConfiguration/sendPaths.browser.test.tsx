@@ -492,7 +492,7 @@ async function withPlanAction(
   await using _stateCleanup = {
     [Symbol.asyncDispose]: async () => {
       for (const interrupt of creationGate.pendingCreations) interrupt();
-      await Promise.allSettled([...sends]);
+      await Promise.allSettled(sends);
       creationGate.intercept = undefined;
       creationGate.messageRejection = false;
       for (const entry of pendingSends.getSnapshot()) pendingSends.dismiss(entry.key);

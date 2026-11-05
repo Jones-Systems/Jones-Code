@@ -56,9 +56,10 @@ export const readOpenCodeProtocolSource = Effect.fn("OpenCodeProtocolFreshness.r
       return encodeProtocolSource({ ...command, executable: null, target: null, info: null });
     }
     // Reuse command lookup rather than walking PATH trees or reading executable contents.
-    const executable = yield* resolveCommandPath(command.command, {
-      ...(environment === undefined ? {} : { env: environment }),
-    });
+    const executable = yield* resolveCommandPath(
+      command.command,
+      environment === undefined ? {} : { env: environment },
+    );
     const target =
       executable === null
         ? undefined

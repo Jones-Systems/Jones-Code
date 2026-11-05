@@ -40,7 +40,6 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
-import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
@@ -351,6 +350,8 @@ class CursorModelUnavailableError extends Schema.TaggedError<CursorModelUnavaila
     return `Cursor cannot run the model "${this.model}". Cursor only runs models from your Cursor account. Choose one of those, or use OpenCode for OpenRouter and other API-key models.`;
   }
 }
+
+const isCursorModelUnavailableError = Schema.is(CursorModelUnavailableError);
 
 // Uncoded SDK model rejections are identifiable only by message prefix.
 const classifyCursorModelRejection =
@@ -2530,7 +2531,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   const rejection = classifyCursorModelRejection(turnInput.modelSelection)(cause);
                   if (
                     cause.method === "run.start" &&
-                    rejection instanceof CursorModelUnavailableError &&
+                    isCursorModelUnavailableError(rejection) &&
                     pendingUpdates.length === 0
                   ) {
                     // Catalog validation rejects before native start; other failures stay unknown.

@@ -1,12 +1,11 @@
-import assert from "node:assert/strict";
-import { AssertionError } from "node:assert";
-import { test } from "node:test";
-import fs from "node:fs/promises";
-import path from "node:path";
-import os from "node:os";
-import { EventEmitter } from "node:events";
-import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import * as NodeAssert from "node:assert";
+import * as NodeTest from "node:test";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
+import * as NodeEvents from "node:events";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeURL from "node:url";
 import { createManifest } from "../../../apps/desktop/scripts/ui-evidence/manifest.mjs";
 import {
   allocateRun,
@@ -29,9 +28,9 @@ import {
   readNativeWorkflowRows,
 } from "./native-workflow-evidence.mjs";
 
-const repo = fileURLToPath(new URL("../../../", import.meta.url));
+const repo = NodeURL.fileURLToPath(new URL("../../../", import.meta.url));
 const workflow = () =>
-  fs.readFile(path.join(repo, ".github/workflows/jones-native-workflows.yml"), "utf8");
+  NodeFSP.readFile(NodePath.join(repo, ".github/workflows/jones-native-workflows.yml"), "utf8");
 const cleanup = { outcome: "complete", remainingRoots: 0 };
 const generation = {
   index: 0,
@@ -113,8 +112,8 @@ function boundaryFixture(failed = true) {
   const record = {
     id: runId,
     parent,
-    registry: path.join(parent, "registry", `${runId}.json`),
-    root: path.join(parent, "scratch", `${runId}-unique`),
+    registry: NodePath.join(parent, "registry", `${runId}.json`),
+    root: NodePath.join(parent, "scratch", `${runId}-unique`),
     cleanup: "complete",
     pid: null,
     namespaceProcess,
@@ -150,7 +149,7 @@ function syntheticExpected(variant) {
   };
 }
 
-test("ordinary first assertion failure with proved partial cleanup permits later first attempts but leaves the aggregate red", async () => {
+NodeTest.test("ordinary first assertion failure with proved partial cleanup permits later first attempts but leaves the aggregate red", async () => {
   const rows = [],
     starts = [],
     validated = [];
@@ -174,26 +173,26 @@ test("ordinary first assertion failure with proved partial cleanup permits later
     });
     rows.push(finishNativeVariant(variant, attempt, failedPositive ? 1 : 0));
   }
-  assert.deepEqual(
+  NodeAssert.strict.deepEqual(
     starts,
     nativeVariants.map((variant) => variant.id),
   );
-  assert.deepEqual(validated, starts);
-  assert.equal(new Set(starts).size, starts.length);
-  assert.equal(rows[0].safe, true);
-  assert.equal(rows[0].nativeCode, 1);
-  assert.equal(rows[0].status, "failed");
-  assert.equal(rows[1].status, "expected-negative");
-  assert.equal(rows[2].status, "passed");
-  assert.equal(aggregateNative(rows, false, cleanup).status, "failed");
+  NodeAssert.strict.deepEqual(validated, starts);
+  NodeAssert.strict.equal(new Set(starts).size, starts.length);
+  NodeAssert.strict.equal(rows[0].safe, true);
+  NodeAssert.strict.equal(rows[0].nativeCode, 1);
+  NodeAssert.strict.equal(rows[0].status, "failed");
+  NodeAssert.strict.equal(rows[1].status, "expected-negative");
+  NodeAssert.strict.equal(rows[2].status, "passed");
+  NodeAssert.strict.equal(aggregateNative(rows, false, cleanup).status, "failed");
   const healed = rows.map((row, i) =>
     i === 0 ? { ...row, status: "passed", nativeCode: 0, oracleCode: 0 } : row,
   );
-  assert.equal(aggregateNative(healed, false, cleanup).status, "passed");
-  assert.equal(aggregateNative(healed).status, "failed", "missing job cleanup must not pass");
+  NodeAssert.strict.equal(aggregateNative(healed, false, cleanup).status, "passed");
+  NodeAssert.strict.equal(aggregateNative(healed).status, "failed", "missing job cleanup must not pass");
 });
 
-test("unknown cleanup, dirty receipt or identity mismatch suppresses every later native start without losing the first code", async () => {
+NodeTest.test("unknown cleanup, dirty receipt or identity mismatch suppresses every later native start without losing the first code", async () => {
   for (const mutate of [
     (f) => {
       f.manifest.cleanup.outcome = "unknown";
@@ -223,15 +222,15 @@ test("unknown cleanup, dirty receipt or identity mismatch suppresses every later
       });
       rows.push(attempt);
     }
-    assert.deepEqual(starts, ["positive"]);
-    assert.equal(rows[0].nativeCode, 1);
-    assert.equal(rows[0].safe, false);
-    assert.ok(rows.slice(1).every((row) => row.status === "not-executed/blocked"));
-    assert.equal(aggregateNative(rows, false, cleanup).status, "failed");
+    NodeAssert.strict.deepEqual(starts, ["positive"]);
+    NodeAssert.strict.equal(rows[0].nativeCode, 1);
+    NodeAssert.strict.equal(rows[0].safe, false);
+    NodeAssert.strict.ok(rows.slice(1).every((row) => row.status === "not-executed/blocked"));
+    NodeAssert.strict.equal(aggregateNative(rows, false, cleanup).status, "failed");
   }
 });
 
-test("the actual boundary validator refuses missing, foreign, dirty, pending and incomplete cleanup evidence", () => {
+NodeTest.test("the actual boundary validator refuses missing, foreign, dirty, pending and incomplete cleanup evidence", () => {
   for (const mutate of [
     (f) => {
       delete f.inner.boundary;
@@ -294,7 +293,7 @@ test("the actual boundary validator refuses missing, foreign, dirty, pending and
   ]) {
     const fixture = boundaryFixture();
     mutate(fixture);
-    assert.throws(() => validateNativeBoundary(fixture));
+    NodeAssert.strict.throws(() => validateNativeBoundary(fixture));
   }
   const service = boundaryFixture(false);
   service.expected.secretService = true;
@@ -303,7 +302,7 @@ test("the actual boundary validator refuses missing, foreign, dirty, pending and
     cancelled: null,
     services: [{ pid: 61, startTicks: "301", closed: true, exited: true, error: false }],
   };
-  assert.equal(validateNativeBoundary(service).safe, true);
+  NodeAssert.strict.equal(validateNativeBoundary(service).safe, true);
   for (const mutate of [
     (f) => {
       f.inner.secretService.status = "cleanup-unproved";
@@ -320,30 +319,30 @@ test("the actual boundary validator refuses missing, foreign, dirty, pending and
   ]) {
     const fixture = structuredClone(service);
     mutate(fixture);
-    assert.throws(() => validateNativeBoundary(fixture));
+    NodeAssert.strict.throws(() => validateNativeBoundary(fixture));
   }
 });
 
-test("only a recorded exact scenario assertion is ordinary; transport, setup and aggregated cleanup exceptions hold", () => {
+NodeTest.test("only a recorded exact scenario assertion is ordinary; transport, setup and aggregated cleanup exceptions hold", () => {
   const assertions = [{ name: "target", status: "failed" }];
   const error = new Error("Scenario assertion failed: target");
-  assert.equal(classifyNativeFailure("scenario", error, assertions), "assertion-failed");
+  NodeAssert.strict.equal(classifyNativeFailure("scenario", error, assertions), "assertion-failed");
   for (const [phase, caught, recorded] of [
     ["electron-launch", error, assertions],
     ["scenario", new Error("Transport closed"), assertions],
     ["scenario", error, []],
     ["scenario", new AggregateError([error], error.message), assertions],
   ])
-    assert.equal(classifyNativeFailure(phase, caught, recorded), "unknown");
-  const nodeAssertion = new AssertionError({
+    NodeAssert.strict.equal(classifyNativeFailure(phase, caught, recorded), "unknown");
+  const nodeAssertion = new NodeAssert.AssertionError({
     actual: false,
     expected: true,
     operator: "strictEqual",
   });
   const steps = [{ name: "Saved selection", status: "failed" }];
-  assert.equal(classifyNativeFailure("scenario", nodeAssertion, [], steps), "assertion-failed");
-  assert.equal(classifyNativeFailure("scenario", nodeAssertion, [], []), "unknown");
-  assert.equal(classifyNativeFailure("scenario-setup", nodeAssertion, [], steps), "unknown");
+  NodeAssert.strict.equal(classifyNativeFailure("scenario", nodeAssertion, [], steps), "assertion-failed");
+  NodeAssert.strict.equal(classifyNativeFailure("scenario", nodeAssertion, [], []), "unknown");
+  NodeAssert.strict.equal(classifyNativeFailure("scenario-setup", nodeAssertion, [], steps), "unknown");
   const fixture = boundaryFixture();
   fixture.inner.assertions = [];
   fixture.manifest.assertions = [];
@@ -355,12 +354,12 @@ test("only a recorded exact scenario assertion is ordinary; transport, setup and
     step: "Saved selection",
   };
   fixture.inner.error = fixture.manifest.error = fixture.result.error = nodeAssertion.message;
-  assert.equal(validateNativeBoundary(fixture).safe, true);
+  NodeAssert.strict.equal(validateNativeBoundary(fixture).safe, true);
   fixture.inner.boundary.failure.code = "ERR_TRANSPORT";
-  assert.throws(() => validateNativeBoundary(fixture));
+  NodeAssert.strict.throws(() => validateNativeBoundary(fixture));
 });
 
-test("cancellation and a resource hold admit no starts; duplicate variants and missing evidence never become a pass", async () => {
+NodeTest.test("cancellation and a resource hold admit no starts; duplicate variants and missing evidence never become a pass", async () => {
   const variant = nativeVariants[0];
   for (const cancelled of [true, false]) {
     const attempt = await attemptNativeVariant({
@@ -371,14 +370,14 @@ test("cancellation and a resource hold admit no starts; duplicate variants and m
       admit: async () => {
         throw new Error("resource-hold");
       },
-      execute: async () => assert.fail("Native start"),
-      validate: async () => assert.fail("Missing evidence accepted"),
+      execute: async () => NodeAssert.strict.fail("Native start"),
+      validate: async () => NodeAssert.strict.fail("Missing evidence accepted"),
     });
-    assert.equal(attempt.attempted, false);
-    assert.equal(attempt.status, cancelled ? "cancelled" : "not-executed/blocked");
-    assert.notEqual(aggregateNative([attempt], cancelled, cleanup).status, "passed");
+    NodeAssert.strict.equal(attempt.attempted, false);
+    NodeAssert.strict.equal(attempt.status, cancelled ? "cancelled" : "not-executed/blocked");
+    NodeAssert.strict.notEqual(aggregateNative([attempt], cancelled, cleanup).status, "passed");
   }
-  assert.equal(nativeAdmission("positive", [{ id: "positive" }]), "first-attempt-already-recorded");
+  NodeAssert.strict.equal(nativeAdmission("positive", [{ id: "positive" }]), "first-attempt-already-recorded");
   const missing = await attemptNativeVariant({
     variant,
     rows: [],
@@ -389,9 +388,9 @@ test("cancellation and a resource hold admit no starts; duplicate variants and m
       throw Object.assign(new Error("missing manifest"), { code: "ENOENT" });
     },
   });
-  assert.equal(finishNativeVariant(variant, missing, 0).status, "failed");
-  assert.equal(aggregateNative([], false, cleanup).variants.length, 7);
-  assert.ok(aggregateNative([], true, cleanup).variants.every((row) => row.status === "cancelled"));
+  NodeAssert.strict.equal(finishNativeVariant(variant, missing, 0).status, "failed");
+  NodeAssert.strict.equal(aggregateNative([], false, cleanup).variants.length, 7);
+  NodeAssert.strict.ok(aggregateNative([], true, cleanup).variants.every((row) => row.status === "cancelled"));
   const negative = nativeVariants.find((value) => value.id === "negative");
   const safeFailure = {
     id: negative.id,
@@ -400,21 +399,21 @@ test("cancellation and a resource hold admit no starts; duplicate variants and m
     status: "failed",
     nativeCode: 1,
   };
-  assert.equal(finishNativeVariant(negative, safeFailure, 0).status, "expected-negative");
-  assert.equal(
+  NodeAssert.strict.equal(finishNativeVariant(negative, safeFailure, 0).status, "expected-negative");
+  NodeAssert.strict.equal(
     finishNativeVariant(negative, { ...safeFailure, nativeCode: 0 }, 0).status,
     "failed",
   );
-  assert.equal(finishNativeVariant(negative, safeFailure, 1).status, "failed");
+  NodeAssert.strict.equal(finishNativeVariant(negative, safeFailure, 1).status, "failed");
 });
 
-test("the consumed child controller forwards the exact cancellation signal and awaits close before boundary cleanup", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "native-workflow-signal-"));
+NodeTest.test("the consumed child controller forwards the exact cancellation signal and awaits close before boundary cleanup", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "native-workflow-signal-"));
   try {
     for (const signal of ["SIGINT", "SIGTERM"]) {
       const events = [],
-        signals = new EventEmitter(),
-        child = new EventEmitter();
+        signals = new NodeEvents.EventEmitter(),
+        child = new NodeEvents.EventEmitter();
       child.pid = 73;
       child.exitCode = null;
       child.signalCode = null;
@@ -424,7 +423,7 @@ test("the consumed child controller forwards the exact cancellation signal and a
         null,
         {
           end: (gate) => {
-            assert.equal(gate, "1");
+            NodeAssert.strict.equal(gate, "1");
             events.push("admitted");
             queueMicrotask(() => signals.emit(signal));
           },
@@ -438,15 +437,15 @@ test("the consumed child controller forwards the exact cancellation signal and a
         signals,
         launch: (_exe, _args, options) => {
           starts++;
-          assert.equal(options.detached, true);
+          NodeAssert.strict.equal(options.detached, true);
           return child;
         },
         captureIdentity: async () => ({ pid: 73, pgid: 73, startTicks: "400" }),
         journal: async () => events.push("identity-journal"),
         absent: () => true,
         signalGroup: (pgid, forwarded) => {
-          assert.equal(pgid, 73);
-          assert.equal(forwarded, signal);
+          NodeAssert.strict.equal(pgid, 73);
+          NodeAssert.strict.equal(forwarded, signal);
           events.push(`signal:${forwarded}`);
           queueMicrotask(() => {
             child.signalCode = forwarded;
@@ -456,30 +455,30 @@ test("the consumed child controller forwards the exact cancellation signal and a
         },
       });
       events.push("boundary-cleanup");
-      assert.equal(starts, 1);
-      assert.equal(result.cancelled, signal);
-      assert.deepEqual(result.forwarded, [signal]);
-      assert.equal(result.code, signal === "SIGINT" ? 130 : 143);
-      assert.deepEqual(events, [
+      NodeAssert.strict.equal(starts, 1);
+      NodeAssert.strict.equal(result.cancelled, signal);
+      NodeAssert.strict.deepEqual(result.forwarded, [signal]);
+      NodeAssert.strict.equal(result.code, signal === "SIGINT" ? 130 : 143);
+      NodeAssert.strict.deepEqual(events, [
         "identity-journal",
         "admitted",
         `signal:${signal}`,
         "close",
         "boundary-cleanup",
       ]);
-      assert.equal(signals.listenerCount("SIGINT") + signals.listenerCount("SIGTERM"), 0);
+      NodeAssert.strict.equal(signals.listenerCount("SIGINT") + signals.listenerCount("SIGTERM"), 0);
     }
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await NodeFSP.rm(root, { recursive: true, force: true });
   }
 });
 
-test("the existing namespace owner forwards cancellation before removing its exact registered scratch", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "native-workflow-namespace-"));
+NodeTest.test("the existing namespace owner forwards cancellation before removing its exact registered scratch", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "native-workflow-namespace-"));
   try {
     const events = [],
-      signals = new EventEmitter(),
-      child = new EventEmitter();
+      signals = new NodeEvents.EventEmitter(),
+      child = new NodeEvents.EventEmitter();
     child.pid = undefined;
     child.exitCode = null;
     child.signalCode = null;
@@ -502,29 +501,29 @@ test("the existing namespace owner forwards cancellation before removing its exa
       },
       remove: async (owned) => {
         events.push("remove");
-        assert.equal(owned, run);
+        NodeAssert.strict.equal(owned, run);
         return removeRun(owned);
       },
     });
-    assert.equal(result.code, 143);
-    assert.deepEqual(events, ["signal:SIGTERM", "close", "remove"]);
+    NodeAssert.strict.equal(result.code, 143);
+    NodeAssert.strict.deepEqual(events, ["signal:SIGTERM", "close", "remove"]);
     const registry = await readNativeEvidence(run.registry);
-    assert.equal(registry.cleanup, "complete");
-    assert.deepEqual(registry.namespaceProcess, result.namespaceProcess);
-    await assert.rejects(fs.lstat(run.root), { code: "ENOENT" });
+    NodeAssert.strict.equal(registry.cleanup, "complete");
+    NodeAssert.strict.deepEqual(registry.namespaceProcess, result.namespaceProcess);
+    await NodeAssert.strict.rejects(NodeFSP.lstat(run.root), { code: "ENOENT" });
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await NodeFSP.rm(root, { recursive: true, force: true });
   }
 });
 
-test("the consumed row reader fences an orphan first attempt and rejects evidence lost after a saved safe boundary", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "native-workflow-evidence-"));
+NodeTest.test("the consumed row reader fences an orphan first attempt and rejects evidence lost after a saved safe boundary", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "native-workflow-evidence-"));
   try {
-    await fs.writeFile(path.join(root, "positive-started.json"), JSON.stringify({ attempts: 1 }));
+    await NodeFSP.writeFile(NodePath.join(root, "positive-started.json"), JSON.stringify({ attempts: 1 }));
     const orphan = await readNativeWorkflowRows(root);
-    assert.equal(orphan[0].safe, false);
-    assert.match(orphan[0].reason, /reconciliation required/);
-    assert.equal(nativeAdmission("positive", orphan), "first-attempt-already-recorded");
+    NodeAssert.strict.equal(orphan[0].safe, false);
+    NodeAssert.strict.match(orphan[0].reason, /reconciliation required/);
+    NodeAssert.strict.equal(nativeAdmission("positive", orphan), "first-attempt-already-recorded");
     const fixture = boundaryFixture(false);
     const evidence = {};
     for (const [key, file, value] of [
@@ -534,13 +533,13 @@ test("the consumed row reader fences an orphan first attempt and rejects evidenc
       ["registry", "positive-boundary/registry.json", fixture.record],
     ]) {
       const bytes = JSON.stringify(value);
-      await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
-      await fs.writeFile(path.join(root, file), bytes);
+      await NodeFSP.mkdir(NodePath.dirname(NodePath.join(root, file)), { recursive: true });
+      await NodeFSP.writeFile(NodePath.join(root, file), bytes);
       evidence[key] = { file, sha256: sha256(bytes) };
     }
-    await fs.mkdir(path.join(root, "build"));
+    await NodeFSP.mkdir(NodePath.join(root, "build"));
     const receipt = JSON.stringify(fixture.receipt);
-    await fs.writeFile(path.join(root, "build/receipt.json"), receipt);
+    await NodeFSP.writeFile(NodePath.join(root, "build/receipt.json"), receipt);
     evidence.buildReceiptSha256 = sha256(receipt);
     const attempt = {
       id: "positive",
@@ -554,30 +553,30 @@ test("the consumed row reader fences an orphan first attempt and rejects evidenc
       controller: { groupAbsent: true, identity: { pid: 91, pgid: 91, startTicks: "500" } },
       evidence,
     };
-    await fs.writeFile(path.join(root, "positive-attempt.json"), JSON.stringify(attempt));
-    await fs.writeFile(
-      path.join(root, "positive-outcome.json"),
+    await NodeFSP.writeFile(NodePath.join(root, "positive-attempt.json"), JSON.stringify(attempt));
+    await NodeFSP.writeFile(
+      NodePath.join(root, "positive-outcome.json"),
       JSON.stringify(finishNativeVariant(nativeVariants[0], attempt, 0)),
     );
-    assert.equal((await readNativeWorkflowRows(root))[0].status, "passed");
-    await fs.rm(path.join(root, "positive/inner.json"));
+    NodeAssert.strict.equal((await readNativeWorkflowRows(root))[0].status, "passed");
+    await NodeFSP.rm(NodePath.join(root, "positive/inner.json"));
     const missing = (await readNativeWorkflowRows(root))[0];
-    assert.equal(missing.safe, false);
-    assert.equal(missing.nativeCode, 0);
-    assert.equal(missing.status, "failed");
-    assert.equal(nativeAdmission("negative", [missing]), "unproved-boundary:positive");
+    NodeAssert.strict.equal(missing.safe, false);
+    NodeAssert.strict.equal(missing.nativeCode, 0);
+    NodeAssert.strict.equal(missing.status, "failed");
+    NodeAssert.strict.equal(nativeAdmission("negative", [missing]), "unproved-boundary:positive");
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await NodeFSP.rm(root, { recursive: true, force: true });
   }
 });
 
 function workflowStep(yaml, name) {
   const step = yaml.split(`      - name: ${name}\n`)[1];
-  assert.ok(step, name);
+  NodeAssert.strict.ok(step, name);
   return step.split(/\n      - name: /)[0];
 }
 
-test("actual YAML keeps one build, exact qualification gates, serial first attempts, unchanged negative oracles and evidence retention", async () => {
+NodeTest.test("actual YAML keeps one build, exact qualification gates, serial first attempts, unchanged negative oracles and evidence retention", async () => {
   const yaml = await workflow();
   const groups = [
     ["Run JE-01R and its unchanged-oracle negative once each", "sidebar", null],
@@ -592,10 +591,10 @@ test("actual YAML keeps one build, exact qualification gates, serial first attem
   ];
   for (const [name, id, previous] of groups) {
     const step = workflowStep(yaml, name);
-    assert.ok(step.includes(`id: ${id}\n`));
+    NodeAssert.strict.ok(step.includes(`id: ${id}\n`));
     const condition = step.split("        if: >-\n")[1].split("        env:")[0];
-    assert.ok(condition.includes("!cancelled()"));
-    assert.ok(!condition.includes("always()"));
+    NodeAssert.strict.ok(condition.includes("!cancelled()"));
+    NodeAssert.strict.ok(!condition.includes("always()"));
     for (const key of [
       "allocation",
       "candidate",
@@ -609,24 +608,24 @@ test("actual YAML keeps one build, exact qualification gates, serial first attem
       "doctor",
       "negatives",
     ])
-      assert.ok(condition.includes(`steps.${key}.outcome == 'success'`), `${id}:${key}`);
-    if (previous) assert.ok(condition.includes(`steps.${previous}.outputs.safe == 'true'`));
-    assert.ok(!step.includes("continue-on-error"));
-    assert.ok(!step.includes("continue-on-error") && !/for\s+attempt\s+in/.test(step));
+      NodeAssert.strict.ok(condition.includes(`steps.${key}.outcome == 'success'`), `${id}:${key}`);
+    if (previous) NodeAssert.strict.ok(condition.includes(`steps.${previous}.outputs.safe == 'true'`));
+    NodeAssert.strict.ok(!step.includes("continue-on-error"));
+    NodeAssert.strict.ok(!step.includes("continue-on-error") && !/for\s+attempt\s+in/.test(step));
     if (id !== "servers") {
-      assert.ok(step.includes("scripts/jones/ci/native-workflow-evidence.mjs run"));
-      assert.ok(step.includes("scripts/jones/ci/native-workflow-evidence.mjs finish"));
-      assert.ok(step.includes(`scripts/jones/ci/native-workflow-evidence.mjs gate ${id}`));
-      assert.ok(!step.includes("ui-evidence.mjs run"));
+      NodeAssert.strict.ok(step.includes("scripts/jones/ci/native-workflow-evidence.mjs run"));
+      NodeAssert.strict.ok(step.includes("scripts/jones/ci/native-workflow-evidence.mjs finish"));
+      NodeAssert.strict.ok(step.includes(`scripts/jones/ci/native-workflow-evidence.mjs gate ${id}`));
+      NodeAssert.strict.ok(!step.includes("ui-evidence.mjs run"));
     }
   }
-  assert.equal((yaml.match(/spawnSync\('vp', \['run', 'build:desktop'\]/g) ?? []).length, 1);
-  assert.ok(yaml.includes("for variant in positive negative; do"));
-  assert.ok(yaml.includes("for queue_case in workflow no-edit-negative; do"));
-  assert.ok(
+  NodeAssert.strict.equal((yaml.match(/spawnSync\('vp', \['run', 'build:desktop'\]/g) ?? []).length, 1);
+  NodeAssert.strict.ok(yaml.includes("for variant in positive negative; do"));
+  NodeAssert.strict.ok(yaml.includes("for queue_case in workflow no-edit-negative; do"));
+  NodeAssert.strict.ok(
     yaml.includes("const expected = 'Scenario assertion failed: Backend target is pinned'"),
   );
-  assert.ok(
+  NodeAssert.strict.ok(
     yaml.includes(
       "const expected = 'Scenario assertion failed: M2 retains exactly the edited text'",
     ),
@@ -644,40 +643,40 @@ test("actual YAML keeps one build, exact qualification gates, serial first attem
     "twoGenerationsClosed",
     "nativeChecks",
   ])
-    assert.ok(yaml.includes(oracle), oracle);
+    NodeAssert.strict.ok(yaml.includes(oracle), oracle);
   const servers = workflowStep(yaml, groups[4][0]);
-  assert.ok(servers.includes("'wholeRunCapSeconds': 390"));
-  assert.ok(servers.includes("--secret-service', 'system'"));
+  NodeAssert.strict.ok(servers.includes("'wholeRunCapSeconds': 390"));
+  NodeAssert.strict.ok(servers.includes("--secret-service', 'system'"));
   const signalHandler = servers
     .split("def cancelled(signum, _frame):")[1]
     .split("signal.signal(signal.SIGALRM")[0];
-  assert.ok(
+  NodeAssert.strict.ok(
     signalHandler.indexOf("signal_owned(signum)") < signalHandler.indexOf("raise RuntimeError"),
   );
   const cleanupStep = workflowStep(yaml, "Verify cleanup of this job's registered runs");
-  assert.ok(cleanupStep.includes("if: always()"));
-  assert.ok(
+  NodeAssert.strict.ok(cleanupStep.includes("if: always()"));
+  NodeAssert.strict.ok(
     yaml.indexOf("Validate the JE-03 first-attempt boundary") <
       yaml.indexOf("Verify cleanup of this job's registered runs"),
   );
-  assert.ok(
+  NodeAssert.strict.ok(
     yaml.indexOf("Verify cleanup of this job's registered runs") <
       yaml.indexOf("Aggregate every required first attempt"),
   );
-  assert.ok(
+  NodeAssert.strict.ok(
     yaml.indexOf("Aggregate every required first attempt") <
       yaml.indexOf("Preserve bounded native evidence"),
   );
   const remove = workflowStep(yaml, "Remove only this job's scratch after evidence upload");
-  assert.ok(
+  NodeAssert.strict.ok(
     remove.includes("steps.evidence.outcome == 'success' && steps.cleanup.outcome == 'success'"),
   );
-  assert.ok(yaml.includes('cron: "45 4 * * *"'));
-  assert.ok(yaml.includes("contains(github.event.pull_request.labels.*.name, 'native-e2e')"));
+  NodeAssert.strict.ok(yaml.includes('cron: "45 4 * * *"'));
+  NodeAssert.strict.ok(yaml.includes("contains(github.event.pull_request.labels.*.name, 'native-e2e')"));
 });
 
-test("the YAML's original JE-01R negative oracle accepts its exact failing assertion and rejects changed or missing evidence", async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), "native-workflow-oracle-"));
+NodeTest.test("the YAML's original JE-01R negative oracle accepts its exact failing assertion and rejects changed or missing evidence", async () => {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "native-workflow-oracle-"));
   try {
     const yaml = await workflow();
     const step = workflowStep(yaml, "Run JE-01R and its unchanged-oracle negative once each");
@@ -690,16 +689,16 @@ test("the YAML's original JE-01R negative oracle accepts its exact failing asser
     const fixture = boundaryFixture();
     fixture.manifest.fixture.variant = "no-action-negative";
     fixture.manifest.resources = { settledIntervalSeconds: 20 };
-    await fs.mkdir(path.join(root, "negative"));
-    await fs.writeFile(path.join(root, "negative-result.json"), JSON.stringify(fixture.result));
-    await fs.writeFile(path.join(root, "negative/manifest.json"), JSON.stringify(fixture.manifest));
-    await fs.writeFile(path.join(root, "negative/inner.json"), JSON.stringify(fixture.inner));
-    await fs.writeFile(
-      path.join(root, "scenario-hashes.json"),
+    await NodeFSP.mkdir(NodePath.join(root, "negative"));
+    await NodeFSP.writeFile(NodePath.join(root, "negative-result.json"), JSON.stringify(fixture.result));
+    await NodeFSP.writeFile(NodePath.join(root, "negative/manifest.json"), JSON.stringify(fixture.manifest));
+    await NodeFSP.writeFile(NodePath.join(root, "negative/inner.json"), JSON.stringify(fixture.inner));
+    await NodeFSP.writeFile(
+      NodePath.join(root, "scenario-hashes.json"),
       JSON.stringify({ negative: fixture.manifest.scenario.sha256 }),
     );
     const invoke = () =>
-      execFileSync(process.execPath, ["--input-type=module", "-e", body], {
+      NodeChildProcess.execFileSync(process.execPath, ["--input-type=module", "-e", body], {
         cwd: repo,
         env: {
           ...process.env,
@@ -713,14 +712,14 @@ test("the YAML's original JE-01R negative oracle accepts its exact failing asser
       });
     invoke();
     fixture.manifest.assertions[0].name = "A different assertion";
-    await fs.writeFile(path.join(root, "negative/manifest.json"), JSON.stringify(fixture.manifest));
-    assert.throws(invoke);
-    await fs.rm(path.join(root, "negative/inner.json"));
-    assert.throws(invoke);
-    await assert.rejects(readNativeEvidence(path.join(root, "negative/inner.json")), {
+    await NodeFSP.writeFile(NodePath.join(root, "negative/manifest.json"), JSON.stringify(fixture.manifest));
+    NodeAssert.strict.throws(invoke);
+    await NodeFSP.rm(NodePath.join(root, "negative/inner.json"));
+    NodeAssert.strict.throws(invoke);
+    await NodeAssert.strict.rejects(readNativeEvidence(NodePath.join(root, "negative/inner.json")), {
       code: "ENOENT",
     });
   } finally {
-    await fs.rm(root, { recursive: true, force: true });
+    await NodeFSP.rm(root, { recursive: true, force: true });
   }
 });

@@ -479,118 +479,116 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
     }),
   );
 
-  for (const batchWindowMs of [0, 1_000]) {
-    it.effect(
-      `writes B and sends a Codex request before releasing held disk A (batch ${batchWindowMs})`,
-      () =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const tempDir = yield* Effect.acquireRelease(
-              Effect.sync(() =>
-                NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-")),
-              ),
-              (directory) =>
-                Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
-            );
-            const basePath = NodePath.join(tempDir, "events.log");
-            const fs = yield* FileSystem.FileSystem;
-            const started = yield* Deferred.make<void>();
-            const secondWritten = yield* Deferred.make<void>();
-            const release = yield* Deferred.make<void>();
-            const store = yield* Effect.acquireRelease(
-              makeEventNdjsonLogStore(basePath, { batchWindowMs, maxBufferedRecords: 2 }).pipe(
-                Effect.provideService(FileSystem.FileSystem, {
-                  ...fs,
-                  writeFile: (filePath, content, options) =>
-                    Effect.gen(function* () {
-                      if (filePath === ownedLogPath(basePath, "held")) {
-                        yield* Deferred.succeed(started, undefined);
-                        yield* Deferred.await(release);
-                      }
-                      yield* fs.writeFile(filePath, content, options);
-                      if (filePath === ownedLogPath(basePath, "free")) {
-                        yield* Deferred.succeed(secondWritten, undefined);
-                      }
-                    }),
-                }),
-              ),
-              (store) => store.close(),
-            );
-            yield* Effect.gen(function* () {
-              const first = yield* store
-                .logger("native")
-                .write({ id: "first" }, ThreadId.make("held"))
-                .pipe(Effect.forkScoped({ startImmediately: true }));
-              if (batchWindowMs > 0) yield* TestClock.adjust(batchWindowMs);
-              yield* Deferred.await(started);
+  it.effect.each([0, 1_000])(
+    "writes B and sends a Codex request before releasing held disk A (batch %i)",
+    (batchWindowMs) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const tempDir = yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-provider-log-")),
+            ),
+            (directory) =>
+              Effect.sync(() => NodeFS.rmSync(directory, { recursive: true, force: true })),
+          );
+          const basePath = NodePath.join(tempDir, "events.log");
+          const fs = yield* FileSystem.FileSystem;
+          const started = yield* Deferred.make<void>();
+          const secondWritten = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const store = yield* Effect.acquireRelease(
+            makeEventNdjsonLogStore(basePath, { batchWindowMs, maxBufferedRecords: 2 }).pipe(
+              Effect.provideService(FileSystem.FileSystem, {
+                ...fs,
+                writeFile: (filePath, content, options) =>
+                  Effect.gen(function* () {
+                    if (filePath === ownedLogPath(basePath, "held")) {
+                      yield* Deferred.succeed(started, undefined);
+                      yield* Deferred.await(release);
+                    }
+                    yield* fs.writeFile(filePath, content, options);
+                    if (filePath === ownedLogPath(basePath, "free")) {
+                      yield* Deferred.succeed(secondWritten, undefined);
+                    }
+                  }),
+              }),
+            ),
+            (store) => store.close(),
+          );
+          yield* Effect.gen(function* () {
+            const first = yield* store
+              .logger("native")
+              .write({ id: "first" }, ThreadId.make("held"))
+              .pipe(Effect.forkScoped({ startImmediately: true }));
+            if (batchWindowMs > 0) yield* TestClock.adjust(batchWindowMs);
+            yield* Deferred.await(started);
 
-              const second = store.logger("canonical");
-              const secondWrite = yield* second
-                .write({ id: "second", type: "item.completed" }, ThreadId.make("free"))
-                .pipe(Effect.forkScoped({ startImmediately: true }));
-              if (batchWindowMs > 0) yield* TestClock.adjust(batchWindowMs);
-              yield* Deferred.await(secondWritten);
-              yield* Fiber.join(secondWrite);
-              assert.include(
-                NodeFS.readFileSync(ownedLogPath(basePath, "free"), "utf8"),
-                '"second"',
-              );
+            const second = store.logger("canonical");
+            const secondWrite = yield* second
+              .write({ id: "second", type: "item.completed" }, ThreadId.make("free"))
+              .pipe(Effect.forkScoped({ startImmediately: true }));
+            if (batchWindowMs > 0) yield* TestClock.adjust(batchWindowMs);
+            yield* Deferred.await(secondWritten);
+            yield* Fiber.join(secondWrite);
+            assert.include(
+              NodeFS.readFileSync(ownedLogPath(basePath, "free"), "utf8"),
+              '"second"',
+            );
 
-              const input = yield* Queue.unbounded<Uint8Array>();
-              const output = yield* Queue.unbounded<string>();
-              const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
-                stdio: Stdio.make({
-                  args: Effect.succeed([]),
-                  stdin: Stream.fromQueue(input),
-                  stdout: () =>
-                    Sink.forEach((chunk: string | Uint8Array) =>
-                      Queue.offer(
-                        output,
-                        typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
-                      ),
+            const input = yield* Queue.unbounded<Uint8Array>();
+            const output = yield* Queue.unbounded<string>();
+            const transport = yield* CodexProtocol.makeCodexAppServerPatchedProtocol({
+              stdio: Stdio.make({
+                args: Effect.succeed([]),
+                stdin: Stream.fromQueue(input),
+                stdout: () =>
+                  Sink.forEach((chunk: string | Uint8Array) =>
+                    Queue.offer(
+                      output,
+                      typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk),
                     ),
-                  stderr: () => Sink.drain,
-                }),
-                logOutgoing: true,
-                logger: (event) =>
-                  store.logger("native").write({ provider: "codex", event }, ThreadId.make("free")),
-              });
-              const request = yield* transport
-                .request("thread/read", { threadId: "synthetic-B" })
-                .pipe(Effect.forkScoped);
-              assert.deepEqual(decodeUnknownJson(yield* Queue.take(output)), {
-                id: 1,
-                method: "thread/read",
-                params: { threadId: "synthetic-B" },
-              });
-              assert.equal(yield* Deferred.isDone(release), false);
-              yield* Queue.offer(
-                input,
-                new TextEncoder().encode('{"id":1,"result":{"ok":true}}\n'),
-              );
-              assert.deepEqual(yield* Fiber.join(request), { ok: true });
+                  ),
+                stderr: () => Sink.drain,
+              }),
+              logOutgoing: true,
+              logger: (event) =>
+                store.logger("native").write({ provider: "codex", event }, ThreadId.make("free")),
+            });
+            const request = yield* transport
+              .request("thread/read", { threadId: "synthetic-B" })
+              .pipe(Effect.forkScoped);
+            assert.deepEqual(decodeUnknownJson(yield* Queue.take(output)), {
+              id: 1,
+              method: "thread/read",
+              params: { threadId: "synthetic-B" },
+            });
+            assert.equal(yield* Deferred.isDone(release), false);
+            yield* Queue.offer(
+              input,
+              new TextEncoder().encode('{"id":1,"result":{"ok":true}}\n'),
+            );
+            assert.deepEqual(yield* Fiber.join(request), { ok: true });
 
-              const closed = yield* Deferred.make<void>();
-              const close = yield* store
-                .close()
-                .pipe(
-                  Effect.andThen(Deferred.succeed(closed, undefined)),
-                  Effect.forkScoped({ startImmediately: true }),
-                );
-              assert.equal(yield* Deferred.isDone(closed), false);
-              const heartbeat = yield* Deferred.make<void>();
-              yield* Effect.forkScoped(Deferred.succeed(heartbeat, undefined));
-              yield* Deferred.await(heartbeat);
-              yield* Deferred.succeed(release, undefined);
-              yield* Fiber.join(first);
-              yield* Fiber.join(close);
-              assert.include(
-                NodeFS.readFileSync(ownedLogPath(basePath, "held"), "utf8"),
-                '{"id":"first"}',
+            const closed = yield* Deferred.make<void>();
+            const close = yield* store
+              .close()
+              .pipe(
+                Effect.andThen(Deferred.succeed(closed, undefined)),
+                Effect.forkScoped({ startImmediately: true }),
               );
-            }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
-          }),
-        ),
-    );
-  }
+            assert.equal(yield* Deferred.isDone(closed), false);
+            const heartbeat = yield* Deferred.make<void>();
+            yield* Effect.forkScoped(Deferred.succeed(heartbeat, undefined));
+            yield* Deferred.await(heartbeat);
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(first);
+            yield* Fiber.join(close);
+            assert.include(
+              NodeFS.readFileSync(ownedLogPath(basePath, "held"), "utf8"),
+              '{"id":"first"}',
+            );
+          }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+        }),
+      ),
+  );
 });

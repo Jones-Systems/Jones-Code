@@ -11141,7 +11141,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         );
 
         const closeSession = Effect.fnUntraced(function* () {
-          for (const existing of [...boundQueriesByNativeThread.values()]) {
+          const capturedQueries = [...boundQueriesByNativeThread.values()];
+          for (const existing of capturedQueries) {
             yield* closeCapturedQuery(existing).pipe(Effect.orDie);
           }
           if (queryBindingUnknown) {

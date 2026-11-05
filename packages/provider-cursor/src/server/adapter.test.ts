@@ -217,8 +217,6 @@ describe("CursorAdapterV2", () => {
           attachments: [],
           createdBy: "user",
           creationSource: "web",
-          scheduledTaskId: null,
-          senderThreadId: null,
         },
       };
       const starting = yield* runtime.startTurn(turn).pipe(Effect.forkChild);
@@ -1292,7 +1290,10 @@ describe("CursorAdapterV2", () => {
         let sends = 0;
         let closes = 0;
         // The SDK checks every create, resume, and send model against the account catalog.
-        const checkModel = (method: string, model: { readonly id: string } | undefined) =>
+        const checkModel = (
+          method: string,
+          model: { readonly id: string } | undefined,
+        ): Effect.Effect<void, CursorAgentSdk.CursorAgentSdkRunnerError> =>
           model === undefined || model.id === "composer-2.5"
             ? Effect.void
             : Effect.fail(
