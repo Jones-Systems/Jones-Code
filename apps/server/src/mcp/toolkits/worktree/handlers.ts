@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../../../jones/workspaceLifecycle/Provenance.ts";
 import { OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as GitWorkflow from "../../../git/GitWorkflowService.ts";
@@ -19,7 +20,7 @@ const handlers = {
           code: "capability_denied",
           message: "This credential cannot inspect worktrees.",
         });
-      const { threadId, ...refs } = input;
+      const { threadId, provenancePath, ...refs } = input;
       const {
         projection: { thread },
       } = yield* readThread(threadId);
@@ -31,9 +32,19 @@ const handlers = {
           message: "The project was not found.",
         });
       const git = yield* GitWorkflow.GitWorkflowService;
-      return yield* git
+      const result = yield* git
         .listRefs({ ...refs, cwd: thread.worktreePath ?? project.value.workspaceRoot })
         .pipe(Effect.mapError(unavailable));
+      const lookup = yield* WorkspaceProvenance.optionalLookup;
+      const provenance = yield* lookup(
+        provenancePath === undefined ? { threadId: thread.id } : { path: provenancePath },
+      ).pipe(Effect.mapError(unavailable));
+      return {
+        ...result,
+        ...(provenance === undefined
+          ? {}
+          : { provenance: provenance.filter((p) => p.projectId === thread.projectId) }),
+      };
     }),
   ),
   t3_worktree_handoff: McpToolAccess.actsAsCaller((input) =>

@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.test.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/AccountTransferRetirement.integration.test.ts": "jones-owned",
     "packages/shared/src/devProxy.ts": "accepted-shared",
     "apps/server/src/jones/auth/devProxy.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/dev-proxy-cookie-auth.json": "jones-owned",
@@ -2545,7 +2548,8 @@
     "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned",
     "apps/server/src/jones/orchestration/pendingControlItems.ts": "jones-owned",
     "apps/server/src/jones/orchestration/pendingControlItems.test.ts": "jones-owned",
-    "scripts/jones/boundary/fragments/pending-control-items.json": "jones-owned"
+    "scripts/jones/boundary/fragments/pending-control-items.json": "jones-owned",
+    "packages/contracts/src/worktreeMcp.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

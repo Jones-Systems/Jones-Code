@@ -143,3 +143,64 @@ it("accepts only the exact captured source binding", () => {
   ])
     assert.isFalse(receiptMatches(binding, { ...binding, ...changed }));
 });
+
+it.effect(
+  "account-transfer fences follow the conversation, while the runtime marker survives every completion path",
+  () =>
+    Effect.gen(function* () {
+      for (const finish of ["complete", "failed", "scope"] as const) {
+        const ledger = makeRetirementLedger();
+        const source = {};
+        const scope = yield* Scope.make();
+        const record = ledger.retain({
+          source,
+          scope,
+          providerSessionId: sessionId,
+          threadIds: new Set([threadId]),
+          kind: "transfer",
+          sessionWide: false,
+          bindings: [binding],
+          conversationKey: "K",
+        });
+        const target = { providerSessionId: ProviderSessionId.make("target"), threadId };
+        assert.isTrue(ledger.retiredWriter(source, threadId));
+        assert.isFalse(ledger.retiredWriter({}, threadId));
+        assert.isFalse(ledger.retiredWriter(source, ThreadId.make("sibling")));
+        assert.isTrue(ledger.blocks({ ...target, destinationKey: "K" }));
+        assert.isTrue(ledger.blocks(target));
+        assert.isFalse(ledger.blocks({ ...target, destinationKey: "unrelated" }));
+        assert.deepEqual(ledger.pendingConversation(threadId, "K"), [record]);
+        assert.deepEqual(ledger.pendingConversation(threadId, undefined), [record]);
+        assert.deepEqual(ledger.pendingConversation(threadId, "unrelated"), []);
+        if (finish === "failed")
+          yield* Deferred.fail(
+            record.completion,
+            new WriterRetirementError({ providerSessionId: sessionId, cause: "proof failed" }),
+          );
+        else if (finish === "scope") yield* ledger.completeScope(scope);
+        else yield* ledger.complete(record);
+        assert.isTrue(ledger.retiredWriter(source, threadId));
+        if (finish === "failed") assert.isTrue(ledger.blocks({ ...target, destinationKey: "K" }));
+      }
+      const ledger = makeRetirementLedger();
+      const source = {};
+      ledger.retain({
+        source,
+        scope: yield* Scope.make(),
+        providerSessionId: sessionId,
+        threadIds: new Set([threadId]),
+        kind: "session",
+        sessionWide: true,
+        bindings: [],
+      });
+      assert.isFalse(ledger.retiredWriter(source, threadId));
+      assert.isTrue(
+        ledger.blocks({
+          providerSessionId: ProviderSessionId.make("different"),
+          threadId,
+          destinationKey: "unrelated",
+        }),
+      );
+      assert.deepEqual(ledger.pendingConversation(threadId, "K"), []);
+    }),
+);
