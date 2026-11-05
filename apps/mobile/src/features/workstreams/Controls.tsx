@@ -1,3 +1,4 @@
+import { MobileWorkstreamExport } from "../../jones/workstreams/MobileWorkstreamExport";
 import {
   nativeWorkstreamsLabel,
   nativeWorkstreamReadLabel,
@@ -330,6 +331,7 @@ export function MobileWorkstreamControls({
                 : "Thread assignment requires current verified enrollment."}
             </Text>
           ) : null}
+          <MobileWorkstreamExport api={api} snapshot={snapshot} />
           <Pressable accessibilityRole="button" onPress={api.toggleEnabled}>
             <Text>{api.enabled ? "Use native order" : "Group by Workstream"}</Text>
           </Pressable>

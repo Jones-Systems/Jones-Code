@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import { ChevronDownIcon, ChevronUpIcon, GripVerticalIcon, MoreHorizontalIcon } from "lucide-react";
 import { useLayoutEffect, useRef, useState, type ReactNode, type DragEvent } from "react";
 
+import { WorkstreamExportButton } from "../../jones/workstreams/WorkstreamExportButton";
 import { WorkstreamAddPrDialog } from "../../jones/workstreams/WorkstreamAddPrDialog";
 import {
   refreshWorkstreamPr,
@@ -458,6 +459,7 @@ export function WorkstreamSidebarSection(props: {
 
   return (
     <section aria-label="Owner Workstreams" className="border-b border-sidebar-border/60 px-2 pb-2">
+      <WorkstreamExportButton controller={props.controller} />
       {props.controller.primaryAssignmentAvailability?.state === "unavailable" ? (
         <div role="status" className="px-1 pb-2 text-xs text-muted-foreground">
           <p>

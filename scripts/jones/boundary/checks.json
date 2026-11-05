@@ -3629,7 +3629,11 @@
         "packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts",
         "apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx",
         "apps/mobile/src/features/workstreams/nativeLifetime.test.tsx",
-        "packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts"
+        "packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts",
+        "apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx",
+        "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx",
+        "apps/mobile/src/lib/attachmentDownload.test.ts",
+        "apps/mobile/src/features/workstreams/Controls.operations.test.tsx"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/state/workstreams/nativeRead.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts --maxWorkers=1 --no-file-parallelism",
@@ -3653,7 +3657,8 @@
         "vp test run packages/contracts/src/jones/workstreamsPeerAuthority.test.ts packages/contracts/src/jones/workstreamsForwardReadmission.test.ts packages/contracts/src/jones/workstreamsHomeReadResult.test.ts apps/server/src/jones/persistence/Migrations/128_JonesWorkstreamsPeerSessionPins.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run apps/server/src/jones/workstreams/native/store/peerSessionPinStore.test.ts apps/server/src/jones/workstreams/native/runtime/peerSessionPins.test.ts apps/server/src/jones/workstreams/native/runtime/peerSessionPinSetup.test.ts apps/server/src/jones/workstreams/native/forwarding/guard.twoServer.test.ts --maxWorkers=1 --no-file-parallelism",
         "vp test run packages/client-runtime/src/jones/workstreams/nativeHttp.test.ts packages/client-runtime/src/state/workstreams/nativeRead.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks",
-        "vp test run packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx apps/mobile/src/features/workstreams/nativeLifetime.test.tsx --maxWorkers=1 --no-file-parallelism --pool=forks"
+        "vp test run packages/client-runtime/src/jones/workstreams/nativePlacements.test.ts packages/client-runtime/src/jones/workstreams/nativeLifetime.test.ts apps/web/src/jones/workstreams/useNativeWorkstreamReads.test.tsx apps/mobile/src/features/workstreams/nativeLifetime.test.tsx --maxWorkers=1 --no-file-parallelism --pool=forks",
+        "vp test run apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx apps/mobile/src/lib/attachmentDownload.test.ts --maxWorkers=1 --no-file-parallelism --pool=forks"
       ]
     },
     {

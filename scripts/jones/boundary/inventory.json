@@ -2225,7 +2225,13 @@
     "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/forwarding/memberCommandReceipts.test.ts": "jones-owned",
     "apps/server/src/jones/workstreams/native/read/memberPlacements.ts": "jones-owned",
-    "apps/server/src/jones/workstreams/native/read/memberPlacements.test.ts": "jones-owned"
+    "apps/server/src/jones/workstreams/native/read/memberPlacements.test.ts": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamExportButton.tsx": "jones-owned",
+    "apps/web/src/jones/workstreams/WorkstreamExportButton.browser.test.tsx": "jones-owned",
+    "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.tsx": "jones-owned",
+    "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx": "jones-owned",
+    "apps/mobile/src/lib/attachmentDownload.ts": "accepted-shared",
+    "apps/mobile/src/lib/attachmentDownload.test.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

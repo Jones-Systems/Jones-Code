@@ -98,3 +98,7 @@ refreshes them. A new ID is allowed only after a settled or sealed result,
 and is required after `contention`. A conflict shows the observed assignment;
 inspect it before issuing a new action. An older server reports unsupported
 instead of attempting a partial assignment.
+
+## Export native Workstreams
+
+On a connected native Workstreams server, choose **Export Workstreams** in the sidebar. Web and desktop download a complete `workstreams.ndjson` file; mobile opens the device’s save/share sheet. Read access is sufficient. The export is withheld if access changes, the connection is replaced, or the transfer cannot be verified as complete. Refresh Workstreams before retrying a failed export. Older servers keep their existing behavior.
