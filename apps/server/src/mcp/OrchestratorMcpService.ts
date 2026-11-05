@@ -17,6 +17,7 @@ import {
   type ModelSelection,
   NodeId,
   ORCHESTRATOR_MCP_RUNNING_TASK_NEXT,
+  THREAD_CONTENT_EVIDENCE_CAPABILITY,
   TurnItemId,
   type OrchestrationV2Run,
   OrchestrationV2DomainEvent,
@@ -105,6 +106,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -144,6 +146,7 @@ import {
 import { isLiveCallerShell, unavailable } from "./threadAccess.ts";
 import * as SecretRequests from "../secrets/SecretRequests.ts";
 import { composeAgentMessage } from "../jones/mcp/agentMessageHeader.ts";
+import { prepareThreadContentEvidence } from "../jones/mcp/threadContentEvidence.ts";
 import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 import {
@@ -616,13 +619,12 @@ function taskResultTransfer(
 
 function pageIncludesTerminalTaskResult(input: {
   readonly parent: Pick<OrchestrationV2ThreadProjection, "thread" | "contextTransfers">;
-  readonly page: ReadonlyArray<OrchestrationV2ThreadProjection["visibleTurnItems"][number]>;
+  readonly items: ReadonlyArray<OrchestratorMcpThreadTimelineItem>;
   readonly task: OrchestrationV2Subagent;
   readonly target: Pick<
     OrchestrationV2ThreadProjection,
     "thread" | "runs" | "contextTransfers" | "messages" | "turnItems"
   >;
-  readonly maxChars: number;
 }): boolean {
   const transfer = taskResultTransfer(input.parent, input.target, input.task);
   if (transfer === undefined) return false;
@@ -635,17 +637,16 @@ function pageIncludesTerminalTaskResult(input: {
   const result = subagentResultForRun(input.target, run);
   if (result.messageId === null && result.turnItemId === null) return false;
 
-  return input.page.some((row) => {
-    if (row.sourceThreadId !== input.target.thread.id) return false;
+  return input.items.some((item) => {
+    if (item.sourceThreadId !== input.target.thread.id) return false;
     const matchesResult =
-      (result.turnItemId !== null && row.sourceItemId === result.turnItemId) ||
+      (result.turnItemId !== null && item.itemId === result.turnItemId) ||
       (result.messageId !== null &&
-        row.item.type === "assistant_message" &&
-        row.item.messageId === result.messageId);
+        item.type === "assistant_message" &&
+        item.messageId === result.messageId);
     if (!matchesResult) return false;
 
-    const text = turnItemText(row.item);
-    return text !== null && text.length <= input.maxChars;
+    return item.text !== null && !item.textTruncated;
   });
 }
 
@@ -926,14 +927,9 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
 
 function timelineItem(input: {
   readonly row: OrchestrationV2ThreadProjection["visibleTurnItems"][number];
-  readonly maxChars: number;
-  readonly textOffset?: number;
   readonly messagesByThreadId: ReadonlyMap<ThreadId, OrchestrationV2ThreadProjection["messages"]>;
 }): OrchestratorMcpThreadTimelineItem {
   const text = turnItemText(input.row.item);
-  const offset = input.textOffset ?? 0;
-  const end = offset + input.maxChars;
-  const textTruncated = text !== null && text.length > end;
   const messageId =
     input.row.item.type === "user_message" || input.row.item.type === "assistant_message"
       ? input.row.item.messageId
@@ -958,9 +954,9 @@ function timelineItem(input: {
     type: input.row.item.type,
     status: input.row.item.status,
     title: input.row.item.title,
-    text: text === null ? null : text.slice(offset, end),
-    textTruncated,
-    nextTextOffset: textTruncated ? end : null,
+    text,
+    textTruncated: false,
+    nextTextOffset: null,
     updatedAt: DateTime.formatIso(input.row.item.updatedAt),
   };
 }
@@ -2297,6 +2293,7 @@ const make = Effect.gen(function* () {
           };
         }),
         features: {
+          threadContentEvidence: THREAD_CONTENT_EVIDENCE_CAPABILITY,
           remoteTaskObservationVersion: ObservationSupport.version,
           ...(resultDependencies === undefined ||
           !(yield* resultDependencies.available.pipe(Effect.mapError(unavailable)))
@@ -3146,6 +3143,15 @@ const make = Effect.gen(function* () {
         { concurrency: 1 },
       );
       const messagesByThreadId = new Map(sourceMessages);
+      const prepared = prepareThreadContentEvidence({
+        request: input,
+        environmentId: scope.environmentId,
+        items: page.map((row) => timelineItem({ row, messagesByThreadId })),
+        hasMore: timeline.hasMore,
+        maxChars,
+      });
+      if (Result.isFailure(prepared)) return yield* prepared.failure;
+      const items = prepared.success;
       const returnedRunIds = new Set(
         page.filter((row) => row.sourceThreadId === target.thread.id).map((row) => row.item.runId),
       );
@@ -3172,10 +3178,9 @@ const make = Effect.gen(function* () {
           if (
             pageIncludesTerminalTaskResult({
               parent,
-              page,
+              items,
               task,
               target: { ...target, ...resultRecords },
-              maxChars,
             })
           ) {
             yield* readTask(
@@ -3224,14 +3229,7 @@ const make = Effect.gen(function* () {
           .toSorted((left, right) => right.ordinal - left.ordinal)
           .slice(0, input.runLimit ?? DEFAULT_THREAD_RUN_LIMIT)
           .map(threadRun),
-        items: page.map((row) =>
-          timelineItem({
-            row,
-            maxChars,
-            messagesByThreadId,
-            ...(input.itemId === undefined ? {} : { textOffset: input.textOffset ?? 0 }),
-          }),
-        ),
+        items,
         nextPosition: page.at(-1)?.position ?? null,
         hasMore: timeline.hasMore,
       } satisfies OrchestratorMcpThreadReadResult;

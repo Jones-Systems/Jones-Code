@@ -54,6 +54,12 @@ import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { DelegatedTaskWorkspaceFields } from "./jones/delegatedTaskWorkspace.ts";
 import { DelegatedTaskSupervisionFields } from "./jones/delegatedTaskSupervision.ts";
 import { DelegatedTaskNativeSession } from "./jones/delegatedTaskNativeSession.ts";
+import {
+  ThreadContentEvidence,
+  ThreadContentEvidenceCapability,
+  ThreadContentEvidenceRequest,
+  isThreadContentEvidenceSelection,
+} from "./jones/threadContentEvidence.ts";
 
 const OrchestratorMcpPrompt = TrimmedNonEmptyString.check(Schema.isMaxLength(120_000));
 const OrchestratorMcpTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(512));
@@ -428,6 +434,7 @@ const clampedPositiveInt = (maximum: number) =>
   );
 
 export const OrchestratorMcpThreadReadInput = Schema.Struct({
+  contentEvidence: Schema.optional(ThreadContentEvidenceRequest),
   childProgressForRunId: Schema.optional(RunId),
   environmentId: OrchestratorMcpEnvironmentTarget,
   threadId: ThreadId,
@@ -444,7 +451,7 @@ export const OrchestratorMcpThreadReadInput = Schema.Struct({
   maxCharsPerItem: Schema.optional(clampedPositiveInt(50_000)).annotate({
     description: "Max chars per item, 1 to 50000.",
   }),
-});
+}).check(Schema.makeFilter(isThreadContentEvidenceSelection));
 export type OrchestratorMcpThreadReadInput = typeof OrchestratorMcpThreadReadInput.Type;
 
 export const OrchestratorMcpThreadDetail = Schema.Struct({
@@ -499,6 +506,7 @@ export const OrchestratorMcpThreadRun = Schema.Struct({
 export type OrchestratorMcpThreadRun = typeof OrchestratorMcpThreadRun.Type;
 
 export const OrchestratorMcpThreadTimelineItem = Schema.Struct({
+  contentEvidence: Schema.optional(ThreadContentEvidence),
   position: NonNegativeInt,
   visibility: Schema.Literals(["local", "inherited", "synthetic"]),
   sourceThreadId: ThreadId,
@@ -675,6 +683,7 @@ export const OrchestratorMcpCapabilitiesResult = Schema.Struct({
   interactionMode: ProviderInteractionMode,
   providers: Schema.Array(OrchestratorMcpProviderCapability),
   features: Schema.Struct({
+    threadContentEvidence: Schema.optional(ThreadContentEvidenceCapability),
     remoteTaskObservationVersion: Schema.optional(Schema.String),
     threadResultRequestVersion: Schema.optional(Schema.String),
     appOwnedSubagents: Schema.Boolean,
@@ -832,6 +841,8 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "thread_not_sendable",
       "thread_not_interruptible",
       "invalid_request",
+      "content_revision_mismatch",
+      "content_evidence_unavailable",
       "request_conflict",
       "launch_fenced",
       "orchestration_error",

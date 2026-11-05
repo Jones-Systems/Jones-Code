@@ -2,6 +2,24 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-thread-content-evidence",
+      "tests": [
+        "packages/contracts/src/jones/threadContentEvidence.test.ts",
+        "apps/server/src/jones/mcp/threadContentEvidence.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/jones/mcp/taskReads.test.ts"
+      ],
+      "commands": [
+        "vp test run packages/contracts/src/jones/threadContentEvidence.test.ts apps/server/src/jones/mcp/threadContentEvidence.test.ts apps/server/src/mcp/OrchestratorMcpService.test.ts apps/server/src/jones/mcp/taskReads.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint packages/contracts/src/jones/threadContentEvidence.ts packages/contracts/src/jones/threadContentEvidence.test.ts apps/server/src/jones/mcp/threadContentEvidence.ts apps/server/src/jones/mcp/threadContentEvidence.test.ts packages/contracts/src/index.ts packages/contracts/src/orchestratorMcp.ts apps/server/src/mcp/OrchestratorMcpService.ts",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run knip --workspace packages/contracts --workspace apps/server",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-preview-input-isolation",
       "tests": [
         "apps/desktop/src/preview/GuestInput.test.ts",
