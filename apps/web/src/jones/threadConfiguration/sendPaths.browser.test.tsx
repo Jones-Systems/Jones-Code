@@ -547,7 +547,7 @@ async function withPlanAction(
     interactionModeEnabled: true,
     interactionMode: "default",
   }));
-  const composerRef = { current: { getSendContext } } as ComposerHandleRef;
+  const composerRef = { current: { getSendContext: () => getSendContext() } } as ComposerHandleRef;
   let submit!: ReturnType<typeof useImplementPlanInNewThread>;
   let planAvailable = true;
   function Probe() {

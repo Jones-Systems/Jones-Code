@@ -20,9 +20,7 @@ it.effect(
       const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       const transitions = yield* sql`SELECT * FROM jones_workspace_lifecycle_transitions`;
       const bindings = yield* sql`SELECT * FROM jones_workspace_lifecycle_bindings`;
-      assert.deepEqual(yield* runJonesMigrations(through136), [
-        [136, "WorkspaceProvenance"],
-      ]);
+      assert.deepEqual(yield* runJonesMigrations(through136), [[136, "WorkspaceProvenance"]]);
       const after = yield* sql<{
         name: string;
       }>`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`;

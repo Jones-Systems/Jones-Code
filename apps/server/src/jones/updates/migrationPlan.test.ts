@@ -101,10 +101,7 @@ const released135Identities = [
   [135, "IdleWorktreeAdmission"],
 ] as const;
 
-const released136Identities = [
-  ...released135Identities,
-  [136, "WorkspaceProvenance"],
-] as const;
+const released136Identities = [...released135Identities, [136, "WorkspaceProvenance"]] as const;
 
 it("preflights a fixed released 130 ledger: append pending, lower insertion refused, bytes unchanged", () => {
   withDatabase((databasePath, root) => {
