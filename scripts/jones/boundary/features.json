@@ -2884,6 +2884,17 @@
         "apps/server/src/jones/fleetCheckpoint/Configuration.test.ts"
       ],
       "scope": "Typed native checkpoint place/get/cancel-pending through the existing fixed Fleet controller client. Original caller identity, bounded process uncertainty and exact native receipt attribution; no new queue, installation or activation."
+    },
+    {
+      "id": "install-retention",
+      "tests": [
+        "apps/desktop/src/jones/updates/installRetention.test.ts",
+        "scripts/jones/updates/install-retention.node-test.mjs",
+        "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+        "packages/contracts/src/settings.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "scope": "C10 manual-install transitive recovery closure, exact-plan retention under the existing activation/admission/startup lock, per-candidate identity and generation comparison, durable intent and held partial effects. Retained external app bundles and launcher generations remain held for unknown consumers. Shared settings/schema/UI edits add propose-default and explicit retire plus optional capability negotiation. The small launcher hooks only publish bounded proposals under launcher ownership and the staging lock. No next-install admission relaxation, native receipt rewrite, runtime adoption, operational disposal authority or external bundle removal. Protocol fixtures use real source functions and CLI contention with synthetic native boundaries; Node/Python source evidence is distinct from packaged macOS acceptance."
     }
   ]
 }

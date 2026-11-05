@@ -4598,6 +4598,26 @@
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
       ]
+    },
+    {
+      "id": "jones-install-retention",
+      "tests": [
+        "apps/desktop/src/jones/updates/installRetention.test.ts",
+        "scripts/jones/updates/install-retention.node-test.mjs",
+        "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+        "packages/contracts/src/settings.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/updates/install-retention.node-test.mjs",
+        "vp test run apps/desktop/src/jones/updates/installRetention.test.ts apps/desktop/src/jones/updates/stagingJobs.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts packages/contracts/src/settings.test.ts apps/server/src/serviceLauncher.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/components/settings/StorageSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
     }
   ]
 }
