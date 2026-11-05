@@ -12,6 +12,25 @@
       "scope": "Unchanged packaged macOS app-pair identity binding, external one-shot helper preparation faults, captured-PID startup/dialog and protected-mutation refusal orchestration. Executable source controls do not prove Apple interpreter, native dialog, packaged matrix, process descendants outside the captured group or installed continuity; those remain separately admitted acceptance."
     },
     {
+      "id": "thread-content-evidence",
+      "tests": [
+        "packages/contracts/src/jones/threadContentEvidence.test.ts",
+        "apps/server/src/jones/mcp/threadContentEvidence.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/jones/mcp/taskReads.test.ts"
+      ],
+      "scope": "Opt-in content-addressed rendered-item evidence with raw UTF-16LE SHA-256, identity-bound revision framing, exact slice offsets and bounded hashing. Native read validates every result before child completion acknowledgement. Legacy DTOs, pagination, statuses, linked routing and composition remain intact. Shared contract export/schema hooks and service renderer/ack hook retain accepted-shared ownership; Jones tests reuse the actual service with mocked external dependencies. No immutable timeline, atomic metadata snapshot, retained old text or no-intermediate-edit guarantee; null compaction remains unavailable. No database, provider or installed-runtime changes."
+    },
+    {
+      "id": "preview-input-isolation",
+      "tests": [
+        "apps/desktop/src/preview/GuestInput.test.ts",
+        "apps/desktop/src/preview/DesktopBrowserHost.test.ts",
+        "apps/desktop/src/preview/Manager.test.ts"
+      ],
+      "scope": "Backport upstream37d7615/dd6c05 pointer focus preservation and ordering, with a narrow local adaptation that reuses the existing Host relay/tab/detached-session validator after pointer queue and host focus capture waits, immediately before dispatch. The optional internal callback preserves rejection behavior and finally focus cleanup; it adds no wire, policy or lease semantics. A shared Host call forwards child session IDs through the guard. The real Host relay harness covers attached mouse/touch routing, unchanged child non-pointer behavior, and release/tab/page/child revocation during delayed capture with a queued pointer. GuestInput source is an accepted shared adaptation; its unchanged upstream tests remain a shared backport. Preserve unrelated relay policy, close/detach behavior and existing boundary ownership. Source unit/model checks do not prove Apple Silicon/macOS foreground or dictation behavior, eliminate the pending-press interval, identify the historical client revision, or establish the Nov2 routing cause."
+    },
+    {
       "id": "historical-preparation",
       "tests": [
         "scripts/jones/performance/historical-preparation.node-test.mjs",
@@ -851,9 +870,17 @@
         "apps/server/src/preview/ServerBrowser.test.ts",
         "apps/server/src/preview/SessionControl.test.ts",
         "packages/contracts/src/preview.test.ts",
-        "packages/contracts/src/jones/previewCompatibility.test.ts"
+        "packages/contracts/src/jones/previewCompatibility.test.ts",
+        "packages/contracts/src/jones/previewRecordingOperation.test.ts",
+        "apps/server/src/jones/previewRecordingOperation/broker.test.ts",
+        "apps/server/src/jones/previewRecordingOperation/mcp.test.ts",
+        "apps/server/src/preview/ServerBrowserContexts.test.ts",
+        "apps/server/src/jones/previewTabAffinity/tabAffinity.test.ts",
+        "apps/server/src/mcp/toolkits/previewControls/handlers.test.ts",
+        "apps/server/src/jones/previewRecordingOperation/recordingAttempt.test.ts",
+        "packages/contracts/src/jones/previewRecordingState.test.ts"
       ],
-      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified."
+      "scope": "Native desktop identity and generation fences, physical-host affinity and recovery, active-operation/snapshot ordering, local preflight deadlines and initialization isolation retain Jones intent together with receiving preview resilience. Broker and native receipt clocks own separate relative budgets; network transit timing is not qualified. Additive caller-scoped recording-operation reads expose only retained broker evidence; completed quarantine replies retain a bounded projection without changing fences or recorder lifecycle. Upstream profile-clear serialization and its original context-pool regression remain shared to exercise the real profile lifecycle. Per-tab dispatch pins isolate runtime holds; only logical retirement collects pins at capacity. Successful close replies retire the captured assignment at the next global sequence, preserving legacy host ordering without tombstones. Shared broker/ServerBrowser and previewControls integration tests exercise actual dispatch, response acceptance and registration hooks. Recorder attempts own frame authority and command answers across replacement; stop artifacts are pending until cessation proof and an empty command log permit success. Status bounds only title and reports recorder evidence without lifting fences. Shared ServerBrowser integration tests use the real broker and recording stop handler."
     },
     {
       "id": "persistent-private-services",
@@ -877,6 +904,8 @@
     {
       "id": "preview-companion-host",
       "tests": [
+        "apps/web/src/browser/previewRuntime.test.ts",
+        "apps/desktop/src/preview/CdpRelay.test.ts",
         "apps/desktop/scripts/main-process-bundle.test.mjs",
         "apps/desktop/src/app/DesktopClerk.test.ts",
         "apps/desktop/src/app/DesktopEarlyElectronStartup.test.ts",
@@ -923,9 +952,11 @@
         "apps/server/src/persistence/AuthPairingLinks.test.ts",
         "apps/server/src/preview/SessionControl.test.ts",
         "apps/server/src/preview/ServerBrowser.test.ts",
-        "apps/server/src/mcp/toolkits/preview/handlers.test.ts"
+        "apps/server/src/mcp/toolkits/preview/handlers.test.ts",
+        "apps/server/src/jones/previewCompanion/openBinding.test.ts",
+        "apps/server/src/ws.test.ts"
       ],
-      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Native host qualification and runtime adoption remain separate."
+      "scope": "Authenticated browser-only companion, fixed isolated product packaging, explicit host placement and generation fences; in-page renderer navigation preserves the host while document navigation and renderer loss revoke readiness. Headless fallback rendering, pre-publication tab reservations, bounded CDP events/replies, and navigation generations retain those fences. Client WS and agent opens freeze selection synchronously before publication; popup admission inherits only the opener's recorded selection or explicit server, rejects conflicting bindings, and refuses companion adoption before mounting a second attachment. The real WS handler uses production registration with held mirror consumption. Failed initial admissions fence queued opens before release; established tabs retain sessions and pinned bindings through offline reconnect failures. Logical close defers pending placement release until settlement, with lifecycle provenance retired at ordered close. Companion integration cases stay in ServerBrowser.test.ts and DesktopBrowserHost.test.ts to exercise the real lifecycle harness; previewRuntime.test.ts exercises both renderer entry points against exact assignments. Native host qualification and runtime adoption remain separate."
     },
     {
       "id": "persistence-upstream-isolation",
@@ -1937,7 +1968,7 @@
         "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
-      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. No server, schema, authentication or lifecycle changes in this UI fold."
+      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. Task and continuation location labels use the desktop client\u2019s primary or desktop-managed local connection identity; local destinations omit the location while remote and unknown destinations retain it, independent of the subject thread\u2019s environment. Browser clients retain explicit locations. No server, schema, authentication or lifecycle changes in this UI fold."
     },
     {
       "id": "incremental-typecheck",
@@ -2595,12 +2626,13 @@
         "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
         "apps/web/src/jones/pendingSends/send.test.ts",
         "apps/web/src/jones/pendingSends/sidebar.test.ts",
+        "apps/web/src/jones/pendingSends/sidebar.browser.test.tsx",
         "apps/web/src/jones/pendingSends/store.test.ts",
         "apps/web/src/jones/pendingSends/app.browser.test.tsx",
         "packages/client-runtime/src/operations/commands.test.ts",
         "packages/client-runtime/src/state/threadCommands.test.ts"
       ],
-      "scope": "Web and desktop renderer pending sends admit before asynchronous preparation, survive navigation in memory, preserve monotonic authoritative acceptance, retry only the exact frozen request by explicit action, and hand local Working and previews to correlated server evidence. Composer, plan followup, lifecycle text commands and fanout targets share the prepared-turn seam. Pending-only targets remain routable until correlated handoff, and fanout uncertainty guards clear only for the accepted target, including Retry and late failures. Synthetic whole-app connection coverage controls commit independently from acknowledgement; no real provider, installed runtime or mobile change."
+      "scope": "Web and desktop renderer pending sends admit before asynchronous preparation, survive navigation in memory, preserve monotonic authoritative acceptance, retry only the exact frozen request by explicit action, and hand local Working and previews to correlated server evidence. Composer, plan followup, lifecycle text commands and fanout targets share the prepared-turn seam. Pending-only targets remain routable until correlated handoff, and fanout uncertainty guards clear only for the accepted target, including Retry and late failures. Synthetic whole-app connection coverage controls commit independently from acknowledgement; no real provider, installed runtime or mobile change. Sidebar subscriptions cache effective pending projections per hook input and environment/thread, preserving bookkeeping-only row/list identity. The adjacent sidebar.browser.test.tsx uses the real pending store, shell/delegated Atom graph and permission helpers; only connection construction and the session producer are mocked. Jones-owned test imports consume apps/web/test/render.tsx, apps/web/src/rpc/atomRegistry.ts, apps/web/src/state/session.ts, apps/web/src/types.ts and public client-runtime connection, state/threads and state/models exports, with local synthetic fixtures. Existing optimistic-send-feedback fragment directory ownership covers this test; no upstream-to-Jones edge, shared implementation edit or upstream test exception is added."
     },
     {
       "id": "delegated-task-supervision",
@@ -2759,6 +2791,94 @@
         "apps/mobile/src/jones/updates/JonesUpdateControls.test.tsx"
       ],
       "scope": "Generic qualified alternative alongside an immutable retained download, bound confirmed native replacement only. Laptop matching credited to640, Install separate, no native protocol or admission changes."
+    },
+    {
+      "id": "provider-core-reliability",
+      "tests": [
+        "packages/contracts/src/jones/deliveryEvidence.test.ts",
+        "packages/client-runtime/src/jones/deliveryEvidence.test.ts",
+        "packages/client-runtime/src/jones/preparedThreadTurn.test.ts",
+        "packages/client-runtime/src/operations/commands.test.ts",
+        "packages/client-runtime/src/operations/commands.performance.test.ts",
+        "apps/server/src/provider/ProviderInstanceRegistry.test.ts",
+        "apps/server/src/provider/ProviderRegistry.test.ts",
+        "apps/server/src/provider/providerStatusCache.test.ts",
+        "apps/server/src/jones/provider/catalog/cachePublication.test.ts",
+        "apps/server/src/jones/provider/catalog/publication.integration.test.ts",
+        "apps/server/src/jones/provider/catalog/modelOptions.integration.test.ts",
+        "apps/server/src/provider/providerCompatibility.test.ts",
+        "apps/server/src/jones/mcp/admissionReplay.integration.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadManagementService.test.ts",
+        "apps/server/src/orchestration-v2/CommandPolicy.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchService.test.ts",
+        "apps/server/src/jones/mcp/clientLaunch/ClientLaunchHandlers.test.ts",
+        "apps/server/src/mcp/toolkits/project/handlers.test.ts",
+        "apps/server/src/relay/AgentAwarenessRelay.test.ts",
+        "apps/mobile/src/jones/threadConfiguration/outboxDelivery.test.ts",
+        "apps/mobile/src/jones/threadConfiguration/outboxDrainReplay.test.ts",
+        "apps/mobile/src/jones/threadConfiguration/outboxRecovery.test.ts",
+        "apps/mobile/src/jones/threadConfiguration/outboxSelection.test.ts",
+        "apps/mobile/src/state/thread-outbox.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+        "apps/mobile/src/state/use-thread-outbox-drain.permissions.test.ts",
+        "apps/mobile/src/state/thread-outbox-removal.test.ts",
+        "apps/mobile/src/state/use-composer-drafts.test.ts",
+        "apps/mobile/src/state/pending-task-editor-writes.test.ts",
+        "apps/mobile/src/state/pending-thread-creation.test.ts",
+        "apps/mobile/src/state/composer-attachment-uploads.test.ts",
+        "apps/mobile/src/state/thread-task-permissions.test.ts",
+        "apps/web/src/jones/pendingSends/send.test.ts",
+        "apps/web/src/jones/pendingSends/store.test.ts",
+        "apps/web/src/jones/pendingSends/recovery.test.ts",
+        "apps/web/src/jones/threadConfiguration/composerSelection.test.ts",
+        "apps/web/src/composerDraftStore.test.ts",
+        "apps/web/src/components/ChatView.logic.test.ts",
+        "apps/web/src/components/chat/composerSendRecovery.test.ts",
+        "apps/web/src/components/chat/composerProviderState.test.tsx",
+        "apps/web/src/providerInstances.test.ts",
+        "apps/web/src/jones/threadMonitor/planFollowUp.test.ts",
+        "apps/web/src/jones/pendingSends/recovery.browser.test.tsx",
+        "apps/web/src/jones/threadConfiguration/providerAvailability.browser.test.tsx",
+        "apps/web/src/jones/threadConfiguration/sendPaths.browser.test.tsx",
+        "apps/web/src/jones/pendingSends/app.browser.test.tsx",
+        "apps/web/src/jones/pendingSends/PendingSendStatus.browser.test.tsx",
+        "apps/web/src/components/chat/ProviderModelPicker.favorites.browser.test.tsx",
+        "apps/web/src/jones/composer/ComposerQuickControls.browser.test.tsx",
+        "apps/server/src/jones/orchestration/deliveryEvidence.test.ts",
+        "apps/server/src/jones/orchestration/deliveryLifecycle.integration.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadMessageIntake.test.ts",
+        "apps/server/src/ws.test.ts",
+        "apps/server/src/orchestration-v2/LegacyBootstrapWireTransport.test.ts",
+        "packages/provider-opencode/src/server/status.test.ts",
+        "packages/provider-opencode/src/server/driver.test.ts",
+        "packages/provider-opencode/src/server/versionProbe.test.ts",
+        "apps/server/src/usage/UsageService.test.ts",
+        "apps/mobile/src/dependency-graph.test.ts",
+        "apps/mobile/src/reactCompilerCoverage.test.ts",
+        "apps/mobile/src/state/edit-pending-thread-message.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RequestContextAdmission.http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/registration.test.ts",
+        "apps/server/src/jones/threadResultDependencies/AdmissionObservation.integration.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/GrokAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/peer/RemoteDelegation.test.ts",
+        "apps/server/src/provider/ProviderAuthService.test.ts",
+        "apps/server/src/provider/providerInstallation.test.ts"
+      ],
+      "scope": "Command-bound optional dispatch and compound launch evidence preserve accepted creation separately from initial-message delivery. Frozen prepared request serialization supports restart retries without recapturing provider selection, IDs or capabilities. Existing prepare/dispatch behavior and performance checks remain part of the maintained integration recipe. Catalog updates retain exact live-source authority through metadata mutation and cache rename, publish current aggregate state, and respect complete OpenCode empty option metadata. MCP automatic delivery uses the locked shared capability policy; accepted replay reconstructs immutable creation and task bindings before mutable validation; keyed and unkeyed fresh launches independently resolve omitted model and runtime defaults. Mobile persists possibly-issued prepared requests before RPC, replays immutable payloads before fresh validation, preserves legacy unknown outcomes, and restores rejected first messages into the proven created thread without erasing newer editor or explicit selection intent. Web and desktop renderer recover exact rejected sends, preserve uncertain frozen retries and accepted launch targets, retain explicit equal picker intent until matching acknowledgement, show unavailable saved providers, and capture plan/standalone selection before asynchronous work. Exact durable dispatch/launch receipts supply failure evidence at the V2 boundary; the public-intake lifecycle spine covers launch, subsequent sends, explicit switch, lost-response replay and idempotent Stop with real execution services. OpenCode loader completion provenance distinguishes settled empty options from partial/error/timeout progress; direct producer tests and producer-to-registry integration retain known variants until authoritative removal. Legacy existing-thread outbox rows reconcile only exact live accepted content; uncertain edits preserve durable retry ownership across editor and storage races. The mobile projection fixture import is a test-only integration exception reusing the existing canonical V2 projection; no runtime package export is added. Upstream edit/pencil hooks stay in their existing revision, draft, and UI owners."
+    },
+    {
+      "id": "fleet-checkpoint",
+      "tests": [
+        "apps/server/src/jones/fleetCheckpoint/Checkpoint.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Connected.test.ts",
+        "apps/server/src/jones/fleetCheckpoint/Configuration.test.ts"
+      ],
+      "scope": "Typed native checkpoint place/get/cancel-pending through the existing fixed Fleet controller client. Original caller identity, bounded process uncertainty and exact native receipt attribution; no new queue, installation or activation."
     }
   ]
 }

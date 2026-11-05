@@ -200,6 +200,10 @@ const alternateProviderInstance = {
 const layerTestProviderInstanceRegistry = Layer.succeed(
   ProviderInstanceRegistry.ProviderInstanceRegistry,
   {
+    getCatalogSource: (instanceId) =>
+      [providerInstance, alternateProviderInstance].find(
+        (instance) => instanceId === instance.instanceId,
+      ),
     getInstance: (instanceId) =>
       Effect.succeed(
         [providerInstance, alternateProviderInstance].find(

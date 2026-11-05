@@ -1,4 +1,7 @@
-import { consumeSubmittedModelPick } from "../jones/threadConfiguration/modelSelection";
+import {
+  captureExplicitComposerModelPick,
+  consumeSubmittedModelPick,
+} from "../jones/threadConfiguration/modelSelection";
 import {
   decodeImportedHistoryCorrelation,
   encodeImportedHistoryCorrelation,
@@ -31,13 +34,11 @@ import {
 import * as Schema from "effect/Schema";
 import { useEffect } from "react";
 import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
-import * as Option from "effect/Option";
-import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type {
   EnvironmentShellState,
   EnvironmentThreadShell,
 } from "@t3tools/client-runtime/state/shell";
-import { draftModelPickMatchesThread } from "@t3tools/shared/model";
 import {
   captureComposerModelSelectionSnapshot,
   composerModelSelectionSnapshotIsCurrent,
@@ -1457,6 +1458,11 @@ export function updateComposerDraftSettings(
   const draft = captureComposerModelSelectionSnapshot(draftKey, {
     ...normalizeDraft(appAtomRegistry.get(composerDraftsAtom)[draftKey]),
     ...settings,
+    ...(settings.modelSelection === undefined
+      ? {}
+      : {
+          modelSelection: captureExplicitComposerModelPick(settings.modelSelection),
+        }),
   });
   updateComposerDrafts((current) => withComposerDraft(current, draftKey, draft));
   return draft;
@@ -1476,7 +1482,7 @@ export function consumeSubmittedComposerModelPick(
   });
 }
 
-export function subscribeComposerDraftModelReconciliation(input: {
+export function subscribeComposerDraftModelReconciliation(_input: {
   readonly registry: AtomRegistry.AtomRegistry;
   readonly threadRefsAtom: Atom.Atom<ReadonlyArray<ScopedThreadRef>>;
   readonly threadShellAtom: (ref: ScopedThreadRef) => Atom.Atom<EnvironmentThreadShell | null>;
@@ -1484,62 +1490,9 @@ export function subscribeComposerDraftModelReconciliation(input: {
     environmentId: EnvironmentId,
   ) => Atom.Atom<AsyncResult.AsyncResult<EnvironmentShellState, unknown>>;
 }): () => void {
-  const draftsAtom = Atom.make(appAtomRegistry.get(composerDraftsAtom));
-  const unsubscribeDrafts = appAtomRegistry.subscribe(composerDraftsAtom, (drafts) =>
-    input.registry.set(draftsAtom, drafts),
-  );
-  const threadKeysAtom = Atom.map(
-    input.threadRefsAtom,
-    (refs) => new Set(refs.map(scopedThreadKey)),
-  );
-  const matchesAtom = Atom.make((get) => {
-    const threadKeys = get(threadKeysAtom);
-    const matches: Array<readonly [string, ComposerDraft]> = [];
-    for (const [key, draft] of Object.entries(get(draftsAtom))) {
-      if (!draft.modelSelection || isNewTaskDraftKey(key) || isQueuedEditDraftKey(key)) continue;
-      const ref = parseScopedThreadKey(key);
-      if (!ref || !threadKeys.has(key)) continue;
-      const thread = get(input.threadShellAtom(ref));
-      if (!thread || !draftModelPickMatchesThread(draft.modelSelection, thread.modelSelection))
-        continue;
-      // Status and selection must come from the same emission; derived atoms can update apart.
-      const shell = Option.getOrNull(
-        AsyncResult.value(get(input.shellStateAtom(ref.environmentId))),
-      );
-      if (shell?.status !== "live") continue;
-      const authoritativeThread = Option.getOrNull(shell.snapshot)?.threads.find(
-        (candidate) => candidate.id === ref.threadId,
-      );
-      if (
-        authoritativeThread &&
-        draftModelPickMatchesThread(draft.modelSelection, authoritativeThread.modelSelection)
-      ) {
-        matches.push([key, draft]);
-      }
-    }
-    return matches;
-  });
-  const unsubscribeMatches = input.registry.subscribe(
-    matchesAtom,
-    (matches) => {
-      if (matches.length === 0) return;
-      updateComposerDrafts((current) => {
-        let next = current;
-        for (const [key, matchedDraft] of matches) {
-          if (next[key] !== matchedDraft) continue;
-          recordComposerModelSelectionInteraction(key);
-          const { modelSelection: _modelSelection, ...draft } = matchedDraft;
-          next = withComposerDraft(next, key, draft);
-        }
-        return next;
-      });
-    },
-    { immediate: true },
-  );
-  return () => {
-    unsubscribeMatches();
-    unsubscribeDrafts();
-  };
+  // A live shell matching a picker value does not acknowledge the user's send.
+  // Keep the existing subscriber API; durable enqueue consumes only its captured pick.
+  return () => {};
 }
 
 export function clearComposerDraftContentState(
@@ -1684,6 +1637,7 @@ export function mergeComposerDraftContentState(
 export async function mergeComposerDraftContent(
   draftKey: string,
   content: ComposerDraftContent,
+  options?: { readonly onMerged?: (draft: ComposerDraft) => void },
 ): Promise<{ readonly skippedAttachmentCount: number }> {
   ensureComposerDraftsLoaded();
   if (loadPromise !== null) {
@@ -1709,6 +1663,7 @@ export async function mergeComposerDraftContent(
   if (next !== current) {
     appAtomRegistry.set(composerDraftsAtom, next);
   }
+  options?.onMerged?.(normalizeDraft(next[draftKey]));
   await persistenceQueue.run(() =>
     writePersistedComposerState(next, appAtomRegistry.get(stickyComposerModelSelectionAtom)),
   );

@@ -288,6 +288,14 @@ files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), a
 compares against the merge base with `origin/main`, or with a ref you pass. CI still runs the full
 test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
 
+For provider lifecycle, thread admission, or selection hooks, also run the affected Jones
+integration commands from [the maintained check recipes](../../scripts/jones/boundary/checks.json)
+(`jones-provider-core-reliability`, plus the affected provider retirement and selection groups)
+at the implementation checkpoint and before publication. Keep the changed-file checks for quick
+iteration; `check:changed` does not automatically consume those integration recipes. Await the
+specific run or effect's completion in asynchronous tests; a worker drain alone does not join
+work already claimed by another daemon lane.
+
 While you iterate, run single checks:
 
 ```sh

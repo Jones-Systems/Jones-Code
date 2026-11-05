@@ -81,7 +81,11 @@ export function installPlanPresentation(
       observed.observation.state?.capability.operations === 1;
     const latest = device.operations.at(-1);
     const lastDownload = device.operations.filter((o) => o.step === "download").at(-1);
+    const retryDownload =
+      latest?.step === "download" && ["failed", "refused"].includes(latest.receipt?.phase ?? "");
     let text = copy[phase];
+    if (latest?.step === "download" && latest.receipt?.phase === "refused")
+      text = "Download request did not start";
     if (phase === "directive") text = `Getting ${device.label} ready…`;
     if (phase === "ended")
       text =
@@ -98,6 +102,7 @@ export function installPlanPresentation(
       phase,
       copyKey: `device.${phase}`,
       text,
+      downloadLabel: retryDownload ? "Retry download" : `Download on ${device.label}`,
       settled: deviceSettled(plan, device),
       status,
       ...(latest === undefined ? {} : { operationId: latest.operationId }),
@@ -120,6 +125,9 @@ export function installPlanPresentation(
     };
   });
   const laptopOperation = plan.laptop.operations.at(-1);
+  const retryLaptopDownload =
+    laptopOperation?.step === "download" &&
+    ["failed", "refused"].includes(laptopOperation.result?.status ?? "");
   const laptopState = options.laptop?.freshness === "fresh" ? options.laptop.state : null;
   const coldStage =
     !readOnly &&
@@ -199,7 +207,11 @@ export function installPlanPresentation(
     laptop: {
       phase: laptopPhase,
       copyKey: `laptop.${laptopPhase}`,
-      text: laptopCopy[laptopPhase] ?? "Not confirmed",
+      text:
+        laptopOperation?.step === "download" && laptopPhase === "refused"
+          ? "Download request did not start"
+          : (laptopCopy[laptopPhase] ?? "Not confirmed"),
+      downloadLabel: retryLaptopDownload ? "Retry download" : "Download on Laptop",
       actions: laptopActions,
       ...(laptopOperation === undefined ? {} : { operationId: laptopOperation.operationId }),
     },

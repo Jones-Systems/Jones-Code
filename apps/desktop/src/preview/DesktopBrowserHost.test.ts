@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off - Stands in for an Electron debugger.
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, it, vi } from "@effect/vitest";
 import { DesktopBrowserEvent } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as NodeEvents from "node:events";
+import * as NodeVM from "node:vm";
 
 import * as DesktopAppIdentity from "../app/DesktopAppIdentity.ts";
 
@@ -138,6 +139,132 @@ const watchPainting = (host: DesktopBrowserHost.DesktopBrowserHost["Service"]) =
   });
 
 describe("DesktopBrowserHost", () => {
+  it.effect.each(["release", "tab-detach", "page-detach", "child-detach"] as const)(
+    "drops pointer input awaiting host capture or a prior press after %s",
+    (revocation) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        const captureStarted = Promise.withResolvers<void>();
+        const finishCapture = Promise.withResolvers<void>();
+        const executeJavaScript = vi.fn(async () => {
+          captureStarted.resolve();
+          await finishCapture.promise;
+        });
+        Object.assign(debuggee.tab.webContents, {
+          id: 7,
+          hostWebContents: { isDestroyed: () => false, executeJavaScript },
+        });
+        const pointer = vi.fn(async () => ({}));
+        const originalSend = debuggee.tab.debugger.sendCommand.bind(debuggee.tab.debugger);
+        vi.spyOn(debuggee.tab.debugger, "sendCommand").mockImplementation(
+          (method, params, sessionId) =>
+            method === "Input.dispatchMouseEvent"
+              ? pointer()
+              : originalSend(method, params, sessionId),
+        );
+        host.attach(key, debuggee.tab);
+        const replies = yield* watchReplies(host);
+        const raw = (message: Record<string, unknown>) =>
+          host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
+        yield* raw({ id: 1, method: "Target.attachToTarget", params: { targetId: "GUEST" } });
+        expect(yield* Queue.take(replies)).toBe(1);
+        const sessionId = revocation === "child-detach" ? "child-frame" : "t3-preview-page-1";
+        yield* raw({
+          id: 2,
+          method: "Input.dispatchMouseEvent",
+          params: { type: "mousePressed" },
+          sessionId,
+        });
+        yield* Effect.promise(() => captureStarted.promise);
+        yield* raw({
+          id: 3,
+          method: "Input.dispatchMouseEvent",
+          params: { type: "mouseReleased" },
+          sessionId,
+        });
+        yield* settle;
+        if (revocation === "release") {
+          yield* host.handleCommandLine(encodeJson({ type: "release", ...key }));
+        } else if (revocation === "tab-detach") {
+          host.detach(key);
+        } else {
+          yield* raw({ id: 4, method: "Target.detachFromTarget", params: { sessionId } });
+          expect(yield* Queue.take(replies)).toBe(4);
+        }
+        finishCapture.resolve();
+        yield* settle;
+        expect(pointer).not.toHaveBeenCalled();
+        expect(executeJavaScript).toHaveBeenCalledTimes(2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { method: "Input.dispatchMouseEvent", params: { type: "mousePressed", x: 10, y: 10 } },
+    {
+      method: "Input.dispatchTouchEvent",
+      params: { type: "touchStart", touchPoints: [{ x: 10, y: 10 }] },
+    },
+  ])(
+    "preserves host focus for a child-session $method without rerouting other commands",
+    ({ method, params }) =>
+      Effect.gen(function* () {
+        const host = yield* DesktopBrowserHost.make;
+        const debuggee = makeDebuggee();
+        const document = { activeElement: {} as object };
+        const composer = {
+          tagName: "TEXTAREA",
+          isConnected: true,
+          focus: () => {
+            document.activeElement = composer;
+          },
+        };
+        const preview = { tagName: "WEBVIEW", getWebContentsId: () => 7 };
+        document.activeElement = composer;
+        const context = NodeVM.createContext({ document });
+        const steps: Array<string> = [];
+        const executeJavaScript = vi.fn(async (script: string) => {
+          steps.push("host");
+          return NodeVM.runInContext(script, context);
+        });
+        const reload = vi.fn();
+        Object.assign(debuggee.tab.webContents, {
+          id: 7,
+          hostWebContents: { isDestroyed: () => false, executeJavaScript },
+          reload,
+        });
+        const originalSend = debuggee.tab.debugger.sendCommand.bind(debuggee.tab.debugger);
+        const sendCommand = vi
+          .spyOn(debuggee.tab.debugger, "sendCommand")
+          .mockImplementation(async (sentMethod, sentParams, sessionId) => {
+            if (sentMethod === method) {
+              steps.push("pointer");
+              document.activeElement = preview;
+              return {};
+            }
+            if (sentMethod === "Page.reload") return {};
+            return originalSend(sentMethod, sentParams, sessionId);
+          });
+        host.attach(key, debuggee.tab);
+        const replies = yield* watchReplies(host);
+        const raw = (message: Record<string, unknown>) =>
+          host.handleCommandLine(encodeJson({ type: "cdp", ...key, message: encodeJson(message) }));
+
+        yield* raw({ id: 1, method, params, sessionId: "child-frame" });
+        expect(yield* Queue.take(replies)).toBe(1);
+        expect(sendCommand).toHaveBeenCalledWith(method, params, "child-frame");
+        expect(steps).toEqual(["host", "pointer", "host"]);
+        expect(document.activeElement).toBe(composer);
+        expect(Object.keys(context)).toEqual(["document"]);
+
+        yield* raw({ id: 2, method: "Page.reload", params: {}, sessionId: "child-frame" });
+        expect(yield* Queue.take(replies)).toBe(2);
+        expect(sendCommand).toHaveBeenCalledWith("Page.reload", {}, "child-frame");
+        expect(executeJavaScript).toHaveBeenCalledTimes(2);
+        expect(reload).not.toHaveBeenCalled();
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("announces tabs already attached to a backend that starts later", () =>
     Effect.gen(function* () {
       const host = yield* DesktopBrowserHost.make;
@@ -1107,4 +1234,76 @@ it.effect("announces only the native runtime identity across backend restarts", 
     expect(yield* takeEvents(host, 1)).toEqual([{ type: "attached", ...key, runtimeIdentity }]);
     expect(yield* takeEvents(host, 1)).toEqual([{ type: "attached", ...key, runtimeIdentity }]);
   }),
+);
+
+it.effect.each(["shared-disk", "deny"] as const)(
+  "detaches only the %s tab whose CDP event is too large to relay",
+  (downloadPolicy) =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const tabs = [makeDebuggee({ deferFocus: true }), makeDebuggee()];
+      const send = vi.spyOn(tabs[0]!.tab.debugger, "sendCommand");
+      const keys = [key, { threadId: "thread-2", tabId: "tab-2" }];
+      if (downloadPolicy === "deny") host.replaceCompanionAssignments(keys);
+      const events = yield* Queue.unbounded<DesktopBrowserEvent>();
+      yield* host.events.pipe(
+        Stream.runForEach((line) =>
+          Queue.offer(events, decodeEvent(new TextDecoder().decode(line))),
+        ),
+        Effect.forkScoped,
+      );
+      for (const [index, tabKey] of keys.entries()) {
+        host.attach(tabKey, tabs[index]!.tab);
+        expect(yield* Queue.take(events)).toEqual({ type: "attached", ...tabKey });
+        yield* host.handleCommandLine(
+          encodeJson({
+            type: "cdp",
+            ...tabKey,
+            message: encodeJson({ id: 1, method: "Target.setAutoAttach" }),
+          }),
+        );
+        // The command's reply and the page announcement.
+        yield* Queue.takeN(events, 2);
+      }
+
+      yield* host.handleCommandLine(
+        encodeJson({
+          type: "cdp",
+          ...key,
+          message: encodeJson({
+            id: 2,
+            method: "Target.setAutoAttach",
+            params: { autoAttach: true, waitForDebuggerOnStart: true, flatten: true },
+            sessionId: "t3-preview-page",
+          }),
+        }),
+      );
+      yield* command(host, 3, "Page.startScreencast");
+      tabs[0]!.emit("Runtime.consoleAPICalled", {
+        args: Array(2048).fill("x".repeat(40 * 1024)),
+      });
+      tabs[1]!.emit("Page.loadEventFired", { timestamp: 1 });
+      const [detached, next] = yield* Queue.takeN(events, 2);
+
+      const { type, threadId, tabId } = detached!;
+      expect({ type, threadId, tabId }).toEqual({ type: "detached", ...key });
+      expect(send).toHaveBeenCalledWith("Target.setAutoAttach", {
+        autoAttach: false,
+        waitForDebuggerOnStart: false,
+        flatten: true,
+      });
+      tabs[0]!.settleFocus();
+      yield* settle;
+      expect(send).not.toHaveBeenCalledWith("Target.setAutoAttach", {
+        autoAttach: true,
+        waitForDebuggerOnStart: true,
+        flatten: true,
+      });
+      expect(send).toHaveBeenCalledWith("Page.stopScreencast");
+      expect(tabs[0]!.focusEmulation).toEqual([true, false]);
+      expect(next).toMatchObject({ type: "cdp", ...keys[1] });
+      expect(JSON.parse((next as { message: string }).message)).toMatchObject({
+        method: "Page.loadEventFired",
+      });
+    }).pipe(Effect.scoped),
 );

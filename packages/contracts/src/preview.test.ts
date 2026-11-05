@@ -6,6 +6,35 @@ import {
   PreviewAutomationHost,
   PreviewAutomationStatus,
 } from "./previewAutomation.ts";
+import { PreviewSessionSnapshot, PreviewEvent } from "./preview.ts";
+const decodeSessionSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
+const decodePreviewEvent = Schema.decodeUnknownSync(PreviewEvent);
+
+describe("PreviewSessionSnapshot headless compatibility", () => {
+  const legacy = {
+    threadId: "thread",
+    tabId: "tab",
+    runtime: "server",
+    navStatus: { _tag: "Idle" },
+    canGoBack: false,
+    canGoForward: false,
+    updatedAt: "2026-11-03T00:00:00.000Z",
+  };
+  it.each([undefined, false, true])("decodes headless=%s in snapshots and events", (headless) => {
+    const snapshot = { ...legacy, ...(headless === undefined ? {} : { headless }) };
+    expect(decodeSessionSnapshot(snapshot)).toEqual(snapshot);
+    const event = {
+      type: "resized",
+      threadId: "thread",
+      tabId: "tab",
+      createdAt: legacy.updatedAt,
+      serverEpoch: "server-epoch",
+      revision: 1,
+      snapshot,
+    };
+    expect(decodePreviewEvent(event)).toEqual(event);
+  });
+});
 
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);

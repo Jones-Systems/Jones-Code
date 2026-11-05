@@ -7,6 +7,10 @@
   ],
   "type": "module",
   "exports": {
+    "./jones/deliveryEvidence": {
+      "types": "./src/jones/deliveryEvidence.ts",
+      "import": "./src/jones/deliveryEvidence.ts"
+    },
     "./jones/workstreamOperations": {
       "types": "./src/jones/workstreamOperations.ts",
       "import": "./src/jones/workstreamOperations.ts"
@@ -94,6 +98,10 @@
     "./jones/guardedThreadSettlement": {
       "types": "./src/jones/guardedThreadSettlement.ts",
       "import": "./src/jones/guardedThreadSettlement.ts"
+    },
+    "./jones/fleetCheckpoint": {
+      "types": "./src/jones/fleetCheckpoint.ts",
+      "import": "./src/jones/fleetCheckpoint.ts"
     }
   },
   "scripts": {

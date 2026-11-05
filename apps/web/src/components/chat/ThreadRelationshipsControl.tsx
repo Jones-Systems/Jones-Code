@@ -1,5 +1,6 @@
 import { RemoteSubagentRow, RemoteParentRow } from "../../jones/remoteAgentLineage/RemoteRows";
-import { groupLineageRows, resolveMachineIdentity } from "../../jones/remoteAgentLineage/model";
+import { groupLineageRows } from "../../jones/remoteAgentLineage/model";
+import { useMachineLocation } from "../../jones/remoteAgentLineage/useMachineLocation";
 import { useParentLink } from "../../jones/remoteAgentLineage/useParentLink";
 import {
   LinkedThreadsSection,
@@ -257,10 +258,7 @@ export function ThreadRelationshipsPanel(props: {
   const parentLink = useParentLink(props.environmentId, projection?.thread);
   const providersByEnvironment = useEnvironmentProviders();
   const environment = useEnvironment(props.environmentId);
-  const machineLabel = resolveMachineIdentity(
-    environment?.label,
-    environment?.serverConfig?.environment.platform.machine,
-  ).shortLabel;
+  const machine = useMachineLocation(props.environmentId);
   const relationshipShells = useThreadRelationshipShells(ref);
   const allProjects = useProjects();
   const archived = useArchivedThreadSnapshots([props.environmentId]);
@@ -490,14 +488,7 @@ export function ThreadRelationshipsPanel(props: {
                         <LinkedEntryLabels entry={entry} />
                       </li>
                     );
-                  return (
-                    <LinkedThreadRow
-                      key={entry.key}
-                      entry={entry}
-                      view={linked}
-                      subjectEnvironmentId={props.environmentId}
-                    />
-                  );
+                  return <LinkedThreadRow key={entry.key} entry={entry} view={linked} />;
                 }
                 return entry.lineage.map((lineageRow) => {
                   if (lineageRow.kind === "remote") {
@@ -632,7 +623,8 @@ export function ThreadRelationshipsPanel(props: {
                         <span
                           className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"} ${trailingVisibilityClass}`}
                         >
-                          on {machineLabel} · {threadRelationshipStatusLabel(rowStatus)}
+                          {machine ? `on ${machine.shortLabel} · ` : ""}
+                          {threadRelationshipStatusLabel(rowStatus)}
                         </span>
                       ) : agent &&
                         !failed &&

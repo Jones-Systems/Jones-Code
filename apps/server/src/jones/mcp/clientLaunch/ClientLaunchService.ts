@@ -26,6 +26,7 @@ import {
   clientLaunchDigest,
   type ClientLaunchRequest,
 } from "./ClientLaunchIdentity.ts";
+import { resolveLaunchDefaults } from "./launchDefaults.ts";
 
 interface Claim {
   readonly request_digest: string;
@@ -317,16 +318,13 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
             }),
         ),
       );
-    const modelSelection =
-      input.modelSelection ??
-      caller.caller?.modelSelection ??
-      project.defaultModelSelection ??
-      undefined;
-    if (modelSelection === undefined)
-      return yield* new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message: "Pass modelSelection: the project has no default model.",
-      });
+    const { modelSelection, runtimeMode } = yield* resolveLaunchDefaults(
+      input,
+      caller,
+      projectId,
+      modes,
+      Effect.succeed(project),
+    );
     const sql = yield* SqlClient.SqlClient;
     yield* sql
       .withTransaction(
@@ -375,7 +373,7 @@ export const launch = Effect.fn("jones.clientLaunch.launch")(function* (
           invoke({
             ...common,
             modelSelection,
-            runtimeMode: modes.runtimeMode,
+            runtimeMode,
             interactionMode: modes.interactionMode,
             ...(modes.linkOrigin === undefined ? {} : { linkOrigin: modes.linkOrigin }),
           }),

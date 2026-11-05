@@ -359,10 +359,12 @@ export const make = Effect.gen(function* () {
   const relayFor = (tab: AttachedTab) => {
     if (tab.relay) return tab.relay;
     const { webContents, debugger: debuggee } = tab.debuggee;
-    const send = (method: string, params: Record<string, unknown>, sessionId?: string) =>
-      sessionId === undefined
-        ? sendPageCommand(webContents, debuggee, method, params)
-        : debuggee.sendCommand(method, params, sessionId);
+    const send = (
+      method: string,
+      params: Record<string, unknown>,
+      sessionId: string | undefined,
+      assertCurrent: () => void,
+    ) => sendPageCommand(webContents, debuggee, method, params, sessionId, assertCurrent);
     const detachedOwners = new Set<string>();
     /** Viewers and recordings stream; the agent's own sessions never do. */
     const streamingOwners = new Set<string>();
@@ -386,19 +388,20 @@ export const make = Effect.gen(function* () {
           // Waits for focus emulation; insertText and other non-CDP input would not queue behind it.
           const forward = (current?: () => boolean) => {
             const change = tab.focusChange;
-            const run = () => {
+            const assertCurrent = () => {
               if (
                 tab.relay !== relay ||
                 tabs.get(keyOf(tab.key)) !== tab ||
                 (owner !== undefined && detachedOwners.has(owner)) ||
                 (sessionId !== undefined && detachedOwners.has(sessionId))
               ) {
-                return Promise.reject(
-                  new Error("The preview connection that sent this command closed."),
-                );
+                throw new Error("The preview connection that sent this command closed.");
               }
+            };
+            const run = async () => {
+              assertCurrent();
               return current === undefined || current()
-                ? send(method, params, sessionId)
+                ? send(method, params, sessionId, assertCurrent)
                 : Promise.reject(new Error("The page this screenshot was for has moved on."));
             };
             return change === null ? run() : change.then(run);
@@ -442,6 +445,23 @@ export const make = Effect.gen(function* () {
         }
       },
       tab.downloadPolicy === "deny" ? companionCdpPolicy : undefined,
+      // Keep the tab detached so reconnecting cannot replay the oversized event.
+      () => {
+        if (tab.relay !== relay || tabs.get(keyOf(tab.key)) !== tab) return;
+        // Release debugger pauses held by child sessions before detaching.
+        void debuggee
+          .sendCommand("Target.setAutoAttach", {
+            autoAttach: false,
+            waitForDebuggerOnStart: false,
+            flatten: true,
+          })
+          .catch(() => {});
+        if (tab.screencasts.size > 0) {
+          void debuggee.sendCommand("Page.stopScreencast").catch(() => {});
+        }
+        setFocusEmulation(tab, false);
+        detach(tab.key);
+      },
     );
     tab.relay = relay;
     return relay;

@@ -213,6 +213,15 @@ export async function runSmoke() {
         90_000,
         `${name}: prerequisite or behavior timed out`,
       );
+      if (app) {
+        entry.application = await app.evaluate(({ app }) => ({
+          dockVisible: app.dock.isVisible(),
+        }));
+        check(
+          entry.application.dockVisible,
+          "Native monitor must preserve the app's Dock presence",
+        );
+      }
       abort.signal.throwIfAborted();
       entry.status = "passed";
     } catch (error) {

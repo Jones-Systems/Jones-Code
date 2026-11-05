@@ -221,6 +221,7 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import { resolveOpenBinding } from "./jones/previewCompanion/openBinding.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import {
   attachmentRelativePath,
@@ -1450,6 +1451,7 @@ export const layerWsRpc = (
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
+      const previewOpenBinding = yield* resolveOpenBinding();
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const modelManifest = yield* ModelManifest.ModelManifest;
@@ -2231,16 +2233,23 @@ export const layerWsRpc = (
                           result.replayed ? Effect.void : recordClientCommandAnalytics(command),
                         ),
                         Effect.map((result) => ({ sequence: result.sequence })),
-                        Effect.mapError((cause) => {
-                          const detail = userFacingDispatchErrorMessage(cause);
-                          return new OrchestrationV2DispatchCommandError({
-                            commandId: command.commandId,
-                            commandType: command.type,
-                            message: detail ?? "Failed to dispatch orchestration V2 command",
-                            ...(detail === undefined ? {} : { detail }),
-                            cause,
-                          });
-                        }),
+                        Effect.catch((cause) =>
+                          threadManagement.getDispatchDeliveryEvidence(command).pipe(
+                            Effect.flatMap((deliveryEvidence) => {
+                              const detail = userFacingDispatchErrorMessage(cause);
+                              return Effect.fail(
+                                new OrchestrationV2DispatchCommandError({
+                                  commandId: command.commandId,
+                                  commandType: command.type,
+                                  message: detail ?? "Failed to dispatch orchestration V2 command",
+                                  ...(detail === undefined ? {} : { detail }),
+                                  deliveryEvidence,
+                                  cause,
+                                }),
+                              );
+                            }),
+                          ),
+                        ),
                       ),
                   ),
                 ),
@@ -2420,36 +2429,25 @@ export const layerWsRpc = (
                     ...result,
                     projection: projectThreadProjectionForWire(result.projection),
                   })),
-                  Effect.catchTags({
-                    AttachmentClaimError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ServerRuntimeStartupError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ThreadManagementProviderInstanceDisabledError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                  }),
+                  Effect.catch((cause) =>
+                    threadLaunch.getDeliveryEvidence(input).pipe(
+                      Effect.flatMap((deliveryEvidence) =>
+                        Effect.fail(
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message:
+                              cause._tag === "AttachmentClaimError" ||
+                              cause._tag === "ThreadManagementProviderInstanceDisabledError"
+                                ? cause.message
+                                : "Failed to launch thread",
+                            deliveryEvidence,
+                            cause,
+                          }),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
             ),
           ),
@@ -3353,7 +3351,12 @@ export const layerWsRpc = (
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
-        [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
+        [WS_METHODS.previewOpen]: (input) =>
+          previewManager.open(
+            previewOpenBinding === undefined
+              ? input
+              : { ...input, beforePublish: previewOpenBinding },
+          ),
         [WS_METHODS.previewNavigate]: (input) => previewManager.navigate(input),
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
         [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),

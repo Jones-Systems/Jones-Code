@@ -1,3 +1,4 @@
+import { PreviewRecordingState } from "./jones/previewRecordingState.ts";
 import { Schema } from "effect";
 
 import { EnvironmentId, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -83,6 +84,7 @@ export const PreviewAutomationRuntimeIdentity = Schema.Struct({
 export type PreviewAutomationRuntimeIdentity = typeof PreviewAutomationRuntimeIdentity.Type;
 
 export const PreviewAutomationStatus = Schema.Struct({
+  recording: Schema.optional(PreviewRecordingState),
   available: Schema.Boolean,
   visible: Schema.Boolean,
   tabId: Schema.NullOr(PreviewTabId),
@@ -753,8 +755,13 @@ export class PreviewAutomationTimeoutError extends Schema.TaggedError<PreviewAut
 ) {
   override get message(): string {
     if (this.unreconciled)
-      return "This browser tab has an earlier action with an unknown outcome. This action was not started. Reconcile controlled actions via preview_snapshot; other actions require their exact late reply.";
+      return "This browser tab has an earlier action with an unknown outcome. This action was not started. A snapshot reconciles only earlier click, type, press, scroll, or evaluate actions; other earlier actions require their exact late reply. Recording state in preview_status, when reported, and preview_recording_operation, if available, clear no fence.";
     const summary = `Preview automation ${this.operation} timed out after ${this.timeoutMs}ms.`;
+    if (
+      this.outcome === "unknown" &&
+      (this.operation === "recordingStart" || this.operation === "recordingStop")
+    )
+      return `${summary} A snapshot cannot reconcile this recording operation; the tab stays blocked until its exact late reply. Recording state in preview_status, when reported, and preview_recording_operation, if available, clear no fence.${this.tabId ? " Other tabs are allowed; open a new tab with reuseExistingTab: false." : ""}`;
     return this.outcome === "unknown"
       ? `${summary} The action may have been applied; reconcile via preview_snapshot before repeating. A snapshot reconciles controlled page actions only; other actions require their late reply.`
       : summary;

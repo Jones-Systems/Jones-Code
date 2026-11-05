@@ -1,4 +1,5 @@
 import { ComposerShortcutPlate } from "../../jones/composer/ComposerShortcutPlate";
+import { requiredComposerProvider } from "../../jones/threadConfiguration/composerSelection";
 import { ReasoningEffortShortcuts } from "../../jones/composer/ReasoningEffortShortcuts";
 import { ProviderInstanceShortcuts } from "../../jones/composer/ProviderInstanceShortcuts";
 import { useComposerShortcutRails } from "../../jones/composer/composerShortcutRails";
@@ -968,6 +969,11 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       activeProjectDefaultModelSelection?.instanceId,
     ],
     lockedProvider,
+    requiredInstanceId: requiredComposerProvider(
+      composerDraft,
+      activeThreadModelSelection,
+      _isLocalDraftThread,
+    ),
     lockedInstanceId:
       activeThread?.runtime?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
   });

@@ -1270,7 +1270,7 @@ NodeTest.test(
       const step = steps.find((item) => item.label === label);
       NodeAssert.ok(step);
       const sha = "a".repeat(39) + (label.startsWith("Changed") ? "c" : "b");
-      const version = label.startsWith("Stable") ? "0.1.0" : "0.0.45-preview.20261011.1.1";
+      const version = label.startsWith("Stable") ? "9.0.0" : "0.0.44-preview.20261009.1.1";
       const badge = (source = sha, fullVersion = version, text = sha.slice(0, 7)) => ({
         textContent: text,
         getAttribute: () => `Build time not recorded\n${fullVersion}\nsource ${source}`,

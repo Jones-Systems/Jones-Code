@@ -180,6 +180,7 @@ export class JonesUpdater {
   private state: JonesUpdateState;
   private revision = 0;
   private busy = false;
+  private checkAdmissions = 0;
   private candidate: JonesActionsCandidate | undefined;
   private candidateBuildStartedAt: string | undefined;
   /** The one check run on this host, keyed by its target (`latest` for the newest main build). */
@@ -203,8 +204,26 @@ export class JonesUpdater {
   releaseHeldJob(jobId: string): void {
     this.heldJobs.delete(jobId);
   }
+  /** Read-only discovery can be joined; mutations and unproved worker exit still hold admission. */
   admissionHeld(): boolean {
-    return this.heldJobs.size > 0 || this.busy;
+    return this.heldJobs.size > 0 || (this.busy && this.inflight === undefined);
+  }
+  /** Reserve the gap between a read-only check and durable operation admission. */
+  reserveCheckAdmission(): { readonly ready: Promise<void>; readonly release: () => void } {
+    this.checkAdmissions += 1;
+    let released = false;
+    return {
+      ready:
+        this.inflight?.promise.then(
+          () => undefined,
+          () => undefined,
+        ) ?? Promise.resolve(),
+      release: () => {
+        if (released) return;
+        released = true;
+        this.checkAdmissions -= 1;
+      },
+    };
   }
   stopPreparation(operationId: string): "requested" | "not-running" | "not-stoppable-phase" {
     const preparation = this.preparation;
@@ -426,7 +445,10 @@ export class JonesUpdater {
     return (await this.checkRun(targetSource)).state;
   }
 
-  private async checkRun(targetSource?: string): Promise<JonesCheckRun> {
+  private async checkRun(
+    targetSource?: string,
+    operation?: JonesPreparationOperation,
+  ): Promise<JonesCheckRun> {
     const key = targetSource ?? "latest";
     for (;;) {
       const running = this.inflight;
@@ -437,6 +459,7 @@ export class JonesUpdater {
     if (
       this.heldJobs.size > 0 ||
       this.busy ||
+      (this.checkAdmissions > 0 && operation === undefined) ||
       this.state.phase === "installing" ||
       this.state.phase === "preparing" ||
       !this.state.capability.check
@@ -575,6 +598,7 @@ export class JonesUpdater {
     replace?: JonesUpdateExactInput["replace"],
     operation?: JonesPreparationOperation,
   ): Promise<JonesUpdateState> {
+    if (this.checkAdmissions > 0 && operation === undefined) return this.snapshot();
     if (this.heldJobs.size > 0)
       return {
         ...this.snapshot(),
@@ -613,7 +637,8 @@ export class JonesUpdater {
     // goes next. A running one is observed through the busy host, never awaited.
     const running = this.preparation;
     if (running?.controller.signal.aborted === true) await running.done;
-    const run = await this.checkRun(targetSource);
+    const run = await this.checkRun(targetSource, operation);
+    if (operation?.signal.aborted) return this.snapshot();
     // Download only the candidate this run returned for the target; a skipped run, or a build
     // offered by any other check, must not be staged.
     const candidate = run.candidate;
@@ -778,6 +803,10 @@ export class JonesUpdater {
     input: JonesUpdateDownloadInput,
     operation?: JonesPreparationOperation,
   ): Promise<JonesUpdateState> {
+    if (operation !== undefined) {
+      while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
+      if (operation.signal.aborted) return this.snapshot();
+    }
     const refusal = followerTargetRefusal(
       this.state.policy,
       input.sourceSha,
@@ -787,6 +816,7 @@ export class JonesUpdater {
     if (
       this.heldJobs.size > 0 ||
       this.busy ||
+      (this.checkAdmissions > 0 && operation === undefined) ||
       !this.state.capability.download ||
       this.state.stagedHandle !== undefined
     )
@@ -818,6 +848,7 @@ export class JonesUpdater {
     if (
       this.heldJobs.size > 0 ||
       this.busy ||
+      (this.checkAdmissions > 0 && operation === undefined) ||
       !this.state.capability.download ||
       this.state.stagedHandle !== undefined
     )
@@ -955,6 +986,7 @@ export class JonesUpdater {
     if (
       this.heldJobs.size > 0 ||
       this.busy ||
+      this.checkAdmissions > 0 ||
       ["preparing", "installing"].includes(this.state.phase)
     )
       return { retired: false, reason: "An update operation is still active." };
@@ -1027,7 +1059,12 @@ export class JonesUpdater {
       return state;
     };
     while (this.inflight !== undefined) await this.inflight.promise.catch(() => undefined);
-    if (this.heldJobs.size > 0 || this.busy || this.state.phase === "installing")
+    if (
+      this.heldJobs.size > 0 ||
+      this.busy ||
+      (this.checkAdmissions > 0 && input.operationId === undefined) ||
+      this.state.phase === "installing"
+    )
       return refused(this.snapshot());
     if (!this.state.capability.install)
       return refused(

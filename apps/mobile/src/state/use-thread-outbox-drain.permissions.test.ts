@@ -1,8 +1,11 @@
+import { decodePreparedThreadTurn } from "@t3tools/client-runtime/jones/preparedThreadTurn";
+import type { PreparedThreadTurn, StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import {
   AuthOrchestrationOperateScope,
   CommandId,
   EnvironmentId,
   MessageId,
+  ORCHESTRATION_V2_WS_METHODS,
   ProjectId,
   ProviderInstanceId,
   ThreadId,
@@ -16,7 +19,20 @@ const state = vi.hoisted(() => ({
   grantedEnvironments: new Set<string>(),
   draftText: "Keep this draft separate",
   cleanups: [] as Array<() => void>,
-  start: vi.fn(),
+  prepareTurn:
+    vi.fn<
+      (request: {
+        environmentId: EnvironmentId;
+        input: StartThreadTurnInput;
+      }) => Promise<AsyncResult.AsyncResult<PreparedThreadTurn, Error>>
+    >(),
+  dispatch:
+    vi.fn<
+      (request: {
+        environmentId: EnvironmentId;
+        input: PreparedThreadTurn;
+      }) => Promise<AsyncResult.AsyncResult<void, Error>>
+    >(),
   metadata: vi.fn(),
   runtime: vi.fn(),
   interaction: vi.fn(),
@@ -72,7 +88,8 @@ vi.mock("./threads", async () => {
   const { Atom } = await import("effect/reactivity");
   return {
     threadEnvironment: {
-      startTurn: state.start,
+      prepareTurn: state.prepareTurn,
+      dispatchPreparedTurn: state.dispatch,
       updateMetadata: state.metadata,
       setRuntimeMode: state.runtime,
       setInteractionMode: state.interaction,
@@ -155,6 +172,7 @@ const message = (overrides: Partial<QueuedThreadMessage> = {}): QueuedThreadMess
   messageId: MessageId.make("message"),
   text: "Keep this queued",
   attachments: [],
+  issuance: { state: "unissued" },
   createdAt: "2026-09-05T00:00:00.000Z",
   ...overrides,
 });
@@ -176,7 +194,7 @@ beforeEach(() => {
   appAtomRegistry.set(state.manager.queuedMessagesByThreadKeyAtom, {});
   appAtomRegistry.set(dispatchingQueuedMessageIdAtom, null);
   for (const command of [
-    state.start,
+    state.dispatch,
     state.metadata,
     state.runtime,
     state.interaction,
@@ -184,6 +202,61 @@ beforeEach(() => {
   ]) {
     command.mockReset().mockResolvedValue(AsyncResult.success(undefined));
   }
+  state.prepareTurn.mockReset().mockImplementation(async ({ input }) => {
+    const creation = input.bootstrap?.createThread;
+    expect(input.bootstrap?.prepareWorktree).toBeUndefined();
+    return AsyncResult.success(
+      decodePreparedThreadTurn(
+        creation === undefined
+          ? {
+              method: ORCHESTRATION_V2_WS_METHODS.dispatchCommand,
+              payload: {
+                type: "message.dispatch",
+                commandId: input.commandId,
+                threadId: input.threadId,
+                createdBy: "user",
+                creationSource: input.creationSource ?? "web",
+                messageId: input.message.messageId,
+                text: input.message.text,
+                ...(input.message.context === undefined ? {} : { context: input.message.context }),
+                attachments: input.message.attachments,
+                ...(input.modelSelection === undefined
+                  ? {}
+                  : { modelSelection: input.modelSelection }),
+                ...(input.modelSelectionExplicit === undefined
+                  ? {}
+                  : { modelSelectionExplicit: input.modelSelectionExplicit }),
+                dispatchMode: { type: "start_immediately" },
+              },
+            }
+          : {
+              method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+              payload: {
+                commandId: input.commandId,
+                threadId: input.threadId,
+                projectId: creation.projectId,
+                creationSource: input.creationSource ?? "web",
+                title: input.titleSeed ?? creation.title,
+                generateTitle: input.titleSeed !== undefined,
+                modelSelection: input.modelSelection ?? creation.modelSelection,
+                runtimeMode: input.runtimeMode,
+                interactionMode: input.interactionMode,
+                workspaceStrategy: creation.worktreePath
+                  ? {
+                      type: "existing_worktree",
+                      worktreePath: creation.worktreePath,
+                      ...(creation.branch === null ? {} : { branch: creation.branch }),
+                    }
+                  : {
+                      type: "root",
+                      ...(creation.branch === null ? {} : { branch: creation.branch }),
+                    },
+                initialMessage: input.message,
+              },
+            },
+      ),
+    );
+  });
   state.prepare.mockReset().mockImplementation(async ({ attachments }) => ({
     status: "ready",
     attachments: [],
@@ -214,7 +287,8 @@ describe("queued PR checkout", () => {
 
   it("waits for the provider's PR checkout and launches in that worktree", async () => {
     state.grantedEnvironments.add("secondary");
-    await state.manager.enqueue(queuedPullRequest());
+    const queued = queuedPullRequest();
+    await state.manager.enqueue(queued);
     const started = Promise.withResolvers<void>();
     const checkout =
       Promise.withResolvers<AsyncResult.AsyncResult<typeof preparedCheckout, Error>>();
@@ -224,20 +298,42 @@ describe("queued PR checkout", () => {
     });
     const drained = runDrain();
     await started.promise;
-    expect(state.start).not.toHaveBeenCalled();
+    expect(state.prepareTurn).not.toHaveBeenCalled();
+    expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.checkout).toHaveBeenCalledWith({
       environmentId: "secondary",
       input: { cwd: "/repo", reference: "https://github.com/acme/repo/pull/123", mode: "worktree" },
     });
     checkout.resolve(AsyncResult.success(preparedCheckout));
     await drained;
-    expect(state.start).toHaveBeenCalledOnce();
-    const bootstrap = state.start.mock.calls[0]?.[0].input.bootstrap;
-    expect(bootstrap.createThread).toMatchObject({
-      branch: "pr-123",
-      worktreePath: preparedCheckout.worktreePath,
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    expect(state.dispatch).toHaveBeenCalledOnce();
+    const dispatched = state.dispatch.mock.calls[0]?.[0];
+    expect(dispatched).toEqual({
+      environmentId: queued.environmentId,
+      input: expect.objectContaining({
+        method: ORCHESTRATION_V2_WS_METHODS.launchThread,
+        payload: expect.objectContaining({
+          commandId: queued.commandId,
+          threadId: queued.threadId,
+          projectId: queued.creation!.projectId,
+          initialMessage: expect.objectContaining({
+            messageId: queued.messageId,
+            text: queued.text,
+          }),
+          workspaceStrategy: {
+            type: "existing_worktree",
+            branch: "pr-123",
+            worktreePath: preparedCheckout.worktreePath,
+          },
+        }),
+      }),
     });
-    expect(bootstrap.prepareWorktree).toBeUndefined();
+    const prepared = await state.prepareTurn.mock.results[0]?.value;
+    if (!prepared || !AsyncResult.isSuccess(prepared))
+      throw new Error("Expected prepared PR launch");
+    expect(dispatched?.input).toBe(prepared.value);
+    expect(Object.isFrozen(dispatched?.input.payload)).toBe(true);
     expect(remaining()).toEqual([]);
   });
 
@@ -249,7 +345,8 @@ describe("queued PR checkout", () => {
       AsyncResult.failure(Cause.fail(new Error("Socket is not connected"))),
     );
     await runDrain();
-    expect(state.start).not.toHaveBeenCalled();
+    expect(state.prepareTurn).not.toHaveBeenCalled();
+    expect(state.dispatch).not.toHaveBeenCalled();
     expect(remaining()).toEqual([queued]);
   });
 
@@ -262,7 +359,8 @@ describe("queued PR checkout", () => {
       return AsyncResult.success(preparedCheckout);
     });
     await runDrain();
-    expect(state.start).not.toHaveBeenCalled();
+    expect(state.prepareTurn).not.toHaveBeenCalled();
+    expect(state.dispatch).not.toHaveBeenCalled();
     expect(remaining()).toEqual([queued]);
   });
 
@@ -276,7 +374,8 @@ describe("queued PR checkout", () => {
       return AsyncResult.success(preparedCheckout);
     });
     await runDrain();
-    expect(state.start).not.toHaveBeenCalled();
+    expect(state.prepareTurn).not.toHaveBeenCalled();
+    expect(state.dispatch).not.toHaveBeenCalled();
     expect(remaining()).toEqual([edited]);
   });
 });
@@ -289,12 +388,14 @@ describe("queued task operation access", () => {
     const queued = message();
     await state.manager.enqueue(queued);
     useThreadOutboxDrain();
-    expect(state.start).not.toHaveBeenCalled();
+    expect(state.prepareTurn).not.toHaveBeenCalled();
+    expect(state.dispatch).not.toHaveBeenCalled();
     expect(state.prepare).not.toHaveBeenCalled();
     expect(remaining()).toEqual([queued]);
     state.grantedEnvironments.add("secondary");
     await runDrain();
-    expect(state.start).toHaveBeenCalledOnce();
+    expect(state.prepareTurn).toHaveBeenCalledOnce();
+    expect(state.dispatch).toHaveBeenCalledOnce();
     expect(remaining()).toEqual([]);
   });
 
@@ -314,7 +415,8 @@ describe("queued task operation access", () => {
     expect(state.runtime).toHaveBeenCalledOnce();
     expect(state.interaction).not.toHaveBeenCalled();
     expect(state.prepare).not.toHaveBeenCalled();
-    expect(state.start).not.toHaveBeenCalled();
+    expect(state.prepareTurn).not.toHaveBeenCalled();
+    expect(state.dispatch).not.toHaveBeenCalled();
     expect(remaining()).toEqual([queued]);
   });
 
@@ -322,7 +424,7 @@ describe("queued task operation access", () => {
     { isCreation: false, accepted: false },
     { isCreation: true, accepted: true },
   ])(
-    "preserves a rejected queue but removes an accepted turn after access loss (new task: $isCreation, accepted: $accepted)",
+    "preserves an uncertain queue but removes an accepted turn after access loss (new task: $isCreation, accepted: $accepted)",
     async ({ isCreation, accepted }) => {
       state.grantedEnvironments.add("secondary");
       const queued = message(
@@ -343,7 +445,7 @@ describe("queued task operation access", () => {
       await state.manager.enqueue(queued);
       const started = Promise.withResolvers<void>();
       const delivery = Promise.withResolvers<AsyncResult.AsyncResult<void, Error>>();
-      state.start.mockImplementationOnce(() => {
+      state.dispatch.mockImplementationOnce(() => {
         started.resolve();
         return delivery.promise;
       });
@@ -357,12 +459,26 @@ describe("queued task operation access", () => {
       );
       await drained;
 
-      expect(remaining()).toEqual(accepted ? [] : [queued]);
+      const dispatched = state.dispatch.mock.calls[0]?.[0];
+      if (!dispatched) throw new Error("Expected prepared turn dispatch");
+      expect(remaining()).toEqual(
+        accepted
+          ? []
+          : [
+              {
+                ...queued,
+                issuance: expect.objectContaining({ state: "issued", prepared: dispatched.input }),
+              },
+            ],
+      );
       expect(state.draftText).toBe("Keep this draft separate");
       if (!accepted) {
         state.grantedEnvironments.add("secondary");
         await runDrain();
-        expect(state.start).toHaveBeenCalledTimes(2);
+        expect(state.prepareTurn).toHaveBeenCalledOnce();
+        expect(state.dispatch).toHaveBeenCalledTimes(2);
+        expect(state.dispatch.mock.calls[1]?.[0]).toEqual(dispatched);
+        expect(state.dispatch.mock.calls[1]?.[0].input).toBe(dispatched.input);
         expect(remaining()).toEqual([]);
         expect(state.draftText).toBe("Keep this draft separate");
       }
@@ -406,7 +522,8 @@ describe("queued task operation access", () => {
       });
       await runDrain();
       expect(state.prepare).toHaveBeenCalledOnce();
-      expect(state.start).not.toHaveBeenCalled();
+      expect(state.prepareTurn).not.toHaveBeenCalled();
+      expect(state.dispatch).not.toHaveBeenCalled();
       expect(remaining()).toEqual([queued]);
     },
   );
