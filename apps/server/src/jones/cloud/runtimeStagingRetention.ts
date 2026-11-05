@@ -36,7 +36,12 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
     const runtime = Path.join(baseDir, "runtime");
     await directory(runtime);
     const versions = Path.join(runtime, "versions");
-    const generations: { version: string; dev: number; ino: number; receiptSha256: string | null }[] = [];
+    const generations: {
+      version: string;
+      dev: number;
+      ino: number;
+      receiptSha256: string | null;
+    }[] = [];
     try {
       await directory(versions);
       const names = (await FS.readdir(versions)).sort();
@@ -44,11 +49,18 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
       for (const version of names) {
         const path = Path.join(versions, version);
         const info = await directory(path);
-        const receipt = await record(Path.join(path, ".jones-runtime-receipt.json")).catch((error: unknown) => {
-          if (absent(error)) return undefined;
-          throw error;
+        const receipt = await record(Path.join(path, ".jones-runtime-receipt.json")).catch(
+          (error: unknown) => {
+            if (absent(error)) return undefined;
+            throw error;
+          },
+        );
+        generations.push({
+          version,
+          dev: info.dev,
+          ino: info.ino,
+          receiptSha256: receipt?.digest ?? null,
         });
-        generations.push({ version, dev: info.dev, ino: info.ino, receiptSha256: receipt?.digest ?? null });
       }
     } catch (error) {
       if (!absent(error)) throw error;
@@ -56,7 +68,13 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
     const references: { path: string; digest: string; versions: string[] }[] = [];
     let referenceEntries = 0;
     const add = (path: string, raw: string, digest: string) => {
-      references.push({ path, digest, versions: generations.filter(({ version }) => raw.includes(version)).map(({ version }) => version) });
+      references.push({
+        path,
+        digest,
+        versions: generations
+          .filter(({ version }) => raw.includes(version))
+          .map(({ version }) => version),
+      });
     };
     // These are the released producer/reference roots: service state, durable
     // operation history, qualified staged handles/selections and paired recovery.
@@ -64,7 +82,8 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
       await directory(path);
       const names = (await FS.readdir(path)).sort();
       referenceEntries += names.length;
-      if (referenceEntries > 1000) throw new Error("Runtime reference inventory exceeds its bound.");
+      if (referenceEntries > 1000)
+        throw new Error("Runtime reference inventory exceeds its bound.");
       for (const name of names) {
         const child = Path.join(path, name);
         const info = await FS.lstat(child);
@@ -80,13 +99,24 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
     };
     const state = await record(Path.join(runtime, "service-state.json"));
     add("service-state.json", JSON.stringify(state.value), state.digest);
-    const settings = await record(Path.join(baseDir, "userdata", "settings.json")).catch((error: unknown) => {
-      if (absent(error)) return undefined;
-      throw error;
-    });
-    const mode = (settings?.value as { storageCleanup?: { installRetention?: unknown } } | undefined)?.storageCleanup?.installRetention ?? "propose";
-    if (mode !== "propose" && mode !== "retire") throw new Error("Unknown runtime retention mode; preserved.");
-    for (const root of ["staged-updates", "jones-updates/selections", "jones-update-operations", "jones-update-history", "db-backup"]) {
+    const settings = await record(Path.join(baseDir, "userdata", "settings.json")).catch(
+      (error: unknown) => {
+        if (absent(error)) return undefined;
+        throw error;
+      },
+    );
+    const mode =
+      (settings?.value as { storageCleanup?: { installRetention?: unknown } } | undefined)
+        ?.storageCleanup?.installRetention ?? "propose";
+    if (mode !== "propose" && mode !== "retire")
+      throw new Error("Unknown runtime retention mode; preserved.");
+    for (const root of [
+      "staged-updates",
+      "jones-updates/selections",
+      "jones-update-operations",
+      "jones-update-history",
+      "db-backup",
+    ]) {
       await scan(Path.join(runtime, root), 3).catch((error: unknown) => {
         if (!absent(error)) throw error;
       });
@@ -119,12 +149,20 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
       try {
         await file.writeFile(`${JSON.stringify(plan)}\n`);
         await file.sync();
-      } finally { await file.close(); }
+      } finally {
+        await file.close();
+      }
       await FS.rename(scratch, path);
       const parent = await FS.open(runtime, "r");
-      try { await parent.sync(); } finally { await parent.close(); }
+      try {
+        await parent.sync();
+      } finally {
+        await parent.close();
+      }
     } finally {
-      await FS.unlink(scratch).catch((error: unknown) => { if (!absent(error)) throw error; });
+      await FS.unlink(scratch).catch((error: unknown) => {
+        if (!absent(error)) throw error;
+      });
     }
   });
 }

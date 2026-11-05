@@ -982,7 +982,9 @@ export class Launcher {
     try {
       await proposeRuntimeStagingRetention(this.#baseDir);
     } catch {
-      process.stderr.write("[service-launcher] Runtime retention proposal held; generations preserved.\n");
+      process.stderr.write(
+        "[service-launcher] Runtime retention proposal held; generations preserved.\n",
+      );
     }
   }
 

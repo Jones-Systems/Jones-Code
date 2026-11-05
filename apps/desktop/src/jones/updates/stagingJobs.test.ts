@@ -1222,10 +1222,16 @@ describe("reclaimJonesStagePayload", () => {
     const transactionId = "a".repeat(64);
     const directory = NodePath.join(NodePath.dirname(root), "jones-manual-installs", transactionId);
     await NodeFSP.mkdir(directory, { recursive: true });
-    await NodeFSP.writeFile(NodePath.join(directory, "receipt.json"), JSON.stringify({
-      protocol: 1, operation: "manual-install", transactionId, phase: "launched",
-      candidate: { stagedHandle: replaced },
-    }));
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "receipt.json"),
+      JSON.stringify({
+        protocol: 1,
+        operation: "manual-install",
+        transactionId,
+        phase: "launched",
+        candidate: { stagedHandle: replaced },
+      }),
+    );
     expect(await reclaimJonesStagePayload(root, replaced)).toEqual({ status: "referenced" });
     expect(await exists(old.appAttempt)).toBe(true);
   });

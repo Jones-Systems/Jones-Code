@@ -1330,7 +1330,9 @@ export class JonesDesktopUpdateController {
       // The native command acquires the same exclusion as install admission and
       // startup reconciliation. Automatic startup only proposes manual retention.
       try {
-        await NodeFSP.lstat(NodePath.join(NodePath.dirname(this.manifestPath), "jones-manual-installs"));
+        await NodeFSP.lstat(
+          NodePath.join(NodePath.dirname(this.manifestPath), "jones-manual-installs"),
+        );
         await runNativeCommand("/usr/bin/python3", [
           await this.#helperPath(),
           "--manifest",

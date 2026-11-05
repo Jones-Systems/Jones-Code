@@ -12,7 +12,10 @@ describe("install and runtime retention protocol", () => {
         "--test",
         "--test-concurrency=1",
         fileURLToPath(
-          new URL("../../../../../scripts/jones/updates/install-retention.node-test.mjs", import.meta.url),
+          new URL(
+            "../../../../../scripts/jones/updates/install-retention.node-test.mjs",
+            import.meta.url,
+          ),
         ),
       ],
       { encoding: "utf8", timeout: 45000, stdio: "pipe" },

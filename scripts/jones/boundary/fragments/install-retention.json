@@ -3,8 +3,7 @@
   "feature": "install-retention",
   "jonesOwnedPaths": [
     "apps/desktop/src/jones/updates/installRetention.test.ts",
-    "apps/server/src/jones/cloud/runtimeStagingRetention.ts",
-    "scripts/jones/updates/install-retention.node-test.mjs"
+    "apps/server/src/jones/cloud/runtimeStagingRetention.ts"
   ],
   "hookPaths": [],
   "tombstones": [],

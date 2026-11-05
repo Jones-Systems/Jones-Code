@@ -31,7 +31,8 @@ describe("storage cleanup settings", () => {
   it("decodes explicit install retention modes and rejects unknown modes", () => {
     for (const installRetention of ["propose", "retire"] as const) {
       expect(
-        decodeServerSettings({ storageCleanup: { installRetention } }).storageCleanup.installRetention,
+        decodeServerSettings({ storageCleanup: { installRetention } }).storageCleanup
+          .installRetention,
       ).toBe(installRetention);
       expect(decodeServerSettingsPatch({ storageCleanup: { installRetention } })).toEqual({
         storageCleanup: { installRetention },
