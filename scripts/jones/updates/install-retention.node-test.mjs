@@ -251,6 +251,37 @@ for identifier in (second, first):
 assert (pair / 'state.sqlite').exists() and (previous / 'binary').exists()
 `));
 
+for (const target of ["held", "dependency"]) {
+  test(`J6-COR-R2-01: old warm retirement preserves ${target} recovery under an unresolved hold`, () =>
+    python(String.raw`
+active, dependency, pair, previous = unreferenced_warm()
+held = '4' * 64
+prior = dict(active, generation=dependency, transactionId=dependency)
+directory = warm(held, prior)
+held_pair = directory / 'previous-pair'
+(held_pair / 'state.sqlite').write_text('held-state')
+held_app = pathlib.Path(active['appPath'] + '.jones-previous-' + dependency)
+held_app.mkdir(); (held_app / 'binary').write_text('held-app')
+durable(directory / 'journal.json', dict(read(directory / 'journal.json'),
+        recoveryReserveCleanup='held', previousBundle=str(held_app), dependencies=[{'generation': ids['d']}]))
+identifier = held if '${target}' == 'held' else dependency
+plan = retirement_command('inspect-retirement', active, identifier)
+result = retirement_command('retire-transaction', active, identifier, plan.get('planSha256', '0' * 64))
+assert (held_pair / 'state.sqlite').read_text() == 'held-state', result
+assert (held_app / 'binary').read_text() == 'held-app', result
+assert (pair / 'state.sqlite').read_text() == 'unreferenced-state', result
+assert (previous / 'binary').read_text() == 'unreferenced-app', result
+assert plan['status'] == result['status'] == 'refused', (plan, result)
+assert plan['reason'] == result['reason'] == 'protected-recovery-parent', (plan, result)
+assert read(directory / 'journal.json')['recoveryReserveCleanup'] == 'held'
+assert not (directory / 'retirement-intent.json').exists()
+assert not (pair.parent / 'retirement-intent.json').exists()
+manual_plan = install_retention_plan()
+assert held in manual_plan['snapshot']['warmKeep'] and dependency in manual_plan['snapshot']['warmKeep']
+assert ids['d'] in manual_plan['keep'] and manual_plan['candidates'] == []
+`));
+}
+
 test("J6-COR-02: unreferenced warm retirement completes and reads back its durable receipt", () =>
   python(String.raw`
 active, identifier, pair, previous = unreferenced_warm()

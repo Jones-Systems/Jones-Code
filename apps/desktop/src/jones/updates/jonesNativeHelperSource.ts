@@ -1966,6 +1966,10 @@ def install_retention_plan(in_progress=None, retiring=None):
     # not merely the directory whose name happens to contain "previous".
     transactions, warm_records, warm_snapshot = warm_retention_inventory(retiring)
     records.update(warm_records)
+    # Resumed activation can still hold recovery material for reconciliation.
+    # Root the transaction so both retention consumers preserve its dependencies.
+    roots.update(identifier for identifier, record in warm_records.items()
+                 if record['journal.json'].get('recoveryReserveCleanup') == 'held')
     stores = ((root, 'manual-'), (transactions, ''))
     payloads = [(value[field], identifier) for identifier, record in records.items()
                 for value in (record['receipt'] if identifier.startswith('manual-') else record['journal.json'],)
