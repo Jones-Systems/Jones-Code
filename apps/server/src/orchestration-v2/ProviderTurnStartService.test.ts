@@ -228,7 +228,10 @@ function startWithMissingWorktree(
             );
           },
         }),
-        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({}),
+        Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          awaitThreadRetirement: () => Effect.void,
+          hasRetiredWriter: () => Effect.succeed(false),
+        }),
         Layer.mock(ProviderAuthService.ProviderAuthService)({
           tryHandlePromptCommand: () => Effect.succeed(false),
         }),
@@ -1017,6 +1020,8 @@ function makeLocalCommandHarness(input: {
               : Effect.succeed([]),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          awaitThreadRetirement: () => Effect.void,
+          hasRetiredWriter: () => Effect.succeed(false),
           open,
           detach: ({ providerSessionId, requireWriterRetirement }) => {
             expect(requireWriterRetirement).toBe(true);

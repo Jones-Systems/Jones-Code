@@ -1,4 +1,5 @@
 import { interactiveRead } from "../jones/serverParallelism/readClassification.ts";
+import { isAccountTransferDetach } from "../jones/providerRetirement/accountTransferRetirement.ts";
 import {
   GoalNotificationDeliveryUnknown,
   isGoalNotificationDeliveryUnknown,
@@ -37,6 +38,7 @@ import {
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
@@ -103,6 +105,7 @@ export const layerExecutor: Layer.Layer<
   OrchestrationEffectExecutorV2,
   never,
   | ProviderSessionManager.ProviderSessionManagerV2
+  | CommandReceiptStore.CommandReceiptStoreV2
   | RestartPreparation.RestartPreparation
   | RunFinalizationService.RunFinalizationService
   | CheckpointRollbackService.CheckpointRollbackServiceV2
@@ -119,6 +122,7 @@ export const layerExecutor: Layer.Layer<
     const resourceCleanup = yield* ResourceCleanupService.ResourceCleanupService;
     const checkpointRollback = yield* CheckpointRollbackService.CheckpointRollbackServiceV2;
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const commandReceipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
     const restartPreparation = yield* RestartPreparation.RestartPreparation;
     const providerTurnControl = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
     const providerTurnStart = yield* ProviderTurnStartService.ProviderTurnStartServiceV2;
@@ -205,9 +209,10 @@ export const layerExecutor: Layer.Layer<
               ),
             );
           }
-          case "provider-session.detach":
-            if (effect.request.runtimeStopCommandId !== undefined) {
-              const runtimeStopCommandId = effect.request.runtimeStopCommandId;
+          case "provider-session.detach": {
+            const request = effect.request;
+            if (request.runtimeStopCommandId !== undefined) {
+              const runtimeStopCommandId = request.runtimeStopCommandId;
               return Effect.gen(function* () {
                 const owner = yield* Effect.serviceOption(RuntimeStop.CurrentRuntimeStop);
                 if (Option.isNone(owner))
@@ -220,31 +225,34 @@ export const layerExecutor: Layer.Layer<
                   (cause) =>
                     new OrchestrationEffectExecutionError({
                       effectId: effect.id,
-                      effectType: effect.request.type,
+                      effectType: request.type,
                       cause,
                     }),
                 ),
               );
             }
-            return providerSessions
-              .detach({
-                providerSessionId: effect.request.providerSessionId,
-                threadId: effect.threadId,
-                ...(effect.request.detail === undefined ? {} : { detail: effect.request.detail }),
-                ...(effect.request.revokeMcpCredential === undefined
-                  ? {}
-                  : { revokeMcpCredential: effect.request.revokeMcpCredential }),
-              })
-              .pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestrationEffectExecutionError({
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                      cause,
-                    }),
-                ),
-              );
+            return isAccountTransferDetach(effect, commandReceipts).pipe(
+              Effect.flatMap((retireOnAccountTransfer) =>
+                providerSessions.detach({
+                  providerSessionId: request.providerSessionId,
+                  threadId: effect.threadId,
+                  ...(request.detail === undefined ? {} : { detail: request.detail }),
+                  ...(request.revokeMcpCredential === undefined
+                    ? {}
+                    : { revokeMcpCredential: request.revokeMcpCredential }),
+                  ...(retireOnAccountTransfer ? { retireOnAccountTransfer: true as const } : {}),
+                }),
+              ),
+              Effect.mapError(
+                (cause) =>
+                  new OrchestrationEffectExecutionError({
+                    effectId: effect.id,
+                    effectType: request.type,
+                    cause,
+                  }),
+              ),
+            );
+          }
           case "provider-turn.start":
             return providerTurnStart
               .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
