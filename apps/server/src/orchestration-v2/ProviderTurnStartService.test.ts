@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
@@ -97,6 +98,7 @@ function startWithMissingWorktree(
     [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
   },
   lifecycleLayer?: Layer.Layer<WorkspaceLifecycle.WorkspaceLifecycle>,
+  provenanceLayer?: Layer.Layer<WorkspaceProvenance.Provenance>,
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -244,7 +246,16 @@ function startWithMissingWorktree(
     return yield* (yield* ProviderTurnStart.ProviderTurnStartServiceV2)
       .start({ threadId, runId })
       .pipe(Effect.flip);
-  }).pipe(Effect.provide([layer, lifecycleLayer ?? Layer.empty]), Effect.runPromise);
+  }).pipe(
+    Effect.provide(
+      layer.pipe(
+        Layer.provideMerge(
+          Layer.merge(lifecycleLayer ?? Layer.empty, provenanceLayer ?? Layer.empty),
+        ),
+      ),
+    ),
+    Effect.runPromise,
+  );
   return {
     start,
     pruneWorktrees,
@@ -2260,3 +2271,29 @@ effectIt.effect("terminalizes an unresolved writer retirement before opening its
     ]);
   }),
 );
+
+it("recreation captures the newly created workspace before provider execution", async () => {
+  const captures: Array<{ reason: string; runId: string | undefined }> = [];
+  const harness = startWithMissingWorktree(
+    `${managedWorktreesDir}/project/provenance`,
+    undefined,
+    undefined,
+    Layer.mock(WorkspaceProvenance.Provenance)({
+      capture: (input) =>
+        Effect.yieldNow.pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              expect(harness.createWorktree).toHaveBeenCalledTimes(1);
+              expect(harness.startRootRun).not.toHaveBeenCalled();
+              captures.push({ reason: input.reason, runId: input.runId });
+              return {} as never;
+            }),
+          ),
+        ),
+    }),
+  );
+  await harness.start;
+  expect(captures).toEqual([
+    { reason: "recreate", runId: "run_provider_turn_start_projection_failure" },
+  ]);
+});

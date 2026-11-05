@@ -78,7 +78,8 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 133, name: "ThreadResultDependencies" },
         { migration_id: 134, name: "GoalContinuity" },
         { migration_id: 135, name: "IdleWorktreeAdmission" },
-        { migration_id: 136, name: "NativeCreationLeaseRenewal" },
+        { migration_id: 136, name: "WorkspaceProvenance" },
+        { migration_id: 137, name: "NativeCreationLeaseRenewal" },
       ],
     );
     assert.deepEqual(
@@ -102,15 +103,15 @@ it.effect("records additive fork migration 3 without changing upstream migration
   }).pipe(Effect.provide(memory)),
 );
 
-const released135Database = Layer.effectDiscard(
+const released136Database = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA foreign_keys = ON`;
     yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
-    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 135));
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 136));
   }),
 ).pipe(Layer.provideMerge(memory));
-const upgradeRepository = RepositorySqlite.layer.pipe(Layer.provideMerge(released135Database));
+const upgradeRepository = RepositorySqlite.layer.pipe(Layer.provideMerge(released136Database));
 
 const nativeUpgradeFixture = Effect.gen(function* () {
   const now = "2026-11-05T12:00:00.000Z";
@@ -290,7 +291,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
 });
 
 it.effect(
-  "real outbox renewal rolls back before 136, then confirms and settles the same native start",
+  "real outbox renewal rolls back before 137, then confirms and settles the same native start",
   () =>
     Effect.gen(function* () {
       const f = yield* nativeUpgradeFixture;
@@ -302,7 +303,7 @@ it.effect(
       assert.isTrue(Exit.isFailure(failed));
       assert.deepStrictEqual(yield* f.readLeases, before);
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-        [136, "NativeCreationLeaseRenewal"],
+        [137, "NativeCreationLeaseRenewal"],
       ]);
       assert.deepStrictEqual(yield* f.readLeases, before);
       const expiry = yield* f.outbox.renew({ claim: f.claim, leaseDurationMs: 30_000 });

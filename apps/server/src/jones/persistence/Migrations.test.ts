@@ -458,7 +458,11 @@ it.effect(
       assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
       assert.deepStrictEqual(
         (yield* readLedger).map(({ migration_id, name }) => [migration_id, name]),
-        [...released135Identities, [136, "NativeCreationLeaseRenewal"]],
+        [
+          ...released135Identities,
+          [136, "WorkspaceProvenance"],
+          [137, "NativeCreationLeaseRenewal"],
+        ],
       );
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
@@ -671,7 +675,8 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [133, "ThreadResultDependencies"],
       [134, "GoalContinuity"],
       [135, "IdleWorktreeAdmission"],
-      [136, "NativeCreationLeaseRenewal"],
+      [136, "WorkspaceProvenance"],
+      [137, "NativeCreationLeaseRenewal"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

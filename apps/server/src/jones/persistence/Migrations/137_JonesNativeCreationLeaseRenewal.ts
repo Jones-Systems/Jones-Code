@@ -21,7 +21,7 @@ export default Effect.gen(function* () {
     return yield* new SqlError({
       reason: new ConstraintError({
         cause: undefined,
-        operation: "Jones migration 136 prerequisite",
+        operation: "Jones migration 137 prerequisite",
         message: "Native lease renewal requires the released immutable start trigger.",
       }),
     });

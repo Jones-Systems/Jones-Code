@@ -2554,7 +2554,8 @@
     "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned",
     "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts": "jones-tests-in-upstream",
-    "apps/server/src/orchestration-v2/testkit/CursorReplayFixtures.integration.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/orchestration-v2/testkit/CursorReplayFixtures.integration.test.ts": "jones-tests-in-upstream",
+    "packages/contracts/src/worktreeMcp.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

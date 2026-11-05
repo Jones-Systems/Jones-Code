@@ -7,7 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "../../../persistence/Migrations.ts";
 import { runJonesMigrations } from "../JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
-import renewalMigration from "./136_JonesNativeCreationLeaseRenewal.ts";
+import renewalMigration from "./137_JonesNativeCreationLeaseRenewal.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 const starts = "jones_native_creation_execution_starts";
@@ -26,13 +26,13 @@ const upstreamTables = [
   "orchestration_events",
   "orchestration_v2_effect_outbox",
 ] as const;
-const through135 = jonesMigrationEntries.filter(([id]) => id <= 135);
+const through136 = jonesMigrationEntries.filter(([id]) => id <= 136);
 
-const installReleased135 = Effect.gen(function* () {
+const installReleased136 = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`PRAGMA foreign_keys = ON`;
   yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
-  yield* runJonesMigrations(through135);
+  yield* runJonesMigrations(through136);
   assert.deepStrictEqual(yield* sql`PRAGMA foreign_keys`, [{ foreign_keys: 1 }]);
   assert.deepStrictEqual(
     yield* sql`SELECT tbl_name, sql FROM sqlite_master WHERE name = ${changedTrigger}`,
@@ -69,7 +69,7 @@ const seedStart = (id: string, expiry: string, rowid: number) =>
   });
 
 const retainedFacts = Effect.gen(function* () {
-  yield* installReleased135;
+  yield* installReleased136;
   yield* seedStart("active", activeExpiry, 41);
   yield* seedStart("expired", "2000-01-01T00:00:00.000Z", 71);
   yield* seedStart("confirmed", activeExpiry, 101);
@@ -120,7 +120,7 @@ const snapshot = Effect.gen(function* () {
   };
 });
 
-it.effect("136 changes only the released update trigger and its normal ledger entry", () =>
+it.effect("137 changes only the released update trigger and its normal ledger entry", () =>
   Effect.gen(function* () {
     yield* retainedFacts;
     const sql = yield* SqlClient.SqlClient;
@@ -134,7 +134,7 @@ it.effect("136 changes only the released update trigger and its normal ledger en
       12,
     );
     assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-      [136, "NativeCreationLeaseRenewal"],
+      [137, "NativeCreationLeaseRenewal"],
     ]);
     const after = yield* snapshot;
     assert.deepStrictEqual(after.native, before.native);
@@ -143,7 +143,7 @@ it.effect("136 changes only the released update trigger and its normal ledger en
     assert.deepStrictEqual(after.jonesLedger.slice(0, -1), before.jonesLedger);
     assert.strictEqual(after.jonesLedger.length, before.jonesLedger.length + 1);
     assert.deepInclude(after.jonesLedger.at(-1), {
-      migration_id: 136,
+      migration_id: 137,
       name: "NativeCreationLeaseRenewal",
     });
     assert.deepStrictEqual(
@@ -165,7 +165,7 @@ it.effect(
   "only expiry advances, including one millisecond and calendar boundaries, preserve facts",
   () =>
     Effect.gen(function* () {
-      yield* installReleased135;
+      yield* installReleased136;
       yield* seedStart("active", "2026-12-31T23:59:59.998Z", 41);
       yield* runJonesMigrations(jonesMigrationEntries);
       const sql = yield* SqlClient.SqlClient;
@@ -253,7 +253,7 @@ it.effect(
   "historical noncanonical expiries survive upgrade and cannot be renewed into valid values",
   () =>
     Effect.gen(function* () {
-      yield* installReleased135;
+      yield* installReleased136;
       for (const [index, expiry] of [
         "lease",
         "2028-02-30T00:00:00.000Z",
@@ -366,9 +366,9 @@ it.effect(
       let replacementObserved = false;
       const result = yield* Effect.exit(
         runJonesMigrations([
-          ...through135,
+          ...through136,
           [
-            136,
+            137,
             "NativeCreationLeaseRenewal",
             Effect.gen(function* () {
               yield* renewalMigration;
@@ -386,7 +386,7 @@ it.effect(
       assert.isTrue(replacementObserved);
       assert.deepStrictEqual(yield* snapshot, before);
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-        [136, "NativeCreationLeaseRenewal"],
+        [137, "NativeCreationLeaseRenewal"],
       ]);
       const after = yield* snapshot;
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
@@ -395,7 +395,7 @@ it.effect(
 );
 
 it.effect.each(["missing", "unexpected body", "unexpected table"] as const)(
-  "136 refuses a %s prerequisite without guessing a repair",
+  "137 refuses a %s prerequisite without guessing a repair",
   (drift) =>
     Effect.gen(function* () {
       yield* retainedFacts;

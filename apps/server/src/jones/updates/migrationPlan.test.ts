@@ -12,7 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import { runJonesMigrations } from "../persistence/JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../persistence/JonesMigrations.ts";
-import nativeLeaseRenewal from "../persistence/Migrations/136_JonesNativeCreationLeaseRenewal.ts";
+import nativeLeaseRenewal from "../persistence/Migrations/137_JonesNativeCreationLeaseRenewal.ts";
 import { readMigrationPlan } from "./migrationPlan.ts";
 
 const manifest = {
@@ -99,6 +99,11 @@ const released135Identities = [
   [133, "ThreadResultDependencies"],
   [134, "GoalContinuity"],
   [135, "IdleWorktreeAdmission"],
+] as const;
+
+const released136Identities = [
+  ...released135Identities,
+  [136, "WorkspaceProvenance"],
 ] as const;
 
 it("preflights a fixed released 130 ledger: append pending, lower insertion refused, bytes unchanged", () => {
@@ -212,7 +217,7 @@ it("allows first startup without creating the missing database", () => {
 });
 
 it.effect(
-  "preflights and upgrades a real released 135 native row, rolling back a failed replacement",
+  "preflights and upgrades a real released 136 native row, rolling back a failed replacement",
   () =>
     Effect.gen(function* () {
       const root = NodeFS.mkdtempSync(
@@ -221,9 +226,9 @@ it.effect(
       const databasePath = NodePath.join(root, "statev2.sqlite");
       const current = {
         upstream: migrationManifest,
-        jones: [...released135Identities, [136, "NativeCreationLeaseRenewal"] as const],
+        jones: [...released136Identities, [137, "NativeCreationLeaseRenewal"] as const],
       };
-      const released = released135Identities.map(([id, name]) => {
+      const released = released136Identities.map(([id, name]) => {
         const entry = jonesMigrationEntries.find(
           ([currentId, currentName]) => currentId === id && currentName === name,
         );
@@ -268,7 +273,7 @@ it.effect(
         yield* run(
           Effect.gen(function* () {
             yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
-            expect(yield* runJonesMigrations(released)).toEqual(released135Identities);
+            expect(yield* runJonesMigrations(released)).toEqual(released136Identities);
             const sql = yield* SqlClient.SqlClient;
             yield* sql`INSERT INTO native_creation_intents VALUES (
           'claim', 'operation', 'preparation', 'command', 'thread', 'message',
@@ -286,7 +291,7 @@ it.effect(
         const files = NodeFS.readdirSync(root);
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [], pendingJones: [136] },
+          migrationPlan: { pendingUpstream: [], pendingJones: [137] },
         });
         expect(NodeFS.readFileSync(databasePath)).toEqual(bytes);
         expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
@@ -297,7 +302,7 @@ it.effect(
             runJonesMigrations([
               ...released,
               [
-                136,
+                137,
                 "NativeCreationLeaseRenewal",
                 Effect.gen(function* () {
                   yield* nativeLeaseRenewal;
@@ -317,7 +322,7 @@ it.effect(
         expect(capture()).toEqual(before);
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [], pendingJones: [136] },
+          migrationPlan: { pendingUpstream: [], pendingJones: [137] },
         });
         yield* run(runMigrations());
         const after = capture();
@@ -326,7 +331,7 @@ it.effect(
         expect(after.jones.slice(0, -1)).toEqual(before.jones);
         expect(after.jones).toHaveLength(before.jones.length + 1);
         expect(after.jones.at(-1)).toMatchObject({
-          migration_id: 136,
+          migration_id: 137,
           name: "NativeCreationLeaseRenewal",
         });
         expect(
@@ -346,11 +351,11 @@ it.effect(
           readMigrationPlan({
             databasePath,
             upstream: current.upstream,
-            jones: released135Identities,
+            jones: released136Identities,
           }),
         ).toEqual({
           status: "blocked",
-          reason: "Candidate older than this database (Jones migration 136).",
+          reason: "Candidate older than this database (Jones migration 137).",
         });
         yield* run(runMigrations());
         expect(capture()).toEqual(after);

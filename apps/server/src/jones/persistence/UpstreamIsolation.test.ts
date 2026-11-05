@@ -334,7 +334,8 @@ it.effect(
         [133, "ThreadResultDependencies"],
         [134, "GoalContinuity"],
         [135, "IdleWorktreeAdmission"],
-        [136, "NativeCreationLeaseRenewal"],
+        [136, "WorkspaceProvenance"],
+        [137, "NativeCreationLeaseRenewal"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
@@ -353,11 +354,11 @@ it.effect(
     }).pipe(Effect.provide(memory)),
 );
 
-it.effect("136 preserves canonical and historical starts with upstream isolation intact", () =>
+it.effect("137 preserves canonical and historical starts with upstream isolation intact", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* runMigrations({ toMigrationInclusive: upstreamThrough });
-    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 135));
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 136));
     yield* seedReferencedRows;
     const expiry = "2026-11-05T12:00:30.000Z";
     yield* sql`INSERT INTO jones_native_creation_execution_starts
@@ -376,7 +377,7 @@ it.effect("136 preserves canonical and historical starts with upstream isolation
     );
     const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
     assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-      [136, "NativeCreationLeaseRenewal"],
+      [137, "NativeCreationLeaseRenewal"],
     ]);
     assert.deepStrictEqual(
       (yield* readObjects).filter(({ name }) => name !== trigger),

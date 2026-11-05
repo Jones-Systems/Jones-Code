@@ -7,6 +7,7 @@ import {
   WorktreeMcpHandoffInput,
   WorktreeMcpHandoffResult,
   WorktreeMcpStatusResult,
+  WorktreeProvenanceEntry,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -61,17 +62,21 @@ const WorktreeStatusTool = Tool.make("t3_worktree_status", {
 
 const WorktreeListTool = Tool.make("t3_worktree_list", {
   description:
-    "List branch refs and checkout paths for a thread's workspace. Omit `threadId` for this thread. Detached worktrees with no branch are left out.",
+    "List branch refs and checkout paths for a thread's workspace. Omit `threadId` for this thread. Detached worktrees with no branch are left out of refs; provenance includes known detached and historical incarnations. Use provenancePath to look up a path within this project.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId),
+    provenancePath: Schema.optional(Schema.String),
     query: VcsListRefsInput.fields.query,
     cursor: VcsListRefsInput.fields.cursor,
     limit: VcsListRefsInput.fields.limit,
     refKind: VcsListRefsInput.fields.refKind,
     includeMatchingRemoteRefs: VcsListRefsInput.fields.includeMatchingRemoteRefs,
   }),
-  success: VcsListRefsResult,
+  success: Schema.Struct({
+    ...VcsListRefsResult.fields,
+    provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
+  }),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [
