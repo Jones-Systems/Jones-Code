@@ -32,7 +32,7 @@ describe("OpenCode protocol source identity", () => {
       assert.isTrue(Option.isSome(info.ino));
       const read = readOpenCodeProtocolSource({ binaryPath, serverUrl: "" }, { PATH: root });
       const source = yield* read;
-      const represented = Schema.decodeUnknownSync(
+      const represented = yield* Schema.decodeEffect(
         Schema.fromJsonString(
           Schema.Struct({
             info: Schema.Struct({ dev: Schema.String, ino: Schema.String, size: Schema.String }),
@@ -58,6 +58,7 @@ describe("OpenCode protocol source identity", () => {
         Effect.provideService(HostProcess.Platform, "win32"),
         Effect.provideService(CommandResolutionCache, new Map()),
         Effect.provideService(SpawnExecutableResolution, () => shim),
+        Effect.provide(Path.layer),
         Effect.provideService(
           FileSystem.FileSystem,
           FileSystem.makeNoop({
@@ -67,7 +68,7 @@ describe("OpenCode protocol source identity", () => {
         ),
       );
       const source = yield* read;
-      const represented = Schema.decodeUnknownSync(
+      const represented = yield* Schema.decodeEffect(
         Schema.fromJsonString(
           Schema.Struct({
             shell: Schema.Boolean,

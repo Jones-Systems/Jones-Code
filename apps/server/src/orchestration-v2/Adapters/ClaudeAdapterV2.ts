@@ -7621,8 +7621,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const interrupted =
             nativeTerminationConfirmed &&
             closedQuery.nativeSessionFailure === undefined &&
-            (retirementRequested ||
-              (yield* Ref.get(interruptedTurns)).has(context.providerTurnId));
+            (retirementRequested || (yield* Ref.get(interruptedTurns)).has(context.providerTurnId));
           const streamFailure = cause === undefined ? undefined : Cause.squash(cause);
           // Finalization can yield to a replacement process; capture ownership and outcomes first.
           const subagents = yield* Ref.get(sessionSubagentsByTaskId);

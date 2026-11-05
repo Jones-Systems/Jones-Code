@@ -126,6 +126,22 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/NativeSource.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
     }
   ]
 }

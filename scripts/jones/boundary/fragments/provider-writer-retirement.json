@@ -85,6 +85,14 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
       "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
     }
   ]
 }

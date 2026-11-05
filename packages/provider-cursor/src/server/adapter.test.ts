@@ -1275,172 +1275,173 @@ describe("CursorAdapterV2", () => {
 
   it.effect.each(["created", "resumed"] as const)(
     "names a custom model Cursor's account catalog rejects (%s agent)",
-    (history) => Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-v2-model-" });
-      const instanceId = ProviderInstanceId.make("cursor");
-      const threadId = ThreadId.make("cursor-custom-model-thread");
-      const catalogModel = { instanceId, model: "composer-2.5" };
-      const customModel = { instanceId, model: "deepseek/deepseek-v4.1-flash" };
-      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-        runtimeMode: "full-access",
-        interactionMode: "default",
-        cwd: workspace,
-      });
-      const opens: Array<"create" | "resume"> = [];
-      let sends = 0;
-      let closes = 0;
-      // The SDK checks every create, resume, and send model against the account catalog.
-      const checkModel = (method: string, model: { readonly id: string } | undefined) =>
-        model === undefined || model.id === "composer-2.5"
-          ? Effect.void
-          : Effect.fail(
-              new CursorAgentSdk.CursorAgentSdkRunnerError({
-                method,
-                cause: new ConfigurationError(
-                  `Cannot use this model: ${model.id}. Available models: default, composer-2.5. Use Cursor.models.list() to discover valid selections.`,
-                  { isRetryable: false },
+    (history) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-v2-model-" });
+        const instanceId = ProviderInstanceId.make("cursor");
+        const threadId = ThreadId.make("cursor-custom-model-thread");
+        const catalogModel = { instanceId, model: "composer-2.5" };
+        const customModel = { instanceId, model: "deepseek/deepseek-v4.1-flash" };
+        const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          cwd: workspace,
+        });
+        const opens: Array<"create" | "resume"> = [];
+        let sends = 0;
+        let closes = 0;
+        // The SDK checks every create, resume, and send model against the account catalog.
+        const checkModel = (method: string, model: { readonly id: string } | undefined) =>
+          model === undefined || model.id === "composer-2.5"
+            ? Effect.void
+            : Effect.fail(
+                new CursorAgentSdk.CursorAgentSdkRunnerError({
+                  method,
+                  cause: new ConfigurationError(
+                    `Cannot use this model: ${model.id}. Available models: default, composer-2.5. Use Cursor.models.list() to discover valid selections.`,
+                    { isRetryable: false },
+                  ),
+                }),
+              );
+        const adapter = yield* makeCursorAdapterV2({
+          instanceId,
+          settings: yield* decodeCursorSettings({}),
+          environment: { HOME: workspace },
+        }).pipe(
+          Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
+            assertComplete: Effect.void,
+            open: (input) =>
+              checkModel(`agent.${input.operation}`, input.options.model).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    opens.push(input.operation);
+                  }),
                 ),
-              }),
-            );
-      const adapter = yield* makeCursorAdapterV2({
-        instanceId,
-        settings: yield* decodeCursorSettings({}),
-        environment: { HOME: workspace },
-      }).pipe(
-        Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
-          assertComplete: Effect.void,
-          open: (input) =>
-            checkModel(`agent.${input.operation}`, input.options.model).pipe(
-              Effect.tap(() =>
-                Effect.sync(() => {
-                  opens.push(input.operation);
+                Effect.as({
+                  agentId: "native-cursor-custom-model",
+                  listMessages: Effect.succeed([]),
+                  close: Effect.sync(() => {
+                    closes++;
+                  }),
+                  send: (sendInput) =>
+                    Effect.sync(() => {
+                      sends++;
+                    }).pipe(
+                      Effect.andThen(checkModel("run.start", sendInput.options?.model)),
+                      Effect.andThen(Effect.die("unexpected Cursor run")),
+                    ),
                 }),
               ),
-              Effect.as({
-                agentId: "native-cursor-custom-model",
-                listMessages: Effect.succeed([]),
-                close: Effect.sync(() => {
-                  closes++;
-                }),
-                send: (sendInput) =>
-                  Effect.sync(() => {
-                    sends++;
-                  }).pipe(
-                    Effect.andThen(checkModel("run.start", sendInput.options?.model)),
-                    Effect.andThen(Effect.die("unexpected Cursor run")),
-                  ),
+          }),
+          Effect.provide(TestProviderHost.layer({ cwd: workspace })),
+        );
+        let runtimeScope = yield* Scope.make();
+        yield* Effect.addFinalizer(() =>
+          Scope.close(runtimeScope, Exit.void).pipe(
+            Effect.exit,
+            Effect.flatMap((exit) =>
+              Effect.sync(() => {
+                assert.equal(closes, history === "created" ? 1 : 2);
+                if (history === "created") {
+                  assert.isTrue(Exit.isSuccess(exit));
+                } else {
+                  assert.isTrue(Exit.isFailure(exit));
+                  if (Exit.isFailure(exit)) {
+                    const unknown = findProviderControlOutcomeUnknown(exit.cause);
+                    assert.isDefined(unknown);
+                    assert.equal(unknown?.operation, "retire");
+                    assert.equal(unknown?.nativeThreadId, "native-cursor-custom-model");
+                  }
+                }
               }),
             ),
-        }),
-        Effect.provide(TestProviderHost.layer({ cwd: workspace })),
-      );
-      let runtimeScope = yield* Scope.make();
-      yield* Effect.addFinalizer(() =>
-        Scope.close(runtimeScope, Exit.void).pipe(
-          Effect.exit,
-          Effect.flatMap((exit) =>
-            Effect.sync(() => {
-              assert.equal(closes, history === "created" ? 1 : 2);
-              if (history === "created") {
-                assert.isTrue(Exit.isSuccess(exit));
-              } else {
-                assert.isTrue(Exit.isFailure(exit));
-                if (Exit.isFailure(exit)) {
-                  const unknown = findProviderControlOutcomeUnknown(exit.cause);
-                  assert.isDefined(unknown);
-                  assert.equal(unknown?.operation, "retire");
-                  assert.equal(unknown?.nativeThreadId, "native-cursor-custom-model");
-                }
-              }
-            }),
           ),
-        ),
-      );
-      const sessionInput = {
-        threadId,
-        providerSessionId: ProviderSessionId.make("cursor-custom-model-session"),
-        modelSelection: catalogModel,
-        runtimePolicy,
-      };
-      let runtime = yield* adapter.openSession(sessionInput).pipe(
-        Effect.provideService(Scope.Scope, runtimeScope),
-      );
-      const expected =
-        'Cursor cannot run the model "deepseek/deepseek-v4.1-flash". Cursor only runs models from your Cursor account. Choose one of those, or use OpenCode for OpenRouter and other API-key models.';
-
-      const createFailure = yield* runtime
-        .ensureThread({ threadId, modelSelection: customModel, runtimePolicy })
-        .pipe(Effect.flip);
-      assert.equal(makeProviderFailure({ cause: createFailure }).message, expected);
-
-      const providerThread = yield* runtime.ensureThread({
-        threadId,
-        modelSelection: catalogModel,
-        runtimePolicy,
-      });
-      if (history === "resumed") {
-        yield* Scope.close(runtimeScope, Exit.void);
-        assert.equal(closes, 1);
-        runtimeScope = yield* Scope.make();
-        runtime = yield* adapter.openSession(sessionInput).pipe(
-          Effect.provideService(Scope.Scope, runtimeScope),
         );
-        yield* runtime.resumeThread({ providerThread });
-      }
-      const now = yield* DateTime.now;
-      const sendFailure = yield* runtime
-        .startTurn({
+        const sessionInput = {
           threadId,
-          providerThread,
-          modelSelection: customModel,
+          providerSessionId: ProviderSessionId.make("cursor-custom-model-session"),
+          modelSelection: catalogModel,
           runtimePolicy,
-          runId: RunId.make("cursor-custom-model-run"),
-          runOrdinal: 1,
-          providerTurnOrdinal: 1,
-          attemptId: RunAttemptId.make("cursor-custom-model-attempt"),
-          rootNodeId: NodeId.make("cursor-custom-model-root"),
-          appThread: {
-            id: threadId,
-            projectId: ProjectId.make("cursor-custom-model-project"),
-            createdBy: "user",
-            creationSource: "web",
-            title: "Cursor custom model",
-            providerInstanceId: instanceId,
+        };
+        let runtime = yield* adapter
+          .openSession(sessionInput)
+          .pipe(Effect.provideService(Scope.Scope, runtimeScope));
+        const expected =
+          'Cursor cannot run the model "deepseek/deepseek-v4.1-flash". Cursor only runs models from your Cursor account. Choose one of those, or use OpenCode for OpenRouter and other API-key models.';
+
+        const createFailure = yield* runtime
+          .ensureThread({ threadId, modelSelection: customModel, runtimePolicy })
+          .pipe(Effect.flip);
+        assert.equal(makeProviderFailure({ cause: createFailure }).message, expected);
+
+        const providerThread = yield* runtime.ensureThread({
+          threadId,
+          modelSelection: catalogModel,
+          runtimePolicy,
+        });
+        if (history === "resumed") {
+          yield* Scope.close(runtimeScope, Exit.void);
+          assert.equal(closes, 1);
+          runtimeScope = yield* Scope.make();
+          runtime = yield* adapter
+            .openSession(sessionInput)
+            .pipe(Effect.provideService(Scope.Scope, runtimeScope));
+          yield* runtime.resumeThread({ providerThread });
+        }
+        const now = yield* DateTime.now;
+        const sendFailure = yield* runtime
+          .startTurn({
+            threadId,
+            providerThread,
             modelSelection: customModel,
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            branch: null,
-            worktreePath: null,
-            activeProviderThreadId: providerThread.id,
-            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-            forkedFrom: null,
-            createdAt: now,
-            updatedAt: now,
-            archivedAt: null,
-            settledOverride: null,
-            settledAt: null,
-            lastVisitedAt: null,
-            deletedAt: null,
-          },
-          message: {
-            messageId: MessageId.make("cursor-custom-model-message"),
-            createdBy: "user",
-            creationSource: "web",
-            text: "Hello.",
-            attachments: [],
-          },
-        })
-        .pipe(Effect.flip);
-      assert.equal(makeProviderFailure({ cause: sendFailure }).message, expected);
-      assert.equal(sends, 1);
-      assert.deepEqual(opens, history === "created" ? ["create"] : ["create", "resume"]);
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(
-        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+            runtimePolicy,
+            runId: RunId.make("cursor-custom-model-run"),
+            runOrdinal: 1,
+            providerTurnOrdinal: 1,
+            attemptId: RunAttemptId.make("cursor-custom-model-attempt"),
+            rootNodeId: NodeId.make("cursor-custom-model-root"),
+            appThread: {
+              id: threadId,
+              projectId: ProjectId.make("cursor-custom-model-project"),
+              createdBy: "user",
+              creationSource: "web",
+              title: "Cursor custom model",
+              providerInstanceId: instanceId,
+              modelSelection: customModel,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: null,
+              activeProviderThreadId: providerThread.id,
+              lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+              forkedFrom: null,
+              createdAt: now,
+              updatedAt: now,
+              archivedAt: null,
+              settledOverride: null,
+              settledAt: null,
+              lastVisitedAt: null,
+              deletedAt: null,
+            },
+            message: {
+              messageId: MessageId.make("cursor-custom-model-message"),
+              createdBy: "user",
+              creationSource: "web",
+              text: "Hello.",
+              attachments: [],
+            },
+          })
+          .pipe(Effect.flip);
+        assert.equal(makeProviderFailure({ cause: sendFailure }).message, expected);
+        assert.equal(sends, 1);
+        assert.deepEqual(opens, history === "created" ? ["create"] : ["create", "resume"]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+        ),
       ),
-    ),
   );
 
   it("maps runtime modes to the SDK sandbox and auto-review controls", () => {

@@ -186,7 +186,10 @@ it.effect("publishes replacement signals before a completed batch resumes anothe
     const next = buffer.next(first.segment);
     assert.equal(next.kind, "batch");
     if (next.kind !== "batch") throw new Error("second batch was not detached");
-    assert.deepEqual(next.batch.records.map((entry) => entry.line), ["second"]);
+    assert.deepEqual(
+      next.batch.records.map((entry) => entry.line),
+      ["second"],
+    );
     yield* Effect.sync(() => buffer.complete(next.batch));
     assert.equal(Deferred.isDoneUnsafe(second.changed), true);
     assert.equal(Deferred.isDoneUnsafe(second.capacityChanged), true);
