@@ -1,4 +1,5 @@
 import * as NodeURL from "node:url";
+import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -16,6 +17,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Crypto from "effect/Crypto";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
@@ -40,6 +42,8 @@ import * as Evidence from "../codexFailover/CodexFailoverEvidence.ts";
 import * as Option from "effect/Option";
 import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
 import * as ProcessAttribution from "../resourceTelemetry/ProcessAttribution.ts";
+
+type DetachInput = Parameters<Sessions.ProviderSessionManagerV2Shape["detach"]>[0];
 
 const accounts = ["A", "B"] as const;
 const instanceId = (account: string) => ProviderInstanceId.make(`synthetic-codex-${account}`);
@@ -111,10 +115,33 @@ const isIdle = (projection: OrchestrationV2ThreadProjection) =>
   projection.runs.every(
     (run) => !["queued", "preparing", "starting", "running", "waiting"].includes(run.status),
   );
+const failureState = Effect.fn("AccountTransferTest.failureState")(function* (threadId: ThreadId) {
+  const orchestrator = yield* Orchestrator.OrchestratorV2;
+  const outbox = yield* Outbox.EffectOutboxV2;
+  const projection = yield* orchestrator.getThreadProjection(threadId);
+  const effects = yield* outbox.listByThreadId(threadId);
+  return {
+    runs: projection.runs.map(({ ordinal, status, providerInstanceId }) => ({
+      ordinal,
+      status,
+      providerInstanceId,
+    })),
+    failures: projection.turnItems.flatMap((item) =>
+      item.type === "error" ? [item.failure] : [],
+    ),
+    effects: effects.map(({ id, status, attemptCount, lastError }) => ({
+      id,
+      status,
+      attemptCount,
+      lastError,
+    })),
+  };
+});
 const awaitProjection = Effect.fn("AccountTransferTest.awaitProjection")(function* (
   threadId: ThreadId,
   afterSequence: number,
   predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
+  stage = "projection",
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sink = yield* Sink.EventSinkV2;
@@ -127,6 +154,16 @@ const awaitProjection = Effect.fn("AccountTransferTest.awaitProjection")(functio
       Stream.filter(predicate),
       Stream.runHead,
       Effect.timeout("45 seconds"),
+      Effect.catchCause((cause) =>
+        Effect.gen(function* () {
+          const state = yield* failureState(threadId);
+          return yield* Effect.die(
+            new Error(`Account transfer ${stage} missing: ${JSON.stringify(state)}`, {
+              cause: Cause.pretty(cause),
+            }),
+          );
+        }),
+      ),
     ),
   );
 });
@@ -230,6 +267,7 @@ const scenario = (
       Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
     );
     const secondAttempt = yield* Deferred.make<Outbox.OrchestrationEffectV2>();
+    const queuedDetach = yield* Deferred.make<DetachInput>();
     const runtime = Harness.layerWithRegistryAndServices(
       { name: `account-transfer-${mode}`, runtimePolicyOverride: { cwd } },
       registry,
@@ -238,6 +276,14 @@ const scenario = (
         databaseLayer: database,
         runEffectWorker: true,
         runContinuationWorker: true,
+        ...(mode === "queued"
+          ? {
+              onSessionDetached: (input: DetachInput) =>
+                input.requireWriterRetirement === true
+                  ? Deferred.succeed(queuedDetach, input).pipe(Effect.asVoid)
+                  : Effect.void,
+            }
+          : {}),
         ...(mode === "retry"
           ? {
               beforeEffectExecution: (effect: Outbox.OrchestrationEffectV2) =>
@@ -266,14 +312,48 @@ const scenario = (
           ),
       )).flat();
     });
-    const awaitTrace = (predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean) =>
-      Stream.merge(Stream.make(undefined), fs.watch(stateDir).pipe(Stream.as(undefined))).pipe(
-        Stream.mapEffect(() => readTraces()),
-        Stream.filter(predicate),
-        Stream.runHead,
-        Effect.map(Option.getOrThrow),
-        Effect.timeout("45 seconds"),
+    const awaitTrace = Effect.fn("AccountTransferTest.awaitTrace")(function* (
+      stage: string,
+      predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean,
+    ) {
+      let changed = yield* Deferred.make<void>();
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const watcher = NodeFS.watch(stateDir, () => Deferred.doneUnsafe(changed, Effect.void));
+          watcher.on("error", (error) => Deferred.doneUnsafe(changed, Effect.die(error)));
+          return watcher;
+        }),
+        (watcher) => Effect.sync(() => watcher.close()),
       );
+      return yield* Effect.gen(function* () {
+        while (true) {
+          const observed = changed;
+          const traces = yield* readTraces();
+          if (predicate(traces)) return traces;
+          yield* Deferred.await(observed);
+          changed = yield* Deferred.make<void>();
+        }
+      }).pipe(
+        Effect.timeout("45 seconds"),
+        Effect.catchCause((cause) =>
+          Effect.gen(function* () {
+            const traces = (yield* readTraces()).map(
+              ({ instance, processId, sequence, method }) => ({
+                instance,
+                processId,
+                sequence,
+                method,
+              }),
+            );
+            return yield* Effect.die(
+              new Error(`Account transfer trace ${stage} missing: ${JSON.stringify(traces)}`, {
+                cause: Cause.pretty(cause),
+              }),
+            );
+          }),
+        ),
+      );
+    }, Effect.scoped);
     const attribution = yield* ProcessAttribution.ProcessAttribution;
     yield* Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
@@ -350,7 +430,7 @@ const scenario = (
       if (mode === "foreign") {
         // An ordinary unsubscribe intentionally leaves the synthetic holder alive until closure.
         yield* sessions.detach({ providerSessionId: sourceThread.providerSessionId!, threadId });
-        yield* awaitTrace((traces) =>
+        yield* awaitTrace("source unsubscribe", (traces) =>
           traces.some(
             (trace) =>
               trace.method === "synthetic/unsubscribe" && trace.processId === sourceProcess,
@@ -367,13 +447,14 @@ const scenario = (
             projection.runs.some(
               (run) => run.userMessageId === "SYNTHETIC_FOREIGN" && run.status === "failed",
             ) && isIdle(projection),
+          "foreign writer refusal",
         );
         assert.equal(yield* fs.readFileString(lockPath), holder);
         assert.isTrue(
           (yield* readTraces()).some((trace) => trace.method === "synthetic/writer-refused"),
         );
         yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
-        yield* awaitTrace((traces) =>
+        yield* awaitTrace("foreign writer closed", (traces) =>
           traces.some(
             (trace) => trace.method === "synthetic/closed" && trace.processId === sourceProcess,
           ),
@@ -386,6 +467,7 @@ const scenario = (
             projection.runs.some(
               (run) => run.userMessageId === "SYNTHETIC_RETRY" && run.status === "completed",
             ) && isIdle(projection),
+          "foreign writer recovery",
         );
         assert.equal(
           recovered.providerThreads.find(
@@ -427,7 +509,7 @@ const scenario = (
         );
       } else yield* dispatch("SYNTHETIC_TARGET", mode === "direct" ? target : undefined);
       if (mode !== "exclusive") {
-        yield* awaitTrace((traces) =>
+        yield* awaitTrace("transfer unsubscribe", (traces) =>
           traces.some(
             (trace) =>
               trace.method === "synthetic/unsubscribe" && trace.processId === sourceProcess,
@@ -448,9 +530,14 @@ const scenario = (
         const detaches = (yield* outbox.listByThreadId(threadId)).filter(
           (effect) => effect.request.type === "provider-session.detach",
         );
-        yield* outbox.awaitCompletion(detaches.map((effect) => effect.id));
-        assert.isTrue(detaches.length > 0);
-        if (mode === "direct" || mode === "queued" || mode === "failover")
+        if (mode === "queued") {
+          assert.lengthOf(detaches, 0);
+          assert.isFalse(yield* Deferred.isDone(queuedDetach));
+        } else {
+          yield* outbox.awaitCompletion(detaches.map((effect) => effect.id));
+          assert.isTrue(detaches.length > 0);
+        }
+        if (mode === "direct" || mode === "failover")
           assert.isTrue(
             detaches.some(
               (effect) =>
@@ -479,9 +566,21 @@ const scenario = (
         }
         yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
         yield* sessions.awaitThreadRetirement!({ threadId, instanceId: instanceId("B") });
+        if (mode === "queued") {
+          const detached = yield* Deferred.await(queuedDetach).pipe(Effect.timeout("45 seconds"));
+          assert.equal(detached.providerSessionId, sourceThread.providerSessionId);
+          assert.equal(detached.threadId, threadId);
+          assert.isTrue(detached.requireWriterRetirement);
+          assert.equal(detached.detail, "Selection changed at normal run admission.");
+        }
       }
       if (mode === "cancel-return") {
-        yield* awaitProjection(threadId, after, (projection) => isIdle(projection));
+        yield* awaitProjection(
+          threadId,
+          after,
+          (projection) => isIdle(projection),
+          "cancelled B idle",
+        );
         yield* select("A", "synthetic:return-A");
         yield* dispatch("SYNTHETIC_RETURN");
         const finished = yield* awaitProjection(
@@ -491,6 +590,7 @@ const scenario = (
             projection.runs.some(
               (run) => run.userMessageId === "SYNTHETIC_RETURN" && run.status === "completed",
             ) && isIdle(projection),
+          "cancelled transfer return to A",
         );
         assert.equal(finished.runs.at(-1)!.modelSelection.instanceId, instanceId("A"));
       } else {
@@ -501,7 +601,12 @@ const scenario = (
             projection.runs.at(-1)!.modelSelection.instanceId === instanceId("B") &&
             projection.runs.at(-1)!.status === "completed" &&
             isIdle(projection),
+          "target B completion",
         );
+        if (mode === "queued")
+          assert.isFalse(
+            finished.providerSessions.some((session) => session.id === sourceThread.providerSessionId),
+          );
         assert.equal(
           finished.providerThreads.find((row) => row.id === finished.thread.activeProviderThreadId)!
             .nativeThreadRef!.nativeId,
@@ -517,6 +622,7 @@ const scenario = (
               projection.runs.some(
                 (run) => run.userMessageId === "SYNTHETIC_RETURN" && run.status === "completed",
               ) && isIdle(projection),
+            "selection return to A",
           );
         }
       }
