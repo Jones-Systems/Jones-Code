@@ -80,13 +80,17 @@ const Trace = Schema.Struct({
 });
 const decodeSettings = Schema.decodeEffect(CodexSettings);
 const decodeTrace = Schema.decodeUnknownEffect(Schema.fromJsonString(Trace));
-const startFailureLogger = Logger.make<unknown, void>(({ message }) => {
+const startFailureLogger = Logger.make<unknown, void>((options) => {
+  const { message } = options;
   if (!Array.isArray(message)) return;
   if (message[0] !== "orchestration V2 provider turn start failed") return;
   const detail: unknown = message[1];
   if (typeof detail !== "object" || detail === null || !("cause" in detail)) return;
   if (!Cause.isCause(detail.cause)) return;
-  console.error("Synthetic provider start cause", Cause.pretty(detail.cause).slice(0, 8000));
+  Logger.consoleLogFmt.log({
+    ...options,
+    message: ["Synthetic provider start cause", Cause.pretty(detail.cause).slice(0, 8000)],
+  });
 });
 
 const catalogs: ReadonlyArray<ServerProvider> = accounts.map((account): ServerProvider => ({
