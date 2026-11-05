@@ -127,7 +127,7 @@ function makeFixture(
               modelChanged: true,
               targetProviderThreadId: null,
               releaseProviderSessionIds:
-                (transition === "switch_model_in_session" || transition === "reuse")
+                transition === "switch_model_in_session" || transition === "reuse"
                   ? []
                   : [projection.providerSessions[0]!.id],
               transition: { type: transition },
@@ -202,35 +202,47 @@ it.effect(
     }),
 );
 
-it.effect("a cancelled transfer's source stays non-reusable; preparation waits before revalidation and persists the fresh key", () => Effect.gen(function* () {
-  for (const stale of [false, true]) {
-    const entered = yield* Deferred.make<void>();
-    const released = yield* Deferred.make<void>();
-    const fixture = makeFixture("reuse", stale ? "selection" : undefined, false, {
-      marked: true,
-      wait: Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(released))),
-    });
-    const preparing = yield* fixture.start.pipe(Effect.exit, Effect.forkChild);
-    yield* Deferred.await(entered);
-    assert.deepEqual(fixture.order, []);
-    assert.deepEqual(fixture.writes, []);
-    yield* Deferred.succeed(released, undefined);
-    const result = yield* Fiber.join(preparing);
-    assert.equal(result._tag, stale ? "Failure" : "Success");
-    if (stale) assert.deepEqual(fixture.writes, []);
-    else {
-      assert.equal(fixture.writes[0]!.expectedStatus, "starting");
-      const update = fixture.writes[0]!.events.find((event) => event.type === "provider-thread.updated");
-      assert.equal(update?.type, "provider-thread.updated");
-      if (update?.type === "provider-thread.updated") assert.equal(update.payload.providerSessionId, `self-configure:${fixture.projection.runs[0]!.id}:${fixture.projection.runs[0]!.activeAttemptId}`);
-    }
-  }
-}));
+it.effect(
+  "a cancelled transfer's source stays non-reusable; preparation waits before revalidation and persists the fresh key",
+  () =>
+    Effect.gen(function* () {
+      for (const stale of [false, true]) {
+        const entered = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        const fixture = makeFixture("reuse", stale ? "selection" : undefined, false, {
+          marked: true,
+          wait: Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(released))),
+        });
+        const preparing = yield* fixture.start.pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.await(entered);
+        assert.deepEqual(fixture.order, []);
+        assert.deepEqual(fixture.writes, []);
+        yield* Deferred.succeed(released, undefined);
+        const result = yield* Fiber.join(preparing);
+        assert.equal(result._tag, stale ? "Failure" : "Success");
+        if (stale) assert.deepEqual(fixture.writes, []);
+        else {
+          assert.equal(fixture.writes[0]!.expectedStatus, "starting");
+          const update = fixture.writes[0]!.events.find(
+            (event) => event.type === "provider-thread.updated",
+          );
+          assert.equal(update?.type, "provider-thread.updated");
+          if (update?.type === "provider-thread.updated")
+            assert.equal(
+              update.payload.providerSessionId,
+              `self-configure:${fixture.projection.runs[0]!.id}:${fixture.projection.runs[0]!.activeAttemptId}`,
+            );
+        }
+      }
+    }),
+);
 
-it.effect("an unmarked reusable runtime keeps its logical session and writes no replacement", () => Effect.gen(function* () {
-  const fixture = makeFixture("reuse");
-  const result = yield* fixture.start;
-  assert.strictEqual(result, fixture.projection.providerThreads[0]);
-  assert.deepEqual(fixture.writes, []);
-  assert.deepEqual(fixture.order, ["open"]);
-}));
+it.effect("an unmarked reusable runtime keeps its logical session and writes no replacement", () =>
+  Effect.gen(function* () {
+    const fixture = makeFixture("reuse");
+    const result = yield* fixture.start;
+    assert.strictEqual(result, fixture.projection.providerThreads[0]);
+    assert.deepEqual(fixture.writes, []);
+    assert.deepEqual(fixture.order, ["open"]);
+  }),
+);

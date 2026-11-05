@@ -202,7 +202,9 @@ function layerExecutorFor(input: {
     Layer.provide(
       Layer.mergeAll(
         layerDependencies,
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({ getByCommandId: input.getReceipt ?? (() => Effect.succeed(Option.none())) }),
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+          getByCommandId: input.getReceipt ?? (() => Effect.succeedNone),
+        }),
         Layer.mock(ThreadManagementService.ThreadManagementService)(input.threads ?? {}),
         ServerSettings.layerTest(
           input.continueAfterRestart === true ? { continueThreadsAfterServerUpdate: true } : {},
@@ -1165,17 +1167,58 @@ it.effect(
     }),
 );
 
-it.effect("the executor opts account-selection detaches in only after reading the accepted command receipt", () => Effect.gen(function* () {
-  const now = yield* DateTime.now;
-  const events = yield* Ref.make<ReadonlyArray<string>>([]);
-  const effect: EffectOutbox.OrchestrationEffectV2 = { ...restartEffect(now, { type: "detach" }), request: { type: "provider-session.detach", providerSessionId: oldSessionId, detail: "Provider or model selection changed." } };
-  const captured: Array<Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["detach"]>[0]> = [];
-  yield* Effect.gen(function* () {
-    const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
-    yield* executor.execute(effect);
-    yield* executor.execute({ ...effect, request: { type: "provider-session.detach", providerSessionId: oldSessionId, detail: "Provider or model selection changed.", revokeMcpCredential: true } });
-    assert.equal(captured[0]!.retireOnAccountTransfer, true);
-    assert.isUndefined(captured[1]!.retireOnAccountTransfer);
-    assert.isTrue(captured[1]!.revokeMcpCredential);
-  }).pipe(Effect.provide(layerExecutorFor({ events, detach: (input) => Effect.sync(() => { captured.push(input); }), getReceipt: (commandId) => Effect.succeed(Option.some({ commandId, threadId, commandType: "thread.model-selection.set", status: "accepted", acceptedAt: now, resultSequence: 1, error: null })) })));
-}));
+it.effect(
+  "the executor opts account-selection detaches in only after reading the accepted command receipt",
+  () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const effect: EffectOutbox.OrchestrationEffectV2 = {
+        ...restartEffect(now, { type: "detach" }),
+        request: {
+          type: "provider-session.detach",
+          providerSessionId: oldSessionId,
+          detail: "Provider or model selection changed.",
+        },
+      };
+      const captured: Array<
+        Parameters<ProviderSessionManager.ProviderSessionManagerV2Shape["detach"]>[0]
+      > = [];
+      yield* Effect.gen(function* () {
+        const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+        yield* executor.execute(effect);
+        yield* executor.execute({
+          ...effect,
+          request: {
+            type: "provider-session.detach",
+            providerSessionId: oldSessionId,
+            detail: "Provider or model selection changed.",
+            revokeMcpCredential: true,
+          },
+        });
+        assert.equal(captured[0]!.retireOnAccountTransfer, true);
+        assert.isUndefined(captured[1]!.retireOnAccountTransfer);
+        assert.isTrue(captured[1]!.revokeMcpCredential);
+      }).pipe(
+        Effect.provide(
+          layerExecutorFor({
+            events,
+            detach: (input) =>
+              Effect.sync(() => {
+                captured.push(input);
+              }),
+            getReceipt: (commandId) =>
+              Effect.succeedSome({
+                commandId,
+                threadId,
+                commandType: "thread.model-selection.set",
+                status: "accepted",
+                acceptedAt: now,
+                resultSequence: 1,
+                error: null,
+              }),
+          }),
+        ),
+      );
+    }),
+);

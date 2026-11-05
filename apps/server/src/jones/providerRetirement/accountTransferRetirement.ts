@@ -8,30 +8,30 @@ import type * as Registry from "../../orchestration-v2/ProviderAdapterRegistry.t
 export const SELECTION_CHANGED = "Provider or model selection changed.";
 export const ACCOUNT_CONTINUED = "Provider account changed; continuing the native thread.";
 
-export const isAccountTransferDetach = Effect.fn("jones.isAccountTransferDetach")(
-  function* (
-    effect: Outbox.OrchestrationEffectV2,
-    receipts: Pick<Receipts.CommandReceiptStoreV2Shape, "getByCommandId">,
-  ) {
-    const request = effect.request;
-    if (
-      request.type !== "provider-session.detach" ||
-      request.runtimeStopCommandId !== undefined ||
-      request.revokeMcpCredential === true ||
-      (request.detail !== SELECTION_CHANGED && request.detail !== ACCOUNT_CONTINUED)
-    ) return false;
-    return yield* receipts.getByCommandId(effect.commandId).pipe(
-      Effect.map(
-        Option.exists((receipt) =>
+export const isAccountTransferDetach = Effect.fn("jones.isAccountTransferDetach")(function* (
+  effect: Outbox.OrchestrationEffectV2,
+  receipts: Pick<Receipts.CommandReceiptStoreV2Shape, "getByCommandId">,
+) {
+  const request = effect.request;
+  if (
+    request.type !== "provider-session.detach" ||
+    request.runtimeStopCommandId !== undefined ||
+    request.revokeMcpCredential === true ||
+    (request.detail !== SELECTION_CHANGED && request.detail !== ACCOUNT_CONTINUED)
+  )
+    return false;
+  return yield* receipts.getByCommandId(effect.commandId).pipe(
+    Effect.map(
+      Option.exists(
+        (receipt) =>
           receipt.status === "accepted" &&
           receipt.threadId === effect.threadId &&
           receipt.commandType !== "provider-session.detach",
-        ),
       ),
-      Effect.orElseSucceed(() => false),
-    );
-  },
-);
+    ),
+    Effect.orElseSucceed(() => false),
+  );
+});
 
 type Metadata = Effect.Success<
   ReturnType<NonNullable<Registry.ProviderAdapterRegistryV2Shape["getMetadata"]>>
@@ -76,7 +76,8 @@ export function decideAccountTransfer(facts: {
     projection === undefined ||
     projection.thread.archivedAt !== null ||
     projection.thread.deletedAt !== null
-  ) return { type: "ordinary" };
+  )
+    return { type: "ordinary" };
   const conversationKey = retirementConversationKey(facts.sourceMetadata);
   if (
     facts.sourceDriver !== "codex" ||
@@ -90,6 +91,7 @@ export function decideAccountTransfer(facts: {
     !facts.destinationMetadata.enabled ||
     conversationKey === undefined ||
     retirementConversationKey(facts.destinationMetadata) !== conversationKey
-  ) return { type: "ordinary" };
+  )
+    return { type: "ordinary" };
   return { type: "prove", loadedKey: facts.loadedKey, conversationKey };
 }

@@ -622,20 +622,22 @@ export function layerWithRegistryAndServices<Error>(
       ),
     ),
   );
-  const layerEffectExecutorProvided = options.beforeEffectExecution === undefined
-    ? layerEffectExecutorBase
-    : Layer.effect(
-        EffectWorker.OrchestrationEffectExecutorV2,
-        Effect.gen(function* () {
-          const delegate = yield* EffectWorker.OrchestrationEffectExecutorV2;
-          return EffectWorker.OrchestrationEffectExecutorV2.of({
-            ...delegate,
-            execute: (effect, executionOptions) => options.beforeEffectExecution!(effect).pipe(
-              Effect.andThen(delegate.execute(effect, executionOptions)),
-            ),
-          });
-        }),
-      ).pipe(Layer.provide(layerEffectExecutorBase));
+  const layerEffectExecutorProvided =
+    options.beforeEffectExecution === undefined
+      ? layerEffectExecutorBase
+      : Layer.effect(
+          EffectWorker.OrchestrationEffectExecutorV2,
+          Effect.gen(function* () {
+            const delegate = yield* EffectWorker.OrchestrationEffectExecutorV2;
+            return EffectWorker.OrchestrationEffectExecutorV2.of({
+              ...delegate,
+              execute: (effect, executionOptions) =>
+                options.beforeEffectExecution!(effect).pipe(
+                  Effect.andThen(delegate.execute(effect, executionOptions)),
+                ),
+            });
+          }),
+        ).pipe(Layer.provide(layerEffectExecutorBase));
   const layerEffectWorkerProvided = EffectWorker.layer.pipe(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );

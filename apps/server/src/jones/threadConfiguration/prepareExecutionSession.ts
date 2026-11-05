@@ -67,17 +67,21 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       },
     });
   }
-  yield* (sessions.awaitThreadRetirement?.({
-    threadId: run.threadId,
-    instanceId: run.modelSelection.instanceId,
-  }) ?? Effect.void);
+  yield* (
+    sessions.awaitThreadRetirement?.({
+      threadId: run.threadId,
+      instanceId: run.modelSelection.instanceId,
+    }) ?? Effect.void
+  );
   yield* revalidateReplacement;
   const retiredWriter =
     provider.providerSessionId !== null &&
-    (yield* (sessions.hasRetiredWriter?.({
-      providerSessionId: provider.providerSessionId,
-      threadId: run.threadId,
-    }) ?? Effect.succeed(false)));
+    (yield* (
+      sessions.hasRetiredWriter?.({
+        providerSessionId: provider.providerSessionId,
+        threadId: run.threadId,
+      }) ?? Effect.succeed(false)
+    ));
   // A new session key prevents a pooled sibling's resident runtime from being reused.
   const replacement =
     retiredWriter ||

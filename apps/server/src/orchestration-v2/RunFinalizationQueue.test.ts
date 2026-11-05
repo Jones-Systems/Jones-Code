@@ -86,7 +86,9 @@ it.effect.each([
     Layer.provide(
       Layer.mergeAll(
         finalization,
-        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({ getByCommandId: () => Effect.succeed(Option.none()) }),
+        Layer.mock(CommandReceiptStore.CommandReceiptStoreV2)({
+          getByCommandId: () => Effect.succeedNone,
+        }),
         Layer.mock(RestartPreparation.RestartPreparation)({}),
         Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
         Layer.mock(ProviderTurnControl.ProviderTurnControlServiceV2)({}),

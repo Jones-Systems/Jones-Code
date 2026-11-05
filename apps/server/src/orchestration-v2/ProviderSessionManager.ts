@@ -3172,7 +3172,9 @@ export const layerWithOptions = (
           const prior = retirements.find(input.providerSessionId, input.threadId);
           if (prior !== undefined) {
             if (options?.awaitCompletion !== false)
-              yield* Deferred.await(prior.completion).pipe(Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS));
+              yield* Deferred.await(prior.completion).pipe(
+                Effect.timeout(UNLOAD_THREAD_TIMEOUT_MS),
+              );
             return;
           }
           const entry = (yield* Ref.get(sessions)).get(sessionKey(input.providerSessionId));
@@ -3392,7 +3394,9 @@ export const layerWithOptions = (
           Ref.get(sessions).pipe(
             Effect.map((entries) => {
               const entry = entries.get(sessionKey(input.providerSessionId));
-              return entry !== undefined && retirements.retiredWriter(entry.runtime, input.threadId);
+              return (
+                entry !== undefined && retirements.retiredWriter(entry.runtime, input.threadId)
+              );
             }),
           ),
         awaitThreadRetirement: Effect.fn("ProviderSessionManager.awaitThreadRetirement")(

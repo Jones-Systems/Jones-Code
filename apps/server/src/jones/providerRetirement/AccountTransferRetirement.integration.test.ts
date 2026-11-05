@@ -71,7 +71,6 @@ const Trace = Schema.Struct({
 const decodeSettings = Schema.decodeEffect(CodexSettings);
 const decodeTrace = Schema.decodeUnknownEffect(Schema.fromJsonString(Trace));
 
-
 const catalogs: ReadonlyArray<ServerProvider> = accounts.map((account): ServerProvider => ({
   instanceId: instanceId(account),
   driver: Codex.CODEX_DRIVER_KIND,
@@ -108,178 +107,485 @@ const catalogs: ReadonlyArray<ServerProvider> = accounts.map((account): ServerPr
   skills: [],
 }));
 
-const isIdle = (projection: OrchestrationV2ThreadProjection) => projection.runs.every((run) => !["queued", "preparing", "starting", "running", "waiting"].includes(run.status));
+const isIdle = (projection: OrchestrationV2ThreadProjection) =>
+  projection.runs.every(
+    (run) => !["queued", "preparing", "starting", "running", "waiting"].includes(run.status),
+  );
 const awaitProjection = Effect.fn("AccountTransferTest.awaitProjection")(function* (
-  threadId: ThreadId, afterSequence: number, predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
+  threadId: ThreadId,
+  afterSequence: number,
+  predicate: (projection: OrchestrationV2ThreadProjection) => boolean,
 ) {
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sink = yield* Sink.EventSinkV2;
   const read = orchestrator.getThreadProjection(threadId);
   const current = yield* read;
   if (predicate(current)) return current;
-  return Option.getOrThrow(yield* sink.stream({ threadId, afterSequence }).pipe(Stream.mapEffect(() => read), Stream.filter(predicate), Stream.runHead, Effect.timeout("45 seconds")));
+  return Option.getOrThrow(
+    yield* sink.stream({ threadId, afterSequence }).pipe(
+      Stream.mapEffect(() => read),
+      Stream.filter(predicate),
+      Stream.runHead,
+      Effect.timeout("45 seconds"),
+    ),
+  );
 });
 
-const scenario = (mode: "selection" | "direct" | "queued" | "failover" | "cancel-return" | "exclusive" | "foreign" | "retry") => Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
-  const config = yield* Effect.acquireRelease(Harness.makeReplayServerConfig(`account-transfer-${mode}`), (value) => fs.remove(value.baseDir, { recursive: true }).pipe(Effect.andThen(fs.exists(value.baseDir)), Effect.tap((exists) => Effect.sync(() => assert.isFalse(exists))), Effect.orDie));
-  const stateDir = path.join(config.baseDir, "peer-state");
-  const homePath = path.join(config.baseDir, "codex-home");
-  const cwd = path.join(config.baseDir, "workspace");
-  for (const directory of [stateDir, homePath, cwd]) yield* fs.makeDirectory(directory);
-  const realNode = yield* fs.realPath(process.execPath);
-  const delimiter = (yield* HostProcess.Platform) === "win32" ? ";" : ":";
-  const held = mode === "queued" || mode === "failover";
-  const entries = yield* Effect.forEach(accounts, (account) => decodeSettings({
-    binaryPath: peerPath, homePath,
-    launchArgs: `--state-dir ${JSON.stringify(stateDir)} --account ${account} --mode chain${account !== "A" || mode !== "failover" ? " --outcome success" : ""}${account === "A" ? `${held ? " --hold" : ""} --defer-close${mode === "exclusive" ? "" : " --shared-producer"}` : ""}`,
-  }).pipe(Effect.map((settings) => ({ account, settings }))));
-  const clientFactory = yield* Codex.CodexAppServerClientFactory.pipe(Effect.provide(Codex.layerAppServerClientFactory));
-  const adapterDependencies = yield* Effect.context<Crypto.Crypto | FileSystem.FileSystem | Path.Path | IdAllocator.IdAllocatorV2 | ControlAdmission.ControlAdmission>();
-  const database = SqlitePersistence.layerMemory;
-  const registry = Layer.effect(Adapters.ProviderAdapterRegistryV2, Effect.gen(function* () {
-    const adapters = yield* Effect.forEach(entries, ({ account, settings }) => Effect.gen(function* () {
-      const adapter = yield* Codex.createCodexAdapterV2({ instanceId: instanceId(account), displayName: undefined, enabled: true, environment: [], config: settings });
-      const layout = yield* resolveCodexHomeLayout(settings);
-      return { adapter, continuationKey: layout.continuationKey };
-    }));
-    const find = (id: ProviderInstanceId) => {
-      const entry = adapters.find(({ adapter }) => adapter.instanceId === id);
-      return entry === undefined ? Effect.fail(new Adapters.ProviderAdapterRegistryLookupError({ instanceId: id })) : Effect.succeed(entry);
-    };
-    return Adapters.ProviderAdapterRegistryV2.of({
-      get: (id) => find(id).pipe(Effect.map(({ adapter }) => adapter)),
-      list: () => Effect.succeed(adapters.map(({ adapter }) => adapter.instanceId)),
-      getMetadata: (id) => find(id).pipe(Effect.map(({ adapter, continuationKey }) => ({ driver: adapter.driver, continuationKey, enabled: true, capabilities: Codex.CodexProviderCapabilitiesV2 }))),
+const scenario = (
+  mode:
+    | "selection"
+    | "direct"
+    | "queued"
+    | "failover"
+    | "cancel-return"
+    | "exclusive"
+    | "foreign"
+    | "retry",
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const config = yield* Effect.acquireRelease(
+      Harness.makeReplayServerConfig(`account-transfer-${mode}`),
+      (value) =>
+        fs.remove(value.baseDir, { recursive: true }).pipe(
+          Effect.andThen(fs.exists(value.baseDir)),
+          Effect.tap((exists) => Effect.sync(() => assert.isFalse(exists))),
+          Effect.orDie,
+        ),
+    );
+    const stateDir = path.join(config.baseDir, "peer-state");
+    const homePath = path.join(config.baseDir, "codex-home");
+    const cwd = path.join(config.baseDir, "workspace");
+    for (const directory of [stateDir, homePath, cwd]) yield* fs.makeDirectory(directory);
+    const realNode = yield* fs.realPath(process.execPath);
+    const delimiter = (yield* HostProcess.Platform) === "win32" ? ";" : ":";
+    const held = mode === "queued" || mode === "failover";
+    const entries = yield* Effect.forEach(accounts, (account) =>
+      decodeSettings({
+        binaryPath: peerPath,
+        homePath,
+        launchArgs: `--state-dir ${JSON.stringify(stateDir)} --account ${account} --mode chain${account !== "A" || mode !== "failover" ? " --outcome success" : ""}${account === "A" ? `${held ? " --hold" : ""} --defer-close${mode === "exclusive" ? "" : " --shared-producer"}` : ""}`,
+      }).pipe(Effect.map((settings) => ({ account, settings }))),
+    );
+    const clientFactory = yield* Codex.CodexAppServerClientFactory.pipe(
+      Effect.provide(Codex.layerAppServerClientFactory),
+    );
+    const adapterDependencies = yield* Effect.context<
+      | Crypto.Crypto
+      | FileSystem.FileSystem
+      | Path.Path
+      | IdAllocator.IdAllocatorV2
+      | ControlAdmission.ControlAdmission
+    >();
+    const database = SqlitePersistence.layerMemory;
+    const registry = Layer.effect(
+      Adapters.ProviderAdapterRegistryV2,
+      Effect.gen(function* () {
+        const adapters = yield* Effect.forEach(entries, ({ account, settings }) =>
+          Effect.gen(function* () {
+            const adapter = yield* Codex.createCodexAdapterV2({
+              instanceId: instanceId(account),
+              displayName: undefined,
+              enabled: true,
+              environment: [],
+              config: settings,
+            });
+            const layout = yield* resolveCodexHomeLayout(settings);
+            return { adapter, continuationKey: layout.continuationKey };
+          }),
+        );
+        const find = (id: ProviderInstanceId) =>
+          Effect.gen(function* () {
+            const entry = adapters.find(({ adapter }) => adapter.instanceId === id);
+            if (entry === undefined)
+              return yield* new Adapters.ProviderAdapterRegistryLookupError({ instanceId: id });
+            return entry;
+          });
+        return Adapters.ProviderAdapterRegistryV2.of({
+          get: (id) => find(id).pipe(Effect.map(({ adapter }) => adapter)),
+          list: () => Effect.succeed(adapters.map(({ adapter }) => adapter.instanceId)),
+          getMetadata: (id) =>
+            find(id).pipe(
+              Effect.map(({ adapter, continuationKey }) => ({
+                driver: adapter.driver,
+                continuationKey,
+                enabled: true,
+                capabilities: Codex.CodexProviderCapabilitiesV2,
+              })),
+            ),
+        });
+      }),
+    ).pipe(
+      Layer.provide(Layer.provide(Evidence.layer, database)),
+      Layer.provide(Layer.succeed(Codex.CodexAppServerClientFactory, clientFactory)),
+      Layer.provide(Layer.succeedContext(adapterDependencies)),
+      Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd })),
+      Layer.provide(
+        Layer.succeed(HostProcess.Environment, {
+          HOME: homePath,
+          PATH: `${path.dirname(realNode)}${delimiter}/usr/bin${delimiter}/bin`,
+        }),
+      ),
+      Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
+    );
+    const secondAttempt = yield* Deferred.make<Outbox.OrchestrationEffectV2>();
+    const runtime = Harness.layerWithRegistryAndServices(
+      { name: `account-transfer-${mode}`, runtimePolicyOverride: { cwd } },
+      registry,
+      {
+        serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd }),
+        databaseLayer: database,
+        runEffectWorker: true,
+        runContinuationWorker: true,
+        ...(mode === "retry"
+          ? {
+              beforeEffectExecution: (effect: Outbox.OrchestrationEffectV2) =>
+                effect.request.type === "provider-turn.start" && effect.attemptCount >= 2
+                  ? Deferred.succeed(secondAttempt, effect).pipe(Effect.asVoid)
+                  : Effect.void,
+            }
+          : {}),
+      },
+    ).pipe(
+      Layer.provide(
+        Layer.mock(Catalog.ProviderRegistry)({ getProviders: Effect.succeed(catalogs) }),
+      ),
+    );
+    const readTraces = Effect.fn("AccountTransferTest.readTraces")(function* () {
+      const files = (yield* fs.readDirectory(stateDir)).filter((name) =>
+        /^trace-.*\.ndjson$/.test(name),
+      );
+      return (yield* Effect.forEach(files, (name) =>
+        fs
+          .readFileString(path.join(stateDir, name))
+          .pipe(
+            Effect.flatMap((contents) =>
+              Effect.forEach(contents.split("\n").slice(0, -1), (line) => decodeTrace(line)),
+            ),
+          ),
+      )).flat();
     });
-  })).pipe(
-    Layer.provide(Layer.provide(Evidence.layer, database)),
-    Layer.provide(Layer.succeed(Codex.CodexAppServerClientFactory, clientFactory)),
-    Layer.provide(Layer.succeedContext(adapterDependencies)),
-    Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd })),
-    Layer.provide(Layer.succeed(HostProcess.Environment, { HOME: homePath, PATH: `${path.dirname(realNode)}${delimiter}/usr/bin${delimiter}/bin` })),
-    Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
-  );
-  const secondAttempt = yield* Deferred.make<Outbox.OrchestrationEffectV2>();
-  const runtime = Harness.layerWithRegistryAndServices({ name: `account-transfer-${mode}`, runtimePolicyOverride: { cwd } }, registry, {
-    serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd }), databaseLayer: database, runEffectWorker: true, runContinuationWorker: true,
-    ...(mode === "retry" ? { beforeEffectExecution: (effect: Outbox.OrchestrationEffectV2) =>
-      effect.request.type === "provider-turn.start" && effect.attemptCount >= 2
-        ? Deferred.succeed(secondAttempt, effect).pipe(Effect.asVoid)
-        : Effect.void } : {}),
-  }).pipe(Layer.provide(Layer.mock(Catalog.ProviderRegistry)({ getProviders: Effect.succeed(catalogs) })));
-  const readTraces = Effect.fn("AccountTransferTest.readTraces")(function* () {
-    const files = (yield* fs.readDirectory(stateDir)).filter((name) => /^trace-.*\.ndjson$/.test(name));
-    return (yield* Effect.forEach(files, (name) => fs.readFileString(path.join(stateDir, name)).pipe(Effect.flatMap((contents) => Effect.forEach(contents.split("\n").slice(0, -1), (line) => decodeTrace(line)))))).flat();
-  });
-  const awaitTrace = (predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean) => Stream.merge(Stream.make(undefined), fs.watch(stateDir).pipe(Stream.as(undefined))).pipe(Stream.mapEffect(() => readTraces()), Stream.filter(predicate), Stream.runHead, Effect.map(Option.getOrThrow), Effect.timeout("45 seconds"));
-  const attribution = yield* ProcessAttribution.ProcessAttribution;
-  yield* Effect.gen(function* () {
-    const orchestrator = yield* Orchestrator.OrchestratorV2;
-    const sink = yield* Sink.EventSinkV2;
-    const outbox = yield* Outbox.EffectOutboxV2;
-    const sessions = yield* Sessions.ProviderSessionManagerV2;
-    const settings = yield* Settings.ServerSettingsService;
-    for (const id of Object.keys((yield* settings.getSettings).providerInstances)) yield* settings.updateProviderInstance({ operation: "remove", instanceId: ProviderInstanceId.make(id) });
-    for (const { account, settings: config } of entries) yield* settings.updateProviderInstance({ operation: "create", instanceId: instanceId(account), instance: { driver: Codex.CODEX_DRIVER_KIND, enabled: true, config } });
-    const threadId = ThreadId.make(`synthetic-account-transfer-${mode}`);
-    yield* orchestrator.dispatch({ type: "thread.create", commandId: CommandId.make("synthetic:create"), threadId, projectId: ProjectId.make("synthetic-project"), title: "Synthetic writer transfer", modelSelection: initialSelection, runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: cwd, createdBy: "user", creationSource: "web" });
-    const after = yield* sink.latestSequence();
-    const dispatch = (marker: string, selection?: ModelSelection, queued = false) => orchestrator.dispatch({ type: "message.dispatch", commandId: CommandId.make(marker), messageId: MessageId.make(marker), threadId, text: marker, ...(selection === undefined ? {} : { modelSelection: selection, modelSelectionExplicit: true }), attachments: [], createdBy: "user", creationSource: "web", dispatchMode: { type: queued ? "queue_after_active" : "start_immediately" } });
-    const select = (account: string, key: string) => orchestrator.dispatch({ type: "thread.model-selection.set", commandId: CommandId.make(key), threadId, modelSelection: { ...initialSelection, instanceId: instanceId(account) } });
-    yield* dispatch("SYNTHETIC_INITIAL");
-    const source = yield* awaitProjection(threadId, after, (projection) => held ? projection.providerTurns.some((turn) => turn.status === "running" && turn.nativeTurnRef?.nativeId != null) : projection.runs.length === 1 && isIdle(projection));
-    const sourceThread = source.providerThreads.find((row) => row.id === source.thread.activeProviderThreadId)!;
-    const nativeId = sourceThread.nativeThreadRef!.nativeId!;
-    assert.equal(sourceThread.providerInstanceId, instanceId("A"));
-    const sourceProcess = (yield* readTraces()).find((trace) => trace.method === "thread/start")!.processId;
-    const target = { ...initialSelection, instanceId: instanceId("B") };
-    if (mode === "foreign") {
-      // An ordinary unsubscribe intentionally leaves the synthetic holder alive until closure.
-      yield* sessions.detach({ providerSessionId: sourceThread.providerSessionId!, threadId });
-      yield* awaitTrace((traces) => traces.some((trace) => trace.method === "synthetic/unsubscribe" && trace.processId === sourceProcess));
-      const lockPath = path.join(stateDir, `lock-${nativeId}`);
-      const holder = yield* fs.readFileString(lockPath);
-      yield* select("B", "synthetic:foreign-B");
-      yield* dispatch("SYNTHETIC_FOREIGN");
-      yield* awaitProjection(threadId, after, (projection) => projection.runs.some((run) => run.userMessageId === "SYNTHETIC_FOREIGN" && run.status === "failed") && isIdle(projection));
-      assert.equal(yield* fs.readFileString(lockPath), holder);
-      assert.isTrue((yield* readTraces()).some((trace) => trace.method === "synthetic/writer-refused"));
-      yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
-      yield* awaitTrace((traces) => traces.some((trace) => trace.method === "synthetic/closed" && trace.processId === sourceProcess));
-      yield* dispatch("SYNTHETIC_RETRY");
-      const recovered = yield* awaitProjection(threadId, after, (projection) => projection.runs.some((run) => run.userMessageId === "SYNTHETIC_RETRY" && run.status === "completed") && isIdle(projection));
-      assert.equal(recovered.providerThreads.find((row) => row.id === recovered.thread.activeProviderThreadId)!.nativeThreadRef!.nativeId, nativeId);
-      assert.lengthOf((yield* readTraces()).filter((trace) => trace.method === "thread/start"), 1);
-      return;
-    }
-    if (mode === "queued") {
-      yield* dispatch("SYNTHETIC_TARGET", target, true);
-      assert.equal((yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!.status, "queued");
-    } else if (mode !== "failover" && mode !== "direct") {
-      const selectionCommand = CommandId.make("synthetic:select-B");
-      yield* select("B", selectionCommand);
-      const effects = (yield* outbox.listByCommandId(selectionCommand)).filter((effect) => effect.request.type === "provider-session.detach");
-      assert.lengthOf(effects, 1);
-      assert.equal(effects[0]!.request.type === "provider-session.detach" && effects[0]!.request.detail, "Provider or model selection changed.");
-      yield* outbox.awaitCompletion(effects.map((effect) => effect.id));
-      assert.equal(Option.getOrThrow(yield* outbox.get(effects[0]!.id)).status, "succeeded");
-    }
-    if (held) {
-      const turn = source.providerTurns.find((turn) => turn.status === "running")!;
-      yield* fs.writeFileString(path.join(stateDir, `release-${turn.nativeTurnRef!.nativeId}`), "SYNTHETIC_RELEASE\n");
-    } else yield* dispatch("SYNTHETIC_TARGET", mode === "direct" ? target : undefined);
-    if (mode !== "exclusive") {
-      yield* awaitTrace((traces) => traces.some((trace) => trace.method === "synthetic/unsubscribe" && trace.processId === sourceProcess));
-      const traces = yield* readTraces();
-      assert.isFalse(traces.some((trace) => trace.instance === "B" && ["thread/resume", "turn/start"].includes(trace.method)));
-      assert.isFalse(traces.some((trace) => trace.method === "synthetic/closed" && trace.processId === sourceProcess));
-      const detaches = (yield* outbox.listByThreadId(threadId)).filter((effect) => effect.request.type === "provider-session.detach");
-      yield* outbox.awaitCompletion(detaches.map((effect) => effect.id));
-      assert.isTrue(detaches.length > 0);
-      if (mode === "direct" || mode === "queued" || mode === "failover") assert.isTrue(detaches.some((effect) => effect.request.type === "provider-session.detach" && effect.request.detail === "Provider account changed; continuing the native thread."));
-      if (mode === "retry") {
-        const attempt = yield* Deferred.await(secondAttempt).pipe(Effect.timeout("45 seconds"));
-        assert.isAtLeast(attempt.attemptCount, 2);
-        const current = Option.getOrThrow(yield* outbox.get(attempt.id));
-        assert.equal(current.status, "running");
-        assert.isAtLeast(current.attemptCount, 2);
-        assert.isFalse((yield* readTraces()).some((trace) => trace.instance === "B" && trace.method === "thread/resume"));
+    const awaitTrace = (predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean) =>
+      Stream.merge(Stream.make(undefined), fs.watch(stateDir).pipe(Stream.as(undefined))).pipe(
+        Stream.mapEffect(() => readTraces()),
+        Stream.filter(predicate),
+        Stream.runHead,
+        Effect.map(Option.getOrThrow),
+        Effect.timeout("45 seconds"),
+      );
+    const attribution = yield* ProcessAttribution.ProcessAttribution;
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const sink = yield* Sink.EventSinkV2;
+      const outbox = yield* Outbox.EffectOutboxV2;
+      const sessions = yield* Sessions.ProviderSessionManagerV2;
+      const settings = yield* Settings.ServerSettingsService;
+      for (const id of Object.keys((yield* settings.getSettings).providerInstances))
+        yield* settings.updateProviderInstance({
+          operation: "remove",
+          instanceId: ProviderInstanceId.make(id),
+        });
+      for (const { account, settings: config } of entries)
+        yield* settings.updateProviderInstance({
+          operation: "create",
+          instanceId: instanceId(account),
+          instance: { driver: Codex.CODEX_DRIVER_KIND, enabled: true, config },
+        });
+      const threadId = ThreadId.make(`synthetic-account-transfer-${mode}`);
+      yield* orchestrator.dispatch({
+        type: "thread.create",
+        commandId: CommandId.make("synthetic:create"),
+        threadId,
+        projectId: ProjectId.make("synthetic-project"),
+        title: "Synthetic writer transfer",
+        modelSelection: initialSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: cwd,
+        createdBy: "user",
+        creationSource: "web",
+      });
+      const after = yield* sink.latestSequence();
+      const dispatch = (marker: string, selection?: ModelSelection, queued = false) =>
+        orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(marker),
+          messageId: MessageId.make(marker),
+          threadId,
+          text: marker,
+          ...(selection === undefined
+            ? {}
+            : { modelSelection: selection, modelSelectionExplicit: true }),
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          dispatchMode: { type: queued ? "queue_after_active" : "start_immediately" },
+        });
+      const select = (account: string, key: string) =>
+        orchestrator.dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make(key),
+          threadId,
+          modelSelection: { ...initialSelection, instanceId: instanceId(account) },
+        });
+      yield* dispatch("SYNTHETIC_INITIAL");
+      const source = yield* awaitProjection(threadId, after, (projection) =>
+        held
+          ? projection.providerTurns.some(
+              (turn) => turn.status === "running" && turn.nativeTurnRef?.nativeId != null,
+            )
+          : projection.runs.length === 1 && isIdle(projection),
+      );
+      const sourceThread = source.providerThreads.find(
+        (row) => row.id === source.thread.activeProviderThreadId,
+      )!;
+      const nativeId = sourceThread.nativeThreadRef!.nativeId!;
+      assert.equal(sourceThread.providerInstanceId, instanceId("A"));
+      const sourceProcess = (yield* readTraces()).find(
+        (trace) => trace.method === "thread/start",
+      )!.processId;
+      const target = { ...initialSelection, instanceId: instanceId("B") };
+      if (mode === "foreign") {
+        // An ordinary unsubscribe intentionally leaves the synthetic holder alive until closure.
+        yield* sessions.detach({ providerSessionId: sourceThread.providerSessionId!, threadId });
+        yield* awaitTrace((traces) =>
+          traces.some(
+            (trace) =>
+              trace.method === "synthetic/unsubscribe" && trace.processId === sourceProcess,
+          ),
+        );
+        const lockPath = path.join(stateDir, `lock-${nativeId}`);
+        const holder = yield* fs.readFileString(lockPath);
+        yield* select("B", "synthetic:foreign-B");
+        yield* dispatch("SYNTHETIC_FOREIGN");
+        yield* awaitProjection(
+          threadId,
+          after,
+          (projection) =>
+            projection.runs.some(
+              (run) => run.userMessageId === "SYNTHETIC_FOREIGN" && run.status === "failed",
+            ) && isIdle(projection),
+        );
+        assert.equal(yield* fs.readFileString(lockPath), holder);
+        assert.isTrue(
+          (yield* readTraces()).some((trace) => trace.method === "synthetic/writer-refused"),
+        );
+        yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
+        yield* awaitTrace((traces) =>
+          traces.some(
+            (trace) => trace.method === "synthetic/closed" && trace.processId === sourceProcess,
+          ),
+        );
+        yield* dispatch("SYNTHETIC_RETRY");
+        const recovered = yield* awaitProjection(
+          threadId,
+          after,
+          (projection) =>
+            projection.runs.some(
+              (run) => run.userMessageId === "SYNTHETIC_RETRY" && run.status === "completed",
+            ) && isIdle(projection),
+        );
+        assert.equal(
+          recovered.providerThreads.find(
+            (row) => row.id === recovered.thread.activeProviderThreadId,
+          )!.nativeThreadRef!.nativeId,
+          nativeId,
+        );
+        assert.lengthOf(
+          (yield* readTraces()).filter((trace) => trace.method === "thread/start"),
+          1,
+        );
+        return;
+      }
+      if (mode === "queued") {
+        yield* dispatch("SYNTHETIC_TARGET", target, true);
+        assert.equal(
+          (yield* orchestrator.getThreadProjection(threadId)).runs.at(-1)!.status,
+          "queued",
+        );
+      } else if (mode !== "failover" && mode !== "direct") {
+        const selectionCommand = CommandId.make("synthetic:select-B");
+        yield* select("B", selectionCommand);
+        const effects = (yield* outbox.listByCommandId(selectionCommand)).filter(
+          (effect) => effect.request.type === "provider-session.detach",
+        );
+        assert.lengthOf(effects, 1);
+        assert.equal(
+          effects[0]!.request.type === "provider-session.detach" && effects[0]!.request.detail,
+          "Provider or model selection changed.",
+        );
+        yield* outbox.awaitCompletion(effects.map((effect) => effect.id));
+        assert.equal(Option.getOrThrow(yield* outbox.get(effects[0]!.id)).status, "succeeded");
+      }
+      if (held) {
+        const turn = source.providerTurns.find((turn) => turn.status === "running")!;
+        yield* fs.writeFileString(
+          path.join(stateDir, `release-${turn.nativeTurnRef!.nativeId}`),
+          "SYNTHETIC_RELEASE\n",
+        );
+      } else yield* dispatch("SYNTHETIC_TARGET", mode === "direct" ? target : undefined);
+      if (mode !== "exclusive") {
+        yield* awaitTrace((traces) =>
+          traces.some(
+            (trace) =>
+              trace.method === "synthetic/unsubscribe" && trace.processId === sourceProcess,
+          ),
+        );
+        const traces = yield* readTraces();
+        assert.isFalse(
+          traces.some(
+            (trace) =>
+              trace.instance === "B" && ["thread/resume", "turn/start"].includes(trace.method),
+          ),
+        );
+        assert.isFalse(
+          traces.some(
+            (trace) => trace.method === "synthetic/closed" && trace.processId === sourceProcess,
+          ),
+        );
+        const detaches = (yield* outbox.listByThreadId(threadId)).filter(
+          (effect) => effect.request.type === "provider-session.detach",
+        );
+        yield* outbox.awaitCompletion(detaches.map((effect) => effect.id));
+        assert.isTrue(detaches.length > 0);
+        if (mode === "direct" || mode === "queued" || mode === "failover")
+          assert.isTrue(
+            detaches.some(
+              (effect) =>
+                effect.request.type === "provider-session.detach" &&
+                effect.request.detail === "Provider account changed; continuing the native thread.",
+            ),
+          );
+        if (mode === "retry") {
+          const attempt = yield* Deferred.await(secondAttempt).pipe(Effect.timeout("45 seconds"));
+          assert.isAtLeast(attempt.attemptCount, 2);
+          const current = Option.getOrThrow(yield* outbox.get(attempt.id));
+          assert.equal(current.status, "running");
+          assert.isAtLeast(current.attemptCount, 2);
+          assert.isFalse(
+            (yield* readTraces()).some(
+              (trace) => trace.instance === "B" && trace.method === "thread/resume",
+            ),
+          );
+        }
+        if (mode === "cancel-return") {
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make("synthetic:cancel-B"),
+            threadId,
+          });
+        }
+        yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
+        yield* sessions.awaitThreadRetirement!({ threadId, instanceId: instanceId("B") });
       }
       if (mode === "cancel-return") {
-        yield* orchestrator.dispatch({ type: "thread.stop", commandId: CommandId.make("synthetic:cancel-B"), threadId });
-      }
-      yield* fs.writeFileString(path.join(stateDir, `close-${nativeId}`), "SYNTHETIC_CLOSE\n");
-      yield* sessions.awaitThreadRetirement!({ threadId, instanceId: instanceId("B") });
-    }
-    if (mode === "cancel-return") {
-      yield* awaitProjection(threadId, after, (projection) => isIdle(projection));
-      yield* select("A", "synthetic:return-A");
-      yield* dispatch("SYNTHETIC_RETURN");
-      const finished = yield* awaitProjection(threadId, after, (projection) => projection.runs.some((run) => run.userMessageId === "SYNTHETIC_RETURN" && run.status === "completed") && isIdle(projection));
-      assert.equal(finished.runs.at(-1)!.modelSelection.instanceId, instanceId("A"));
-    } else {
-      const finished = yield* awaitProjection(threadId, after, (projection) => projection.runs.at(-1)!.modelSelection.instanceId === instanceId("B") && projection.runs.at(-1)!.status === "completed" && isIdle(projection));
-      assert.equal(finished.providerThreads.find((row) => row.id === finished.thread.activeProviderThreadId)!.nativeThreadRef!.nativeId, nativeId);
-      if (mode === "selection") {
+        yield* awaitProjection(threadId, after, (projection) => isIdle(projection));
         yield* select("A", "synthetic:return-A");
         yield* dispatch("SYNTHETIC_RETURN");
-        yield* awaitProjection(threadId, after, (projection) => projection.runs.some((run) => run.userMessageId === "SYNTHETIC_RETURN" && run.status === "completed") && isIdle(projection));
+        const finished = yield* awaitProjection(
+          threadId,
+          after,
+          (projection) =>
+            projection.runs.some(
+              (run) => run.userMessageId === "SYNTHETIC_RETURN" && run.status === "completed",
+            ) && isIdle(projection),
+        );
+        assert.equal(finished.runs.at(-1)!.modelSelection.instanceId, instanceId("A"));
+      } else {
+        const finished = yield* awaitProjection(
+          threadId,
+          after,
+          (projection) =>
+            projection.runs.at(-1)!.modelSelection.instanceId === instanceId("B") &&
+            projection.runs.at(-1)!.status === "completed" &&
+            isIdle(projection),
+        );
+        assert.equal(
+          finished.providerThreads.find((row) => row.id === finished.thread.activeProviderThreadId)!
+            .nativeThreadRef!.nativeId,
+          nativeId,
+        );
+        if (mode === "selection") {
+          yield* select("A", "synthetic:return-A");
+          yield* dispatch("SYNTHETIC_RETURN");
+          yield* awaitProjection(
+            threadId,
+            after,
+            (projection) =>
+              projection.runs.some(
+                (run) => run.userMessageId === "SYNTHETIC_RETURN" && run.status === "completed",
+              ) && isIdle(projection),
+          );
+        }
       }
-    }
-    const traces = yield* readTraces();
-    assert.lengthOf(traces.filter((trace) => trace.method === "thread/start"), 1);
-    assert.isFalse(traces.some((trace) => trace.method === "synthetic/writer-refused"));
-    for (const trace of traces.filter((trace) => trace.method === "thread/resume")) assert.equal(trace.nativeThreadId, nativeId);
-    if (mode === "cancel-return") assert.isFalse(traces.some((trace) => trace.instance === "B" && trace.method === "thread/resume"));
-    else assert.isTrue(traces.some((trace) => trace.instance === "B" && trace.method === "thread/resume"));
-    if (mode === "selection" || mode === "cancel-return") assert.isTrue(traces.some((trace) => trace.instance === "A" && trace.method === "thread/resume" && trace.processId !== sourceProcess));
-    if (mode === "exclusive") assert.isTrue(traces.some((trace) => trace.method === "synthetic/exit" && trace.processId === sourceProcess));
-    assert.isFalse(yield* fs.exists(path.join(homePath, "auth.json")));
-  }).pipe(Effect.provide(runtime), Effect.scoped, Effect.ensuring(attribution.snapshot.pipe(Effect.tap((entries) => Effect.sync(() => assert.equal(entries.size, 0))))));
-}).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, IdAllocator.layer, ControlAdmission.layer, ProcessAttribution.layer)), Effect.provideService(ProviderEventLoggers.ProviderEventLoggers, ProviderEventLoggers.NoOpProviderEventLoggers));
+      const traces = yield* readTraces();
+      assert.lengthOf(
+        traces.filter((trace) => trace.method === "thread/start"),
+        1,
+      );
+      assert.isFalse(traces.some((trace) => trace.method === "synthetic/writer-refused"));
+      for (const trace of traces.filter((trace) => trace.method === "thread/resume"))
+        assert.equal(trace.nativeThreadId, nativeId);
+      if (mode === "cancel-return")
+        assert.isFalse(
+          traces.some((trace) => trace.instance === "B" && trace.method === "thread/resume"),
+        );
+      else
+        assert.isTrue(
+          traces.some((trace) => trace.instance === "B" && trace.method === "thread/resume"),
+        );
+      if (mode === "selection" || mode === "cancel-return")
+        assert.isTrue(
+          traces.some(
+            (trace) =>
+              trace.instance === "A" &&
+              trace.method === "thread/resume" &&
+              trace.processId !== sourceProcess,
+          ),
+        );
+      if (mode === "exclusive")
+        assert.isTrue(
+          traces.some(
+            (trace) => trace.method === "synthetic/exit" && trace.processId === sourceProcess,
+          ),
+        );
+      assert.isFalse(yield* fs.exists(path.join(homePath, "auth.json")));
+    }).pipe(
+      Effect.provide(runtime),
+      Effect.scoped,
+      Effect.ensuring(
+        attribution.snapshot.pipe(
+          Effect.tap((entries) => Effect.sync(() => assert.equal(entries.size, 0))),
+        ),
+      ),
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        IdAllocator.layer,
+        ControlAdmission.layer,
+        ProcessAttribution.layer,
+      ),
+    ),
+    Effect.provideService(
+      ProviderEventLoggers.ProviderEventLoggers,
+      ProviderEventLoggers.NoOpProviderEventLoggers,
+    ),
+  );
 
 describe("Codex account transfer with synthetic producers and a shared writer registry", () => {
-  it.live.each(["selection", "direct", "queued", "failover", "cancel-return", "exclusive", "foreign", "retry"] as const)("%s preserves native identity behind exact writer release", (mode) => scenario(mode));
+  it.live.each([
+    "selection",
+    "direct",
+    "queued",
+    "failover",
+    "cancel-return",
+    "exclusive",
+    "foreign",
+    "retry",
+  ] as const)("%s preserves native identity behind exact writer release", (mode) => scenario(mode));
 });

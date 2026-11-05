@@ -9,7 +9,8 @@ const options = {};
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "app-server") continue;
-  if (["--hold", "--version", "--defer-close", "--shared-producer"].includes(arg)) options[arg] = true;
+  if (["--hold", "--version", "--defer-close", "--shared-producer"].includes(arg))
+    options[arg] = true;
   else if (["--state-dir", "--account", "--mode", "--outcome"].includes(arg) && args[i + 1])
     options[arg] = args[++i];
   else throw new Error("Unsupported synthetic CLI argument");
@@ -80,13 +81,20 @@ const takeWriter = (id) => {
   const name = lockName(id);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      NodeFS.writeFileSync(output(name), JSON.stringify({ pid: process.pid, processId }), { flag: "wx", mode: 0o600 });
+      NodeFS.writeFileSync(output(name), JSON.stringify({ pid: process.pid, processId }), {
+        flag: "wx",
+        mode: 0o600,
+      });
       ownedLocks.add(id);
       return true;
     } catch (error) {
       if (error.code !== "EEXIST") throw error;
       const holder = JSON.parse(read(name));
-      if (!Number.isSafeInteger(holder.pid) || holder.pid <= 0 || typeof holder.processId !== "string")
+      if (
+        !Number.isSafeInteger(holder.pid) ||
+        holder.pid <= 0 ||
+        typeof holder.processId !== "string"
+      )
         throw new Error("Invalid synthetic writer holder");
       if (holder.pid === process.pid && holder.processId === processId) return true;
       try {
@@ -247,7 +255,12 @@ const closeThread = () => {
   notify("thread/closed", { threadId: id });
 };
 const watcher = NodeFS.watch(root, () => {
-  try { release(); closeThread(); } catch { fail(); }
+  try {
+    release();
+    closeThread();
+  } catch {
+    fail();
+  }
 });
 const fail = () => {
   clearTimeout(timer);
@@ -337,7 +350,13 @@ const handle = ({ id, method, params = {} }) => {
     const resumed = load(params.threadId);
     if (!takeWriter(resumed.id)) {
       trace("synthetic/writer-refused", { nativeThreadId: resumed.id });
-      return write({ id, error: { code: -32000, message: "Thread already has an active writer in another Codex process" } });
+      return write({
+        id,
+        error: {
+          code: -32000,
+          message: "Thread already has an active writer in another Codex process",
+        },
+      });
     }
     thread = resumed;
     trace(method);
@@ -399,7 +418,10 @@ const handle = ({ id, method, params = {} }) => {
     return;
   }
   if (method === "thread/loaded/list")
-    return respond({ data: [...ownedLocks, ...(options["--shared-producer"] ? ["synthetic-sibling"] : [])], nextCursor: null });
+    return respond({
+      data: [...ownedLocks, ...(options["--shared-producer"] ? ["synthetic-sibling"] : [])],
+      nextCursor: null,
+    });
   if (method === "thread/backgroundTerminals/list") return respond({ data: [], nextCursor: null });
   if (method === "thread/unsubscribe") {
     if (!thread || params.threadId !== thread.id) throw new Error("Unknown synthetic thread");
@@ -452,5 +474,11 @@ lines.on("close", () => {
   cleanup();
   process.stdin.destroy();
 });
-process.on("SIGTERM", () => { cleanup(); process.exit(0); });
-process.on("SIGINT", () => { cleanup(); process.exit(0); });
+process.on("SIGTERM", () => {
+  cleanup();
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  cleanup();
+  process.exit(0);
+});
