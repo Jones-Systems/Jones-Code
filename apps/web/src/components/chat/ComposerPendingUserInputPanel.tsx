@@ -8,7 +8,7 @@ import {
 } from "../../jones/questionAnswer/questionAnswerCard";
 import { type RuntimeRequestId, type ScopedThreadRef } from "@t3tools/contracts";
 import { markdownProseDirection, textDirection } from "~/textDirection";
-import { memo, use, useEffect, useEffectEvent, useRef, useState } from "react";
+import { memo, use, useEffect, useEffectEvent, useState } from "react";
 import { BackgroundThreadContext } from "./backgroundThread";
 import { type PendingUserInput } from "../../session-logic";
 import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/state/pending-user-input";
@@ -30,8 +30,8 @@ interface PendingUserInputPanelProps {
   answers: Record<string, PendingUserInputDraftAnswer>;
   questionIndex: number;
   onToggleOption: (questionId: string, optionValue: string) => void;
-  onChangeCustomAnswer: (questionId: string, value: string) => void;
-  onPrevious: () => void;
+  onChangeCustomAnswer?: (questionId: string, value: string) => void;
+  onPrevious?: () => void;
   onSelectQuestion?: ((index: number) => void) | undefined;
   attachmentCapabilities?: QuestionAnswerAttachmentCapabilities;
   onAdvance: () => void;
@@ -47,8 +47,8 @@ export const ComposerPendingUserInputPanel = memo(function ComposerPendingUserIn
   answers,
   questionIndex,
   onToggleOption,
-  onChangeCustomAnswer,
-  onPrevious,
+  onChangeCustomAnswer = () => {},
+  onPrevious = () => {},
   onSelectQuestion,
   attachmentCapabilities = NO_QUESTION_ATTACHMENT_CAPABILITIES,
   onAdvance,
@@ -129,29 +129,6 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   );
   const isCollapsed = collapsedQuestionId !== null && collapsedQuestionId === activeQuestion?.id;
 
-  if (
-    optimisticSingleSelect &&
-    activeQuestion &&
-    !activeQuestion.multiSelect &&
-    (optimisticSingleSelect.questionId !== activeQuestion.id ||
-      (!customAnswerActive &&
-        progress.selectedOptionValues.includes(optimisticSingleSelect.optionValue)))
-  ) {
-    setOptimisticSingleSelect(null);
-  }
-
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- clears the auto-advance timer when the question changes, input is disabled, or the panel unmounts
-  useEffect(() => {
-    const clearAutoAdvance = () => {
-      if (autoAdvanceTimerRef.current !== null) {
-        window.clearTimeout(autoAdvanceTimerRef.current);
-        autoAdvanceTimerRef.current = null;
-      }
-    };
-    if (disabled || activeQuestion?.id === undefined) clearAutoAdvance();
-    return clearAutoAdvance;
-  }, [activeQuestion?.id, disabled]);
-
   const handleOptionSelection = (questionId: string, optionValue: string) => {
     if (!responseDisabled) onToggleOption(questionId, optionValue);
   };
@@ -205,41 +182,42 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
   const questionTextAlign = promptDirection === "rtl" ? "text-right" : "text-left";
 
   return (
-    <Collapsible
-      dir={promptDirection}
-      open={!isCollapsed}
-      onOpenChange={(open) => {
-        setCollapsedQuestionId(open ? null : activeQuestion.id);
-      }}
-    >
-      <CollapsibleTrigger
-        render={<ComposerBanner.Row render={<button type="button" />} />}
-        title={
-          isCollapsed ? "Show the question and its options" : "Hide the question and its options"
-        }
-        data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
-        className="px-4 pt-1.5"
+    <ComposerBanner.Scroll>
+      <Collapsible
+        dir={promptDirection}
+        open={!isCollapsed}
+        onOpenChange={(open) => {
+          setCollapsedQuestionId(open ? null : activeQuestion.id);
+        }}
       >
-        <ComposerBanner.Content>
-          <span
-            className={cn("min-w-0 truncate text-muted-foreground", isCollapsed && "max-w-1/2")}
-            dir={textDirection(activeQuestion.header)}
+        <ComposerBanner.Row className="flex flex-wrap items-center gap-2 px-4 pt-1.5 @max-[18rem]:px-2">
+          <CollapsibleTrigger
+            render={<button type="button" />}
+            title={
+              isCollapsed
+                ? "Show the question and its options"
+                : "Hide the question and its options"
+            }
+            data-pending-user-input-toggle={isCollapsed ? "collapsed" : "expanded"}
+            className="flex min-w-0 flex-1 basis-32 items-center gap-2 rounded outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           >
-            {activeQuestion.header}
-          </span>
-          {isCollapsed ? (
-            <>
-              <ComposerBanner.Separator />
+            <ComposerBanner.Content>
               <span
-                className={cn("min-w-0 flex-1 truncate text-secondary-label", questionTextAlign)}
-                dir={markdownProseDirection(activeQuestion.question)}
+                className="min-w-0 truncate text-muted-foreground"
+                dir={textDirection(activeQuestion.header)}
               >
-                {activeQuestion.question}
+                {activeQuestion.header}
               </span>
               {isCollapsed ? (
                 <>
                   <ComposerBanner.Separator />
-                  <span className="min-w-0 flex-1 truncate text-secondary-label">
+                  <span
+                    className={cn(
+                      "min-w-0 flex-1 truncate text-secondary-label",
+                      questionTextAlign,
+                    )}
+                    dir={markdownProseDirection(activeQuestion.question)}
+                  >
                     {questionSummaryLine(activeQuestion.question)}
                   </span>
                 </>

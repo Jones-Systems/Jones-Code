@@ -9,6 +9,7 @@ import { runSshCommand, baseSshArgs, resolveSshCommand } from "@t3tools/ssh/comm
 import * as NetService from "@t3tools/shared/Net";
 import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
 import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -154,6 +155,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const digest = yield* Digest.Digest;
+  const random = yield* SecureRandom.SecureRandom;
   const parentScope = yield* Scope.Scope;
   const ssh = yield* resolveSshCommand;
   const owner = yield* ownerFor(config.id);
@@ -243,7 +245,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
     activated = true;
     const scope = yield* Scope.make();
     connectionScope = scope;
-    const generation = yield* crypto.randomUUIDv4().pipe(Effect.orDie);
+    const generation = yield* random.uuidV4().pipe(Effect.orDie);
     let active = true;
     yield* registerDirectRetirement({
       scope,
@@ -269,83 +271,63 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
           direct ? generation : undefined,
         ),
       );
-    let stderr = "";
-    yield* child.stderr.pipe(
-      Stream.decodeText(),
-      Stream.runForEach((chunk) =>
-        Effect.sync(() => {
-          stderr = (stderr + chunk).slice(-2000);
-        }),
-      ),
-      Effect.forkIn(scope),
-    );
-    const hubOrigin = `http://127.0.0.1:${hubPort}`;
-    const next = {
-      nodePath: remote.nodePath,
-      hub: { origin: hubOrigin },
-      devices: makeDeviceHubOperations({
-        hostId: config.id,
-        origin: hubOrigin,
-        http,
-        run,
-        // Keep probing negative reports so an SDK installed after connecting is still found.
-        androidAvailable: Effect.suspend(() =>
-          summary.platforms.some((p) => p.platform === "android" && p.available)
-            ? Effect.succeed(true)
-            : platformAvailability("android").pipe(
-                Effect.map((availability) => availability.available),
-              ),
+      yield* onStatus("starting");
+      const remote = yield* decodeStarted(result.stdout.trim()).pipe(
+        Effect.mapError(
+          (cause) =>
+            new DeviceHost.DeviceHostError({
+              hostId: config.id,
+              step: "reading host endpoints",
+              cause,
+            }),
         ),
-      }),
-      ...(remote.daemonPort !== undefined &&
-      remote.token !== undefined &&
-      remote.entryPath !== undefined
-        ? {
-            agentDevice: {
-              baseUrl: `http://127.0.0.1:${daemonPort}`,
-              token: remote.token,
-              entryPath: remote.entryPath,
-            },
-          }
-        : {}),
-      helpers: remote.helpers,
-      run,
-    };
-    for (const [baseUrl, route] of [
-      [next.hub.origin, "/readyz"],
-      ...(next.agentDevice ? [[next.agentDevice.baseUrl, "/health"]] : []),
-    ]) {
-      yield* waitForHttpReady({
-        baseUrl: baseUrl!,
-        path: route!,
-        timeoutMs: 15000,
-        makeError: () =>
-          new DeviceHost.DeviceHostError({
-            hostId: config.id,
-            step: "waiting for SSH forward",
-            cause: new Error(stderr || "Forwarded endpoint did not answer."),
-          }),
-      }).pipe(Effect.provideService(HttpClient.HttpClient, http));
-    }
-    if (next.agentDevice) yield* onReady({ ...next, agentDevice: next.agentDevice });
-    ready = next.agentDevice
-      ? { ...next, releaseAgentSession: releaseAgentDeviceSession(http, next.agentDevice) }
-      : next;
-    yield* onStatus("ready");
-    // Reconnect also repairs helpers that died while SSH itself stayed connected.
-    const unhealthy = Effect.gen(function* () {
-      while (true) {
-        yield* Effect.sleep("10 seconds");
-        const alive = yield* http.get(`${next.hub.origin}/readyz`).pipe(
-          Effect.timeout("5 seconds"),
-          Effect.map((r) => r.status === 200),
-          Effect.orElseSucceed(() => false),
-        );
-        const daemonAlive = next.agentDevice
-          ? yield* http.get(`${next.agentDevice!.baseUrl}/health`).pipe(
-              Effect.timeout("5 seconds"),
-              Effect.map((r) => r.status === 200),
-              Effect.orElseSucceed(() => false),
+      );
+      summary = {
+        ...summary,
+        platforms: remote.platforms,
+        tools: remote.tools,
+        hubInstalled: true,
+        agentDeviceInstalled: wantsAgent || summary.agentDeviceInstalled,
+      };
+      const reserve = (step: string) =>
+        net
+          .reserveLoopbackPort("127.0.0.1")
+          .pipe(
+            Effect.mapError(
+              (cause) => new DeviceHost.DeviceHostError({ hostId: config.id, step, cause }),
+            ),
+          );
+      const hubPort = yield* reserve("reserving hub port");
+      const daemonPort =
+        remote.daemonPort === undefined ? undefined : yield* reserve("reserving daemon port");
+      if (direct && (!currentEndpoint || remote.directMedia?.generation !== generation))
+        return yield* new DeviceHost.DeviceHostError({
+          hostId: config.id,
+          step: "reading direct gateway endpoints",
+          cause: new Error("Missing direct gateway descriptor or readiness callback."),
+        });
+      const endpoint =
+        direct && remote.directMedia && config.directSshTarget
+          ? {
+              target: config.directSshTarget,
+              gatewayPort: remote.directMedia.gatewayPort,
+              owner,
+              generation,
+            }
+          : undefined;
+      const gatewayProbePort = endpoint ? yield* reserve("reserving gateway port") : undefined;
+      const admission =
+        endpoint && currentEndpoint
+          ? yield* openDirectAdmission({
+              hostId: config.id,
+              owner,
+              generation,
+              gatewayPort: endpoint.gatewayPort,
+              currentEndpoint,
+              isActive: () => active && !stopped && connectionScope === scope,
+            }).pipe(
+              Effect.provideService(DeviceDirectGrants, grants),
+              Effect.provideService(Scope.Scope, scope),
             )
           : undefined;
       const child = yield* spawner
@@ -421,8 +403,13 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
           origin: hubOrigin,
           http,
           run,
-          androidAvailable: platformAvailability("android").pipe(
-            Effect.map((availability) => availability.available),
+          // Recheck negative availability so an SDK installed after connecting is discovered.
+          androidAvailable: Effect.suspend(() =>
+            summary.platforms.some((p) => p.platform === "android" && p.available)
+              ? Effect.succeed(true)
+              : platformAvailability("android").pipe(
+                  Effect.map((availability) => availability.available),
+                ),
           ),
         }),
         ...(endpoint ? { directMedia: endpoint } : {}),
@@ -472,7 +459,9 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
           cause: new Error("Gateway owner or generation mismatch."),
         });
       if (next.agentDevice) yield* onReady({ ...next, agentDevice: next.agentDevice });
-      ready = next;
+      ready = next.agentDevice
+        ? { ...next, releaseAgentSession: releaseAgentDeviceSession(http, next.agentDevice) }
+        : next;
       yield* onStatus("ready");
       const unhealthy = Effect.gen(function* () {
         while (true) {

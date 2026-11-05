@@ -38,43 +38,40 @@ export function RemoteSubagentRow(props: {
   return (
     <li className="group relative flex h-8 items-center rounded-lg">
       <Tooltip>
-        <TooltipTrigger
-          delay={200}
-          render={
-            <ThreadDetailsControl
-              size="sm"
-              variant="ghost"
-              part="row"
-              aria-label={`${title}${machine ? ` on ${machine.label}` : ""}`}
-              disabled={environment?.connection.phase !== "connected"}
-              onClick={() =>
-                void navigate({
-                  to: "/$environmentId/$threadId",
-                  params: buildThreadRouteParams(
-                    scopeThreadRef(remoteChild.environmentId, remoteChild.threadId),
-                  ),
-                })
-              }
-            />
-          }
-        >
-          <ThreadRelationshipIcon
-            driver={props.agent.driver}
-            provider={props.provider}
-            fallbackIcon={BotIcon}
-            status={status}
-          />
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
-              {title}
-            </span>
-          </span>
-          <span
-            className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"}`}
+        <TooltipTrigger delay={200} render={<span className="flex min-w-0 flex-1" />}>
+          <ThreadDetailsControl
+            size="sm"
+            variant="ghost"
+            part="row"
+            aria-label={`${title}${machine ? ` on ${machine.label}` : ""}`}
+            disabled={environment?.connection.phase !== "connected"}
+            onClick={() =>
+              void navigate({
+                to: "/$environmentId/$threadId",
+                params: buildThreadRouteParams(
+                  scopeThreadRef(remoteChild.environmentId, remoteChild.threadId),
+                ),
+              })
+            }
           >
-            {machine ? `on ${machine.shortLabel} · ` : ""}
-            {threadRelationshipStatusLabel(status)}
-          </span>
+            <ThreadRelationshipIcon
+              driver={props.agent.driver}
+              provider={props.provider}
+              fallbackIcon={BotIcon}
+              status={status}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-left text-sm font-medium leading-4 text-foreground/85">
+                {title}
+              </span>
+            </span>
+            <span
+              className={`shrink-0 text-2xs ${failed ? "text-destructive" : "text-muted-foreground"}`}
+            >
+              {machine ? `on ${machine.shortLabel} · ` : ""}
+              {threadRelationshipStatusLabel(status)}
+            </span>
+          </ThreadDetailsControl>
         </TooltipTrigger>
         <TooltipPopup side="left">
           {title}.{" "}
@@ -100,25 +97,23 @@ export function RemoteParentRow({
     <ul className="m-0 list-none p-0" aria-label="Parent agent">
       <li className="flex h-8 min-w-0 items-center">
         <Tooltip>
-          <TooltipTrigger
-            render={
-              <ThreadDetailsControl
-                size="sm"
-                variant="ghost"
-                part="row"
-                disabled={!parent.open}
-                onClick={parent.open}
-                aria-label={`Parent agent: ${parent.title}`}
-                aria-description={parent.unavailableReason}
-              />
-            }
-          >
-            <CornerLeftUpIcon className="size-4 shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-left">{parent.title}</span>
+          <TooltipTrigger render={<span className="flex min-w-0 flex-1" />}>
+            <ThreadDetailsControl
+              size="sm"
+              variant="ghost"
+              part="row"
+              disabled={!parent.open}
+              onClick={parent.open}
+              aria-label={`Parent agent: ${parent.title}`}
+              aria-description={parent.unavailableReason}
+            >
+              <CornerLeftUpIcon className="size-4 shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-left">{parent.title}</span>
+            </ThreadDetailsControl>
           </TooltipTrigger>
           <TooltipPopup side="left">
             {parent.unavailableReason
-              ? `${parent.title}. ${parent.unavailableReason}`
+              ? `${parent.title}. ${parent.unavailableReason} Delegated from a linked environment. Connect to it to open the parent thread.`
               : `Open parent agent: ${parent.title}`}
           </TooltipPopup>
         </Tooltip>

@@ -142,6 +142,28 @@ function gitHubProviderFailure(
   }
 }
 
+export const makeCiReader = Effect.gen(function* () {
+  const github = yield* GitHubRest.GitHubRest;
+  return {
+    rest: (input) =>
+      github.rest(input).pipe(
+        Effect.mapError(
+          (cause) =>
+            new PullRequestProviderError({
+              provider: SourceControlProviderKind.make("github"),
+              operation: input.operation,
+              ...gitHubProviderFailure(cause),
+              ...(cause._tag === "GitHubApiResponseError" && cause.status === 429
+                ? { reason: "rate-limited" as const }
+                : {}),
+              detail: "GitHub CI data could not be read.",
+              cause,
+            }),
+        ),
+      ),
+  } satisfies SourceControlCiReader;
+});
+
 const REPOSITORY_ACCESS_HINTS: Record<Exclude<GitHubCredentialSource, "app">, string> = {
   settings:
     "Your saved GitHub token can't see it. Give it access, or change it in Settings → Source Control.",

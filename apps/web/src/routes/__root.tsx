@@ -1,3 +1,7 @@
+import { RemoteAdmissionNotifications } from "../jones/remoteAdmission/RemoteAdmissionNotifications";
+import { SettlementNotificationCoordinator } from "../jones/settlementNotifications/SettlementNotificationCoordinator";
+import { ProviderUpdateNotice } from "../jones/updates/ProviderUpdateNotice";
+import { PendingSendsCoordinator } from "../jones/pendingSends/PendingSendsCoordinator";
 import { type ServerLifecycleWelcomePayload } from "@t3tools/contracts";
 import { scopedProjectKey, scopeProjectRef } from "@t3tools/client-runtime/environment";
 import {
@@ -206,6 +210,11 @@ function RootRouteBranch() {
         <ConnectOnboardingDialog />
         <SshPasswordPromptDialog />
         <SnapShotCoordinator />
+        <PendingSendsCoordinator />
+        <ProviderUpdateNotice />
+        <SettlementNotificationCoordinator />
+        <RemoteAdmissionNotifications />
+
         <ReopenClosedViewShortcut />
         <ConfirmDialogHost />
         <CustomSnoozeDialogHost />

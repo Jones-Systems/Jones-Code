@@ -1,3 +1,5 @@
+import { pendingSends } from "../../jones/pendingSends/store";
+import { usePendingPreviewUrls } from "../../jones/pendingSends/previews";
 import { type EnvironmentId, type MessageId, type ThreadId } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { type Dispatch, type SetStateAction, useEffect } from "react";
@@ -34,11 +36,26 @@ export function useAttachmentPreviewHandoff(input: AttachmentPreviewHandoffInput
     blobPreviews,
     setOptimisticUserMessages,
   } = input;
+  const pendingPreviewUrls = usePendingPreviewUrls(environmentId, threadId);
   const handoffByMessageId = input.handoff;
 
   // Blob URLs are a browser resource owned per thread; leaving the thread or the view ends them.
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- revokes the thread's blob preview URLs when the thread changes or the view unmounts
-  useEffect(() => () => blobPreviews.revokeThread(threadId), [blobPreviews, threadId]);
+  useEffect(
+    () => () => {
+      const retained = pendingSends
+        .getSnapshot()
+        .filter((entry) => entry.environmentId === environmentId && entry.threadId === threadId)
+        .flatMap((entry) =>
+          (entry.message.attachments ?? []).flatMap((attachment) =>
+            "previewUrl" in attachment && attachment.previewUrl ? [attachment.previewUrl] : [],
+          ),
+        );
+      blobPreviews.transfer(threadId, retained);
+      blobPreviews.revokeThread(threadId);
+    },
+    [blobPreviews, environmentId, threadId],
+  );
 
   const serverAttachmentResources = selectHandoffImageResources(
     Object.keys(handoffByMessageId).length === 0
@@ -94,7 +111,7 @@ export function useAttachmentPreviewHandoff(input: AttachmentPreviewHandoffInput
   }
 
   const timelineAttachmentUrlById = (() => {
-    const urls = new Map(serverAttachmentUrlById);
+    const urls = new Map([...serverAttachmentUrlById, ...pendingPreviewUrls]);
     for (const row of serverVisibleTurnItems) {
       if (row.item.type !== "user_message") continue;
       const handoffUrls = handoffByMessageId[row.item.messageId];

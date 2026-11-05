@@ -1,4 +1,3 @@
-import { formatUserResponseChoiceWithNote } from "@t3tools/contracts/jones/userResponseRequest";
 import { isWorkModeSentinelMessage } from "@t3tools/shared/jones/workMode";
 import type {
   ThreadPendingApproval,
@@ -1924,6 +1923,8 @@ interface ThreadFeedBuild {
   readonly nodes: ReadonlyArray<OrchestrationV2ExecutionNode> | undefined;
   readonly checkpointSummaries: ReadonlyArray<ThreadCheckpointSummary> | undefined;
   readonly foldedAnswerMessageIds: ReadonlySet<string>;
+  readonly compactPromptRunIds: ReadonlySet<RunId>;
+  readonly compactedRunIds: ReadonlySet<RunId>;
   readonly delegatedChildrenByRun: ReadonlyMap<RunId, ReadonlySet<string>>;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
   /** Grouping is empty before `row`: the rows before it produced `feed.slice(0, feedLength)`. */
@@ -2028,7 +2029,17 @@ export function buildThreadFeed(
   // is reused only while these match the build that produced it.
   const foldedAnswerMessageIds = new Set<string>();
   const delegatedChildrenByRun = new Map<RunId, Set<string>>();
+  const compactPromptRunIds = new Set<RunId>();
+  const compactedRunIds = new Set<RunId>();
   for (const { item } of visibleTurnItems) {
+    if (item.runId !== null) {
+      if (
+        item.type === "user_message" &&
+        isCompactionCommandMessage({ role: "user", text: item.text, attachments: item.attachments })
+      )
+        compactPromptRunIds.add(item.runId);
+      else if (item.type === "compaction") compactedRunIds.add(item.runId);
+    }
     if (item.type === "user_input_request" && item.questionAnswer) {
       foldedAnswerMessageIds.add(`async-answer:${item.questionAnswer.requestId}`);
     } else if (item.type === "subagent" && item.origin === "app_owned" && item.runId !== null) {
@@ -2048,6 +2059,8 @@ export function buildThreadFeed(
     previous.nodes === options?.nodes &&
     checkpointSummariesEqual(previous.checkpointSummaries, options?.checkpointSummaries) &&
     setsEqual(previous.foldedAnswerMessageIds, foldedAnswerMessageIds) &&
+    setsEqual(previous.compactPromptRunIds, compactPromptRunIds) &&
+    setsEqual(previous.compactedRunIds, compactedRunIds) &&
     setMapsEqual(previous.delegatedChildrenByRun, delegatedChildrenByRun)
   ) {
     const firstChanged = firstChangedIndex(previous.rows, visibleTurnItems);
@@ -2062,18 +2075,6 @@ export function buildThreadFeed(
 
   const entries: RawThreadFeedEntry[] = [];
   const entryRows: number[] = [];
-  // A stopped compaction's own row already says it stopped. A `/compact` run stopped
-  // before its provider started has no such row, so it keeps the interrupted one.
-  const compactPromptRunIds = new Set<RunId>();
-  const compactedRunIds = new Set<RunId>();
-  for (const { item } of visibleTurnItems) {
-    if (item.runId === null) continue;
-    if (item.type === "user_message" && isCompactionCommandMessage({ role: "user", ...item })) {
-      compactPromptRunIds.add(item.runId);
-    } else if (item.type === "compaction") {
-      compactedRunIds.add(item.runId);
-    }
-  }
   for (let index = restart?.row ?? 0; index < visibleTurnItems.length; index += 1) {
     const row = visibleTurnItems[index]!;
     const item = row.item;
@@ -2256,6 +2257,8 @@ export function buildThreadFeed(
             nodes: options?.nodes,
             checkpointSummaries: options?.checkpointSummaries,
             foldedAnswerMessageIds,
+            compactPromptRunIds,
+            compactedRunIds,
             delegatedChildrenByRun,
             feed,
             restarts,

@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- The probe creates a synchronous opaque observation ID without changing its service requirements.
+import * as NodeCrypto from "node:crypto";
 import { pipe } from "effect/Function";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -853,6 +855,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(fu
             (codexSettings.binaryPath === "codex"
               ? " Installing ChatGPT or Codex desktop may not add codex to PATH."
               : " Make sure the configured executable exists and can be run."),
+        qualifiedQuota: failedQuota("probe_failed", DateTime.formatIso(yield* DateTime.now)),
       },
     });
   }

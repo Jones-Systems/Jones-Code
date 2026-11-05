@@ -186,7 +186,9 @@ export const make = Effect.gen(function* () {
     }
 
     const first = Option.fromNullishOr(
-      (yield* listWindows).find((window) => !auxiliaryWindows.has(window)) ?? null,
+      (yield* listWindows).find(
+        (window) => !auxiliaryWindows.has(window) && !isThreadMonitorWindow(window),
+      ) ?? null,
     );
     if (Option.isNone(first) || (yield* isWindowDestroyed(first.value))) {
       return Option.none<Electron.BrowserWindow>();

@@ -152,11 +152,12 @@
     "apps/web/src/components/desktopUpdate.logic.ts",
     "apps/web/src/components/sidebar/SidebarUpdatePill.tsx",
     "apps/web/src/components/settings/SettingsPanels.tsx",
-    "apps/web/src/components/LegacySidebar.tsx",
+    "apps/web/src/components/sidebar/SidebarChrome.tsx",
     "apps/web/src/components/desktopUpdate.toast.tsx",
     "scripts/tsconfig.json",
     "apps/desktop/tsconfig.json",
-    "apps/desktop/src/backend/DesktopBackendConfiguration.ts"
+    "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
+    "apps/server/src/background/BackgroundPolicy.ts"
   ],
   "tombstones": [
     "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
@@ -388,7 +389,7 @@
       "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
     },
     {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
       "to": "apps/web/src/jones/updates/localDesktopUpdate.ts"
     },
     {
@@ -458,6 +459,34 @@
     {
       "from": "apps/server/src/cli/servicePreflight.ts",
       "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/background/BackgroundPolicy.ts",
+      "to": "apps/server/src/jones/fleetUpdates/backgroundPolicyChanges.ts"
+    },
+    {
+      "from": "apps/server/src/cli/service.ts",
+      "to": "apps/server/src/jones/cli/serviceOnboarding.ts"
+    },
+    {
+      "from": "apps/server/src/cloud/selfUpdate.ts",
+      "to": "apps/server/src/jones/updateContinuity/Runtime.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
+      "to": "apps/server/src/jones/workstreams/DesktopNativeOwner.ts"
+    },
+    {
+      "from": "packages/contracts/src/resourceTelemetry.ts",
+      "to": "packages/contracts/src/jones/workstreamShellActivation.ts"
+    },
+    {
+      "from": "apps/desktop/src/shell/DesktopShellEnvironment.ts",
+      "to": "packages/shared/src/jones/workstreamShellActivation.ts"
+    },
+    {
+      "from": "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
+      "to": "packages/shared/src/jones/workstreamShellActivation.ts"
     }
   ]
 }

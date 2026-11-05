@@ -35,3 +35,5 @@ export function useOrchestrationCommand<W extends { readonly environmentId: Envi
     return run(value);
   };
 }
+
+export { ORCHESTRATION_OPERATE_DENIED_MESSAGE };

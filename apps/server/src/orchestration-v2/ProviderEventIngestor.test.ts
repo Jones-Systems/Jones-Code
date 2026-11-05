@@ -51,7 +51,6 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
-import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import {
@@ -76,6 +75,7 @@ const layerGit = GitVcsDriver.layer.pipe(
 );
 
 const layerEmptyInstances = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+  getCatalogSource: () => undefined,
   // @effect-diagnostics-next-line effectSucceedWithVoid:off - Optional instances require undefined rather than void.
   getInstance: () => Effect.succeed(undefined),
 });
@@ -256,6 +256,7 @@ it.effect("refreshes the failing instance snapshot after a committed usage_limit
         displayName: undefined,
         orchestrationAdapter: adapter,
         textGeneration: {
+          evaluateRemoteRequest: () => Effect.die("unused"),
           generateBranchName: () => Effect.die("unused"),
           generateCommitMessage: () => Effect.die("unused"),
           generatePrContent: () => Effect.die("unused"),
@@ -273,6 +274,7 @@ it.effect("refreshes the failing instance snapshot after a committed usage_limit
       };
       const lookups: ProviderInstanceId[] = [];
       const instances = Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+        getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
         getInstance: (id) =>
           Effect.sync(() => {
             lookups.push(id);

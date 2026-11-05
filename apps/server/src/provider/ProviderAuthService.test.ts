@@ -241,6 +241,7 @@ const makeHarness = Effect.fn("ProviderAuthService.test.makeHarness")(function* 
     Effect.provide(
       Layer.mergeAll(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
           getInstance: (id) =>
             Effect.gen(function* () {
               const found = instances.find((instance) => instance.instanceId === id);
@@ -355,6 +356,7 @@ const makeSubscriptionHarness = Effect.fn("ProviderAuthService.test.makeSubscrip
       Effect.provide(
         Layer.mergeAll(
           Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getCatalogSource: (id) => (current?.instanceId === id ? current : undefined),
             subscribeChanges: Effect.gen(function* () {
               const subscription = yield* PubSub.subscribe(changes);
               subscribed = true;

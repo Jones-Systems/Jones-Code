@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
+import * as NodeChildProcess from "node:child_process";
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -91,6 +92,14 @@ let currentContext = "272k";
 let currentFast = false;
 let currentAgent = "";
 let authenticated = !requiresAuthentication;
+const emitRunningCommandThenHang = process.env.T3_ACP_EMIT_RUNNING_COMMAND_THEN_HANG === "1";
+const emitRunningCommandThenHangOnFirstPrompt =
+  process.env.T3_ACP_EMIT_RUNNING_COMMAND_THEN_HANG_FIRST_PROMPT === "1";
+const runningCommandIgnoresTerm = process.env.T3_ACP_RUNNING_COMMAND_IGNORE_TERM === "1";
+const runningCommandPidPath = process.env.T3_ACP_RUNNING_COMMAND_PID_PATH;
+const runningCommandSeparateSession = process.env.T3_ACP_RUNNING_COMMAND_SEPARATE_SESSION === "1";
+const exitAfterRunningCommandLaunch = process.env.T3_ACP_EXIT_AFTER_RUNNING_COMMAND_LAUNCH === "1";
+
 let promptCount = 0;
 const cancelledSessions = new Set<string>();
 let configuredProvider: AcpSchema.ProviderCurrentConfig | null = null;
@@ -1378,6 +1387,103 @@ const program = Effect.gen(function* () {
         yield* Effect.sleep("25 millis");
         yield* agent.client.sessionUpdate(update);
         return yield* finishPrompt(requestedSessionId, "end_turn");
+      }
+
+      if (
+        emitRunningCommandThenHang ||
+        (emitRunningCommandThenHangOnFirstPrompt && promptCount === 1)
+      ) {
+        const toolCallId = "tool-call-running-1";
+        let runningCommandPublished: Promise<void> = Promise.resolve();
+        if (runningCommandPidPath !== undefined) {
+          const command = runningCommandIgnoresTerm
+            ? 'trap "" TERM; bash -c \'trap "" TERM; while :; do sleep 1; done\' & child=$!; printf "%s %s\n" "$$" "$child" > "$1"; wait "$child"'
+            : 'sleep 120 & child=$!; printf "%s %s\n" "$$" "$child" > "$1"; wait "$child"';
+          if (runningCommandSeparateSession) {
+            const launcher = [
+              'const { spawn } = require("node:child_process");',
+              "const child = spawn(process.argv[1], process.argv.slice(2), { stdio: ['ignore', 'inherit', 'ignore'] });",
+              "child.once('exit', (code, signal) => process.exitCode = code ?? (signal ? 1 : 0));",
+            ].join(" ");
+            const detachedCommand = runningCommandIgnoresTerm
+              ? 'trap "" TERM; bash -c \'trap "" TERM; while :; do sleep 1; done\' & child=$!; printf "%s %s %s\n" "$PPID" "$$" "$child" > "$1"; echo published; wait "$child"'
+              : 'sleep 120 & child=$!; printf "%s %s %s\n" "$PPID" "$$" "$child" > "$1"; echo published; wait "$child"';
+            // Only nested bash writes the "$PPID $$ $child" triple; writing the launcher PID
+            // here would race it. The launcher's printed line keeps the agent alive until the
+            // triple exists.
+            const detachedLauncher = NodeChildProcess.spawn(
+              process.execPath,
+              ["-e", launcher, "bash", "-c", detachedCommand, "bash", runningCommandPidPath],
+              { detached: true, stdio: ["ignore", "pipe", "ignore"] },
+            );
+            runningCommandPublished = new Promise((resolve) =>
+              detachedLauncher.stdout.once("data", () => resolve()),
+            );
+            detachedLauncher.unref();
+          } else {
+            NodeChildProcess.spawn("bash", ["-c", command, "bash", runningCommandPidPath], {
+              stdio: "ignore",
+            });
+          }
+        }
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "pending",
+            rawInput: {
+              command: ["sleep", "120"],
+            },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId,
+            title: "Terminal",
+            kind: "execute",
+            status: "in_progress",
+            rawInput: {
+              command: ["sleep", "120"],
+            },
+            // Grok-like mid-stream Bash re-report: exit_code 0 while still running.
+            rawOutput: { type: "Bash", exit_code: 0 },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tool-call-output-1",
+            title: "get_command_or_subagent_output",
+            kind: "other",
+            status: "pending",
+            rawInput: { task_id: "task-running-1" },
+          },
+        });
+        yield* agent.client.sessionUpdate({
+          sessionId: requestedSessionId,
+          update: {
+            sessionUpdate: "tool_call_update",
+            toolCallId: "tool-call-output-1",
+            status: "in_progress",
+            rawOutput: { task_id: "task-running-1", status: "running" },
+          },
+        });
+        if (exitAfterRunningCommandLaunch) {
+          // The test sends `_test/exit` once T3 has recorded the published processes.
+          yield* Effect.promise(() => runningCommandPublished);
+          return yield* Effect.never;
+        }
+        while (!cancelledSessions.has(requestedSessionId)) {
+          yield* Effect.sleep("25 millis");
+        }
+        cancelledSessions.delete(requestedSessionId);
+        return yield* finishPrompt(requestedSessionId, "cancelled");
       }
 
       if (emitGrokBackgroundTaskPoll) {

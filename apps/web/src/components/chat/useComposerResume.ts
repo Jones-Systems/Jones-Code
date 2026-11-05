@@ -138,7 +138,10 @@ export function useComposerResume(input: ComposerResumeInput) {
         runtimeMode,
         interactionMode,
       });
-      if (settingsResult._tag === "Failure") return settingsResult;
+      if (settingsResult._tag === "Failure") {
+        pendingSends.failBeforeDispatch(environmentId, threadId, messageId);
+        return settingsResult;
+      }
       const turnResult = await startThreadTurn({
         environmentId,
         input: {

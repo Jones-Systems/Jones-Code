@@ -62,11 +62,20 @@ function ChildApproval({ entry }: { entry: ChildThreadApproval }) {
 export function ChildThreadApprovals({
   threadRef,
   maxHeight,
+  excludedThreads = [],
 }: {
   threadRef: ScopedThreadRef | null;
   maxHeight: DerivedValue<number>;
+  excludedThreads?: ReadonlyArray<ScopedThreadRef>;
 }) {
-  const approvals = useAtomValue(childThreadApprovalsAtom(threadRef));
+  const approvals = useAtomValue(childThreadApprovalsAtom(threadRef)).filter(
+    (entry) =>
+      !excludedThreads.some(
+        (ref) =>
+          ref.environmentId === entry.thread.environmentId &&
+          ref.threadId === entry.thread.threadId,
+      ),
+  );
   const heightStyle = useAnimatedStyle(() => ({ maxHeight: Math.min(320, maxHeight.value / 2) }));
   if (approvals.length === 0) return null;
   return (

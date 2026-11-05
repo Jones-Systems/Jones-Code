@@ -1,3 +1,4 @@
+import { resolveFirstSendWorktreePreparation } from "./ChatView.logic";
 import { resolveComposerPickerModelSelection } from "./ChatView.logic";
 import {
   boundAttachmentIds,

@@ -1,3 +1,4 @@
+import { useComposerPickerSession } from "../../jones/composer/useComposerPickerSession";
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type ProviderInstanceId,
@@ -116,6 +117,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   const composerFloatingLayerProps = useComposerMenuProps();
   const [uncontrolledIsMenuOpen, setUncontrolledIsMenuOpen] = useState(false);
   const isMenuOpen = props.open ?? uncontrolledIsMenuOpen;
+  const pickerSession = useComposerPickerSession(isMenuOpen);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement | null>(null);
@@ -248,6 +250,7 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
 
   const picker = (
     <ModelPickerContent
+      key={pickerSession}
       searchInputRef={searchInputRef}
       environmentId={props.environmentId}
       activeInstanceId={activeInstanceId}

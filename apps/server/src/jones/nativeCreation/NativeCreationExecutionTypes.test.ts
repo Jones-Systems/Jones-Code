@@ -20,34 +20,49 @@ const reference = {
   effectId: "synthetic-effect",
   stage: "native_command",
 };
+
+const decodeEffectOrchestrationEffectRequestV2 = Schema.decodeEffect(OrchestrationEffectRequestV2);
+const encodeEffectFromJsonStringOrchestrationEffectRequestV2 = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationEffectRequestV2),
+);
+const decodeUnknownEffectNativeOrchestrationEffectPayloadV2 = Schema.decodeUnknownEffect(
+  NativeOrchestrationEffectPayloadV2,
+);
+const encodeEffectFromJsonStringNativeOrchestrationEffectPayloadV2 = Schema.encodeEffect(
+  Schema.fromJsonString(NativeOrchestrationEffectPayloadV2),
+);
+
 it.effect("retains ordinary payload compatibility and native authority lineage", () =>
   Effect.gen(function* () {
-    const request = yield* Schema.decodeEffect(OrchestrationEffectRequestV2)({
+    const request = yield* decodeEffectOrchestrationEffectRequestV2({
       type: "provider-turn.start",
       runId: "synthetic-run",
     });
     assert.deepEqual(
       yield* decodeOrchestrationEffectPayloadV2(
-        yield* Schema.encodeEffect(Schema.fromJsonString(OrchestrationEffectRequestV2))(request),
+        yield* encodeEffectFromJsonStringOrchestrationEffectRequestV2(request),
       ),
       {
         request,
       },
     );
-    const envelope = yield* Schema.decodeUnknownEffect(NativeOrchestrationEffectPayloadV2)({
+    const envelope = yield* decodeUnknownEffectNativeOrchestrationEffectPayloadV2({
       request,
       nativeCreationExecutionReference: reference,
     });
     assert.deepEqual(
       yield* decodeOrchestrationEffectPayloadV2(
-        yield* Schema.encodeEffect(Schema.fromJsonString(NativeOrchestrationEffectPayloadV2))(
-          envelope,
-        ),
+        yield* encodeEffectFromJsonStringNativeOrchestrationEffectPayloadV2(envelope),
       ),
       envelope,
     );
   }),
 );
+
+const encodeEffectFromJsonStringUnknown = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Unknown),
+);
+
 it.effect("does not downgrade malformed native envelopes to ordinary requests", () =>
   Effect.gen(function* () {
     for (const payload of [
@@ -63,31 +78,45 @@ it.effect("does not downgrade malformed native envelopes to ordinary requests", 
       },
     ]) {
       const exit = yield* decodeOrchestrationEffectPayloadV2(
-        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(payload),
+        yield* encodeEffectFromJsonStringUnknown(payload),
       ).pipe(Effect.exit);
       assert.isTrue(exit._tag === "Failure");
     }
   }),
 );
+
+const decodeUnknownSyncNativeCreationExecutionReferenceV2 = Schema.decodeUnknownSync(
+  NativeCreationExecutionReferenceV2,
+);
+const decodeUnknownSyncNativeCreationWholeOperationEvidence = Schema.decodeUnknownSync(
+  NativeCreationWholeOperationEvidence,
+);
+
 it("references and evidence reject excess wire authority", () => {
   assert.throws(() =>
-    Schema.decodeUnknownSync(NativeCreationExecutionReferenceV2)({ ...reference, grant: true }),
+    decodeUnknownSyncNativeCreationExecutionReferenceV2({ ...reference, grant: true }),
   );
   assert.throws(() =>
-    Schema.decodeUnknownSync(NativeCreationWholeOperationEvidence)({
+    decodeUnknownSyncNativeCreationWholeOperationEvidence({
       version: 1,
       outcome: "confirmed_success",
       coverage: "final_rpc",
     }),
   );
 });
+
+const decodeUnknownEffectNativeCreationExecutionReferenceV2 = Schema.decodeUnknownEffect(
+  NativeCreationExecutionReferenceV2,
+);
+const decodeEffectThreadId = Schema.decodeEffect(ThreadId);
+const decodeEffectRunId = Schema.decodeEffect(RunId);
+
 it.effect("an unbound whole-operation executor cannot invoke ordinary provider start", () =>
   Effect.gen(function* () {
-    const decodedReference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)(
-      reference,
-    );
-    const threadId = yield* Schema.decodeEffect(ThreadId)("synthetic-thread");
-    const runId = yield* Schema.decodeEffect(RunId)("synthetic-run");
+    const decodedReference =
+      yield* decodeUnknownEffectNativeCreationExecutionReferenceV2(reference);
+    const threadId = yield* decodeEffectThreadId("synthetic-thread");
+    const runId = yield* decodeEffectRunId("synthetic-run");
     const rejection = yield* executeNativeProviderEffect({
       id: "synthetic-effect",
       commandId: decodedReference.stageCommandId,
@@ -100,7 +129,7 @@ it.effect("an unbound whole-operation executor cannot invoke ordinary provider s
       status: "running",
       attemptCount: 1,
       leaseOwner: "synthetic-worker",
-      leaseExpiresAt: "2099-01-01T00:00:00Z",
+
       availableAt: "2026-10-07T00:00:00Z",
       createdAt: "2026-10-07T00:00:00Z",
       updatedAt: "2026-10-07T00:00:00Z",

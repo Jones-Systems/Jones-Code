@@ -4,7 +4,10 @@ import { expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
   EnvironmentId,
+  PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   ProjectId,
+  PreviewTabId,
+  type PreviewAutomationRequest,
   ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -102,4 +105,104 @@ it.effect.each([
       }
     }),
   ),
+);
+
+it.effect("REC-R t3_preview_close retires the server target through the real broker", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("preview-close-thread");
+      const scope = {
+        environmentId: EnvironmentId.make("preview-close-environment"),
+        requestNamespace: "preview-close-session",
+        thread: {
+          threadId,
+          providerSessionId: "preview-close-session",
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        },
+        client: undefined,
+        capabilities: new Set(["preview"] as const),
+        issuedAt: 0,
+      };
+      const manager = yield* Preview.make.pipe(
+        Effect.provide(
+          Layer.merge(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3-preview-close-" }).pipe(
+              Layer.provide(NodeServices.layer),
+            ),
+            NodeCrypto.layer,
+          ),
+        ),
+      );
+      const broker = yield* PreviewAutomationBroker.make.pipe(Effect.provide(NodeServices.layer));
+      const tab = yield* manager.open({ threadId, runtime: "server" });
+      const tabId = PreviewTabId.make(tab.tabId);
+      let evidence: PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null = {
+        runtimeIdentity: {
+          schemaVersion: 1,
+          runtimeKind: "electron",
+          runtimeInstanceId: "close-host",
+          appVersion: "test",
+          buildCommit: null,
+        },
+        attachmentGeneration: 1,
+      };
+      const routed: PreviewAutomationRequest[] = [];
+      yield* Stream.runForEach(
+        yield* broker.connect(
+          {
+            clientId: "close-host",
+            environmentId: scope.environmentId,
+            supportedOperations: [...PREVIEW_AUTOMATION_SERVER_OPERATIONS],
+          },
+          {
+            resolveRuntimeEvidence: () => Effect.sync(() => evidence),
+          },
+        ),
+        (event) =>
+          Effect.gen(function* () {
+            if (event.type !== "request") return;
+            routed.push(event.request);
+            if (event.request.operation === "close") yield* manager.close({ threadId, tabId });
+            yield* broker.respond({
+              clientId: "close-host",
+              connectionId: event.connectionId,
+              requestId: event.request.requestId,
+              ok: true,
+              result: event.request.operation === "status" ? { tabId } : {},
+            });
+          }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
+      const dependencies = Layer.mergeAll(
+        Layer.succeed(PreviewAutomationBroker.PreviewAutomationBroker, broker),
+        Layer.succeed(Preview.PreviewManager, manager),
+        Layer.succeed(McpInvocationContext.McpInvocationContext, scope),
+        McpToolAccessTestkit.liveThreadsLayer,
+        Layer.mock(ServerSettings.ServerSettingsService)({
+          getSettings: Effect.succeed({
+            ...DEFAULT_SERVER_SETTINGS,
+            enableAgentBrowserAccess: true,
+          }),
+        }),
+      );
+      const toolkit = yield* PreviewControlsToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(PreviewControlsHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const closed = yield* toolkit
+        .handle("t3_preview_close", { tabId })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(closed.at(-1)?.result).toEqual({});
+      expect((yield* manager.list({ threadId })).sessions).toEqual([]);
+      yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+      expect(routed.at(-1)?.tabId).toBeUndefined();
+      evidence = null;
+      yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
+      expect(routed.at(-1)?.tabId).toBe(tabId);
+    }),
+  ).pipe(Effect.provide(NodeCrypto.layer)),
 );

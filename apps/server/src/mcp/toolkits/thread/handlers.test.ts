@@ -148,8 +148,8 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
         Effect.provide(dependencies),
       );
     for (const [name, args] of [
-      ["t3_queue_edit", { queuedRunId: RunId.make("run:queued"), text: "Foreign edit" }],
-      ["t3_pending_request_respond", { requestId, answers: { q: ["Foreign answer"] } }],
+      ["t3_queue", { action: "edit", queuedRunId: RunId.make("run:queued"), text: "Foreign edit" }],
+      ["t3_pending_request", { action: "respond", requestId, answers: { q: ["Foreign answer"] } }],
     ] as const) {
       const denied = yield* invoke(name, { threadId: peerId, ...args });
       expect(denied.isFailure).toBe(true);
@@ -161,7 +161,8 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
     for (const threadId of [callerId, peerId]) {
       if (threadId === peerId)
         shells.set(peerId, { ...shells.get(peerId)!, threadMessagesBlocked: false });
-      const edit = yield* invoke("t3_queue_edit", {
+      const edit = yield* invoke("t3_queue", {
+        action: "edit",
         threadId,
         queuedRunId: RunId.make("run:queued"),
         text: "Allowed edit",
@@ -172,7 +173,8 @@ it.effect("blocks foreign text edits and answers while preserving self controls 
         senderThreadId: callerId,
         threadId,
       });
-      const answer = yield* invoke("t3_pending_request_respond", {
+      const answer = yield* invoke("t3_pending_request", {
+        action: "respond",
         threadId,
         requestId,
         answers: { q: ["Allowed answer"] },

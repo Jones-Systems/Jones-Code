@@ -19,6 +19,7 @@ import type * as ElectronSafeStorage from "../electron/ElectronSafeStorage.ts";
 
 const MAX_ENCRYPTED_BYTES = 131_072;
 const HintJson = Schema.fromJsonString(StoredConnectionCompatibilityHint);
+const decodeStoredHint = Schema.decodeEffect(StoredConnectionCompatibilityHint);
 const encodeHint = Schema.encodeEffect(HintJson);
 const decodeHint = Schema.decodeUnknownOption(HintJson, { onExcessProperty: "error" });
 const encodeKey = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
@@ -113,7 +114,7 @@ export const make = Effect.fn("desktop.connectionCompatibilityHintStore.make")(f
       routeBinding: string,
       kind: StoredConnectionCompatibilityHint["kind"] | null,
     ) {
-      const hint = yield* Schema.decodeEffect(StoredConnectionCompatibilityHint)({
+      const hint = yield* decodeStoredHint({
         environmentId,
         routeBinding,
         kind: kind ?? "outdated-update",

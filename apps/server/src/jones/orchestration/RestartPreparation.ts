@@ -54,6 +54,8 @@ export class RestartThreadHeld extends Schema.TaggedError<RestartThreadHeld>()(
     return "The previous provider runtime has an unresolved restart. Stop that exact runtime before starting more work.";
   }
 }
+const isRestartPreparationError = Schema.is(RestartPreparationError);
+const isRestartThreadHeld = Schema.is(RestartThreadHeld);
 
 export function findRestartPreparationFailure(
   value: unknown,
@@ -62,8 +64,7 @@ export function findRestartPreparationFailure(
   const seen = new Set<unknown>();
   for (let remaining = 64; pending.length > 0 && remaining > 0; remaining -= 1) {
     const current = pending.pop();
-    if (Schema.is(RestartPreparationError)(current) || Schema.is(RestartThreadHeld)(current))
-      return current;
+    if (isRestartPreparationError(current) || isRestartThreadHeld(current)) return current;
     if (typeof current !== "object" || current === null || seen.has(current)) continue;
     seen.add(current);
     if (Cause.isCause(current)) {
@@ -235,7 +236,7 @@ const make = Effect.gen(function* () {
       const capture = targets.length === 1 ? targets[0]!.capture : null;
       return capture !== null && (yield* capture.isCurrent) ? capture : null;
     }),
-    resolveAfterTeardown: (binding) =>
+    resolveAfterTeardown: Effect.fn("RestartPreparation.resolveAfterTeardown")((binding) =>
       Effect.sync(() => {
         for (const [id, hold] of holds) {
           if (
@@ -247,6 +248,7 @@ const make = Effect.gen(function* () {
             holds.delete(id);
         }
       }),
+    ),
     run: Effect.fn("RestartPreparation.run")(function* ({
       effect,
       interrupt,

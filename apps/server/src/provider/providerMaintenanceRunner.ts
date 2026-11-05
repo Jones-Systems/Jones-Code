@@ -368,10 +368,9 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
               }),
             ),
           ),
-        ),
-      );
-    },
-  );
+        );
+      }),
+    );
 
   const updateProvider: ProviderMaintenanceRunnerShape["updateProvider"] = Effect.fn(
     "ProviderMaintenanceRunner.updateProvider",
@@ -556,33 +555,28 @@ export const make = Effect.fn("ProviderMaintenanceRunner.make")(function* () {
             yield* invalidateLatestProviderVersion(verified).pipe(
               Effect.provideService(ProviderLatestVersions.ProviderLatestVersions, latestVersions),
             );
-            const { verifiedProviders } = yield* verifyFromRefresh(
+            const { verifiedProviders, advisoryEnriched } = yield* verifyFromRefresh(
               providerRegistry.refreshAfterUpdate(provider, instanceId),
               provider,
               verified,
               instanceId,
               "post-update",
             );
-            // Cursor about probes can fail transiently; missing versions alone do not imply failure.
-            const couldNotVerify =
-              verifiedProviders.length === 0 ||
-              verifiedProviders.some((verifiedProvider) => {
-                const installedVersion =
-                  verifiedProvider.installedVersion !== undefined
-                    ? verifiedProvider.installedVersion
-                    : verifiedProvider.version;
-                return (
-                  !isStillInstalled(verifiedProvider) ||
-                  (verifiedProvider.status === "error" &&
-                    (verifiedProvider.auth.status !== "unauthenticated" ||
-                      !verifiedProvider.version)) ||
-                  (targetVersion !== undefined &&
-                    installedVersion?.replace(/^v/, "") !== targetVersion)
-                );
-              });
-            const stillOutdated =
-              targetVersion === undefined &&
-              verifiedProviders.some((verifiedProvider) => isOutdatedProvider(verifiedProvider));
+            const providerAfterUpdate = verifiedProviders[0];
+            const outcome = resolveProviderUpdateVerification({
+              provider:
+                providerAfterUpdate === undefined
+                  ? undefined
+                  : {
+                      ...providerAfterUpdate,
+                      version:
+                        providerAfterUpdate.installedVersion !== undefined
+                          ? providerAfterUpdate.installedVersion
+                          : providerAfterUpdate.version,
+                    },
+              advisoryRefreshed: advisoryEnriched,
+              targetVersion,
+            });
             return yield* finish(
               makeUpdateState({
                 ...outcome,

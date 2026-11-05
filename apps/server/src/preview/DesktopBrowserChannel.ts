@@ -148,6 +148,9 @@ const make = Effect.gen(function* () {
   if (inputFd === undefined || controlFd === undefined) {
     return DesktopBrowserChannel.of({
       available: false,
+      runtimeEvidence: Effect.fn("DesktopBrowserChannel.runtimeEvidence")(() =>
+        Effect.succeed(null),
+      ),
       awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function () {
         return Effect.succeed(false);
       }),
@@ -230,6 +233,9 @@ const make = Effect.gen(function* () {
 
   return DesktopBrowserChannel.of({
     available: true,
+    runtimeEvidence: Effect.fn("DesktopBrowserChannel.runtimeEvidence")((key) =>
+      Effect.sync(() => attachedTabs.get(keyOf(key)) ?? null),
+    ),
     awaitAttached: Effect.fn("DesktopBrowserChannel.awaitAttached")(function (key, timeout) {
       return Effect.scoped(
         Effect.gen(function* () {

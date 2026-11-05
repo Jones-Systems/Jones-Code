@@ -1,3 +1,4 @@
+import * as JonesHostCli from "./jones/hostService/cli.ts";
 import { doctorCommand } from "./cli/doctor.ts";
 import { policyCommand } from "./cli/policy.ts";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";

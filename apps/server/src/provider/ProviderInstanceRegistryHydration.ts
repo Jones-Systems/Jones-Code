@@ -29,6 +29,7 @@ import type * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import type * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../config.ts";
 import type * as PortScanner from "../preview/PortScanner.ts";
+import type * as ProcessAttribution from "../jones/resourceTelemetry/ProcessAttribution.ts";
 
 type ProviderInstanceRegistryHydrationEnv =
   | Exclude<
@@ -37,6 +38,7 @@ type ProviderInstanceRegistryHydrationEnv =
       | AcpRegistrySupport.AcpRegistryCatalog
       | ProviderHost.ProviderHost
     >
+  | ProcessAttribution.ProcessAttribution
   | Settings.ServerSettingsService
   | BackgroundPolicy.BackgroundPolicy
   | ServerConfig.ServerConfig

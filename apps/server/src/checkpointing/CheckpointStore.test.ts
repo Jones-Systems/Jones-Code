@@ -328,6 +328,37 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
         }
       }),
     );
+
+    it.effect("keeps a/ and b/ patch prefixes when the repository disables them", () =>
+      Effect.gen(function* () {
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
+        yield* git(tmp, ["config", "diff.noprefix", "true"]);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const threadId = ThreadId.make("thread-checkpoint-store-noprefix");
+        const fromCheckpointRef = checkpointRefForThreadTurn(threadId, 0);
+        const toCheckpointRef = checkpointRefForThreadTurn(threadId, 1);
+
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: fromCheckpointRef,
+        });
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# changed\n");
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: toCheckpointRef,
+        });
+
+        const diff = yield* checkpointStore.diffCheckpoints({
+          cwd: tmp,
+          fromCheckpointRef,
+          toCheckpointRef,
+          ignoreWhitespace: false,
+        });
+
+        expect(diff).toContain("diff --git a/README.md b/README.md");
+      }),
+    );
   });
 
   describe("checkpoint file summaries", () => {
@@ -526,6 +557,35 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
         expect(yield* checkpointStore.listAuthoredPaths(refs)).toEqual(new Set(["app/kept.txt"]));
       }),
     );
+
+    it.effect("limits a diff to repository paths from a subdirectory workspace", () =>
+      Effect.gen(function* () {
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
+        const fileSystem = yield* FileSystem.FileSystem;
+        const cwd = NodePath.join(tmp, "app");
+        yield* fileSystem.makeDirectory(cwd);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const threadId = ThreadId.make("checkpoint-file-paths-subdirectory");
+        const refs = {
+          cwd,
+          fromCheckpointRef: checkpointRefForThreadTurn(threadId, 0),
+          toCheckpointRef: checkpointRefForThreadTurn(threadId, 1),
+        };
+        yield* checkpointStore.captureCheckpoint({ cwd, checkpointRef: refs.fromCheckpointRef });
+        yield* writeTextFile(NodePath.join(cwd, "kept.txt"), "kept\n");
+        yield* writeTextFile(NodePath.join(tmp, "README.md"), "# hidden\n");
+        yield* checkpointStore.captureCheckpoint({ cwd, checkpointRef: refs.toCheckpointRef });
+
+        const patch = yield* checkpointStore.diffCheckpoints({
+          ...refs,
+          ignoreWhitespace: false,
+          filePaths: ["app/kept.txt"],
+        });
+        expect(patch).toContain("+kept");
+        expect(patch).not.toContain("hidden");
+      }),
+    );
   });
 
   describe("listAuthoredPaths", () => {
@@ -614,6 +674,39 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
         yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: refs.toCheckpointRef });
 
         expect(yield* checkpointStore.listAuthoredPaths(refs)).toEqual(new Set(["kept.txt"]));
+      }),
+    );
+
+    it.effect("leaves out paths that only a rebase onto upstream brought in", () =>
+      Effect.gen(function* () {
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
+        const checkpointStore = yield* CheckpointStore.CheckpointStore;
+        const threadId = ThreadId.make("checkpoint-authored-paths-rebase");
+        const refs = {
+          cwd: tmp,
+          fromCheckpointRef: checkpointRefForThreadTurn(threadId, 0),
+          toCheckpointRef: checkpointRefForThreadTurn(threadId, 1),
+        };
+        const commitBeforeTurn = (file: string) =>
+          Effect.gen(function* () {
+            yield* writeTextFile(NodePath.join(tmp, file), `${file}\n`);
+            yield* git(tmp, ["add", "."]);
+            yield* git(tmp, ["commit", "-m", file], { committedAt: "2020-01-01T00:00:00Z" });
+          });
+
+        yield* git(tmp, ["checkout", "-b", "upstream"]);
+        yield* commitBeforeTurn("upstream.txt");
+        yield* git(tmp, ["checkout", "-"]);
+        yield* commitBeforeTurn("feature.txt");
+        yield* checkpointStore.captureCheckpoint({
+          cwd: tmp,
+          checkpointRef: refs.fromCheckpointRef,
+        });
+        yield* git(tmp, ["rebase", "upstream"]);
+        yield* checkpointStore.captureCheckpoint({ cwd: tmp, checkpointRef: refs.toCheckpointRef });
+
+        expect(yield* checkpointStore.listAuthoredPaths(refs)).toEqual(new Set(["feature.txt"]));
       }),
     );
   });

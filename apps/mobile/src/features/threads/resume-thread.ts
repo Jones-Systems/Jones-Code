@@ -21,7 +21,7 @@ type Command<Input, E> = (request: {
 }) => Promise<AtomCommandResult<unknown, E>>;
 
 /** Resolves to the first failed command's result, or the last successful one. */
-export async function resumeThread<E>(input: {
+export async function resumeThread<E, QueueE>(input: {
   readonly thread: {
     readonly environmentId: EnvironmentId;
     readonly id: ThreadId;
@@ -38,8 +38,8 @@ export async function resumeThread<E>(input: {
   readonly setRuntimeMode: Command<SetThreadRuntimeModeInput, E>;
   readonly setInteractionMode: Command<SetThreadInteractionModeInput, E>;
   readonly startTurn: Command<StartThreadTurnInput, E>;
-  readonly resumeQueue: Command<ResumeThreadQueueInput, E>;
-}): Promise<AtomCommandResult<unknown, E>> {
+  readonly resumeQueue: Command<ResumeThreadQueueInput, QueueE>;
+}): Promise<AtomCommandResult<unknown, E | QueueE>> {
   const { thread, runtimeMode, interactionMode, createdAt } = input;
   const environmentId = thread.environmentId;
   // The server holds the queue behind a stopped or usage-limited run until that run is continued.

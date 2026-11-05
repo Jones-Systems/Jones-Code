@@ -54,7 +54,6 @@ import {
   formatTokens,
   formatUsageContractMismatch,
   formatUsd,
-  makeWindow,
   usageSourceMessages,
 } from "@t3tools/shared/usageFormat";
 import { Button, InlineButton } from "../ui/button";
@@ -404,7 +403,7 @@ export function UsagePage() {
           <ToggleGroup
             aria-label="Usage period"
             variant="segmented"
-            value={[String(windowDays)]}
+            value={windowPeriodValue ? [windowPeriodValue] : []}
             onValueChange={(next) => {
               const value = next[0];
               if (value) selectWindow(Number(value));
@@ -417,6 +416,7 @@ export function UsagePage() {
             ))}
           </ToggleGroup>
         )}
+        {showingLimits ? null : <UsageRangePicker {...rangePickerProps} />}
         <ToggleGroup
           aria-label="Usage metric"
           variant="segmented"
@@ -445,7 +445,7 @@ export function UsagePage() {
       </div>
       <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
         {showingLimits ? null : (
-          <Select value={String(windowDays)} onValueChange={(value) => selectWindow(Number(value))}>
+          <Select value={windowPeriodValue} onValueChange={(value) => selectWindow(Number(value))}>
             <SelectTrigger
               aria-label="Usage period"
               size="compact"
@@ -469,6 +469,7 @@ export function UsagePage() {
             </SelectPopup>
           </Select>
         )}
+        {showingLimits ? null : <UsageRangePicker {...rangePickerProps} />}
         <Select
           value={metric}
           onValueChange={(value) => {

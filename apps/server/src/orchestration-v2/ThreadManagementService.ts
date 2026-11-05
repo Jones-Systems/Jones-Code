@@ -1,4 +1,7 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import { dispatchDeliveryEvidence } from "../jones/orchestration/deliveryEvidence.ts";
+import type { DispatchDeliveryEvidence } from "@t3tools/contracts/jones/deliveryEvidence";
 import * as Queue from "effect/Queue";
 import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
@@ -65,7 +68,6 @@ import { threadTranscriptHeader } from "@t3tools/shared/threadTranscript";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
-import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -140,6 +142,8 @@ function existingThreadIdsForCommand(
     case "delegated_task.remote.request":
     case "delegated_task.remote.complete":
     case "delegated_task.remote.stop":
+    case "delegated_task.remote.bind":
+    case "delegated_task.remote.hold":
       return [command.parentThreadId];
     case "thread.created.record":
       return command.parentThreadId === command.targetThreadId
@@ -382,6 +386,9 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape extends ObservationPorts {
+  readonly observeThreadActivity?: (
+    threadId: ThreadId,
+  ) => Effect.Effect<RuntimeObservation.ProviderThreadActivityObservation>;
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
@@ -485,6 +492,10 @@ export interface ThreadManagementServiceShape extends ObservationPorts {
   }) => Effect.Effect<boolean>;
   /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
   readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  readonly getCommandReceipt: CommandReceiptStore.CommandReceiptStoreV2["Service"]["getByCommandId"];
+  readonly getDispatchDeliveryEvidence: (
+    command: OrchestrationV2Command,
+  ) => Effect.Effect<DispatchDeliveryEvidence>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
@@ -1026,6 +1037,7 @@ const make = Effect.gen(function* () {
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       dispatchMode,
+      ...(input.mode === "auto" ? { deliveryIntent: "auto" as const } : {}),
 
       ...(input.creationSource === "mcp" &&
       (input.senderThreadId !== undefined || (yield* IncomingLinkedMessage)) &&
@@ -1121,41 +1133,81 @@ const make = Effect.gen(function* () {
     const delegatedWorkResult = Effect.gen(function* () {
       const records = yield* getProjectThreadRecords(
         input,
-        ["runs", "messages", "subagents", "providerThreads"],
+        ["runs", "messages", "subagents", "providerThreads", "runtimeRequests"],
         { messageRoles: ["user"], monitorNotificationsOnly: true },
       );
+      if (records.runtimeRequests.some((request) => request.status === "pending")) return undefined;
       const progress = delegatedTaskProgress(records);
-      // A thread rolled back past all its work, with nothing left running, has no answer to wait for.
       if (
         progress.resultRun === undefined &&
         records.runs.every((run) => isTerminalRunStatus(run.status))
-      ) {
+      )
         return latestRun(records);
-      }
       if (progress.state !== "result_available") return undefined;
       const pending = yield* orchestrator
         .delegatedTaskResultPending(input.threadId)
         .pipe(Effect.mapError(loadError));
       return pending ? undefined : progress.resultRun;
     });
-    const evaluate = Effect.fn("orchestrationV2.threadManagement.evaluate")(function* (
+    const evaluate = Effect.fn("ThreadManagementService.evaluate")(function* (
       runs: ReadonlyArray<OrchestrationV2Run>,
     ) {
       const current = yield* outcome(runs);
+      const questions =
+        input.observeBlockingQuestions === true
+          ? blockingQuestions(
+              yield* getProjectThreadRecords(input, ["runtimeRequests", "nodes", "runs"]),
+            )
+          : undefined;
+      const questionChanged =
+        questions !== undefined && questionsChanged(questions, input.questionResumeToken);
       if (!current.settled || !untilDelegatedWorkSettled) {
-        return { ...current, resultRun: undefined };
+        return { ...current, resultRun: undefined, questions, questionChanged };
       }
+
+      // A declined continuation records no event, so its effect settling wakes
+      // the wait too.
+
       const resultRun = yield* delegatedWorkResult;
-      return { ...current, settled: resultRun !== undefined, resultRun };
+      return {
+        ...current,
+        settled: resultRun !== undefined,
+        resultRun,
+        questions,
+        questionChanged,
+      };
     });
     const settledResult = (current: Effect.Success<ReturnType<typeof evaluate>>) => ({
       threadId: input.threadId,
       run: current.run,
-      timedOut: !current.settled,
+      timedOut: !current.settled && !current.questionChanged,
+      ...(current.questions === undefined
+        ? {}
+        : { blockingQuestions: current.questions, observationChanged: current.questionChanged }),
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
     });
-    const initial = yield* evaluate(target.runs);
-    if (initial.settled) return settledResult(initial);
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+    const dependencySubscription = Option.isSome(dependencyChanges)
+      ? yield* dependencyChanges.value.subscribe
+      : undefined;
+    const continuationSignals = yield* Queue.unbounded<void>();
+    const watchingContinuations = new Set<RunId>();
+    const evaluateAndWatch = (runs: ReadonlyArray<OrchestrationV2Run>) =>
+      evaluate(runs).pipe(
+        Effect.tap((current) => {
+          if (!current.pending || watchingContinuations.has(current.run.id)) return Effect.void;
+          watchingContinuations.add(current.run.id);
+          return orchestrator
+            .awaitRestartContinuation(current.run)
+            .pipe(
+              Effect.andThen(Queue.offer(continuationSignals, undefined)),
+              Effect.forkScoped,
+              Effect.asVoid,
+            );
+        }),
+      );
+    const initial = yield* evaluateAndWatch(target.runs);
+    if (initial.settled || initial.questionChanged) return settledResult(initial);
 
     // A declined continuation records no event, so its effect settling wakes
     // the wait too.
@@ -1167,8 +1219,15 @@ const make = Effect.gen(function* () {
             "thread.deleted",
             // What delegated work reads besides runs: tasks and their
             // deliveries, and a provider thread's background tasks.
+            ...(input.observeBlockingQuestions === true && !untilDelegatedWorkSettled
+              ? (["runtime-request.updated"] as const)
+              : []),
             ...(untilDelegatedWorkSettled
-              ? (["subagent.updated", "provider-thread.updated"] as const)
+              ? ([
+                  "subagent.updated",
+                  "provider-thread.updated",
+                  "runtime-request.updated",
+                ] as const)
               : []),
           ] as const
         ).map((eventType) =>
@@ -1200,7 +1259,7 @@ const make = Effect.gen(function* () {
     ).pipe(
       Stream.mapEffect(() =>
         getProjectThreadRecords(input, ["runs"]).pipe(
-          Effect.flatMap((current) => evaluate(current.runs)),
+          Effect.flatMap((current) => evaluateAndWatch(current.runs)),
         ),
       ),
       Stream.filter((current) => current.settled || current.questionChanged),
@@ -1213,7 +1272,7 @@ const make = Effect.gen(function* () {
     // winning the race; the final projection read decides what actually
     // happened, so only a still-active run counts as timed out.
     return settledResult(yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs));
-  });
+  }, Effect.scoped);
 
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
     "orchestrationV2.threadManagement.settleAfterRun",
@@ -1681,6 +1740,34 @@ const make = Effect.gen(function* () {
       );
     }),
     dispatch,
+    promoteQueuedBatch,
+    observeThreadActivity,
+    getTimelinePages: Effect.fn("ThreadManagementService.getTimelinePages")(
+      (threadId, selections) =>
+        ensureProjectionTranscript(threadId).pipe(
+          Effect.andThen(
+            orchestrator.getTimelinePages(threadId, selections).pipe(NodeSqliteClient.readOnly),
+          ),
+        ),
+    ),
+    ...(orchestrator.dispatchLegacyFailureDelete === undefined
+      ? {}
+      : { dispatchLegacyFailureDelete: orchestrator.dispatchLegacyFailureDelete }),
+    ...(orchestrator.dispatchLegacyGuardRejectionDelete === undefined
+      ? {}
+      : { dispatchLegacyGuardRejectionDelete: orchestrator.dispatchLegacyGuardRejectionDelete }),
+    ...(orchestrator.recoverRemoteTaskQuestions === undefined
+      ? {}
+      : { recoverRemoteTaskQuestions: orchestrator.recoverRemoteTaskQuestions }),
+    ...(orchestrator.observeRemoteTask === undefined
+      ? {}
+      : { observeRemoteTask: orchestrator.observeRemoteTask }),
+    ...(orchestrator.readRemoteTaskObservation === undefined
+      ? {}
+      : { readRemoteTaskObservation: orchestrator.readRemoteTaskObservation }),
+    ...(orchestrator.reconcileRemoteTaskQuestions === undefined
+      ? {}
+      : { reconcileRemoteTaskQuestions: orchestrator.reconcileRemoteTaskQuestions }),
     getThreadHistoryPage: Effect.fn("ThreadManagementService.getThreadHistoryPage")(
       function (threadId, cursor, throughEntryId, conversationOnly, workMode) {
         return ensureProjectionTranscript(threadId).pipe(
@@ -1746,6 +1833,10 @@ const make = Effect.gen(function* () {
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,
+    getCommandReceipt: receipts.getByCommandId,
+    getDispatchDeliveryEvidence: Effect.fn("ThreadManagementService.getDispatchDeliveryEvidence")(
+      (command) => dispatchDeliveryEvidence(receipts, command),
+    ),
     waitForThread,
     settleAfterRun,
     settleThread,

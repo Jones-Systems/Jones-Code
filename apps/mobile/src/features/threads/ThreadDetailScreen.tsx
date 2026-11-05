@@ -1,3 +1,5 @@
+import { undoSettleThread } from "../../jones/settlementRestore/runtime";
+import { settlementRestoreMenuItems } from "../../jones/settlementRestore/menu";
 import { ChildThreadApprovals } from "./ChildThreadApprovals";
 import { useOpenThreadInspector } from "./thread-inspector-navigation";
 import { useSidebarWorkspaceTabs } from "../workspace/useSystemWorkspaceTabBar";
@@ -666,15 +668,27 @@ function ThreadDetailBody(
   });
   const runUndoSettle = async () => {
     if (statusPending || !props.canOperateThread) return;
-    const request = { threadKey: selectedThreadKey };
-    setStatusRequest(request);
+    const request: BackgroundWorkStopRequest = {
+      threadKey: selectedThreadKey,
+      taskIds: [],
+      retryAt: null,
+    };
+    props.setStatusRequests((current) => ({ ...current, [request.threadKey]: request }));
     try {
       await undoSettleThread({ environmentId: props.environmentId, id: props.selectedThread.id });
     } catch (cause) {
-      setStatusRequest((current) => (current === request ? null : current));
+      props.setStatusRequests((current) =>
+        current[request.threadKey] === request
+          ? { ...current, [request.threadKey]: undefined }
+          : current,
+      );
       throw cause;
     }
-    setStatusRequest((current) => (current === request ? null : current));
+    props.setStatusRequests((current) =>
+      current[request.threadKey] === request
+        ? { ...current, [request.threadKey]: undefined }
+        : current,
+    );
   };
   const runStatusAction = async (action: "stop" | "wake" | "unsettle" | "dismiss") => {
     if (statusPending || !props.canOperateThread) return;
@@ -1158,7 +1172,8 @@ function ThreadDetailBody(
       ),
     [floatingCoverageTarget],
   );
-  const userInputCoverageApplies = Platform.OS === "ios" && activeUserInputRequestId !== null;
+  const userInputCoverageApplies =
+    Platform.OS === "ios" && activeUserInputRequestId !== null && descendantApproval.state === null;
   const questionStatusSpace = useAnimatedStyle(() => ({ height: floatingControlCoverage.value }));
   const combinedContentInsetEndAdjustment = useSharedValue(
     Math.max(0, estimatedOverlayHeight - nativeInsetOvercount),
@@ -1223,6 +1238,7 @@ function ThreadDetailBody(
   const showContent = props.showContent ?? true;
   const focused = useIsFocused();
   const [appActive, setAppActive] = useState(AppState.currentState === "active");
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Subscribe read dwell ownership to native app visibility.
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) =>
       setAppActive(state === "active"),
@@ -1684,6 +1700,9 @@ function ThreadDetailBody(
                       thread={props.selectedThread}
                     />
                     <ChildThreadApprovals
+                      excludedThreads={descendantApproval.state?.candidates.map(
+                        (candidate) => candidate.ref,
+                      )}
                       threadRef={props.selectedThreadDetailRef}
                       maxHeight={pendingUserInputMaxHeight}
                     />
@@ -1759,7 +1778,9 @@ function ThreadDetailBody(
                         />
                       </Animated.View>
                     ) : null}
-                    {props.activePendingApproval || props.activePendingUserInput ? (
+                    {descendantApproval.state ||
+                    props.activePendingApproval ||
+                    props.activePendingUserInput ? (
                       <Animated.View
                         className="shrink-0 gap-3 px-4 pb-3"
                         style={
@@ -1770,35 +1791,49 @@ function ThreadDetailBody(
                         entering={FadeInDown.duration(220)}
                         exiting={FadeOut.duration(140)}
                       >
-                        {props.activePendingApproval ? (
-                          <PendingApprovalCard
-                            canOperateThread={props.canOperateThread}
-                            approval={props.activePendingApproval}
-                            respondingApprovalId={props.respondingApprovalId}
-                            onRespond={props.onRespondToApproval}
-                          />
-                        ) : null}
-                        {props.activePendingUserInput ? (
-                          <PendingUserInputCard
-                            environmentId={props.environmentId}
-                            canOperateThread={props.canOperateThread}
-                            pendingUserInput={props.activePendingUserInput}
-                            maxHeight={pendingUserInputMaxHeight}
-                            collapsed={userInputCollapsed}
-                            onToggleCollapsed={handleToggleUserInputCollapsed}
-                            onStopThread={props.onStopThread}
-                            cardProgress={userInputCardProgress}
-                            cardCoverage={userInputCardCoverage}
-                            onInputFocusChange={handleOwnedInputFocusChange}
-                            drafts={props.activePendingUserInputDrafts}
-                            answers={props.activePendingUserInputAnswers}
-                            respondingUserInputId={props.respondingUserInputId}
-                            onSelectOption={props.onSelectUserInputOption}
-                            onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
-                            onSubmit={props.onSubmitUserInput}
-                            onDismiss={props.onDismissUserInput}
-                          />
-                        ) : null}
+                        <PendingApprovalStack
+                          enabled={descendantApproval.state !== null}
+                          maxHeight={pendingApprovalStackMaxHeight}
+                        >
+                          {descendantApproval.state ? (
+                            <DescendantApprovalCard
+                              state={descendantApproval.state}
+                              onRespond={descendantApproval.onRespond}
+                              onNext={descendantApproval.onNext}
+                              onOpen={openLinkedThread}
+                            />
+                          ) : null}
+                          {props.activePendingApproval ? (
+                            <PendingApprovalCard
+                              canOperateThread={props.canOperateThread}
+                              approval={props.activePendingApproval}
+                              respondingApprovalId={props.respondingApprovalId}
+                              onRespond={props.onRespondToApproval}
+                            />
+                          ) : null}
+                          {props.activePendingUserInput ? (
+                            <PendingUserInputCard
+                              environmentId={props.environmentId}
+                              canOperateThread={props.canOperateThread}
+                              pendingUserInput={props.activePendingUserInput}
+                              maxHeight={pendingUserInputMaxHeight}
+                              collapsed={userInputCollapsed}
+                              expandedInFlow={descendantApproval.state !== null}
+                              onToggleCollapsed={handleToggleUserInputCollapsed}
+                              onStopThread={props.onStopThread}
+                              cardProgress={userInputCardProgress}
+                              cardCoverage={userInputCardCoverage}
+                              onInputFocusChange={handleOwnedInputFocusChange}
+                              drafts={props.activePendingUserInputDrafts}
+                              answers={props.activePendingUserInputAnswers}
+                              respondingUserInputId={props.respondingUserInputId}
+                              onSelectOption={props.onSelectUserInputOption}
+                              onChangeCustomAnswer={props.onChangeUserInputCustomAnswer}
+                              onSubmit={props.onSubmitUserInput}
+                              onDismiss={props.onDismissUserInput}
+                            />
+                          ) : null}
+                        </PendingApprovalStack>
                       </Animated.View>
                     ) : null}
                   </ComposerPanels>

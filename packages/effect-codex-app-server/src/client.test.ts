@@ -1,4 +1,4 @@
-import * as Deferred from "effect/Deferred";
+import * as Result from "effect/Result";
 import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
@@ -272,4 +272,28 @@ it.live("reports the stderr error when the process exits before initialize", () 
       "Codex App Server process exited with code 1: Error: Missing optional dependency @openai/codex-darwin-arm64. Reinstall Codex: npm install -g @openai/codex@latest",
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+it.effect("forwards transport termination to the client owner exactly once", () =>
+  Effect.gen(function* () {
+    const { stdio, input } = yield* makeInMemoryStdio();
+    const observed: Array<CodexError.CodexAppServerError> = [];
+    const error = new CodexError.CodexAppServerProcessExitedError({ code: 7 });
+    const client = yield* CodexClient.make(
+      stdio,
+      {
+        onTermination: (cause) =>
+          Effect.sync(() => {
+            observed.push(cause);
+          }),
+      },
+      Effect.succeed(error),
+    );
+    yield* Queue.end(input);
+    for (let i = 0; i < 20; i++) yield* Effect.yieldNow;
+    assert.deepEqual(observed, [error]);
+    const rejected = yield* client.raw.request("turn/start", {}).pipe(Effect.result);
+    assert.isTrue(Result.isFailure(rejected));
+    if (Result.isFailure(rejected)) assert.equal(rejected.failure, error);
+    assert.equal(observed.length, 1);
+  }).pipe(Effect.scoped),
 );

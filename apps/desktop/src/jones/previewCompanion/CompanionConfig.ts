@@ -33,6 +33,11 @@ export class CompanionConfig extends Context.Service<
 
 export const browserOnlyStartup = (config: DesktopCompanionConfig): boolean => config.browserOnly;
 
+const CompanionConfigJson = Schema.fromJsonString(DesktopCompanionConfig);
+const encodeConfig = Schema.encodeEffect(CompanionConfigJson);
+const decodeConfigJson = Schema.decodeEffect(CompanionConfigJson);
+const decodeConfig = Schema.decodeEffect(DesktopCompanionConfig);
+
 const make = Effect.gen(function* () {
   const productLocked = yield* DesktopConfig.DesktopConfig.pipe(
     Effect.map((config) => config.previewCompanionProduct),
@@ -59,9 +64,7 @@ const make = Effect.gen(function* () {
     function* (config: DesktopCompanionConfig) {
       const id = yield* crypto.uuidV4();
       const temporary = `${target}.${id}.tmp`;
-      const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(
-        config,
-      );
+      const encoded = yield* encodeConfig(config);
       yield* fs.makeDirectory(directory, { recursive: true });
       yield* fs
         .writeFileString(temporary, encoded, { mode: 0o600 })
@@ -84,7 +87,7 @@ const make = Effect.gen(function* () {
           label: "Browser host",
           browserOnly: productLocked,
         }
-      : yield* Schema.decodeEffect(Schema.fromJsonString(DesktopCompanionConfig))(raw).pipe(
+      : yield* decodeConfigJson(raw).pipe(
           Effect.mapError(() => new CompanionConfigError({ operation: "decode" })),
         );
   if (productLocked && !initial.browserOnly) {
@@ -94,8 +97,8 @@ const make = Effect.gen(function* () {
   const state = yield* SynchronizedRef.make<DesktopCompanionConfig>(initial);
   return CompanionConfig.of({
     get: SynchronizedRef.get(state),
-    set: (input) =>
-      SynchronizedRef.modifyEffect(state, (current) =>
+    set: Effect.fn("CompanionConfig.set")(function (input) {
+      return SynchronizedRef.modifyEffect(state, (current) =>
         Effect.gen(function* () {
           if (
             (productLocked && !input.browserOnly) ||
@@ -103,14 +106,15 @@ const make = Effect.gen(function* () {
           ) {
             return yield* new CompanionConfigError({ operation: "decode" });
           }
-          const next = yield* Schema.decodeEffect(DesktopCompanionConfig)({
+          const next = yield* decodeConfig({
             ...input,
             hostId: current.hostId,
           }).pipe(Effect.mapError(() => new CompanionConfigError({ operation: "decode" })));
           yield* write(next);
           return [next, next] as const;
         }),
-      ),
+      );
+    }),
   });
 });
 export const layer = Layer.effect(CompanionConfig, make);

@@ -321,6 +321,19 @@ const ThreadInterruptTool = Tool.make("t3_thread_interrupt", {
   .annotate(Tool.Title, "Interrupt a T3 thread")
   .annotate(Tool.Destructive, true);
 
+const ThreadSettleTool = Tool.make("t3_thread_settle", {
+  description:
+    "Request settlement of THIS calling thread after this turn succeeds and its checkpoint completes. Returns an accepted deferred request; keep writing the current reply normally. This does not interrupt the turn. User follow-up work, interruption, failure, reverse state actions, or server restart cancel the request. Reuse the same clientRequestId when retrying; the receipt remains bound to the original run.",
+  parameters: OrchestratorMcpThreadSettleInput,
+  success: OrchestratorMcpThreadSettleResult,
+  failure: OrchestratorMcpFailure,
+  failureMode: "return",
+  dependencies,
+})
+  .annotate(Tool.Title, "Settle this T3 thread after the reply")
+  .annotate(Tool.Destructive, true)
+  .annotate(Tool.Idempotent, true);
+
 const EnvironmentLinksTool = Tool.make("t3_environment_links", {
   description:
     "List linked environments (the user's other machines) and whether each answers now. Pass one's `environmentId` to a tool to act there; `delegate_task` takes `target.environmentId`. Expired: link it again with `t3_environment_link`.",

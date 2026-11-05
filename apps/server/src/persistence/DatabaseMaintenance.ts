@@ -70,6 +70,10 @@ export class LegacyDatabaseRemoveError extends Schema.TaggedError<LegacyDatabase
   }
 }
 
+const isJonesSettlementProofMigrationRequired = Schema.is(
+  SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError,
+);
+
 /** Offline inspection and repair of a T3 state database, for `t3 doctor`. */
 export class DatabaseMaintenance extends Context.Service<
   DatabaseMaintenance,
@@ -222,8 +226,7 @@ const make = Effect.gen(function* () {
     (effect, databasePath) =>
       effect.pipe(
         Effect.mapError((cause) =>
-          isDomainError(cause) ||
-          Schema.is(SettlementCompactionPreflight.JonesSettlementProofMigrationRequiredError)(cause)
+          isDomainError(cause) || isJonesSettlementProofMigrationRequired(cause)
             ? cause
             : new DatabaseCompactError({ path: databasePath, cause }),
         ),

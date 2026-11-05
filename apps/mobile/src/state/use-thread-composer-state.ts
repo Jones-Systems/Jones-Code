@@ -1,3 +1,4 @@
+import { uploadedComposerContext } from "../lib/composerContext";
 import { captureFollowUpModelSelection } from "../jones/threadConfiguration/modelSelection";
 import { useComposerAttachmentActions } from "./use-composer-attachment-actions";
 import { importedHistoryContinuationEligible } from "@t3tools/client-runtime/jones/imported-history/continuation";
@@ -21,7 +22,7 @@ import {
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
 } from "@t3tools/client-runtime/state/thread-execution";
-import { useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import {
   CommandId,
@@ -230,6 +231,7 @@ export function useThreadComposerState() {
     ? scopedThreadKey(selectedThreadShell.environmentId, selectedThreadShell.id)
     : null;
   const currentImportedThreadKeyRef = useRef(selectedThreadKey);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed thread ownership to asynchronous imported-history preparation.
   useLayoutEffect(() => {
     currentImportedThreadKeyRef.current = selectedThreadKey;
   }, [selectedThreadKey]);

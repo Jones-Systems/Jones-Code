@@ -1,6 +1,7 @@
 import { EnvironmentId, MessageId, ThreadId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Atom, type AtomRegistry } from "effect/reactivity";
+import { preserveQueuedThreadIssuance } from "../jones/threadConfiguration/outboxDelivery";
 
 import {
   flattenQueuedThreadMessages,
@@ -104,6 +105,10 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
   };
 
   const enqueue = (message: QueuedThreadMessage): Promise<void> => {
+    const previous = currentMessages().find(
+      (candidate) => candidate.messageId === message.messageId,
+    );
+    message = preserveQueuedThreadIssuance(previous, message);
     bumpRevision(message.messageId);
     setMessages([
       ...currentMessages().filter((candidate) => candidate.messageId !== message.messageId),
@@ -114,7 +119,19 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
         await options.storage.write(message);
       } catch (cause) {
         // Rollback by reference: a retry with the same id may already own a newer optimistic entry.
-        setMessages(currentMessages().filter((candidate) => candidate !== message));
+        setMessages(
+          currentMessages().flatMap((candidate) =>
+            candidate !== message ? [candidate] : previous === undefined ? [] : [previous],
+          ),
+        );
+        if (
+          previous !== undefined &&
+          currentMessages().some((candidate) => candidate === previous)
+        ) {
+          try {
+            await options.storage.write(previous);
+          } catch {}
+        }
         // Remove compensating persisted copies after rollback unless a same-id entry survives, or restart resurrects rejected messages.
         if (!currentMessages().some((candidate) => candidate.messageId === message.messageId)) {
           try {
@@ -146,6 +163,10 @@ export function createThreadOutboxManager(options: ThreadOutboxManagerOptions) {
       if (staleOrMissing()) {
         return false;
       }
+      message = preserveQueuedThreadIssuance(
+        currentMessages().find((candidate) => candidate.messageId === message.messageId),
+        message,
+      );
       try {
         await options.storage.write(message);
       } catch (cause) {

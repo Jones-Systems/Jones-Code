@@ -141,6 +141,7 @@ export function AttachmentFilePreview(props: {
   const [saving, setSaving] = useState(false);
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [remoteUrl, setRemoteUrl] = useState<string | null>(null);
+  const [authorizedRevision, setAuthorizedRevision] = useState(0);
   const [rendered, setRendered] = useState(true);
   const [revision, setRevision] = useState(0);
   const [content, setContent] = useState<{ text: string; truncated: boolean } | null>(null);
@@ -169,6 +170,7 @@ export function AttachmentFilePreview(props: {
         if (!url) throw new Error("Reconnect to the environment and try again.");
         authorizedAt.current = Date.now();
         setRemoteUrl(url);
+        setAuthorizedRevision(revision);
       })
       .catch((cause: unknown) => {
         if (!cancelled)
@@ -177,7 +179,6 @@ export function AttachmentFilePreview(props: {
     return () => {
       cancelled = true;
     };
-    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Retry must reauthorize the remote file.
   }, [props.file, refresh, revision]);
   const url = props.file ? localUrl : remoteUrl;
   const streamsText =
@@ -344,8 +345,10 @@ export function AttachmentFilePreview(props: {
           : props.file
             ? blobKey(props.file)
             : props.asset && "attachmentId" in props.asset
-              ? `${props.asset.environmentId}:${props.asset.attachmentId}`
-              : undefined
+              ? `${props.asset.environmentId}:${props.asset.attachmentId}:${authorizedRevision}`
+              : props.asset && "resource" in props.asset
+                ? `${props.asset.environmentId}:${JSON.stringify(props.asset.resource)}:${authorizedRevision}`
+                : undefined
       }
     />
   ) : kind === "audio" ? (

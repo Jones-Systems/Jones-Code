@@ -7,6 +7,7 @@ import { JonesBuildStatus } from "./JonesBuildStatus";
 import type { ExactSourceHost, ExactSourceTarget } from "./ExactSourceUpdateAction";
 import { page } from "vite-plus/test/browser";
 import { AsyncResult } from "effect/reactivity";
+import "../../index.css";
 
 const alternativeHost = vi.hoisted(() => ({ value: undefined as ExactSourceHost | undefined }));
 vi.mock("./ProductionExactSourceUpdateAction", async () => {

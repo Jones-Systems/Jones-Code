@@ -1578,6 +1578,7 @@ export function BrowserSettingsPanel() {
 
   return (
     <SettingsPageContainer>
+      <BrowserHostsSettings />
       <SettingsSection id="browser-agent-access" title="Agent access">
         <AgentBrowserAccessSetting />
       </SettingsSection>

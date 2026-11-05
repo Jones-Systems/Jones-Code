@@ -1,3 +1,4 @@
+import * as FileSystem from "effect/FileSystem";
 // @effect-diagnostics nodeBuiltinImport:off
 import { expect, it } from "@effect/vitest";
 import * as NodeFS from "node:fs";
@@ -995,9 +996,10 @@ it.layer(
         ]);
 
         let npmProbes = 0;
+        const env = fixture.inheritPath ? {} : { PATH: pnpmBinDir };
         const capabilities = yield* resolveProviderMaintenanceCapabilitiesEffect(
           packageToolUpdate,
-          { binaryPath: link, env: fixture.inheritPath ? {} : { PATH: pnpmBinDir } },
+          { binaryPath: link, env },
         ).pipe(
           Effect.provideService(HostProcess.Environment, {
             PATH: fixture.inheritPath ? pnpmBinDir : "",

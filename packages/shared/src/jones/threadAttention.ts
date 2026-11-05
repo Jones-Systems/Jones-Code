@@ -155,11 +155,7 @@ export function shellAttentionInput(
   pendingSubagentRequest: PendingSubagentRequest | null = null,
 ): ThreadAttentionInput {
   const runtime = shellRuntime(thread);
-  // A nonblocking input is actionable only once the provider is no longer working.
-  const runtimeIsWorking =
-    runtime?.status === "preparing" ||
-    runtime?.status === "starting" ||
-    runtime?.status === "running";
+  // An open question needs attention independently of whether execution is blocked.
   return {
     latestRun: shellLatestRun(thread),
     runtime,
@@ -167,9 +163,7 @@ export function shellAttentionInput(
       thread.pendingRuntimeRequest !== null &&
       thread.pendingRuntimeRequest.kind !== "user_input" &&
       thread.pendingRuntimeRequest.kind !== "auth_refresh",
-    hasPendingUserInput:
-      thread.pendingRuntimeRequest?.kind === "user_input" &&
-      (thread.pendingRuntimeRequest.blocking !== false || !runtimeIsWorking),
+    hasPendingUserInput: thread.pendingRuntimeRequest?.kind === "user_input",
     pendingSubagentRequest,
     interactionMode: thread.interactionMode,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,

@@ -203,7 +203,7 @@ it("allows first startup without creating the missing database", () => {
 });
 
 it.effect(
-  "upgrades a retained upstream-63 installation through 64–67 and preserves rows on failure",
+  "upgrades a retained upstream-63 installation through 64–77 and preserves rows on failure",
   () =>
     Effect.gen(function* () {
       const root = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "jones-install-migrations-"));
@@ -271,7 +271,7 @@ it.effect(
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
           migrationPlan: {
-            pendingUpstream: [64, 65, 66, 67, 68, 69],
+            pendingUpstream: [64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77],
             pendingJones: [latestJones[0]],
           },
         });
@@ -281,7 +281,7 @@ it.effect(
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
           migrationPlan: {
-            pendingUpstream: [64, 65, 66, 67, 68, 69],
+            pendingUpstream: [64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77],
             pendingJones: [latestJones[0]],
           },
         });
@@ -293,7 +293,10 @@ it.effect(
         );
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [], pendingJones: [latestJones[0]] },
+          migrationPlan: {
+            pendingUpstream: [70, 71, 72, 73, 74, 75, 76, 77],
+            pendingJones: [latestJones[0]],
+          },
         });
         yield* run(runMigrations());
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({

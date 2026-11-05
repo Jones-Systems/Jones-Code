@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -34,6 +35,11 @@ import {
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
 import { materializeCodexReplayAppIdentity } from "../../runtimeIdentity/CodexReplayIdentity.ts";
 
+const layerNodeServicesWithCrypto = Layer.merge(NodeServices.layer, NodeCrypto.layer);
+
+const decodeCodexTranscript = Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript);
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+
 const rootThread = "reader-root";
 const rootTurn = "reader-root-turn";
 const childThread = "reader-child";
@@ -66,7 +72,7 @@ const inbound = (frame: unknown, label?: string): CodexReplay.CodexAppServerRepl
   ...(label === undefined ? {} : { label }),
 });
 
-const transcript = Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript)(
+const transcript = decodeCodexTranscript(
   materializeCodexReplayAppIdentity({
     provider: "codex",
     protocol: "codex.app-server",
@@ -221,7 +227,7 @@ describe("Codex late subagent reader progress", () => {
       });
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: modelSelection.instanceId,
-        settings: yield* Schema.decodeEffect(CodexSettings)({}),
+        settings: yield* decodeCodexSettings({}),
         environment: {},
         digest: yield* Digest.Digest,
         fileSystem,
@@ -355,7 +361,7 @@ describe("Codex late subagent reader progress", () => {
           IdAllocator.layer,
           McpProviderSessions.layer,
           ControlAdmission.layer,
-          NodeServices.layer,
+          layerNodeServicesWithCrypto,
         ),
       ),
     ),

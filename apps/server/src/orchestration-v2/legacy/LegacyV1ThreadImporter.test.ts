@@ -1,4 +1,4 @@
-import { CommandId, MessageId, ProjectId } from "@t3tools/contracts";
+import { CommandId, MessageId } from "@t3tools/contracts";
 
 import { assert, it } from "@effect/vitest";
 import {
@@ -214,6 +214,35 @@ it.effect("caches the absent legacy transcript for a native V2 thread", () =>
     }
     assert.equal(legacyLookups, 1);
     assert.deepStrictEqual(yield* projections.getThreadProjection(threadId), before);
+  }).pipe(Effect.provide(layerTest)),
+);
+
+it.effect("does not cache an unknown thread before its later genuine legacy shell import", () =>
+  Effect.gen(function* () {
+    const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = ThreadId.make("thread:first");
+    assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+      importedThreadCount: 0,
+      importedMessageCount: 0,
+    });
+    yield* seedPendingTranscripts;
+    assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+      importedThreadCount: 1,
+      importedMessageCount: 1,
+    });
+    assert.deepStrictEqual(
+      (yield* projections.getThreadProjection(threadId)).messages.map((message) => message.text),
+      ["Old question", "Latest question"],
+    );
+    assert.deepStrictEqual(yield* importer.ensureTranscript(threadId), {
+      importedThreadCount: 0,
+      importedMessageCount: 0,
+    });
+    assert.deepStrictEqual(
+      (yield* projections.getThreadProjection(threadId)).messages.map((message) => message.text),
+      ["Old question", "Latest question"],
+    );
   }).pipe(Effect.provide(layerTest)),
 );
 

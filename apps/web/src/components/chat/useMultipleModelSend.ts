@@ -1,3 +1,4 @@
+import { environmentServerConfigsAtom } from "../../state/server";
 import { pendingNewThread } from "../../jones/pendingSends/newThread";
 import { pendingSends } from "../../jones/pendingSends/store";
 import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
@@ -29,8 +30,6 @@ import type { ComposerHandleRef } from "../../composerHandleContext";
 import { releaseDraftAttachments } from "../../lib/attachmentUploadQueue";
 import type { buildMessageContext } from "../../lib/composerContextRecords";
 import { appAtomRegistry } from "../../rpc/atomRegistry";
-import { threadEnvironment } from "../../state/threads";
-import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { buildThreadRouteParams } from "../../threadRoutes";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import {

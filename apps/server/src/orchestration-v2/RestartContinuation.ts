@@ -3,7 +3,6 @@ import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
   isOrchestrationV2WorkActive,
-  latestProviderTurnForAttempt,
   MessageId,
   type OrchestrationV2Run,
   type RunId,
@@ -18,11 +17,7 @@ import { isNativeMaintenanceCommand } from "./CommandPolicy.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import { restartContinuationBlocked } from "./RestartContinuationPolicy.ts";
 import {
-  awaitingProviderThreadId,
-  cancelledRosterTaskWork,
-  cancelledTurnItemWork,
   continuationFailedBeforePrompt,
-  isAwaitedWork,
   isRestartContinuationSource,
   cancelledBeforeStart,
   isRestartNoteSource,

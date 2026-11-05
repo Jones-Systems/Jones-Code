@@ -60,7 +60,7 @@ interface ChatHeaderProps {
   } | null;
   onOpenThread: (threadId: ThreadId) => void;
   rightPanelOpen: boolean;
-  titlebarControlsElement: HTMLDivElement | null;
+  titlebarControlsElement?: HTMLDivElement | null;
   onNewThreadInProject: () => void;
   onOpenProjectSettings?: (() => void) | undefined;
   onFindInThread?: ((threadRef: ScopedThreadRef) => void) | undefined;
@@ -88,7 +88,7 @@ export const ChatHeader = memo(function ChatHeader({
   parentThreadLink,
   onOpenThread,
   rightPanelOpen,
-  titlebarControlsElement,
+  titlebarControlsElement = null,
   onNewThreadInProject,
   onOpenProjectSettings,
   onFindInThread,
@@ -447,6 +447,12 @@ export const ChatHeader = memo(function ChatHeader({
                 Started by an agent on {activeThreadLinkOrigin} through a linked environment.
               </TooltipPopup>
             </Tooltip>
+          ) : null}
+          {renamingTitle === null ? (
+            <MachineRouteBadge
+              environmentId={activeThreadEnvironmentId}
+              threadId={activeThreadId}
+            />
           ) : null}
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>

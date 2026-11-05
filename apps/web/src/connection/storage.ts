@@ -640,6 +640,9 @@ export function makeCompatibilityHintBackend(database: DatabaseHandle): Compatib
       ),
   };
 }
+const decodeStoredConnectionCompatibilityHint = Schema.decodeEffect(
+  StoredConnectionCompatibilityHint,
+);
 
 /** Fresh diagnostic reads never invoke catalog recovery or migration. */
 export function makeCompatibilityHintStore(
@@ -668,7 +671,7 @@ export function makeCompatibilityHintStore(
     routeBinding: string,
     kind: "outdated-update" | null,
   ) {
-    yield* Schema.decodeEffect(StoredConnectionCompatibilityHint)({
+    yield* decodeStoredConnectionCompatibilityHint({
       environmentId,
       routeBinding,
       kind: kind ?? "outdated-update",
@@ -936,6 +939,19 @@ export const layer = Layer.effectContext(
       listCompatibilityHints: hints.read,
     });
     const registrationStore = Persistence.ConnectionRegistrationStore.of({
+      setCompatibilityHint: Effect.fn(
+        "Persistence.ConnectionRegistrationStore.setCompatibilityHint",
+      )(function (environmentId, routeBinding, kind) {
+        return hints.set(environmentId, routeBinding, kind).pipe(
+          Effect.mapError(
+            () =>
+              new Persistence.ConnectionPersistenceError({
+                operation: "set-compatibility-hint",
+                message: "Could not save historical connection compatibility hints.",
+              }),
+          ),
+        );
+      }),
       register: Effect.fn("Persistence.ConnectionRegistrationStore.register")(
         function (registration, routes) {
           return catalog

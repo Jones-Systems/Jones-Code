@@ -339,10 +339,8 @@ export const make = Effect.gen(function* () {
     const settleThread = Effect.fnUntraced(
       function* (thread: (typeof candidates)[number], pullRequest: SettlementPullRequest | null) {
         // thread.auto-settle does not recheck settings, so read them per decision; reads are cached.
-        const currentSettings = resolveProjectSettings(
-          yield* settingsService.getSettings,
-          thread.projectId,
-        ).settings;
+        const serverSettings = yield* settingsService.getSettings;
+        const currentSettings = resolveProjectSettings(serverSettings, thread.projectId).settings;
         const decisionNow = yield* DateTime.now;
         const settledAt = resolveAutoSettlementAt({
           thread: settlementActivity(thread, serverSettings),
@@ -382,7 +380,7 @@ export const make = Effect.gen(function* () {
         const projectSettings = resolveProjectSettings(settings, thread.projectId).settings;
         // Skip no-op decisions; actual settlement still reads fresh settings before dispatch.
         const settledAt = resolveAutoSettlementAt({
-          thread,
+          thread: settlementActivity(thread, settings),
           pullRequest: null,
           nowMs,
           autoSettleAfterDays: projectSettings.sidebarAutoSettleAfterDays,

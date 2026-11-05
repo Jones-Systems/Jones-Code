@@ -104,11 +104,13 @@ const FOLLOWER_PASS_INTERVAL = "60 seconds";
 
 const fail = (reason: FleetHostError["reason"], message: string) =>
   new FleetHostError({ reason, message });
+const isFleetHostError = Schema.is(FleetHostError);
+
 const storage = <T>(f: () => Promise<T>) =>
   Effect.tryPromise({
     try: f,
     catch: (cause) =>
-      Schema.is(FleetHostError)(cause)
+      isFleetHostError(cause)
         ? cause
         : fail(
             "storage",
@@ -930,12 +932,14 @@ export const makeFleetUpdates = Effect.fn("FleetUpdates.makeFleetUpdates")(funct
     );
   return FleetUpdates.of({
     status,
-    enroll: (input) => gate.withPermits(1)(enroll(input)),
-    stage: (input) => gate.withPermits(1)(stage(input)),
-    retire: (input) => gate.withPermits(1)(retire(input)),
-    activate: (input) => gate.withPermits(1)(activate(input)),
+    enroll: Effect.fn("FleetUpdates.enroll")((input) => gate.withPermits(1)(enroll(input))),
+    stage: Effect.fn("FleetUpdates.stage")((input) => gate.withPermits(1)(stage(input))),
+    retire: Effect.fn("FleetUpdates.retire")((input) => gate.withPermits(1)(retire(input))),
+    activate: Effect.fn("FleetUpdates.activate")((input) => gate.withPermits(1)(activate(input))),
     leader,
-    planDirective: (input) => gate.withPermits(1)(planDirective(input)),
+    planDirective: Effect.fn("FleetUpdates.planDirective")((input) =>
+      gate.withPermits(1)(planDirective(input)),
+    ),
     follow,
   });
 });

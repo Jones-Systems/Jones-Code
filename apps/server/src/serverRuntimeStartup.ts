@@ -1,3 +1,4 @@
+import { installSelectedSyntheticPresentation } from "./jones/testing/SyntheticPresentation.ts";
 import * as ThreadMetadataReads from "./jones/orchestration/threadMetadataReads.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Option from "effect/Option";
@@ -180,7 +181,7 @@ const recordStartupHeartbeat = Effect.gen(function* () {
 
   const { threadCount, projectCount } = yield* Effect.all({
     projects: projects.snapshot,
-    threadCount: threads.countThreads(),
+    threadCount: metadata.count.pipe(NodeSqliteClient.readOnly),
   }).pipe(
     Effect.map(({ projects: projectSnapshot, threadCount }) => ({
       projectCount: projectSnapshot.projects.length,
@@ -306,9 +307,10 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
       title: path.basename(serverConfig.cwd) || "project",
       workspaceRoot: serverConfig.cwd,
     });
-    const existingThread = (yield* threads.listActiveShellIndex()).find(
-      (thread) => thread.projectId === project.id && isListedThreadLineage(thread.lineage),
-    );
+    const existingThread = (yield* metadata.list({
+      projectId: project.id,
+      location: "active",
+    })).threads.find((thread) => isListedThreadLineage(thread.lineage));
     if (existingThread === undefined) {
       const serverSettings = yield* ServerSettings.ServerSettingsService;
       const settings = yield* serverSettings.getSettings;
@@ -743,6 +745,7 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     yield* runStartupPhase("auxiliary-roots.parked", options?.awaitAuxiliaryParked ?? Effect.void);
 
     const updateOutcome = yield* launcher.prepareTrial;
+    yield* installSelectedSyntheticPresentation();
 
     yield* Effect.logDebug("startup phase: publishing welcome event", {
       environmentId: environment.environmentId,

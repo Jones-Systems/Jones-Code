@@ -21,15 +21,50 @@ import { peerEnvironmentLinksTable } from "./table.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 
+const assertUpstreamPeerSchema = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const columns = yield* sql`PRAGMA table_info(peer_environment_links)`;
+  assert.deepStrictEqual(columns, [
+    { cid: 0, name: "environment_id", type: "TEXT", notnull: 0, dflt_value: null, pk: 1 },
+    { cid: 1, name: "secret_name", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 2, name: "label", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 3, name: "urls_json", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 4, name: "access", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 5, name: "linked_at", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 6, name: "expires_at", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+    { cid: 7, name: "last_reached_at", type: "TEXT", notnull: 0, dflt_value: null, pk: 0 },
+    { cid: 8, name: "last_error", type: "TEXT", notnull: 0, dflt_value: null, pk: 0 },
+    { cid: 9, name: "fenced", type: "INTEGER", notnull: 1, dflt_value: "0", pk: 0 },
+  ]);
+  assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_list(peer_environment_links)`, []);
+});
+const upstreamMarker = {
+  environment_id: "synthetic-upstream-peer",
+  secret_name: "synthetic-upstream-secret-marker",
+  label: "Upstream marker",
+  urls_json: '["https://upstream-marker.invalid"]',
+  access: "auto",
+  linked_at: "2026-10-01T00:00:00.000Z",
+  expires_at: "2027-10-01T00:00:00.000Z",
+  last_reached_at: "2026-10-02T00:00:00.000Z",
+  last_error: "synthetic preserved error",
+  fenced: 0,
+};
+const seedUpstreamMarker = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO peer_environment_links ${sql.insert(upstreamMarker)}`;
+});
+const assertUpstreamMarker = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* assertUpstreamPeerSchema;
+  assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, [upstreamMarker]);
+});
+
 const assertJonesPeerSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   assert.deepStrictEqual(
     yield* sql`SELECT migration_id, name FROM jones_sql_migrations WHERE migration_id = 119`,
     [{ migration_id: 119, name: "PeerEnvironmentLinks" }],
-  );
-  assert.deepStrictEqual(
-    yield* sql`SELECT name FROM sqlite_master WHERE name = 'peer_environment_links'`,
-    [],
   );
   assert.deepStrictEqual(
     yield* sql`SELECT * FROM pragma_foreign_key_list(${peerEnvironmentLinksTable})`,
@@ -66,8 +101,10 @@ it.effect("fresh startup keeps experimental peer links entirely in the Jones led
       upstream.map(({ migration_id, name }) => [migration_id, name] as const),
       migrationManifest,
     );
-    assert.strictEqual(upstream.at(-1)?.migration_id, 69);
+    assert.strictEqual(upstream.at(-1)?.migration_id, 77);
     yield* assertJonesPeerSchema;
+    yield* assertUpstreamPeerSchema;
+    assert.deepStrictEqual(yield* sql`SELECT * FROM peer_environment_links`, []);
     assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(peerEnvironmentLinksTable)}`, []);
     assert.deepStrictEqual(yield* runMigrations(), []);
   }).pipe(Effect.provide(memory)),
@@ -80,6 +117,10 @@ it.effect(
       const sql = yield* SqlClient.SqlClient;
       yield* sql`PRAGMA foreign_keys = ON`;
       yield* runMigrations({ toMigrationInclusive: 63 });
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE name = 'peer_environment_links'`,
+        [],
+      );
       yield* sql`
       INSERT INTO orchestration_command_receipts
         (command_id, aggregate_kind, aggregate_id, accepted_at, result_sequence, status)
@@ -118,10 +159,21 @@ it.effect(
         { command_id: "synthetic-peer-command" },
       ]);
       yield* assertJonesPeerSchema;
+      yield* assertUpstreamPeerSchema;
+      yield* seedUpstreamMarker;
+      const peerObjects =
+        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`;
+      yield* JonesMigrations.runMigrations();
+      yield* assertUpstreamMarker;
+      assert.deepStrictEqual(
+        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`,
+        peerObjects,
+      );
+      assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(peerEnvironmentLinksTable)}`, []);
 
-      // Real upstream migrations own 64–69; synthetic later migrations prove
+      // Real upstream migrations own 64–77; synthetic later migrations prove
       // Jones still leaves future upstream IDs available without predicting their contents.
-      const future = [70, 71].map((id) => [id, `SyntheticFuture${id}`] as const);
+      const future = [78, 79].map((id) => [id, `SyntheticFuture${id}`] as const);
       const executed = yield* Migrator.make({})({
         loader: Migrator.fromRecord(
           Object.fromEntries(
@@ -154,6 +206,15 @@ it.effect("pairing creates a sparse Jones row and unlink removes only the local 
       );
       const links = Context.get(context, PeerLinks.PeerLinks);
       const sql = Context.get(context, SqlClient.SqlClient);
+      yield* assertUpstreamPeerSchema.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      yield* seedUpstreamMarker.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      const peerObjects =
+        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`;
+      const preserveUpstream = assertUpstreamMarker.pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      yield* JonesMigrations.runMigrations().pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      yield* preserveUpstream;
       const rows = sql<{
         readonly environment_id: string;
         readonly secret_name: string;
@@ -171,6 +232,11 @@ it.effect("pairing creates a sparse Jones row and unlink removes only the local 
         linked.environmentId,
       );
       assert.strictEqual((yield* peer.linkedSessions).length, 1);
+      yield* preserveUpstream;
+      assert.deepStrictEqual(
+        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`,
+        peerObjects,
+      );
 
       assert.isTrue(yield* links.unlink(linked.environmentId));
       assert.deepStrictEqual(yield* rows, []);
@@ -181,6 +247,11 @@ it.effect("pairing creates a sparse Jones row and unlink removes only the local 
       );
       assert.isFalse(yield* links.unlink(linked.environmentId));
       assert.strictEqual((yield* peer.linkedSessions).length, 1);
+      yield* preserveUpstream;
+      assert.deepStrictEqual(
+        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE tbl_name='peer_environment_links' ORDER BY type,name`,
+        peerObjects,
+      );
     }),
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );

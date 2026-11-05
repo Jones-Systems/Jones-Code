@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { CommandId, MessageId } from "@t3tools/contracts";
@@ -79,7 +80,7 @@ it.effect(
           ]);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -158,7 +159,7 @@ it.effect(
           );
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["present", "removed"] as const)(
@@ -203,7 +204,7 @@ it.effect.each(["present", "removed"] as const)(
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["attempt", "assignment", "birth", "head", "directory", "cancellation"] as const)(
@@ -251,7 +252,7 @@ it.effect.each(["attempt", "assignment", "birth", "head", "directory", "cancella
           expect(f.state.resumes).toBe(1);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["assignment", "birth", "head", "directory"] as const)(
@@ -305,7 +306,7 @@ it.effect.each(["assignment", "birth", "head", "directory"] as const)(
           expect(f.state.resumes).toBe(2);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -360,7 +361,7 @@ it.effect(
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect(
@@ -410,7 +411,7 @@ it.effect(
           expect(yield* f.fs.exists(f.linked)).toBe(true);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["lineage", "branch", "head"] as const)(
@@ -458,5 +459,5 @@ it.effect.each(["lineage", "branch", "head"] as const)(
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

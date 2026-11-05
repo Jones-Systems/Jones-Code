@@ -28,7 +28,9 @@ vi.mock(import("../../state/entities"), () => ({
   useHiddenThreadKeys: (() => new Set()) as never,
   useAnyEnvironmentHiding: (() => false) as never,
 }));
-vi.mock(import("../../state/environments"), () => ({
+vi.mock(import("../../state/environments"), async (original) => ({
+  ...(await original()),
+  useEnvironments: (() => ({ environments: [] })) as never,
   useEnvironment: (() => null) as never,
   useEnvironmentProviders: (() => new Map()) as never,
 }));
@@ -42,7 +44,42 @@ vi.mock(import("../../state/use-atom-command"), () => ({
       : AsyncResult.failure(Cause.fail(new Error("Connection lost")))) as never,
 }));
 
-import { render } from "../../../test/render";
+vi.mock(import("../../jones/linkedThreads/useLinkedThreads"), () => ({
+  useLinkedThreads: () => ({
+    links: [],
+    relations: [],
+    snapshots: new Map(),
+    environments: [],
+    errors: [],
+    offline: [],
+    answering: new Set(),
+    shells: [],
+    loading: false,
+    incomplete: false,
+    truncated: false,
+    visible: false,
+    canLink: false,
+    canCopy: false,
+    hasSuccessor: false,
+    canAccept: () => false,
+    canUnlink: () => false,
+    onExpand: () => {},
+    link: async () => false,
+    unlink: async () => false,
+    accept: async () => false,
+  }),
+}));
+import { act, render as renderBase } from "../../../test/render";
+
+// The Jones composition starts collapsed; these scenarios exercise the upstream lineage actions.
+async function render(...args: Parameters<typeof renderBase>) {
+  const screen = await renderBase(...args);
+  const toggle = screen.container.querySelector<HTMLButtonElement>(
+    'button[aria-label="Linked threads"]',
+  );
+  if (toggle?.getAttribute("aria-expanded") === "false") await act(() => toggle.click());
+  return screen;
+}
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { ToastProvider } from "../ui/toast";
 import { ThreadRelationshipsPanel } from "./ThreadRelationshipsControl";
@@ -296,6 +333,10 @@ it("shows a remote subagent's full title in its tooltip even when its environmen
     { router: "/environment/fork" },
   );
 
+  const previous = [...screen.container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent?.includes("Previous agents"),
+  );
+  if (previous?.getAttribute("aria-expanded") === "false") await act(() => previous.click());
   const row = screen.getByRole("button", { name: new RegExp(longTitle) });
   await userEvent.hover(row);
   await vi.waitFor(() =>

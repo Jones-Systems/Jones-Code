@@ -43,7 +43,8 @@ export function buildCodexAdditionalContext(
   runtime: CodexRuntimeInfo,
   toolsAvailable: boolean | T3CodeToolAvailability = true,
 ): Record<string, V2TurnStartParams__AdditionalContextEntry> {
-  const tools = toolInstructions(toolsAvailable);
+  const availability = normalizeAvailability(toolsAvailable);
+  const tools = toolInstructions(availability);
   // Split values to fit per-entry caps; number keys because Codex emits them in key order.
   return {
     ...Object.fromEntries(
@@ -56,6 +57,17 @@ export function buildCodexAdditionalContext(
       kind: "application",
       value: buildRuntimeInstructions({ appIdentity: APP_IDENTITY, harness: "Codex", ...runtime }),
     },
-    ...(tools ? { t3_code_tools: { kind: "application", value: tools } } : {}),
+    ...(availability.browser &&
+    availability.device &&
+    Buffer.byteLength(tools, "utf8") > CODEX_ADDITIONAL_CONTEXT_VALUE_MAX_BYTES
+      ? {
+          // Codex truncates each value independently. Keep both authored blocks
+          // intact, and retain the primary tool key for the native device block.
+          t3_code_tools: { kind: "application", value: T3_CODE_DEVICE_TOOL_INSTRUCTIONS },
+          t3_code_tools_browser: { kind: "application", value: T3_CODE_BROWSER_TOOL_INSTRUCTIONS },
+        }
+      : tools
+        ? { t3_code_tools: { kind: "application", value: tools } }
+        : {}),
   };
 }

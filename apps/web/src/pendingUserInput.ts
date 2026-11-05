@@ -1,28 +1,21 @@
-import { formatUserResponseChoiceWithNote } from "@t3tools/contracts/jones/userResponseRequest";
 import type { ThreadContextRecord, UserInputQuestion } from "@t3tools/contracts";
-import { replaceComposerContextReferences } from "@t3tools/shared/composerContextReferences";
-import { formatThreadLink } from "@t3tools/shared/threadLinks";
 import {
   buildPendingUserInputAnswers,
   normalizeSelectedOptionValues,
   resolvePendingUserInputAnswer,
   type PendingUserInputAnswer,
   type PendingUserInputDraftAnswer,
-} from "@t3tools/client-runtime/state/pending-user-input";
+} from "./jones/questionAnswer/pendingAnswers";
 
 import { collectInlineContextIds } from "./lib/composerContextReferences";
 
-export function projectPendingUserInputAnswer(
-  answer: unknown,
-  threadContexts: ReadonlyArray<ThreadContextRecord>,
-) {
-  if (typeof answer !== "string" || threadContexts.length === 0) return answer;
-  const recordsById = new Map(threadContexts.map((record) => [record.contextId, record]));
-  return replaceComposerContextReferences(answer, (reference) => {
-    const record = reference.kind === "thread" ? recordsById.get(reference.contextId) : undefined;
-    return record ? formatThreadLink(record, reference.label) : reference.source;
-  });
-}
+export { projectPendingUserInputAnswer } from "./jones/questionAnswer/threadReferenceAnswer";
+export {
+  buildPendingUserInputAnswers,
+  togglePendingUserInputOptionSelection,
+  type PendingUserInputDraftAnswer,
+  type PendingUserInputAnswer,
+} from "./jones/questionAnswer/pendingAnswers";
 
 // Question drafts retain deleted chip records for undo; only transfer referenced records.
 export function threadContextsReferencedByAnswer(
@@ -123,5 +116,23 @@ export function derivePendingUserInputProgress(
     isLastQuestion,
     isComplete: buildPendingUserInputAnswers(questions, draftAnswers, options) !== null,
     canAdvance: resolvedAnswer !== null,
+  };
+}
+
+export function setPendingUserInputCustomAnswer(
+  draft: PendingUserInputDraftAnswer | undefined,
+  customAnswer: string,
+  question?: Pick<UserInputQuestion, "initialAnswer" | "multiSelect">,
+  options: { notes?: boolean } = {},
+): PendingUserInputDraftAnswer {
+  const selectedOptionValues =
+    !(options.notes && !question?.multiSelect) &&
+    (question?.initialAnswer !== undefined || customAnswer.trim().length > 0)
+      ? undefined
+      : [...new Set(draft?.selectedOptionValues ?? [])];
+
+  return {
+    customAnswer,
+    ...(selectedOptionValues && selectedOptionValues.length > 0 ? { selectedOptionValues } : {}),
   };
 }

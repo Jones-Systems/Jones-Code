@@ -35,9 +35,6 @@ import { build } from "vite-plus/pack";
 import * as IdentityFixture from "../../../../scripts/jones/updates/native-fixture-support.mjs";
 
 import * as DesktopBackendManager from "./DesktopBackendManager.ts";
-import type { JonesColdBackendPermit } from "../jones/updates/jonesColdBackendCustody.ts";
-import * as DesktopApp from "../app/DesktopApp.ts";
-import * as DesktopBackendPool from "./DesktopBackendPool.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopTelemetryPublisher from "../telemetry/DesktopTelemetryPublisher.ts";
 import * as DesktopBrowserHost from "../preview/DesktopBrowserHost.ts";
@@ -348,6 +345,71 @@ try {
 `;
 
 describe("DesktopBackendManager", () => {
+  it.for(["early-failure", "cancel", "race-cold", "race-warm"] as const)(
+    "retains actual cold custody after %s while captured pipes remain open",
+    async (scenario, { signal }) => {
+      await IdentityFixture.withNativeFixtureScratch(async (root: string) => {
+        const managerPath = NodeURL.fileURLToPath(import.meta.url).replace(/\.test\.ts$/, ".ts");
+        const custodyPath = NodePath.resolve(
+          NodePath.dirname(managerPath),
+          "../jones/updates/jonesColdBackendCustody.ts",
+        );
+        const marker = NodePath.join(root, "settled.json");
+        await NodeFSP.writeFile(marker, JSON.stringify({ settled: false }));
+        await NodeFSP.writeFile(NodePath.join(root, "keeper.py"), coldPipeKeeper);
+        await NodeFSP.writeFile(NodePath.join(root, "child.mjs"), coldAdapterChild);
+        const sources = new Map([
+          [managerPath, (await NodeFSP.readFile(managerPath, "utf8")) + coldManagerHarness],
+          [custodyPath, (await NodeFSP.readFile(custodyPath, "utf8")) + coldFixturePermit],
+        ]);
+        let launched = false;
+        try {
+          await build({
+            config: false,
+            cwd: root,
+            entry: { fixture: managerPath },
+            outDir: root,
+            clean: false,
+            format: "esm",
+            dts: false,
+            sourcemap: false,
+            tsconfig: false,
+            outExtensions: () => ({ js: ".mjs" }),
+            outputOptions: { codeSplitting: false },
+            deps: { alwaysBundle: (id) => !id.startsWith("node:"), onlyBundle: false },
+            plugins: [
+              {
+                name: "owned-lexical-cold-custody-fixture",
+                resolveId(id) {
+                  if (id === "electron") return "\0cold-fixture-electron.cjs";
+                },
+                load(id) {
+                  if (id === "\0cold-fixture-electron.cjs") return "module.exports = {};";
+                  return sources.get(id);
+                },
+              },
+            ],
+            logLevel: "silent",
+          });
+          launched = true;
+          const result = await IdentityFixture.runNativeFixtureCommand(
+            NodeProcess.execPath,
+            [NodePath.join(root, "fixture.mjs"), scenario, root],
+            root,
+            { signal },
+          );
+          assert.equal(result.code, 0, result.stderr);
+          assert.equal(JSON.parse(await NodeFSP.readFile(marker, "utf8")).settled, true);
+        } catch (cause) {
+          const settled = await NodeFSP.readFile(marker, "utf8")
+            .then((raw) => JSON.parse(raw).settled)
+            .catch(() => false);
+          if (launched && !settled) Object.assign(cause as object, { preserveScratch: true });
+          throw cause;
+        }
+      });
+    },
+  );
   it.effect("notifies readiness waiters on HTTP readiness and stop without clock advancement", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -835,12 +897,25 @@ describe("DesktopBackendManager", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const reports = yield* Queue.unbounded<DesktopBackendManager.BackendStartupFailure>();
-        const startInstance = (status: Ref.Ref<number>, onReady?: Effect.Effect<void>) =>
-          makeTestInstance({
+        const startInstance = Effect.fn("test.startReadinessInstance")(function* (
+          status: Ref.Ref<number>,
+          onReady?: Effect.Effect<void>,
+        ) {
+          const exit = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
+          return yield* makeTestInstance({
             spawnerLayer: Layer.succeed(
               ChildProcessSpawner.ChildProcessSpawner,
               ChildProcessSpawner.make(() =>
-                Effect.succeed(makeProcess({ exitCode: Effect.never })),
+                Effect.acquireRelease(
+                  Effect.succeed(
+                    makeProcess({
+                      exitCode: Deferred.await(exit),
+                      kill: () =>
+                        Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)).pipe(Effect.asVoid),
+                    }),
+                  ),
+                  () => Deferred.succeed(exit, ChildProcessSpawner.ExitCode(0)),
+                ),
               ),
             ),
             httpClientLayer: layerHttpClient((request) =>
@@ -849,16 +924,22 @@ describe("DesktopBackendManager", () => {
             onStartupFailure: (failure) => Queue.offer(reports, failure).pipe(Effect.asVoid),
             ...(onReady ? { onReady } : {}),
           }).pipe(Effect.tap((instance) => instance.start));
+        });
 
         const slowStatus = yield* Ref.make(503);
         const ready = yield* Deferred.make<void>();
-        yield* startInstance(slowStatus, Deferred.succeed(ready, undefined).pipe(Effect.asVoid));
+        const first = yield* startInstance(
+          slowStatus,
+          Deferred.succeed(ready, undefined).pipe(Effect.asVoid),
+        );
         yield* TestClock.adjust(Duration.seconds(66));
         yield* Ref.set(slowStatus, 200);
         yield* TestClock.adjust(Duration.millis(100));
         yield* Deferred.await(ready);
         assert.isTrue(Option.isNone(yield* Queue.poll(reports)));
 
+        yield* first.stop();
+        assert.isFalse(yield* first.waitForReady(Duration.seconds(1)));
         yield* startInstance(yield* Ref.make(503));
         yield* TestClock.adjust(Duration.seconds(179));
         assert.isTrue(Option.isNone(yield* Queue.poll(reports)));

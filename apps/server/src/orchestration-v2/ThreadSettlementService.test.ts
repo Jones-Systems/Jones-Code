@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { SourceControlProviderKind } from "@t3tools/contracts";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
@@ -1293,6 +1294,82 @@ describe("ThreadSettlementServiceV2 worker", () => {
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
+  );
+
+  it.effect.each([false, true])(
+    "admits foreground Git during eight cold settlement groups (fresh confirmation: %s)",
+    (fresh) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const labels = Array.from({ length: 8 }, (_, index) => `background-settlement-${index}`);
+          const gitFixture = yield* makeGitFixture([...labels, "foreground-fetch-resolution"]);
+          const lookups = yield* Queue.unbounded<{ readonly refresh: boolean | undefined }>();
+          const threads = labels.map((branch, index) =>
+            makeThread(branch, {
+              branch,
+              ...(fresh
+                ? {
+                    linkedPullRequest: {
+                      projectId: PROJECT_ID,
+                      repository: "owner/repository",
+                      number: index + 1,
+                      url: `https://example.test/owner/repository/pull/${index + 1}`,
+                    },
+                  }
+                : {}),
+            }),
+          );
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot(threads),
+            settings: {
+              ...DEFAULT_SERVER_SETTINGS,
+              sidebarAutoSettleAfterDays: null,
+              sidebarAutoSettleOnMerge: true,
+            },
+            branchPullRequest: (input, options) =>
+              Queue.offer(lookups, { refresh: options?.refresh }).pipe(
+                Effect.andThen(gitFixture.run(input.branch)),
+                Effect.orDie,
+                Effect.as(null),
+              ),
+            pullRequestSummary: (input) =>
+              Effect.succeed({
+                ...makePullRequestSummary({ ...input, state: "merged" }),
+                mergedAt: NOW,
+              }),
+          });
+
+          yield* Effect.gen(function* () {
+            const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+            yield* service.start();
+            yield* Deferred.succeed(fixture.activation, undefined);
+            const calls = yield* Effect.forEach(labels, () => Queue.take(lookups));
+            expect(calls.map((call) => call.refresh)).toEqual(labels.map(() => fresh));
+            yield* Effect.forEach(Array.from({ length: 4 }), () => Queue.take(gitFixture.starts));
+            const foreground = yield* gitFixture
+              .run("foreground-fetch-resolution")
+              .pipe(Effect.forkScoped);
+            // Advancing the test clock lets all runnable fibers reach the fake
+            // subprocess gates, including the foreground caller. No Git exits.
+            yield* TestClock.adjust(1);
+            expect(gitFixture.peakBackground()).toBe(4);
+            expect(gitFixture.started).toContain("foreground-fetch-resolution");
+            expect(
+              gitFixture.started.filter((label) => label.startsWith("background-")),
+            ).toHaveLength(4);
+
+            yield* gitFixture.releaseAll;
+            yield* Fiber.join(foreground);
+            yield* service.drain;
+            expect(
+              gitFixture.started.filter((label) => label.startsWith("background-")),
+            ).toHaveLength(8);
+            expect(gitFixture.peakBackground()).toBe(4);
+            expect(yield* Ref.get(fixture.commands)).toHaveLength(fresh ? 8 : 0);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ).pipe(Effect.provide(gitDependencies.pipe(Layer.provideMerge(NodeCrypto.layer)))),
   );
 });
 

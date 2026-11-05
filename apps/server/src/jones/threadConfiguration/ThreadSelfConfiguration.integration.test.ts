@@ -1,3 +1,4 @@
+import * as InProcessMcp from "../../mcp/McpHttpServer.ts";
 import { withOwnerSelectionIngress } from "./ownerIngress.ts";
 import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -287,7 +288,7 @@ function scenario<E>(
         Mcp.layerThreadSelfConfigurationToolkit,
       ).pipe(
         Layer.provide(service),
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(InProcessMcp.layerInProcessMcpServer),
         Layer.provide(NodeCrypto.layer),
         Layer.provide(runtime),
         Layer.provide(Layer.mock(ThreadSearch.ThreadSearch)({})),

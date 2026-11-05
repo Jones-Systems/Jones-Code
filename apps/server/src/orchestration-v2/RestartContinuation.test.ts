@@ -1111,7 +1111,14 @@ it.effect.each([
         },
       ],
     } as unknown as OrchestrationV2ThreadProjection);
-    assert.deepEqual(texts, origin.continues ? ["Continue where you left off."] : []);
+    assert.deepEqual(
+      texts,
+      origin.continues
+        ? [
+            "Continue where you left off. Your last turn was cut short, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect and is not still running; if you cannot tell, say so instead of repeating it.",
+          ]
+        : [],
+    );
   }),
 );
 
@@ -1124,7 +1131,11 @@ it.effect("tells a turn cut mid-way about the background work it lost", () =>
     );
     assert.lengthOf(texts, 1);
     assert.include(texts[0]!, "Background reviewer");
-    assert.isTrue(texts[0]!.endsWith("Continue where you left off."));
+    assert.isTrue(
+      texts[0]!.endsWith(
+        "Continue where you left off. Your last turn was cut short, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect and is not still running; if you cannot tell, say so instead of repeating it.",
+      ),
+    );
   }),
 );
 
@@ -1135,7 +1146,8 @@ it.effect("shows a continuation as a T3 Code notice whose detail is the prompt",
       source: { kind: "system" },
       outcome: "updated",
       summary: "T3 Code restarted and resumed this turn",
-      detail: "Continue where you left off.",
+      detail:
+        "Continue where you left off. Your last turn was cut short, so a command or other action it started may have finished or may still be running. Before you repeat one that changes state, confirm it did not take effect and is not still running; if you cannot tell, say so instead of repeating it.",
     });
   }),
 );

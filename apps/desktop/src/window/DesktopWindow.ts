@@ -430,6 +430,23 @@ export const make = Effect.gen(function* () {
     }
 
     pendingMainReveals.set(window, Effect.void);
+    const threadMonitor = yield* Effect.sync(() =>
+      attachThreadMonitor({
+        main: window,
+        bundleDirectory: environment.dirname,
+        stateDirectory: environment.stateDir,
+        hostEnvironment,
+        platform: environment.platform,
+        scheme: new URL(applicationUrl).protocol.slice(0, -1),
+        assetDirectory: environment.clientAssetsDir,
+        developmentOrigin: Option.getOrNull(environment.devServerUrl),
+        revealMain: () => {
+          void runPromise(revealMain(window));
+        },
+      }),
+    );
+    threadMonitors.add(threadMonitor);
+
     yield* rendererHistory.register(window.webContents, { surface: "main" });
     if (environment.platform === "darwin") {
       window.setAutoHideCursor(false);

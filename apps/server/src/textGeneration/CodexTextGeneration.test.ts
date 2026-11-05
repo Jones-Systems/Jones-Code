@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import {
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   ProviderDriverKind,
@@ -488,6 +489,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
         textGeneration: TextGeneration.TextGeneration.of({
           generateCommitMessage: () => Effect.die("unused"),
           generatePrContent: () => Effect.die("unused"),
+          evaluateRemoteRequest: () => Effect.die("unused"),
           generateBranchName: () => Effect.die("unused"),
           generateReviewGuide: () => Effect.die("unused"),
           generateThreadTitle: (input) =>
@@ -502,6 +504,7 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
       Effect.provide(
         Layer.mergeAll(
           Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
             listInstances: Effect.succeed(instances),
             getInstance: (id) =>
               Effect.succeed(instances.find((instance) => instance.instanceId === id)),
@@ -536,3 +539,23 @@ it.effect.each([false, true])("text generation preflight: exhausted=%s", (exhaus
     ]);
   }),
 );
+it.layer(layerCodexTextGenerationTest)("remote evaluation support", (it) => {
+  it.effect("holds remote evaluation as unsupported without running the CLI", () =>
+    withFakeCodexEnv({ output: "", exitCode: 99 }, (generation) =>
+      Effect.gen(function* () {
+        const result = yield* generation
+          .evaluateRemoteRequest({
+            cwd: process.cwd(),
+            message: "Fix the parser",
+            modelSelection: DEFAULT_TEST_MODEL_SELECTION,
+          })
+          .pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure.operation).toBe("evaluateRemoteRequest");
+          expect(result.failure.detail).toContain("does not support tool-less");
+        }
+      }),
+    ),
+  );
+});

@@ -3725,6 +3725,7 @@ export const make = Effect.gen(function* () {
     );
 
   return PullRequestService.of({
+    ciStatus,
     withSharedProjectReads,
     routing,
     routingIdentity,

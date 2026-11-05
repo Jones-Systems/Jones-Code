@@ -1,3 +1,5 @@
+import * as Deferred from "effect/Deferred";
+import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { CodexSettings, type ProviderReplayTranscript } from "@t3tools/contracts";
@@ -12,7 +14,6 @@ import * as Schema from "effect/Schema";
 import { materializeCodexReplayAppIdentity } from "../../jones/runtimeIdentity/CodexReplayIdentity.ts";
 
 import * as ServerConfig from "../../config.ts";
-import { resolveServerParallelismProfile } from "../../jones/serverParallelism/config.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
@@ -23,6 +24,8 @@ import {
 } from "../testkit/ProviderReplayHarness.ts";
 import type { ProviderReplayGate } from "@t3tools/provider-testing/replayGate";
 import * as CodexAdapterV2 from "./CodexAdapterV2.ts";
+
+export { makeReplayServerConfig } from "../testkit/ProviderReplayHarness.ts";
 
 const DEFAULT_CODEX_SETTINGS = Schema.decodeSync(CodexSettings)({});
 
@@ -107,7 +110,7 @@ function metadataFromTranscript(transcript: ProviderReplayTranscript): {
   };
 }
 
-export function layer(input: {
+export function makeCodexReplayClientFactory(input: {
   readonly transcript: CodexReplay.CodexAppServerReplayTranscript;
   readonly driver?: CodexReplay.CodexAppServerReplayDriver;
 }): CodexAdapterV2.CodexAppServerClientFactoryShape {

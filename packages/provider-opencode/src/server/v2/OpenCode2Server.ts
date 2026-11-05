@@ -149,9 +149,19 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
       Effect.tap(remember),
     );
     return OpenCode2Server.of({
-      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
+      withConnection: Effect.fn("OpenCode2Server.withConnection")(function (
+        use,
+        _hooks,
+        consumerKind = "other",
+      ) {
         return Effect.suspend(() => (latest === undefined ? connect : Effect.succeed(latest))).pipe(
-          Effect.flatMap(use),
+          Effect.flatMap((connection) =>
+            OpenCodeCreationPolicy.authorizeConsumption(
+              undefined,
+              input.authority,
+              consumerKind,
+            ).pipe(Effect.andThen(() => use(connection))),
+          ),
         );
       }),
     });
@@ -166,12 +176,34 @@ export const make = Effect.fn("OpenCode2Server.make")(function* (input: {
     verify: (url) => connectTo(url, password, false).pipe(Effect.flatMap(remember)),
   });
   return OpenCode2Server.of({
-    withConnection: Effect.fn("OpenCode2Server.withConnection")(function (use) {
-      return owner.withServer((server) =>
-        latest?.url === server.url
-          ? use(latest)
-          : Effect.die(new Error("OpenCode 2 server was lent before verification.")),
-      );
-    }),
+    withConnection: Effect.fn("OpenCode2Server.withConnection")(
+      function (use, creationHooks, consumerKind) {
+        return owner.withServer(
+          (server) => {
+            // The owner verifies every server it starts before lending it out.
+            if (latest?.url !== server.url) {
+              return Effect.die(new Error("OpenCode 2 server was lent before verification."));
+            }
+            if (
+              server.runtimeGeneration !== undefined &&
+              (latest.ownedProcess?.runtimeGeneration !== server.runtimeGeneration ||
+                latest.ownedProcess?.incarnation !== server.ownedProcess?.incarnation)
+            ) {
+              latest = {
+                ...latest,
+                ownedProcess: Object.freeze({
+                  runtimeGeneration: server.runtimeGeneration,
+                  isRunning: server.isRunning,
+                  ...(server.ownedProcess !== undefined ? server.ownedProcess : {}),
+                }),
+              };
+            }
+            return use(latest);
+          },
+          creationHooks,
+          consumerKind,
+        );
+      },
+    ),
   });
 });

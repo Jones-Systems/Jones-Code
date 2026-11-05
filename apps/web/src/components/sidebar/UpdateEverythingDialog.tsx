@@ -18,7 +18,11 @@ import { Button } from "../ui/button";
 import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "../ui/collapsible";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { ScrollArea } from "../ui/scroll-area";
-import type { RestartingMachine, UpdateEverythingRow } from "./updateEverything.logic";
+import {
+  updateEverythingRowHasWork,
+  type RestartingMachine,
+  type UpdateEverythingRow,
+} from "./updateEverything.logic";
 
 const isRunning = (status: string) =>
   status === "preparing" || status === "starting" || status === "running";
@@ -122,7 +126,7 @@ function UpdateEverythingDialogContent({
   const running = stopped + continuing;
   const threads = `${running} running ${running === 1 ? "thread" : "threads"}`;
   const restarting = new Set(restarts.map((machine) => machine.environmentId));
-  const updating = rows.filter((row) => row.app !== null || row.providers.length > 0);
+  const updating = rows.filter(updateEverythingRowHasWork);
   const skipped = rows.filter((row) => row.skipped !== null);
 
   return (
@@ -167,7 +171,11 @@ function UpdateEverythingDialogContent({
                   <MiddleTruncate value={row.label} />
                 </span>
                 <span>
-                  {row.app !== null ? APP_LABELS[row.app] : null}
+                  {row.app !== null
+                    ? APP_LABELS[row.app]
+                    : row.jonesHandoffNotice
+                      ? "Install status"
+                      : null}
                   {row.app === null && row.skipped !== null ? (
                     <span className="text-muted-foreground">Skipped</span>
                   ) : null}
@@ -176,6 +184,11 @@ function UpdateEverythingDialogContent({
                   ) : null}
                 </span>
                 <span>
+                  {row.jonesHandoffNotice ? (
+                    <span className="block text-muted-foreground text-xs">
+                      {row.jonesHandoffNotice}
+                    </span>
+                  ) : null}
                   {row.providers.map((provider, index) => (
                     <Fragment key={provider}>
                       <span className="whitespace-nowrap">{provider}</span>

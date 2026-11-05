@@ -28,6 +28,7 @@ import { CircleArrowUpIcon } from "lucide-react";
 import { type ComponentProps, useRef, useState } from "react";
 
 import { requestConfirmDialog } from "~/confirmDialog";
+import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { serverEnvironment, updateOutdatedServer } from "~/state/server";
 import { appAtomRegistry } from "~/rpc/atomRegistry";
@@ -36,7 +37,7 @@ import { useServerConfigs } from "~/state/entities";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { environmentPresentations } from "~/state/presentation";
 import { ManagedControl } from "./ManagedPolicy";
-import { manualServerUpdateCommand } from "~/versionSkew";
+import { manualServerUpdateCommand, serverUpdateGuidance } from "~/versionSkew";
 import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
@@ -95,6 +96,8 @@ export interface ServerUpdateTarget {
   readonly installation?: ServerInstallation | undefined;
   readonly desktopAppUpdate?: boolean;
   readonly targetVersion: string;
+  readonly threadContinuation?: boolean;
+  readonly continueThreadsAfterServerUpdate?: boolean;
   /** Set only by a track switch; the host's desktop app moves to this track. */
   readonly channel?: DesktopUpdateChannel;
   /** A track switch's checked release migration; the host re-checks its own database. */
@@ -120,6 +123,10 @@ export function useServerUpdate() {
     { quiet = false }: { readonly quiet?: boolean } = {},
   ): Promise<ServerUpdateOutcome> => {
     const { environmentId, serverLabel, selfUpdate, targetVersion } = target;
+    const config = appAtomRegistry
+      .get(environmentPresentations.serverConfigsAtom)
+      .get(environmentId);
+    if (config?.environment.jonesSource !== undefined) return { status: "skipped" };
     const denial = readUpdatesDenial(environmentId);
     if (denial !== undefined) {
       if (!quiet) {
@@ -141,6 +148,9 @@ export function useServerUpdate() {
       environmentId,
       input: {
         targetVersion,
+        ...(target.threadContinuation && target.continueThreadsAfterServerUpdate
+          ? { continueRunningThreads: true }
+          : {}),
         ...(target.channel === undefined ? {} : { channel: target.channel }),
         ...(target.targetDatabaseMigration === undefined
           ? {}
@@ -193,6 +203,7 @@ export function ServerUpdatesAction({
   const eligible = useAtomValue(releaseTargets).filter(
     (target) =>
       target.selfUpdate !== null &&
+      serverConfigs.get(target.environmentId)?.environment.jonesSource === undefined &&
       (target.selfUpdate !== "desktop-managed" || target.desktopAppUpdate) &&
       managedUpdatesDenial(serverConfigs.get(target.environmentId)?.managedPolicy) === undefined &&
       !refusedCrossing(target, serverConfigs.get(target.environmentId)?.environment.serverVersion),
@@ -269,6 +280,7 @@ export function ServerUpdateAction({
   selfUpdate,
   installation,
   desktopAppUpdate = false,
+  threadContinuation = false,
   targetVersion,
   channel,
   label = "Update",
@@ -277,8 +289,16 @@ export function ServerUpdateAction({
   className,
   appearance = "button",
 }: ServerUpdateTarget & UpdateButtonProps) {
+  const jones = useAtomValue(jonesUpdates.value(environmentId));
+  const navigate = useNavigate();
+  const continueThreadsAfterServerUpdate = useEnvironmentSettings(
+    environmentId,
+    (settings) => settings.continueThreadsAfterServerUpdate,
+  );
   const isDesktopAppUpdate = selfUpdate === "desktop-managed";
-  const serverVersion = useServerConfigs().get(environmentId)?.environment.serverVersion;
+  const serverConfig = useServerConfigs().get(environmentId);
+  const sourceIdentity = serverConfig?.environment.jonesSource;
+  const serverVersion = serverConfig?.environment.serverVersion;
   const sessionStateAtom = environmentSession.sessionStateAtom(environmentId);
   const canUpdate = useAtomValue(sessionStateAtom, canUpdateServer);
   const updatesDenial = managedUpdatesDenial(useManagedPolicy(environmentId));
@@ -327,7 +347,10 @@ export function ServerUpdateAction({
       serverLabel,
       selfUpdate,
       desktopAppUpdate,
+      threadContinuation,
+      continueThreadsAfterServerUpdate,
       targetVersion,
+      ...(channel === undefined ? {} : { channel }),
     });
   };
 
@@ -343,10 +366,39 @@ export function ServerUpdateAction({
     );
   }
 
+  if (jones !== null || sourceIdentity !== undefined) {
+    if (appearance === "icon") {
+      return (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="icon-xs"
+                variant="ghost-muted"
+                aria-label={`Jones builds for ${serverLabel}`}
+                onClick={() => void navigate({ to: "/settings/connections" })}
+              />
+            }
+          >
+            <CircleArrowUpIcon className="size-3.5" />
+          </TooltipTrigger>
+          <TooltipPopup>
+            {jones?.launcherRefresh === "recommended" || jones?.launcherSettlement === "unsupported"
+              ? "Launcher refresh recommended. Review this host in Connections."
+              : jones?.settlement === "none"
+                ? "Previous attempt needs reconciliation. Review this host in Connections."
+                : "Download and Install separately in Connections."}
+          </TooltipPopup>
+        </Tooltip>
+      );
+    }
+    return <JonesUpdateControls environmentId={environmentId} />;
+  }
+
   if (selfUpdate === "desktop-managed" && !desktopAppUpdate) {
     return (
       <span className="text-muted-foreground text-xs">
-        Update the desktop app on that machine to update this server.
+        {serverUpdateGuidance(selfUpdate)} on that machine to update this server.
       </span>
     );
   }

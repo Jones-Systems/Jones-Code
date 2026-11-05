@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 // @effect-diagnostics nodeBuiltinImport:off -- CLI fixtures use only one cleanup-owned synthetic home and qualified payload.
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -47,7 +48,7 @@ const decodeCredentialJson = Schema.decodeUnknownSync(
 );
 const unexpectedNetwork = Effect.die("Provider enrollment fixture invoked a network operation.");
 const cliRuntimeLayer = Layer.mergeAll(
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   TestConsole.layer,
   Layer.succeed(NetService.NetService, {
     canListenOnHost: () => unexpectedNetwork,

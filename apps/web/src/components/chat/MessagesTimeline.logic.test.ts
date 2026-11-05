@@ -3571,7 +3571,7 @@ describe("streaming v2 row projection", () => {
         (row) => row.kind === "turn-fold" && row.runId === activeRun.id,
       );
       expect(providerFolds.length).toBeGreaterThan(0);
-      expect(providerFolds[0]).toMatchObject({ label: "Worked for 4.0s" });
+      expect(providerFolds[0]).toMatchObject({ label: "Worked for 4s" });
       apply({
         ...event,
         type: "run.updated",
@@ -3587,7 +3587,7 @@ describe("streaming v2 row projection", () => {
       });
       expect(
         captured.rows.find((row) => row.kind === "turn-fold" && row.runId === activeRun.id),
-      ).toMatchObject({ label: "Worked for 4.0s" });
+      ).toMatchObject({ label: "Worked for 4s" });
       expect(finalizedText.rows.find((row) => row.id === "live-assistant")).toMatchObject({
         assistantCopyStreaming: true,
       });

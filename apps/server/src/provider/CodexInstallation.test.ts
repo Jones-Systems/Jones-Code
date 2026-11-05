@@ -240,7 +240,10 @@ it.effect.each(["--version", "app-server --help"])(
       ]);
       expect(h.downloads()).toBe(0);
       expect(yield* h.fs.exists(h.installation.managedDirectory)).toBe(false);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(NodeServices.layer.pipe(Layer.provideMerge(NodeCrypto.layer))),
+    ),
 );
 
 const compileNative = Effect.fn("test.compileNative")(function* (

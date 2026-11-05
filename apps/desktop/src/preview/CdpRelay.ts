@@ -44,9 +44,8 @@ const isCommand = (value: unknown): value is CdpCommand =>
   typeof (value as { id?: unknown }).id === "number" &&
   typeof (value as { method?: unknown }).method === "string";
 
-// CDP values are plain JSON data, so their serialized size can be bounded before
-// JSON.stringify allocates it. A string counts at its length unless it holds a
-// character JSON may escape, which can take six code units.
+// Bound plain CDP JSON before stringify allocates the full payload. Escaped
+// strings can take six code units per character.
 const MAX_CDP_PAYLOAD_SIZE = 64 * 1024 * 1024;
 const MAY_ESCAPE = /[^\x20\x21\x23-\x5b\x5d-\ud7ff\ue000-\uffff]/;
 const serializedSize = (text: string) =>
@@ -82,6 +81,7 @@ export function createCdpRelayConnection(
   target: CdpRelayTarget,
   write: (message: string) => void,
   close: () => void,
+  policy?: CdpRelayPolicy,
 ): CdpRelayConnection {
   let closed = false;
   const send = (message: Record<string, unknown>) => {
@@ -90,8 +90,7 @@ export function createCdpRelayConnection(
       write(JSON.stringify(message));
       return;
     }
-    // An error reply fails only that command. A dropped event would leave
-    // Playwright out of step with the page, so the relay closes instead.
+    // A reply fails its command; dropping an event would desynchronize Playwright.
     if (typeof message["id"] === "number") {
       write(
         JSON.stringify({

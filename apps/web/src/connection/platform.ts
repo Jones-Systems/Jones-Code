@@ -793,8 +793,10 @@ const layerEnvironmentOwnedDataCleanup = Layer.succeed(
   Persistence.EnvironmentOwnedDataCleanup,
   Persistence.EnvironmentOwnedDataCleanup.of({
     clear: Effect.fn("Persistence.EnvironmentOwnedDataCleanup.clear")(function (environmentId) {
-      return Effect.sync(() => {
+      return Effect.suspend(() => {
         clearComposerDraftsEnvironment(environmentId);
+        const retired = clearMonitorEnvironment(environmentId);
+        return Effect.promise(() => retired);
       });
     }),
   }),

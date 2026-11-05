@@ -50,7 +50,6 @@ function Questions({
   const state = usePendingThreadRequests({
     environmentId,
     activeThreadId: threadId,
-    activeThread: { id: threadId },
     serverProjection: {
       ...projection,
       thread: { ...projection.thread, id: threadId },

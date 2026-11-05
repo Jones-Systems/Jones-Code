@@ -486,6 +486,15 @@ export function HomeScreen(props: HomeScreenProps) {
     settledShelfExpanded,
     selectedThreadKey,
   });
+  const threadListV2Items = projectMobileWorkstreamList(nativeThreadListV2Items, {
+    enabled: workstreams.enabled,
+    groups: workstreams.groups,
+    collapsedKeys: workstreams.collapsedKeys,
+    secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+    confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
+    selectedThreadKey: selectedThreadKey,
+    searching: props.searchQuery.trim().length > 0,
+  });
   // Called as `props.onSelectThread(...)`, the compiler would cache this handler on the whole
   // props object, which is new on every render of Home's parent.
   const { onSelectThread } = props;

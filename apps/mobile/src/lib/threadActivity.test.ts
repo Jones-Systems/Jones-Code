@@ -1,5 +1,4 @@
 import {
-  ChatAttachmentId,
   MessageId,
   CheckpointId,
   CheckpointRef,

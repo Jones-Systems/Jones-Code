@@ -1,3 +1,4 @@
+import { AuthAdministrativeScopes } from "@t3tools/contracts";
 import { AuthStandardClientScopes } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -231,5 +232,43 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("PairingGrantStor
         expect(yield* Queue.take(changes)).toEqual({ type: "pairingLinkRemoved", id: issued.id });
       }
     }).pipe(Effect.scoped, Effect.provide(layerPairingGrantStore())),
+  );
+
+  it.effect("issues one-time bootstrap tokens that can only be consumed once", () =>
+    Effect.gen(function* () {
+      const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
+      const issued = yield* bootstrapCredentials.issueOneTimeToken({ label: "Julius iPhone" });
+      const first = yield* bootstrapCredentials.consume(issued.credential);
+      const second = yield* Effect.flip(bootstrapCredentials.consume(issued.credential));
+
+      expect(first.method).toBe("one-time-token");
+      expect(first.scopes).toEqual(AuthStandardClientScopes);
+      expect(first.subject).toBe("one-time-token");
+      expect(first.label).toBe("Julius iPhone");
+      expect(issued.label).toBe("Julius iPhone");
+      expect(second._tag).toBe("UnknownBootstrapCredentialError");
+      expect(second.message).toContain("Unknown bootstrap credential");
+    }).pipe(Effect.provide(layerPairingGrantStore())),
+  );
+
+  it.effect("seeds the desktop bootstrap credential as a reusable grant", () =>
+    Effect.gen(function* () {
+      const bootstrapCredentials = yield* PairingGrantStore.PairingGrantStore;
+      const first = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
+      const second = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
+      const third = yield* bootstrapCredentials.consume("desktop-bootstrap-token");
+
+      expect(first.method).toBe("desktop-bootstrap");
+      expect(first.scopes).toEqual(AuthAdministrativeScopes);
+      expect(first.subject).toBe("desktop-bootstrap");
+      expect(second.method).toBe("desktop-bootstrap");
+      expect(third.method).toBe("desktop-bootstrap");
+    }).pipe(
+      Effect.provide(
+        layerPairingGrantStore({
+          desktopBootstrapToken: "desktop-bootstrap-token",
+        }),
+      ),
+    ),
   );
 });

@@ -1,3 +1,9 @@
+import { classifiedCheckFeedback } from "../../jones/installStatus/checkFeedback";
+import {
+  canOpenInstallStatusPill,
+  routeInstallStatusPill,
+} from "../../jones/installStatus/entrypoints";
+import { useInstallPlan } from "../../jones/installStatus/useInstallPlan";
 import {
   type DesktopBridge,
   type DesktopUpdateState,
@@ -238,12 +244,29 @@ export async function downloadLocalUpdate(
 }
 
 export async function installLocalUpdate(
-  bridge: DesktopBridge,
+  bridge: Pick<
+    DesktopBridge,
+    "getUpdateState" | "installUpdate" | "openExternal" | "fleetUpdates" | "installPlan"
+  >,
   reportError: ReportLocalUpdateError = toastUpdateError,
   expectedVersion?: string,
 ): Promise<boolean> {
   try {
-    const result = await bridge.installUpdate(expectedVersion);
+    // Update everything installs after its own download finishes, so the rendered
+    // state can predate the staged selection that the installer requires.
+    const current = await bridge.getUpdateState();
+    const result =
+      current.jones !== undefined
+        ? await installLocalDesktopUpdate(bridge, current)
+        : expectedVersion === undefined
+          ? await bridge.installUpdate()
+          : await bridge.installUpdate(expectedVersion);
+    const actionError = getDesktopUpdateActionError(result);
+    if (actionError) {
+      reportError("Could not install update", actionError);
+      return false;
+    }
+
     if (!result.accepted) {
       showDesktopUpdateDownloadedToast(bridge, result.state);
       return false;
@@ -264,6 +287,7 @@ export function SidebarUpdatePill() {
 
 function SidebarUpdateControl() {
   const state = useDesktopUpdateState();
+  const installPlan = useInstallPlan();
   // The desktop updates this machine, whose policy the primary environment reports.
   const updatesDenial = managedUpdatesDenial(usePrimaryManagedPolicy());
   const [isActionPending, setIsActionPending] = useState(false);
@@ -314,15 +338,22 @@ function SidebarUpdateControl() {
   });
   const idleTooltip =
     !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state, updatesDenial) : null;
-  const tooltip = runsEverything
-    ? everything.summary
-    : showUpdateDetails
-      ? state
-        ? getDesktopUpdateButtonTooltip(state)
-        : "Update available"
-      : showCheckIcon
-        ? "Checking for updates…"
-        : (idleTooltip?.title ?? "Check for updates");
+  const opensInstallStatus = canOpenInstallStatusPill(
+    installPlan.native,
+    state,
+    everything.hasUpdates,
+  );
+  const tooltip = opensInstallStatus
+    ? "Open Install status"
+    : runsEverything
+      ? everything.summary
+      : showUpdateDetails
+        ? state
+          ? getDesktopUpdateButtonTooltip(state)
+          : "Update available"
+        : showCheckIcon
+          ? "Checking for updates…"
+          : (idleTooltip?.title ?? "Check for updates");
   const disabled = showCheckIcon
     ? true
     : runsEverything
@@ -429,31 +460,7 @@ function SidebarUpdateControl() {
       setIsCheckAnimationLatched(true);
       setCheckAnimationKey((key) => key + 1);
     }
-    void bridge
-      .checkForUpdate()
-      .then((result) => {
-        if (result.checked) return;
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description:
-              updatesDenial ??
-              result.state.message ??
-              "Automatic updates are not available in this build.",
-          }),
-        );
-      })
-      .catch((error) => {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not check for updates",
-            description: error instanceof Error ? error.message : "Update check failed.",
-          }),
-        );
-      })
-      .finally(() => setIsActionPending(false));
+    void checkForSidebarUpdate(bridge).finally(() => setIsActionPending(false));
   };
 
   const runEverything = async () => {

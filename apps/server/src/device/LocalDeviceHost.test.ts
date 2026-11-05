@@ -47,6 +47,14 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   const hub = { running: true, spawnFails: false };
   const stateDir = agentDeviceStateDir(path, path.join(baseDir, "userdata"));
   const daemonHealthy = yield* Ref.make(true);
+  // These daemon-lifecycle cases require a ready platform; Xcode refusal has
+  // separate real readiness cases. Supply only task-local executable fixtures.
+  yield* fs.makeDirectory(path.join(baseDir, "bin"));
+  for (const command of ["xcrun", "xcodebuild"]) {
+    const file = path.join(baseDir, "bin", command);
+    yield* fs.writeFileString(file, "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(file, 0o755);
+  }
   for (const [name, version, entry] of [
     ["expo-device-hub", DEVICE_HUB_VERSION, "dist/server/cli.mjs"],
     ["agent-device", AGENT_DEVICE_VERSION, "bin/agent-device.mjs"],

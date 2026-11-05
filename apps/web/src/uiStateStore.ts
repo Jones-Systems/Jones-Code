@@ -35,6 +35,7 @@ export interface PersistedUiState {
 }
 
 export interface UiProjectState {
+  environmentOrder: string[];
   projectExpandedById: Record<string, boolean>;
   projectOrder: string[];
   sidebarProjectScopeKeys: string[];
@@ -59,6 +60,7 @@ export interface UiState
 const initialState: UiState = {
   projectExpandedById: {},
   projectOrder: [],
+  environmentOrder: [],
   sidebarProjectScopeKeys: [],
   threadLastVisitedAtById: {},
   threadChangedFilesExpandedById: {},

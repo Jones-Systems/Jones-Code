@@ -328,6 +328,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
                 return;
               }
               if (permission === "clipboard-read") {
+                if (isCompanionGuest(webContents)) {
+                  callback(false);
+                  return;
+                }
                 confirmClipboardRead(
                   webContents,
                   "requestingUrl" in details ? details.requestingUrl : undefined,
@@ -338,9 +342,10 @@ export const make = Effect.gen(function* BrowserSessionMake() {
               callback(ALLOWED_PREVIEW_PERMISSIONS.has(permission));
             },
           );
-          browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin) =>
+          browserSession.setPermissionCheckHandler((webContents, permission, requestingOrigin) =>
             permission === "clipboard-read"
-              ? clipboardReadDecisions.get(permissionOrigin(requestingOrigin) ?? "") === true
+              ? !isCompanionGuest(webContents) &&
+                clipboardReadDecisions.get(permissionOrigin(requestingOrigin) ?? "") === true
               : ALLOWED_PREVIEW_PERMISSIONS.has(permission),
           );
           const next = new Map(sessions);

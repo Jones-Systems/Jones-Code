@@ -1,3 +1,4 @@
+import { CommandId } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -9,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Scope from "effect/Scope";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { SCAN_CACHE_FILE_NAME } from "./usage/usageScanCache.ts";
 import { TestClock } from "effect/testing";
@@ -48,6 +50,7 @@ import {
   RunId,
   RuntimeRequestId,
   ThreadId,
+  OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ThreadShell,
 } from "@t3tools/contracts";
@@ -60,6 +63,9 @@ import {
 
 const NOW_MS = Date.parse("2026-06-10T12:00:00.000Z");
 const DAY_MS = 24 * 60 * 60 * 1_000;
+const encodeCleanupAppThreadJson = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2AppThread),
+);
 
 function at(offsetMs: number): DateTime.Utc {
   return DateTime.makeUnsafe(NOW_MS + offsetMs);
@@ -404,7 +410,22 @@ const cleanupFixture = (
               error: null,
             });
           }
-          return yield* makeDeletionAdmission;
+          for (const child of threads.filter((entry) => entry.deletedAt === null)) {
+            const payload = yield* encodeCleanupAppThreadJson({
+              ...child,
+              lastVisitedAt: child.lastVisitedAt ?? null,
+            });
+            const timestamp = DateTime.formatIso(child.createdAt);
+            yield* sql`INSERT INTO orchestration_v2_projection_threads(thread_id,project_id,title,default_provider,runtime_mode,interaction_mode,created_at,updated_at,deleted_at,payload_json) VALUES(${child.id},${child.projectId},${child.title},'codex','local','default',${timestamp},${timestamp},NULL,${payload})`;
+          }
+          const owner = yield* makeDeletionAdmission;
+          return {
+            ...owner,
+            inspectBindings: () =>
+              sql<{
+                binding_json: string;
+              }>`SELECT binding_json FROM jones_deletion_worktree_admissions ORDER BY effect_id`,
+          };
         }).pipe(Effect.provide(context));
       }).pipe(Effect.provideService(Scope.Scope, lifetime)),
     );
@@ -606,6 +627,7 @@ const cleanupFixture = (
       setThreads: (next: typeof threads) => {
         threads = next;
       },
+      admissionBindings: () => withDeletionOwner((owner) => owner.inspectBindings()),
       setOnLiveCheck: (hook: Effect.Effect<void>) => {
         onLiveCheck = hook;
       },
@@ -1110,27 +1132,17 @@ describe("deleted thread worktrees", () => {
         fixture.setDeletedThreads([owner]);
         fixture.setThreads(scenario === "native subagent" ? [subagent(owner)] : []);
         const report = yield* fixture.service.runNow;
-        if (scenario === "native subagent") {
-          expect(report.entries[0]).toMatchObject({ threadId: owner.id, outcome: "failed" });
-          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(true);
-          expect(fixture.deletionEvidence()).toEqual({
-            worktreeRemovalCalls: 0,
-            deletionRefusals: ["current_cleanup_owner_or_live_prerequisites_changed"],
-            qualifiedDeletions: 0,
-          });
-        } else {
-          expect(report.entries[0]).toMatchObject({
-            threadId: owner.id,
-            outcome: "removed",
-            reason: "Thread was deleted",
-          });
-          expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
-          expect(fixture.deletionEvidence()).toEqual({
-            worktreeRemovalCalls: 1,
-            deletionRefusals: [],
-            qualifiedDeletions: 1,
-          });
-        }
+        expect(report.entries[0]).toMatchObject({
+          threadId: owner.id,
+          outcome: "removed",
+          reason: "Thread was deleted",
+        });
+        expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+        expect(fixture.deletionEvidence()).toEqual({
+          worktreeRemovalCalls: 1,
+          deletionRefusals: [],
+          qualifiedDeletions: 1,
+        });
       }).pipe(Effect.provide(cleanupTestLayer), Effect.scoped),
   );
 
@@ -1234,6 +1246,11 @@ describe("deleted thread worktrees", () => {
       );
       expect(reads).toBeGreaterThan(0);
       expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      expect(fixture.deletionEvidence()).toEqual({
+        worktreeRemovalCalls: 1,
+        deletionRefusals: [],
+        qualifiedDeletions: 1,
+      });
     }).pipe(Effect.provide(cleanupTestLayer), Effect.scoped),
   );
 
@@ -1264,6 +1281,20 @@ describe("deleted thread worktrees", () => {
       );
       expect(reads).toBeGreaterThan(0);
       expect(yield* fixture.fs.exists(fixture.worktree)).toBe(false);
+      expect(fixture.deletionEvidence()).toEqual({
+        worktreeRemovalCalls: 1,
+        deletionRefusals: [],
+        qualifiedDeletions: 1,
+      });
+      const bindings = yield* fixture.admissionBindings();
+      expect(bindings).toHaveLength(1);
+      expect(JSON.parse(bindings[0]!.binding_json)).toMatchObject({
+        schema: "jones.deletion-admission/v3",
+        completedNativeMembers: [
+          { threadId: child.id, payloadSha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        ],
+        target: { path: fixture.worktree, force: false },
+      });
     }).pipe(Effect.provide(cleanupTestLayer), Effect.scoped),
   );
 

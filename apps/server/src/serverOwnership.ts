@@ -12,6 +12,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Runtime from "effect/Runtime";
 import * as Schema from "effect/Schema";
+import {
+  beginCheckedServerOwnership,
+  invalidateCheckedServerOwnership,
+} from "./jones/cleanup/CheckedRuntimeOwner.ts";
 
 import {
   BOOT_SERVICE_LAUNCHD_LABEL,
@@ -200,10 +204,11 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
         }
         const db = new NodeSqlite.DatabaseSync(lockPath);
         try {
-          db.exec("PRAGMA busy_timeout = 0; BEGIN EXCLUSIVE;");
+          const heldRuntimeOwner = beginCheckedServerOwnership(db, stateDir, lockPath);
           const identity = NodeFS.statSync(lockPath, { bigint: true });
           return {
             db,
+            heldRuntimeOwner,
             identity,
             replacedDuringAcquire: before.dev !== identity.dev || before.ino !== identity.ino,
           };
@@ -217,8 +222,9 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
           ? new ServerAlreadyRunningError({ stateDir })
           : new ServerOwnershipError({ stateDir, cause }),
     }),
-    ({ db }) =>
-      readPersistedServerRuntimeState(statePath).pipe(
+    ({ db, heldRuntimeOwner }) =>
+      Effect.sync(() => invalidateCheckedServerOwnership(heldRuntimeOwner)).pipe(
+        Effect.andThen(readPersistedServerRuntimeState(statePath)),
         Effect.flatMap((state) =>
           Option.isSome(state) && state.value.ownerId === ownerId
             ? clearPersistedServerRuntimeState(statePath)
@@ -278,6 +284,7 @@ export const acquireServerOwnership = Effect.fn("acquireServerOwnership")(functi
   }).pipe(Effect.forkScoped);
 
   return {
+    heldRuntimeOwner: lock.heldRuntimeOwner,
     publish: (state: PersistedServerRuntimeState) =>
       persistServerRuntimeState({ path: statePath, state: { ...state, ownerId } }),
   };

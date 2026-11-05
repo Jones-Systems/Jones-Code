@@ -1,3 +1,4 @@
+import * as Context from "effect/Context";
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 // @effect-diagnostics nodeBuiltinImport:off
 
@@ -8284,7 +8285,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
                       yield* terminalizeOpenForegroundTools(context, "failed");
                       // Unlike an RPC failure, the agent survives an idle error, so its
                       // background tools and subagents keep reporting to this run.
-                      yield* finalizeTurn(context, "failed", failure, {
+                      yield* finalizeTurn(context, "failed", failure, "provider_result", {
                         childTurnsContinue: hasSurvivingBackgroundWork(context),
                       });
                       return;

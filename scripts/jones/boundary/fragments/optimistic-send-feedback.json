@@ -17,7 +17,7 @@
       "to": "apps/web/src/jones/pendingSends/usePendingTurn.ts"
     },
     {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
       "to": "apps/web/src/jones/pendingSends/sidebar.ts"
     },
     {

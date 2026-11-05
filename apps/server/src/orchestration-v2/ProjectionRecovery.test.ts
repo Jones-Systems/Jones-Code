@@ -6,6 +6,7 @@ import {
   MessageId,
   NodeId,
   type OrchestrationV2AppThread,
+  type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   ProjectId,
   ProviderDriverKind,
@@ -709,9 +710,10 @@ it.effect("bounds runtime provider-thread reads by ownership and preserves recov
       { name: "unrelated", ownership: "none", status: "active", ordinal: 8, included: false },
       { name: "unrelated-run", ownership: "none", status: "idle", ordinal: 9, included: false },
     ] as const;
+    let directPayload: OrchestrationV2ProviderThread | undefined;
     for (const entry of cases) {
       const id = ProviderThreadId.make(`provider-thread:ownership:${entry.name}`);
-      yield* projections.apply({
+      const event = {
         id: EventId.make(`event:${id}`),
         type: "provider-thread.updated",
         threadId,
@@ -744,8 +746,10 @@ it.effect("bounds runtime provider-thread reads by ownership and preserves recov
             entry.name === "roster"
               ? [{ taskId: "shell", description: "background", kind: "command" }]
               : [],
-        },
-      });
+        } satisfies OrchestrationV2ProviderThread,
+      };
+      if (entry.name === "direct") directPayload = event.payload;
+      yield* projections.apply({ ...event, type: "provider-thread.updated" });
       if (entry.ownership === "subagent" || entry.ownership === "all") {
         for (const suffix of ["a", "b"]) {
           yield* sql`
@@ -773,6 +777,24 @@ it.effect("bounds runtime provider-thread reads by ownership and preserves recov
       VALUES ('item:ownership', ${threadId}, ${waitingRunId}, ${ownerNodeId},
         ${ProviderThreadId.make("provider-thread:ownership:item")}, 1, 'assistant_message', 'waiting', '', '{}')
     `;
+    assert.equal(
+      (yield* projections.getThread(threadId)).activeProviderThreadId,
+      ProviderThreadId.make("provider-thread:ownership:settled"),
+    );
+    if (directPayload === undefined)
+      return yield* Effect.die("Missing original direct fixture payload");
+    yield* projections.apply({
+      id: EventId.make("event:recovery:ownership:select-direct"),
+      type: "provider-thread.updated",
+      threadId,
+      driver,
+      providerInstanceId,
+      occurredAt: now,
+      payload: directPayload,
+    });
+    const selected = (yield* projections.getThread(threadId)).activeProviderThreadId;
+    assert.equal(selected, ProviderThreadId.make("provider-thread:ownership:direct"));
+    assert.notEqual(selected, waitingProviderThreadId);
     const statements: Array<ReturnType<Statement.Statement<unknown>["compile"]>> = [];
     const observe: Statement.Transformer = (statement) => {
       const compiled = statement.compile();

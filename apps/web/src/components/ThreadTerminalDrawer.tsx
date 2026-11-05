@@ -1,3 +1,5 @@
+import { isShellRunTerminal } from "@t3tools/contracts/jones/shellDestinationFence";
+import { TerminalContentsFrame } from "../jones/shellDestination/TerminalContentsFrame";
 import { workspaceAreaProps } from "../lib/workspaceFocus";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import {
@@ -581,7 +583,9 @@ function TerminalSessionViewport({
   const terminalSessionAtom = attachedTerminalSessionAtom(environmentId, {
     threadId,
     terminalId,
-    cwd,
+    ...(attachExistingOnly || isShellRunTerminal(threadId, terminalId)
+      ? { restartIfNotRunning: false }
+      : { cwd }),
     ...(worktreePath !== undefined ? { worktreePath } : {}),
     ...(runtimeEnv ? { env: runtimeEnv } : {}),
     ...(providerInstanceId ? { providerInstanceId } : {}),

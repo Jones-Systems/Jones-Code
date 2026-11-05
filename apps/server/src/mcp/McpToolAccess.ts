@@ -128,6 +128,19 @@ export const reads = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>)
 export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare((params: P) => requireThreadCaller.pipe(Effect.flatMap(() => handle(params))), undefined);
 
+/** The domain service checks immutable receipts before its locked execution guard. */
+export const actsAsCallerWithReceipt = <P, A, E, R>(
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) =>
+  declare(
+    (params: P) =>
+      requireThreadCaller.pipe(
+        Effect.andThen(readCaller()),
+        Effect.flatMap(() => handle(params)),
+      ),
+    undefined,
+  );
+
 export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A, E, R>) =>
   declare(
     (params: P) =>
@@ -301,6 +314,67 @@ export const either = <P, A, E, R, A2, E2, R2>(
   );
 };
 
+// Jones hook: spec.jones-client-launch; defer start resolution until after keyed capability checks.
+export interface ThreadStartGate {
+  readonly start: Effect.Effect<StartedModes, OrchestratorMcpFailure>;
+  readonly continueWithin: <A, E, R>(
+    target: {
+      readonly runtimeMode: RuntimeMode;
+      readonly interactionMode: ProviderInteractionMode;
+    },
+    effect: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<A, E | OrchestratorMcpFailure, R>;
+}
+
+export const startsOrContinuesThreads = <P, A, E, R>(
+  modes: (params: P) => {
+    readonly runtimeMode?: RuntimeMode | undefined;
+    readonly interactionMode?: ProviderInteractionMode | undefined;
+  },
+  handle: (params: P, gate: ThreadStartGate) => Effect.Effect<A, E, R>,
+  linked: "stamped" | { readonly refused: string },
+) => {
+  const started = Effect.fn("McpToolAccess.startsOrContinuesThreads.started")(function* (
+    caller: Caller,
+    params: P,
+  ) {
+    const requested = modes(params);
+    return {
+      runtimeMode: yield* resolveRuntimeMode(caller.limits.runtimeMode, requested.runtimeMode),
+      interactionMode: yield* resolveInteractionMode(
+        caller.limits.interactionMode,
+        requested.interactionMode,
+      ),
+      linkOrigin: callerLinkOrigin(caller),
+    } satisfies StartedModes;
+  });
+  return declare(
+    (params: P) =>
+      Effect.gen(function* () {
+        const caller = yield* writingCaller;
+        const { limits } = caller;
+        if (linked !== "stamped") yield* assertNotLinked(caller, linked.refused);
+        const gate: ThreadStartGate = {
+          start: started(caller, params),
+          continueWithin: Effect.fn("McpToolAccess.continueWithin")(function* (target, effect) {
+            yield* assertTargetWithinLimits(limits, target);
+            const refused = yield* Ref.make<DispatchModeRefusal | undefined>(undefined);
+            return yield* effect.pipe(
+              Effect.provideService(DispatchModeLimit, { ...limits, refused }),
+              Effect.catch((error) =>
+                Effect.flatMap(Ref.get(refused), (refusal) =>
+                  Effect.fail(refusal === undefined ? error : escalationDenied(refusal)),
+                ),
+              ),
+            );
+          }),
+        };
+        return yield* handle(params, gate);
+      }),
+    (params: P) => Effect.flatMap(writingCaller, (caller) => started(caller, params)),
+  );
+};
+
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";
 
@@ -405,7 +479,12 @@ const routed = Effect.fn("McpToolAccess.routed")(function* <Tools extends Record
   const handlers: Record<string, unknown> = { ...checked };
   for (const [name, declaration] of Object.entries<Declaration<unknown>>(declarations)) {
     const tool = toolkit.tools[name];
-    if (tool === undefined || !takesLinkedEnvironment(tool)) continue;
+    if (tool === undefined) continue;
+    handlers[name] = yield* RemoteAdmissionMcp.wrap(
+      tool,
+      handlers[name] as (params: object) => Effect.Effect<unknown, OrchestratorMcpFailure>,
+    );
+    if (!takesLinkedEnvironment(tool)) continue;
     const remote = remoteCheckOf(declaration);
     if (remote === undefined)
       return yield* Effect.die(

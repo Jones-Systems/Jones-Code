@@ -8,6 +8,7 @@ import {
   ClientWebDeployment,
   TrimmedNonEmptyString,
 } from "./baseSchemas.ts";
+import { jonesAuthClientPresentationFields } from "./jones/authClientPresentation.ts";
 import { RuntimeMode } from "./providerPolicy.ts";
 
 export const ServerAuthPolicy = Schema.Literals([
@@ -289,6 +290,7 @@ export const AuthPairingLink = Schema.Struct({
 export type AuthPairingLink = typeof AuthPairingLink.Type;
 
 export const AuthClientMetadata = Schema.Struct({
+  ...jonesAuthClientPresentationFields,
   label: Schema.optionalKey(TrimmedNonEmptyString),
   ipAddress: Schema.optionalKey(TrimmedNonEmptyString),
   userAgent: Schema.optionalKey(TrimmedNonEmptyString),

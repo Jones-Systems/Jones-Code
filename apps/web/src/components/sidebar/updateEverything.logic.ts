@@ -616,6 +616,12 @@ export interface UpdateEverythingRow {
   readonly app: "this-app" | "server" | "desktop-app" | null;
   readonly skipped: string | null;
   readonly providers: ReadonlyArray<string>;
+  /** Qualified Jones targets hand off to Install status after Laptop verification. */
+  readonly jonesHandoffNotice?: string | null;
+}
+
+export function updateEverythingRowHasWork(row: UpdateEverythingRow): boolean {
+  return row.app !== null || row.providers.length > 0 || row.jonesHandoffNotice != null;
 }
 
 function countLabel(count: number, noun: string): string | null {
@@ -674,9 +680,9 @@ export function describeUpdateEverything(plan: UpdateEverythingPlan): {
     });
   }
   for (const machine of plan.jonesMachines ?? []) {
-    itemsFor(machine.environmentId, machine.label).push(
-      "Install status after Laptop verification; every install needs review",
-    );
+    update(machine.environmentId, machine.label, {
+      jonesHandoffNotice: "Install status after Laptop verification; every install needs review",
+    });
   }
   for (const machine of plan.providerMachines) {
     update(machine.environmentId, machine.label, { providers: machine.providers });

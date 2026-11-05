@@ -1,3 +1,22 @@
+import { EnvironmentId, ProjectId } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
+
+export class ProjectThreadTaskRequiredError extends Schema.TaggedError<ProjectThreadTaskRequiredError>()(
+  "ProjectThreadTaskRequiredError",
+  {
+    environmentId: EnvironmentId,
+    projectId: ProjectId,
+    environmentMode: Schema.Literals(["local", "worktree"]),
+  },
+) {
+  override get message(): string {
+    return "Enter a task before starting the thread.";
+  }
+}
+
+export const ProjectThreadCreationValidationError = ProjectThreadTaskRequiredError;
+export type ProjectThreadCreationValidationError = typeof ProjectThreadCreationValidationError.Type;
+
 export function resolveProjectThreadCreationBranch(input: {
   readonly workspaceMode: "local" | "worktree";
   readonly selectedBranch: string | null;
@@ -7,4 +26,21 @@ export function resolveProjectThreadCreationBranch(input: {
     return input.selectedBranch;
   }
   return input.workspaceMode === "local" ? input.currentCheckoutBranch : null;
+}
+
+export function validateProjectThreadCreation(input: {
+  readonly environmentId: EnvironmentId;
+  readonly projectId: ProjectId;
+  readonly environmentMode: "local" | "worktree";
+  readonly branch: string | null;
+  readonly initialMessageText: string;
+}): ProjectThreadCreationValidationError | null {
+  if (input.initialMessageText.trim().length === 0) {
+    return new ProjectThreadTaskRequiredError({
+      environmentId: input.environmentId,
+      projectId: input.projectId,
+      environmentMode: input.environmentMode,
+    });
+  }
+  return null;
 }

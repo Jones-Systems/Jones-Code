@@ -736,8 +736,9 @@ export const openArtifactStore = Effect.fn("SourceRenewalArtifacts.openStore")(f
     changeBuild: (build: WorkstreamsNativeBuild) =>
       Effect.gen(function* () {
         NodeAssert.deepEqual(build, artifacts.next.build);
+        const context = yield* Effect.context<never>();
         yield* Effect.promise(() =>
-          artifacts.transition(stop, () => Effect.runPromise(start(artifacts.next))),
+          artifacts.transition(stop, () => Effect.runPromiseWith(context)(start(artifacts.next))),
         );
       }),
     environment: (control: Awaited<ReturnType<typeof startLoopbackControlPlane>>) =>

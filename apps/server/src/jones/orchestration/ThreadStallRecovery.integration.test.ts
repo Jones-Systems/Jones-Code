@@ -210,9 +210,7 @@ it.effect("lease loss prevents a stale worker from emitting a delivery explanati
     const worker = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
       Effect.flatMap((worker) => worker.runOnce),
       Effect.provide(
-        EffectWorker.layerWithOptions({ workerId: "original", leaseDurationMs: 1 }).pipe(
-          Layer.provide(executor),
-        ),
+        EffectWorker.layerWithOptions({ workerId: "original" }).pipe(Layer.provide(executor)),
       ),
       Effect.exit,
       Effect.forkScoped,

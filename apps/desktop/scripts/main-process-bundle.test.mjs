@@ -5,7 +5,6 @@ import * as NodeOS from "node:os";
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 import * as NodeVM from "node:vm";
-import * as NodeURL from "node:url";
 import { build } from "vite-plus/pack";
 import { assert, it } from "vite-plus/test";
 
@@ -120,7 +119,101 @@ void import("./linux.ts").then(({ result }) => process.emit("ready", result));`,
 it("loads the emitted packaged boot entry and backend cache preload", async () => {
   const directory = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-desktop-boot-"));
   try {
-    const entries = ["src/boot.ts", "src/compileCache.ts"];
+    const entries = [
+      "src/boot.ts",
+      "src/compileCache.ts",
+      "src/serverCompileCache.ts",
+      "src/main.ts",
+      "src/jones/updates/jonesColdBackendCustody.ts",
+    ];
+    const sources = [
+      ...entries.filter((entry) => entry !== "src/main.ts"),
+      "src/app/DesktopUserDataOverride.ts",
+      "src/jones/previewCompanion/CompanionProduct.ts",
+      "src/jones/updates/jonesNativeStartup.ts",
+      "src/jones/updates/jonesNativeHelperSource.ts",
+      "src/jones/updates/jonesSigningSource.ts",
+      "src/jones/updates/jonesPairedStateSource.ts",
+      "src/jones/updates/jonesColdDarwinLayout.ts",
+    ];
+    await NodeFSP.mkdir(NodePath.join(directory, "scripts/lib"), { recursive: true });
+    await NodeFSP.copyFile(
+      new URL("../../../scripts/lib/server-compile-cache.ts", import.meta.url),
+      NodePath.join(directory, "scripts/lib/server-compile-cache.ts"),
+    );
+    const sharedPackageDirectory = NodePath.join(directory, "node_modules/@t3tools/shared");
+    const electronPackageDirectory = NodePath.join(directory, "node_modules/electron");
+    await Promise.all([
+      ...sources.map((entry) =>
+        NodeFSP.mkdir(NodePath.dirname(NodePath.join(directory, entry)), { recursive: true }),
+      ),
+      NodeFSP.mkdir(sharedPackageDirectory, { recursive: true }),
+      NodeFSP.mkdir(electronPackageDirectory, { recursive: true }),
+    ]);
+    await Promise.all([
+      NodeFSP.copyFile(
+        new URL("../../../packages/shared/src/jones/previewCompanionProduct.ts", import.meta.url),
+        NodePath.join(sharedPackageDirectory, "previewCompanionProduct.ts"),
+      ),
+      NodeFSP.copyFile(
+        new URL("../../../packages/shared/src/jones/nativeWriterFence.ts", import.meta.url),
+        NodePath.join(sharedPackageDirectory, "nativeWriterFence.ts"),
+      ),
+      NodeFSP.copyFile(
+        new URL("../../../packages/shared/src/jones/desktopNativeOwner.ts", import.meta.url),
+        NodePath.join(sharedPackageDirectory, "desktopNativeOwner.ts"),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(sharedPackageDirectory, "package.json"),
+        JSON.stringify({
+          name: "@t3tools/shared",
+          type: "module",
+          exports: {
+            "./jones/previewCompanionProduct": "./previewCompanionProduct.ts",
+            "./jones/nativeWriterFence": "./nativeWriterFence.ts",
+            "./jones/desktopNativeOwner": "./desktopNativeOwner.ts",
+          },
+        }),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(directory, "package.json"),
+        JSON.stringify({
+          name: "t3code",
+          dependencies: { "@t3tools/shared": "0.0.0", electron: "44.4.2" },
+        }),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(electronPackageDirectory, "package.json"),
+        JSON.stringify({ name: "electron", main: "index.cjs" }),
+      ),
+      NodeFSP.writeFile(
+        NodePath.join(electronPackageDirectory, "index.cjs"),
+        `
+const path = require("node:path");
+const appRoot = path.resolve(__dirname, "../..");
+module.exports = { app: {
+  isPackaged: true,
+  getAppPath: () => appRoot,
+  getVersion: () => "fixture",
+  getPath: (role) => path.join(appRoot, "electron-" + role),
+  setPath: () => {},
+  exit: (code) => process.exit(code),
+} };`,
+      ),
+    ]);
+    await Promise.all(
+      sources.map((entry) =>
+        NodeFSP.copyFile(new URL(`../${entry}`, import.meta.url), NodePath.join(directory, entry)),
+      ),
+    );
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "src/main.ts"),
+      `
+import { resolveJonesColdBackendPermit, startJonesColdBackend } from "./jones/updates/jonesColdBackendCustody.ts";
+export const resolvePermit = resolveJonesColdBackendPermit;
+export const startBackend = startJonesColdBackend;
+`,
+    );
     assert.ok(Array.isArray(desktopConfig.pack));
     for (const packConfig of desktopConfig.pack) {
       const packEntries = Array.isArray(packConfig.entry)
@@ -129,10 +222,17 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       if (!packEntries.some((entry) => entries.includes(entry))) continue;
       await build({
         ...packConfig,
-        entry: packConfig.entry.map((entry) =>
-          NodeURL.fileURLToPath(new URL(`../${entry}`, import.meta.url)),
-        ),
         outDir: NodePath.join(directory, "dist-electron"),
+        plugins: [
+          ...(packConfig.plugins ?? []),
+          {
+            name: "owned-server-cache-fixture-layout",
+            resolveId(id) {
+              if (id === "../../../scripts/lib/server-compile-cache.ts")
+                return NodePath.join(directory, "scripts/lib/server-compile-cache.ts");
+            },
+          },
+        ],
         config: false,
         cwd: directory,
         tsconfig: false,
@@ -156,9 +256,20 @@ it("loads the emitted packaged boot entry and backend cache preload", async () =
       /^rolldown-runtime-[A-Za-z0-9_-]+\.cjs$/.test(name),
     );
     assert.equal(runtimeChunks.length, 1);
+    const serverCacheChunks = [...emittedSources.keys()].filter((name) =>
+      /^server-compile-cache-[A-Za-z0-9_-]+\.cjs$/.test(name),
+    );
+    assert.equal(serverCacheChunks.length, 1);
     assert.deepEqual(
       [...emittedSources.keys()].filter((name) => !runtimeChunks.includes(name)).sort(),
-      ["boot.cjs", "compileCache.cjs", "jones-cold-backend-custody.cjs", "main.cjs"],
+      [
+        "boot.cjs",
+        "compileCache.cjs",
+        "jones-cold-backend-custody.cjs",
+        "main.cjs",
+        serverCacheChunks[0],
+        "serverCompileCache.cjs",
+      ],
     );
     const custodyArtifact = emittedSources.get("jones-cold-backend-custody.cjs");
     assert.match(custodyArtifact, /["']ffi-rs["']/);

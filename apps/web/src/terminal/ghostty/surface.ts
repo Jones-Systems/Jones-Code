@@ -985,6 +985,10 @@ export class GhosttyTerminalSurface {
   }
 
   /** An upper bound on the selection's size, read without formatting its text. */
+  getText(): string {
+    return this.core.getText();
+  }
+
   getSelectionCellCount(): number {
     const range = this.core.selectionRange();
     return range ? (Math.abs(range.end.y - range.start.y) + 1) * this.cols : 0;

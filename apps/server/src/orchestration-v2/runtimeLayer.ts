@@ -107,6 +107,9 @@ const layerStores = Layer.mergeAll(
 );
 
 export const layerEventSink = EventSink.layerFromStores.pipe(Layer.provide(layerStores));
+const layerRestartPreparationProvided = RestartPreparation.layer.pipe(
+  Layer.provide(Layer.merge(layerStores, layerEventSink)),
+);
 const layerProjectionMaintenanceProvided = ProjectionMaintenance.layer.pipe(
   Layer.provide(layerStores),
 );
@@ -181,7 +184,7 @@ const currentRuntimeStopProvided = RuntimeStop.layer.pipe(
   Layer.provide(layerRestartPreparationProvided),
   Layer.provide(
     Layer.mergeAll(
-      layerEventSinkProvided,
+      layerEventSink,
       layerProviderSessionManagerProvided,
       ProjectionStore.layer,
       AuthSessions.layer,
@@ -192,7 +195,7 @@ const currentRuntimeStopProvided = RuntimeStop.layer.pipe(
 const providerConversationReselectionProvided = ProviderConversationReselection.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
-      layerEventSinkProvided,
+      layerEventSink,
       layerCommandReceiptStoreProvided,
       layerProviderSessionManagerProvided,
       ProjectionStore.layer,
@@ -256,7 +259,7 @@ const nativeCreationProviderExecutorProvided = NativeCreationProviderExecutor.la
 );
 
 const layerProviderTurnControlServiceProvided = ProviderTurnControlService.layer.pipe(
-  Layer.provide(layerEventSinkProvided),
+  Layer.provide(layerEventSink),
   Layer.provide(Layer.merge(ProjectionStore.layer, layerProviderSessionManagerProvided)),
 );
 const layerRuntimeRequestServiceProvided = RuntimeRequestService.layer.pipe(
@@ -355,7 +358,7 @@ const layerThreadLaunchProvided = ThreadLaunchService.layer.pipe(
       nativeCreationProviderExecutorProvided.pipe(Layer.provide(layerProjectService)),
       nativeCreationOwnersProvided,
       EffectOutbox.layer.pipe(Layer.provide(layerEventInfrastructure)),
-      layerEventSinkProvided,
+      layerEventSink,
       layerEventStoreProvided,
       layerProjectService,
       layerProjectSetupScriptRunner,
@@ -457,13 +460,13 @@ export const layer = Layer.mergeAll(
   layerGoalContinuity,
   layerPlannedUpdateContinuityProvided,
   layerStores,
-  layerEventSinkProvided,
+  layerEventSink,
   currentRuntimeStopProvided,
   providerConversationReselectionProvided,
   ThreadSelfConfiguration.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        layerEventSinkProvided,
+        layerEventSink,
         ProjectionStore.layer,
         layerProviderSessionManagerProvided,
         ThreadCommandExecutor.layer,

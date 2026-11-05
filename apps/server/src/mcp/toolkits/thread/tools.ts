@@ -1,3 +1,4 @@
+import * as ThreadMetadataReads from "../../../jones/orchestration/threadMetadataReads.ts";
 import { ThreadConfigurationEvidence } from "@t3tools/contracts";
 import {
   OrchestratorMcpEnvironmentTarget,
@@ -26,7 +27,7 @@ import * as Schema from "effect/Schema";
 import { Tool, Toolkit } from "effect/ai";
 
 import * as JonesPinPlacement from "../../../jones/mcp/pinPlacement/pinPlacement.ts";
-import * as ThreadMetadataReads from "../../../jones/orchestration/threadMetadataReads.ts";
+
 import * as ThreadSearch from "../../../orchestration-v2/ThreadSearch.ts";
 import * as ScheduledTaskService from "../../../scheduledTasks/ScheduledTaskService.ts";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -63,6 +64,7 @@ const ThreadOrganizeTool = Tool.make("t3_thread_organize", {
   dependencies: [
     McpInvocationContext.McpInvocationContext,
     ThreadManagementService.ThreadManagementService,
+    ThreadMetadataReads.ThreadMetadataReads,
     SecureRandom.SecureRandom,
   ],
 })
@@ -156,6 +158,32 @@ const threadConfiguration = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
 });
+const ThreadConfigurationTool = Tool.make("t3_thread_configuration", {
+  ...commandTool,
+  description:
+    "Read a thread's provider/model selection and modes. Omit threadId for this thread. orchestrator_capabilities lists available providers and models.",
+  parameters: Schema.Struct({
+    environmentId: OrchestratorMcpEnvironmentTarget,
+    threadId: Schema.optional(ThreadId),
+  }),
+  success: Schema.Struct({
+    threadId: ThreadId,
+    modelSelection: ModelSelection,
+    runtimeMode: RuntimeMode,
+    interactionMode: ProviderInteractionMode,
+    threadMessagesBlocked: Schema.Boolean,
+    configurationRevision: Schema.optional(
+      ThreadConfigurationEvidence.fields.configurationRevision,
+    ),
+    savedSelection: Schema.optional(ThreadConfigurationEvidence.fields.savedSelection),
+    executionPrecondition: Schema.optional(
+      ThreadConfigurationEvidence.fields.executionPrecondition,
+    ),
+    currentExecution: Schema.optional(ThreadConfigurationEvidence.fields.currentExecution),
+  }),
+})
+  .annotate(Tool.Readonly, true)
+  .annotate(Tool.Destructive, false);
 const ThreadConfigureTool = Tool.make("t3_thread_configure", {
   ...commandTool,
   description:
@@ -246,6 +274,7 @@ const ScheduledTaskRunTool = Tool.make("run_scheduled_task_now", {
 export const ThreadToolkit = Toolkit.make(
   ScheduledTaskRunTool,
   ThreadSearchTool,
+  ThreadConfigurationTool,
   ThreadConfigureTool,
   ThreadTransferTool,
   ThreadOrganizeTool,

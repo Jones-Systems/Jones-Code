@@ -14,6 +14,29 @@ describe("buildRuntimeInstructions", () => {
     assert.notInclude(instructions, "<pull_request_linking>");
   });
 
+  it("keeps absent identity unknown and describes the supplied Jones build", () => {
+    const unknown = buildRuntimeInstructions({ harness: "Codex" });
+    assert.include(unknown, "App identity and build source are unavailable");
+    assert.notInclude(unknown, "running in T3 Code");
+    const identified = buildRuntimeInstructions({
+      harness: "Codex",
+      appIdentity: {
+        productId: "jones-code",
+        productName: "Jones Code",
+        version: "0.1.0-test",
+        source: {
+          repository: "Jones-Systems/Jones-Code",
+          sha: "a".repeat(40),
+          tree: "b".repeat(40),
+        },
+      },
+    });
+    assert.include(identified, "running in Jones Code through the Codex harness");
+    assert.include(identified, "commit " + "a".repeat(40));
+    assert.include(identified, "tree " + "b".repeat(40));
+    assert.include(identified, "a connected desktop or mobile client may have a different version");
+  });
+
   it("links PRs the agent creates, takes over, or pushes to, and no others", () => {
     const instructions = buildRuntimeInstructions({ harness: "Codex" });
 

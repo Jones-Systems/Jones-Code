@@ -1,3 +1,4 @@
+import * as ServerSettings from "../../serverSettings.ts";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
@@ -59,6 +60,7 @@ const makeStubRegistry = (
 ): ProviderInstanceRegistry.ProviderInstanceRegistry["Service"] => {
   const byId = new Map(instances.map((instance) => [instance.instanceId, instance] as const));
   return {
+    getCatalogSource: (id) => byId.get(id),
     getInstance: (id) => Effect.succeed(byId.get(id)),
     listInstances: Effect.succeed(instances),
     listUnavailable: Effect.succeed([]),
@@ -107,6 +109,7 @@ describe("Jones remote evaluation routing", () => {
                 ),
               ];
         const generation = yield* TextGeneration.make.pipe(
+          Effect.provide(ServerSettings.layerTest()),
           Effect.provideService(
             ProviderInstanceRegistry.ProviderInstanceRegistry,
             makeStubRegistry(instances),

@@ -1,3 +1,4 @@
+import * as JonesForwarding from "../jones/peerTransport/Forwarding.ts";
 import {
   type EnvironmentId,
   OrchestratorMcpFailure,
@@ -10,20 +11,16 @@ import {
   OrchestratorMcpThreadWaitResult,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Digest from "effect/crypto/Digest";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Hex from "effect/encoding/Hex";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
-import type * as Tool from "effect/ai/Tool";
+import * as Tool from "effect/ai/Tool";
 
 import { assertNotLinked } from "../mcp/linkOrigin.ts";
 import * as McpInvocationContext from "../mcp/McpInvocationContext.ts";
-import { readCaller, unavailable } from "../mcp/threadAccess.ts";
+import { readCaller } from "../mcp/threadAccess.ts";
 import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as PeerLinks from "./PeerLinks.ts";
-import * as PeerMcpClient from "./PeerMcpClient.ts";
 
 /**
  * A peer's `/mcp` holds a wait open for its whole timeout without sending
@@ -92,9 +89,7 @@ export const remoteTarget = (scope: Scope, environmentId: EnvironmentId | undefi
   environmentId === scope.environmentId ? undefined : environmentId;
 
 const make = Effect.gen(function* () {
-  const peers = yield* PeerMcpClient.PeerMcpClient;
   const links = yield* PeerLinks.PeerLinks;
-  const crypto = yield* Digest.Digest;
   const threads = yield* ThreadManagement.ThreadManagementService;
 
   /**
@@ -111,49 +106,7 @@ const make = Effect.gen(function* () {
       Effect.provideService(ThreadManagement.ThreadManagementService, threads),
     );
 
-  /**
-   * Every caller here reaches the peer as the one link session, so a retry
-   * key is scoped to its caller before it leaves: two agents here reusing a
-   * key never collide there, and one agent retrying gets its first result.
-   */
-  const scopedRequestId = (namespace: string, clientRequestId: string) =>
-    crypto.digest(Digest.sha256, new TextEncoder().encode(`${namespace}\n${clientRequestId}`)).pipe(
-      Effect.map((digest) => `fwd:${Hex.encode(digest)}`),
-      Effect.orDie,
-    );
-
-  /** Tool and contract schemas are plain data: they encode and decode without services. */
-  const forward = Effect.fn("PeerForwarding.forward")(function* <A>(
-    scope: Scope,
-    toolName: string,
-    parameters: Schema.Top,
-    success: Schema.Top,
-    environmentId: EnvironmentId,
-    params: unknown,
-  ) {
-    const limits = yield* callerLimits(scope);
-    const encoded = (yield* Schema.encodeUnknownEffect(parameters as Schema.Encoder<unknown>)(
-      params,
-    ).pipe(Effect.mapError(unavailable))) as Record<string, unknown>;
-    const { environmentId: _target, ...args } = encoded;
-    // A pending upload lives here, so it cannot go with the call.
-    if (Array.isArray(args.attachments) && args.attachments.length > 0) {
-      return yield* new OrchestratorMcpFailure({
-        code: "invalid_request",
-        message: "A launch in a linked environment cannot carry attachments yet.",
-      });
-    }
-    if (typeof args.clientRequestId === "string") {
-      args.clientRequestId = yield* scopedRequestId(scope.requestNamespace, args.clientRequestId);
-    }
-    return yield* peers.call({
-      environmentId,
-      tool: toolName,
-      arguments: args,
-      limits,
-      success: success as Schema.Decoder<A>,
-    });
-  });
+  const forward = yield* JonesForwarding.make;
 
   const readThread: PeerForwarding["Service"]["readThread"] = (scope, environmentId, input) =>
     forward<OrchestratorMcpThreadReadResult>(
@@ -163,6 +116,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadReadResult,
       environmentId,
       input,
+      true,
     );
 
   const interruptThread: PeerForwarding["Service"]["interruptThread"] = (
@@ -177,6 +131,7 @@ const make = Effect.gen(function* () {
       OrchestratorMcpThreadInterruptResult,
       environmentId,
       input,
+      false,
     );
 
   const waitForThread: PeerForwarding["Service"]["waitForThread"] = Effect.fn(
@@ -202,7 +157,17 @@ const make = Effect.gen(function* () {
           ...(input.untilDelegatedWorkSettled === undefined
             ? {}
             : { untilDelegatedWorkSettled: input.untilDelegatedWorkSettled }),
+          ...(input.observeBlockingQuestions === undefined
+            ? {}
+            : { observeBlockingQuestions: input.observeBlockingQuestions }),
+          ...(input.questionResumeToken === undefined
+            ? {}
+            : { questionResumeToken: input.questionResumeToken }),
+          ...(input.childProgressForRunId === undefined
+            ? {}
+            : { childProgressForRunId: input.childProgressForRunId }),
         },
+        true,
       );
       remaining -= chunk;
       if (!result.timedOut || remaining <= 0) return result;
@@ -227,7 +192,15 @@ const make = Effect.gen(function* () {
           environmentId,
           params as OrchestratorMcpThreadWaitInput,
         ) as Effect.Effect<Tool.Success<typeof tool>, OrchestratorMcpFailure>)
-      : forward(scope, tool.name, tool.parametersSchema, tool.successSchema, environmentId, params);
+      : forward(
+          scope,
+          tool.name,
+          tool.parametersSchema,
+          tool.successSchema,
+          environmentId,
+          params,
+          Context.get(tool.annotations, Tool.Readonly),
+        );
     return Effect.andThen(requireEnabled, forwarded);
   };
 

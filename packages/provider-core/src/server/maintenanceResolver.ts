@@ -527,9 +527,10 @@ export const resolvePackageManagedProviderMaintenance = Effect.fn(
         updateArgs: nativeUpdate.args,
         updateLockKey: `${definition.provider}-native`,
         platform: context.platform,
-        ...(nativeEnv
-          ? { env: typeof nativeEnv === "function" ? nativeEnv(context) : nativeEnv }
-          : {}),
+        env: {
+          ...context.env,
+          ...(typeof nativeEnv === "function" ? nativeEnv(context) : nativeEnv),
+        },
       })
     : manual;
   // A native-looking launcher can still delegate to a mise-owned install.
@@ -799,7 +800,11 @@ const withConfiguredNpmVersionLookup = Effect.fn("withConfiguredNpmVersionLookup
   if (!packageName || capabilities.latestVersion !== undefined) {
     return capabilities;
   }
-  const env = { ...(yield* HostProcess.Environment), ...capabilities.update?.env };
+  const hostEnv = yield* HostProcess.Environment;
+  const configuredEnv = { ...hostEnv, ...capabilities.update?.env };
+  // Native binaries may be selected by absolute path with an empty PATH. The
+  // registry helper still belongs to this server's package-manager environment.
+  const env = { ...configuredEnv, PATH: configuredEnv.PATH || hostEnv.PATH };
   const npmPath = yield* resolveCommandPath("npm", { env });
   if (!npmPath) return capabilities;
   const services = yield* Effect.context<ProviderMaintenanceResolverServices>();
@@ -983,7 +988,15 @@ function installerLatestVersionKey(capabilities: ProviderMaintenanceCapabilities
   if (!capabilities.lookupLatestVersion) return null;
   if (capabilities.latestVersionCacheKey) return capabilities.latestVersionCacheKey;
   const update = capabilities.update;
-  if (update) return [update.lockKey, update.executable, ...update.args].join("\0");
+  if (update)
+    return [
+      update.lockKey,
+      update.executable,
+      ...update.args,
+      JSON.stringify(
+        Object.entries(update.env ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+      ),
+    ].join("\0");
   return capabilities.installPath
     ? ["manual", capabilities.installPath].join("\0")
     : capabilities.packageName && `npm-registry\0${capabilities.packageName}`;

@@ -1,3 +1,5 @@
+import { makeServiceOnboarding } from "../jones/cli/serviceOnboarding.ts";
+import * as Option from "effect/Option";
 import * as NodeUtil from "node:util";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -114,11 +116,13 @@ export const writeServiceEnv = Effect.fn("cli.service.write_env")(function* (
   yield* fs.writeFileString(current.path, next);
 });
 
-export const reconcileService = Effect.fn("cli.service.reconcile")(function* (options?: {
-  readonly allowDowngrade?: boolean;
-  readonly start?: boolean;
-}) {
-  const { baseDir } = yield* ServerConfig.ServerConfig;
+export const reconcileServiceAt = Effect.fn("cli.service.reconcileAt")(function* (
+  baseDir: string,
+  options?: {
+    readonly allowDowngrade?: boolean;
+    readonly start?: boolean;
+  },
+) {
   const service = yield* BootService.BootService;
   const status = yield* service.status;
   if (status.installed && status.current) {
@@ -126,9 +130,15 @@ export const reconcileService = Effect.fn("cli.service.reconcile")(function* (op
   }
   if (status.supported && !status.installed) {
     // A new service listens on this machine only, until `t3 up` opens the local network.
-    const { entries } = yield* readServiceEnv(baseDir);
+    const { entries, path: envPath, contents } = yield* readServiceEnv(baseDir);
     if (entries.T3CODE_LAN === undefined && entries.T3CODE_HOST === undefined) {
-      yield* writeServiceEnv(baseDir, { T3CODE_LAN: "false" });
+      // Append only the absent default: line-based replacement can alter multiline values.
+      const fs = yield* FileSystem.FileSystem;
+      yield* fs.makeDirectory(baseDir, { recursive: true });
+      yield* fs.writeFileString(
+        envPath,
+        `${contents}${contents === "" || contents.endsWith("\n") ? "" : "\n"}T3CODE_LAN=false\n`,
+      );
     }
   }
   if (
@@ -147,6 +157,13 @@ export const reconcileService = Effect.fn("cli.service.reconcile")(function* (op
     previouslyInstalled: status.installed,
     plan,
   } satisfies ServiceReconcileResult;
+});
+
+export const reconcileService = Effect.fn("cli.service.reconcile")(function* (
+  options?: Parameters<typeof reconcileServiceAt>[1],
+) {
+  const { baseDir } = yield* ServerConfig.ServerConfig;
+  return yield* reconcileServiceAt(baseDir, options);
 });
 
 export function formatServiceChange(
@@ -457,3 +474,12 @@ export const serviceCommand = Command.make("service").pipe(
     serviceUpdateCommand,
   ]),
 );
+
+// Jones retains the explicit onboarding offer through the current safe reconciler.
+export const { offerServiceDuringOnboarding } = makeServiceOnboarding({
+  cliVersion: packageJson.version,
+  reconcileService,
+  formatServiceChange,
+});
+export { recoverServiceOnboardingOffer } from "../jones/cli/serviceOnboarding.ts";
+export type { ServiceOnboardingOutcome } from "../jones/cli/serviceOnboarding.ts";

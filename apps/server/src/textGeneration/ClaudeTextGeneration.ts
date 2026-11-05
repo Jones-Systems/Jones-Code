@@ -34,6 +34,7 @@ import {
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
 import { classifyClaudeEvaluatorLaunchArgs } from "./jones/claudeEvaluatorLaunch.ts";
+import { claudeCommandFailure } from "./jones/claudeCommandFailure.ts";
 
 const CLAUDE_TIMEOUT_MS = 180_000;
 /** `--tools` takes bare names; patterns go in the allow list. */
@@ -289,21 +290,15 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         () => runClaudeCommand(false),
       ),
       Effect.flatMap(({ stdout, stderr, exitCode }) => {
-        if (exitCode === 0) return Effect.succeed(stdout);
-        const stderrDetail = stderr.trim();
-        const stdoutDetail = stdout.trim();
-        const detail =
-          claudeErrorResult(stdoutDetail) ??
-          (stderrDetail.length > 0 ? stderrDetail : stdoutDetail);
-        return Effect.fail(
-          new TextGenerationError({
-            operation,
-            detail:
-              detail.length > 0
-                ? `Claude CLI command failed: ${detail}`
-                : `Claude CLI command failed with code ${exitCode}.`,
-          }),
-        );
+        const detail = claudeCommandFailure({
+          stdout,
+          stderr,
+          exitCode,
+          reportedError: claudeErrorResult(stdout),
+        });
+        return detail === undefined
+          ? Effect.succeed(stdout)
+          : Effect.fail(new TextGenerationError({ operation, detail }));
       }),
       Effect.scoped,
       Effect.timeoutOption(investigate?.timeoutMs ?? CLAUDE_TIMEOUT_MS),

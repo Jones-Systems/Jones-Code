@@ -26,32 +26,17 @@ it("sends telemetry from a detached flusher that the task runner does not wait f
   });
   // The hook detaches and unrefs its flusher, so only this channel lets cleanup wait for it.
   const flushers: Promise<void>[] = [];
+  const capturedPids: number[] = [];
+  const failures: unknown[] = [];
   const onSpawn = (message: unknown) => {
     const { process: flusher } = message as { process: NodeChildProcess.ChildProcess };
+    flusher.once("spawn", () => {
+      if (flusher.pid !== undefined) capturedPids.push(flusher.pid);
+    });
     flushers.push(new Promise((resolve) => flusher.once("close", () => resolve())));
   };
   NodeDiagnosticsChannel.subscribe("child_process", onSpawn);
   try {
-    // The hook intentionally detaches telemetry from the CLI. Capture its exact spawned PIDs
-    // without making the CLI wait, then join their absence before removing the fixture home.
-    await NodeFSP.writeFile(
-      trackedPreload,
-      `
-      import childProcess from 'node:child_process';
-      import fs from 'node:fs';
-      import { syncBuiltinESMExports } from 'node:module';
-      const spawn = childProcess.spawn;
-      childProcess.spawn = function(file, args, options) {
-        const child = spawn.call(this, file, args, options);
-        if (args?.[0] === ${JSON.stringify(NodePath.join(import.meta.dirname, "flush.ts"))} && child.pid !== undefined) {
-          fs.appendFileSync(${JSON.stringify(flusherPids)}, child.pid + '\\n');
-        }
-        return child;
-      };
-      syncBuiltinESMExports();
-      await import(${JSON.stringify(new URL("./preload.mjs", import.meta.url).href)});
-    `,
-    );
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Missing HTTP address");
@@ -79,19 +64,27 @@ it("sends telemetry from a detached flusher that the task runner does not wait f
     finishReturned();
     await Promise.all(flushers);
     expect(flushers).toHaveLength(1);
+    expect(capturedPids).toHaveLength(1);
+    expect(capturedPids.every(Number.isInteger)).toBe(true);
     expect(reports.map((report) => JSON.parse(report).tasks)).toEqual([
       [{ package: "fixture", task: "build", source: "executed", savedMs: 0 }],
     ]);
     expect(disconnected).toBe(false);
+  } catch (failure) {
+    failures.push(failure);
   } finally {
     finishReturned();
-    await Promise.all(flushers);
-    NodeDiagnosticsChannel.unsubscribe("child_process", onSpawn);
-    vi.unstubAllEnvs();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
-    await NodeFSP.rm(root, { recursive: true, force: true });
+    try {
+      await Promise.all(flushers);
+      NodeDiagnosticsChannel.unsubscribe("child_process", onSpawn);
+      vi.unstubAllEnvs();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+      await NodeFSP.rm(root, { recursive: true, force: true });
+    } catch (failure) {
+      failures.push(failure);
+    }
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1)

@@ -193,6 +193,7 @@ function ProviderUpdateToastBody() {
       </button>
       <div id={detailsId} hidden={!expanded}>
         <Toast.Description
+          render={<div />}
           className="min-w-0 pt-0.5 pr-5 select-text wrap-break-word text-muted-foreground"
           data-slot="toast-description"
         />
@@ -218,7 +219,7 @@ export function ProviderUpdateNotice() {
     setSettleGrace({ settling: isAnySettling, elapsed: false });
   }
   const settleGraceElapsed = settleGrace.settling === isAnySettling && settleGrace.elapsed;
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the settling grace timer and cancel it when the update group stops settling.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the settling grace timer and cancel it when the update group stops settling.
   useEffect(() => {
     if (!isAnySettling) return;
     const timer = setTimeout(() => setSettleGrace({ settling: true, elapsed: true }), 30_000);
@@ -231,7 +232,7 @@ export function ProviderUpdateNotice() {
       : null;
   const active = useRef<{ key: string; id: string } | null>(null);
   const navigate = useNavigate();
-  // oxlint-disable-next-line t3code/react-effect-budget -- Close the imperative update toast when its mounted notice owner retires.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Close the imperative update toast when its mounted notice owner retires.
   useEffect(
     () => () => {
       if (active.current) toastManager.close(active.current.id);
@@ -239,7 +240,7 @@ export function ProviderUpdateNotice() {
     },
     [],
   );
-  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the imperative toast manager with committed update groups and dismissal preferences.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize the imperative toast manager with committed update groups and dismissal preferences.
   useEffect(() => {
     if (
       (isAnySettling && !settleGraceElapsed) ||

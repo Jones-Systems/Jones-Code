@@ -608,9 +608,9 @@ const runRepoScript = Effect.fn("dev-runner.runRepoScript")(function* (
 });
 
 /**
- * The first start in a worktree seeds its empty database from a small live database
- * and warms the web dependency cache. Each step checks for its own output, so
- * later starts skip it.
+ * The first start warms the web dependency cache. Seeding from the live install
+ * requires explicit opt-in; without it, the private source is not inspected.
+ * Each step checks for its own output, so later starts skip it.
  */
 const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (input: {
   readonly mode: DevMode;
@@ -640,6 +640,12 @@ const prepareFirstStart = Effect.fn("dev-runner.prepareFirstStart")(function* (i
       !(yield* exists(path.join(stateDir, "statev2.sqlite"))) &&
       !(yield* exists(path.join(stateDir, "state.sqlite")))
     ) {
+      const source = path.join(
+        yield* HostProcess.HomeDirectory,
+        ".t3",
+        "userdata",
+        "statev2.sqlite",
+      );
       const info = yield* fs.stat(source).pipe(Effect.option);
       if (Option.isSome(info)) {
         if (Number(info.value.size) > LARGE_DEV_DATABASE_BYTES) {
@@ -965,7 +971,7 @@ export const devRunnerCli = Command.make("dev-runner", {
   ),
   seed: Flag.Boolean("seed").pipe(
     Flag.withDescription(
-      "Seed an empty worktree database from ~/.t3 on first start (read-only, via migrate-dev-db) if the source is at most 500 MiB. On by default; --no-seed or T3CODE_DEV_SEED=0 skips it.",
+      "Opt in to seed an empty worktree database from ~/.t3 (read-only, via migrate-dev-db) if the source is at most 500 MiB. Off by default; --seed or T3CODE_DEV_SEED=1 enables it. --no-seed overrides the environment.",
     ),
     Flag.withFallbackConfig(optionalBooleanConfig("T3CODE_DEV_SEED")),
   ),

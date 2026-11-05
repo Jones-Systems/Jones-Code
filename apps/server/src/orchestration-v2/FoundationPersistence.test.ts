@@ -1508,7 +1508,6 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         );
         const first = yield* outbox.claimNext({
           workerId: "cleanup-test",
-          leaseDurationMs: 60_000,
         });
         assert.isTrue(Option.isSome(first));
         if (Option.isSome(first))
@@ -1518,7 +1517,6 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         assert.isUndefined(fence.pollUnsafe());
         const second = yield* outbox.claimNext({
           workerId: "cleanup-test",
-          leaseDurationMs: 60_000,
         });
         assert.isTrue(Option.isSome(second));
         if (Option.isSome(second))
@@ -1537,7 +1535,6 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         assert.isUndefined(failedFence.pollUnsafe());
         const failed = yield* outbox.claimNext({
           workerId: "cleanup-test",
-          leaseDurationMs: 60_000,
         });
         assert.isTrue(Option.isSome(failed));
         assert.isTrue(
@@ -2237,20 +2234,14 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         },
         { id: "effect:passive-live", commandId, threadId, request: { type: "terminal.cleanup" } },
       ]);
-      const live = yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 });
+      const live = yield* outbox.claimNext({ workerId: "passive-worker" });
       assert.equal(Option.getOrThrow(live).id, "effect:passive-live");
       yield* outbox.succeed({ effectId: "effect:passive-live", workerId: "passive-worker" });
-      assert.isTrue(
-        Option.isNone(
-          yield* outbox.claimNext({ workerId: "passive-worker", leaseDurationMs: 30_000 }),
-        ),
-      );
+      assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "passive-worker" })));
       assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
       const reconciled = yield* outbox.reconcileAfterProcessLoss;
       assert.equal(reconciled.requeued, 1);
-      const active = Option.getOrThrow(
-        yield* outbox.claimNext({ workerId: "restarted-worker", leaseDurationMs: 30_000 }),
-      );
+      const active = Option.getOrThrow(yield* outbox.claimNext({ workerId: "restarted-worker" }));
       assert.equal(active.id, marker);
       assert.deepEqual(active.request, {
         type: "provider-runtime.continue",
@@ -2779,10 +2770,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
     }),
   );
 
-  it.effect("does not reclaim a running effect after its process-local lease expires", () =>
+  it.effect("does not reclaim a running effect after clock advance alone", () =>
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const sql = yield* SqlClient.SqlClient;
       const commandId = CommandId.make("command:foundation-no-live-reclaim");
       const threadId = ThreadId.make("thread:foundation-no-live-reclaim");
       const firstEffectId = "effect:foundation-no-live-reclaim:first";
@@ -2832,11 +2822,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const firstFiber = yield* worker.runOnce.pipe(Effect.forkChild);
         yield* Deferred.await(firstStarted);
-        yield* sql`
-          UPDATE orchestration_v2_effect_outbox
-          SET lease_expires_at = '1970-01-01T00:00:00.000Z'
-          WHERE effect_id = ${firstEffectId}
-        `;
+        yield* TestClock.adjust(Duration.seconds(60));
 
         assert.isFalse(yield* worker.runOnce);
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId]);
@@ -2933,9 +2919,9 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       }),
   );
 
-  it.effect(
-    "persists shutdown continuation intent through the real event sink without domain events",
-    () =>
+  it.effect.each(["passive", "shutdown"] as const)(
+    "serializes passive quit and shutdown recovery with $0 claimed first",
+    (first) =>
       Effect.gen(function* () {
         const outbox = yield* EffectOutbox.EffectOutboxV2;
         const now = yield* DateTime.now;
@@ -3015,9 +3001,7 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           continueWithoutPreference: false,
         });
         if (first === "passive") {
-          assert.isTrue(
-            Option.isNone(yield* outbox.claimNext({ workerId: "live", leaseDurationMs: 30_000 })),
-          );
+          assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "live" })));
           assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
           yield* recovery.prepareForShutdown;
           yield* recovery.prepareForShutdown;
@@ -3047,7 +3031,6 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
           Option.isNone(
             yield* outbox.claimNext({
               workerId: "startup",
-              leaseDurationMs: 30_000,
               excludeRestartContinuations: true,
             }),
           ),
@@ -3058,26 +3041,14 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         yield* sql`UPDATE orchestration_v2_effect_outbox
           SET available_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))}
           WHERE effect_id = ${firstId}`;
-        const claimed = Option.getOrThrow(
-          yield* outbox.claimNext({ workerId: "activated", leaseDurationMs: 30_000 }),
-        );
+        const claimed = Option.getOrThrow(yield* outbox.claimNext({ workerId: "activated" }));
         assert.equal(claimed.id, firstId);
-        assert.isTrue(
-          Option.isNone(
-            yield* outbox.claimNext({ workerId: "other-worker", leaseDurationMs: 30_000 }),
-          ),
-        );
+        assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "other-worker" })));
         yield* outbox.succeed({ effectId: firstId, workerId: "activated" });
-        const next = Option.getOrThrow(
-          yield* outbox.claimNext({ workerId: "activated", leaseDurationMs: 30_000 }),
-        );
+        const next = Option.getOrThrow(yield* outbox.claimNext({ workerId: "activated" }));
         assert.equal(next.id, secondId);
         yield* outbox.succeed({ effectId: secondId, workerId: "activated" });
-        assert.isTrue(
-          Option.isNone(
-            yield* outbox.claimNext({ workerId: "activated", leaseDurationMs: 30_000 }),
-          ),
-        );
+        assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "activated" })));
       }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 
@@ -3637,6 +3608,139 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
       assert.isTrue(rebuilt.valid);
       assert.lengthOf((yield* projectionStore.getThreadProjection(threadId)).turnItems, 151);
     }),
+  );
+
+  it.effect.each(["passive", "shutdown"] as const)(
+    "serializes passive quit and shutdown recovery with $0 claimed first",
+    (first) =>
+      Effect.gen(function* () {
+        const outbox = yield* EffectOutbox.EffectOutboxV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make(`thread:shutdown-prepare:${first}`);
+        const runId = RunId.make(`run:shutdown-prepare:${first}`);
+        const providerThreadId = ProviderThreadId.make("provider-thread:shutdown-prepare");
+        const sessionId = ProviderSessionId.make("session:shutdown-prepare");
+        const attemptId = RunAttemptId.make("attempt:shutdown-prepare");
+        const projection = {
+          thread: makeThread(threadId, now),
+          runs: [
+            {
+              id: runId,
+              ordinal: 1,
+              status: "running",
+              providerInstanceId,
+              providerThreadId,
+              activeAttemptId: attemptId,
+            },
+          ],
+          providerThreads: [
+            {
+              id: providerThreadId,
+              appThreadId: threadId,
+              ownerNodeId: null,
+              driver: "codex",
+              providerInstanceId,
+              providerSessionId: sessionId,
+              status: "active",
+              nativeThreadRef: {
+                driver: "codex",
+                nativeId: "saved-native-thread",
+                strength: "strong",
+              },
+            },
+          ],
+          providerSessions: [
+            { id: sessionId, driver: "codex", providerInstanceId, status: "running" },
+          ],
+          providerTurns: [{ providerThreadId, runAttemptId: attemptId, status: "running" }],
+          runtimeRequests: [],
+          turnItems: [],
+        } as unknown as OrchestrationV2ThreadProjection;
+        const dependencies = Layer.mergeAll(
+          ServerSettings.layerTest({ continueThreadsAfterServerUpdate: true }),
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getRecoveryThreadIds: () => Effect.succeed([threadId]),
+            getRuntimeRecoveryProjection: () => Effect.succeed(projection),
+          }),
+          Layer.mock(EffectWorker.OrchestrationEffectWorkerV2)({}),
+        );
+        const recovery = yield* ProviderRuntimeRecovery.make.pipe(Effect.provide(dependencies));
+        if (first === "shutdown") {
+          yield* recovery.prepareForShutdown;
+          yield* recovery.prepareForShutdown;
+        }
+        for (let preparation = 0; preparation < 2; preparation += 1) {
+          assert.deepEqual(
+            yield* ServerUpdateContinuation.markOptedInProviderSessionsForContinuation.pipe(
+              Effect.provide(dependencies),
+            ),
+            [threadId],
+          );
+        }
+        const sql = yield* SqlClient.SqlClient;
+        const passiveRows = yield* sql<{ effect_id: string }>`
+          SELECT effect_id FROM orchestration_v2_effect_outbox
+          WHERE thread_id = ${threadId} AND status = 'pending'
+            AND command_id GLOB 'command:server-update-prepare:*'`;
+        assert.lengthOf(passiveRows, 1);
+        const passiveId = passiveRows[0]!.effect_id;
+        const passive = Option.getOrThrow(yield* outbox.get(passiveId));
+        assert.deepEqual(passive.request, {
+          type: "provider-runtime.continue",
+          sourceRunId: runId,
+          preparedForRestart: true,
+          continueWithoutPreference: false,
+        });
+        if (first === "passive") {
+          assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "live" })));
+          assert.isTrue(Option.isNone(yield* outbox.nextClaimableAt()));
+          yield* recovery.prepareForShutdown;
+          yield* recovery.prepareForShutdown;
+        }
+        const effects = yield* outbox.listByCommandId(
+          CommandId.make(`command:restart-prepare:${runId}`),
+        );
+        assert.lengthOf(effects, 1);
+        assert.equal(effects[0]?.status, "pending");
+        assert.deepEqual(effects[0]?.request, {
+          type: "provider-runtime.continue",
+          sourceRunId: runId,
+        });
+        assert.lengthOf(
+          yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+            WHERE thread_id = ${threadId} AND status = 'pending'`,
+          2,
+        );
+        assert.equal((yield* outbox.reconcileAfterProcessLoss).requeued, 1);
+        assert.deepEqual(Option.getOrThrow(yield* outbox.get(passiveId)).request, {
+          type: "provider-runtime.continue",
+          sourceRunId: runId,
+          preparedForRestart: false,
+          continueWithoutPreference: false,
+        });
+        assert.isTrue(
+          Option.isNone(
+            yield* outbox.claimNext({
+              workerId: "startup",
+              excludeRestartContinuations: true,
+            }),
+          ),
+        );
+        const firstId = first === "passive" ? passiveId : effects[0]!.id;
+        const secondId = first === "passive" ? effects[0]!.id : passiveId;
+        // Activation refreshes available_at; control claim order independently of wall-clock ties.
+        yield* sql`UPDATE orchestration_v2_effect_outbox
+          SET available_at = ${DateTime.formatIso(DateTime.subtract(now, { seconds: 1 }))}
+          WHERE effect_id = ${firstId}`;
+        const claimed = Option.getOrThrow(yield* outbox.claimNext({ workerId: "activated" }));
+        assert.equal(claimed.id, firstId);
+        assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "other-worker" })));
+        yield* outbox.succeed({ effectId: firstId, workerId: "activated" });
+        const next = Option.getOrThrow(yield* outbox.claimNext({ workerId: "activated" }));
+        assert.equal(next.id, secondId);
+        yield* outbox.succeed({ effectId: secondId, workerId: "activated" });
+        assert.isTrue(Option.isNone(yield* outbox.claimNext({ workerId: "activated" })));
+      }).pipe(Effect.provide(Layer.fresh(layerTest))),
   );
 });
 

@@ -31,6 +31,8 @@ const admissionError = (reason: AdmissionFailure) =>
   });
 
 export interface ReaderSlot {
+  /** Only an already-ready, non-retiring generation; cold startup stays scoped below. */
+  readonly readyConnection?: () => Connection | undefined;
   readonly acquire: Effect.Effect<Connection | undefined>;
   readonly generation: () => number;
   readonly available?: () => boolean;
@@ -336,9 +338,13 @@ export const makeReaderPool = Effect.fnUntraced(function* (
           const slot = slots[slotId]!;
           if (!active) return yield* admissionError("generation-retired");
           const startup = now();
-          // Fork while masked and publish before joining so scope closure can cancel and drain it.
-          starting = yield* Effect.forkChild(restore(slot.acquire));
-          const connection = yield* restore(Fiber.join(starting));
+          let acquiredConnection = slot.readyConnection?.();
+          if (acquiredConnection === undefined) {
+            // Fork while masked and publish before joining so scope closure can cancel and drain it.
+            starting = yield* Effect.forkChild(restore(slot.acquire));
+            acquiredConnection = yield* restore(Fiber.join(starting));
+          }
+          const connection = acquiredConnection;
           observe({
             phase: "startup",
             priority,

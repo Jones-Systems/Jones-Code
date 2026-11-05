@@ -224,7 +224,7 @@ it.effect("a link whose row cannot be stored keeps none of its token", () =>
       );
       const a = yield* makeA(laptop, noted);
       yield* a.sql`
-        CREATE TRIGGER refuse_link BEFORE INSERT ON peer_environment_links
+        CREATE TRIGGER refuse_link BEFORE INSERT ON jones_peer_environment_links
         BEGIN SELECT RAISE(ABORT, 'database or disk is full'); END
       `;
       const pairing = yield* b.auth.issuePairingCredential();
@@ -442,7 +442,7 @@ it.effect("tells the agent to link again once the peer revokes the link or it ex
 
       // A link stored before links were marked: its session there is not a
       // link's, so the peer would not fence its work even though it can.
-      yield* a.sql`UPDATE peer_environment_links SET fenced = 0`;
+      yield* a.sql`UPDATE jones_peer_environment_links SET fenced = 0`;
       // Linking again is its only way back, as for an expired link.
       expect((yield* a.links.list).map((link) => link.status)).toEqual(["expired"]);
       const legacy = yield* probe(a).pipe(Effect.flip);

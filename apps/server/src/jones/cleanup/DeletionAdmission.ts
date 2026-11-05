@@ -1,11 +1,20 @@
+import {
+  DeletionAdmissionBinding as Binding,
+  DeletionAdmissionWitnessBinding as WitnessBinding,
+  DeletionAdmissionCompletedNativeBinding as CompletedNativeBinding,
+} from "./DeletionBinding.ts";
+import { readCompletedNativeCleanupMembers } from "./CompletedNativeCleanup.ts";
+import { DeletionGroupRuntime, makeDeletionGroupEvidence } from "./DeletionGroupWitness.ts";
 import { withOperation } from "../workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup, beforeCleanupPath } from "../workspaceLifecycle/NativeBoundary.ts";
+import { makeRuntimeUseStore } from "./RuntimeUseStore.ts";
+import { overlaps as runtimeUseOverlaps } from "../ordinaryCheckout/CheckoutTarget.ts";
 import * as EffectPath from "effect/Path";
 import {
   CommandId,
   ProjectId,
   ThreadId,
-  WorktreeCleanupRules,
+  type WorktreeCleanupRules,
   type ServerSettingsError,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -40,19 +49,6 @@ export interface DeletionAdmissionInput {
   readonly currentRules: DeletionPolicyRead;
   readonly currentLive: DeletionLiveRead;
 }
-const Binding = Schema.Struct({
-  actor: Schema.Literal("storage-cleanup-policy"),
-  threadId: ThreadId,
-  birthEventId: Schema.NonEmptyString,
-  birthSequence: Schema.Int,
-  deletionEventId: Schema.NonEmptyString,
-  deletionSequence: Schema.Int,
-  commandId: CommandId,
-  deletionPayload: Schema.String,
-  target: DeletionWorktreeRemovalTargetV1,
-  rules: WorktreeCleanupRules,
-});
-type Binding = typeof Binding.Type;
 const ThreadIdentity = Schema.Struct({
   id: ThreadId,
   projectId: ProjectId,
@@ -113,9 +109,23 @@ const jsonBinding = Schema.fromJsonString(Binding);
 const jsonStart = Schema.fromJsonString(DeletionWorktreeRemovalStartV1);
 const same = (left: unknown, right: unknown) =>
   nativeCreationCanonicalJson(left) === nativeCreationCanonicalJson(right);
+const decodeThreadIdentityJson = Schema.decodeEffect(Schema.fromJsonString(ThreadIdentity));
+const decodeStringJson = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
+  ),
+);
+const isWitnessBinding = Schema.is(WitnessBinding);
+const isCompletedNativeBinding = Schema.is(CompletedNativeBinding);
+const isDeletionAdmissionError = Schema.is(DeletionAdmissionError);
+const decodeObservation = Schema.decodeEffect(Observation);
+
 // These methods execute inside EventSink's owning SQL context. They never run Git.
 export const makeDeletionAdmission = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const runtimeUses = yield* makeRuntimeUseStore;
+  const groupEvidence = yield* makeDeletionGroupEvidence(sql);
+  const groupRuntime = yield* Effect.serviceOption(DeletionGroupRuntime);
   const path = yield* EffectPath.Path;
   const overlaps = (left: string, right: string) =>
     left === right ||
@@ -132,7 +142,9 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     }>`SELECT binding_json,start_json,state FROM jones_deletion_worktree_admissions WHERE effect_id=${effectId}`;
     if (rows.length !== 1) return null;
     return {
-      binding: yield* Schema.decodeEffect(jsonBinding)(rows[0]!.binding_json),
+      binding: yield* Schema.decodeEffect(jsonBinding)(rows[0]!.binding_json, {
+        onExcessProperty: "error",
+      }),
       start: yield* Schema.decodeEffect(jsonStart)(rows[0]!.start_json),
       state: rows[0]!.state,
     };
@@ -151,6 +163,12 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       overlaps(target.path, target.projectRoot)
     )
       return yield* failure("original_policy_target_invalid");
+    if (
+      (yield* runtimeUses.pending()).some((use) =>
+        runtimeUseOverlaps(use.canonicalPath, target.path, path.sep),
+      )
+    )
+      return yield* failure("workspace_runtime_use_retirement_unconfirmed");
     const native = yield* sql<{
       readonly worktree_path: string;
     }>`SELECT worktree_path FROM jones_native_workspace_admissions`;
@@ -199,21 +217,13 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       binding.birthSequence >= binding.deletionSequence
     )
       return yield* failure("original_application_birth_changed");
-    const identity = yield* Schema.decodeEffect(Schema.fromJsonString(ThreadIdentity))(
-      binding.deletionPayload,
-    );
-    const born = yield* Schema.decodeEffect(
-      Schema.fromJsonString(
-        Schema.Struct({ id: ThreadId, projectId: ProjectId, createdAt: Schema.String }),
-      ),
-    )(birth[0]!.payload_json);
+    const identity = yield* decodeThreadIdentityJson(binding.deletionPayload);
+    const born = yield* decodeStringJson(birth[0]!.payload_json);
     const projection = yield* sql<{
       readonly payload_json: string;
     }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id=${binding.threadId}`;
     if (projection.length !== 1) return yield* failure("original_deleted_projection_unavailable");
-    const current = yield* Schema.decodeEffect(Schema.fromJsonString(ThreadIdentity))(
-      projection[0]!.payload_json,
-    );
+    const current = yield* decodeThreadIdentityJson(projection[0]!.payload_json);
     if (
       identity.id !== binding.threadId ||
       identity.projectId !== target.projectId ||
@@ -234,7 +244,24 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     const active = yield* sql<{
       readonly path: string | null;
     }>`SELECT json_extract(payload_json,'$.worktreePath') AS path FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
-    if (active.some((row) => row.path !== null && overlaps(row.path, target.path)))
+    if (isWitnessBinding(binding)) {
+      if (
+        binding.groupWitness.ownerThreadId !== binding.threadId ||
+        binding.groupWitness.deletionEventId !== binding.deletionEventId ||
+        binding.groupWitness.deletionSequence !== binding.deletionSequence ||
+        !same(binding.groupWitness.target, target)
+      )
+        return yield* failure("original_group_binding_mismatch");
+      yield* groupEvidence.validate(binding.groupWitness);
+    } else if (isCompletedNativeBinding(binding)) {
+      if (
+        !same(
+          binding.completedNativeMembers,
+          yield* readCompletedNativeCleanupMembers(sql, binding.threadId, target, path.sep),
+        )
+      )
+        return yield* failure("completed_native_cleanup_snapshot_changed");
+    } else if (active.some((row) => row.path !== null && overlaps(row.path, target.path)))
       return yield* failure("shared_worktree_retained");
     const sessions = yield* sql<{
       readonly cwd: string;
@@ -250,6 +277,8 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     currentRules?: DeletionPolicyRead,
     currentLive?: DeletionLiveRead,
   ) {
+    if (Option.isSome(yield* Effect.serviceOption(sql.transactionService)))
+      return yield* failure("live_observation_inside_transaction");
     if (currentRules === undefined || currentLive === undefined)
       return yield* failure("current_policy_owner_unavailable");
     const rules = yield* currentRules;
@@ -257,6 +286,11 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       return yield* failure("original_worktree_policy_changed");
     if (!(yield* currentLive))
       return yield* failure("current_cleanup_owner_or_live_prerequisites_changed");
+    if (isWitnessBinding(binding)) {
+      if (Option.isNone(groupRuntime))
+        return yield* failure("original_group_exclusion_unavailable");
+      yield* groupRuntime.value.revalidate(binding.groupWitness);
+    }
     yield* validateBinding(binding);
   });
   const readBinding = Effect.fn("DeletionAdmission.readBinding")(function* (
@@ -287,11 +321,30 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       target: input.target,
       rules: input.rules,
     };
-    yield* checkCurrent(binding, input.currentRules, input.currentLive);
-    return binding;
+    const active = yield* sql<{
+      readonly path: string | null;
+    }>`SELECT json_extract(payload_json,'$.worktreePath') AS path FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL`;
+    let candidate: Binding = binding;
+    if (active.some((row) => row.path !== null && overlaps(row.path, input.target.path))) {
+      candidate = {
+        ...binding,
+        schema: "jones.deletion-admission/v3",
+        completedNativeMembers: yield* readCompletedNativeCleanupMembers(
+          sql,
+          input.threadId,
+          input.target,
+          path.sep,
+        ),
+      };
+    }
+    yield* checkCurrent(candidate, input.currentRules, input.currentLive);
+    return candidate;
   });
   const start = Effect.fn("DeletionAdmission.start")(
-    function* (input: DeletionAdmissionInput) {
+    function* (
+      input: DeletionAdmissionInput,
+      beforeCommit: Effect.Effect<void, DeletionAdmissionError> = Effect.void,
+    ) {
       const binding = yield* readBinding(input);
       yield* withOperation(
         {
@@ -311,7 +364,8 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       );
       return yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* checkCurrent(binding, input.currentRules, input.currentLive);
+          yield* beforeCommit;
+          yield* validateBinding(binding);
           const bindingSha256 = nativeCreationSha256(nativeCreationCanonicalJson(binding));
           const effectId = `deletion-worktree:${binding.deletionEventId}:${bindingSha256}`;
           const existing = yield* sql<{
@@ -346,7 +400,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       return result;
     }),
     Effect.mapError((cause) =>
-      Schema.is(DeletionAdmissionError)(cause)
+      isDeletionAdmissionError(cause)
         ? cause
         : new DeletionAdmissionError({ reason: "deletion_admission_failed", cause }),
     ),
@@ -374,7 +428,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       return { start: original.start, ordinal: 0 };
     },
     Effect.mapError((cause) =>
-      Schema.is(DeletionAdmissionError)(cause)
+      isDeletionAdmissionError(cause)
         ? cause
         : new DeletionAdmissionError({ reason: "original_target_read_failed", cause }),
     ),
@@ -385,6 +439,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       ordinal: number,
       rules?: DeletionPolicyRead,
       live?: DeletionLiveRead,
+      beforeCommit: Effect.Effect<void, DeletionAdmissionError> = Effect.void,
     ) {
       const check = Effect.gen(function* () {
         const original = yield* load(captured.effectId);
@@ -402,8 +457,11 @@ export const makeDeletionAdmission = Effect.gen(function* () {
         if (outcomes.length > 0) return yield* failure("original_start_already_observed");
         if (!newlyIssuedStarts.has(captured.effectId))
           return yield* failure("original_start_observation_only");
-        yield* checkCurrent(original.binding, rules, live);
+        yield* validateBinding(original.binding);
+        return original.binding;
       });
+      const prepared = yield* check;
+      yield* checkCurrent(prepared, rules, live);
       yield* withOperation(
         {
           id: `deletion:${captured.effectId}:${ordinal}`,
@@ -411,12 +469,13 @@ export const makeDeletionAdmission = Effect.gen(function* () {
           worktree: captured.target.path,
           boundaries: ["cleanup"],
           inherit: false,
-          check,
+          check: checkCurrent(prepared, rules, live),
         },
         beforeCleanupPath(captured.target.path),
       );
       yield* sql.withTransaction(
-        check.pipe(
+        beforeCommit.pipe(
+          Effect.andThen(check),
           Effect.andThen(
             Effect.suspend(() =>
               newlyIssuedStarts.delete(captured.effectId)
@@ -426,9 +485,14 @@ export const makeDeletionAdmission = Effect.gen(function* () {
           ),
         ),
       );
+      if (isWitnessBinding(prepared)) {
+        if (Option.isNone(groupRuntime))
+          return yield* failure("original_group_exclusion_unavailable");
+        yield* groupRuntime.value.revalidate(prepared.groupWitness);
+      }
     },
     Effect.mapError((cause) =>
-      Schema.is(DeletionAdmissionError)(cause)
+      isDeletionAdmissionError(cause)
         ? cause
         : new DeletionAdmissionError({ reason: "original_start_revalidation_failed", cause }),
     ),
@@ -437,7 +501,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          const observation = yield* Schema.decodeEffect(Observation)(input, {
+          const observation = yield* decodeObservation(input, {
             onExcessProperty: "error",
           });
           const original = yield* load(observation.start.effectId);
@@ -457,6 +521,21 @@ export const makeDeletionAdmission = Effect.gen(function* () {
             return yield* failure("observation_original_operation_mismatch");
           yield* validateBinding(original.binding);
           const target = original.binding.target;
+          if (isWitnessBinding(original.binding)) {
+            const physical = original.binding.groupWitness.physical;
+            const registered = observation.before.registration;
+            const entry =
+              registered.status === "complete"
+                ? registered.entries.find((row) => row.path === target.path)
+                : undefined;
+            if (
+              registered.status !== "complete" ||
+              registered.gitCommonDirectory !== physical.gitCommonDirectory ||
+              (entry !== undefined &&
+                (entry.head !== physical.head || entry.branch !== physical.branch))
+            )
+              return yield* failure("original_group_observation_identity_mismatch");
+          }
           for (const readback of [observation.before, observation.after]) {
             if (
               readback.filesystem.path !== target.path ||
@@ -510,7 +589,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       )
       .pipe(
         Effect.mapError((cause) =>
-          Schema.is(DeletionAdmissionError)(cause)
+          isDeletionAdmissionError(cause)
             ? cause
             : new DeletionAdmissionError({ reason: "observation_qualification_failed", cause }),
         ),

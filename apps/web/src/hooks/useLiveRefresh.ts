@@ -80,6 +80,7 @@ export function useLiveRefresh(
   refresh: (() => void) | null,
   options: {
     readonly enabled?: boolean;
+    readonly minimumIntervalMs?: number;
     readonly key?: string;
     /** `null` turns off the periodic refresh, for a read too costly to repeat unasked. */
     readonly intervalMs?: number | null;
@@ -93,6 +94,7 @@ export function useLiveRefresh(
 ): void {
   const {
     enabled = true,
+    minimumIntervalMs = LIVE_REFRESH_MIN_INTERVAL_MS,
     key,
     intervalMs = LIVE_REFRESH_INTERVAL_MS,
     refreshOnShow = false,
@@ -155,7 +157,7 @@ export function useLiveRefresh(
     if (refreshOnShow) {
       const now = Date.now();
       const lastRefreshedAt = lastRefreshedAtByView.get(viewId);
-      if (lastRefreshedAt === undefined || now - lastRefreshedAt >= LIVE_REFRESH_MIN_INTERVAL_MS) {
+      if (lastRefreshedAt === undefined || now - lastRefreshedAt >= minimumIntervalMs) {
         read(now);
       }
     } else onArrival();
@@ -168,5 +170,5 @@ export function useLiveRefresh(
       document.removeEventListener("visibilitychange", onVisibilityChange);
       stopWatchingInteraction();
     };
-  }, [enabled, viewId, intervalMs, refreshOnShow]);
+  }, [enabled, viewId, intervalMs, refreshOnShow, minimumIntervalMs]);
 }

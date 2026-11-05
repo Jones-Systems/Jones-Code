@@ -17,6 +17,7 @@ import { Atom } from "effect/reactivity";
 
 import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
+import { createQuietShellList } from "../jones/shellPublication/batchedPublication.ts";
 import { hiddenThreadKeys, NO_HIDDEN_THREADS } from "./threadTagFilter.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
@@ -562,18 +563,25 @@ export function createEnvironmentThreadShellAtoms(input: {
 
   // Lists that arrange threads read this, so a running thread's streaming
   // ticks reach only what reads its live shell.
-  let previousQuietThreadShells: ReadonlyArray<EnvironmentThreadShell> = [];
+  const keepQuietShellList = createQuietShellList<EnvironmentThreadShell>(
+    (thread) => threadKey({ environmentId: thread.environmentId, threadId: thread.id }),
+    sameApartFromStreaming,
+  );
   const quietThreadShellsAtom = Atom.make((get) => {
     const next: EnvironmentThreadShell[] = [];
     const hidden = get(hiddenThreadKeysAtom);
-    for (const ref of get(threadRefsAtom)) {
-      if (hidden.has(threadKey(ref))) continue;
-      const shell = get(quietThreadShellAtomFamily(threadKey(ref)));
-      if (shell !== null) next.push(shell);
+    // Jones: aggregate the shared source index directly. Thousands of list-only
+    // point subscriptions otherwise reevaluate for every streaming count tick.
+    for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
+      const requests = get(pendingSubagentRequestsAtom(environmentId));
+      const index = get(environmentThreadIndexAtom(environmentId));
+      for (const thread of get(environmentThreadsAtom(environmentId))) {
+        if (hidden.has(threadKey({ environmentId, threadId: thread.id }))) continue;
+        const source = index.get(thread.id);
+        if (source !== undefined) next.push(scopedThread(environmentId, source, requests));
+      }
     }
-    if (arrayElementsEqual(previousQuietThreadShells, next)) return previousQuietThreadShells;
-    previousQuietThreadShells = next;
-    return next;
+    return keepQuietShellList(next);
   }).pipe(Atom.withLabel("environment-quiet-thread-shell-list"));
 
   let previousDelegatedUnderParent: ReadonlySet<string> = new Set();

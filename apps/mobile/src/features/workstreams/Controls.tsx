@@ -2,8 +2,9 @@ import { workstreamPageUrl } from "./gateway";
 import { WorkstreamColorPicker } from "../../jones/workstreamAppearance/WorkstreamColorPicker";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
 import { runtime } from "../../lib/runtime";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import type { WorkstreamThreadLike } from "@t3tools/client-runtime/state/workstreams";
 import {
@@ -62,7 +63,7 @@ function WorkstreamAction({
   );
 }
 
-export function MobileWorkstreamControls({
+function MobileWorkstreamControlsSession({
   api,
   selection,
   onSelect,
@@ -73,11 +74,14 @@ export function MobileWorkstreamControls({
   onSelect: (selection: { thread?: WorkstreamThreadLike; groupKey?: string }) => void;
   onClose: () => void;
 }) {
-  const binding = useRef(api.bindingRevision);
+  const binding = useRef<string | null>(api.bindingRevision);
   const bindingRevision = api.bindingRevision;
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed binding revision before asynchronous control actions can accept their results.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish the committed authority revision to in-flight workstream callbacks.
   useLayoutEffect(() => {
     binding.current = bindingRevision;
+    return () => {
+      binding.current = null;
+    };
   }, [bindingRevision]);
   const [colorOpen, setColorOpen] = useState(false);
   const [name, setName] = useState("");
@@ -85,15 +89,6 @@ export function MobileWorkstreamControls({
   const [busy, setBusy] = useState(false);
   const [lastDestination, setLastDestination] = useState<string | null | undefined>(undefined);
   const [history, setHistory] = useState<readonly { key: string; text: string }[]>([]);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Clear control state when the selected workstream or its authority binding changes.
-  useEffect(() => {
-    setMessage(null);
-    setLastDestination(undefined);
-    setBusy(false);
-    setHistory([]);
-    setName("");
-    setColorOpen(false);
-  }, [api.bindingRevision, selection]);
   const group = api.groups.find((item) => item.key === selection?.groupKey);
   const snapshot = selection?.thread
     ? api.snapshots.find((item) => item.prepared.environmentId === selection.thread?.environmentId)
@@ -178,6 +173,7 @@ export function MobileWorkstreamControls({
             }),
         )
       : undefined;
+    const now = await runtime.runPromise(Clock.currentTimeMillis);
     const planned = planNativeMembership({
       data: snapshot.data,
       placements: snapshot.placements,
@@ -185,7 +181,7 @@ export function MobileWorkstreamControls({
       destinationMemberships: episodes?.items,
       thread: selection.thread,
       destination,
-      now: Date.now(),
+      now,
       index: snapshot.index,
     });
     if (secondary) {
@@ -197,7 +193,7 @@ export function MobileWorkstreamControls({
       const reference = references.items.find(
         (item) =>
           item.owner_id === snapshot.data.binding.ownerId &&
-          attestedNativeThreadKey(item, Date.now(), trust) === key,
+          attestedNativeThreadKey(item, now, trust) === key,
       );
       if (!reference) throw new Error("Unavailable");
       return api.submit(snapshot, {
@@ -505,4 +501,17 @@ export function MobileWorkstreamControls({
       </Modal>
     </View>
   );
+}
+
+export function MobileWorkstreamControls(
+  props: Parameters<typeof MobileWorkstreamControlsSession>[0],
+) {
+  const key = JSON.stringify([
+    props.api.bindingRevision,
+    props.selection?.groupKey,
+    props.selection?.thread?.environmentId,
+    props.selection?.thread?.id,
+    props.selection !== null,
+  ]);
+  return <MobileWorkstreamControlsSession key={key} {...props} />;
 }

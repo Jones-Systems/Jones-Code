@@ -18,6 +18,7 @@ const readGitHubCiStatus = (
     Effect.provideService(GitHubRest.GitHubRest, {
       ...github,
       credential: () => Effect.die("CI reads must use the pinned credential"),
+      appCredential: () => Effect.die("CI reads must use the pinned credential"),
     }),
     Effect.flatMap((reader) => readCiStatus(reader, input)),
   );
@@ -80,6 +81,7 @@ function empty(endpoint: string) {
       ? { total_count: 0, jobs: [] }
       : { total_count: 0, workflow_runs: [] };
 }
+const decodePullRequestCiStatusResult = Schema.decodeEffect(PullRequestCiStatusResult);
 
 it.effect("normalizes active jobs and runners and separates unmaterialized waiting runs", () =>
   Effect.gen(function* () {
@@ -128,7 +130,7 @@ it.effect("normalizes active jobs and runners and separates unmaterialized waiti
     assert.equal(result.runners.items[1]!.status, "offline");
     assert.equal(result.jobs.state, "available");
     assert.equal(result.runners.state, "available");
-    yield* Schema.decodeEffect(PullRequestCiStatusResult)(result);
+    yield* decodePullRequestCiStatusResult(result);
   }),
 );
 

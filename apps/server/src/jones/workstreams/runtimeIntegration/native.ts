@@ -154,7 +154,7 @@ const createNativeWorkstreamsHttpHandler = (
       });
     }
     const enrollments = NativeProviderEnrollment.of({
-      getBySessionId: (sessionId) =>
+      getBySessionId: Effect.fn("NativeProviderEnrollment.getBySessionId")((sessionId) =>
         runtime.enrollments
           .getBySessionId(sessionId)
           .pipe(
@@ -169,6 +169,7 @@ const createNativeWorkstreamsHttpHandler = (
               ),
             ),
           ),
+      ),
     });
     const body =
       request.source instanceof Request && request.source.body === null

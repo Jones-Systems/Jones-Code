@@ -114,7 +114,13 @@ export default defineConfig({
       dts: false,
       sourcemap: true,
       outExtensions: () => ({ js: ".cjs" }),
-      entry: ["src/boot.ts", "src/compileCache.ts", "src/serverCompileCache.ts"],
+      entry: {
+        boot: "src/boot.ts",
+        compileCache: "src/compileCache.ts",
+        serverCompileCache: "src/serverCompileCache.ts",
+        "jones-cold-backend-custody": "src/jones/updates/jonesColdBackendCustody.ts",
+      },
+      plugins: [coldCustodyExternal],
       clean: false,
       deps: {
         alwaysBundle: (id) =>

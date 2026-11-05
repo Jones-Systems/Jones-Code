@@ -80,6 +80,7 @@ const layerWithPolicy = (policy?: ManagedPolicySummary) =>
     Layer.provide(ServerSettings.layerTest({}, policy)),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+        getCatalogSource: providerInstanceFor,
         getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
         listInstances: Effect.succeed([]),
         listUnavailable: Effect.succeed([]),

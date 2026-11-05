@@ -37,6 +37,10 @@ import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 
+const encodeNativeProviderEnrollment = Schema.encodeEffect(
+  Schema.fromJsonString(NativeProviderEnrollmentBinding),
+);
+
 it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))(
   "DatabaseMaintenance",
   (it) => {
@@ -219,9 +223,7 @@ it.layer(DatabaseMaintenance.layer.pipe(Layer.provideMerge(NodeServices.layer)))
             yield* sql`INSERT INTO orchestration_command_receipts
             (command_id, aggregate_kind, aggregate_id, command_type, accepted_at, result_sequence, status, error)
             VALUES (${commandId}, 'thread', ${threadId}, 'thread.settle', ${now}, ${batch.at(-1)!.sequence}, 'accepted', NULL)`;
-            const enrollment = yield* Schema.encodeEffect(
-              Schema.fromJsonString(NativeProviderEnrollmentBinding),
-            )(binding);
+            const enrollment = yield* encodeNativeProviderEnrollment(binding);
             yield* sql`INSERT INTO workstreams_native_attempts VALUES
             (${request.owner_id}, ${request.principal_id}, ${request.command_id}, ${requestText}, ${requestBytesSha256}, ${"e".repeat(64)}, ${enrollment}, ${commandId}, ${now}, ${now})`;
             yield* events.append({

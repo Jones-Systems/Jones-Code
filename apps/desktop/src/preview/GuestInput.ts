@@ -102,6 +102,7 @@ const sendPointerPress = async (
   method: string,
   params: Record<string, unknown>,
   sessionId: string | undefined,
+  assertCurrent: (() => void) | undefined,
 ) => {
   const host = webContents.hostWebContents;
   if (!host || host.isDestroyed() || webContents.focusedFrame) {
@@ -121,6 +122,7 @@ const sendPointerPress = async (
     state.presses.push(${webContents.id});
   })()`);
   try {
+    assertCurrent?.();
     return await debuggee.sendCommand(method, params, sessionId);
   } finally {
     if (!host.isDestroyed()) {
@@ -150,15 +152,17 @@ const sendPointerCommand = async (
   method: string,
   params: Record<string, unknown>,
   sessionId: string | undefined,
+  assertCurrent: (() => void) | undefined,
 ) => {
   const previous = pointerCommands.get(webContents) ?? Promise.resolve();
   const current = previous
     .catch(() => {})
-    .then(() =>
-      params["type"] === "mousePressed" || params["type"] === "touchStart"
-        ? sendPointerPress(webContents, debuggee, method, params, sessionId)
-        : debuggee.sendCommand(method, params, sessionId),
-    );
+    .then(() => {
+      assertCurrent?.();
+      return params["type"] === "mousePressed" || params["type"] === "touchStart"
+        ? sendPointerPress(webContents, debuggee, method, params, sessionId, assertCurrent)
+        : debuggee.sendCommand(method, params, sessionId);
+    });
   pointerCommands.set(webContents, current);
   try {
     return await current;
@@ -174,9 +178,10 @@ export const sendPageCommand = async (
   method: string,
   params: Record<string, unknown>,
   sessionId?: string,
+  assertCurrent?: () => void,
 ): Promise<unknown> => {
   if (method === "Input.dispatchMouseEvent" || method === "Input.dispatchTouchEvent") {
-    return sendPointerCommand(webContents, debuggee, method, params, sessionId);
+    return sendPointerCommand(webContents, debuggee, method, params, sessionId, assertCurrent);
   }
   if (sessionId !== undefined) return debuggee.sendCommand(method, params, sessionId);
   // Electron's debugger routes Page.reload on a webview to its embedder window.

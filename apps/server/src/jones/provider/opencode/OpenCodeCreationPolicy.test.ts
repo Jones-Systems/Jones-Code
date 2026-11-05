@@ -88,8 +88,6 @@ const syntheticRuntime = (
   createOpenCodeSdkClient: () => ({}) as never,
   loadOpenCodeInventory: unusedRuntimeMethod,
   loadOpenCodeSkills: unusedRuntimeMethod,
-  loadInventoryFromCli: unusedRuntimeMethod,
-  loadSkillsFromCli: unusedRuntimeMethod,
 });
 const processSnapshot = (index: number): OpenCodeRuntime.OpenCodeServerProcess => ({
   url: `http://127.0.0.1:${index}`,

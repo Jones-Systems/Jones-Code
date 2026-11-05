@@ -1,3 +1,5 @@
+import { AuthStandardClientScopes } from "@t3tools/contracts";
+
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Effect's Crypto has no generateKeyPairSync or sign.
 import * as NodeCrypto from "node:crypto";
 
@@ -139,7 +141,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
         const authenticated = yield* serverAuth.authenticateHttpRequest(request);
         expect(devExchange.cookieName).toMatch(/^t3_dev_session_/);
         expect(devExchange.expireNormalCookie).toBe(true);
-        expect(devExchange.response).toMatchObject(authScopeResponse(AuthStandardClientScopes));
+        expect(devExchange.response).toMatchObject(authScopeResponse(AuthAdministrativeScopes));
         expect(authenticated.scopes).toEqual(["orchestration:read"]);
       }).pipe(
         Effect.provide(
@@ -821,6 +823,41 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
       }).pipe(
         Effect.provide(layerEnvironmentAuth({ desktopBootstrapToken: "desktop-bootstrap-token" })),
       ),
+    );
+
+    it.effect("keeps user-issued administrative pairing links manageable", () =>
+      Effect.gen(function* () {
+        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const pairingCredential = yield* serverAuth.issuePairingCredential({
+          scopes: AuthAdministrativeScopes,
+        });
+        const listedPairingLinks = yield* serverAuth.listPairingLinks();
+
+        expect(
+          listedPairingLinks.find((pairingLink) => pairingLink.id === pairingCredential.id)
+            ?.subject,
+        ).toBe("one-time-token");
+      }).pipe(Effect.provide(layerEnvironmentAuth())),
+    );
+
+    it.effect("keeps bearer socket upgrades independent of the page origin", () =>
+      Effect.gen(function* () {
+        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const bearer = yield* serverAuth.issueSession();
+        const verified = yield* serverAuth.authenticateWebSocketUpgrade(
+          {
+            url: "/ws",
+            cookies: {},
+            headers: {
+              host: "192.168.1.50:3773",
+              origin: "http://192.168.1.50:8080",
+              authorization: `Bearer ${bearer.token}`,
+            },
+          } as never,
+          "rpc",
+        );
+        expect(verified.sessionId).toBe(bearer.sessionId);
+      }).pipe(Effect.provide(layerEnvironmentAuth({ mode: "web", host: "192.168.1.50" }))),
     );
   },
 );

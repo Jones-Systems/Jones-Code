@@ -1,8 +1,51 @@
+const THREAD_PILL_STYLES = {
+  Failed: {
+    colorClass: "text-red-600 dark:text-red-300/90",
+    dotClass: "bg-red-500 dark:bg-red-300/90",
+    pulse: false,
+  },
+  "Pending Approval": {
+    colorClass: "text-amber-600 dark:text-amber-300/90",
+    dotClass: "bg-amber-500 dark:bg-amber-300/90",
+    pulse: false,
+  },
+  "Awaiting Input": {
+    colorClass: "text-indigo-600 dark:text-indigo-300/90",
+    dotClass: "bg-indigo-500 dark:bg-indigo-300/90",
+    pulse: false,
+  },
+  Working: {
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
+  },
+  Connecting: {
+    colorClass: "text-sky-600 dark:text-sky-300/80",
+    dotClass: "bg-sky-500 dark:bg-sky-300/80",
+    pulse: true,
+  },
+  Waiting: {
+    colorClass: "text-sidebar-muted-foreground",
+    dotClass: "bg-sidebar-muted-foreground",
+    pulse: false,
+  },
+  "Plan Ready": {
+    colorClass: "text-violet-600 dark:text-violet-300/90",
+    dotClass: "bg-violet-500 dark:bg-violet-300/90",
+    pulse: false,
+  },
+  Completed: {
+    colorClass: "text-emerald-600 dark:text-emerald-300/90",
+    dotClass: "bg-emerald-500 dark:bg-emerald-300/90",
+    pulse: false,
+  },
+} as const;
+import { resolveThreadAttentionPill } from "@t3tools/shared/jones/threadAttention";
+import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/models";
 import type { EnvironmentServerConfig } from "@t3tools/client-runtime/connection";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -394,8 +437,9 @@ export function resolveSidebarReorderableThreadKeys(input: {
     }
 
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
-    activeReorderableThreadKeys.add(threadKey);
-    draggableThreadKeys.add(threadKey);
+    const capabilities = input.serverConfigs.get(thread.environmentId)!.environment.capabilities;
+    if (capabilities.threadActiveReorder === true) activeReorderableThreadKeys.add(threadKey);
+    if (capabilities.threadPinReorder === true) draggableThreadKeys.add(threadKey);
   }
 
   return { draggableThreadKeys, activeReorderableThreadKeys };
@@ -490,12 +534,7 @@ export function planSidebarThreadDrop(input: {
       ) {
         return { kind: "none" };
       }
-      const assignments = planWritableSidebarReorder(
-        order,
-        activeKeysById,
-        activeKey,
-        activeReorderableKeys,
-      );
+      const assignments = arrange(order, activeKeysById, activeReorderableKeys);
       if (assignments === null) return { kind: "none" };
       return {
         kind: "move-active",
@@ -517,12 +556,7 @@ export function planSidebarThreadDrop(input: {
       ) {
         return { kind: "none" };
       }
-      const assignments = planWritableSidebarReorder(
-        order,
-        pinnedKeysById,
-        activeKey,
-        reorderableKeys,
-      );
+      const assignments = arrange(order, pinnedKeysById, reorderableKeys);
       if (assignments === null) return { kind: "none" };
       if (activeSection === "pinned") {
         return assignments.length === 0
@@ -1242,7 +1276,7 @@ function sortProjectsByActivity<TProject extends SidebarProject>(
     .map(({ project }) => project);
 }
 
-export function sortLogicalProjectsForSidebar<
+function sortLogicalProjectsForSidebar<
   TProject extends LogicalSidebarProject,
   TThread extends ScopedSidebarThread,
 >(
@@ -1327,4 +1361,30 @@ export function sortScopedProjectsForSidebar<
       left.environmentId.localeCompare(right.environmentId) ||
       left.id.localeCompare(right.id),
   );
+}
+
+export function resolveSidebarV2TopStatus(input: {
+  readonly status: SidebarThreadStatus;
+  readonly isUnread: boolean;
+  readonly isWoke: boolean;
+}): SidebarV2TopStatusKind | null {
+  if (input.status === "working") {
+    return "working";
+  }
+  if (input.status === "waiting") {
+    return "waiting";
+  }
+  if (input.status === "approval") {
+    return "approval";
+  }
+  if (input.status === "input" || input.status === "request") {
+    return input.status;
+  }
+  if (input.status === "failed" || input.status === "limited") {
+    return input.status;
+  }
+  if (input.isWoke) {
+    return "woke";
+  }
+  return input.isUnread ? "done" : null;
 }

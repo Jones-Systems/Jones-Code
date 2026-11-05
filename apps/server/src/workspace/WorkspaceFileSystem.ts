@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { makeFileWriteSerialization } from "../jones/workspace/fileWriteSerialization.ts";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 
@@ -141,6 +142,7 @@ export const make = Effect.gen(function* () {
   const knownWorkspaces = yield* KnownWorkspaces.KnownWorkspaces;
   const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
   const isServerInternalPath = yield* makeIsServerInternalPath;
+  const serializeWrite = makeFileWriteSerialization();
 
   const metadataForPath = Effect.fnUntraced(function* (requestedPath: string) {
     const expandedPath = expandHomePath(requestedPath, yield* HostProcess.HomeDirectory);
@@ -546,50 +548,81 @@ export const make = Effect.gen(function* () {
     yield* knownWorkspaces.assertContains(input.cwd);
     const target = yield* resolveWriteTarget(input);
     const realTargetPath = target.realTargetPath;
-    const replacesFile = yield* fileSystem
-      .exists(realTargetPath)
-      .pipe(Effect.orElseSucceed(() => false));
+    return yield* serializeWrite(
+      realTargetPath,
+      Effect.gen(function* () {
+        const replacesFile = yield* fileSystem
+          .exists(realTargetPath)
+          .pipe(Effect.orElseSucceed(() => false));
 
-    yield* fileSystem.makeDirectory(path.dirname(realTargetPath), { recursive: true }).pipe(
-      Effect.mapError(
-        (cause) =>
-          new WorkspaceFileSystemOperationError({
-            workspaceRoot: input.cwd,
-            relativePath: input.relativePath,
-            resolvedPath: realTargetPath,
-            operationPath: path.dirname(realTargetPath),
-            operation: "make-directory",
-            cause,
-          }),
-      ),
+        yield* fileSystem.makeDirectory(path.dirname(realTargetPath), { recursive: true }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorkspaceFileSystemOperationError({
+                workspaceRoot: input.cwd,
+                relativePath: input.relativePath,
+                resolvedPath: realTargetPath,
+                operationPath: path.dirname(realTargetPath),
+                operation: "make-directory",
+                cause,
+              }),
+          ),
+        );
+        yield* Effect.tryPromise({
+          // A symlink swapped in after the check is not followed. Windows lacks O_NOFOLLOW.
+          try: () =>
+            NodeFSP.writeFile(realTargetPath, input.contents, {
+              flag:
+                NodeFS.constants.O_WRONLY |
+                NodeFS.constants.O_CREAT |
+                NodeFS.constants.O_TRUNC |
+                (NodeFS.constants.O_NOFOLLOW ?? 0),
+            }),
+          catch: (cause) =>
+            new WorkspaceFileSystemOperationError({
+              workspaceRoot: input.cwd,
+              relativePath: input.relativePath,
+              resolvedPath: realTargetPath,
+              operationPath: realTargetPath,
+              operation: "write-file",
+              cause,
+            }),
+        });
+        if (!replacesFile) {
+          yield* workspaceEntries.refresh(input.cwd);
+        } else {
+          // Paths stay unchanged; only an already-resident content finder pays for strict freshness.
+          yield* workspaceEntries.refreshContentAfterWrite(input.cwd).pipe(
+            Effect.mapError(
+              (cause) =>
+                new WorkspaceFileSystemOperationError({
+                  workspaceRoot: input.cwd,
+                  relativePath: input.relativePath,
+                  resolvedPath: realTargetPath,
+                  operationPath: realTargetPath,
+                  operation: "write-file",
+                  cause,
+                }),
+            ),
+          );
+        }
+        return { relativePath: target.relativePath };
+      }),
+    ).pipe(
+      Effect.catchTags({
+        FileWriteBusyError: (cause) =>
+          Effect.fail(
+            new WorkspaceFileSystemOperationError({
+              workspaceRoot: input.cwd,
+              relativePath: input.relativePath,
+              resolvedPath: realTargetPath,
+              operationPath: realTargetPath,
+              operation: "write-file",
+              cause,
+            }),
+          ),
+      }),
     );
-    yield* Effect.tryPromise({
-      // A symlink swapped in after the check is not followed. Windows lacks O_NOFOLLOW.
-      try: () =>
-        NodeFSP.writeFile(realTargetPath, input.contents, {
-          flag:
-            NodeFS.constants.O_WRONLY |
-            NodeFS.constants.O_CREAT |
-            NodeFS.constants.O_TRUNC |
-            (NodeFS.constants.O_NOFOLLOW ?? 0),
-        }),
-      catch: (cause) =>
-        new WorkspaceFileSystemOperationError({
-          workspaceRoot: input.cwd,
-          relativePath: input.relativePath,
-          resolvedPath: realTargetPath,
-          operationPath: realTargetPath,
-          operation: "write-file",
-          cause,
-        }),
-    });
-    // Editor autosave overwrites existing files, which leaves the indexed paths unchanged, and
-    // fff's watcher applies the new contents on its own. A forced rescan re-walks the whole
-    // workspace, and the save would wait for it.
-    if (!replacesFile) {
-      yield* workspaceEntries.refresh(input.cwd);
-    }
-    return { relativePath: target.relativePath };
   });
 
   return WorkspaceFileSystem.of({ getMetadata, readFile, writeFile });

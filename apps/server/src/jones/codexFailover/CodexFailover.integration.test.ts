@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeURL from "node:url";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
@@ -252,6 +253,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       Layer.provide(Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd })),
       Layer.provide(Layer.succeed(HostProcess.Environment, environment)),
       Layer.provide(Layer.succeed(HostProcess.HomeDirectory, homePath)),
+      Layer.provide(NodeCrypto.layer),
     );
     const runtime = Harness.layerWithRegistryAndServices(
       { name: `codex-failover-${mode}`, runtimePolicyOverride: { cwd } },
@@ -562,10 +564,10 @@ const scenario = (mode: "chain" | "all-unavailable") =>
 describe("Codex automatic account failover through the real server and subprocess adapter", () => {
   it.live(
     "cascades A → B → C across distinct provider threads and starts an inherited queued follower on C",
-    () => scenario("chain"),
+    () => scenario("chain").pipe(Effect.provide(NodeCrypto.layer)),
   );
   it.live(
     "exhausts A/B/C/D/E exactly once and terminates failed without duplicate continuation",
-    () => scenario("all-unavailable"),
+    () => scenario("all-unavailable").pipe(Effect.provide(NodeCrypto.layer)),
   );
 });

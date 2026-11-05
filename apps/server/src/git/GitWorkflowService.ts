@@ -446,6 +446,14 @@ export const make = Effect.gen(function* () {
         );
       },
     ),
+    resolveRemoteTrackingCommitIfExists: Effect.fn(
+      "GitWorkflowService.resolveRemoteTrackingCommitIfExists",
+    )(function (input) {
+      return ensureGitCommand(
+        "GitWorkflowService.resolveRemoteTrackingCommitIfExists",
+        input.cwd,
+      ).pipe(Effect.andThen(git.resolveRemoteTrackingCommitIfExists(input)));
+    }),
     resolveWorktreeBaseRemote: Effect.fn("GitWorkflowService.resolveWorktreeBaseRemote")(
       function (input) {
         return ensureGitCommand("GitWorkflowService.resolveWorktreeBaseRemote", input.cwd).pipe(

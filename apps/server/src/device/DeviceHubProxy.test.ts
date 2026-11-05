@@ -134,6 +134,9 @@ const accessSchema = Schema.Struct({
   owner: Schema.String,
   generation: Schema.String,
 });
+
+const decodeSyncFromJsonStringAccessSchema = Schema.decodeSync(Schema.fromJsonString(accessSchema));
+
 const getDirect = async (f: ReturnType<typeof fixture>, extra = "") => {
   const response = await f.handler(
     new Request(
@@ -144,7 +147,7 @@ const getDirect = async (f: ReturnType<typeof fixture>, extra = "") => {
   expect(response.status).toBe(200);
   const text = await response.text();
   expect(text).not.toContain("private-vps-token");
-  return Schema.decodeSync(Schema.fromJsonString(accessSchema))(text);
+  return decodeSyncFromJsonStringAccessSchema(text);
 };
 
 describe("device hub proxy", () => {

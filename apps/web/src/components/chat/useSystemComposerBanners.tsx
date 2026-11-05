@@ -243,9 +243,19 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         icon: <ComposerServerUpdateIcon status={serverUpdateState.status} />,
         title: `${updateFailed ? "Could not update" : "Updating"} ${versionMismatchServerLabel}`,
         description:
-          serverUpdateState.status === "failed"
-            ? serverUpdateState.message
-            : serverUpdateStageLabel(serverUpdateState.stage),
+          serverUpdateState.status === "failed" ? (
+            <>
+              {serverUpdateState.message}
+              {versionMismatch ? (
+                <>
+                  <br />
+                  <ClientServerBuildLabels builds={versionMismatch} />
+                </>
+              ) : null}
+            </>
+          ) : (
+            serverUpdateStageLabel(serverUpdateState.stage)
+          ),
         actions: !updateFailed ? (
           disconnectAction
         ) : !versionMismatch ||

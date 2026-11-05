@@ -1,6 +1,5 @@
 import type { AnyRouter } from "@tanstack/react-router";
 import { EnvironmentId } from "@t3tools/contracts";
-import { pendingSubagentRequestsByThread } from "@t3tools/shared/jones/threadAttention";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import { Atom, AtomRegistry } from "effect/reactivity";

@@ -17,6 +17,7 @@ type SendSnapshot = Pick<
   | "previewAnnotations"
   | "reviewComments"
   | "threadContexts"
+  | "environmentContexts"
 >;
 type SendOwner = {
   routeThreadKey: string;
@@ -42,7 +43,8 @@ function matchesDraftContent(
     current.terminalContexts === expected.terminalContexts &&
     current.previewAnnotations === expected.previewAnnotations &&
     current.reviewComments === expected.reviewComments &&
-    current.threadContexts === expected.threadContexts
+    current.threadContexts === expected.threadContexts &&
+    current.environmentContexts === expected.environmentContexts
   );
 }
 
@@ -69,6 +71,7 @@ export function restoreFailedComposerSend(
     composerImagesRef: Ref<SendSnapshot["images"]>;
     composerFilesRef: Ref<SendSnapshot["files"]>;
     composerTerminalContextsRef: Ref<SendSnapshot["terminalContexts"]>;
+    composerEnvironmentContextsRef?: Ref<SendSnapshot["environmentContexts"]>;
     snapshot: SendSnapshot;
     onRestore?: () => void;
     resetCursor: (options: RecoveryCursor) => void;
@@ -84,9 +87,11 @@ export function restoreFailedComposerSend(
       input.composerImagesRef.current.length === 0 &&
       input.composerFilesRef.current.length === 0 &&
       input.composerTerminalContextsRef.current.length === 0 &&
+      (input.composerEnvironmentContextsRef?.current.length ?? 0) === 0 &&
       (draft?.previewAnnotations.length ?? 0) === 0 &&
       (draft?.reviewComments.length ?? 0) === 0 &&
-      (draft?.threadContexts.length ?? 0) === 0
+      (draft?.threadContexts.length ?? 0) === 0 &&
+      (draft?.environmentContexts.length ?? 0) === 0
     : !composerDraftHasUserContent(draft);
   if (!canRestore) return false;
 
@@ -98,6 +103,8 @@ export function restoreFailedComposerSend(
     input.composerImagesRef.current = images;
     input.composerFilesRef.current = snapshot.files;
     input.composerTerminalContextsRef.current = snapshot.terminalContexts;
+    if (input.composerEnvironmentContextsRef)
+      input.composerEnvironmentContextsRef.current = snapshot.environmentContexts;
   }
   store.setPrompt(input.composerDraftTarget, snapshot.prompt);
   store.addImages(input.composerDraftTarget, images);
@@ -106,6 +113,7 @@ export function restoreFailedComposerSend(
   store.setPreviewAnnotations(input.composerDraftTarget, snapshot.previewAnnotations);
   store.setReviewComments(input.composerDraftTarget, snapshot.reviewComments);
   store.setThreadContexts(input.composerDraftTarget, snapshot.threadContexts);
+  store.setEnvironmentContexts(input.composerDraftTarget, snapshot.environmentContexts);
   if (isDisplayed) {
     input.resetCursor({
       cursor: collapseExpandedComposerCursor(snapshot.prompt, snapshot.prompt.length),

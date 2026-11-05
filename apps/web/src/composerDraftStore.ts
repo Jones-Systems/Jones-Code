@@ -1173,14 +1173,15 @@ export function deriveEffectiveComposerModelState(input: {
         activeSelection.model,
       ))
     : baseModel;
-  // Options come from the first of the draft, thread and project that has any. Their selections
-  // stay with them, so a fallback instance can check which model the options belong to.
-  const optionSelections =
-    [
-      input.draft?.modelSelectionByProvider,
-      selectionsByInstance(input.threadModelSelection),
-      selectionsByInstance(input.projectModelSelection),
-    ].find((selections) => modelSelectionByProviderToOptions(selections) !== null) ?? null;
+  // An optionless draft pick still owns this model's defaults; older thread options cannot fill it.
+  // Keep each fallback's selection beside its options so cross-account reuse checks the model.
+  const optionSelections = activeSelection
+    ? (input.draft?.modelSelectionByProvider ?? null)
+    : ([
+        input.draft?.modelSelectionByProvider,
+        selectionsByInstance(input.threadModelSelection),
+        selectionsByInstance(input.projectModelSelection),
+      ].find((selections) => modelSelectionByProviderToOptions(selections) !== null) ?? null);
   const modelOptions = modelSelectionByProviderToOptions(optionSelections);
 
   return {
@@ -3039,9 +3040,10 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
             }
             const nextActiveProvider = normalized?.instanceId ?? base.activeProvider;
             if (
+              opts?.explicit !== true &&
               Equal.equals(base.modelSelectionByProvider, nextMap) &&
               base.activeProvider === nextActiveProvider &&
-              (base.modelSelectionExplicit ?? false) === (opts?.explicit === true)
+              base.modelSelectionExplicit !== true
             ) {
               return state;
             }
@@ -3134,15 +3136,6 @@ const composerDraftStore = create<ComposerDraftStoreState>()(
               nextStickyActiveProvider = options.instanceId
                 ? instanceKey
                 : (base.activeProvider ?? instanceKey);
-            }
-
-            if (
-              Equal.equals(base.modelSelectionByProvider, nextMap) &&
-              Equal.equals(state.stickyModelSelectionByProvider, nextStickyMap) &&
-              Equal.equals(state.stickyOptionsByModelByProvider, nextOptionsByModel) &&
-              state.stickyActiveProvider === nextStickyActiveProvider
-            ) {
-              return state;
             }
 
             const { modelSelectionExplicit: _previousExplicit, ...restBase } = base;
@@ -4267,7 +4260,12 @@ export function subscribeComposerDraftModelReconciliation(input: {
     const matches: Array<readonly [string, ComposerThreadDraftState]> = [];
     for (const [key, draft] of Object.entries(state.draftsByThreadKey)) {
       // Local drafts can materialize a shell before their first turn is submitted.
-      if (state.draftThreadsByThreadKey[key] || draft.activeProvider === null) continue;
+      if (
+        state.draftThreadsByThreadKey[key] ||
+        draft.activeProvider === null ||
+        draft.modelSelectionExplicit === true
+      )
+        continue;
       const ref = parseScopedThreadKey(key);
       const pick = draft.modelSelectionByProvider[draft.activeProvider];
       if (!ref || !pick || !threadKeys.has(key)) continue;
@@ -4579,5 +4577,49 @@ export function subscribeDraftThreadPromotion(input: {
     disposed = true;
     unsubscribeMilestones();
     unsubscribeDrafts();
+  };
+}
+
+export function importedHistoryCorrelationStorage(
+  ref: ScopedThreadRef,
+): ImportedHistoryCorrelationStorage {
+  const key = `jones:imported-history-choice:v1:${scopedThreadKey(ref)}`;
+  const storage = () => {
+    if (typeof localStorage === "undefined")
+      throw new Error("Durable imported history storage is unavailable.");
+    return localStorage;
+  };
+  const read = () => {
+    const raw = storage().getItem(key);
+    if (raw === null) return null;
+    const value = decodeImportedHistoryCorrelation(raw);
+    if (value.environmentId !== ref.environmentId || value.command.threadId !== ref.threadId)
+      throw new Error("Imported history storage target changed.");
+    return value;
+  };
+  return {
+    withLock<A>(operation: () => Promise<A>): Promise<A> {
+      if (typeof navigator === "undefined" || navigator.locks === undefined)
+        return Promise.reject(new ImportedHistoryLockUnavailable());
+      return navigator.locks.request(key, { mode: "exclusive" }, operation);
+    },
+    read,
+    reserve(value) {
+      composerDebouncedStorage.flush();
+      if (read() !== null)
+        throw new Error("An imported history choice already awaits observation.");
+      const encoded = encodeImportedHistoryCorrelation(value);
+      storage().setItem(key, encoded);
+      if (storage().getItem(key) !== encoded)
+        throw new Error("Imported history reservation was not persisted.");
+    },
+    remove(value) {
+      const current = read();
+      if (
+        current !== null &&
+        encodeImportedHistoryCorrelation(current) === encodeImportedHistoryCorrelation(value)
+      )
+        storage().removeItem(key);
+    },
   };
 }

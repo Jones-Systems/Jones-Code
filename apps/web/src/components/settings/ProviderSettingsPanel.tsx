@@ -1067,7 +1067,12 @@ export function EnvironmentProviderSettings({
               className="@min-[48rem]/providers:min-h-0 @min-[48rem]/providers:flex-1"
             >
               <div className="divide-y divide-border/50">
-                {rows.map((row) => renderProviderInstance(row, "list"))}
+                <SortableProviderRows
+                  environmentId={environmentId}
+                  rows={rows}
+                  readOnly={readOnly}
+                  renderRow={(row) => renderProviderInstance(row, "list")}
+                />
                 {canAddProvider ? (
                   <button
                     type="button"

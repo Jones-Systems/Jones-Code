@@ -1,3 +1,10 @@
+import * as Clock from "effect/Clock";
+import {
+  QUALIFIED_RECOVERY_PROTOCOL,
+  RECOVERED_QUALIFIED_STAGE_PROTOCOL,
+  type StagedQualifiedRuntime,
+} from "../jones/cloud/qualifiedRuntime.ts";
+export { withRunningThreadContinuation } from "../jones/updateContinuity/Runtime.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 // Qualified Install delegates to the Node-only launcher boundary; staging runs off-process.
 import {
@@ -50,6 +57,14 @@ import {
 } from "./servicePreflight.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { isExactServiceVersion, SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
+
+export type QualifiedStageVerifier = (input: {
+  readonly stagedHandle: string;
+  readonly activeVersion: string;
+  readonly signal: AbortSignal;
+}) => Promise<StagedQualifiedRuntime>;
+
+const decodePreflightJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown));
 
 // A staged runtime's cold start can take over a minute on a loaded, swapping host.
 const PREFLIGHT_TIMEOUT = Duration.minutes(3);
@@ -139,6 +154,54 @@ export function trackSwitchBlockReason(input: {
   return input.targetDatabaseMigration < databaseMigration
     ? `This database has changes t3@${input.targetVersion} does not support yet; it stays on this release.`
     : null;
+}
+
+const timedQualifiedStep = Effect.fn("ServerSelfUpdate.timedQualifiedStep")(function* <A, E, R>(
+  step: string,
+  operationId: string | undefined,
+  effect: Effect.Effect<A, E, R>,
+) {
+  const started = yield* Clock.currentTimeMillis;
+  return yield* effect.pipe(
+    Effect.ensuring(
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((completed) =>
+          Effect.logInfo("Qualified installation timing", {
+            operationId,
+            step,
+            durationMs: completed - started,
+          }),
+        ),
+      ),
+    ),
+  );
+});
+
+/** The deadline owns preparation only; launcher handoff can have an uncertain external effect. */
+export function runQualifiedInstallPhases<A, B, R, R2>(input: {
+  readonly prepare: Effect.Effect<A, ServerSelfUpdateError, R>;
+  readonly handoff: (prepared: A) => Effect.Effect<B, ServerSelfUpdateError, R2>;
+  readonly onPreparationRefused?: () => Effect.Effect<void>;
+}): Effect.Effect<B, ServerSelfUpdateError, R | R2> {
+  return Effect.uninterruptibleMask((restore) =>
+    Effect.gen(function* () {
+      const prepared = yield* restore(
+        input.prepare.pipe(
+          Effect.timeoutOrElse({
+            duration: Duration.minutes(20),
+            orElse: () =>
+              Effect.fail(
+                new ServerSelfUpdateError({
+                  reason:
+                    "Installation preparation timed out after 20 minutes; the launcher was not contacted. Retry Install.",
+                }),
+              ),
+          }),
+        ),
+      ).pipe(Effect.onError(() => input.onPreparationRefused?.() ?? Effect.void));
+      return yield* input.handoff(prepared);
+    }),
+  );
 }
 
 export const make = Effect.fn("cloud.server_self_update.make")(function* () {
@@ -436,10 +499,11 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           return yield* failWith(
             "bootstrap-required: The launcher cannot activate historical enrollment receipts. Refresh it on this host first.",
           );
-        const actualDatabase = yield* Effect.tryPromise({
-          try: () => NodeFSP.realpath(serverConfig.dbPath),
-          catch: (cause) => failWith("Could not bind the running database.", cause),
-        });
+        const actualDatabase = yield* fs
+          .realPath(serverConfig.dbPath)
+          .pipe(
+            Effect.mapError((cause) => failWith("Could not bind the running database.", cause)),
+          );
         if (staged.binding.dbPath !== actualDatabase)
           return yield* failWith("The staged update belongs to a different running database.");
         yield* reportStep("preflight");
@@ -447,13 +511,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
           "preflight",
           input.operationId,
           validateQualifiedCandidate(
-            NodePath.join(
-              staged.binding.baseDir,
-              "runtime",
-              "versions",
-              staged.receipt.version,
-              "t3",
-            ),
+            path.join(staged.binding.baseDir, "runtime", "versions", staged.receipt.version, "t3"),
             staged.binding.dbPath,
             staged.receipt.version,
             staged.protocol === RECOVERED_QUALIFIED_STAGE_PROTOCOL
@@ -497,6 +555,7 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
 
   return ServerSelfUpdate.of({
     update,
+    installQualified,
     commitDesktopUpdate: Effect.fn("ServerSelfUpdate.commitDesktopUpdate")(
       function (requestId, onHandoffAccepted) {
         return desktopAppUpdate.commit(requestId, onHandoffAccepted);

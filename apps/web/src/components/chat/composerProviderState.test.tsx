@@ -17,8 +17,7 @@ import {
   getComposerProviderState,
   getComposerReasoningStep,
   getComposerEffectiveTraitsOptions,
-  renderProviderTraitsMenuContent,
-  renderProviderTraitsPicker,
+  resolveComposerTraitsInput,
   withImplicitFastModeDefault,
 } from "./composerProviderState";
 import { readPromptUltrathink } from "./TraitsPicker";
@@ -486,8 +485,9 @@ describe("provider traits render guards", () => {
       planModeEnabled: true,
     };
 
-    expect(renderProviderTraitsPicker(args)).toBeNull();
-    expect(renderProviderTraitsMenuContent(args)).toBeNull();
+    expect(
+      resolveComposerTraitsInput({ ...args, instanceId: ProviderInstanceId.make("codex") }),
+    ).toBeNull();
   });
 });
 

@@ -1273,6 +1273,26 @@ it.effect("lists pull request watch tools only to threads that are not delegated
   ).pipe(Effect.provide(NodeHttpServer.layerTest)),
 );
 
+const decodeUnknownEffectFromJsonStringStructResultStructContentArrayStructT =
+  Schema.decodeUnknownEffect(
+    Schema.fromJsonString(
+      Schema.Struct({
+        result: Schema.Struct({
+          content: Schema.Array(Schema.Struct({ text: Schema.String })),
+        }),
+      }),
+    ),
+  );
+const decodeUnknownEffectFromJsonStringUnionStructModesStringStructCodeString =
+  Schema.decodeUnknownEffect(
+    Schema.fromJsonString(
+      Schema.Union([
+        Schema.Struct({ modes: Schema.String }),
+        Schema.Struct({ code: Schema.String }),
+      ]),
+    ),
+  );
+
 it.effect(
   "narrows an OAuth client's modes to the T3-Mode-Limit it sends, and never widens them",
   () =>
@@ -1340,23 +1360,9 @@ it.effect(
           Layer.build,
         );
         const httpClient = yield* HttpClient.HttpClient;
-        const decodeOutcome = Schema.decodeUnknownEffect(
-          Schema.fromJsonString(
-            Schema.Struct({
-              result: Schema.Struct({
-                content: Schema.Array(Schema.Struct({ text: Schema.String })),
-              }),
-            }),
-          ),
-        );
-        const decodeText = Schema.decodeUnknownEffect(
-          Schema.fromJsonString(
-            Schema.Union([
-              Schema.Struct({ modes: Schema.String }),
-              Schema.Struct({ code: Schema.String }),
-            ]),
-          ),
-        );
+        const decodeOutcome =
+          decodeUnknownEffectFromJsonStringStructResultStructContentArrayStructT;
+        const decodeText = decodeUnknownEffectFromJsonStringUnionStructModesStringStructCodeString;
         /** Starts a thread as the client, with `limit` as T3-Mode-Limit; the HTTP status or the outcome. */
         const start = (limit: string | undefined, args: Record<string, string> = {}) =>
           Effect.gen(function* () {

@@ -1,3 +1,11 @@
+import {
+  readEnvironmentSupportsSettlement,
+  readEnvironmentSupportsSnooze,
+  readEnvironmentSupportsPinning,
+  readEnvironmentSupportsPinReorder,
+  readEnvironmentSupportsActiveReorder,
+  readEnvironmentSupportsVisitedTracking,
+} from "../state/entities";
 import { useMarkThreadUnread } from "../jones/threadReadDwell/useMarkThreadUnread";
 import {
   newSettleCommandId,
@@ -43,7 +51,6 @@ import { refreshArchivedThreadsForEnvironment } from "../lib/archivedThreadsStat
 import { releaseComposerDraftUploads } from "../lib/composerDraftUploads";
 import { readLocalApi } from "../localApi";
 import {
-  readEnvironmentServerConfigLoaded,
   readEnvironmentSupportsAutoSettleOptOut,
   readEnvironmentThreadRefs,
   readProject,
@@ -205,29 +212,11 @@ export async function navigateAfterThreadDeletion(navigate: () => Promise<void>)
   }
 }
 
-function useMarkThreadUnread() {
-  const markThreadUnreadMutation = useAtomCommand(threadEnvironment.markUnread, {
-    reportFailure: false,
-  });
-  const markThreadUnreadLocal = useUiStateStore((state) => state.markThreadUnread);
-  return (target: ScopedThreadRef) => {
-    if (readEnvironmentServerConfigLoaded(target.environmentId)) {
-      void markThreadUnreadMutation({
-        environmentId: target.environmentId,
-        input: { threadId: target.threadId },
-      });
-      return;
-    }
-    const thread = readThreadShell(target);
-    markThreadUnreadLocal(scopedThreadKey(target), thread?.latestRun?.completedAt);
-  };
-}
-
 export function useAcknowledgeThreadWoke() {
   const visitThreadMutation = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
   const markThreadVisited = useUiStateStore((state) => state.markThreadVisited);
   return (target: ScopedThreadRef, wokeAt: string) => {
-    if (readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (readEnvironmentSupportsVisitedTracking(target.environmentId)) {
       void visitThreadMutation({
         environmentId: target.environmentId,
         input: { threadId: target.threadId, visitedAt: wokeAt },
@@ -657,7 +646,7 @@ export function useThreadActions() {
   };
 
   const unsettleThread = async (target: ScopedThreadRef) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsSettlement(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadSettlementUnsupportedError({
@@ -693,7 +682,7 @@ export function useThreadActions() {
   };
 
   const pinThread = async (target: ScopedThreadRef, opts: { orderKey?: string } = {}) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsPinning(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadPinningUnsupportedError({
@@ -703,7 +692,9 @@ export function useThreadActions() {
         ),
       );
     }
-    const orderKey = opts.orderKey ?? topOfPinnedRunOrderKey();
+    const orderKey = readEnvironmentSupportsPinReorder(target.environmentId)
+      ? (opts.orderKey ?? topOfPinnedRunOrderKey())
+      : undefined;
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
     // Pinning clears snooze, so older Settled or Snoozed undos would fight this pin.
     ThreadUndo.invalidate("settle", scopedThreadKey(target));
@@ -718,7 +709,7 @@ export function useThreadActions() {
   };
 
   const unpinThread = async (target: ScopedThreadRef) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsPinning(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadPinningUnsupportedError({
@@ -749,7 +740,7 @@ export function useThreadActions() {
   };
 
   const settleThread = async (target: ScopedThreadRef) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsSettlement(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadSettlementUnsupportedError({
@@ -760,10 +751,19 @@ export function useThreadActions() {
       );
     }
     const resolved = resolveThreadTarget(target);
-    // oxlint-disable-next-line react/purity -- runs in an event handler (oxc#27309)
     const nowIso = new Date().toISOString();
     const wokeAt = resolved ? threadWokeAt(resolved.thread, { now: nowIso }) : null;
-    const undoPlan = ThreadUndo.planThreadUndo("settle", resolved?.thread);
+    const pinOrderKey = resolved?.thread.pinnedAt != null ? resolved.thread.pinOrderKey : null;
+    const wasPinned = resolved?.thread.pinnedAt != null;
+    const snoozedUntil = resolved?.thread.snoozedUntil ?? null;
+    // Jones: a server with native restore undoes exactly this settle command.
+    const settleCommandId = newSettleCommandId();
+    const nativeRestore = readEnvironmentSupportsSettlementRestore(target.environmentId);
+    const settleWasNoop =
+      resolved?.thread.settledOverride === "settled" &&
+      resolved.thread.settledAt != null &&
+      !wasPinned;
+
     // An older unpin/snooze Undo would re-pin or re-snooze, and the server
     // treats either as a promotion that un-settles; settling supersedes them.
     ThreadUndo.invalidate("pin", scopedThreadKey(target));
@@ -829,7 +829,7 @@ export function useThreadActions() {
   };
 
   const reorderPinnedThread = async (target: ScopedThreadRef, orderKey: string) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsPinReorder(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadPinReorderUnsupportedError({
@@ -847,7 +847,7 @@ export function useThreadActions() {
   };
 
   const reorderActiveThread = async (target: ScopedThreadRef, orderKey: string) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsActiveReorder(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadActiveReorderUnsupportedError({
@@ -864,7 +864,7 @@ export function useThreadActions() {
   };
 
   const unsnoozeThread = async (target: ScopedThreadRef) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsSnooze(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadSnoozeUnsupportedError({
@@ -882,7 +882,7 @@ export function useThreadActions() {
   };
 
   const snoozeThread = async (target: ScopedThreadRef, snoozedUntil: string) => {
-    if (!readEnvironmentServerConfigLoaded(target.environmentId)) {
+    if (!readEnvironmentSupportsSnooze(target.environmentId)) {
       return AsyncResult.failure(
         Cause.fail(
           new ThreadSnoozeUnsupportedError({

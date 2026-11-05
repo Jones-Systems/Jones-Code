@@ -320,9 +320,35 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   setUpdateChannel: (channel, minimumVersion) =>
     ipcRenderer.invoke(IpcChannels.UPDATE_SET_CHANNEL_CHANNEL, { channel, minimumVersion }),
   checkForUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_CHECK_CHANNEL),
-  downloadUpdate: () => ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL),
-  installUpdate: (expectedVersion) =>
-    ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, expectedVersion),
+  downloadUpdate: (selection) =>
+    selection === undefined
+      ? ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL)
+      : ipcRenderer.invoke(IpcChannels.UPDATE_DOWNLOAD_CHANNEL, selection),
+  discardUpdate: (stagedHandle) =>
+    ipcRenderer.invoke(IpcChannels.UPDATE_DISCARD_CHANNEL, stagedHandle),
+  setJonesBackgroundPreparation: (enabled) =>
+    ipcRenderer.invoke(JonesUpdateChannels.SET_BACKGROUND_PREPARATION, enabled),
+  ...(ipcRenderer.sendSync("desktop:jones-install-plan-available") === true
+    ? {
+        installPlan: (request: Parameters<NonNullable<DesktopBridge["installPlan"]>>[0]) =>
+          ipcRenderer.invoke("desktop:jones-install-plan", request),
+        onInstallPlan: (listener: Parameters<NonNullable<DesktopBridge["onInstallPlan"]>>[0]) => {
+          const wrapped = (
+            _event: Electron.IpcRendererEvent,
+            state: Parameters<typeof listener>[0],
+          ) => listener(state);
+          ipcRenderer.on("desktop:jones-install-plan-state", wrapped);
+          return () => ipcRenderer.removeListener("desktop:jones-install-plan-state", wrapped);
+        },
+      }
+    : {}),
+  fleetUpdates: (request) => ipcRenderer.invoke(IpcChannels.FLEET_UPDATES_CHANNEL, request),
+  installUpdate: (stagedHandle, campaignId) =>
+    campaignId !== undefined
+      ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, { stagedHandle, campaignId })
+      : stagedHandle === undefined
+        ? ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL)
+        : ipcRenderer.invoke(IpcChannels.UPDATE_INSTALL_CHANNEL, stagedHandle),
   cliCommand: {
     getState: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_GET_STATE_CHANNEL),
     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),

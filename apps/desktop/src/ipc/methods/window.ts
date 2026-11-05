@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
+import * as DesktopAppIdentity from "../../app/DesktopAppIdentity.ts";
 import * as DesktopBackendConfiguration from "../../backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
 import * as DesktopLocalEnvironmentAuth from "../../backend/DesktopLocalEnvironmentAuth.ts";
@@ -72,6 +73,16 @@ export const getAppBranding = DesktopIpc.makeSyncIpcMethod({
   handler: Effect.fn("desktop.ipc.window.getAppBranding")(function* () {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
     return environment.branding;
+  }),
+});
+
+export const getPreviewAutomationRuntimeIdentity = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.GET_PREVIEW_AUTOMATION_RUNTIME_IDENTITY_CHANNEL,
+  payload: Schema.Undefined,
+  result: PreviewAutomationRuntimeIdentity,
+  handler: Effect.fn("desktop.ipc.window.getPreviewAutomationRuntimeIdentity")(function* () {
+    const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+    return yield* identity.previewAutomationRuntimeIdentity;
   }),
 });
 

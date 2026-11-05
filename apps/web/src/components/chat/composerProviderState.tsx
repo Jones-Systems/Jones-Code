@@ -51,6 +51,8 @@ type ComposerProviderState = {
 type ComposerTraitsTarget = {
   provider: ProviderDriverKind;
   instanceId: ProviderInstanceId;
+  defaultModelSelection?: ModelSelection | null | undefined;
+  defaultDriverKind?: ProviderDriverKind | undefined;
   threadRef?: ScopedThreadRef | undefined;
   draftId?: DraftId | undefined;
   model: string;
@@ -247,14 +249,14 @@ export function resolveComposerTraitsInput(
   input: ComposerTraitsTarget,
 ): TraitsSelectionInput | null {
   const { threadRef, draftId, ...rest } = input;
-  const { selections } = resolveComposerOptionSelections(
-    input.models,
-    input.model,
-    input.provider,
-    input.modelOptions,
-    input.planModeEnabled,
-  );
+  const { modelOptions, displayCapabilities } = getComposerEffectiveTraitsOptions(input);
   const persistence = threadRef ? { threadRef } : draftId ? { draftId } : null;
   if (!persistence) return null;
-  return { ...rest, ...persistence, modelOptions: selections };
+  return {
+    ...rest,
+    ...persistence,
+    modelOptions,
+    displayCapabilities,
+    reportedModelSelection: undefined,
+  };
 }

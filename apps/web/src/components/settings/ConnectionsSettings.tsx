@@ -1,6 +1,5 @@
 import { clientServerBuildLabels } from "../../jones/updates/buildPairs";
 import { RemoteAdmissionConfigurations } from "../../jones/remoteAdmission/RemoteAdmissionSettings";
-import { JonesUpdateControls } from "~/jones/updates/JonesUpdateControls";
 import { SessionPermissions } from "./SessionPermissions";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
@@ -1484,6 +1483,7 @@ export function ConnectionsSettings({ view }: { readonly view: "environments" | 
           <LocalEnvironmentSetting />
         </SettingsSection>
       ) : null}
+      <RemoteAdmissionConfigurations />
       <SettingsSection
         {...searchableSetting("remote-environments")}
         title="Environments"

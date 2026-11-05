@@ -97,6 +97,8 @@ const ports = (input: {
 }) =>
   Layer.succeed(ProviderSessionManager.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
+    releaseUnlessBusy: () => Effect.die("Unexpected releaseUnlessBusy"),
+    otherWorkingThreads: () => Effect.die("Unexpected otherWorkingThreads"),
     isLive: () => Effect.die("A census must use captured runtime attachment evidence"),
     shutdown: Effect.void,
     open: () => Effect.die("A census must never open a provider"),

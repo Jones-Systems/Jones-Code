@@ -97,6 +97,9 @@ export const layer = HttpApiBuilder.group(
           listProjects: projectStore.listShells(),
           latestSequence: applicationEvents.latestApplicationSequence,
           options,
+          ...(options.omitIdleSubagents || options.omitOlderSettled
+            ? { readRetainedThreadIds: readRemoteTaskOwnerIds(sql) }
+            : {}),
         });
         const projects = yield* enrichProjectShells(snapshot.projects);
         return { ...snapshot, projects };

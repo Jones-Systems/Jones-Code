@@ -350,12 +350,12 @@ export const layer = Layer.effect(
       return JonesUpdates.of({
         ...unsupportedOperations,
         prepareQuit,
-        state: () => Effect.succeed(null),
+        state: Effect.fn("JonesUpdates.state")(() => Effect.succeed(null)),
         check: unavailable,
-        prepareNative: () => unavailable,
-        download: () => unavailable,
-        downloadExact: () => unavailable,
-        install: () => unavailable,
+        prepareNative: Effect.fn("JonesUpdates.prepareNative")(() => unavailable),
+        download: Effect.fn("JonesUpdates.download")(() => unavailable),
+        downloadExact: Effect.fn("JonesUpdates.downloadExact")(() => unavailable),
+        install: Effect.fn("JonesUpdates.install")(() => unavailable),
       });
     }
     const reconcileOperation = (operationId: string) =>
@@ -515,7 +515,7 @@ export const layer = Layer.effect(
         ...unsupportedOperations,
         prepareQuit,
         prepareNative,
-        state: (after) =>
+        state: Effect.fn("JonesUpdates.state")((after) =>
           after !== revision
             ? Effect.sync(snapshot)
             : changes.pipe(
@@ -525,12 +525,16 @@ export const layer = Layer.effect(
                 Effect.asVoid,
                 Effect.andThen(Effect.sync(snapshot)),
               ),
+        ),
         check: action({ action: "check" }),
-        download: (input) => action({ action: "download", ...input }),
+        download: Effect.fn("JonesUpdates.download")((input) =>
+          action({ action: "download", ...input }),
+        ),
         // The desktop host owns its updater; its state never advertises exactSource.
-        downloadExact: () =>
+        downloadExact: Effect.fn("JonesUpdates.downloadExact")(() =>
           Effect.succeed(blocked("Exact-source download is unavailable for the desktop updater.")),
-        install: (input) =>
+        ),
+        install: Effect.fn("JonesUpdates.install")((input) =>
           Effect.suspend(() => {
             if (installPending)
               return Effect.succeed(blocked("A native installation is already reserved."));
@@ -581,6 +585,7 @@ export const layer = Layer.effect(
               ),
             );
           }),
+        ),
       });
     }
 
@@ -1234,9 +1239,11 @@ export const layer = Layer.effect(
       reconcile: settleOperation,
       recordRetired: settleOperation,
       refreshPolicy,
-      retireStagedOperation: (input) => Effect.promise(() => updater.retireStagedOperation(input)),
+      retireStagedOperation: Effect.fn("JonesUpdates.retireStagedOperation")((input) =>
+        Effect.promise(() => updater.retireStagedOperation(input)),
+      ),
       fleetOperationsSupported,
-      stageExact: (input) =>
+      stageExact: Effect.fn("JonesUpdates.stageExact")((input) =>
         isUpdateOperationId(input.operationId) &&
         launcher.qualifiedOperations === true &&
         launcher.qualifiedRetirement === true
@@ -1244,11 +1251,13 @@ export const layer = Layer.effect(
           : Effect.succeed(
               blocked("A UUID v4 operation ID and an operation-capable launcher are required."),
             ),
+      ),
       installForOperation,
       reconcileOperation,
-      prepareNative: () =>
+      prepareNative: Effect.fn("JonesUpdates.prepareNative")(() =>
         Effect.succeed(blocked("Native desktop preparation is unavailable on this server.")),
-      state: (after) =>
+      ),
+      state: Effect.fn("JonesUpdates.state")((after) =>
         Effect.promise(async (signal) => {
           const state = await updater.observe(after, signal);
           if (state.updateId === undefined || state.outcome === undefined) return state;
@@ -1267,9 +1276,12 @@ export const layer = Layer.effect(
                 },
               };
         }),
+      ),
       check: Effect.promise(() => updater.check()),
-      download: (input) => Effect.promise(() => updater.download(input)),
-      downloadExact: (input) =>
+      download: Effect.fn("JonesUpdates.download")((input) =>
+        Effect.promise(() => updater.download(input)),
+      ),
+      downloadExact: Effect.fn("JonesUpdates.downloadExact")((input) =>
         updater.snapshot().capability.download &&
         updater.snapshot().capability.exactSource === true &&
         (input.replace === undefined || updater.snapshot().capability.replaceStaged === true)
@@ -1279,7 +1291,10 @@ export const layer = Layer.effect(
               phase: "blocked" as const,
               message: "Exact-source download is unavailable on this host.",
             }),
-      install: (input) => Effect.promise(() => updater.install({ ...input, origin: "manual" })),
+      ),
+      install: Effect.fn("JonesUpdates.install")((input) =>
+        Effect.promise(() => updater.install({ ...input, origin: "manual" })),
+      ),
     });
   }),
 );

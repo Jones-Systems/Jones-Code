@@ -1,3 +1,9 @@
+import { useEnvironmentProviders } from "../../state/environments";
+import {
+  createModelSelectionResolver,
+  modelSelectionsAreMixed,
+} from "../../jones/settings/modelSelectionCorrespondence";
+import { mergeEnvironmentSettings } from "../../hooks/useSettings";
 import { AuthSettingsWriteScope } from "@t3tools/contracts";
 import { useEnvironmentsWithScope } from "../../state/session";
 import {
@@ -110,8 +116,28 @@ export function useUpdateScopedSettings() {
   const settings = useMergedSettings(target?.settings ?? DEFAULT_SERVER_SETTINGS);
   const run = useRunScopedPlan();
   /** `onFailed` runs when any target rejects or drops the patch, so a draft can fall back. */
-  return (patch: ScopedSettingsPatch, options?: { readonly onFailed?: () => void }) =>
-    run(planScopedSettingsPatch(scope, environments, patch), options?.onFailed);
+  return (
+    patch: ScopedSettingsPatch,
+    options?: { readonly onFailed?: () => void; readonly literalModelSelections?: boolean },
+  ) =>
+    run(
+      planScopedSettingsPatch(
+        scope,
+        environments,
+        patch,
+        createModelSelectionResolver(
+          {
+            representative: target,
+            targets,
+            providersByEnvironment,
+            settingsForDestination: (destination) =>
+              mergeEnvironmentSettings(destination.settings, settings),
+          },
+          options,
+        ),
+      ),
+      options?.onFailed,
+    );
 }
 
 export function useClearScopedSettings() {

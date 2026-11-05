@@ -170,6 +170,8 @@ it.effect("authenticates relay status reads and target-bound plan directive PUTs
       "https://fleet.example.test/api/jones-fleet-updates",
       "https://fleet.example.test/api/jones-fleet-updates/plan-directive",
     ]);
-    expect(authorizations).toEqual(Array(3).fill({ expectedEnvironmentId: target.environmentId }));
+    expect(authorizations).toEqual(
+      Array.from({ length: 3 }, () => ({ expectedEnvironmentId: target.environmentId })),
+    );
   }),
 );

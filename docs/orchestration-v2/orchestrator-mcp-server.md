@@ -414,12 +414,14 @@ and `creationSource: "mcp"`; provider output uses `creationSource: "provider"`.
 Actor and ingress are separate so agent-authored user-role messages remain
 distinguishable from human-authored messages.
 
-Agents mention another thread as `[title](t3-thread://v1/<threadId>)`. Thread
-results carry this ready-made as `link`, so agents never format the id. The
-link carries only the id. Clients first resolve it in the message's environment,
-then use a unique match in another enabled environment. Ambiguous matches stay
-unresolved. Web and desktop show the resolved thread’s current title. Mobile
-relabels local matches; cross-environment links can retain the written label.
+Agents use the ready-made `link` in a thread result without reconstructing it.
+Environment-qualified `t3-thread://v2/<environmentId>/<threadId>` links retain
+their environment and never fall back to another environment with the same ID.
+Clients still read legacy `t3-thread://v1/<threadId>` links: they first resolve
+in the message's environment, then use a unique match in another enabled
+environment. Ambiguous matches stay unresolved. Web and desktop show the
+resolved thread’s current title. Mobile relabels local matches;
+cross-environment links can retain the written label.
 
 List and read results report `snoozed` and `snoozedUntil`, and
 `t3_thread_list` filters on `snoozed`. The server's `isSnoozed` follows the
@@ -430,16 +432,21 @@ runs, background wakes, and delegated completions keep it snoozed.
 ### `t3_thread_update`
 
 Updates metadata for the calling thread or any other thread in the environment.
-The typed actions are `rename`, `regenerate_title`, `link_pull_request`, and
-`unlink_pull_request`. A link input supplies the repository, number, and URL;
-the server records the target thread's project ID. Branch and workspace changes
-are outside this tool.
+The typed actions are `rename` and `regenerate_title`. Branch, workspace, and
+pull request links are outside this tool.
 
 The result includes the command ID and durable event sequence together with the
-resultant title, title-regeneration marker, and linked pull request. Reusing a
+resultant title and title-regeneration marker. Reusing a
 `clientRequestId` for the same action and thread replays the same command
-receipt. Thread list and read results expose the linked pull request, and thread
-detail also exposes an in-flight title regeneration.
+receipt. Thread detail also exposes an in-flight title regeneration.
+
+Use `link_pull_request` and `unlink_pull_request` for PR links. Pass the target
+URL, or repository and number, at the top level; optional thread and environment
+targets follow the tool's advertised schema. Linking returns the PR identity and
+`alreadyLinked`; unlinking returns `wasLinked`. `list_thread_pull_requests`
+reads the linked PRs. Current thread metadata keeps plural PR links separately
+from the supported legacy `linkedPullRequest` field; unlinking a current link
+does not erase unrelated historical metadata.
 
 ### `t3_thread_send`
 

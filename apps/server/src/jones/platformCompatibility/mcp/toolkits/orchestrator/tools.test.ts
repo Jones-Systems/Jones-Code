@@ -89,9 +89,9 @@ describe("orchestrator MCP tool guidance", () => {
       "threadId",
       "action",
       "title",
-      "pullRequest",
       "clientRequestId",
     ]);
-    assert.include(ThreadUpdateTool.description ?? "", "Workspace and branch changes");
+    assert.notProperty(schema.properties ?? {}, "pullRequest");
+    assert.include(ThreadUpdateTool.description ?? "", "Workspace and branch cannot change here.");
   });
 });

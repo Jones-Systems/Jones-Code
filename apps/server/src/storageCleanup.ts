@@ -4,6 +4,7 @@ import { withOperation } from "./jones/workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup } from "./jones/workspaceLifecycle/NativeBoundary.ts";
 import * as DeletionWorktreeRemoval from "./jones/cleanup/DeletionWorktreeRemoval.ts";
 import * as EventSink from "./orchestration-v2/EventSink.ts";
+import { completedNativeCleanupGroup } from "./jones/cleanup/CompletedNativeCleanup.ts";
 import {
   GitCommandError,
   OrchestrationV2AppThreadJson,
@@ -1147,13 +1148,19 @@ const make = Effect.gen(function* () {
           );
           const currentLive = Effect.gen(function* () {
             const current = yield* readThreads().pipe(inventoryRead);
+            const members = current.threads.filter(
+              (entry) =>
+                entry.worktreePath !== null &&
+                overlapsCleanupPath(path.resolve(entry.worktreePath), worktreePath),
+            );
             return (
               !hasTerminal(worktreePath) &&
-              !current.threads.some(
-                (entry) =>
-                  entry.worktreePath !== null &&
-                  overlapsCleanupPath(path.resolve(entry.worktreePath), worktreePath),
-              )
+              completedNativeCleanupGroup(
+                thread.id,
+                { projectId: thread.projectId, path: worktreePath, branch: thread.branch },
+                members,
+              ) &&
+              members.every((entry) => storageCleanupThreadIdle(entry, now, serverSettings))
             );
           }).pipe(Effect.orElseSucceed(() => false));
           const admission = yield* sink.startDeletionWorktreeRemoval({

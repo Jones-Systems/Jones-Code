@@ -1,4 +1,4 @@
-import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import { scopedThreadKey, parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   AuthPreviewOperateScope,
   type DesktopPreviewBridge,
@@ -133,7 +133,43 @@ export function ElectronBrowserHost() {
   const previewByThreadKey = useActivePreviewSessions();
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
   useDesktopHostedPreviewSessions(primaryEnvironmentId);
-  const sessions = hostedBrowserSessions(previewByThreadKey, primaryEnvironmentId);
+  const assignedSessions = useAssignedCompanionSessions();
+  const bindingResults = useAtomValue(
+    Atom.make(
+      (get) =>
+        new Map(
+          Object.keys(previewByThreadKey).flatMap((key) => {
+            const threadRef = parseScopedThreadKey(key);
+            return threadRef
+              ? [
+                  [
+                    key,
+                    get(
+                      bindingsQuery({
+                        environmentId: threadRef.environmentId,
+                        input: { threadId: threadRef.threadId },
+                      }),
+                    ),
+                  ] as const,
+                ]
+              : [];
+          }),
+        ),
+    ),
+  );
+  const ordinarySessions = hostedBrowserSessions(previewByThreadKey, primaryEnvironmentId).filter(
+    ({ threadRef, snapshot }) => {
+      if (snapshot.runtime !== "server") return true;
+      const result = bindingResults.get(scopedThreadKey(threadRef));
+      const binding = result ? getBindingValue(result) : null;
+      return (
+        binding !== null && binding.tabs.find((tab) => tab.tabId === snapshot.tabId)?.hostId == null
+      );
+    },
+  );
+  const sessions = mergeCompanionSessions(ordinarySessions, assignedSessions).toSorted(
+    (left, right) => left.runtimeTabId.localeCompare(right.runtimeTabId),
+  );
 
   if (!isElectron) return null;
   return (

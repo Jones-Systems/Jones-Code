@@ -1,3 +1,4 @@
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import {
   isListedThreadLineage,
   type EnvironmentId,
@@ -21,7 +22,7 @@ import {
   RELAY_ACTIVITY_PUBLISH_TYP,
   signRelayJwt,
 } from "@t3tools/shared/relayJwt";
-import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -738,13 +739,17 @@ export const make = Effect.gen(function* () {
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const projectSnapshot = yield* projects.snapshot;
     // Subagents and side chats never publish awareness, and subagents are most threads.
-    const topLevelThreadIds = (yield* threads.listActiveShellIndex()).flatMap((thread) =>
+    const topLevelThreadIds = (yield* threads
+      .listActiveShellIndex()
+      .pipe(NodeSqliteClient.readOnly)).flatMap((thread) =>
       isListedThreadLineage(thread.lineage) ? [thread.id] : [],
     );
-    const shellSnapshot = yield* threads.getShellSnapshot({
-      location: "active",
-      threadIds: topLevelThreadIds,
-    });
+    const shellSnapshot = yield* threads
+      .getShellSnapshot({
+        location: "active",
+        threadIds: topLevelThreadIds,
+      })
+      .pipe(NodeSqliteClient.readOnly);
     const activeThreadIds = resolveAgentAwarenessRelayActiveThreadIds({
       environmentId,
       startedAt,

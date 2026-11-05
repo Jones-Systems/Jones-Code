@@ -742,8 +742,8 @@ it.effect.each(
           },
         }),
       );
-      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-sparse-" });
-      const { git } = yield* makeCheckpointFixture(driver, cwd);
+      const fixtureRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-sparse-" });
+      const { cwd, git, gitDir } = yield* makeCheckpointFixture(driver, fixtureRoot);
       const write = Effect.fn(function* (name: string, contents: string) {
         yield* fs.makeDirectory(path.dirname(path.join(cwd, name)), { recursive: true });
         yield* fs.writeFileString(path.join(cwd, name), contents);
@@ -852,7 +852,7 @@ it.effect.each(
         path.join(gitDir, "filter.cjs"),
         'require("node:fs").appendFileSync(require("node:path").join(__dirname, "reads"), "read\\n"); process.stdin.pipe(process.stdout);',
       );
-      yield* git(["config", "filter.probe.clean", "node .git/filter.cjs"]);
+      yield* git(["config", "filter.probe.clean", `node "${path.join(gitDir, "filter.cjs")}"`]);
       yield* git(["config", "core.trustctime", "false"]);
       yield* fs.utimes(path.join(cwd, "stable"), 1_700_000_000, 1_700_000_000);
       yield* fs.utimes(path.join(cwd, "z-skipped"), 1_700_000_000, 1_700_000_000);
@@ -869,8 +869,8 @@ it.effect.each(
       yield* fs.writeFileString(path.join(cwd, "z-skipped"), "modified\n");
       // A flagged edit with the indexed size and mtime is invisible to Git's stat check.
       if (flagged) yield* fs.utimes(path.join(cwd, "z-skipped"), 1_700_000_000, 1_700_000_000);
-      yield* fs.writeFileString(path.join(cwd, ".git/reads"), "");
-      const originalIndex = yield* fs.readFile(path.join(cwd, ".git/index"));
+      yield* fs.writeFileString(path.join(gitDir, "reads"), "");
+      const originalIndex = yield* fs.readFile(path.join(gitDir, "index"));
       let freshReadTrees = 0;
       const captureDriver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
         Effect.provideService(VcsProcess.VcsProcess, {
@@ -900,8 +900,8 @@ it.effect.each(
       if (flagged) assert.notInclude(files, "z-deleted");
       else assert.include(files, "z-deleted");
       assert.strictEqual(freshReadTrees, 0);
-      assert.strictEqual(yield* fs.readFileString(path.join(cwd, ".git/reads")), "");
-      assert.deepEqual(yield* fs.readFile(path.join(cwd, ".git/index")), originalIndex);
+      assert.strictEqual(yield* fs.readFileString(path.join(gitDir, "reads")), "");
+      assert.deepEqual(yield* fs.readFile(path.join(gitDir, "index")), originalIndex);
     }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
 );
 
@@ -1183,12 +1183,14 @@ it.effect.each(["missing", "invalid"] as const)(
 const captureRecordingGitCommands = Effect.fn("test.captureRecordingGitCommands")(function* (
   cwd: string,
   checkpointRef: CheckpointRef,
+  onCommand?: (args: ReadonlyArray<string>) => void,
 ) {
   const liveProcess = yield* VcsProcess.VcsProcess;
   const commands: Array<string | undefined> = [];
   const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
     Effect.provideService(VcsProcess.VcsProcess, {
       run: (input) => {
+        onCommand?.(input.args);
         let index = 0;
         while (input.args[index] === "-C" || input.args[index] === "-c") index += 2;
         commands.push(input.args[index]);
@@ -1207,14 +1209,14 @@ it.effect.each(["committed", "unborn"] as const)(
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-checkpoint-processes-" });
-      const git = (args: ReadonlyArray<string>) =>
-        driver.execute({ operation: "checkpoint-test", cwd, args });
+      const fixtureRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-checkpoint-processes-",
+      });
+      const { cwd, git } = yield* makeCheckpointFixture(driver, fixtureRoot);
       const checkpointRef = CheckpointRef.make("refs/t3/checkpoints/test");
-      if (head === "committed") {
-        yield* makeCheckpointFixture(driver, cwd);
-      } else {
-        yield* git(["init"]);
+      if (head === "unborn") {
+        yield* git(["restore", "--source=HEAD", "--staged", "--worktree", "--", "."]);
+        yield* git(["switch", "--orphan", "checkpoint-unborn"]);
         yield* fileSystem.writeFileString(path.join(cwd, "file.txt"), "unstaged\n");
       }
 
@@ -1270,13 +1272,21 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const driver = yield* GitVcsDriver.makeVcsDriverShape();
-      const cwd = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-checkpoint-new\nline-" });
-      const { git, checkpointRef } = yield* makeCheckpointFixture(driver, cwd);
-      const originalIndex = yield* fileSystem.readFile(path.join(cwd, ".git", "index"));
-
-      const commands = yield* captureRecordingGitCommands(cwd, checkpointRef);
+      const fixtureRoot = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-checkpoint-new\nline-",
+      });
+      const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, fixtureRoot);
+      const commonOutput = (yield* git(["rev-parse", "--git-common-dir"])).stdout;
+      assert.isTrue(commonOutput.endsWith("\n"));
+      const gitCommonDir = path.resolve(cwd, commonOutput.slice(0, -1));
+      const originalIndex = yield* fileSystem.readFile(path.join(gitDir, "index"));
+      const metadataArgs: ReadonlyArray<string>[] = [];
+      const commands = yield* captureRecordingGitCommands(cwd, checkpointRef, (args) =>
+        metadataArgs.push(args),
+      );
 
       assert.deepStrictEqual(commands, [
+        "rev-parse",
         "rev-parse",
         "rev-parse",
         "config",
@@ -1289,10 +1299,35 @@ it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
         "commit-tree",
         "update-ref",
       ]);
+      assert.deepStrictEqual(metadataArgs.slice(0, 3), [
+        [
+          "-C",
+          cwd,
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-common-dir",
+          "--git-dir",
+          "--git-path",
+          "index",
+          "--verify",
+          "--quiet",
+          "HEAD",
+        ],
+        ["-C", cwd, "rev-parse", "--git-common-dir"],
+        ["-C", cwd, "rev-parse", "--git-dir"],
+      ]);
+      assert.deepStrictEqual(metadataArgs[4], [
+        "-C",
+        cwd,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-path",
+        "index",
+      ]);
       assert.strictEqual((yield* git(["show", `${checkpointRef}:file.txt`])).stdout, "unstaged\n");
-      assert.deepEqual(yield* fileSystem.readFile(path.join(cwd, ".git", "index")), originalIndex);
+      assert.deepEqual(yield* fileSystem.readFile(path.join(gitDir, "index")), originalIndex);
       assert.deepStrictEqual(
-        (yield* fileSystem.readDirectory(path.join(cwd, ".git"))).filter((name) =>
+        (yield* fileSystem.readDirectory(gitCommonDir)).filter((name) =>
           name.startsWith("t3-checkpoint-index-"),
         ),
         [],
@@ -1763,21 +1798,26 @@ it.effect("GitVcsDriver flushes checkpoint objects and refs to disk before publi
     Effect.provide(
       Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.mock(VcsProcess.VcsProcess)({
           run: (input) =>
             Effect.sync(() => {
               observedArgs.push(input.args);
-              const stdout = input.args.includes("write-tree")
-                ? "tree0000\n"
-                : input.args.includes("commit-tree")
-                  ? "commit0000\n"
-                  : input.args.includes("--git-common-dir")
-                    ? ".git\n"
-                    : input.args.includes("--git-dir")
-                      ? ".git/worktrees/checkpoint-test\n"
-                      : "";
+              const metadata =
+                input.args.includes("--git-common-dir") && input.args.includes("--git-path");
+              const stdout = metadata
+                ? "/repo/.git\n/repo/.git/worktrees/checkpoint-test\n/repo/.git/worktrees/checkpoint-test/index\n"
+                : input.args.includes("write-tree")
+                  ? "tree0000\n"
+                  : input.args.includes("commit-tree")
+                    ? "commit0000\n"
+                    : input.args.includes("--git-common-dir")
+                      ? ".git\n"
+                      : input.args.includes("--git-dir")
+                        ? ".git/worktrees/checkpoint-test\n"
+                        : "";
               return {
-                exitCode: ChildProcessSpawner.ExitCode(0),
+                exitCode: ChildProcessSpawner.ExitCode(metadata ? 1 : 0),
                 stdout,
                 stderr: "",
                 stdoutTruncated: false,
@@ -1804,20 +1844,33 @@ it.effect("refuses primary checkout capture before running index, object, or ref
     if (result._tag !== "Failure") return assert.fail("Expected primary checkout refusal");
     assert.equal(result.failure._tag, "VcsPrimaryCheckoutCheckpointError");
     assert.deepEqual(commands, [
-      ["-C", "/synthetic-primary", "rev-parse", "--git-common-dir"],
-      ["-C", "/synthetic-primary", "rev-parse", "--git-dir"],
+      [
+        "-C",
+        "/synthetic-primary",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        "--git-dir",
+        "--git-path",
+        "index",
+        "--verify",
+        "--quiet",
+        "HEAD",
+      ],
     ]);
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
         NodeServices.layer,
+        NodeCrypto.layer,
         Layer.mock(VcsProcess.VcsProcess)({
           run: (input) =>
             Effect.sync(() => {
               commands.push(input.args);
               return {
                 exitCode: ChildProcessSpawner.ExitCode(0),
-                stdout: ".git\n",
+                stdout:
+                  "/synthetic-primary/.git\n/synthetic-primary/.git\n/synthetic-primary/.git/index\n0123456789012345678901234567890123456789\n",
                 stderr: "",
                 stdoutTruncated: false,
                 stderrTruncated: false,
@@ -1828,3 +1881,468 @@ it.effect("refuses primary checkout capture before running index, object, or ref
     ),
   );
 });
+
+const malformedCaptureMetadata = [
+  {
+    label: "empty directory",
+    stdout: "\n/synthetic/linked\n/synthetic/index\n0123456789012345678901234567890123456789\n",
+    exitCode: 0,
+    headProbe: false,
+  },
+  {
+    label: "relative directory",
+    stdout: ".git\n/synthetic/linked\n/synthetic/index\n0123456789012345678901234567890123456789\n",
+    exitCode: 0,
+    headProbe: false,
+  },
+  {
+    label: "missing directory",
+    stdout: "/synthetic/common\n/synthetic/index\n0123456789012345678901234567890123456789\n",
+    exitCode: 0,
+    headProbe: false,
+  },
+  {
+    label: "extra field",
+    stdout:
+      "/synthetic/common\n/synthetic/linked\n/synthetic/index\nextra\n0123456789012345678901234567890123456789\n",
+    exitCode: 0,
+    headProbe: false,
+  },
+  {
+    label: "invalid object ID",
+    stdout: "/synthetic/common\n/synthetic/linked\n/synthetic/index\nnot-an-object\n",
+    exitCode: 0,
+    headProbe: true,
+  },
+  {
+    label: "zero object ID",
+    stdout:
+      "/synthetic/common\n/synthetic/linked\n/synthetic/index\n0000000000000000000000000000000000000000\n",
+    exitCode: 0,
+    headProbe: true,
+  },
+  {
+    label: "missing object ID",
+    stdout: "/synthetic/common\n/synthetic/linked\n/synthetic/index\n",
+    exitCode: 0,
+    headProbe: true,
+  },
+  {
+    label: "contradictory unborn exit",
+    stdout:
+      "/synthetic/common\n/synthetic/linked\n/synthetic/index\n0123456789012345678901234567890123456789\n",
+    exitCode: 1,
+    headProbe: true,
+  },
+  {
+    label: "missing final terminator",
+    stdout:
+      "/synthetic/common\n/synthetic/linked\n/synthetic/index\n0123456789012345678901234567890123456789",
+    exitCode: 0,
+    headProbe: true,
+  },
+  {
+    label: "truncated output",
+    stdout:
+      "/synthetic/common\n/synthetic/linked\n/synthetic/index\n0123456789012345678901234567890123456789\n",
+    exitCode: 0,
+    headProbe: true,
+    stdoutTruncated: true,
+  },
+  {
+    label: "invalid UTF-8",
+    stdout:
+      "/synthetic/common\n/synthetic/linked\n/synthetic/index\n0123456789012345678901234567890123456789\n",
+    exitCode: 0,
+    headProbe: true,
+    stdoutInvalidUtf8: true,
+  },
+] as const;
+
+it.effect.each(malformedCaptureMetadata)(
+  "capture metadata rejects $label before a primary writer",
+  (sample) => {
+    const commands: ReadonlyArray<string>[] = [];
+    return Effect.gen(function* () {
+      const driver = yield* GitVcsDriver.makeVcsDriverShape();
+      const result = yield* Effect.result(
+        driver.checkpoints.captureCheckpoint({
+          cwd: "/synthetic-primary",
+          checkpointRef: CheckpointRef.make("refs/t3/checkpoints/invalid-metadata"),
+        }),
+      );
+      assert.equal(result._tag, "Failure");
+      if (result._tag !== "Failure") return assert.fail("Expected capture refusal");
+      assert.equal(result.failure._tag, "VcsPrimaryCheckoutCheckpointError");
+      assert.deepEqual(commands, [
+        [
+          "-C",
+          "/synthetic-primary",
+          "rev-parse",
+          "--path-format=absolute",
+          "--git-common-dir",
+          "--git-dir",
+          "--git-path",
+          "index",
+          "--verify",
+          "--quiet",
+          "HEAD",
+        ],
+        ["-C", "/synthetic-primary", "rev-parse", "--git-common-dir"],
+        ["-C", "/synthetic-primary", "rev-parse", "--git-dir"],
+        ...(sample.headProbe
+          ? [["-C", "/synthetic-primary", "rev-parse", "--verify", "--quiet", "HEAD"]]
+          : []),
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(VcsProcess.VcsProcess)({
+            run: (input) =>
+              Effect.gen(function* () {
+                commands.push(input.args);
+                const args = input.args.slice(2);
+                if (commands.length === 1)
+                  return {
+                    exitCode: ChildProcessSpawner.ExitCode(sample.exitCode),
+                    stdout: sample.stdout,
+                    stderr: "",
+                    stdoutTruncated: "stdoutTruncated" in sample && sample.stdoutTruncated,
+                    stderrTruncated: false,
+                    stdoutInvalidUtf8: "stdoutInvalidUtf8" in sample && sample.stdoutInvalidUtf8,
+                  };
+                const stdout =
+                  args.join(" ") === "rev-parse --git-common-dir" ||
+                  args.join(" ") === "rev-parse --git-dir"
+                    ? "/synthetic-primary/.git\n"
+                    : args.join(" ") === "rev-parse --verify --quiet HEAD"
+                      ? "0123456789012345678901234567890123456789\n"
+                      : undefined;
+                if (stdout === undefined)
+                  return yield* Effect.die(
+                    new Error(`Unexpected capture command: ${input.args.join(" ")}`),
+                  );
+                return {
+                  exitCode: ChildProcessSpawner.ExitCode(0),
+                  stdout,
+                  stderr: "",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                };
+              }),
+          }),
+        ),
+      ),
+    );
+  },
+);
+
+it.effect("capture metadata preserves SHA-256 HEAD identity and the primary fence", () => {
+  const commands: ReadonlyArray<string>[] = [];
+  return Effect.gen(function* () {
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    const result = yield* Effect.result(
+      driver.checkpoints.captureCheckpoint({
+        cwd: "/synthetic-primary",
+        checkpointRef: CheckpointRef.make("refs/t3/checkpoints/sha256-primary"),
+      }),
+    );
+    assert.equal(result._tag, "Failure");
+    if (result._tag !== "Failure") return assert.fail("Expected primary refusal");
+    assert.equal(result.failure._tag, "VcsPrimaryCheckoutCheckpointError");
+    assert.deepEqual(commands, [
+      [
+        "-C",
+        "/synthetic-primary",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        "--git-dir",
+        "--git-path",
+        "index",
+        "--verify",
+        "--quiet",
+        "HEAD",
+      ],
+    ]);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: (input) =>
+            Effect.sync(() => {
+              commands.push(input.args);
+              return {
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout:
+                  "/synthetic-primary/.git\n/synthetic-primary/.git\n/synthetic-primary/.git/index\n0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        }),
+      ),
+    ),
+  );
+});
+
+it.effect("capture metadata propagates an unknown HEAD probe without treating it as unborn", () => {
+  const commands: ReadonlyArray<string>[] = [];
+  return Effect.gen(function* () {
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    const result = yield* Effect.result(
+      driver.checkpoints.captureCheckpoint({
+        cwd: "/synthetic-linked",
+        checkpointRef: CheckpointRef.make("refs/t3/checkpoints/unknown-head"),
+      }),
+    );
+    assert.equal(result._tag, "Failure");
+    if (result._tag !== "Failure" || result.failure._tag !== "VcsProcessExitError")
+      return assert.fail("Expected the actual HEAD probe failure");
+    assert.equal(result.failure.operation, "GitVcsDriver.checkpoints.hasHeadCommit");
+    assert.equal(result.failure.exitCode, 128);
+    assert.deepEqual(commands, [
+      [
+        "-C",
+        "/synthetic-linked",
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        "--git-dir",
+        "--git-path",
+        "index",
+        "--verify",
+        "--quiet",
+        "HEAD",
+      ],
+      ["-C", "/synthetic-linked", "rev-parse", "--git-common-dir"],
+      ["-C", "/synthetic-linked", "rev-parse", "--git-dir"],
+      ["-C", "/synthetic-linked", "rev-parse", "--verify", "--quiet", "HEAD"],
+    ]);
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.mock(VcsProcess.VcsProcess)({
+          run: (input) =>
+            Effect.gen(function* () {
+              commands.push(input.args);
+              const args = input.args.slice(2).join(" ");
+              if (commands.length === 1)
+                return {
+                  exitCode: ChildProcessSpawner.ExitCode(0),
+                  stdout: "--path-format=absolute\n",
+                  stderr: "",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                };
+              if (args === "rev-parse --verify --quiet HEAD")
+                return {
+                  exitCode: ChildProcessSpawner.ExitCode(128),
+                  stdout: "",
+                  stderr: "fixture HEAD lookup failure",
+                  stdoutTruncated: false,
+                  stderrTruncated: false,
+                };
+              const stdout =
+                args === "rev-parse --git-common-dir"
+                  ? "/synthetic/.git\n"
+                  : args === "rev-parse --git-dir"
+                    ? "/synthetic/.git/worktrees/linked\n"
+                    : undefined;
+              if (stdout === undefined)
+                return yield* Effect.die(
+                  new Error(`Unexpected capture command: ${input.args.join(" ")}`),
+                );
+              return {
+                exitCode: ChildProcessSpawner.ExitCode(0),
+                stdout,
+                stderr: "",
+                stdoutTruncated: false,
+                stderrTruncated: false,
+              };
+            }),
+        }),
+      ),
+    ),
+  );
+});
+
+it.effect("capture metadata falls back from an echoed option with real linked index custody", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const liveProcess = yield* VcsProcess.VcsProcess;
+    const fixtureDriver = yield* GitVcsDriver.makeVcsDriverShape();
+    const fixtureRoot = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-old-option-" });
+    const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(
+      fixtureDriver,
+      fixtureRoot,
+    );
+    const originalIndex = yield* fs.readFile(path.join(gitDir, "index"));
+    const commands: ReadonlyArray<string>[] = [];
+    const driver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+      Effect.provideService(VcsProcess.VcsProcess, {
+        run: (input) => {
+          commands.push(input.args);
+          return liveProcess
+            .run(input)
+            .pipe(
+              Effect.map((result) =>
+                input.args.includes("--git-common-dir") && input.args.includes("--git-path")
+                  ? { ...result, stdout: `--path-format=absolute\n${result.stdout}` }
+                  : result,
+              ),
+            );
+        },
+      }),
+    );
+    yield* driver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
+    assert.equal((yield* git(["show", `${checkpointRef}:file.txt`])).stdout, "unstaged\n");
+    assert.deepEqual(yield* fs.readFile(path.join(gitDir, "index")), originalIndex);
+    const names = commands.map((args) => {
+      let index = 0;
+      while (args[index] === "-C" || args[index] === "-c") index += 2;
+      return args[index];
+    });
+    assert.deepEqual(names, [
+      "rev-parse",
+      "rev-parse",
+      "rev-parse",
+      "config",
+      "rev-parse",
+      "read-tree",
+      "ls-files",
+      "check-ignore",
+      "add",
+      "write-tree",
+      "commit-tree",
+      "update-ref",
+    ]);
+    assert.deepEqual(commands.slice(0, 3), [
+      [
+        "-C",
+        cwd,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        "--git-dir",
+        "--git-path",
+        "index",
+        "--verify",
+        "--quiet",
+        "HEAD",
+      ],
+      ["-C", cwd, "rev-parse", "--git-common-dir"],
+      ["-C", cwd, "rev-parse", "--git-dir"],
+    ]);
+    assert.deepEqual(commands[4], [
+      "-C",
+      cwd,
+      "rev-parse",
+      "--path-format=absolute",
+      "--git-path",
+      "index",
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+);
+
+it.effect("checkpoint capture keeps the legacy path when Git lacks add --sparse", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const liveProcess = yield* VcsProcess.VcsProcess;
+    const driver = yield* GitVcsDriver.makeVcsDriverShape();
+    const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-legacy-" });
+    const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
+    yield* git(["sparse-checkout", "set", "--cone", "included"]);
+    const originalIndex = yield* fs.readFile(path.join(gitDir, "index"));
+    const captureDriver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+      Effect.provideService(VcsProcess.VcsProcess, {
+        run: (input) => {
+          if (input.args.includes("-h"))
+            return Effect.succeed({
+              exitCode: ChildProcessSpawner.ExitCode(129),
+              stdout: "usage: git add",
+              stderr: "",
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            });
+          return liveProcess.run(
+            input.args.includes("--sparse")
+              ? {
+                  ...input,
+                  args: input.args.map((arg) =>
+                    arg === "--sparse" ? "--unsupported-sparse" : arg,
+                  ),
+                }
+              : input,
+          );
+        },
+      }),
+    );
+    yield* captureDriver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
+    assert.strictEqual((yield* git(["show", `${checkpointRef}:file.txt`])).stdout, "unstaged\n");
+    assert.deepEqual(yield* fs.readFile(path.join(gitDir, "index")), originalIndex);
+  }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+);
+
+it.effect.each(["normal", "flags", "sparse"] as const)(
+  "checkpoint index inspection handles entries beyond the output cap (index=%s)",
+  (indexMode) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const liveProcess = yield* VcsProcess.VcsProcess;
+      const driver = yield* GitVcsDriver.makeVcsDriverShape();
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "t3-checkpoint-inspection-" });
+      const { cwd, git, gitDir, checkpointRef } = yield* makeCheckpointFixture(driver, root);
+      yield* fs.writeFileString(path.join(cwd, ".gitattributes"), "stable filter=probe\n");
+      yield* fs.writeFileString(path.join(cwd, "stable"), "unchanged\n");
+      yield* fs.writeFileString(path.join(cwd, "z-skipped"), "original\n");
+      yield* fs.makeDirectory(path.join(cwd, "excluded"));
+      yield* fs.writeFileString(path.join(cwd, "excluded/file"), "absent\n");
+      yield* fs.writeFileString(
+        path.join(gitDir, "filter.cjs"),
+        'require("node:fs").appendFileSync(require("node:path").join(__dirname, "reads"), "read\\n"); process.stdin.pipe(process.stdout);',
+      );
+      yield* git(["config", "filter.probe.clean", `node "${path.join(gitDir, "filter.cjs")}"`]);
+      yield* fs.utimes(path.join(cwd, "stable"), 1_700_000_000, 1_700_000_000);
+      yield* git(["add", "."]);
+      yield* git(["commit", "-m", "inspection fixture"]);
+      if (indexMode === "flags") yield* git(["update-index", "--skip-worktree", "z-skipped"]);
+      if (indexMode === "sparse")
+        yield* git(["sparse-checkout", "set", "--cone", "--sparse-index", "included"]);
+      yield* fs.writeFileString(path.join(cwd, "z-skipped"), "modified\n");
+      yield* fs.writeFileString(path.join(gitDir, "reads"), "");
+      const originalIndex = yield* fs.readFile(path.join(gitDir, "index"));
+      const captureDriver = yield* GitVcsDriver.makeVcsDriverShape().pipe(
+        Effect.provideService(VcsProcess.VcsProcess, {
+          run: (input) =>
+            liveProcess.run(
+              input.args.includes("ls-files")
+                ? {
+                    ...input,
+                    maxOutputBytes: 8,
+                    onStdoutChunk: (chunk) => {
+                      for (let i = 0; i < chunk.length; i++)
+                        input.onStdoutChunk?.(chunk.subarray(i, i + 1));
+                    },
+                  }
+                : input,
+            ),
+        }),
+      );
+      yield* captureDriver.checkpoints.captureCheckpoint({ cwd, checkpointRef });
+      assert.strictEqual((yield* git(["show", `${checkpointRef}:z-skipped`])).stdout, "modified\n");
+      if (indexMode !== "flags")
+        assert.strictEqual(yield* fs.readFileString(path.join(gitDir, "reads")), "");
+      assert.deepEqual(yield* fs.readFile(path.join(gitDir, "index")), originalIndex);
+    }).pipe(Effect.scoped, Effect.provide(layerGitContract)),
+);

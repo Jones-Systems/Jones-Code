@@ -333,6 +333,15 @@ function ThreadNavigationSidebarPane(
     settledShelfExpanded,
     selectedThreadKey: props.selectedThreadKey ?? null,
   });
+  const threadListV2Items = projectMobileWorkstreamList(nativeThreadListV2Items, {
+    enabled: workstreams.enabled,
+    groups: workstreams.groups,
+    collapsedKeys: workstreams.collapsedKeys,
+    secondaryLabelsByKey: workstreams.secondaryLabelsByKey,
+    confirmedUnassignedKeys: workstreams.confirmedUnassignedKeys,
+    selectedThreadKey: props.selectedThreadKey ?? null,
+    searching: props.searchQuery.trim().length > 0,
+  });
   const listItems: readonly SidebarListItem[] =
     settledShelfExpanded && threadListV2Layout.hiddenSettledCount > 0
       ? [

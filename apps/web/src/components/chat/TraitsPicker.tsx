@@ -1,8 +1,11 @@
 import {
+  buildTraitsOptionSelections,
+  getComposerTraitSelectChange as getTraitSelectChange,
+} from "../../jones/composer/traitsOptions";
+export { buildTraitsOptionSelections } from "../../jones/composer/traitsOptions";
+import {
   buildTraitsTriggerDisplay,
   getDescriptorStringValue,
-  getTraitSelectChange as getSharedTraitSelectChange,
-  replaceDescriptorCurrentValue,
   selectableProviderOptionChoices,
   isReasoningSelect,
 } from "@t3tools/client-runtime/model-traits";
@@ -17,7 +20,6 @@ import {
   type ServerProviderModel,
 } from "@t3tools/contracts";
 import {
-  buildExplicitProviderOptionSelectionsFromDescriptors,
   getProviderOptionCurrentLabel,
   getProviderOptionDescriptors,
   isClaudeUltrathinkPrompt,
@@ -53,39 +55,6 @@ export type PromptUltrathink = "none" | "prefix" | "body";
 export function readPromptUltrathink(prompt: string): PromptUltrathink {
   if (!isClaudeUltrathinkPrompt(prompt)) return "none";
   return isClaudeUltrathinkPrompt(prompt.replace(/^Ultrathink:\s*/i, "")) ? "body" : "prefix";
-}
-
-export function buildTraitsOptionSelections(
-  descriptors: ReadonlyArray<ProviderOptionDescriptor>,
-  selections: ProviderOptions | null | undefined,
-  change: ProviderOptionSelection,
-): ProviderOptions | undefined {
-  const descriptorIds = new Set(descriptors.map((descriptor) => descriptor.id));
-  const normalized = buildExplicitProviderOptionSelectionsFromDescriptors(
-    replaceDescriptorCurrentValue(descriptors, change.id, change.value),
-    [...(selections ?? []), change],
-  );
-  const preserved = (selections ?? []).filter((selection) => !descriptorIds.has(selection.id));
-  const next = [...(normalized ?? []), ...preserved];
-  return next.length > 0 ? next : undefined;
-}
-
-function getTraitSelectChange(
-  selected: Parameters<typeof getSharedTraitSelectChange>[0],
-  descriptor: Parameters<typeof getSharedTraitSelectChange>[1],
-  prompt: string,
-  value: string,
-  modelOptions: ProviderOptions | null | undefined,
-) {
-  const change = getSharedTraitSelectChange(selected, descriptor, prompt, value);
-  if (!change || !("modelOptions" in change)) return change;
-  return {
-    ...change,
-    modelOptions: buildTraitsOptionSelections(selected.descriptors, modelOptions, {
-      id: descriptor.id,
-      value,
-    }),
-  };
 }
 
 const SAVED_OPTION_LABELS: Readonly<Record<string, string>> = {
@@ -315,8 +284,12 @@ export function getReasoningTraitStep(input: {
   const next = [...ordered.slice(position + 1), ...ordered.slice(0, Math.max(position, 0))].find(
     (option) => choices.includes(option),
   );
-  const change = next && getTraitSelectChange(selected, descriptor, input.prompt, next.id);
-  return change?.modelOptions ? { prompt: change.prompt, modelOptions: change.modelOptions } : null;
+  const change =
+    next &&
+    getTraitSelectChange(selected, descriptor, input.prompt, next.id, input.modelOptions, false);
+  return change && "modelOptions" in change && change.modelOptions
+    ? { prompt: change.prompt, modelOptions: change.modelOptions }
+    : null;
 }
 
 export interface TraitsMenuContentProps {
@@ -395,18 +368,34 @@ export function useTraitsSelection({
       value: string,
     ) => {
       // Whether a pick applies, and the options it writes, do not depend on the prompt text.
-      const change = getTraitSelectChange(selected, descriptor, "", value);
+      const change = getTraitSelectChange(
+        selected,
+        descriptor,
+        "",
+        value,
+        modelOptions,
+        allowPromptInjectedEffort,
+      );
       if (!change) return;
       onPromptEdit?.(
-        (prompt) => getTraitSelectChange(selected, descriptor, prompt, value)?.prompt ?? prompt,
+        (prompt) =>
+          getTraitSelectChange(
+            selected,
+            descriptor,
+            prompt,
+            value,
+            modelOptions,
+            allowPromptInjectedEffort,
+          )?.prompt ?? prompt,
       );
-      updateModelOptions(change.modelOptions);
+      if ("modelOptions" in change) updateModelOptions(change.modelOptions);
     },
     changeBoolean: (descriptorId: string, value: boolean) => {
       updateModelOptions(
-        buildProviderOptionSelectionsFromDescriptors(
-          replaceDescriptorCurrentValue(selected.descriptors, descriptorId, value),
-        ),
+        buildTraitsOptionSelections(selected.descriptors, modelOptions, {
+          id: descriptorId,
+          value,
+        }),
       );
     },
   };

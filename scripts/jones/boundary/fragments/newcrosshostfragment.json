@@ -43,7 +43,7 @@
       "to": "apps/server/src/jones/peerTransport/PeerMcpTransport.ts"
     },
     {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
+      "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",
       "to": "apps/web/src/jones/remoteAdmission/RemoteAdmissionAttention.tsx"
     },
     {

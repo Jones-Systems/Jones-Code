@@ -1,3 +1,4 @@
+import { captureWorkstreamShellActivation } from "@t3tools/shared/jones/workstreamShellActivation";
 import { DesktopShellEnvironmentSnapshot, ShellEnvironmentPatch } from "@t3tools/contracts";
 import {
   applyShellEnvironment,
@@ -111,6 +112,7 @@ const LOGIN_SHELL_ENV_NAMES = [
   "T3CODE_GITHUB_APP_CLIENT_ID",
   "__MISE_DIFF",
   "JAVA_HOME",
+  ...WORKSTREAM_SHELL_ENV_NAMES,
 ] as const;
 const WINDOWS_PROFILE_ENV_NAMES = ["PATH", "FNM_DIR", "FNM_MULTISHELL_PATH"] as const;
 const LOCALE_ENV_NAMES = ["LANG", "LC_ALL", "LC_CTYPE"] as const;
@@ -589,6 +591,7 @@ export const make = Effect.gen(function* () {
       discovered,
       platform: environment.platform,
       environment: patch,
+      ...(discovered ? { jonesWorkstreamActivation: captureWorkstreamShellActivation(env) } : {}),
     };
     yield* Ref.set(latest, Option.some(message));
     yield* PubSub.publish(changes, message);
@@ -597,6 +600,13 @@ export const make = Effect.gen(function* () {
     // Refresh from the inherited baseline so removed cached paths and values do not survive.
     const fresh = { ...inherited };
     const prepared = yield* installShellEnvironment({ env: fresh, platform: environment.platform });
+    // Workstream activation stays process-local and is never written to the shell cache.
+    installMissingWorkstreamShellActivation(
+      env,
+      Object.fromEntries(
+        Object.entries(fresh).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      ),
+    );
     const patch = Object.fromEntries(
       Object.keys(ShellEnvironmentPatch.fields).map((name) => [name, fresh[name] ?? null]),
     );

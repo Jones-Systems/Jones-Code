@@ -1,3 +1,6 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as ManagedPolicy from "../../src/policy/ManagedPolicy.ts";
+import * as PeerLinkRequests from "../../src/peer/PeerLinkRequests.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- Test-owned loopback listeners only; no child processes or host state.
 import * as NodeHttp from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -127,7 +130,7 @@ export const startServer = (
     const database = yield* Sqlite.layerFromPath(config.dbPath).pipe(Layer.build);
     const dbLayer = Layer.succeedContext(database);
     const configLayer = Layer.succeedContext(configuration);
-    const settings = ServerSettings.layerTest();
+    const settings = ServerSettings.layerTest({ linkedEnvironmentsEnabled: true });
     const registry = ProviderAdapterRegistry.layerFromAdapters([provider]);
     const core = yield* ProviderReplayHarness.layerWithRegistry({ name: "jones-e2e" }, registry, {
       serverConfigLayer: configLayer,
@@ -142,6 +145,8 @@ export const startServer = (
       settings,
       registry,
       NodeServices.layer,
+      NodeCrypto.layer,
+      ManagedPolicy.layerTest(),
     );
     const services = yield* Layer.mergeAll(
       ThreadManagement.layer.pipe(Layer.provide(CommandReceiptStore.layer)),
@@ -189,13 +194,12 @@ export const startServer = (
       Layer.build,
     );
     const registered = yield* Deferred.make<McpServer.McpServer["Service"]>();
-    const tools = Layer.mergeAll(
+    const registrations = Layer.mergeAll(
       McpHttpServer.layerOrchestratorToolkit,
       Layer.effectDiscard(
         McpServer.McpServer.pipe(Effect.flatMap((server) => Deferred.succeed(registered, server))),
       ),
     ).pipe(
-      Layer.provideMerge(McpHttpServer.layerMcpTransport),
       Layer.provide(McpOAuth.layerMcpClientAuthenticator),
       Layer.provide(
         Layer.mock(McpSessionRegistry.McpSessionRegistry)({
@@ -208,6 +212,7 @@ export const startServer = (
       Layer.provide(Layer.mock(ScheduledTasks.ScheduledTaskService)({})),
       Layer.provide(Layer.mock(SecretRequests.SecretRequests)({})),
       Layer.provide(Layer.mock(RemoteDelegation.RemoteDelegation)({})),
+      Layer.provide(Layer.mock(PeerLinkRequests.PeerLinkRequests)({})),
     );
     const routes = Layer.mergeAll(
       HttpApiBuilder.layer(FixtureApi).pipe(
@@ -215,7 +220,12 @@ export const startServer = (
         Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
         Layer.provide(AuthHttp.layerAuthenticatedAuth),
       ),
-      tools,
+      McpHttpServer.layerMcpTransport(registrations).pipe(
+        Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+        Layer.provide(
+          Layer.mock(McpSessionRegistry.McpSessionRegistry)({ resolve: () => Effect.undefined }),
+        ),
+      ),
     ).pipe(Layer.provide(Layer.succeedContext(forwarding)));
     const listening = yield* HttpRouter.serve(routes, {
       disableListenLog: true,
@@ -274,7 +284,7 @@ export const startServer = (
           Effect.provideService(McpSchema.McpServerClient, mcpClient),
         ),
     };
-  });
+  }).pipe(Effect.provide(NodeCrypto.layer));
 
 export type TestServer = Effect.Success<ReturnType<typeof startServer>>;
 

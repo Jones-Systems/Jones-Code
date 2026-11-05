@@ -1,3 +1,4 @@
+import * as ServerSettings from "../../serverSettings.ts";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId, type ModelSelection, type ServerProvider } from "@t3tools/contracts";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
@@ -89,6 +90,7 @@ it.effect(
           ),
       } as ProviderInstanceRegistry.ProviderInstanceRegistry["Service"];
       const generation = yield* TextGeneration.make.pipe(
+        Effect.provide(ServerSettings.layerTest()),
         Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
         Effect.provideService(
           SourceControlProviderRegistry.SourceControlProviderRegistry,

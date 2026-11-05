@@ -1,3 +1,4 @@
+import type { BoundLinkedMessageOrigin } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import {
   type AuthMcpClientAccess,
   type EnvironmentId,
@@ -41,6 +42,7 @@ export interface McpClientCaller {
    * session as `linkOrigin`, and it changes only that work (`linkOrigin.ts`).
    */
   readonly linked?: boolean | undefined;
+  readonly remoteOrigin?: BoundLinkedMessageOrigin | undefined;
   /**
    * Narrower modes the client asked for on this request (`T3-Mode-Limit`):
    * another environment passing on the limits of the agent it calls for.
@@ -144,7 +146,7 @@ export const threadLinkFor = (
 ): string => {
   const origin = scope.client?.webOrigin;
   return origin === undefined
-    ? formatThreadLink({ environmentId: scope.environmentId, threadId })
+    ? formatThreadLink({ threadId, environmentId: scope.environmentId })
     : `${origin}/${encodeURIComponent(scope.environmentId)}/${encodeURIComponent(threadId)}`;
 };
 

@@ -40,6 +40,9 @@ export class ShellMaterialization extends Context.Service<
   ShellMaterialization,
   {
     readonly forSubscription: Effect.Effect<{
+      readonly getMany: (
+        requests: ReadonlyArray<{ readonly threadId: ThreadId; readonly sequence: number }>,
+      ) => Effect.Effect<ReadonlyMap<ThreadId, OrchestrationV2ThreadShell | null>, ReadError>;
       readonly get: (
         threadId: ThreadId,
         sequence: number,
@@ -126,98 +129,227 @@ const make = Effect.gen(function* () {
         }),
       );
 
-  const read = Effect.fnUntraced(function* (
-    threadId: ThreadId,
-    minimum: number,
-    independent: boolean,
-  ) {
-    while (true) {
-      const selected = yield* Effect.uninterruptible(
-        Effect.gen(function* () {
-          if (closed) return yield* Effect.interrupt;
-          if (!independent) {
-            const cached = newest.get(threadId);
-            if (
-              cached !== undefined &&
-              cached.version >= minimum &&
-              cached.generation === generationOf(threadId)
-            ) {
-              remember(threadId, cached);
-              return { kind: "cached", result: cached } as const;
-            }
-            const pending = inFlight.get(threadId);
-            if (pending !== undefined) return { kind: "pending", pending, started: false } as const;
-          }
+  type Reservation = {
+    readonly threadId: ThreadId;
+    readonly minimum: number;
+    readonly generation: number;
+    readonly pending: Deferred.Deferred<Materialization | undefined, ReadError>;
+  };
 
-          const generation = generationOf(threadId);
-          const pending = Deferred.makeUnsafe<Materialization | undefined, ReadError>();
-          pendingReads.add(pending);
-          if (!independent) inFlight.set(threadId, pending);
-          // Only the environment's scope owns this fiber. Canceling a waiter
-          // must not cancel another subscription's read or leave an orphan.
-          yield* readVersioned(threadId).pipe(
-            // Keep invalidation distinct from an unavailable event watermark:
-            // the former must retry, while only the latter uses the unshared fallback.
-            Effect.map((result) =>
-              generationOf(threadId) === generation
-                ? result
-                : { version: -1, generation, shell: null },
-            ),
-            Effect.onExit((exit) =>
-              Effect.sync(() => {
-                pendingReads.delete(pending);
-                if (inFlight.get(threadId) === pending) inFlight.delete(threadId);
-                if (
-                  Exit.isSuccess(exit) &&
-                  exit.value !== undefined &&
-                  exit.value.version >= minimum
-                ) {
-                  remember(threadId, exit.value);
-                }
-              }).pipe(Effect.andThen(Deferred.done(pending, exit))),
-            ),
-            Effect.ignoreCause,
-            Effect.forkIn(scope, { uninterruptible: false }),
-          );
-          return { kind: "pending", pending, started: true } as const;
-        }),
-      );
-      if (selected.kind === "cached") return selected.result;
-      const result = yield* Deferred.await(selected.pending);
-      if (result !== undefined && result.generation !== generationOf(threadId)) continue;
-      if (result === undefined || result.version >= minimum) return result;
-      // A read already in flight can predate this event. Wait for it, then
-      // retry against a fresh snapshot; never label its result with the event.
-      if (selected.started) {
-        return yield* new ShellMaterializationVersionError({
-          threadId,
-          requiredSequence: minimum,
-          actualSequence: result.version,
-        });
-      }
+  const settle = (owned: Reservation, exit: Exit.Exit<Materialization | undefined, ReadError>) => {
+    if (!pendingReads.delete(owned.pending)) return;
+    if (inFlight.get(owned.threadId) === owned.pending) inFlight.delete(owned.threadId);
+    if (Exit.isSuccess(exit) && exit.value !== undefined && exit.value.version >= owned.minimum) {
+      remember(owned.threadId, exit.value);
     }
+    Deferred.doneUnsafe(owned.pending, exit);
+  };
+
+  // Capture all rows and their committed watermark together; decode after releasing SQL custody.
+  const readBatchVersioned = (owned: ReadonlyArray<Reservation>) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const version = yield* events.latestApplicationSequence.pipe(Effect.option);
+          if (Option.isNone(version)) return undefined;
+          const decode = yield* threads.readShellSnapshot({
+            threadIds: owned.map((entry) => entry.threadId),
+          });
+          return { version: version.value, decode };
+        }),
+      )
+      .pipe(
+        NodeSqliteClient.readOnly,
+        Effect.flatMap((captured) =>
+          captured === undefined
+            ? Effect.sync(() => captured)
+            : captured.decode.pipe(
+                Effect.map((snapshot) => ({
+                  version: captured.version,
+                  shells: new Map(
+                    [...snapshot.threads, ...snapshot.archivedThreads].map((shell) => [
+                      shell.id,
+                      shell,
+                    ]),
+                  ),
+                })),
+              ),
+        ),
+      );
+
+  const launch = Effect.fn("ShellMaterialization.launch")(function* (
+    owned: ReadonlyArray<Reservation>,
+  ) {
+    const scalar = (entry: Reservation) =>
+      readVersioned(entry.threadId).pipe(
+        Effect.map((result) =>
+          result === undefined ? undefined : { ...result, generation: entry.generation },
+        ),
+        Effect.exit,
+        Effect.tap((exit) => Effect.sync(() => settle(entry, exit))),
+        Effect.asVoid,
+      );
+    const recover = Effect.forEach(owned, scalar, { concurrency: 8, discard: true });
+    const work =
+      owned.length === 1
+        ? scalar(owned[0]!)
+        : readBatchVersioned(owned).pipe(
+            Effect.matchEffect({
+              // Only typed aggregate failures use scalar attribution. Defects and interruptions propagate.
+              onFailure: () => recover,
+              onSuccess: (batch) =>
+                Effect.sync(() => {
+                  for (const entry of owned)
+                    settle(
+                      entry,
+                      Exit.succeed(
+                        batch === undefined
+                          ? undefined
+                          : {
+                              version: batch.version,
+                              generation: entry.generation,
+                              shell: batch.shells.get(entry.threadId) ?? null,
+                            },
+                      ),
+                    );
+                }),
+            }),
+          );
+    const worker = yield* work.pipe(
+      Effect.exit,
+      Effect.interruptible,
+      Effect.forkIn(scope, { uninterruptible: false }),
+    );
+    // Observer registration also covers interruption before the worker's effect can start.
+    worker.addObserver((exit) => {
+      // The flight reports defects through each waiter, without also failing its environment scope.
+      const completed = Exit.isFailure(exit) ? Exit.failCause(exit.cause) : exit.value;
+      const remaining = owned.filter((entry) => pendingReads.has(entry.pending));
+      // Retire every failed reservation before any resumed waiter can retry an overlapping batch.
+      for (const entry of remaining) {
+        pendingReads.delete(entry.pending);
+        if (inFlight.get(entry.threadId) === entry.pending) inFlight.delete(entry.threadId);
+      }
+      for (const entry of remaining)
+        Deferred.doneUnsafe(
+          entry.pending,
+          Exit.isFailure(completed) ? Exit.failCause(completed.cause) : Exit.interrupt(),
+        );
+    });
   });
 
   const forSubscription = Effect.sync(() => {
     const floors = new Map<ThreadId, number>();
     const unversioned = new Set<ThreadId>();
-    const get = Effect.fnUntraced(function* (threadId: ThreadId, sequence: number) {
-      const minimum = Math.max(sequence, floors.get(threadId) ?? 0);
-      const result = yield* read(threadId, minimum, unversioned.has(threadId));
-      if (result === undefined) {
-        // Version failures preserve the old, unshared read path. Its version
-        // is unknown, so this subscription must read afresh before reusing.
-        const shell = yield* threads
-          .getThreadShell(threadId)
-          .pipe(NodeSqliteClient.readOnly, Effect.forkIn(scope), Effect.flatMap(Fiber.join));
-        unversioned.add(threadId);
-        return shell;
+    const getMany = Effect.fnUntraced(function* (
+      requests: ReadonlyArray<{ readonly threadId: ThreadId; readonly sequence: number }>,
+    ) {
+      const requested = new Map<ThreadId, number>();
+      for (const { threadId, sequence } of requests)
+        requested.set(threadId, Math.max(sequence, requested.get(threadId) ?? 0));
+      const results = new Map<ThreadId, OrchestrationV2ThreadShell | null>();
+      const accepted = new Map<ThreadId, Materialization>();
+      while (results.size < requested.size) {
+        const selected = yield* Effect.uninterruptible(
+          Effect.gen(function* () {
+            if (closed) return yield* Effect.interrupt;
+            const owned: Reservation[] = [];
+            const entries = [];
+            // No yielding occurs while checking or reserving per-thread state.
+            for (const [threadId, sequence] of requested) {
+              if (results.has(threadId)) continue;
+              const minimum = Math.max(sequence, floors.get(threadId) ?? 0);
+              const cached = unversioned.has(threadId) ? undefined : newest.get(threadId);
+              if (
+                cached !== undefined &&
+                cached.version >= minimum &&
+                cached.generation === generationOf(threadId)
+              ) {
+                remember(threadId, cached);
+                entries.push({ threadId, minimum, started: false, result: Effect.succeed(cached) });
+                continue;
+              }
+              const pending = unversioned.has(threadId) ? undefined : inFlight.get(threadId);
+              if (pending !== undefined) {
+                entries.push({
+                  threadId,
+                  minimum,
+                  started: false,
+                  result: Deferred.await(pending),
+                });
+                continue;
+              }
+              const fresh = Deferred.makeUnsafe<Materialization | undefined, ReadError>();
+              pendingReads.add(fresh);
+              if (!unversioned.has(threadId)) inFlight.set(threadId, fresh);
+              owned.push({ threadId, minimum, generation: generationOf(threadId), pending: fresh });
+              entries.push({ threadId, minimum, started: true, result: Deferred.await(fresh) });
+            }
+            if (owned.length > 0) yield* launch(owned);
+            return entries;
+          }),
+        );
+        yield* Effect.forEach(
+          selected,
+          (entry) =>
+            Effect.gen(function* () {
+              const result = yield* entry.result;
+              if (closed) return yield* Effect.interrupt;
+              if (result !== undefined && result.generation !== generationOf(entry.threadId))
+                return;
+              if (result === undefined) {
+                // Unknown watermarks never establish a reusable version. Refresh independently next time.
+                const generation = generationOf(entry.threadId);
+                const shell = yield* threads
+                  .getThreadShell(entry.threadId)
+                  .pipe(
+                    NodeSqliteClient.readOnly,
+                    Effect.forkIn(scope),
+                    Effect.flatMap(Fiber.join),
+                  );
+                if (generation !== generationOf(entry.threadId)) return;
+                unversioned.add(entry.threadId);
+                results.set(entry.threadId, shell);
+                return;
+              }
+              const minimum = Math.max(
+                requested.get(entry.threadId)!,
+                floors.get(entry.threadId) ?? 0,
+              );
+              if (result.version < minimum) {
+                if (entry.started && result.version < entry.minimum)
+                  return yield* new ShellMaterializationVersionError({
+                    threadId: entry.threadId,
+                    requiredSequence: minimum,
+                    actualSequence: result.version,
+                  });
+                return;
+              }
+              floors.set(entry.threadId, Math.max(floors.get(entry.threadId) ?? 0, result.version));
+              unversioned.delete(entry.threadId);
+              accepted.set(entry.threadId, result);
+              results.set(entry.threadId, result.shell);
+            }),
+          { concurrency: 8, discard: true },
+        );
+        // Another call on this subscription can advance a floor while another member waits.
+        for (const [threadId] of results) {
+          if (unversioned.has(threadId)) continue;
+          const proof = accepted.get(threadId);
+          if (
+            proof === undefined ||
+            proof.generation !== generationOf(threadId) ||
+            proof.version < (floors.get(threadId) ?? 0)
+          )
+            results.delete(threadId);
+        }
       }
-      floors.set(threadId, Math.max(floors.get(threadId) ?? 0, result.version));
-      unversioned.delete(threadId);
-      return result.shell;
+      return results;
     });
-    return { get };
+    const get = Effect.fnUntraced(function* (threadId: ThreadId, sequence: number) {
+      return (yield* getMany([{ threadId, sequence }])).get(threadId) ?? null;
+    });
+    return { get, getMany };
   });
 
   return ShellMaterialization.of({ forSubscription });

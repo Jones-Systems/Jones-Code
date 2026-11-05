@@ -353,8 +353,8 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
     return result.value;
   });
 
-  const refresh: WorkspaceSearchIndex["Service"]["refresh"] = Effect.fn(
-    "WorkspaceSearchIndex.refresh",
+  const refreshContent: WorkspaceSearchIndex["Service"]["refreshContent"] = Effect.fn(
+    "WorkspaceSearchIndex.refreshContent",
   )(function* () {
     const result = yield* Effect.try({
       try: () => finder.scanFiles(),
@@ -382,6 +382,13 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
         }),
     );
   });
+  const refresh: WorkspaceSearchIndex["Service"]["refresh"] = Effect.fn(
+    "WorkspaceSearchIndex.refresh",
+  )(() =>
+    refreshContent().pipe(
+      Effect.catchTags({ WorkspaceSearchIndexScanTimedOut: () => Effect.void }),
+    ),
+  );
 
   const list: WorkspaceSearchIndex["Service"]["list"] = Effect.fn("WorkspaceSearchIndex.list")(
     function* () {
@@ -454,7 +461,7 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
         const matchRanges = mapContentMatchRanges(match.lineContent, match.matchRanges).filter(
           (range) => !input.wholeWord || isWholeWordRange(match.lineContent, range),
         );
-        if (matchRanges.length === 0) return undefined;
+        if (input.wholeWord && matchRanges.length === 0) return undefined;
         return {
           path: toPosixPath(match.relativePath),
           lineNumber: match.lineNumber,
@@ -468,6 +475,7 @@ export const make = Effect.fn("WorkspaceSearchIndex.make")(function* (
   return {
     list,
     refresh,
+    refreshContent,
     search,
     searchContents,
     status: () => {

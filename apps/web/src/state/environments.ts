@@ -118,3 +118,7 @@ export function useConnectedEnvironmentIds() {
 export function useEnvironmentConnectionSummaries() {
   return useAtomValue(environmentSummaries.environmentsAtom);
 }
+
+export function useEnvironmentIds(): readonly EnvironmentId[] {
+  return useEnvironmentIdentities().map((environment) => environment.environmentId);
+}

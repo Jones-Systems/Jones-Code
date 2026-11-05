@@ -1,3 +1,4 @@
+import { showScopedGitActionResult } from "../jones/requestEconomy/gitActionResultToast";
 import { ThreadDetailsControl } from "./chat/ThreadDetailsControl";
 import { useAtomMount, useAtomValue } from "@effect/atom-react";
 import {
@@ -942,6 +943,7 @@ export default function GitActionsControl({
     "thread branch metadata update",
   );
   const activeEnvironmentId = activeThreadRef?.environmentId ?? null;
+  const openResultPullRequest = useOpenLink(activeThreadRef);
   const successScopeKey = `${activeEnvironmentId ?? ""}\u0000${gitCwd ?? ""}`;
   const canWriteSourceControl = useEnvironmentScope(
     activeEnvironmentId,
@@ -1236,6 +1238,12 @@ export default function GitActionsControl({
 
     const actionResult = result.value;
     syncThreadBranchAfterGitAction(actionResult);
+    showScopedGitActionResult({
+      result: actionResult,
+      threadRef: activeThreadRef,
+      run: (action) => runGitActionWithToast({ action }),
+      openPullRequest: openResultPullRequest,
+    });
     const createdPullRequest = actionResult.pr.status === "created";
     setInlineSuccess({
       title: createdPullRequest
@@ -1838,6 +1846,7 @@ export default function GitActionsControl({
       {/* Its discovery query should stop when the Git actions row that opens it is hidden. */}
       {showActions ? (
         <PublishRepositoryDialog
+          prefetchDiscovery={false}
           open={isPublishDialogOpen}
           onOpenChange={setIsPublishDialogOpen}
           environmentId={activeEnvironmentId}

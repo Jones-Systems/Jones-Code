@@ -1,3 +1,5 @@
+import * as DesktopNativeOwner from "../jones/workstreams/DesktopNativeOwner.ts";
+import { installMissingWorkstreamShellActivation } from "@t3tools/shared/jones/workstreamShellActivation";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeFS from "node:fs";
 import * as NodeNet from "node:net";
@@ -189,7 +191,13 @@ export class DesktopTelemetryReceiver extends Context.Service<
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
     readonly requestDesktopUpdate: (
       requestId: string,
-      trackSwitch?: DesktopTrackSwitch,
+      trackSwitch?:
+        | DesktopTrackSwitch
+        | {
+            readonly action: "check" | "download";
+            readonly artifactId?: number;
+            readonly sourceSha?: string;
+          },
     ) => Effect.Effect<void, DesktopTelemetryControlError>;
     readonly commitDesktopUpdate: (
       requestId: string,
@@ -220,12 +228,28 @@ class DesktopShellCertificatesUpdateFailed extends Schema.TaggedError<DesktopShe
 export function makeApplyDesktopShellEnvironmentSnapshot(
   environment: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
+  authorizePrivateActivation?: Effect.Effect<void, Error>,
 ) {
   let baseCertificates: Array<string> | undefined;
   return Effect.fn("resourceTelemetry.desktopTelemetryReceiver.applyShellEnvironment")(function* (
     message: DesktopShellEnvironmentSnapshot,
   ) {
     if (message.platform !== platform) return;
+    if (
+      message.discovered &&
+      message.jonesWorkstreamActivation !== undefined &&
+      authorizePrivateActivation !== undefined
+    ) {
+      // This witness uses the same captured parent's private challenge/reply descriptors.
+      // Public renderer events never receive the activation object.
+      const witness = yield* authorizePrivateActivation.pipe(Effect.result);
+      if (witness._tag === "Success")
+        installMissingWorkstreamShellActivation(environment, message.jonesWorkstreamActivation);
+      else
+        yield* Effect.logWarning(
+          "Private desktop shell activation refused: parent custody unavailable.",
+        );
+    }
     // Node's first default-CA enumeration consults process.env, so capture it before the patch.
     if (message.environment.NODE_EXTRA_CA_CERTS !== undefined && baseCertificates === undefined) {
       // Remove only the startup extras, preserving duplicates from bundled or system trust.
@@ -400,7 +424,15 @@ export const make = Effect.fn("resourceTelemetry.desktopTelemetryReceiver.make")
   const config = yield* ServerConfig.ServerConfig;
   const environment = yield* HostProcess.Environment;
   const platform = yield* HostProcess.Platform;
-  const applyShellSnapshot = makeApplyDesktopShellEnvironmentSnapshot(environment, platform);
+  const nativeOwner = yield* DesktopNativeOwner.DesktopNativeOwner;
+  const authorizePrivateActivation = nativeOwner.refresh.pipe(
+    Effect.andThen(Effect.try(() => nativeOwner.assertCurrent())),
+  );
+  const applyShellSnapshot = makeApplyDesktopShellEnvironmentSnapshot(
+    environment,
+    platform,
+    config.mode === "desktop" ? authorizePrivateActivation : undefined,
+  );
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const latest = yield* Ref.make(Option.none<DesktopHostTelemetrySnapshot>());
   const receiverStartedAt = yield* DateTime.now;

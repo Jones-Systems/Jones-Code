@@ -46,6 +46,7 @@ function ResumeButton(props: {
   readonly persistSettings: () => Promise<AtomCommandResult<void, unknown>>;
 }) {
   const { onResume } = useComposerResume({
+    isImportedHistory: false,
     environmentId: EnvironmentId.make("environment:test"),
     routeThreadKey: "environment:test:thread:a",
     currentRouteThreadKeyRef: { current: "environment:test:thread:a" },

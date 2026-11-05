@@ -13,6 +13,7 @@ import { ChildProcessSpawner } from "effect/process";
 import {
   GitCommandError,
   VcsPrimaryCheckoutCheckpointError,
+  VcsRepositoryDetectionError,
   VcsProcessExitError,
   VcsUnsupportedOperationError,
   type VcsSwitchRefInput,
@@ -916,22 +917,108 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       }),
     );
 
-  // Git reports relative paths from the physical cwd, which can differ from a symlink.
-  const resolveGitCommonDir = Effect.fn("GitVcsDriver.resolveGitCommonDir")(function* (
+  // Preserve a path's whitespace and embedded newlines; Git adds one record terminator.
+  const resolveCapturePath = Effect.fn("GitVcsDriver.resolveCapturePath")(function* (
     cwd: string,
+    args: ReadonlyArray<string>,
+    operation: string,
   ) {
-    const result = yield* execute({
-      operation: "GitVcsDriver.checkpoints.resolveGitCommonDir",
-      cwd,
-      args: ["rev-parse", "--git-common-dir"],
-    });
-    const gitCommonDir = result.stdout.trim();
-    if (path.isAbsolute(gitCommonDir)) return gitCommonDir;
-    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(Effect.orElseSucceed(() => cwd));
-    return path.resolve(physicalCwd, gitCommonDir);
+    const result = yield* execute({ operation, cwd, args });
+    if (result.exitCode !== 0) {
+      return yield* VcsProcessExitError.fromProcessExit(
+        { operation, command: "git", cwd, argumentCount: args.length + 2 },
+        result,
+        "command-failed",
+      );
+    }
+    if (
+      result.stdoutTruncated ||
+      result.stderrTruncated ||
+      result.stdoutInvalidUtf8 === true ||
+      result.stderrInvalidUtf8 === true ||
+      !result.stdout.endsWith("\n")
+    ) {
+      return yield* new VcsRepositoryDetectionError({
+        operation,
+        cwd,
+        detail: "Git returned incomplete or invalid capture-path metadata.",
+      });
+    }
+    const value = result.stdout.slice(
+      0,
+      hostPlatform === "win32" && result.stdout.endsWith("\r\n") ? -2 : -1,
+    );
+    if (value.length === 0 || value.includes("\0")) {
+      return yield* new VcsRepositoryDetectionError({
+        operation,
+        cwd,
+        detail: "Git returned an empty or invalid capture path.",
+      });
+    }
+    if (path.isAbsolute(value)) return path.normalize(value);
+    const physicalCwd = yield* fileSystem.realPath(cwd).pipe(
+      Effect.mapError(
+        (cause) =>
+          new VcsRepositoryDetectionError({
+            operation,
+            cwd,
+            detail: "Unable to resolve the physical capture working directory.",
+            cause,
+          }),
+      ),
+    );
+    return path.resolve(physicalCwd, value);
   });
 
-  // --verify prints HEAD after the paths; --quiet leaves only paths for an unborn HEAD.
+  const resolveGitCommonDir = (cwd: string) =>
+    resolveCapturePath(
+      cwd,
+      ["rev-parse", "--git-common-dir"],
+      "GitVcsDriver.checkpoints.resolveGitCommonDir",
+    );
+  const resolveGitDir = (cwd: string) =>
+    resolveCapturePath(cwd, ["rev-parse", "--git-dir"], "GitVcsDriver.checkpoints.resolveGitDir");
+  const captureObjectId = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
+  const isCaptureObjectId = (value: string | undefined) =>
+    value !== undefined && captureObjectId.test(value) && !/^0+$/.test(value);
+
+  // Unlike general nested-repository detection, an unknown HEAD probe cannot authorize an unborn capture.
+  const captureHasHead = Effect.fn("GitVcsDriver.captureHasHead")(function* (cwd: string) {
+    const operation = "GitVcsDriver.checkpoints.hasHeadCommit";
+    const args = ["rev-parse", "--verify", "--quiet", "HEAD"];
+    const result = yield* execute({ operation, cwd, args, allowNonZeroExit: true });
+    if (result.exitCode !== 0 && result.exitCode !== 1) {
+      return yield* VcsProcessExitError.fromProcessExit(
+        { operation, command: "git", cwd, argumentCount: args.length + 2 },
+        result,
+        "command-failed",
+      );
+    }
+    const stdout =
+      hostPlatform === "win32" && result.stdout.endsWith("\r\n")
+        ? result.stdout.slice(0, -2)
+        : result.stdout.endsWith("\n")
+          ? result.stdout.slice(0, -1)
+          : result.stdout;
+    if (
+      result.stdoutTruncated ||
+      result.stderrTruncated ||
+      result.stdoutInvalidUtf8 === true ||
+      result.stderrInvalidUtf8 === true ||
+      (result.exitCode === 0
+        ? !result.stdout.endsWith("\n") || !isCaptureObjectId(stdout)
+        : result.stdout !== "")
+    ) {
+      return yield* new VcsRepositoryDetectionError({
+        operation,
+        cwd,
+        detail: "Git did not establish a valid HEAD or an unborn capture.",
+      });
+    }
+    return result.exitCode === 0;
+  });
+
+  // One read supplies upstream's index/HEAD optimization and the independent Jones primary fence.
   const resolveCaptureRepository = Effect.fn("GitVcsDriver.resolveCaptureRepository")(function* (
     cwd: string,
   ) {
@@ -942,6 +1029,7 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "rev-parse",
         "--path-format=absolute",
         "--git-common-dir",
+        "--git-dir",
         "--git-path",
         "index",
         "--verify",
@@ -950,23 +1038,49 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
       ],
       allowNonZeroExit: true,
     });
-    const headExists = result.exitCode === 0;
-    const headChecked = headExists || result.exitCode === 1;
-    const lines = result.stdout.split("\n");
-    const [gitCommonDir = "", indexPath = ""] = lines;
-    if (headChecked && lines.length === (headExists ? 4 : 3) && lines.at(-1) === "") {
+    const lines = (
+      hostPlatform === "win32" ? result.stdout.replace(/\r\n/g, "\n") : result.stdout
+    ).split("\n");
+    const intact =
+      !result.stdoutTruncated &&
+      !result.stderrTruncated &&
+      result.stdoutInvalidUtf8 !== true &&
+      result.stderrInvalidUtf8 !== true;
+    const establishedHead =
+      intact && result.exitCode === 0 && lines.at(-1) === "" && isCaptureObjectId(lines.at(-2));
+    const headExists = establishedHead;
+    const [gitCommonDir, gitDir, indexPath] = lines;
+    if (
+      intact &&
+      lines.at(-1) === "" &&
+      ((headExists && lines.length === 5) || (result.exitCode === 1 && lines.length === 4)) &&
+      gitCommonDir !== undefined &&
+      gitCommonDir.length > 0 &&
+      path.isAbsolute(gitCommonDir) &&
+      gitDir !== undefined &&
+      gitDir.length > 0 &&
+      path.isAbsolute(gitDir) &&
+      indexPath !== undefined &&
+      indexPath.length > 0 &&
+      path.isAbsolute(indexPath) &&
+      ![gitCommonDir, gitDir, indexPath].some((value) => value.includes("\0"))
+    ) {
       return {
-        gitCommonDir: gitCommonDir.trim(),
-        indexPath: indexPath.trim(),
+        gitCommonDir: path.normalize(gitCommonDir),
+        gitDir: path.normalize(gitDir),
+        indexPath: path.normalize(indexPath),
         headExists,
       };
     }
-    // Git before 2.31 echoes --path-format, and a path containing a newline spans lines.
-    // Separate commands read the paths as before and report a failure the same way.
+    // Old Git echoes --path-format; embedded-newline paths cannot be positionally decoded.
+    // Independent metadata reads preserve the original outside-repository error and fail closed.
+    const fallbackCommonDir = yield* resolveGitCommonDir(cwd);
+    const fallbackGitDir = yield* resolveGitDir(cwd);
     return {
-      gitCommonDir: yield* resolveGitCommonDir(cwd),
+      gitCommonDir: fallbackCommonDir,
+      gitDir: fallbackGitDir,
       indexPath: undefined,
-      headExists: headChecked ? headExists : yield* hasHeadCommit(cwd),
+      headExists: establishedHead || (yield* captureHasHead(cwd)),
     };
   });
 
@@ -1002,7 +1116,11 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
         "-c",
         "splitIndex.sharedIndexExpire=never",
       ];
-      const { gitCommonDir, indexPath, headExists } = yield* resolveCaptureRepository(input.cwd);
+      const { gitCommonDir, gitDir, indexPath, headExists } = yield* resolveCaptureRepository(
+        input.cwd,
+      );
+      if (path.normalize(gitDir) === path.normalize(gitCommonDir))
+        return yield* new VcsPrimaryCheckoutCheckpointError({ operation, cwd: input.cwd });
       const indexId = yield* random.uuidV4();
       const tempIndexPath = path.join(gitCommonDir, `t3-checkpoint-index-${indexId}`);
       const commitEnv: NodeJS.ProcessEnv = {
@@ -1041,11 +1159,11 @@ export const makeVcsDriverShape = Effect.fn("makeGitVcsDriverShape")(function* (
           const reusedIndex = yield* Effect.gen(function* () {
             const userIndexPath =
               indexPath ??
-              (yield* execute({
+              (yield* resolveCapturePath(
+                input.cwd,
+                ["rev-parse", "--path-format=absolute", "--git-path", "index"],
                 operation,
-                cwd: input.cwd,
-                args: ["rev-parse", "--path-format=absolute", "--git-path", "index"],
-              })).stdout.trim();
+              ));
             const { mtime } = yield* fileSystem.stat(userIndexPath);
             if (Option.isNone(mtime)) return false;
             // Stay below the source timestamp even if Date rounded up, preserving Git's racy check.

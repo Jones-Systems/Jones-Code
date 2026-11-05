@@ -59,6 +59,11 @@ import JonesMigration0133 from "./Migrations/133_JonesThreadResultDependencies.t
 import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
 import JonesMigration0135 from "./Migrations/135_JonesIdleWorktreeAdmission.ts";
 
+import JonesMigration0136 from "./Migrations/136_JonesNativeExecutionProcessCustody.ts";
+import JonesMigration0137 from "./Migrations/137_JonesOrdinaryCheckoutProcessCustody.ts";
+import JonesMigration0138 from "./Migrations/138_JonesAuthSessionClientMetadata.ts";
+import JonesMigration0139 from "./Migrations/139_JonesWorkspaceRuntimeUses.ts";
+
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
   [2, "ProjectionThreadRuntimeIdentity", JonesMigration0002],
@@ -96,6 +101,10 @@ export const jonesMigrationEntries = [
   [133, "ThreadResultDependencies", JonesMigration0133],
   [134, "GoalContinuity", JonesMigration0134],
   [135, "IdleWorktreeAdmission", JonesMigration0135],
+  [136, "NativeExecutionProcessCustody", JonesMigration0136],
+  [137, "OrdinaryCheckoutProcessCustody", JonesMigration0137],
+  [138, "AuthSessionClientMetadata", JonesMigration0138],
+  [139, "WorkspaceRuntimeUses", JonesMigration0139],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

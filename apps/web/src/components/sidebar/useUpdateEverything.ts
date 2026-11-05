@@ -1,3 +1,4 @@
+import { supportsServerUpdateThreadContinuation } from "~/versionSkew";
 import { useJonesBulkUpdates } from "../../jones/installStatus/bulkUpdates";
 import { useAtomValue } from "@effect/atom-react";
 import { PROVIDER_DISPLAY_NAMES } from "@t3tools/contracts";
@@ -67,19 +68,35 @@ export function useUpdateEverything(
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
-  const { targets: servers, skipped } = channelSwitch
-    ? collectChannelSwitchTargets(machines, channelSwitch)
-    : collectServerUpdateTargets(machines, targetVersion);
+  const jones = useJonesBulkUpdates(machines, targetVersion, localUpdateVersion);
+  const { targets: selectedServers, skipped } = channelSwitch
+    ? collectChannelSwitchTargets(jones.other, channelSwitch)
+    : collectServerUpdateTargets(jones.other, targetVersion);
+  const servers = selectedServers.map((server) => {
+    const config = machines.find(
+      (machine) => machine.environmentId === server.environmentId,
+    )?.serverConfig;
+    return {
+      ...server,
+      threadContinuation: supportsServerUpdateThreadContinuation(config),
+      continueThreadsAfterServerUpdate: config?.settings.continueThreadsAfterServerUpdate === true,
+    };
+  });
   // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
   const moving = servers.filter((server) => server.trackOnly !== true);
-  const restarts = collectRestartingMachines(machines, moving, localUpdateVersion !== null);
+  const restarts = collectRestartingMachines(
+    machines,
+    moving,
+    localUpdateVersion !== null && !jones.managesLocal,
+  );
   const providerUpdates = useProviderUpdates();
   // A track switch moves app and servers only; provider updates stay a separate choice.
   const providers = channelSwitch ? { machines: [], updateAll: async () => [] } : providerUpdates;
   const updateServer = useServerUpdate();
 
   const view = describeUpdateEverything({
-    localVersion: localUpdateVersion,
+    localVersion: jones.managesLocal ? null : localUpdateVersion,
+    jonesMachines: jones.targets,
     localMachines: machines.filter((machine) => machine.hostedByThisApp),
     servers: moving,
     skipped,
@@ -93,7 +110,8 @@ export function useUpdateEverything(
   });
 
   return {
-    hasUpdates: servers.length > 0 || providers.machines.length > 0,
+    hasUpdates: servers.length > 0 || providers.machines.length > 0 || jones.hasUpdates,
+    skipped,
     ...view,
     restarts,
     run: async ({

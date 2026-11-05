@@ -630,6 +630,10 @@
     "./composerContextLegacySend": {
       "types": "./src/composerContextLegacySend.ts",
       "import": "./src/composerContextLegacySend.ts"
+    },
+    "./jones/workstreamShellActivation": {
+      "types": "./src/jones/workstreamShellActivation.ts",
+      "import": "./src/jones/workstreamShellActivation.ts"
     }
   },
   "scripts": {

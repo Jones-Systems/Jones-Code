@@ -141,6 +141,7 @@ export function HostedBrowserWebview(props: {
   }, [runtimeTabId, serverZoomFactor]);
 
   const [webviewGeneration, setWebviewGeneration] = useState(0);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Acquire the external companion activity lease for this mounted tab and release it on tab replacement or unmount.
   useEffect(
     () => (companion ? acquireBrowserSurfaceActivity(runtimeTabId) : undefined),
     [companion, runtimeTabId],

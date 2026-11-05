@@ -27,6 +27,7 @@ import {
   canonical,
   CheckoutError,
   operationId,
+  digest,
   type Binding,
   type Evidence,
   type Source,
@@ -92,11 +93,15 @@ const acceptedInput: Accept = {
   effects: [{ effectId: "effect", request, role: "launch" }],
 };
 const source: Source = {
-  kind: "outbox",
+  kind: "outbox_process_v2",
+  commandId: "command",
+  threadId: "thread",
+  runId: null,
+  claimedAt: now,
+  requestDigest: digest(request),
   effectId: "effect",
   workerId: "worker",
   attempt: 1,
-  claimExpiresAt: expiry,
 };
 const binding: Binding = {
   version: 1,
@@ -249,8 +254,8 @@ const seed = Effect.gen(function* () {
       VALUES(${sequence},${id},'thread','thread',${sequence},${type},${now},${sequence === 1 ? null : "command"},'client',${canonical(payload)},'{}',2)`;
   yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error)
     VALUES('command','thread','thread','thread.test',${now},2,'accepted',NULL)`;
-  yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,lease_expires_at,created_at,updated_at)
-    VALUES('effect','command','thread','terminal.cleanup',${canonical(request)},'running',1,${now},'worker',${expiry},${now},${now})`;
+  yield* sql`INSERT INTO orchestration_v2_effect_outbox(effect_id,command_id,thread_id,effect_type,payload_json,status,attempt_count,available_at,lease_owner,created_at,updated_at)
+    VALUES('effect','command','thread','terminal.cleanup',${canonical(request)},'running',1,${now},'worker',${now},${now})`;
   return { sql, checkout: yield* OrdinaryCheckout, payload };
 });
 const reserved = Effect.gen(function* () {

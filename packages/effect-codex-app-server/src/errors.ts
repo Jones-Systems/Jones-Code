@@ -298,6 +298,14 @@ export class CodexAppServerRequestError extends Schema.TaggedError<CodexAppServe
     );
   }
 
+  static invalidRequest(message = "Invalid request", data?: unknown) {
+    return new CodexAppServerRequestError({
+      code: -32600,
+      errorMessage: message,
+      ...(data !== undefined ? { data } : {}),
+    });
+  }
+
   static methodNotFound(method: string) {
     return new CodexAppServerRequestError({
       code: -32601,

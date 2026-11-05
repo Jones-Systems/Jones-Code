@@ -1,3 +1,5 @@
+import { serializeLegacyContextMessage } from "@t3tools/shared/composerContextLegacySend";
+import { collapseExpandedComposerCursor } from "../composer-logic";
 import type { StartThreadTurnInput } from "@t3tools/client-runtime/operations";
 import { type OrchestrationV2ProviderTurn, type RunAttemptId } from "@t3tools/contracts";
 import {
@@ -5,7 +7,6 @@ import {
   deriveThreadRuntime,
 } from "@t3tools/client-runtime/state/thread-execution";
 import { checkpointFileTotals } from "@t3tools/client-runtime/state/thread-checkpoints";
-import { derivePendingBackgroundWork } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   latestUnheldRun,
   usageLimitRunPresentedAsLatest,
@@ -489,6 +490,7 @@ export function resolveComposerProviderSelection(input: {
   candidateInstanceIds: ReadonlyArray<ProviderInstanceId | null | undefined>;
   lockedProvider: ProviderDriverKind | null;
   lockedInstanceId: ProviderInstanceId | null | undefined;
+  requiredInstanceId?: ProviderInstanceId | null | undefined;
 }) {
   const requestedInstanceId = input.candidateInstanceIds.find(
     (candidate) => candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
@@ -514,23 +516,29 @@ export function resolveComposerProviderSelection(input: {
       (!requiresExactInstance || entry.instanceId === input.lockedInstanceId),
   );
   const selectedProviderEntry =
-    input.candidateInstanceIds
-      .map((candidate) =>
-        compatibleEntries.find(
-          (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
-        ),
-      )
-      .find((entry) => entry !== undefined) ??
-    resolveSelectableProviderInstanceEntry(
-      compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
-      undefined,
-    ) ??
-    resolveSelectableProviderInstanceEntry(compatibleEntries, undefined);
+    input.requiredInstanceId != null
+      ? compatibleEntries.find(
+          (entry) =>
+            entry.instanceId === input.requiredInstanceId && entry.enabled && entry.isAvailable,
+        )
+      : (input.candidateInstanceIds
+          .map((candidate) =>
+            compatibleEntries.find(
+              (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
+            ),
+          )
+          .find((entry) => entry !== undefined) ??
+        resolveSelectableProviderInstanceEntry(
+          compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
+          undefined,
+        ) ??
+        resolveSelectableProviderInstanceEntry(compatibleEntries, undefined));
   const unavailableProviderInstanceId = selectedProviderEntry
     ? undefined
-    : input.lockedProvider
-      ? (input.lockedInstanceId ?? requestedInstanceId)
-      : requestedInstanceId;
+    : (input.requiredInstanceId ??
+      (input.lockedProvider
+        ? (input.lockedInstanceId ?? requestedInstanceId)
+        : requestedInstanceId));
   return {
     selectedProviderEntry,
     requestedInstanceId,
@@ -697,7 +705,7 @@ export function timelineHasEphemeralPreviewUrls(
   );
 }
 
-function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
+export function collectUserMessageBlobPreviewUrls(message: ChatMessage): string[] {
   if (message.role !== "user" || !message.attachments) {
     return [];
   }
@@ -1501,9 +1509,12 @@ export function boundAttachmentIds(
 export function withMessageContext(input: {
   readonly text: string;
   readonly context: OrchestrationMessageContext | undefined;
+  readonly supportsInlineMessageContext?: boolean;
 }): { readonly text: string; readonly context?: OrchestrationMessageContext } {
   const { text, context } = input;
   if (context === undefined) return { text };
+  if (input.supportsInlineMessageContext === false)
+    return { text: serializeLegacyContextMessage({ text, records: context.records }) };
   return { text, context };
 }
 

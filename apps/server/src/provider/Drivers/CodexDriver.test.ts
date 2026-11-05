@@ -533,10 +533,20 @@ it.layer(layerTest)("CodexDriver", (it) => {
           }),
         );
         expect((yield* instance.snapshot.resolveMaintenance()).update?.env).toEqual({
+          PATH: "/usr/bin:/bin",
+          JONES_FIXTURE_ENV: "preserved",
           CODEX_HOME: fixture.home,
         });
       }
-    }).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn), Effect.scoped),
+    }).pipe(
+      Effect.provideService(HostProcess.Environment, {
+        PATH: "/usr/bin:/bin",
+        JONES_FIXTURE_ENV: "preserved",
+        CODEX_HOME: "/unrelated/account",
+      }),
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, noSpawn),
+      Effect.scoped,
+    ),
   );
 
   it.effect("uses each instance's environment CODEX_HOME for continuation", () =>

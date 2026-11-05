@@ -74,9 +74,13 @@ export const layer = Layer.effect(
       }),
       cleanupTerminals: Effect.fn("ResourceCleanupService.cleanupTerminals")(function (
         threadId: string,
+        legacyOwnedControl?: LegacyOwnedTerminalControl,
       ) {
         return terminals
-          .close({ threadId, deleteHistory: true })
+          .close(
+            { threadId, deleteHistory: true },
+            legacyOwnedControl === undefined ? undefined : { legacyOwnedControl },
+          )
           .pipe(
             Effect.mapError(
               (cause) => new ResourceCleanupError({ operation: "terminal", threadId, cause }),

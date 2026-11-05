@@ -42,7 +42,13 @@ async function loadHooks(
     NodePath,
     stripFrontmatter: (content: string) => content,
     pi: {
-      on: (name: string, handler: unknown) => handlers.set(name, handler),
+      on: (name: string, handler: (...args: unknown[]) => unknown) => {
+        const previous = handlers.get(name) as ((...args: unknown[]) => unknown) | undefined;
+        handlers.set(name, (...args: unknown[]) => {
+          const previousResult = previous?.(...args);
+          return handler(...args) ?? previousResult;
+        });
+      },
       getCommands: () => commands,
     },
   });
@@ -104,6 +110,41 @@ describe("Pi project trust", () => {
     assert.equal(sent.length, notices * 2);
     for (const message of sent)
       assert.include(message, "for /repo because the folder is not trusted");
+  });
+});
+
+describe("Pi app identity", () => {
+  it("uses the native section channel for identity and orchestration together", async () => {
+    const bridge = await loadMcpBridge();
+    const hook = bridge.handlers.get("before_agent_start")!;
+    const sections: Record<string, string> = {};
+    const result = await hook(
+      { systemPrompt: "base", systemPromptOptions: { sections } },
+      { ui: { notify: assert.fail } },
+    );
+    assert.isUndefined(result);
+    assert.include(sections.t3_code_app_identity!, "App identity and build source are unavailable");
+    assert.include(sections.t3_code_orchestration!, "orchestrator_capabilities");
+  });
+
+  it("injects unknown identity without MCP guidance when no bridge is attached", async () => {
+    const handlers = await loadHooks();
+    const hook = handlers.get("before_agent_start") as (
+      event: { systemPrompt: string },
+      ctx: { isProjectTrusted: () => boolean; ui: { notify: typeof assert.fail } },
+    ) => {
+      systemPrompt: string;
+    };
+    const result = hook(
+      { systemPrompt: "/original" },
+      {
+        isProjectTrusted: () => true,
+        ui: { notify: assert.fail },
+      },
+    );
+    assert.isTrue(result.systemPrompt.startsWith("/original\n\n"));
+    assert.include(result.systemPrompt, "App identity and build source are unavailable");
+    assert.notInclude(result.systemPrompt, "orchestrator_capabilities");
   });
 });
 

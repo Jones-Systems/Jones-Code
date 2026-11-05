@@ -329,6 +329,7 @@ describe("DesktopClerk", () => {
           "setPath:userData:/isolated/client-profile",
           "requestSingleInstanceLock",
           "on:second-instance",
+          "on:open-url",
           "createClerkBridge",
         ]);
       });

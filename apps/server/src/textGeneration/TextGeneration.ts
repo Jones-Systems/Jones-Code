@@ -131,6 +131,12 @@ export const make = Effect.gen(function* () {
     );
   });
   return TextGeneration.of({
+    evaluateRemoteRequest: Effect.fn("TextGeneration.evaluateRemoteRequest")((input) =>
+      resolveRemoteEvaluationModel(input.modelSelection).pipe(
+        Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, registry),
+        Effect.flatMap((instance) => instance.textGeneration.evaluateRemoteRequest(input)),
+      ),
+    ),
     generateCommitMessage: Effect.fn("TextGeneration.generateCommitMessage")(function (input) {
       return generate("generateCommitMessage", input.modelSelection, (service, modelSelection) =>
         service.generateCommitMessage({ ...input, modelSelection }),

@@ -98,11 +98,10 @@ export class GoalContinuityStore extends Context.Service<
     ) => Effect.Effect<readonly ContinuityStoredRow[], GoalContinuityError>;
   }
 >()("t3/jones/goals/continuity/GoalContinuityStore") {}
+const isGoalContinuityError = Schema.is(GoalContinuityError);
 
 const storageError = (cause: unknown) =>
-  Schema.is(GoalContinuityError)(cause)
-    ? cause
-    : new GoalContinuityError({ reason: "unavailable" });
+  isGoalContinuityError(cause) ? cause : new GoalContinuityError({ reason: "unavailable" });
 const corrupt = () => new GoalContinuityError({ reason: "corrupt_snapshot" });
 const stale = () => new GoalContinuityError({ reason: "stale" });
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(ContinuitySnapshot));
@@ -349,9 +348,12 @@ const make = Effect.gen(function* () {
     writeRow,
     openDeliveries,
     deliveryPage,
-    transaction: (effect) => sql.withTransaction(effect).pipe(Effect.mapError(storageError)),
-    readOnly: (effect) =>
+    transaction: Effect.fn("GoalContinuityStore.transaction")((effect) =>
+      sql.withTransaction(effect).pipe(Effect.mapError(storageError)),
+    ),
+    readOnly: Effect.fn("GoalContinuityStore.readOnly")((effect) =>
       sql.withTransaction(effect).pipe(NodeSqliteClient.readOnly, Effect.mapError(storageError)),
+    ),
   });
 });
 export const layer = Layer.effect(GoalContinuityStore, make);

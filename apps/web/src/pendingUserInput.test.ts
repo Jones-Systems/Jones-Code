@@ -1,3 +1,6 @@
+import { setPendingUserInputCustomAnswer } from "./pendingUserInput";
+import { buildPendingUserInputAnswers } from "./pendingUserInput";
+import { togglePendingUserInputOptionSelection } from "./pendingUserInput";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { formatInlineContextReference } from "./lib/composerContextReferences";

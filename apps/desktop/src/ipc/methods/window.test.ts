@@ -30,8 +30,6 @@ vi.mock("@clerk/electron/preload", () => ({ exposeClerkBridge: vi.fn() }));
 
 import type { DesktopBridge } from "@t3tools/contracts";
 import * as DesktopAppIdentity from "../../app/DesktopAppIdentity.ts";
-import * as DesktopIpc from "../DesktopIpc.ts";
-import * as IpcChannels from "../channels.ts";
 import * as DesktopBackendConfiguration from "../../backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
@@ -45,7 +43,7 @@ import {
   getLocalEnvironmentBootstraps,
   installRelayTelemetryEnabled,
   pickProjectFavicon,
-  getRelayTelemetryEnabled,
+  getPreviewAutomationRuntimeIdentity,
   probeRemoteEditors,
   readMedia,
 } from "./window.ts";

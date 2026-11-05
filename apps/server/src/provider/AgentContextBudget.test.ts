@@ -1,3 +1,12 @@
+import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
+import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
+import * as WorkstreamGateway from "../workstreams/WorkstreamGateway.ts";
+import * as RemoteAdmissionIntake from "../jones/remoteAdmissionIntegration/RemoteAdmissionIntake.ts";
+import * as ProviderSessions from "../orchestration-v2/ProviderSessionManager.ts";
+import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
+import * as Receipts from "../orchestration-v2/CommandReceiptStore.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -47,6 +56,14 @@ import budget from "./agentContextBudget.json" with { type: "json" };
 
 // Registration only stores tool definitions, so the handlers' services are never called.
 const toolHandlerServices = Layer.mergeAll(
+  Sqlite.layerMemory,
+  Layer.mock(Receipts.CommandReceiptStoreV2)({}),
+  Layer.mock(EventSink.EventSinkV2)({}),
+  Layer.mock(ProjectionStore.ProjectionStoreV2)({}),
+  Layer.mock(ProviderSessions.ProviderSessionManagerV2)({}),
+  Layer.mock(RemoteAdmissionIntake.RemoteAdmissionIntake)({ register: () => {} }),
+  Layer.mock(WorkstreamGateway.WorkstreamGateway)({ purgeAuthorization: () => {} }),
+  Layer.mock(WorkstreamOperations.WorkstreamOperations)({}),
   Layer.mock(DeviceService)({}),
   Layer.mock(DocumentText)({}),
   Layer.mock(GitVcsDriver)({}),
@@ -78,7 +95,10 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ThreadManagementService)({}),
   Layer.mock(ThreadSearch)({}),
   Layer.mock(VcsStatusBroadcaster)({}),
-).pipe(Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
+).pipe(
+  Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+);
 
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
 

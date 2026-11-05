@@ -215,6 +215,28 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         }),
     ),
   ),
+  t3_thread_configuration: McpToolAccess.reads((input) =>
+    Effect.gen(function* () {
+      const {
+        projection: { thread },
+      } = yield* readThread(input.threadId);
+      const configuration = yield* Effect.serviceOption(
+        ThreadSelfConfiguration.ThreadSelfConfiguration,
+      );
+      return {
+        threadId: thread.id,
+        modelSelection: thread.modelSelection,
+        runtimeMode: thread.runtimeMode,
+        interactionMode: thread.interactionMode,
+        threadMessagesBlocked: thread.threadMessagesBlocked ?? false,
+        ...(Option.isNone(configuration)
+          ? {}
+          : yield* configuration.value
+              .read(thread.id, yield* Invocation.McpInvocationContext)
+              .pipe(Effect.mapError(toMcpFailure))),
+      };
+    }),
+  ),
   t3_thread_configure: McpToolAccess.either(
     (input) => input.modelSelection === undefined,
     McpToolAccess.reads((input) =>
@@ -237,6 +259,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
           threads,
           projection: { thread },
         } = yield* readThread(input.threadId);
+        const scope = yield* Invocation.McpInvocationContext;
+        if (scope.thread?.threadId === thread.id)
+          return yield* new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Use t3_thread_self_configure with the revision and execution precondition from t3_thread_configuration to safely change your own thread.",
+          });
         const type = modelSelectionCommandType(thread.providerInstanceId, modelSelection);
         const result = yield* threads
           .dispatch({ type, threadId: thread.id, commandId: yield* newCommandId(), modelSelection })
@@ -266,10 +295,13 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
       Effect.gen(function* () {
         const requestId = yield* required(input.requestId, "requestId");
         const answers = yield* required(input.answers, "answers");
-        const { threads, projection } = yield* readQuestion({
-          threadId: input.threadId,
-          requestId,
-        });
+        const { threads, projection, caller } = yield* readQuestion(
+          {
+            threadId: input.threadId,
+            requestId,
+          },
+          true,
+        );
         const result = yield* threads
           .dispatch({
             type: "runtime-request.respond",
@@ -277,6 +309,7 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
             commandId: yield* newCommandId(),
             requestId,
             answers,
+            ...(caller === undefined ? {} : { senderThreadId: caller.id }),
           })
           .pipe(Effect.mapError(dispatchFailure));
         return { sequence: result.sequence };
@@ -316,12 +349,16 @@ export const layer = McpToolAccess.toLayer(ThreadToolkit, {
         switch (input.action) {
           case "edit": {
             const text = yield* required(input.text, "text");
-            return yield* dispatch(input.threadId, (common) => ({
-              ...common,
-              type: "queued-run.edit",
-              runId,
-              text,
-            }));
+            return yield* dispatch(
+              input.threadId,
+              (common) => ({
+                ...common,
+                type: "queued-run.edit",
+                runId,
+                text,
+              }),
+              true,
+            );
           }
           case "reorder": {
             const beforeRunId = yield* required(input.beforeRunId, "beforeRunId");

@@ -58,6 +58,8 @@ export class TaskContinuation extends Context.Service<
     ) => Effect.Effect<TaskContinueResult, OrchestratorMcpFailure>;
   }
 >()("t3/jones/taskContinuation/TaskContinuation") {}
+const isTaskContinuationError = Schema.is(TaskContinuationError);
+const isOrchestratorMcpFailure = Schema.is(OrchestratorMcpFailure);
 
 const make = Effect.gen(function* () {
   const store = yield* Store.TaskContinuationStore;
@@ -72,7 +74,7 @@ const make = Effect.gen(function* () {
       const chain = current.runs.filter((run) => {
         const root = continuationRoot(current.runs, run);
         return (
-          !Schema.is(TaskContinuationError)(root) &&
+          !isTaskContinuationError(root) &&
           root.id === row.runId &&
           run.delegatedTaskId === row.taskId
         );
@@ -120,10 +122,10 @@ const make = Effect.gen(function* () {
       } satisfies TaskContinueResult;
     },
     Effect.mapError((cause) =>
-      Schema.is(OrchestratorMcpFailure)(cause)
+      isOrchestratorMcpFailure(cause)
         ? cause
         : toMcpFailure(
-            Schema.is(TaskContinuationError)(cause)
+            isTaskContinuationError(cause)
               ? cause
               : new TaskContinuationError({ reason: "storage_unavailable", cause }),
           ),
@@ -186,7 +188,7 @@ const make = Effect.gen(function* () {
             "turnItems",
           ]);
           const binding = sourceBinding(task, child);
-          if (Schema.is(TaskContinuationError)(binding)) return yield* binding;
+          if (isTaskContinuationError(binding)) return yield* binding;
           const idle = idleEligibility(parent, child);
           if (idle !== undefined) return yield* idle;
           const current = assertCurrentBinding(binding, child);
@@ -206,7 +208,10 @@ const make = Effect.gen(function* () {
         const preflight = yield* eligible().pipe(
           Effect.catch((cause) =>
             reconcile().pipe(
-              Effect.flatMap((row) => (row === null ? Effect.fail(cause) : Effect.succeed(row))),
+              Effect.filterOrFail(
+                (row) => row !== null,
+                () => cause,
+              ),
             ),
           ),
         );
@@ -289,7 +294,7 @@ const make = Effect.gen(function* () {
               yield* Ref.set(inserted, true);
             },
             Effect.mapError((cause) =>
-              Schema.is(TaskContinuationError)(cause)
+              isTaskContinuationError(cause)
                 ? cause
                 : new TaskContinuationError({ reason: "acceptance_unknown", cause }),
             ),
@@ -323,17 +328,17 @@ const make = Effect.gen(function* () {
         if (dispatched._tag === "Failure") {
           let cause: unknown = dispatched.failure;
           for (let depth = 0; depth < 12 && cause !== null && typeof cause === "object"; depth++) {
-            if (Schema.is(TaskContinuationError)(cause)) return yield* cause;
+            if (isTaskContinuationError(cause)) return yield* cause;
             cause = "cause" in cause ? cause.cause : undefined;
           }
         }
         return yield* new TaskContinuationError({ reason: "acceptance_unknown" });
       },
       Effect.mapError((cause) =>
-        Schema.is(OrchestratorMcpFailure)(cause)
+        isOrchestratorMcpFailure(cause)
           ? cause
           : toMcpFailure(
-              Schema.is(TaskContinuationError)(cause)
+              isTaskContinuationError(cause)
                 ? cause
                 : new TaskContinuationError({ reason: "storage_unavailable", cause }),
             ),

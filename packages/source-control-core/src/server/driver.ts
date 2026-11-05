@@ -1,3 +1,4 @@
+import type * as Duration from "effect/Duration";
 import type {
   SourceControlAppAccess,
   SourceControlProviderKind,
@@ -25,6 +26,27 @@ export interface SourceControlMediaRequest {
   readonly url: string;
   /** Request headers to forward, such as `range`. */
   readonly headers: Readonly<Record<string, string>>;
+}
+
+export interface SourceControlCiReader {
+  readonly rest: (input: {
+    readonly host: string;
+    readonly operation: string;
+    readonly method: "GET";
+    readonly path: string;
+    readonly body?: never;
+    readonly timeout?: Duration.Input;
+    readonly maxResponseBytes?: number;
+  }) => Effect.Effect<
+    {
+      readonly status: number;
+      readonly headers: Readonly<Record<string, string | undefined>>;
+      readonly body: string;
+      readonly truncated: boolean;
+      readonly invalidUtf8: boolean;
+    },
+    PullRequestProviderError
+  >;
 }
 
 /** The server side of a definition's `credentials.appSignIn`. */

@@ -1,3 +1,5 @@
+import * as OpenCodeCreationPolicy from "./jones/OpenCodeCreationPolicy.ts";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Exercise HTTP authentication with the real SDK.
 import * as NodeHttp from "node:http";
 import * as ChildProcess from "effect/process/ChildProcess";
@@ -3035,4 +3037,136 @@ it.live.each([true, false])("opens an authenticated OpenCode session (external=%
       McpProviderSessions.layer,
     ]),
   ),
+);
+it.effect(
+  "revoked qualified adoption refuses create and resume before any native SDK request",
+  () =>
+    Effect.gen(function* () {
+      const instanceId = ProviderInstanceId.make("opencode-revoked-adoption");
+      const threadId = ThreadId.make("thread-opencode-revoked-adoption");
+      const providerSessionId = ProviderSessionId.make("session-opencode-revoked-adoption");
+      const modelSelection = { instanceId, model: "default" };
+      const policy = runtimePolicy("full-access", { cwd: "/workspace" });
+      let authorized = true;
+      const requests: string[] = [];
+      const nativeEvents = asyncEventStream();
+      const client = {
+        event: {
+          subscribe: async (_input: unknown, options: { signal?: AbortSignal }) => {
+            options.signal?.addEventListener("abort", () => nativeEvents.close(), { once: true });
+            return { stream: nativeEvents.stream };
+          },
+        },
+        session: {
+          create: async () => {
+            requests.push("create");
+            throw new Error("Unexpected create");
+          },
+          get: async () => {
+            requests.push("get");
+            throw new Error("Unexpected resume");
+          },
+        },
+      } as unknown as OpencodeClient;
+      const authority: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority = {
+        creationHooks: {
+          reserveGeneration: Effect.die(
+            "The existing synthetic physical owner must not reserve again",
+          ),
+          authorize: () => Effect.die("The existing synthetic physical owner must not start again"),
+          abandonGeneration: () => Effect.die("The live physical parent must not be abandoned"),
+        },
+        authorizeAdoption: () => Effect.succeed(Effect.sync(() => authorized)),
+        authorizeConsumption: () => Effect.void,
+      };
+      const lifecycle: ProviderAdapter.ProviderRuntimeLifecycle = {
+        admit: () => Effect.void,
+        reserve: () => Effect.succeed("synthetic-session-adoption-generation"),
+        abandon: () => Effect.void,
+        bind: ({ providerThread }) => Effect.succeed(providerThread),
+        invalidate: () => Effect.void,
+      };
+      const unused = () => Effect.die("Unexpected runtime operation");
+      const runtime: OpenCodeRuntime.OpenCodeRuntimeShape = {
+        startOpenCodeServerProcess: unused,
+        connectToOpenCodeServer: () =>
+          Effect.succeed({
+            url: "http://test.invalid",
+            version: "synthetic",
+            external: false,
+            exitCode: null,
+            ownedProcess: {
+              incarnation: Object.freeze({
+                directory: "/workspace",
+                pid: 123,
+                url: "http://test.invalid",
+                runtimeGeneration: "synthetic-physical-generation",
+              }),
+              isCurrent: Effect.succeed(true),
+            },
+          }),
+        createOpenCodeSdkClient: () => client,
+        runOpenCodeCommand: unused,
+        loadOpenCodeInventory: unused,
+        loadOpenCodeSkills: unused,
+      };
+      const adapter = yield* makeOpenCodeAdapterV2({
+        instanceId,
+        authority,
+        settings: OPEN_CODE_TEST_SETTINGS,
+        environment: {},
+      }).pipe(Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime));
+      const session = yield* adapter.openSession({
+        threadId,
+        providerSessionId,
+        modelSelection,
+        runtimePolicy: policy,
+        runtimeLifecycle: lifecycle,
+      });
+      authorized = false;
+      const create = yield* session
+        .ensureThread({ threadId, modelSelection, runtimePolicy: policy })
+        .pipe(Effect.flip);
+      assert.equal(create._tag, "ProviderAdapterEnsureThreadError");
+      if (!OpenCodeRuntime.isOpenCodeRuntimeError(create.cause))
+        return yield* Effect.die("Expected adoption currentness refusal");
+      assert.equal(create.cause.operation, "adoptServer");
+      const now = yield* DateTime.now;
+      const providerThread: OrchestrationV2ProviderThread = {
+        id: ProviderThreadId.make("provider-thread-opencode-revoked-adoption"),
+        driver: OPENCODE_PROVIDER,
+        providerInstanceId: instanceId,
+        providerSessionId,
+        appThreadId: threadId,
+        ownerNodeId: null,
+        nativeThreadRef: {
+          driver: OPENCODE_PROVIDER,
+          nativeId: "synthetic-native",
+          strength: "strong",
+        },
+        nativeConversationHeadRef: null,
+        status: "idle",
+        firstRunOrdinal: 1,
+        lastRunOrdinal: 1,
+        handoffIds: [],
+        forkedFrom: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      const resume = yield* session.resumeThread({ providerThread }).pipe(Effect.flip);
+      assert.equal(resume._tag, "ProviderAdapterResumeThreadError");
+      if (!OpenCodeRuntime.isOpenCodeRuntimeError(resume.cause))
+        return yield* Effect.die("Expected adoption currentness refusal");
+      assert.equal(resume.cause.operation, "adoptServer");
+      assert.deepEqual(requests, []);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          TestProviderHost.layer({ cwd: "/workspace" }).pipe(Layer.provide(NodeServices.layer)),
+        ),
+      ),
+      Effect.scoped,
+    ),
 );

@@ -24,7 +24,7 @@ export const openDirectAdmission = Effect.fn("DeviceDirectAdmission.open")(funct
   const runFork = Effect.runForkWith(context);
   const fibers = new Set<Fiber.Fiber<unknown, unknown>>();
   const sockets = new Set<NodeNet.Socket>();
-  const lifecycle = new AbortController();
+  const lifecycle = yield* Effect.abortSignal;
   let active = true;
   const server = NodeHttp.createServer({ maxHeaderSize: 8192 }, (req, res) => {
     let finished = false;
@@ -137,7 +137,6 @@ export const openDirectAdmission = Effect.fn("DeviceDirectAdmission.open")(funct
     Effect.gen(function* () {
       active = false;
       const ownedFibers = [...fibers];
-      lifecycle.abort();
       for (const socket of sockets) socket.destroy();
       yield* Fiber.interruptAll(ownedFibers);
       yield* Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -151,7 +150,7 @@ export const openDirectAdmission = Effect.fn("DeviceDirectAdmission.open")(funct
         ),
       );
     server.once("error", failed);
-    server.listen({ port: 0, host: "127.0.0.1", signal: lifecycle.signal }, () => {
+    server.listen({ port: 0, host: "127.0.0.1", signal: lifecycle }, () => {
       server.removeListener("error", failed);
       resume(Effect.void);
     });

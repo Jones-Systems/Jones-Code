@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { createChildThreadApprovalsAtom } from "@t3tools/client-runtime/state/thread-requests";
 import { useAtomValue } from "@effect/atom-react";
 import { enabledEnvironmentIds } from "@t3tools/client-runtime/state/connections";
@@ -131,3 +133,15 @@ export const runningThreadKeepAliveAtom = createRunningThreadKeepAliveAtom({
   threadsAtom: environmentThreadShells.environmentThreadsAtom,
   stateAtom: environmentThreads.stateAtom,
 });
+
+/** Retains omitted shell relatives while the current thread view is mounted. */
+export function useThreadFamily(
+  environmentId: EnvironmentId | null,
+  rootThreadId: ThreadId | null,
+): void {
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- owns the family subscription for this mounted thread view
+  useEffect(() => {
+    if (environmentId !== null && rootThreadId !== null)
+      return threadFamilies.mount(appAtomRegistry, environmentId, rootThreadId);
+  }, [environmentId, rootThreadId]);
+}

@@ -9,6 +9,8 @@ import {
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
+import * as Cause from "effect/Cause";
+import * as DependencyChanges from "../threadResultDependencies/DependencyChanges.ts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -43,6 +45,7 @@ function boundedService<T extends object>(methods: Partial<T>): T {
 const testLayer = (input: {
   readonly latest: OrchestrationEventStore.OrchestrationEventStore["Service"]["latestApplicationSequence"];
   readonly read: ThreadManagementService.ThreadManagementService["Service"]["getThreadShell"];
+  readonly batch?: ThreadManagementService.ThreadManagementService["Service"]["readShellSnapshot"];
 }) =>
   ShellMaterialization.layer.pipe(
     Layer.provide(
@@ -58,6 +61,7 @@ const testLayer = (input: {
         ThreadManagementService.ThreadManagementService,
         boundedService<ThreadManagementService.ThreadManagementService["Service"]>({
           getThreadShell: input.read,
+          ...(input.batch === undefined ? {} : { readShellSnapshot: input.batch }),
         }),
       ),
     ),
@@ -508,5 +512,337 @@ it.effect("service close releases a waiter even when its read fiber has not star
       yield* Scope.close(lifetime, Exit.void);
       assert.isTrue(Exit.isFailure(yield* Fiber.await(waiter)));
     }),
+  ),
+);
+
+const batchOther = ThreadId.make("materialization:batch-other");
+const batchThird = ThreadId.make("materialization:batch-third");
+const request = (id: ThreadId, sequence = 10) => ({ threadId: id, sequence });
+const batchSnapshot = (ids: ReadonlyArray<ThreadId>) => ({
+  schemaVersion: 1 as const,
+  snapshotSequence: 9999,
+  threads: ids.map((id) => ({ ...shell(`batch:${id}`), id })),
+  archivedThreads: [],
+});
+
+it.effect(
+  "overlapping batches and scalar callers share per-thread reservations without redundant reads",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const thirdEntered = yield* Deferred.make<void>();
+        const batches: Array<ReadonlyArray<ThreadId>> = [];
+        const scalars: ThreadId[] = [];
+        yield* Effect.gen(function* () {
+          const service = yield* ShellMaterialization.ShellMaterialization;
+          const first = yield* service.forSubscription;
+          const second = yield* service.forSubscription;
+          const initial = yield* Effect.forkChild(
+            first.getMany([request(threadId, 3), request(batchOther), request(threadId, 10)]),
+          );
+          yield* Deferred.await(entered);
+          const scalar = yield* Effect.forkChild(second.get(batchOther, 7));
+          const overlap = yield* Effect.forkChild(
+            second.getMany([request(batchOther), request(batchThird)]),
+          );
+          yield* Deferred.await(thirdEntered);
+          yield* Deferred.succeed(release, undefined);
+          assert.sameMembers([...(yield* Fiber.join(initial)).keys()], [threadId, batchOther]);
+          assert.equal((yield* Fiber.join(scalar))?.title, `batch:${batchOther}`);
+          assert.equal((yield* Fiber.join(overlap)).get(batchThird)?.title, "scalar third");
+          assert.deepEqual(batches, [[threadId, batchOther]]);
+          assert.deepEqual(scalars, [batchThird]);
+        }).pipe(
+          Effect.provide(
+            testLayer({
+              latest: Effect.succeed(10),
+              read: (id) =>
+                Effect.sync(() => {
+                  scalars.push(id);
+                  return { ...shell("scalar third"), id };
+                }).pipe(Effect.tap(() => Deferred.succeed(thirdEntered, undefined))),
+              batch: (options) =>
+                Effect.sync(() => {
+                  const ids = options?.threadIds ?? [];
+                  batches.push([...ids]);
+                  return Deferred.await(release).pipe(Effect.as(batchSnapshot(ids)));
+                }).pipe(Effect.tap(() => Deferred.succeed(entered, undefined))),
+            }),
+          ),
+        );
+      }),
+    ),
+);
+
+it.effect("batch generation drift retries only the invalidated member", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const scalars: ThreadId[] = [];
+      let batches = 0;
+      const dependencyLayer = DependencyChanges.layer;
+      const base = testLayer({
+        latest: Effect.succeed(10),
+        read: (id) =>
+          Effect.sync(() => {
+            scalars.push(id);
+            return { ...shell("fresh generation"), id };
+          }),
+        batch: (options) =>
+          Effect.sync(() => {
+            batches++;
+            return Effect.succeed(batchSnapshot(options?.threadIds ?? []));
+          }).pipe(
+            Effect.tap(() => Deferred.succeed(entered, undefined)),
+            Effect.flatMap((decode) => Deferred.await(release).pipe(Effect.as(decode))),
+          ),
+      }).pipe(Layer.provideMerge(dependencyLayer));
+      yield* Effect.gen(function* () {
+        const service = yield* ShellMaterialization.ShellMaterialization;
+        const changes = yield* DependencyChanges.DependencyChanges;
+        const reader = yield* service.forSubscription;
+        const pending = yield* Effect.forkChild(
+          reader.getMany([request(threadId), request(batchOther)]),
+        );
+        yield* Deferred.await(entered);
+        yield* changes.publish({ threadIds: [threadId], sequence: 10 });
+        yield* Deferred.succeed(release, undefined);
+        const result = yield* Fiber.join(pending);
+        assert.equal(result.get(threadId)?.title, "fresh generation");
+        assert.equal(result.get(batchOther)?.title, `batch:${batchOther}`);
+        assert.equal(batches, 1);
+        assert.deepEqual(scalars, [threadId]);
+      }).pipe(Effect.provide(base));
+    }),
+  ),
+);
+
+it.effect(
+  "batch floors survive scalar cache eviction and reject an unproved newer snapshot DTO",
+  () =>
+    Effect.gen(function* () {
+      let version = 30;
+      yield* Effect.gen(function* () {
+        const reader = yield* (yield* ShellMaterialization.ShellMaterialization).forSubscription;
+        yield* reader.getMany([request(threadId), request(batchOther)]);
+        for (let i = 0; i < 513; i++) yield* reader.get(ThreadId.make(`batch-eviction:${i}`), 1);
+        version = 10;
+        const exit = yield* reader
+          .getMany([request(threadId, 1), request(batchOther, 1)])
+          .pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(exit));
+        if (Exit.isFailure(exit))
+          assert.include(Cause.pretty(exit.cause), "required committed sequence");
+      }).pipe(
+        Effect.provide(
+          testLayer({
+            latest: Effect.sync(() => version),
+            read: (id) => Effect.succeed({ ...shell("eviction"), id }),
+            batch: (options) =>
+              Effect.succeed(Effect.succeed(batchSnapshot(options?.threadIds ?? []))),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "typed aggregate failure attributes versioned scalar errors and releases healthy joined waiters",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const error = new OrchestratorProjectionError({ threadId, cause: "corrupt scalar" });
+        const reads: ThreadId[] = [];
+        let fail = true;
+        yield* Effect.gen(function* () {
+          const service = yield* ShellMaterialization.ShellMaterialization;
+          const reader = yield* service.forSubscription;
+          const otherReader = yield* service.forSubscription;
+          const pending = yield* Effect.forkChild(
+            reader.getMany([request(threadId), request(batchOther)]).pipe(Effect.exit),
+          );
+          yield* Deferred.await(entered);
+          const healthy = yield* Effect.forkChild(otherReader.get(batchOther, 10));
+          yield* Deferred.succeed(release, undefined);
+          const exit = yield* Fiber.join(pending);
+          assert.isTrue(Exit.isFailure(exit));
+          if (Exit.isFailure(exit)) assert.deepEqual(Cause.squash(exit.cause), error);
+          assert.equal((yield* Fiber.join(healthy))?.title, "healthy scalar");
+          assert.sameMembers(reads, [threadId, batchOther]);
+          fail = false;
+          assert.equal((yield* reader.get(threadId, 10))?.title, "healthy scalar");
+          assert.equal(reads.filter((id) => id === threadId).length, 2);
+        }).pipe(
+          Effect.provide(
+            testLayer({
+              latest: Effect.succeed(10),
+              read: (id) =>
+                Effect.suspend(() => {
+                  reads.push(id);
+                  return id === threadId && fail
+                    ? Effect.fail(error)
+                    : Effect.succeed({ ...shell("healthy scalar"), id });
+                }),
+              batch: () =>
+                Deferred.succeed(entered, undefined).pipe(
+                  Effect.andThen(Deferred.await(release)),
+                  Effect.andThen(Effect.fail(error)),
+                ),
+            }),
+          ),
+        );
+      }),
+    ),
+);
+
+it.effect("batch defects propagate without scalar recovery and never strand later requests", () =>
+  Effect.gen(function* () {
+    const defect = new Error("synthetic batch defect");
+    let scalarReads = 0;
+    let broken = true;
+    yield* Effect.gen(function* () {
+      const reader = yield* (yield* ShellMaterialization.ShellMaterialization).forSubscription;
+      const exit = yield* reader
+        .getMany([request(threadId), request(batchOther)])
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(exit));
+      if (Exit.isFailure(exit)) assert.equal(Cause.squash(exit.cause), defect);
+      assert.equal(scalarReads, 0);
+      broken = false;
+      const result = yield* reader.getMany([request(threadId), request(batchOther)]);
+      assert.equal(result.size, 2);
+      assert.equal(scalarReads, 0);
+    }).pipe(
+      Effect.provide(
+        testLayer({
+          latest: Effect.succeed(10),
+          read: () =>
+            Effect.sync(() => {
+              scalarReads++;
+              return null;
+            }),
+          batch: (options) =>
+            Effect.suspend(() =>
+              broken
+                ? Effect.die(defect)
+                : Effect.succeed(Effect.succeed(batchSnapshot(options?.threadIds ?? []))),
+            ),
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect(
+  "canceling a batch waiter leaves its environment flight alive for another subscriber",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        let finished = false;
+        let batches = 0;
+        yield* Effect.gen(function* () {
+          const service = yield* ShellMaterialization.ShellMaterialization;
+          const first = yield* service.forSubscription;
+          const second = yield* service.forSubscription;
+          const canceled = yield* Effect.forkChild(
+            first.getMany([request(threadId), request(batchOther)]),
+          );
+          yield* Deferred.await(entered);
+          const retained = yield* Effect.forkChild(
+            second.getMany([request(batchOther), request(threadId)]),
+            { startImmediately: true },
+          );
+          yield* Fiber.interrupt(canceled);
+          assert.isFalse(finished);
+          yield* Deferred.succeed(release, undefined);
+          assert.equal((yield* Fiber.join(retained)).size, 2);
+          assert.equal(batches, 1);
+          assert.isTrue(finished);
+        }).pipe(
+          Effect.provide(
+            testLayer({
+              latest: Effect.succeed(10),
+              read: () => Effect.die("unexpected scalar"),
+              batch: (options) =>
+                Effect.sync(() => {
+                  batches++;
+                  return Effect.succeed(batchSnapshot(options?.threadIds ?? []));
+                }).pipe(
+                  Effect.tap(() => Deferred.succeed(entered, undefined)),
+                  Effect.flatMap((decode) => Deferred.await(release).pipe(Effect.as(decode))),
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      finished = true;
+                    }),
+                  ),
+                ),
+            }),
+          ),
+        );
+      }),
+    ),
+);
+
+it.effect("batch service shutdown before worker start settles every owned reservation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const lifetime = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+        Scope.close(scope, Exit.void),
+      );
+      const context = yield* Layer.build(
+        testLayer({
+          latest: Effect.succeed(10),
+          read: () => Effect.never,
+          batch: () => Effect.never,
+        }),
+      ).pipe(Scope.provide(lifetime));
+      const reader = yield* Context.get(context, ShellMaterialization.ShellMaterialization)
+        .forSubscription;
+      const waiter = yield* Effect.forkChild(
+        reader.getMany([request(threadId), request(batchOther)]),
+        { startImmediately: true },
+      );
+      yield* Scope.close(lifetime, Exit.void);
+      assert.isTrue(Exit.isFailure(yield* Fiber.await(waiter)));
+      assert.isTrue(
+        Exit.isFailure(
+          yield* reader.getMany([request(threadId), request(batchOther)]).pipe(Effect.exit),
+        ),
+      );
+    }),
+  ),
+);
+
+const batchArchivedAt = DateTime.makeUnsafe("2026-10-01T00:00:00.000Z");
+it.effect("batch results preserve archived shells and successful absence independently", () =>
+  Effect.gen(function* () {
+    const reader = yield* (yield* ShellMaterialization.ShellMaterialization).forSubscription;
+    const result = yield* reader.getMany([request(threadId), request(batchOther)]);
+    assert.equal(result.get(threadId)?.archivedAt, batchArchivedAt);
+    assert.equal(result.get(batchOther), null);
+    assert.deepEqual([...result.keys()], [threadId, batchOther]);
+  }).pipe(
+    Effect.provide(
+      testLayer({
+        latest: Effect.succeed(10),
+        read: () => Effect.die("unexpected scalar"),
+        batch: () =>
+          Effect.succeed(
+            Effect.succeed({
+              schemaVersion: 1,
+              snapshotSequence: 9999,
+              threads: [],
+              archivedThreads: [{ ...shell("archived batch"), archivedAt: batchArchivedAt }],
+            }),
+          ),
+      }),
+    ),
   ),
 );

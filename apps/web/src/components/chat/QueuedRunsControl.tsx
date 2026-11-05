@@ -1,13 +1,14 @@
+import { useAtomValue } from "@effect/atom-react";
+import { serverEnvironment } from "../../state/server";
+import { GripVerticalIcon } from "lucide-react";
 import { PendingSendStatus } from "../../jones/pendingSends/PendingSendStatus";
 import { QueuedClearAction } from "../../jones/queue/QueuedClearAction";
 import { useQueuedRunRemoval } from "../../jones/queue/useQueuedRunRemoval";
 import { canDispatchQueuedRun } from "../../jones/queue/queuedRunAdmission";
 import { QueuedSteerBatchAction } from "../../jones/queue/QueuedSteerBatchAction";
 import { useQueuedSteerBatch } from "../../jones/queue/useQueuedSteerBatch";
-import {
-  importedHistoryCommands,
-  type PreparedImportedHistoryChoice,
-} from "../../jones/importedHistory/ContinuationChoiceBanner";
+import { importedHistoryCommands } from "../../jones/importedHistory/commands";
+import type { PreparedImportedHistoryChoice } from "../../jones/importedHistory/ContinuationChoiceBanner";
 import {
   importedHistoryContinuationEligible,
   resolveImportedHistoryReview,
@@ -33,13 +34,20 @@ import {
   ArrowUpIcon,
   CalendarClockIcon,
   ChevronDownIcon,
-  Clock3Icon,
   MessagesSquareIcon,
   PencilIcon,
   XIcon,
 } from "lucide-react";
 import * as DateTime from "effect/DateTime";
-import { useId, useImperativeHandle, useRef, useState, type ReactNode, type Ref } from "react";
+import {
+  useLayoutEffect,
+  useId,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react";
 
 import { useAssetUrls } from "../../assets/assetUrls";
 import { threadEnvironment } from "../../state/threads";
@@ -69,6 +77,7 @@ interface QueuedRowThumbnail {
 
 // A longer queue shows its first messages and a button that shows the rest.
 const QUEUE_VISIBLE_ROWS = 3;
+const QUEUED_RUN_DRAG_TYPE = "application/x-t3code-queued-run";
 
 export interface QueuedRunsControlHandle {
   steerNext: (repeat: boolean) => boolean;
@@ -105,15 +114,31 @@ export function QueuedRunsControl({
   readonly editBlockedReason: string | null;
   readonly onEditQueuedRun: (request: EditQueuedRunRequest) => void;
   readonly onCancelEdit: () => void;
+  readonly onImportedHistoryChoice?: (choice: {
+    environmentId: EnvironmentId;
+    threadId: ThreadId;
+    reason: string | null;
+    prepared: PreparedImportedHistoryChoice | null;
+  }) => void;
   readonly timestampFormat: TimestampFormat;
   readonly onOpenThread: (threadId: ThreadId) => void;
 }) {
   const projection = useThreadProjection(
     scopeThreadRef(props.environmentId, props.threadId),
   )?.projection;
+  const serverConfig = useAtomValue(serverEnvironment.configValueAtom(props.environmentId));
+  const reviewImportedHistory = useAtomCommand(importedHistoryCommands.review, {
+    reportFailure: false,
+  });
+  const importedEligible = importedHistoryContinuationEligible(projection);
+  const [dragState, setDragState] = useState<{
+    readonly runId: RunId;
+    readonly insertIndex: number | null;
+  } | null>(null);
+  const dragArmedRunIdRef = useRef<RunId | null>(null);
+  const reorder = useAtomCommand(threadEnvironment.reorderQueuedRun);
   const promote = useAtomCommand(threadEnvironment.promoteQueuedRun);
   const resume = useAtomCommand(threadEnvironment.resumeThreadQueue);
-  const cancel = useAtomCommand(threadEnvironment.cancelQueuedRun);
   const [showAll, setShowAll] = useState(false);
   const queueListId = useId();
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
@@ -145,7 +170,7 @@ export function QueuedRunsControl({
     importedEligible,
   });
   // Async review guards always compare against the latest committed route and queue.
-  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed route and queue to asynchronous imported-run review guards.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish the committed route and queue to asynchronous imported-run review guards.
   useLayoutEffect(() => {
     currentQueueRef.current = {
       environmentId: props.environmentId,
@@ -212,8 +237,8 @@ export function QueuedRunsControl({
     });
   };
 
+  const canReorder = workflow?.canReorder === true;
   const activeRun = workflow?.activeRun ?? null;
-  const canSend = workflow?.canSendNow === true || workflow?.canPromoteToSteer === true;
   const queuedImageUrlById = new Map(
     queuedImageAttachmentUrls.flatMap((url, index) => {
       const resource = queuedImageAttachmentResources[index];
@@ -290,6 +315,33 @@ export function QueuedRunsControl({
     })),
   ];
 
+  const move = async (runId: RunId, beforeRunId: RunId | null) => {
+    if (queueBusy || steerInFlightRef.current || removals.isBusy()) return;
+    steerInFlightRef.current = true;
+    setBusyRunId(runId);
+    await Promise.resolve()
+      .then(() =>
+        reorder({
+          environmentId: props.environmentId,
+          input: { threadId: props.threadId, runId, beforeRunId },
+        }),
+      )
+      .finally(() => {
+        steerInFlightRef.current = false;
+        setBusyRunId(null);
+      });
+  };
+
+  const completeDrag = (runId: RunId, insertIndex: number | null) => {
+    setDragState(null);
+    dragArmedRunIdRef.current = null;
+    if (insertIndex === null || queueBusy || steerInFlightRef.current || removals.isBusy()) return;
+    const draggedIndex = queued.findIndex(({ run }) => run.id === runId);
+    if (draggedIndex === -1) return;
+    if (insertIndex === draggedIndex || insertIndex === draggedIndex + 1) return;
+    void move(runId, queued[insertIndex]?.run.id ?? null);
+  };
+
   const sendQueuedMessage = async (queuedRunId: RunId) => {
     if (!canSend || steerInFlightRef.current || removals.isBusy()) return;
     steerInFlightRef.current = true;
@@ -327,9 +379,12 @@ export function QueuedRunsControl({
         latest.context?.guest !== undefined ||
         props.editingRunId !== null ||
         props.editBlockedReason !== null ||
-        busyRunId !== null
+        queueBusy ||
+        steerInFlightRef.current ||
+        removals.isBusy()
       ) {
         return false;
+      }
       if (!repeat) {
         setShowAll(true);
         props.onEditQueuedRun({
@@ -345,15 +400,6 @@ export function QueuedRunsControl({
 
   if (items.length === 0) return null;
 
-  const remove = async (runId: RunId) => {
-    setBusyRunId(runId);
-    await cancel({
-      environmentId: props.environmentId,
-      input: { threadId: props.threadId, runId },
-    });
-    setBusyRunId(null);
-  };
-
   const collapsible = items.length > QUEUE_VISIBLE_ROWS;
   const visibleItems = collapsible && !showAll ? items.slice(0, QUEUE_VISIBLE_ROWS - 1) : items;
 
@@ -367,6 +413,24 @@ export function QueuedRunsControl({
       <span className="sr-only" aria-live="polite">
         {items.length} queued
       </span>
+      <div className="flex flex-wrap items-center justify-end gap-2 text-xs">
+        <QueuedClearAction
+          disabled={
+            removalBlocked ||
+            props.editingRunId !== null ||
+            optimisticQueued.length > 0 ||
+            !queued.some(({ run }) => !removals.isRemoving(run.id))
+          }
+          onClear={() => {
+            if (props.editingRunId === null && optimisticQueued.length === 0) {
+              setShowAll(true);
+              void removals.remove(queued.map(({ run }) => run.id));
+            }
+          }}
+          failedCount={removals.failedCount}
+        />
+        <QueuedSteerBatchAction batch={batch} onSend={() => setShowAll(true)} />
+      </div>
       <ol className="flex flex-col items-end gap-3" id={queueListId}>
         {visibleItems.map((item, position) => {
           const previewText = isAttachmentOnlyBootstrapPrompt(item.text)
@@ -376,9 +440,46 @@ export function QueuedRunsControl({
                   reference.kind === "image" && item.thumbnails.length > 0 ? "" : reference.label,
                 ),
               ).trim();
+          const rowRunId = item.runId;
+          const rowServerIndex = item.serverIndex;
+          const rowDraggable =
+            rowRunId !== null && rowServerIndex !== null && canReorder && !queueBusy;
           const isEditing = item.runId !== null && item.runId === props.editingRunId;
           return (
             <li
+              draggable={rowDraggable}
+              onDragStart={(event) => {
+                if (item.runId === null || dragArmedRunIdRef.current !== item.runId) {
+                  event.preventDefault();
+                  return;
+                }
+                event.dataTransfer.setData(QUEUED_RUN_DRAG_TYPE, item.runId);
+                event.dataTransfer.effectAllowed = "move";
+                setDragState({ runId: item.runId, insertIndex: null });
+              }}
+              onDragEnd={() => {
+                dragArmedRunIdRef.current = null;
+                setDragState(null);
+              }}
+              onDragOver={(event) => {
+                if (dragState === null || item.serverIndex === null) return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "move";
+                const rect = event.currentTarget.getBoundingClientRect();
+                const insertIndex =
+                  event.clientY < rect.top + rect.height / 2
+                    ? item.serverIndex
+                    : item.serverIndex + 1;
+                if (dragState.insertIndex !== insertIndex) {
+                  setDragState({ runId: dragState.runId, insertIndex });
+                }
+              }}
+              onDrop={(event) => {
+                if (dragState === null) return;
+                event.preventDefault();
+                completeDrag(dragState.runId, dragState.insertIndex);
+              }}
+
               key={item.key}
               aria-label={`Queued message ${position + 1} of ${items.length}, not sent`}
               aria-posinset={position + 1}
@@ -386,6 +487,32 @@ export function QueuedRunsControl({
               aria-current={isEditing ? "true" : undefined}
               className="group/queued flex w-full flex-col items-end gap-1 transition-opacity duration-150 ease-out starting:opacity-0 motion-reduce:transition-none"
             >
+              {canReorder && rowRunId !== null && rowServerIndex !== null ? (
+                <Button
+                  size="icon-xs"
+                  variant="ghost-muted"
+                  aria-label="Reorder queued message (drag, or press the arrow keys)"
+                  className="cursor-grab active:cursor-grabbing disabled:cursor-default"
+                  disabled={queueBusy}
+                  onPointerDown={() => {
+                    dragArmedRunIdRef.current = rowRunId;
+                  }}
+                  onKeyDown={(event) => {
+                    if (queueBusy || steerInFlightRef.current || removals.isBusy()) return;
+                    if (event.key === "ArrowUp" && rowServerIndex > 0) {
+                      event.preventDefault();
+                      void move(rowRunId, queued[rowServerIndex - 1]?.run.id ?? null);
+                    }
+                    if (event.key === "ArrowDown" && rowServerIndex < queued.length - 1) {
+                      event.preventDefault();
+                      void move(rowRunId, queued[rowServerIndex + 2]?.run.id ?? null);
+                    }
+                  }}
+                >
+                  <GripVerticalIcon />
+                </Button>
+              ) : null}
+
               <QueuedMessage
                 environmentId={props.environmentId}
                 message={item.message}
@@ -395,14 +522,14 @@ export function QueuedRunsControl({
                 timestampFormat={props.timestampFormat}
                 onOpenThread={props.onOpenThread}
               >
-                {canSend && !isEditing ? (
+                {(workflow?.canSendNow || workflow?.canPromoteToSteer) && !isEditing ? (
                   <>
                     <Tooltip>
                       <TooltipTrigger render={<span className="flex shrink-0" />}>
                         <Button
                           size="xs"
                           variant="ghost-muted"
-                          disabled={item.runId === null || busyRunId !== null}
+                          disabled={item.runId === null || !canSend || queueBusy}
                           onClick={() => {
                             if (item.runId !== null) {
                               void sendQueuedMessage(item.runId);
@@ -410,7 +537,7 @@ export function QueuedRunsControl({
                           }}
                         >
                           <ArrowUpIcon />
-                          Send now
+                          {workflow?.canSendNow ? "Send now" : "Steer"}
                         </Button>
                       </TooltipTrigger>
                       <TooltipPopup>
@@ -419,11 +546,26 @@ export function QueuedRunsControl({
                     </Tooltip>
                   </>
                 ) : null}
+                {importedEligible &&
+                !isEditing &&
+                item.serverIndex === 0 &&
+                item.runId !== null &&
+                item.messageId !== null ? (
+                  <Button
+                    size="xs"
+                    variant="ghost-muted"
+                    disabled={queueBusy}
+                    onClick={() => void reviewImportedQueued(item.runId!, item.messageId!)}
+                  >
+                    Review imported history
+                  </Button>
+                ) : null}
                 {item.pending ? (
-                  <span className="flex items-center gap-1 px-1">
-                    <Clock3Icon aria-hidden className="size-3" />
-                    Saving
-                  </span>
+                  <PendingSendStatus
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                    messageId={item.messageId}
+                  />
                 ) : null}
                 {isEditing ? (
                   <>
@@ -449,10 +591,17 @@ export function QueuedRunsControl({
                           disabled={
                             item.runId === null ||
                             !item.editable ||
-                            busyRunId !== null ||
+                            queueBusy ||
                             props.editBlockedReason !== null
                           }
                           onClick={() => {
+                            if (
+                              queueBusy ||
+                              steerInFlightRef.current ||
+                              removals.isBusy() ||
+                              props.editBlockedReason !== null
+                            )
+                              return;
                             if (item.runId !== null && item.messageId !== null) {
                               props.onEditQueuedRun({
                                 runId: item.runId,
@@ -478,9 +627,13 @@ export function QueuedRunsControl({
                             size="icon-xs"
                             variant="ghost-muted"
                             aria-label="Remove queued message"
-                            disabled={item.runId === null || busyRunId !== null}
+                            disabled={
+                              item.runId === null ||
+                              removalBlocked ||
+                              removals.isRemoving(item.runId)
+                            }
                             onClick={() => {
-                              if (item.runId !== null) void remove(item.runId);
+                              if (item.runId !== null) void removals.remove([item.runId]);
                             }}
                           />
                         }
@@ -500,6 +653,7 @@ export function QueuedRunsControl({
         <div className="self-end pe-1 text-xs pointer-coarse:[&_[data-slot=inline-button]]:relative pointer-coarse:[&_[data-slot=inline-button]]:after:absolute pointer-coarse:[&_[data-slot=inline-button]]:after:-inset-x-1.5 pointer-coarse:[&_[data-slot=inline-button]]:after:-inset-y-3.5">
           <InlineButton
             tone="muted"
+            aria-label={showAll ? "Collapse queued messages" : "Expand queued messages"}
             aria-expanded={showAll}
             aria-controls={queueListId}
             // Keep the composer focused; keyboard activation still works.

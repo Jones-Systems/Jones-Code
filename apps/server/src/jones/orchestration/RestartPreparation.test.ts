@@ -260,7 +260,7 @@ const fixture = (includeOldRoot = false) =>
       status: "running" as const,
       attemptCount: 1,
       leaseOwner: "worker",
-      leaseExpiresAt: DateTime.formatIso(now),
+
       availableAt: DateTime.formatIso(now),
       createdAt: DateTime.formatIso(now),
       updatedAt: DateTime.formatIso(now),

@@ -208,10 +208,9 @@ const canonicalizePath = Effect.fn("ServerConfig.canonicalizePath")(function* (i
   while (true) {
     const canonical = yield* fileSystem.realPath(candidate).pipe(
       Effect.asSome,
-      Effect.catch((error) =>
-        error.reason._tag === "NotFound"
-          ? Effect.succeed(Option.none<string>())
-          : Effect.fail(error),
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed(Option.none<string>()),
       ),
     );
     if (Option.isSome(canonical)) {

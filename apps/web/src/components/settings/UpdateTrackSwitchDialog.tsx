@@ -120,8 +120,11 @@ function SwitchPlan({
           : {
               ...(local.status === "available"
                 ? {
-                    downloadLocal: (reportError) =>
-                      downloadLocalUpdate(bridge, { notifyDownloaded: false, reportError }),
+                    downloadLocal: async (reportError) =>
+                      downloadLocalUpdate(bridge, await bridge.getUpdateState(), {
+                        notifyDownloaded: false,
+                        reportError,
+                      }),
                   }
                 : {}),
               // Install only a build the database check covers, pinned so nothing replaces it.

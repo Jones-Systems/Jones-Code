@@ -230,7 +230,7 @@ describe("qualified update-only connection", () => {
         Array(3).fill("https://updates.example.test/api/jones-updates"),
       );
       expect(authorizations).toEqual(
-        Array(3).fill({ expectedEnvironmentId: target.environmentId }),
+        Array.from({ length: 3 }, () => ({ expectedEnvironmentId: target.environmentId })),
       );
     }),
   );

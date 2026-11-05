@@ -6,11 +6,13 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
-import { makeDeletionAdmission } from "./DeletionAdmission.ts";
+import { DeletionAdmissionError, makeDeletionAdmission } from "./DeletionAdmission.ts";
+import { makeRuntimeUseStore } from "./RuntimeUseStore.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "./DeletionWorktreeRemoval.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
@@ -77,6 +79,49 @@ const setup = Effect.gen(function* () {
   const owner = yield* makeDeletionAdmission;
   return { sql, receipts, owner, payload };
 });
+
+it.effect.each(["same", "parent", "descendant"] as const)(
+  "unresolved %s runtime use refuses the actual deletion admission before its start row",
+  (relation) =>
+    Effect.gen(function* () {
+      const { owner, sql } = yield* setup;
+      const uses = yield* makeRuntimeUseStore;
+      const canonicalPath =
+        relation === "same"
+          ? target.path
+          : relation === "parent"
+            ? "/synthetic/worktrees"
+            : target.path + "/child";
+      yield* uses.reserve({
+        schema: "jones.workspace-runtime-use/v1",
+        useId: "synthetic-unresolved-use",
+        canonicalPath,
+        directoryIdentity: {
+          version: 1,
+          device: "synthetic-device",
+          inode: "synthetic-inode",
+          birth: "synthetic-birth",
+        },
+        threadId,
+        actor: {
+          kind: "provider_open",
+          provider: { sessionId: "synthetic-session", instanceId: "codex", driver: "codex" },
+        },
+        original: {
+          commandId: null,
+          runId: null,
+          attemptId: null,
+          outboxReference: null,
+          nativeReference: null,
+          claim: null,
+        },
+      });
+      const denial = yield* owner.start(input).pipe(Effect.flip);
+      assert.strictEqual(denial.reason, "workspace_runtime_use_retirement_unconfirmed");
+      assert.deepStrictEqual(yield* sql`SELECT * FROM jones_deletion_worktree_admissions`, []);
+      assert.strictEqual((yield* uses.pending()).length, 1);
+    }).pipe(Effect.provide(testLayer)),
+);
 
 it.effect(
   "records the original task and unknown-start fence before returning one execution permit",
@@ -285,4 +330,70 @@ it.effect("observation cannot substitute another original target or Git common d
       { state: "unknown" },
     ]);
   }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "observes live state outside SQL and keeps exclusion checks inside the permit transaction",
+  () =>
+    Effect.gen(function* () {
+      const { owner, sql } = yield* setup;
+      const observations: boolean[] = [];
+      const commits: boolean[] = [];
+      const live = Effect.gen(function* () {
+        observations.push(Option.isSome(yield* Effect.serviceOption(sql.transactionService)));
+        return true;
+      });
+      const commitFence = Effect.gen(function* () {
+        commits.push(Option.isSome(yield* Effect.serviceOption(sql.transactionService)));
+      });
+      const admitted = yield* owner.start({ ...input, currentLive: live }, commitFence);
+      yield* owner.revalidate(admitted.start, 0, input.currentRules, live, commitFence);
+      assert.isAbove(observations.length, 0);
+      assert.deepEqual(
+        observations,
+        observations.map(() => false),
+      );
+      assert.deepEqual(commits, [true, true]);
+      const rows = yield* sql<{
+        binding_json: string;
+      }>`SELECT binding_json FROM jones_deletion_worktree_admissions`;
+      assert.deepEqual(
+        Object.keys(JSON.parse(rows[0]!.binding_json)).sort(),
+        [
+          "actor",
+          "birthEventId",
+          "birthSequence",
+          "commandId",
+          "deletionEventId",
+          "deletionPayload",
+          "deletionSequence",
+          "rules",
+          "target",
+          "threadId",
+        ].sort(),
+      );
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "rechecks persisted target authority after live preparation and rolls back a changed commit",
+  () =>
+    Effect.gen(function* () {
+      const { owner, sql } = yield* setup;
+      const changed = yield* owner
+        .start(
+          input,
+          sql`UPDATE projection_projects SET workspace_root='/synthetic/replaced' WHERE project_id=${projectId}`.pipe(
+            Effect.asVoid,
+            Effect.mapError((cause) => new DeletionAdmissionError({ reason: "fixture", cause })),
+          ),
+        )
+        .pipe(Effect.flip);
+      assert.strictEqual(changed.reason, "original_project_root_changed");
+      assert.deepEqual(yield* sql`SELECT effect_id FROM jones_deletion_worktree_admissions`, []);
+      assert.deepEqual(
+        yield* sql`SELECT workspace_root FROM projection_projects WHERE project_id=${projectId}`,
+        [{ workspace_root: target.projectRoot }],
+      );
+    }).pipe(Effect.provide(testLayer)),
 );

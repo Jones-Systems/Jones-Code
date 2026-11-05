@@ -52,20 +52,30 @@ export function usePreviewAvailable(environmentId: EnvironmentId | null): boolea
 export function rendersServerTabNatively(
   environmentId: EnvironmentId,
   primaryEnvironmentId: EnvironmentId | null,
-  snapshot: Pick<PreviewSessionSnapshot, "runtime" | "headless"> | null | undefined,
+  snapshot:
+    | (Pick<PreviewSessionSnapshot, "runtime" | "headless"> &
+        Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
+    | null
+    | undefined,
 ): boolean {
-  return (
-    isElectron &&
-    snapshot?.runtime === "server" &&
-    !snapshot.headless &&
-    primaryEnvironmentId !== null &&
-    environmentId === primaryEnvironmentId
-  );
+  if (!isElectron || snapshot?.runtime !== "server" || snapshot.headless) return false;
+  if (!snapshot.threadId || !snapshot.tabId) return environmentId === primaryEnvironmentId;
+  return nativeCompanionRendering({
+    environmentId,
+    primaryEnvironmentId,
+    snapshot: { ...snapshot, threadId: snapshot.threadId, tabId: snapshot.tabId },
+    binding: readBindingResult({ environmentId, threadId: ThreadId.make(snapshot.threadId) }),
+    companion: appAtomRegistry.get(companionStateAtom),
+  });
 }
 
 export function useRendersServerTabNatively(
   environmentId: EnvironmentId,
-  snapshot: Pick<PreviewSessionSnapshot, "runtime" | "headless"> | null | undefined,
+  snapshot:
+    | (Pick<PreviewSessionSnapshot, "runtime" | "headless"> &
+        Partial<Pick<PreviewSessionSnapshot, "threadId" | "tabId">>)
+    | null
+    | undefined,
 ): boolean {
   const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
   const companion = useAtomValue(companionStateAtom);
@@ -74,6 +84,7 @@ export function useRendersServerTabNatively(
       ? bindingsQuery({ environmentId, input: { threadId: ThreadId.make(snapshot.threadId) } })
       : emptyBinding,
   );
+  if (snapshot?.headless) return false;
   if (!isElectron || !snapshot?.threadId || !snapshot.tabId)
     return rendersServerTabNatively(environmentId, primaryEnvironmentId, snapshot);
   return nativeCompanionRendering({

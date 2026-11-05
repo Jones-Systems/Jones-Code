@@ -1,3 +1,4 @@
+import { makePullRequestScopeLocks } from "../jones/pullRequest/pullRequestScopeLocks.ts";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Equal from "effect/Equal";
@@ -80,6 +81,9 @@ export class PullRequestReadCache extends Context.Service<
   }
 >()("t3/pullRequest/PullRequestReadCache") {}
 
+const decodeEffectRevisionCodec = Schema.decodeEffect(revisionCodec);
+const encodeEffectRevisionCodec = Schema.encodeEffect(revisionCodec);
+
 export const make = Effect.gen(function* () {
   const backing = yield* KeyValueStore.KeyValueStore;
   const random = yield* SecureRandom.SecureRandom;
@@ -94,13 +98,13 @@ export const make = Effect.gen(function* () {
   const revisions = yield* Cache.makeWith(
     () =>
       backing.get("revisions").pipe(
-        Effect.flatMap((raw) => Schema.decodeEffect(revisionCodec)(raw ?? "{}")),
+        Effect.flatMap((raw) => decodeEffectRevisionCodec(raw ?? "{}")),
         Effect.catchTags({
           SchemaError: Effect.fn("PullRequestReadCache.recoverRevisions")(function* () {
             // Without scope revisions, persisted PR entries cannot be trusted.
             yield* backing.clear;
             yield* Effect.logWarning("PR cache reset after invalid scope revisions");
-            return yield* Schema.decodeEffect(revisionCodec)("{}");
+            return yield* decodeEffectRevisionCodec("{}");
           }),
         }),
       ),
@@ -179,7 +183,7 @@ export const make = Effect.gen(function* () {
           Object.entries(current).filter(([, value]) => value.expiresAt > now),
         );
         next[scope] = { revision: yield* random.uuidV4(), expiresAt: now + 60_000 };
-        const encoded = yield* Schema.encodeEffect(revisionCodec)(next);
+        const encoded = yield* encodeEffectRevisionCodec(next);
         yield* backing.set("revisions", encoded);
         yield* Cache.set(revisions, undefined, next);
       },
@@ -188,7 +192,8 @@ export const make = Effect.gen(function* () {
         return Effect.logWarning("PR cache disabled after clearing failed");
       }),
       Effect.uninterruptible,
-      lock.withPermits(CONCURRENT_READS),
+      revisionMutex.withPermit,
+      (effect, scope) => scopeLocks.withWriteScope(scope)(effect),
       detachStackFrame,
     ),
   });

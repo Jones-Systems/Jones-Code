@@ -1,3 +1,4 @@
+export const SIDEBAR_DRAG_DISTANCE = 6;
 import { type PointerEvent as ReactPointerEvent } from "react";
 import { type SensorProps } from "@dnd-kit/core";
 import { getOwnerDocument, getWindow } from "@dnd-kit/utilities";

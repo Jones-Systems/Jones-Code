@@ -242,6 +242,17 @@ describe("MessagesTimeline work rows", () => {
       expect(viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop).toBeLessThan(2),
     );
     expect(viewport.scrollTop).toBeGreaterThan(0);
+    // LegendList exposes measured rows before its initial transition enables pointer events.
+    // Observe real hit-test readiness before freezing the expansion timers.
+    await vi.waitFor(() => {
+      const button = heading.element();
+      const bounds = button.getBoundingClientRect();
+      expect(
+        document
+          .elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2)
+          ?.closest("button"),
+      ).toBe(button);
+    });
     const top = heading.element().getBoundingClientRect().top;
     const height = viewport.scrollHeight;
     using _timers = fakeTimers();

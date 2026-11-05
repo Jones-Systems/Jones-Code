@@ -22,7 +22,7 @@ import type { ChatAttachment, EnvironmentId, RunId, ThreadId } from "@t3tools/co
 import { Atom } from "effect/reactivity";
 import { Image } from "expo-image";
 import * as Haptics from "expo-haptics";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import ReanimatedSwipeable, {
@@ -167,6 +167,54 @@ export function ThreadQueueSheet({ route }: StaticScreenProps<QueueTarget>) {
   const [busyRunId, setBusyRunId] = useState<RunId | null>(null);
   const busyRef = useRef(false);
   const queuedRuns = workflow?.queuedRuns ?? [];
+  const batch = useMobileQueuedSteerBatch({
+    ...target,
+    projection,
+    editing: editing !== null,
+    busy: busyRunId !== null || resuming || importedState.busy,
+    mutationLock: {
+      acquire: () => {
+        if (busyRef.current) return false;
+        busyRef.current = true;
+        return true;
+      },
+      release: () => {
+        busyRef.current = false;
+      },
+    },
+  });
+  const queueBusy = busyRunId !== null || batch.pending;
+  const importedQueueRef = useRef({ target, queuedRuns, importedThread });
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Publish committed queue identity to the asynchronous imported-history review guard.
+  useLayoutEffect(() => {
+    importedQueueRef.current = { target, queuedRuns, importedThread };
+  }, [target, queuedRuns, importedThread]);
+  const reviewImportedQueued = async (runId: RunId) => {
+    if (!importedThread || busyRef.current) return;
+    const entry = queuedRuns.find((candidate) => candidate.run.id === runId);
+    if (entry === undefined || entry !== queuedRuns[0]) return;
+    const snapshot = importedHistoryCanonicalJson(entry);
+    const queueIdentity = importedHistoryCanonicalJson(queuedRuns);
+    const unchanged = () => {
+      const current = importedQueueRef.current;
+      const row = current.queuedRuns.find(
+        (candidate) => candidate.run.id === runId && candidate.messageId === entry.messageId,
+      );
+      return (
+        current.importedThread &&
+        current.target.environmentId === target.environmentId &&
+        current.target.threadId === target.threadId &&
+        row !== undefined &&
+        importedHistoryCanonicalJson(row) === snapshot &&
+        importedHistoryCanonicalJson(current.queuedRuns) === queueIdentity
+      );
+    };
+    await importedChoice.review(
+      { type: "queued_run", runId, messageId: entry.messageId },
+      snapshot,
+      unchanged,
+    );
+  };
 
   const hadQueuedRuns = useRef(queuedRuns.length > 0);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- pops the navigator once the server-side queue empties after it had runs

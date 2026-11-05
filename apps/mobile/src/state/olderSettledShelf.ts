@@ -6,18 +6,15 @@ import {
   sortOlderSettledScopes,
   unloadedOlderSettledCount,
   wantedOlderSettledPages,
-  type OlderSettled,
   type OlderSettledScope,
 } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentId, ProjectId } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
 import { useEffect, useMemo, useState } from "react";
 
 import { appAtomRegistry } from "./atom-registry";
 import { olderSettledThreads, threadFamilies } from "./threads";
 
 const NO_PAGES: ReadonlyMap<EnvironmentId, number> = new Map();
-const NO_OLDER_SETTLED: Atom.Atom<OlderSettled | null> = Atom.make(null);
 
 /**
  * The Settled shelf for one scope when shells leave older settled threads out: which rows it may
@@ -124,16 +121,4 @@ export function readUnloadedThreadCount(
       ),
     ),
   });
-}
-
-/** How many older settled threads one project has, loaded or not, kept current for render. */
-export function useOlderSettledCount(
-  project: { readonly environmentId: EnvironmentId; readonly id: ProjectId } | null,
-): number {
-  const older = useAtomValue(
-    project === null
-      ? NO_OLDER_SETTLED
-      : olderSettledThreads.olderSettledAtom(project.environmentId),
-  );
-  return project === null ? 0 : (older?.counts.get(project.id) ?? 0);
 }

@@ -88,11 +88,12 @@ export const layer = Layer.sync(ControlAdmission, () => {
       ([dispatch, unknown]) => unknown && dispatch.binding.instanceId === instanceId,
     );
   return ControlAdmission.of({
-    assertOpen: (instanceId) =>
+    assertOpen: Effect.fn("ControlAdmission.assertOpen")((instanceId) =>
       Effect.suspend(() =>
         blocked(instanceId) ? Effect.fail(new ControlAdmissionHeld({ instanceId })) : Effect.void,
       ),
-    begin: (binding) =>
+    ),
+    begin: Effect.fn("ControlAdmission.begin")((binding) =>
       Effect.suspend(() => {
         if (blocked(binding.instanceId))
           return Effect.fail(new ControlAdmissionHeld({ instanceId: binding.instanceId }));
@@ -100,11 +101,13 @@ export const layer = Layer.sync(ControlAdmission, () => {
         dispatches.set(dispatch, false);
         return Effect.succeed(dispatch);
       }),
-    markUnknown: (dispatch) =>
+    ),
+    markUnknown: Effect.fn("ControlAdmission.markUnknown")((dispatch) =>
       Effect.sync(() => {
         if (dispatches.has(dispatch)) dispatches.set(dispatch, true);
       }),
-    acknowledge: (dispatch, binding) =>
+    ),
+    acknowledge: Effect.fn("ControlAdmission.acknowledge")((dispatch, binding) =>
       Effect.sync(() => {
         if (!dispatches.has(dispatch)) return false;
         for (const key of Object.keys(dispatch.binding) as Array<keyof ControlDispatchBinding>) {
@@ -113,11 +116,13 @@ export const layer = Layer.sync(ControlAdmission, () => {
         dispatches.delete(dispatch);
         return true;
       }),
-    rejectNonApplying: (dispatch) =>
+    ),
+    rejectNonApplying: Effect.fn("ControlAdmission.rejectNonApplying")((dispatch) =>
       Effect.sync(() => {
         dispatches.delete(dispatch);
       }),
-    retireGeneration: (binding) =>
+    ),
+    retireGeneration: Effect.fn("ControlAdmission.retireGeneration")((binding) =>
       Effect.sync(() => {
         for (const dispatch of dispatches.keys()) {
           if (
@@ -127,7 +132,8 @@ export const layer = Layer.sync(ControlAdmission, () => {
             dispatches.delete(dispatch);
         }
       }),
-    snapshot: (instanceId) =>
+    ),
+    snapshot: Effect.fn("ControlAdmission.snapshot")((instanceId) =>
       Effect.sync(() =>
         Array.from(dispatches).flatMap(([dispatch, unknown]) =>
           dispatch.binding.instanceId === instanceId
@@ -135,5 +141,6 @@ export const layer = Layer.sync(ControlAdmission, () => {
             : [],
         ),
       ),
+    ),
   });
 });

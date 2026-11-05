@@ -5,12 +5,7 @@
     "apps/server/src/jones/workspace/contentSearchPages.ts",
     "apps/server/src/jones/workspace/contentSearchPages.test.ts"
   ],
-  "hookPaths": ["apps/server/src/workspace/WorkspaceSearchIndex.ts"],
+  "hookPaths": [],
   "tombstones": [],
-  "allowedImports": [
-    {
-      "from": "apps/server/src/workspace/WorkspaceSearchIndex.ts",
-      "to": "apps/server/src/jones/workspace/contentSearchPages.ts"
-    }
-  ]
+  "allowedImports": []
 }

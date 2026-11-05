@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -161,7 +162,7 @@ function fixture(
     runs: active ? [{ status: "running" }] : [],
   });
   const dependencies = Layer.mergeAll(
-    NodeServices.layer,
+    Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
     Layer.mock(Threads.ThreadManagementService)({
       getThreadShell: (id) =>
         Effect.sync(

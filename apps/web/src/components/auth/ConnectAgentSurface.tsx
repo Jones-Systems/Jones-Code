@@ -294,7 +294,7 @@ function ceilingReason(details: AuthMcpApprovalDetails, access: AuthMcpClientAcc
 }
 
 /** One choice in a picker of what an outside agent, or a linked environment, may do. */
-export function AccessOption({
+function AccessOption({
   access,
   selected,
   managedReason,

@@ -1,3 +1,4 @@
+import { parseServiceState } from "../cloud/serviceProtocol.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   CLI_RELEASE_BASE_URL_ENV,

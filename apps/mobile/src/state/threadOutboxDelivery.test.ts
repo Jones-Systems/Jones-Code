@@ -180,6 +180,7 @@ function queuedMessage(input: {
     messageId: MessageId.make(input.messageId),
     commandId: CommandId.make(`command-${input.messageId}`),
     text: input.text,
+    issuance: { state: "unissued" },
     attachments: input.fileUri
       ? [
           {
@@ -264,6 +265,7 @@ describe("queued mobile selection intent", () => {
         ),
       );
       expect(encoded.schemaVersion).toBe(3);
+      if (flag === undefined) delete encoded.issuance;
       const stored = decodeQueuedThreadMessage(
         JSON.parse(JSON.stringify({ ...encoded, schemaVersion: version })),
       );
@@ -283,9 +285,11 @@ describe("queued mobile selection intent", () => {
       expect(input.commandId).toBe(stored.commandId);
       expect(input.message.messageId).toBe(stored.messageId);
       if (flag === undefined) {
+        expect(stored).not.toHaveProperty("issuance");
         expect(stored).not.toHaveProperty("modelSelectionExplicit");
         expect(input).not.toHaveProperty("modelSelectionExplicit");
       } else {
+        expect(stored.issuance).toEqual({ state: "unissued" });
         expect(input.modelSelectionExplicit).toBe(flag);
       }
     },
@@ -342,8 +346,8 @@ describe.each(["rejected", "delivered"] as const)("%s outbox selection recovery"
       const releaseRecovery = Promise.withResolvers<void>();
       const mergeSpy = vi
         .spyOn(composerDrafts, "mergeComposerDraftContent")
-        .mockImplementation(async (key, content) => {
-          const result = await originalMerge(key, content);
+        .mockImplementation(async (...args) => {
+          const result = await originalMerge(...args);
           mergeCompleted.resolve();
           await releaseRecovery.promise;
           return result;
@@ -894,9 +898,13 @@ describe("thread outbox drain delivery cleanup", () => {
     const deliveryRevision = harness.manager.revisionOf(message.messageId);
     const edited = { ...message, modelSelectionExplicit: true };
     await harness.manager.update(edited);
-    await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]));
+    await composerDrafts.archiveCloudComposerDrafts("account-a", new Set([message.environmentId]), [
+      message.environmentId,
+    ]);
     await harness.manager.clearEnvironment(message.environmentId);
-    await expect(completeQueuedMessageDelivery(message, deliveryRevision)).resolves.toBe("edited");
+    await expect(completeQueuedMessageDelivery(message, deliveryRevision, undefined)).resolves.toBe(
+      "edited",
+    );
     await composerDrafts.restoreCloudComposerDrafts("account-a");
     expect(remainingMessages()).toEqual([edited]);
   });
@@ -990,8 +998,8 @@ describe("thread outbox delivered creation recovery", () => {
     const releaseRecovery = Promise.withResolvers<void>();
     const mergeSpy = vi
       .spyOn(composerDrafts, "mergeComposerDraftContent")
-      .mockImplementation(async (draftKey, content) => {
-        const result = await originalMergeComposerDraftContent(draftKey, content);
+      .mockImplementation(async (...args) => {
+        const result = await originalMergeComposerDraftContent(...args);
         mergeCompleted.resolve();
         await releaseRecovery.promise;
         return result;
@@ -1030,8 +1038,8 @@ describe("thread outbox delivered creation recovery", () => {
     const releaseRecovery = Promise.withResolvers<void>();
     const mergeSpy = vi
       .spyOn(composerDrafts, "mergeComposerDraftContent")
-      .mockImplementation(async (draftKey, content) => {
-        const result = await originalMergeComposerDraftContent(draftKey, content);
+      .mockImplementation(async (...args) => {
+        const result = await originalMergeComposerDraftContent(...args);
         mergeCompleted.resolve();
         await releaseRecovery.promise;
         return result;
@@ -1110,15 +1118,17 @@ describe("thread outbox recovery rollback", () => {
     };
     const draftKey = `${message.environmentId}:${message.threadId}`;
     composerDrafts.setComposerDraftText(draftKey, "Typed before");
-    composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: selection });
+    const submitted = composerDrafts.updateComposerDraftSettings(draftKey, {
+      modelSelection: selection,
+    }).modelSelection;
     await harness.manager.enqueue(message);
     const originalMerge = composerDrafts.mergeComposerDraftContent;
     const mergeCompleted = Promise.withResolvers<void>();
     const releaseRecovery = Promise.withResolvers<void>();
     const mergeSpy = vi
       .spyOn(composerDrafts, "mergeComposerDraftContent")
-      .mockImplementation(async (key, content) => {
-        const result = await originalMerge(key, content);
+      .mockImplementation(async (...args) => {
+        const result = await originalMerge(...args);
         mergeCompleted.resolve();
         await releaseRecovery.promise;
         return result;
@@ -1130,7 +1140,7 @@ describe("thread outbox recovery rollback", () => {
     try {
       const recovery = restoreRejectedQueuedMessage(message, "rejected");
       await mergeCompleted.promise;
-      composerDrafts.consumeSubmittedComposerModelPick(draftKey, selection);
+      composerDrafts.consumeSubmittedComposerModelPick(draftKey, submitted);
       releaseRecovery.resolve();
       await expect(recovery).resolves.toBe("deferred");
 
@@ -1194,10 +1204,16 @@ describe("thread outbox recovery rollback", () => {
     };
     const draftKey = `${message.environmentId}:${message.threadId}`;
     await harness.manager.enqueue(message);
+    let reselected: QueuedThreadMessage["modelSelection"];
     const unsubscribe = appAtomRegistry.subscribe(composerDrafts.composerDraftsAtom, (drafts) => {
-      if (drafts[draftKey]?.modelSelection === selection) {
+      const restored = drafts[draftKey]?.modelSelection;
+      if (restored !== undefined) {
+        expect(restored).toEqual(selection);
         unsubscribe();
-        composerDrafts.updateComposerDraftSettings(draftKey, { modelSelection: selection });
+        reselected = composerDrafts.updateComposerDraftSettings(draftKey, {
+          modelSelection: selection,
+        }).modelSelection;
+        expect(reselected).not.toBe(restored);
         appAtomRegistry.set(editingQueuedMessageIdsAtom, { [message.messageId]: true });
       }
     });
@@ -1205,6 +1221,7 @@ describe("thread outbox recovery rollback", () => {
       await expect(restoreRejectedQueuedMessage(message, "rejected")).resolves.toBe("deferred");
 
       expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toEqual(selection);
+      expect(composerDrafts.getComposerDraftSnapshot(draftKey).modelSelection).toBe(reselected);
       expect(composerDrafts.getComposerDraftSnapshot(draftKey).text).toBe("");
       expect(remainingMessages()).toEqual([message]);
     } finally {

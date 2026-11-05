@@ -2,6 +2,8 @@ import { assert, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { EnvironmentId, OrchestratorMcpFailure } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Queue from "effect/Queue";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
@@ -222,6 +224,68 @@ it.effect(
             Layer.provide(Watch.layer),
             Layer.provide(ports(f)),
             Layer.provide(peer),
+            Layer.provide(NodeCrypto.layer),
+          ),
+        ),
+      );
+    }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect(
+  "captures the committed start cursor and catches a real event before stream admission",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* Fixture.seed;
+      const before = yield* f.sink.latestSequence();
+      const gate = yield* Deferred.make<void>();
+      const finalized = yield* Queue.unbounded<typeof f.waiter.id>();
+      const cursors: unknown[] = [];
+      const observed = Layer.effect(
+        Orchestrator.OrchestratorV2,
+        Effect.gen(function* () {
+          const original = yield* Orchestrator.OrchestratorV2;
+          return {
+            ...original,
+            streamStoredEventsFrom: (
+              input: Parameters<typeof original.streamStoredEventsFrom>[0],
+            ) => {
+              cursors.push(input);
+              return Stream.unwrap(
+                Deferred.await(gate).pipe(Effect.as(original.streamStoredEventsFrom(input))),
+              );
+            },
+            finalizeDelegatedTask: (id: typeof f.waiter.id) =>
+              Queue.offer(finalized, id).pipe(Effect.asVoid),
+          };
+        }),
+      ).pipe(Layer.provide(ports(f)));
+      yield* Effect.gen(function* () {
+        const reactor = yield* Reactor.DependencyReactor;
+        yield* reactor.start();
+        assert.deepEqual(cursors, [{ afterSequence: before }]);
+        yield* f.sink.write({
+          events: [
+            f.event({
+              type: "run.updated",
+              threadId: f.waiter.id,
+              runId: f.waiterRun.id,
+              payload: f.waiterRun,
+            }),
+          ],
+        });
+        assert.equal(yield* Queue.size(finalized), 0); // Actual source is still held at its admission gate.
+        yield* Deferred.succeed(gate, undefined);
+        assert.equal(yield* Queue.take(finalized), f.waiter.id);
+      }).pipe(
+        Effect.provide(
+          Reactor.layer.pipe(
+            Layer.provide(Watch.layer),
+            Layer.provide(observed),
+            Layer.provide(
+              Layer.mock(Forwarding.PeerForwarding)({
+                call: () => Effect.die("Local event must not call a peer"),
+              }),
+            ),
             Layer.provide(NodeCrypto.layer),
           ),
         ),

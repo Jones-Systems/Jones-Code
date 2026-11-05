@@ -142,7 +142,7 @@ import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
-import type * as ProjectSetupScriptRunner from "./project/ProjectSetupScriptRunner.ts";
+
 import * as CommandOutputHub from "./orchestration-v2/CommandOutputHub.ts";
 import * as McpAppRequests from "./mcpApps/McpAppRequests.ts";
 import * as ProviderSessionManager from "./orchestration-v2/ProviderSessionManager.ts";
@@ -220,6 +220,7 @@ import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
+import { resolveOpenBinding } from "./jones/previewCompanion/openBinding.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
 import {
   attachmentRelativePath,
@@ -299,18 +300,6 @@ import * as AgentSessionScanner from "./project/AgentSessionScanner.ts";
 import * as AgentSessionImporter from "./project/AgentSessionImporter.ts";
 import * as UsageLimitSources from "./usage/UsageLimitSources.ts";
 import { requestUrl } from "./requestUrl.ts";
-
-import type * as NativeStoreAuthority from "./environment/NativeStoreAuthority.ts";
-import type * as AntigravityInstallation from "./provider/AntigravityInstallation.ts";
-import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
-import type * as CodexInstallation from "./provider/CodexInstallation.ts";
-import type * as EffectOutbox from "./orchestration-v2/EffectOutbox.ts";
-import type * as EventSink from "./orchestration-v2/EventSink.ts";
-import type * as VcsProcess from "./vcs/VcsProcess.ts";
-import type { ConfigError } from "effect/Config";
-import type * as HttpClient from "effect/http/HttpClient";
-import type * as ProjectFaviconResolver from "./project/ProjectFaviconResolver.ts";
-import type * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 
 const CONFIG_DISCOVERY_TIMEOUT = Duration.seconds(5);
 const isProviderUploadFeedbackError = Schema.is(ProviderUploadFeedbackError);
@@ -911,7 +900,7 @@ export const subscribeOrchestrationV2Thread = Effect.fn("ws.orchestrationV2.subs
           Stream.map((stored) => ({
             kind: "event" as const,
             sequence: stored.sequence,
-            event: stored.event,
+            event: projectDomainEventForWire(stored.event),
           })),
           coalesceThreadLiveStream,
           Stream.mapError(
@@ -1120,17 +1109,24 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
         };
       },
     );
-    const loadSnapshot = Effect.fn("ws.orchestrationV2.loadShellSnapshot")(function* () {
+    const loadSnapshot = Effect.fn("ws.orchestrationV2.loadShellSnapshot")(function* (
+      changedThreadIds: ReadonlyArray<ThreadId> = [],
+    ) {
       const forSubscriber = yield* loadSubscriberShellSnapshot({
         sql,
         listShellIndex: threadManagement.listActiveShellIndex(),
         readThreads: (threadIds) =>
           threadManagement.readShellSnapshot({
             location: "active",
-            ...(threadIds === undefined ? {} : { threadIds }),
+            ...(threadIds === undefined
+              ? {}
+              : { threadIds: [...new Set([...threadIds, ...changedThreadIds])] }),
           }),
         listProjects: projects.listShells(),
         latestSequence: applicationEvents.latestApplicationSequence,
+        ...(input.omitIdleSubagents === true || input.omitOlderSettled === true
+          ? { readRetainedThreadIds: readRemoteTaskOwnerIds(sql) }
+          : {}),
         options: {
           omitIdleSubagents: input.omitIdleSubagents === true,
           omitOlderSettled: input.omitOlderSettled === true,
@@ -1143,7 +1139,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
           ...forSubscriber.snapshot,
           projects: enriched.projects,
         } as OrchestrationV2ShellSnapshot,
-        currentThreads: base.threads,
+        currentThreads: forSubscriber.currentThreads,
         resolvedRepositoryIdentityRoots: enriched.resolvedRepositoryIdentityRoots,
       };
     });
@@ -1176,24 +1172,13 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
       events: ReadonlyArray<ShellApplicationEvent>,
     ) {
       const coalesced = coalesceShellApplicationEvents(events);
-      const threadIds = coalesced.flatMap((stored) =>
-        "aggregateKind" in stored ? [] : [stored.event.threadId],
+      const shells = yield* shellReader.getMany(
+        coalesced.flatMap((stored) =>
+          "aggregateKind" in stored
+            ? []
+            : [{ threadId: stored.event.threadId, sequence: stored.sequence }],
+        ),
       );
-      // A failed batch can't name its thread, so the scalar reads below report which one is bad.
-      const batch =
-        threadIds.length > 1
-          ? yield* threadManagement
-              .getShellSnapshot({ threadIds })
-              .pipe(Effect.orElseSucceed(() => null))
-          : null;
-      const batchedShells =
-        batch === null
-          ? null
-          : new Map(
-              [...batch.threads, ...batch.archivedThreads].map(
-                (shell) => [shell.id, shell] as const,
-              ),
-            );
       return yield* Effect.forEach(
         coalesced,
         (stored) =>
@@ -1202,10 +1187,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
               return yield* projectItem(stored);
             }
             const threadId = stored.event.threadId;
-            const shell =
-              batchedShells === null
-                ? yield* threadManagement.getThreadShell(threadId)
-                : (batchedShells.get(threadId) ?? null);
+            const shell = shells.get(threadId) ?? null;
             return shellStreamItemFromThreadShell({ stored, shell });
           }),
         { concurrency: 8 },
@@ -1273,7 +1255,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
                   ...new Set(Array.from(changes).flatMap((change) => [...change.threadIds])),
                 ];
                 if (ids.length === 0) return [];
-                const loaded = yield* loadSnapshot();
+                const loaded = yield* loadSnapshot(ids);
                 return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
               }),
             ),
@@ -1287,7 +1269,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             Effect.gen(function* () {
               const ids = yield* resultDependencies.changedThreads(input.afterSequence!);
               if (ids.length === 0) return [];
-              const loaded = yield* loadSnapshot();
+              const loaded = yield* loadSnapshot(ids);
               return dependencyRefreshItems(loaded.snapshot, ids, loaded.currentThreads);
             }),
           ).pipe(Stream.flatMap(Stream.fromIterable));
@@ -1387,11 +1369,19 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
   },
 );
 
+const isNativeCreationRejectionCode = Schema.is(NativeCreationRejectionCode);
+const isQueueDispatchCommand = Schema.is(QueueDispatchCommand);
+const isOrchestrationDispatchCommandError = Schema.is(OrchestrationDispatchCommandError);
+const isQueueCompatibilityQueueCompatibilityError = Schema.is(
+  QueueCompatibility.QueueCompatibilityError,
+);
+
 export const layerWsRpc = (
   currentSession: EnvironmentAuth.AuthenticatedSession,
   clientAnalyticsProps: Readonly<Record<string, unknown>>,
   serverBrowser: ServerBrowser.ServerBrowser["Service"],
   reportProfiles: ServerBrowser.ProfileReporter,
+  readNativeStoreAuthorityConfig: NativeStoreAuthorityConfigReader = () => Effect.succeed({}),
 ) =>
   Layer.effectContext(
     Effect.gen(function* () {
@@ -1422,7 +1412,6 @@ export const layerWsRpc = (
       });
       const sql = yield* SqlClient.SqlClient;
       const threadManagement = yield* ThreadManagementService.ThreadManagementService;
-      const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
       const threadReferenceExcerpts = yield* ThreadReferenceExcerpts.ThreadReferenceExcerpts.pipe(
         Effect.provide(ThreadReferenceExcerpts.layer),
       );
@@ -1519,6 +1508,7 @@ export const layerWsRpc = (
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const previewManager = yield* PreviewManager.PreviewManager;
+      const previewOpenBinding = yield* resolveOpenBinding();
       const portDiscovery = yield* PortScanner.PortDiscovery;
       const providerRegistry = yield* ProviderRegistry.ProviderRegistry;
       const providerInstances = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -2144,6 +2134,139 @@ export const layerWsRpc = (
         [ORCHESTRATION_V2_WS_METHODS.stopWorkflow]: (input) => threadManagement.stopWorkflow(input),
         [ORCHESTRATION_V2_WS_METHODS.forceStopThread]: (input) =>
           threadManagement.forceStopThread(input),
+        [ORCHESTRATION_V2_WS_METHODS.readCurrentRuntimeStopTarget]: (input) =>
+          withCurrentRuntimeStop((owner) => owner.readTarget(input.threadId)).pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, runtimeStopPrincipal),
+            Effect.mapError(
+              (error) => new CurrentRuntimeStopRequestError({ reason: error.reason }),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchNativeBootstrap]: (submission) =>
+          Effect.annotateCurrentSpan({ "rpc.aggregate": "orchestrationV2" }).pipe(
+            Effect.andThen(
+              threadLaunch.dispatchNativeBootstrap === undefined
+                ? Effect.fail(
+                    new NativeBootstrapDispatchError({
+                      code: "unsupported_authority",
+                      message: "Native bootstrap is unavailable",
+                    }),
+                  )
+                : startup
+                    .enqueueCommand(
+                      threadLaunch.dispatchNativeBootstrap(submission).pipe(
+                        Effect.provideService(EnvironmentAuthenticatedPrincipal, {
+                          ...currentSession,
+                          scopes: new Set(currentSession.scopes),
+                        }),
+                      ),
+                    )
+                    .pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new NativeBootstrapDispatchError({
+                            code:
+                              "code" in cause &&
+                              typeof cause.code === "string" &&
+                              isNativeCreationRejectionCode(cause.code)
+                                ? cause.code
+                                : "unresolved_claim",
+                            message: "Native bootstrap was rejected; observe the original claim",
+                          }),
+                      ),
+                    ),
+            ),
+          ),
+        [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
+          isQueueDispatchCommand(command)
+            ? Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestration",
+                "orchestration.command_id": command.commandId,
+              }).pipe(
+                Effect.andThen(
+                  startup
+                    .enqueueCommand(
+                      queueCompatibility
+                        .dispatch(command, "legacy_websocket")
+                        .pipe(withOwnerSelectionIngress),
+                    )
+                    .pipe(
+                      Effect.mapError((error) => {
+                        const cause = error.cause;
+                        return isOrchestrationDispatchCommandError(cause)
+                          ? cause
+                          : new OrchestrationDispatchCommandError({
+                              message:
+                                isQueueCompatibilityQueueCompatibilityError(error) &&
+                                error.reason === "dispatch_guard_rejected"
+                                  ? "Dispatch guard rejected."
+                                  : "Failed to dispatch orchestration command.",
+                              cause,
+                            });
+                      }),
+                    ),
+                ),
+              )
+            : Effect.annotateCurrentSpan({
+                "rpc.aggregate": "orchestrationV2",
+                "orchestration_v2.command_id": command.commandId,
+                "orchestration_v2.command_type": command.type,
+                "orchestration_v2.thread_id":
+                  command.type === "thread.fork" || command.type === "thread.merge_back"
+                    ? command.targetThreadId
+                    : command.type === "delegated_task.request" ||
+                        command.type === "delegated_task.wake-policy" ||
+                        command.type === "delegated_task.completion-delivery.acknowledge" ||
+                        command.type === "delegated_task.completion-delivery.dispose" ||
+                        command.type === "thread.created.record"
+                      ? command.parentThreadId
+                      : command.threadId,
+                ...(command.type === "thread.fork" || command.type === "thread.merge_back"
+                  ? { "orchestration_v2.source_thread_id": command.sourceThreadId }
+                  : {}),
+              }).pipe(
+                Effect.andThen(
+                  withClientSettlementOrigin(
+                    command,
+                    startup
+                      .enqueueCommand(
+                        // A retry also restarts the preparation work the launch owns.
+                        (command.type === "prepared-run.retry"
+                          ? threadLaunch.retryPreparation(command)
+                          : ThreadMessageIntake.dispatchCommand(
+                              ThreadManagementService.withCreationProvenance(command, {
+                                createdBy: "user",
+                                creationSource:
+                                  "creationSource" in command ? command.creationSource : "web",
+                              }),
+                            )
+                        ).pipe(Effect.provide(intakeContext), withOwnerSelectionIngress),
+                      )
+                      .pipe(
+                        Effect.tap((result) =>
+                          result.replayed ? Effect.void : recordClientCommandAnalytics(command),
+                        ),
+                        Effect.map((result) => ({ sequence: result.sequence })),
+                        Effect.catch((cause) =>
+                          threadManagement.getDispatchDeliveryEvidence(command).pipe(
+                            Effect.flatMap((deliveryEvidence) => {
+                              const detail = userFacingDispatchErrorMessage(cause);
+                              return Effect.fail(
+                                new OrchestrationV2DispatchCommandError({
+                                  commandId: command.commandId,
+                                  commandType: command.type,
+                                  message: detail ?? "Failed to dispatch orchestration V2 command",
+                                  ...(detail === undefined ? {} : { detail }),
+                                  deliveryEvidence,
+                                  cause,
+                                }),
+                              );
+                            }),
+                          ),
+                        ),
+                      ),
+                  ),
+                ),
+              ),
         [ORCHESTRATION_V2_WS_METHODS.getWorkflowScript]: (input) =>
           readWorkflowScript({ scriptPath: input.scriptPath }),
         [ORCHESTRATION_V2_WS_METHODS.getNativeChildWork]: (input) =>
@@ -2321,36 +2444,25 @@ export const layerWsRpc = (
                     ...result,
                     projection: projectThreadProjectionForWire(result.projection),
                   })),
-                  Effect.catchTags({
-                    AttachmentClaimError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                    ThreadLaunchError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ServerRuntimeStartupError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: "Failed to launch thread",
-                        cause,
-                      }),
-                    ThreadManagementProviderInstanceDisabledError: (cause) =>
-                      new OrchestrationV2ThreadLaunchError({
-                        commandId: input.commandId,
-                        projectId: input.projectId,
-                        message: cause.message,
-                        cause,
-                      }),
-                  }),
+                  Effect.catch((cause) =>
+                    threadLaunch.getDeliveryEvidence(input).pipe(
+                      Effect.flatMap((deliveryEvidence) =>
+                        Effect.fail(
+                          new OrchestrationV2ThreadLaunchError({
+                            commandId: input.commandId,
+                            projectId: input.projectId,
+                            message:
+                              cause._tag === "AttachmentClaimError" ||
+                              cause._tag === "ThreadManagementProviderInstanceDisabledError"
+                                ? cause.message
+                                : "Failed to launch thread",
+                            deliveryEvidence,
+                            cause,
+                          }),
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
             ),
           ),
@@ -3245,7 +3357,12 @@ export const layerWsRpc = (
               (unsubscribe) => Effect.sync(unsubscribe),
             ),
           ),
-        [WS_METHODS.previewOpen]: (input) => previewManager.open(input),
+        [WS_METHODS.previewOpen]: (input) =>
+          previewManager.open(
+            previewOpenBinding === undefined
+              ? input
+              : { ...input, beforePublish: previewOpenBinding },
+          ),
         [WS_METHODS.previewResize]: (input) => previewManager.resize(input),
         [WS_METHODS.previewAdjust]: (input) => previewManager.adjust(input),
         [WS_METHODS.previewClose]: (input) => previewManager.close(input),
@@ -3513,102 +3630,6 @@ export const WS_RPC_SERVER_OPTIONS = {
   disableFatalDefects: true,
 } as const;
 
-type WsLayerServices =
-  | PeerLinks.PeerLinks
-  | HttpRouter.HttpRouter
-  | NativeStoreAuthority.NativeStoreAuthority
-  | PreviewAutomationBroker.PreviewAutomationBroker
-  | PullRequestReviewGuideService.PullRequestReviewGuideService
-  | PullRequestService.PullRequestService
-  | ServerBrowser.ServerBrowser
-  | ServerSelfUpdate.ServerSelfUpdate
-  | SqlClient.SqlClient
-  | ShellMaterialization.ShellMaterialization
-  | HttpRouter.Request.From<
-      "Requires",
-      | AcpRegistryRuntimeCoordinator.AcpRegistryRuntimeCoordinator
-      | AcpRegistrySupport.AcpRegistryCatalog
-      | AgentSessionImporter.AgentSessionImporter
-      | AnalyticsService.AnalyticsService
-      | AntigravityInstallation.AntigravityInstallation
-      | BackgroundPolicy.BackgroundPolicy
-      | CheckpointDiffQuery.CheckpointDiffQuery
-      | ChildProcessSpawner.ChildProcessSpawner
-      | CodexInstallation.CodexInstallation
-      | CommandOutputHub.CommandOutputHub
-      | SecureRandom.SecureRandom
-      | DatabaseStorage.DatabaseStorage
-      | DeviceService.DeviceService
-      | DirectEndpoints.DirectEndpoints
-      | DocumentText.DocumentText
-      | EffectOutbox.EffectOutboxV2
-      | EnvironmentAuth.EnvironmentAuth
-      | EnvironmentTheme.EnvironmentThemeService
-      | EventSink.EventSinkV2
-      | ExternalLauncher.ExternalLauncher
-      | FileSystem.FileSystem
-      | GitWorkflowService.GitWorkflowService
-      | GuestShareService.GuestShareService
-      | HostResources.HostResources
-      | HttpClient.HttpClient
-      | Keybindings.Keybindings
-      | ManagedProjectFolders.ManagedProjectFolders
-      | McpAppRequests.McpAppRequests
-      | ModelManifest.ModelManifest
-      | OrchestrationEventStore.OrchestrationEventStore
-      | Orchestrator.OrchestratorV2
-      | PairingGrantStore.PairingGrantStore
-      | Path.Path
-      | PortScanner.PortDiscovery
-      | PreviewManager.PreviewManager
-      | ProcessDiagnostics.ProcessDiagnostics
-      | ProcessResourceMonitor.ProcessResourceMonitor
-      | ProjectCloneTracker.ProjectCloneTracker
-      | ProjectEnrichmentService.ProjectEnrichmentService
-      | ProjectFaviconResolver.ProjectFaviconResolver
-      | ProjectService.ProjectService
-      | ProjectSetupScriptRunner.ProjectSetupScriptRunner
-      | ProjectStore.ProjectStoreV2
-      | ProviderAuthService.ProviderAuthService
-      | ProviderInstanceRegistry.ProviderInstanceRegistry
-      | ProviderLatestVersions.ProviderLatestVersions
-      | ProviderRegistry.ProviderRegistry
-      | ProviderSessionManager.ProviderSessionManagerV2
-      | PullRequestSyncReactor.PullRequestSyncReactor
-      | RelayClient.RelayClient
-      | RemoteOpenTargets.RemoteOpenTargets
-      | RepositoryIdentityResolver.RepositoryIdentityResolver
-      | ResourceTelemetry.ResourceTelemetry
-      | ReviewService.ReviewService
-      | ScheduledTasks.ScheduledTaskService
-      | SecretRequests.SecretRequests
-      | ServerConfig.ServerConfig
-      | ServerEnvironment.ServerEnvironment
-      | ServerLifecycleEvents.ServerLifecycleEvents
-      | ServerRuntimeStartup.ServerRuntimeStartup
-      | ServerSecretStore.ServerSecretStore
-      | ServerSettings.ServerSettingsService
-      | SessionStore.SessionStore
-      | SourceControlRepositoryService.SourceControlRepositoryService
-      | StorageCleanup.StorageCleanup
-      | TerminalManager.TerminalManager
-      | ThreadLaunchService.ThreadLaunchService
-      | ThreadManagementService.ThreadManagementService
-      | ThreadSearch.ThreadSearch
-      | TokenAccountingService.TokenAccountingService
-      | TraceDiagnostics.TraceDiagnostics
-      | UsageLimitSources.UsageLimitSources
-      | UsageService.UsageService
-      | VcsProcess.VcsProcess
-      | VcsProvisioningService.VcsProvisioningService
-      | VcsStatusBroadcaster.VcsStatusBroadcaster
-      | WorkspaceEntries.WorkspaceEntries
-      | WorkspaceFileSystem.WorkspaceFileSystem
-      | WorkspacePaths.WorkspacePaths
-      | WorktreeSetupTracker.WorktreeSetupTracker
-    >
-  | HttpRouter.Request<"Error", ConfigError>;
-
 const layerWs = Layer.unwrap(
   Effect.gen(function* () {
     const serverBrowser = yield* ServerBrowser.ServerBrowser;
@@ -3620,6 +3641,7 @@ const layerWs = Layer.unwrap(
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
     const sql = yield* SqlClient.SqlClient;
     const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
+    const queueCompatibility = yield* QueueCompatibility.QueueCompatibility;
     const readNativeStoreAuthorityConfig = yield* makeNativeStoreAuthorityConfigReader;
     return HttpRouter.add(
       "GET",
@@ -3652,6 +3674,16 @@ const layerWs = Layer.unwrap(
           ),
         );
         const clientAnalyticsProps = readClientAnalyticsProps(request);
+        yield* sessions
+          .recordClientConnection(session.sessionId, {
+            ...(clientAnalyticsProps.surface === undefined
+              ? {}
+              : { surface: clientAnalyticsProps.surface }),
+            ...(clientAnalyticsProps.appVersion === undefined
+              ? {}
+              : { appVersion: clientAnalyticsProps.appVersion }),
+          })
+          .pipe(Effect.catch((error) => failEnvironmentInternal("internal_error", error)));
         yield* analytics.recordOwners(readClientOwners(request), "client");
         const reportProfiles = yield* serverBrowser.profileReporter;
         const rpcWebSocketHttpEffect = yield* Effect.gen(function* () {
@@ -3683,13 +3715,23 @@ const layerWs = Layer.unwrap(
           return httpEffect;
         }).pipe(
           Effect.provide(
-            layerWsRpc(session, clientAnalyticsProps, serverBrowser, reportProfiles).pipe(
+            layerWsRpc(
+              session,
+              clientAnalyticsProps,
+              serverBrowser,
+              reportProfiles,
+              readNativeStoreAuthorityConfig,
+            ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.
               Layer.provide(DefectReporter.layer),
+              Layer.provide(SettlementOrigins.layer),
               Layer.provide(Layer.succeed(SqlClient.SqlClient, sql)),
               Layer.provide(
                 Layer.succeed(ShellMaterialization.ShellMaterialization, shellMaterialization),
+              ),
+              Layer.provide(
+                Layer.succeed(QueueCompatibility.QueueCompatibility, queueCompatibility),
               ),
               Layer.provide(AgentSessionScanner.layer),
               Layer.provide(ProviderMaintenanceRunner.layer),
@@ -3746,3 +3788,5 @@ const layerWs = Layer.unwrap(
     );
   }),
 ).pipe(Layer.provide(NpmRelease.layer));
+
+export const layer = layerWs;

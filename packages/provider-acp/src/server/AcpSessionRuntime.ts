@@ -1178,6 +1178,11 @@ export class AcpSessionRuntime extends Context.Service<
       options?: { readonly dispatched?: Deferred.Deferred<void> },
     ) => Effect.Effect<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>;
     readonly cancel: Effect.Effect<void, EffectAcpErrors.AcpError>;
+    readonly processContainment:
+      | "cgroup-v2"
+      | "process-ledger-reduced-guarantee"
+      | "process-group"
+      | "none";
     readonly terminateProcessGroup?: Effect.Effect<void, AcpProcessGroupTerminationError>;
     readonly setMode: (
       modeId: string,
@@ -1254,7 +1259,21 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
 > {
   const random = yield* SecureRandom.SecureRandom;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const runtimeScope = yield* Scope.fork(yield* Scope.Scope);
+  const parentScope = yield* Scope.Scope;
+  const runtimeScope = yield* Scope.make();
+  let retirementExit: Exit.Exit<unknown, unknown> | undefined;
+  // Scope.close itself does not join a close already in progress in Effect 4.
+  // Keep one completion fence attached to the parent even after native exit.
+  const joinedRetirement = yield* Effect.cached(
+    Effect.suspend(() => Scope.close(runtimeScope, retirementExit ?? Exit.void)),
+  );
+  const closeRuntime = Effect.fn("AcpSessionRuntime.closeRuntime")(
+    (exit: Exit.Exit<unknown, unknown>) =>
+      Effect.sync(() => {
+        retirementExit ??= exit;
+      }).pipe(Effect.andThen(joinedRetirement)),
+  );
+  yield* Scope.addFinalizerExit(parentScope, closeRuntime);
   const eventQueue = yield* Queue.unbounded<AcpSessionRuntimeEvent>();
   const modeStateRef = yield* Ref.make<AcpSessionModeState | undefined>(undefined);
   const toolCallsRef = yield* Ref.make(new Map<string, AcpToolCallTrackedState>());
@@ -1490,6 +1509,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
             cause,
           }),
       ),
+      Effect.onError(() => closeRuntime(Exit.void)),
     );
 
   // Detached children can keep stdout open, delaying protocol termination.
@@ -1698,9 +1718,7 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
       onTermination: (error) =>
         recordTermination(error).pipe(
           Effect.andThen(options.onTermination?.(error) ?? Effect.void),
-          Effect.ensuring(
-            Scope.close(runtimeScope, Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid),
-          ),
+          Effect.ensuring(closeRuntime(Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid)),
         ),
       ...(options.onOutgoingResponseFailure
         ? { onOutgoingResponseFailure: options.onOutgoingResponseFailure }
@@ -2434,7 +2452,26 @@ export const make = Effect.fn("AcpSessionRuntime.make")(function* (
     }
   });
 
+  // A detached descendant may retain protocol pipes after its root exits.
+  // The captured runtime scope owns both cgroup and process-ledger cleanup.
+  const closeExitedRuntime = closeRuntime(Exit.void).pipe(Effect.forkDetach, Effect.asVoid);
+  yield* child.exitCode.pipe(
+    Effect.matchEffect({
+      onFailure: () => closeExitedRuntime,
+      onSuccess: () => closeExitedRuntime,
+    }),
+    Effect.forkIn(runtimeScope),
+  );
+
   return {
+    processContainment:
+      linuxCgroupLease !== undefined
+        ? "cgroup-v2"
+        : options.ownDescendantProcessGroups === true
+          ? "process-ledger-reduced-guarantee"
+          : options.ownDetachedProcessGroup === true
+            ? "process-group"
+            : "none",
     handleRequestPermission: acp.handleRequestPermission,
     handleElicitation: acp.handleElicitation,
     handleMcpConnect: acp.handleMcpConnect,

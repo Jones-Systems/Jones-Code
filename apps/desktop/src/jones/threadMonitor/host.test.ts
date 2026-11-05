@@ -23,6 +23,7 @@ interface FakeWindow {
   focused: boolean;
   destroyed: boolean;
   showInactive: ReturnType<typeof vi.fn>;
+  setVisibleOnAllWorkspaces: ReturnType<typeof vi.fn>;
   loadURL: ReturnType<typeof vi.fn>;
   getBounds: () => { x: number; y: number; width: number; height: number };
   emit: (event: string, ...args: unknown[]) => boolean;
@@ -180,7 +181,11 @@ vi.mock("electron", async () => {
 const hosts: ThreadMonitorHost[] = [];
 async function setup(
   preferences: unknown = null,
-  options: { loadFailures?: number; backend?: ReturnType<typeof monitorBackend> } = {},
+  options: {
+    loadFailures?: number;
+    backend?: ReturnType<typeof monitorBackend>;
+    platform?: NodeJS.Platform;
+  } = {},
 ) {
   native.preferences = preferences;
   native.loadFailures = options.loadFailures ?? 0;
@@ -194,7 +199,7 @@ async function setup(
     main,
     bundleDirectory: "/isolated/bundle",
     stateDirectory: "/isolated/state",
-    platform: "linux",
+    platform: options.platform ?? "linux",
     scheme: "t3code",
     assetDirectory: "/isolated/assets",
     developmentOrigin: null,
@@ -303,6 +308,41 @@ const pendingResult = {
 };
 
 describe("monitor host lifecycle", () => {
+  it.each(["darwin", "linux", "win32"] as const)(
+    "preserves %s process-type and passive visibility configuration for saved-hidden and replacement peers",
+    async (platform) => {
+      const h = await setup({ enabled: false }, { platform });
+      await h.invoke(channels.dispatch, { type: "ready" }, h.peer);
+      expect(h.host.state()).toMatchObject({ enabled: false, visible: false });
+      expect(h.peer.showInactive).not.toHaveBeenCalled();
+
+      h.mainWindow.webContents.emit("did-start-navigation", {}, "t3code://app/", false, true, 1, 1);
+      expect(h.peer.destroyed).toBe(true);
+      await h.invoke(channels.publish, { type: "reset", publisherGeneration: "generation-2" });
+      expect(native.windows).toHaveLength(3);
+      const replacement = native.windows[2]!;
+      for (const peer of [h.peer, replacement]) {
+        if (platform === "darwin") {
+          expect(peer.options.type).toBe("panel");
+          expect(peer.setVisibleOnAllWorkspaces.mock.calls).toEqual([
+            [true, { visibleOnFullScreen: true, skipTransformProcessType: true }],
+          ]);
+        } else {
+          expect(peer.options.type).toBeUndefined();
+          expect(peer.setVisibleOnAllWorkspaces).not.toHaveBeenCalled();
+        }
+      }
+
+      await h.invoke(channels.dispatch, { type: "ready" }, replacement);
+      expect(h.host.state()).toMatchObject({ enabled: false, visible: false });
+      expect(replacement.showInactive).not.toHaveBeenCalled();
+      await h.invoke(channels.setEnabled, true);
+      expect(h.host.state().visible).toBe(true);
+      expect(replacement.showInactive).toHaveBeenCalledTimes(1);
+      expect(h.revealMain).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["peer", "toolbar"] as const)(
     "retains the peer's expanded bounds and focused-draft view contract through %s hide and toolbar show",
     async (control) => {

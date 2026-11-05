@@ -13,7 +13,7 @@ import {
   textDirection,
   type TextDirection,
 } from "@t3tools/shared/textDirection";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Platform, Pressable, ScrollView, View, type LayoutChangeEvent } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -32,8 +32,9 @@ import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useLiveThreadLinkLabels } from "../../state/entities";
 import {
   isPendingUserInputOptionSelected,
+  resolvePendingUserInputAnswer,
   type PendingUserInputDraftAnswer,
-} from "@t3tools/client-runtime/state/pending-user-input";
+} from "../../jones/questionAnswer/answers";
 import type { PendingUserInput } from "../../lib/threadActivity";
 
 export interface PendingUserInputCardProps {
@@ -97,7 +98,6 @@ function QuestionText(props: {
 }
 
 export function PendingUserInputCard(props: PendingUserInputCardProps) {
-  const expandedCardIsOverlay = EXPANDED_CARD_IS_OVERLAY && props.expandedInFlow !== true;
   const questionCount = props.pendingUserInput.questions.length;
   const canRespond = props.pendingUserInput.responseCapability !== "not_resumable";
   const isResponding = props.respondingUserInputId === props.pendingUserInput.requestId;
@@ -111,6 +111,48 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       ])
       .join(" "),
   );
+
+  const notes = supportsUserResponseAnswerNotes(props.pendingUserInput.responseCapability);
+  const progress = sequentialQuestionProgress(
+    props.pendingUserInput.questions,
+    props.drafts,
+    notes,
+  );
+  const [position, setPosition] = useState({
+    requestId: props.pendingUserInput.requestId,
+    index: progress.initialIndex,
+  });
+  if (position.requestId !== props.pendingUserInput.requestId) {
+    setPosition({ requestId: props.pendingUserInput.requestId, index: progress.initialIndex });
+  }
+  const questionIndex = clampQuestionIndex(
+    position.requestId === props.pendingUserInput.requestId
+      ? position.index
+      : progress.initialIndex,
+    questionCount,
+  );
+  const activeQuestion = props.pendingUserInput.questions[questionIndex];
+  const selectQuestion = (index: number) => {
+    setPosition({
+      requestId: props.pendingUserInput.requestId,
+      index: clampQuestionIndex(index, questionCount),
+    });
+    if (props.collapsed) props.onToggleCollapsed();
+  };
+  const segments = (
+    <QuestionProgress
+      index={questionIndex}
+      answered={progress.answered}
+      questionIds={props.pendingUserInput.questions.map((question) => question.id)}
+      disabled={!props.canOperateThread || isResponding}
+      onSelect={selectQuestion}
+    />
+  );
+  const isLastQuestion = questionIndex === questionCount - 1;
+  const blockedReason =
+    isLastQuestion && !progress.complete
+      ? `Answer question ${progress.firstUnansweredIndex + 1} to send · ${progress.answeredCount} of ${questionCount} answered`
+      : null;
 
   const { cardCoverage, cardProgress, maxHeight } = props;
   const barHeightRef = useRef(0);
@@ -380,6 +422,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
       ) : null}
     </Animated.View>
   );
+  if (props.expandedInFlow) return props.collapsed ? bar : card;
   return (
     <Animated.View
       className="relative"

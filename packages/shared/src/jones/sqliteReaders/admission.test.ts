@@ -555,3 +555,80 @@ it.effect("retains an unsuccessful acquisition's slot when native retirement is 
     yield* Fiber.interrupt(next);
   }).pipe(Effect.scoped),
 );
+
+it.effect(
+  "reuses a ready generation while retaining exclusive leases and stale-connection fences",
+  () =>
+    Effect.gen(function* () {
+      let starts = 0;
+      let warm = false;
+      let generation = 1;
+      const connection = yield* slot().acquire;
+      const shared: ReaderSlot = {
+        ...slot(),
+        generation: () => generation,
+        readyConnection: () => (warm ? connection : undefined),
+        acquire: Effect.sync(() => {
+          starts++;
+          warm = true;
+          return connection;
+        }),
+      };
+      const pool = yield* makeReaderPool(
+        options(2),
+        [slot(), shared],
+        makeCheckpointReaderAdmission(),
+      );
+      const first = yield* Effect.scoped(acquire(pool, "background"));
+      assert.equal(starts, 1);
+      const expired = yield* first.connection.execute("SELECT 1", [], undefined).pipe(Effect.flip);
+      assert.include(String(expired.reason.cause), "generation-retired");
+      const scope = yield* Scope.make();
+      yield* Effect.addFinalizer((exit) => Scope.close(scope, exit));
+      const second = yield* Scope.provide(acquire(pool, "background"), scope);
+      const queued = yield* Effect.forkChild(Effect.scoped(acquire(pool, "background")), {
+        startImmediately: true,
+      });
+      assert.isUndefined(queued.pollUnsafe());
+      assert.equal(starts, 1);
+      generation++;
+      const stale = yield* second.connection.execute("SELECT 1", [], undefined).pipe(Effect.flip);
+      assert.include(String(stale.reason.cause), "generation-retired");
+      yield* Scope.close(scope, Exit.void);
+      const next = yield* Fiber.join(queued);
+      assert.equal(next.slotId, 1);
+      assert.equal(next.generation, 2);
+      assert.equal(starts, 1);
+    }).pipe(Effect.scoped),
+);
+
+it.effect("a ready connection cannot bypass unproved retirement or take reserved capacity", () =>
+  Effect.gen(function* () {
+    let starts = 0;
+    const connection = yield* slot().acquire;
+    const pool = yield* makeReaderPool(
+      options(2),
+      [
+        slot(),
+        {
+          ...slot(),
+          readyConnection: () => connection,
+          acquire: Effect.sync(() => {
+            starts++;
+            return connection;
+          }),
+          settled: Effect.succeed(false),
+        },
+      ],
+      makeCheckpointReaderAdmission(),
+    );
+    yield* Effect.scoped(acquire(pool, "background"));
+    const queued = yield* Effect.forkChild(Effect.scoped(acquire(pool, "background")), {
+      startImmediately: true,
+    });
+    assert.isUndefined(queued.pollUnsafe());
+    assert.equal((yield* Effect.scoped(acquire(pool, "interactive"))).slotId, 0);
+    assert.equal(starts, 0);
+    yield* Fiber.interrupt(queued);
+  }).pipe(Effect.scoped),
+);

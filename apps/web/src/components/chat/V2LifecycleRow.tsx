@@ -321,9 +321,17 @@ export function EnvironmentSubagentAvatar({
     (providers) =>
       providers?.find((provider) => provider.instanceId === providerInstanceId)?.iconUrl,
   );
+  const accountDisplayName = useAtomValue(providersAtom, (providers) =>
+    subagentAccountDisplayName(
+      providers,
+      providerInstanceId,
+      providerDriver ?? (remote === undefined ? driver : undefined),
+    ),
+  );
   return (
     <SubagentAvatar
       {...props}
+      accountDisplayName={accountDisplayName}
       driver={providerDriver ?? (remote === undefined ? driver : undefined)}
       displayName={displayName}
       iconUrl={iconUrl}

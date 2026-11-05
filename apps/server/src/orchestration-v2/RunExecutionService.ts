@@ -1,3 +1,4 @@
+import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
 import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import type { GoalContinuityContext } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
@@ -709,7 +710,17 @@ export const layer: Layer.Layer<
           readonly expectedStatus: OrchestrationV2Run["status"];
         };
       }) {
-        const completedAt = input.completedAt ?? (yield* DateTime.now);
+        const completedAt =
+          input.terminal.providerTurn?.completedAt ?? input.completedAt ?? (yield* DateTime.now);
+        const providerSettlement =
+          input.terminal.evidenceKind === "local_failure"
+            ? null
+            : {
+                runAttemptId: input.attempt.id,
+                providerTurnId: input.terminal.providerTurnId,
+                status: input.terminal.status,
+                completedAt,
+              };
         const finalizedAttempt: OrchestrationV2RunAttempt = {
           ...input.attempt,
           providerTurnId: providerSettlement?.providerTurnId ?? input.attempt.providerTurnId,
@@ -806,6 +817,10 @@ export const layer: Layer.Layer<
           status: finalProviderThreadStatus(input.terminal.threadDisposition),
           updatedAt: completedAt,
         };
+        const persistedProviderTurn =
+          input.persistProviderTurn === false
+            ? input.abandonedProviderTurn
+            : (input.terminal.providerTurn ?? input.abandonedProviderTurn);
         const runEventId = yield* allocateEventId();
         const nodeEventId = yield* allocateEventId();
         const providerThreadEventId = yield* allocateEventId();
@@ -836,7 +851,7 @@ export const layer: Layer.Layer<
               : [],
           events: [
             ...cascadedSubagentEvents,
-            ...(input.abandonedProviderTurn === undefined
+            ...(persistedProviderTurn === undefined
               ? []
               : [
                   {
@@ -847,7 +862,7 @@ export const layer: Layer.Layer<
                     nodeId: input.rootNode.id,
                     providerInstanceId: input.run.providerInstanceId,
                     occurredAt: completedAt,
-                    payload: input.abandonedProviderTurn,
+                    payload: persistedProviderTurn,
                   },
                 ]),
             {
@@ -941,6 +956,9 @@ export const layer: Layer.Layer<
             runId: input.run.id,
             activeAttemptId: input.writeIfRunCurrent.activeAttemptId,
             expectedStatus: input.writeIfRunCurrent.expectedStatus,
+            ...(finalization.runtimeEvidence === undefined
+              ? {}
+              : { runtimeEvidence: finalization.runtimeEvidence }),
             events: finalization.events,
             effects: finalization.effects,
           });
@@ -1143,6 +1161,7 @@ export const layer: Layer.Layer<
               : { relatedProviderThreadIds: input.relatedProviderThreadIds }),
           }),
         );
+        const persistedNativeRootTerminals = new Set<ProviderTurnId>();
         const rootTerminalSeen = yield* Ref.make(false);
         const rootRunFinalized = yield* Ref.make(false);
         const providerThreadOwnerLost = yield* Ref.make(false);
@@ -1560,6 +1579,15 @@ export const layer: Layer.Layer<
                 });
                 storedEventCount = storedEvents.length;
                 if (
+                  storedEventCount > 0 &&
+                  event.type === "provider_turn.updated" &&
+                  event.providerTurn.providerThreadId === input.providerThread.id &&
+                  event.providerTurn.runAttemptId === input.attempt.id &&
+                  isTerminalProviderTurnStatus(event.providerTurn.status) &&
+                  event.providerTurn.completedAt !== null
+                )
+                  persistedNativeRootTerminals.add(event.providerTurn.id);
+                if (
                   isRootProviderThreadUpdate &&
                   rootTerminalAlreadySeen &&
                   storedEventCount === 0
@@ -1606,7 +1634,16 @@ export const layer: Layer.Layer<
                   snapshot === undefined ? event : { ...event, providerTurn: snapshot };
                 yield* Ref.set(terminalEvent, terminal);
                 yield* Ref.set(rootTerminalSeen, true);
-                yield* finalizeRootRun(terminal, !hasObservedTerminal);
+                // Jones capacity recovery closes one logical root after distinct
+                // same-attempt native turns. Its validated aggregate snapshot must
+                // not overwrite the earlier native terminal already committed.
+                const logicalSuccessor =
+                  persistedNativeRootTerminals.has(event.providerTurnId) &&
+                  observedTurn !== null &&
+                  observedTurn.id !== event.providerTurnId &&
+                  observedTurn.providerThreadId === input.providerThread.id &&
+                  observedTurn.runAttemptId === input.attempt.id;
+                yield* finalizeRootRun(terminal, !hasObservedTerminal && !logicalSuccessor);
               }
               if (event.type === "background_work.updated") {
                 if (event.pending) {

@@ -280,11 +280,24 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     const limited = McpInvocationContext.withRuntimeModeCeiling(asked, runtimeModeCeiling);
     const linkedEnvironments = yield* linksEnabled;
     if (limited.client?.linked === true && !linkedEnvironments) return linkedEnvironmentsOff;
+    const attributed = withLinkedMessageOrigin(
+      { ...limited, linkedEnvironments },
+      request.headers[LINKED_MESSAGE_ORIGIN_HEADER],
+    );
+    if (attributed === undefined)
+      return HttpServerResponse.jsonUnsafe(
+        {
+          error: "invalid_linked_message_origin",
+          message: "The linked message origin is malformed or this credential is not a peer link.",
+        },
+        { status: 400, headers: { "cache-control": "no-store" } },
+      );
     return yield* httpEffect.pipe(
-      Effect.provideService(McpInvocationContext.McpInvocationContext, {
-        ...limited,
-        linkedEnvironments,
-      }),
+      Effect.provideService(McpInvocationContext.McpInvocationContext, attributed),
+      Effect.provideService(
+        IncomingLinkedRequestContext,
+        bindLinkedRequestContext(attributed, request.headers[LINKED_REQUEST_CONTEXT_HEADER]),
+      ),
       Effect.map(normalizeMcpHttpResponse),
     );
   }) satisfies McpAuthMiddleware;
@@ -1067,6 +1080,10 @@ const withToolAnalytics =
     });
     return yield* registration.pipe(Effect.provideService(McpServer.McpServer, recordingServer));
   });
+const decodeThreadReadArguments = Schema.decodeUnknownEffect(
+  Schema.toCodecJson(OrchestratorToolkit.tools.t3_thread_read.parametersSchema),
+  { onExcessProperty: "error" },
+);
 
 /** `McpServer.registerToolkit` advertises the full codec schema; agents get the compact one. */
 const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(function* <
@@ -1086,9 +1103,22 @@ const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(f
           ? options
           : {
               ...options,
+              handle:
+                options.tool.name === "t3_thread_read"
+                  ? (payload) =>
+                      decodeThreadReadArguments(payload).pipe(
+                        Effect.mapError(
+                          (cause) => new McpSchema.InvalidParams({ message: cause.message }),
+                        ),
+                        Effect.andThen(() => options.handle(payload)),
+                      )
+                  : options.handle,
               tool: new McpSchema.Tool({
                 ...options.tool,
-                inputSchema: advertisedJsonSchema(tool),
+                inputSchema:
+                  options.tool.name === "t3_thread_read"
+                    ? { ...advertisedJsonSchema(tool), additionalProperties: false }
+                    : advertisedJsonSchema(tool),
               }),
             },
       );
@@ -1258,8 +1288,53 @@ export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE,
     registrations,
   }).pipe(Layer.provide(layerMcpAuthMiddleware));
 
+export const OrganizationMetadataRegistrationLive = toolkitRegistration(
+  OrganizationMetadataToolkit,
+  OrganizationMetadataHandlersLive,
+).pipe(Layer.provide(OrganizationMetadata.layer));
+
+const SettlementRestoreRegistrationLive = toolkitRegistration(
+  SettlementRestoreToolkit,
+  SettlementRestoreHandlersLive,
+).pipe(Layer.provide(SettlementRestore.layer.pipe(Layer.provide(ProjectionStoreV2.layer))));
+
+const DecisionSnapshotToolkitRegistrationLive = toolkitRegistration(
+  DecisionSnapshotToolkit,
+  DecisionSnapshotToolkitAccess,
+).pipe(
+  Layer.provide(DecisionSnapshotNativeCountsLive),
+  Layer.provide(DecisionSnapshotCollectorLive),
+);
+
+export const layerWorkstreamToolkit = toolkitRegistration(
+  WorkstreamToolkit,
+  workstreamHandlers,
+).pipe(Layer.provide(workstreamBackendLayer));
+
 /** Every tool the T3 MCP server advertises. AgentContextBudget.test.ts measures this set. */
 export const layerTools = Layer.mergeAll(
+  Layer.unwrap(
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      return config.fleetCheckpoint === undefined
+        ? Layer.empty
+        : toolkitRegistration(FleetCheckpointToolkit, FleetCheckpointHandlersLive).pipe(
+            Layer.provide(
+              FleetCheckpoint.layer(config.fleetCheckpoint).pipe(
+                Layer.provide(ProcessRunner.layer),
+              ),
+            ),
+          );
+    }),
+  ),
+  layerWorkstreamToolkit,
+  toolkitRegistration(UserResponseRequestToolkit, userResponseRequestHandlers).pipe(
+    Layer.provide(UserResponseRequest.layer),
+  ),
+  OrganizationMetadataRegistrationLive,
+  SettlementRestoreRegistrationLive,
+  toolkitRegistration(RemoteAdmissionCancel.toolkit, RemoteAdmissionCancel.handlers),
+  DecisionSnapshotToolkitRegistrationLive,
   layerPreviewToolkit,
   layerOrchestratorToolkit,
   layerThreadToolkit,

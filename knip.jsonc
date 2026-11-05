@@ -115,6 +115,11 @@
       ],
     },
     "apps/desktop": {
+      // Exact filenames emitted by the desktop build and required by boot.
+      "paths": {
+        "./compileCache.cjs": ["./src/compileCache.ts"],
+        "./main.cjs": ["./src/main.ts"],
+      },
       // Electron loads these bundles by filename rather than importing them.
       "entry": [
         "gnome-extension/extension.js!",
@@ -185,6 +190,12 @@
       "ignoreDependencies": ["@astrojs/check"],
     },
     "apps/mobile": {
+      // Awaited Metro generators create these string modules and license manifest.
+      "paths": {
+        "@t3tools/mobile-preview-stream": [".generated/preview-stream/index.js"],
+        "@t3tools/mobile-device-stream": [".generated/device-stream/index.js"],
+        "@t3tools/mobile-third-party-licenses": [".generated/third-party-licenses/index.js"],
+      },
       // Expo loads plugins and the fingerprint config by string; Metro embeds the browser entry in the native WebView.
       "entry": [
         "index.ts!",
@@ -194,6 +205,9 @@
         "scripts/generate-device-stream.mts",
         "src/features/devices/device-stream.browser.ts!",
         "src/features/browser/preview-stream.browser.ts!",
+        ".generated/preview-stream/index.js!",
+        ".generated/device-stream/index.js!",
+        ".generated/third-party-licenses/index.js!",
       ],
       // Fonts are configured as asset paths; Expo autolinks the native packages.
       "ignoreDependencies": [

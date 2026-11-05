@@ -344,6 +344,13 @@ describe("mobile task permissions", () => {
     };
     const requestId = RuntimeRequestId.make("input");
     useSelectedThreadRequests().onSelectUserInputOption(requestId, state.question, "TypeScript");
+    expect(useSelectedThreadRequests().activePendingUserInputAnswers).toBeNull();
+    // Selecting a live option is an action; text draft editing remains local.
+    useSelectedThreadRequests().onChangeUserInputCustomAnswer(
+      requestId,
+      state.question.id,
+      "TypeScript",
+    );
     state.grantedEnvironments.add("secondary");
     const requests = useSelectedThreadRequests();
     expect(requests.activePendingUserInputAnswers).toEqual({ language: "TypeScript" });

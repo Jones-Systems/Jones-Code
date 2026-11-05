@@ -90,25 +90,48 @@ const completed = () =>
   );
 
 describe("shared native thread attention", () => {
-  it.each(["preparing", "starting", "running", "waiting", "completed"] as const)(
-    "preserves upstream nonblocking input semantics while %s",
-    (status) => {
+  it.each([
+    "preparing",
+    "queued",
+    "starting",
+    "running",
+    "waiting",
+    "completed",
+    "interrupted",
+    "failed",
+    "cancelled",
+    "rolled_back",
+    "idle",
+  ] as const)("keeps every open question actionable while %s", (status) => {
+    for (const capability of [{ blocking: false }, { blocking: true }, {}] as const) {
       const thread = shell({
         latestRunId: RunId.make("run"),
         status,
-        pendingRuntimeRequest: { ...request("user_input"), blocking: false },
+        pendingRuntimeRequest: { ...request("user_input"), ...capability },
       });
-      expect(shellAttentionInput(thread).hasPendingUserInput).toBe(
-        status === "waiting" || status === "completed",
+      const attention = shellAttentionInput(thread);
+      expect(attention.hasPendingUserInput).toBe(true);
+      expect(resolveThreadAttentionStatus(attention)).toBe("input");
+      expect(resolveThreadAttentionPill({ thread: attention })).toBe("Awaiting Input");
+      const cleared = shellAttentionInput({ ...thread, pendingRuntimeRequest: null });
+      expect(cleared.hasPendingUserInput).toBe(false);
+      expect(attention.runtime).toEqual(cleared.runtime);
+    }
+  });
+
+  it("keeps an own question actionable with absent runtime", () => {
+    for (const capability of [{ blocking: false }, { blocking: true }, {}] as const) {
+      const attention = shellAttentionInput(
+        shell({
+          pendingRuntimeRequest: { ...request("user_input"), ...capability },
+        }),
       );
-      expect(
-        shellAttentionInput({
-          ...thread,
-          pendingRuntimeRequest: { ...request("user_input"), blocking: true },
-        }).hasPendingUserInput,
-      ).toBe(true);
-    },
-  );
+      expect(attention.runtime).toBeNull();
+      expect(attention.hasPendingUserInput).toBe(true);
+      expect(resolveThreadAttentionStatus(attention)).toBe("input");
+      expect(resolveThreadAttentionPill({ thread: attention })).toBe("Awaiting Input");
+    }
+  });
 
   it("prioritizes own or child approvals, then input, then runtime status", () => {
     const base = shellAttentionInput(shell({ latestRunId: RunId.make("run"), status: "running" }));

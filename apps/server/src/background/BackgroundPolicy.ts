@@ -1,3 +1,6 @@
+import { makeBackgroundPolicyChanges } from "../jones/fleetUpdates/backgroundPolicyChanges.ts";
+import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import {
   type AuthSessionId,
   type BackgroundPolicySnapshot,
@@ -34,6 +37,15 @@ export class BackgroundPolicy extends Context.Service<
       rpcClientId: RpcClientId,
     ) => Effect.Effect<void>;
     readonly snapshot: Effect.Effect<BackgroundPolicySnapshot>;
+    readonly subscribe: Effect.Effect<
+      {
+        readonly latest: BackgroundPolicySnapshot;
+        readonly changes: Stream.Stream<BackgroundPolicySnapshot>;
+      },
+      never,
+      Scope.Scope
+    >;
+    readonly streamChanges: Stream.Stream<BackgroundPolicySnapshot>;
     readonly shouldRunScopeWork: (scope: BackgroundScope) => Effect.Effect<boolean>;
     readonly shouldRunOpportunisticWork: Effect.Effect<boolean>;
   }
@@ -212,6 +224,8 @@ export const make = Effect.fn("background.policy.make")(function* () {
     return computeSnapshot({ hostPower, leases, now, settings, updatedAt: now });
   });
 
+  const changes = yield* makeBackgroundPolicyChanges(snapshot);
+
   const reportClientActivity: BackgroundPolicy["Service"]["reportClientActivity"] = Effect.fn(
     "BackgroundPolicy.reportClientActivity",
   )(function* (sessionId, rpcClientId, input) {
@@ -232,22 +246,26 @@ export const make = Effect.fn("background.policy.make")(function* () {
       updatedAt: now,
       expiresAt,
     };
-    yield* Ref.update(leasesRef, (leases) => upsertClientActivityLease(leases, lease, now));
+    yield* changes.mutate(
+      Ref.update(leasesRef, (leases) => upsertClientActivityLease(leases, lease, now)),
+    );
   });
 
   const removeRpcClient: BackgroundPolicy["Service"]["removeRpcClient"] = (
     sessionId,
     rpcClientId,
   ) =>
-    Ref.update(leasesRef, (leases) => {
-      const next = new Map(leases);
-      for (const [key, lease] of next) {
-        if (lease.sessionId === sessionId && lease.rpcClientId === rpcClientId) {
-          next.delete(key);
+    changes.mutate(
+      Ref.update(leasesRef, (leases) => {
+        const next = new Map(leases);
+        for (const [key, lease] of next) {
+          if (lease.sessionId === sessionId && lease.rpcClientId === rpcClientId) {
+            next.delete(key);
+          }
         }
-      }
-      return next;
-    });
+        return next;
+      }),
+    );
 
   const shouldRunScopeWork: BackgroundPolicy["Service"]["shouldRunScopeWork"] = Effect.fn(
     "BackgroundPolicy.shouldRunScopeWork",
@@ -266,21 +284,30 @@ export const make = Effect.fn("background.policy.make")(function* () {
     (current) => current.shouldRunOpportunisticWork,
   );
 
+  yield* Stream.runForEach(hostPowerMonitor.streamChanges, () => changes.publish).pipe(
+    Effect.forkScoped,
+  );
+  yield* Stream.runForEach(serverSettings.streamChanges, () => changes.publish).pipe(
+    Effect.forkScoped,
+  );
+
   yield* Effect.forever(
     Effect.sleep("15 seconds").pipe(
       Effect.andThen(
-        Effect.gen(function* () {
-          const now = yield* DateTime.now;
-          yield* Ref.update(leasesRef, (leases) => {
-            const next = new Map(leases);
-            for (const [key, lease] of next) {
-              if (!isLeaseActive(lease, now)) {
-                next.delete(key);
+        changes.mutate(
+          Effect.gen(function* () {
+            const now = yield* DateTime.now;
+            yield* Ref.update(leasesRef, (leases) => {
+              const next = new Map(leases);
+              for (const [key, lease] of next) {
+                if (!isLeaseActive(lease, now)) {
+                  next.delete(key);
+                }
               }
-            }
-            return next;
-          });
-        }),
+              return next;
+            });
+          }),
+        ),
       ),
     ),
   ).pipe(Effect.forkScoped);
@@ -289,6 +316,8 @@ export const make = Effect.fn("background.policy.make")(function* () {
     reportClientActivity,
     removeRpcClient,
     snapshot,
+    subscribe: changes.subscribe,
+    streamChanges: changes.streamChanges,
     shouldRunScopeWork,
     shouldRunOpportunisticWork,
   });

@@ -1,3 +1,6 @@
+import { getProjectOrderKey } from "@t3tools/client-runtime/state/project-grouping";
+import { useProjects } from "../state/entities";
+import { orderItemsByPreferredIds } from "../components/Sidebar.logic";
 import {
   scopedProjectKey,
   scopeProjectRef,
@@ -14,7 +17,6 @@ import {
   useComposerDraftStore,
 } from "../composerDraftStore";
 import { newDraftId, newThreadId } from "../lib/utils";
-import { useSidebarProjectGroups } from "./useSidebarProjectGroups";
 import {
   deriveLogicalProjectKeyFromSettings,
   selectProjectGroupingSettings,
@@ -438,6 +440,8 @@ export function resolveDefaultProjectRef(
 }
 
 export function useHandleNewThread() {
+  const projects = useProjects();
+  const projectOrder = useUiStateStore((store) => store.projectOrder);
   const routeTarget = useThreadRouteTarget();
   const routeThreadRef = routeTarget?.kind === "server" ? routeTarget.threadRef : null;
   const routeDraftId = routeTarget?.kind === "draft" ? routeTarget.draftId : null;

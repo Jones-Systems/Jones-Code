@@ -12,14 +12,16 @@ import { conversationLibraryHttpApiLayer } from "../../conversations/http.ts";
 import * as HostStatus from "../../hostStatus/HostStatus.ts";
 import { hostStatusHttpApiLayer as hostStatusHandlers } from "../../hostStatus/http.ts";
 import * as VoiceReview from "../../voiceReview/bridge.ts";
-import { voiceReviewHttpApiLayer } from "../../voiceReview/http.ts";
+import {
+  voiceReviewHttpApiLayer,
+  voiceReviewResponseHeadersLayer,
+} from "../../voiceReview/http.ts";
 import * as TokenAccountingService from "../../tokenAccounting/TokenAccountingService.ts";
 import { makeRuntimeReader } from "../../tokenAccounting/RuntimeReader.ts";
 
-export { voiceReviewResponseHeadersLayer } from "../../voiceReview/http.ts";
-
 export const provideConversationAndVoiceReview = <A, E, R>(api: Layer.Layer<A, E, R>) =>
   api.pipe(
+    Layer.provide(voiceReviewResponseHeadersLayer),
     Layer.provide(settlementOriginsHttpApiLayer.pipe(Layer.provide(SettlementOrigins.layer))),
     Layer.provide(
       settlementRestoreHttpApiLayer.pipe(

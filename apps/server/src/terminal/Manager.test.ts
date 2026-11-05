@@ -1,3 +1,14 @@
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
+import type { TerminalRestartInput } from "./Manager.ts";
+import * as NativeSetup from "./NativeSetupControl.ts";
+import {
+  LegacyOwnedTerminalControl,
+  LegacyNoTerminalControl,
+} from "../orchestration-v2/RecordedTypes.ts";
+import { legacyBootstrapCreateCommandId } from "../orchestration-v2/LegacyBootstrap.ts";
+import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ServerConfig from "../config.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -45,6 +56,17 @@ import * as ProjectSetupScriptRunner from "../project/ProjectSetupScriptRunner.t
 import * as TerminalManager from "./Manager.ts";
 import { terminalOutputStream } from "./OutputProtocol.ts";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
+
+function restartInput(overrides: Partial<TerminalRestartInput> = {}): TerminalRestartInput {
+  return {
+    threadId: "thread-1",
+    terminalId: DEFAULT_TERMINAL_ID,
+    cwd: process.cwd(),
+    cols: 100,
+    rows: 24,
+    ...overrides,
+  };
+}
 
 vi.mock("effect/SynchronizedRef", async (importOriginal) => {
   const original = await importOriginal<typeof SynchronizedRef>();
@@ -431,11 +453,13 @@ const isTerminalInputValidationError = Schema.is(
   TerminalManager.LegacyTerminalInputValidationError,
 );
 
+const decodeSyncLegacyOwnedTerminalControl = Schema.decodeSync(LegacyOwnedTerminalControl);
+
 function ownedControl(generation = "terminal-generation:one") {
   const threadId = ThreadId.make("thread-1");
   const releaseCommandId = CommandId.make("legacy-terminal:C");
   const createCommandId = legacyBootstrapCreateCommandId(threadId, releaseCommandId);
-  return Schema.decodeSync(LegacyOwnedTerminalControl)({
+  return decodeSyncLegacyOwnedTerminalControl({
     version: 1,
     threadId,
     runId: "legacy-terminal:run",
@@ -472,6 +496,7 @@ function ownedOpenHooks(binding = ownedControl()): TerminalManager.LegacyTermina
 
 it.layer(
   Layer.mergeAll(
+    ManagedPolicy.layerTest(),
     NodeServices.layer,
     NodeCrypto.layer,
     ProcessRunner.layer.pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
@@ -2429,11 +2454,13 @@ it.layer(
   it.effect("retains encoded history if migration cannot write the bounded file", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       let failNextWrite = true;
       const limited = FileSystem.FileSystem.of({
         ...fs,
         writeFileString: (filePath, data, options) => {
-          if (!failNextWrite) return fs.writeFileString(filePath, data, options);
+          if (!failNextWrite || !path.basename(path.dirname(filePath)).startsWith(".history-"))
+            return fs.writeFileString(filePath, data, options);
           failNextWrite = false;
           return fs.writeFileString(filePath, "partial").pipe(
             Effect.andThen(
@@ -3317,6 +3344,85 @@ it.layer(
       expect(process.killSignals).toEqual([]);
       expect(missingEvents).toEqual([]);
     }),
+  );
+
+  it.effect("restarts with current provider secrets and clears bounded history", () =>
+    Effect.gen(function* () {
+      const serverSettings = yield* ServerSettings.ServerSettingsService;
+      const path = yield* Path.Path;
+      const providerInstanceId = ProviderInstanceId.make("codex_restart");
+      const { manager, ptyAdapter, logsDir } = yield* createManager(2, {
+        historyByteLimit: 8,
+        resolveProviderInstanceEnvironment: (rawProviderInstanceId, env) =>
+          TerminalManager.resolveProviderInstanceTerminalEnvironment({
+            serverSettings,
+            path,
+            rawProviderInstanceId,
+            env,
+          }),
+      });
+      const homePath = path.join(logsDir, "codex");
+      const updateSecret = (value: string) =>
+        serverSettings.updateSettings({
+          providerInstances: {
+            [providerInstanceId]: {
+              driver: ProviderDriverKind.make("codex"),
+              config: { homePath },
+              environment: [{ name: "PROVIDER_SECRET", value, sensitive: true }],
+            },
+          },
+        });
+      const input = {
+        providerInstanceId,
+        env: { CLIENT_FLAG: "1", PROVIDER_SECRET: "client-value" },
+      };
+      const outputProcessed = yield* Deferred.make<void>();
+      const unsubscribe = yield* manager.subscribe((event) =>
+        event.type === "output"
+          ? Deferred.succeed(outputProcessed, undefined).pipe(Effect.asVoid)
+          : Effect.void,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+
+      yield* updateSecret("first-secret");
+      yield* manager.restart(restartInput(input));
+      const firstProcess = ptyAdapter.processes[0]!;
+      expect(ptyAdapter.spawnInputs[0]?.env.PROVIDER_SECRET).toBe("first-secret");
+      firstProcess.emitData("discarded\nold-one\nold-two\n");
+      yield* Deferred.await(outputProcessed);
+      expect((yield* manager.open(openInput(input))).history).toBe("old-two\n");
+
+      yield* updateSecret("second-secret");
+      const restarted = yield* manager.restart(restartInput(input));
+
+      expect(firstProcess.killed).toBe(true);
+      expect(ptyAdapter.spawnInputs).toHaveLength(2);
+      expect(ptyAdapter.spawnInputs[1]?.env).toMatchObject({
+        PROVIDER_SECRET: "second-secret",
+        CODEX_HOME: homePath,
+        CLIENT_FLAG: "1",
+      });
+      expect(restarted.history).toBe("");
+      expect(restarted.status).toBe("running");
+      expect(restarted).not.toHaveProperty("env");
+      expect(restarted).not.toHaveProperty("providerInstanceId");
+      const logPath = yield* historyLogPath(logsDir);
+      expect(yield* readFileString(logPath)).toBe("");
+
+      ptyAdapter.processes[1]!.emitData("discarded again\nnew-one\nnew-two\n");
+      yield* manager.close({ threadId: "thread-1" });
+      expect(yield* readFileString(logPath)).toBe("new-two\n");
+    }).pipe(
+      Effect.provide(
+        ServerSettings.layer.pipe(
+          Layer.provide(ServerSecretStore.layer),
+          Layer.provide(SqlitePersistence.layerMemory),
+          Layer.provide(
+            ServerConfig.layerTest(process.cwd(), { prefix: "t3code-terminal-provider-restart-" }),
+          ),
+        ),
+      ),
+    ),
   );
 });
 

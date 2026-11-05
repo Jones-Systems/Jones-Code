@@ -1,3 +1,4 @@
+import * as Option from "effect/Option";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import { vi } from "vite-plus/test";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
@@ -83,9 +84,7 @@ const decodeServerSettings = Schema.decodeSync(ServerSettings);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodedDefaultServerSettings = encodeServerSettings(DEFAULT_SERVER_SETTINGS);
 
-const disabledDefaultSlots = (
-  ...drivers: ReadonlyArray<string>
-): ContractServerSettings["providerInstances"] =>
+const disabledDefaultSlots = (...drivers: ReadonlyArray<string>) =>
   Object.fromEntries(
     drivers.map((driver) => [
       ProviderInstanceId.make(driver),
@@ -331,6 +330,9 @@ const awaitPersistedProvider = (
 
 const layerTestNodeServices = Layer.mergeAll(
   ProviderLatestVersions.layer,
+  layerUnusedMutator,
+  ProcessAttribution.layer,
+  PortScanner.layerTest,
   NodeServices.layer,
   NodeCrypto.layer,
   Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
@@ -1102,6 +1104,7 @@ it.layer(
               {
                 getInstance: (id) =>
                   Effect.succeed(id === instance.instanceId ? instance : undefined),
+                getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
                 listInstances: Effect.succeed([instance]),
                 listUnavailable: Effect.succeed([]),
                 streamChanges: Stream.empty,
@@ -1241,6 +1244,7 @@ it.layer(
             {
               getInstance: (id) =>
                 Effect.succeed(id === instance.instanceId ? instance : undefined),
+              getCatalogSource: (id) => (id === instance.instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1548,6 +1552,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instances.find((instance) => instance.instanceId === instanceId)),
+            getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
             listInstances: Effect.succeed(instances),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -1679,6 +1684,7 @@ it.layer(
             {
               getInstance: (requestedId) =>
                 Effect.succeed(requestedId === instanceId ? instance : undefined),
+              getCatalogSource: (id) => (id === instanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -1775,6 +1781,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -1896,6 +1903,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(instances.find((instance) => instance.instanceId === requestedId)),
+            getCatalogSource: (id) => instances.find((instance) => instance.instanceId === id),
             listInstances: Effect.succeed(instances),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2005,6 +2013,7 @@ it.layer(
           {
             getInstance: (requestedId) =>
               Effect.succeed(requestedId === instanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === instanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2128,6 +2137,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === cursorInstanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === cursorInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2229,6 +2239,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === claudeInstanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === claudeInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2418,6 +2429,7 @@ it.layer(
             {
               getInstance: (instanceId) =>
                 Effect.succeed(instanceId === openCodeInstanceId ? instance : undefined),
+              getCatalogSource: (id) => (id === openCodeInstanceId ? instance : undefined),
               listInstances: Effect.succeed([instance]),
               listUnavailable: Effect.succeed([]),
               streamChanges: Stream.empty,
@@ -2522,6 +2534,7 @@ it.layer(
           {
             getInstance: (instanceId) =>
               Effect.succeed(instanceId === codexInstanceId ? instance : undefined),
+            getCatalogSource: (id) => (id === codexInstanceId ? instance : undefined),
             listInstances: Effect.succeed([instance]),
             listUnavailable: Effect.succeed([]),
             streamChanges: Stream.empty,
@@ -2628,6 +2641,8 @@ it.layer(
         const layerInstanceRegistry = Layer.succeed(
           ProviderInstanceRegistry.ProviderInstanceRegistry,
           {
+            getCatalogSource: (id) =>
+              Ref.getUnsafe(instancesRef).find((instance) => instance.instanceId === id),
             getInstance: (instanceId) =>
               Ref.get(instancesRef).pipe(
                 Effect.map((instances) =>
@@ -2709,7 +2724,7 @@ it.layer(
                     homePath: `/tmp/${missingBinary}_home`,
                   },
                 },
-              } as unknown as ContractServerSettings["providerInstances"],
+              },
             }),
           ),
         );
@@ -2819,7 +2834,10 @@ it.layer(
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(
-            ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(PortScanner.layerTest)),
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provide(PortScanner.layerTest),
+              Layer.provide(ProcessAttribution.layer),
+            ),
           ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
@@ -2937,7 +2955,10 @@ it.layer(
         yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
         const layerProviderRegistry = ProviderRegistry.layer.pipe(
           Layer.provideMerge(
-            ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(PortScanner.layerTest)),
+            ProviderInstanceRegistryHydration.layer.pipe(
+              Layer.provide(PortScanner.layerTest),
+              Layer.provide(ProcessAttribution.layer),
+            ),
           ),
           Layer.provideMerge(AntigravityInstallation.AntigravityInstallation.layer),
           Layer.provideMerge(
@@ -3073,7 +3094,10 @@ it.layer(
       );
       readSeed = false;
       const services = yield* Layer.build(
-        ProviderInstanceRegistryHydration.layer.pipe(Layer.provide(PortScanner.layerTest)),
+        ProviderInstanceRegistryHydration.layer.pipe(
+          Layer.provide(PortScanner.layerTest),
+          Layer.provide(ProcessAttribution.layer),
+        ),
       ).pipe(Effect.provide(dependencies));
       failCurrentRead = input.failCurrentRead ?? false;
       yield* PubSub.publish(changes, undefined);

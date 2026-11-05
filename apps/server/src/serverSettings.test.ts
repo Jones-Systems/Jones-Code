@@ -117,6 +117,16 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
     `;
   });
 
+const decodeUnknownEffectFromJsonStringServerSettings = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(ServerSettings),
+);
+const encodeEffectFromJsonStringModelSelection = Schema.encodeEffect(
+  Schema.fromJsonString(ModelSelection),
+);
+const encodeEffectFromJsonStringArrayProjectScript = Schema.encodeEffect(
+  Schema.fromJsonString(Schema.Array(ProjectScript)),
+);
+
 it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings", (it) => {
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
@@ -596,7 +606,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         };
         const readPersisted = fileSystem
           .readFileString(serverConfig.settingsPath)
-          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings))));
+          .pipe(Effect.flatMap(decodeUnknownEffectFromJsonStringServerSettings));
 
         yield* serverSettings.updateSettings({ usagePriceOverrides: { "example-model": prices } });
         const usageModelAliases = { "example-preview": "example-model" };
@@ -752,9 +762,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
 
           const persisted = yield* fileSystem
             .readFileString(serverConfig.settingsPath)
-            .pipe(
-              Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ServerSettings))),
-            );
+            .pipe(Effect.flatMap(decodeUnknownEffectFromJsonStringServerSettings));
           assert.deepEqual(persisted.textGenerationModelSelection, selection);
 
           const restored = yield* serverSettings.updateSettings({ providerInstances });
@@ -1934,12 +1942,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
         runOnWorktreeCreate: false,
       };
       const model = createModelSelection(ProviderInstanceId.make("codex"), "gpt-5.5");
-      const encodeModelSelection = Schema.encodeEffect(Schema.fromJsonString(ModelSelection));
+      const encodeModelSelection = encodeEffectFromJsonStringModelSelection;
 
       const modelJson = yield* encodeModelSelection(model);
-      const encodeProjectScripts = Schema.encodeEffect(
-        Schema.fromJsonString(Schema.Array(ProjectScript)),
-      );
+      const encodeProjectScripts = encodeEffectFromJsonStringArrayProjectScript;
 
       const scriptsJson = yield* encodeProjectScripts([script]);
       for (const [projectId, modelColumn, envMode, autoPull, scripts] of [
@@ -2024,6 +2030,106 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
 
       assert.equal(yield* fileSystem.readFileString(serverConfig.settingsPath), broken);
     }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect.each(
+    (["production", "test"] as const).flatMap((mode) =>
+      (["missing", "disabled", "unsupported"] as const).map((target) => ({ mode, target })),
+    ),
+  )(
+    "refuses explicit text-generation substitution for $target in $mode settings",
+    ({ mode, target }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const writerId = ProviderInstanceId.make("writer_a");
+          const requestedId = ProviderInstanceId.make("foreign_b");
+          const selection = { instanceId: writerId, model: "writer-model" };
+          yield* service.updateSettings({
+            autoResumeLimitedThreads: false,
+            providerInstances: {
+              [writerId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+              ...(target === "missing"
+                ? {}
+                : {
+                    [requestedId]: {
+                      driver: ProviderDriverKind.make(
+                        target === "unsupported" ? "acpRegistry" : "codex",
+                      ),
+                      enabled: target !== "disabled",
+                      config:
+                        target === "unsupported"
+                          ? { agentId: "foreign", distribution: "auto" }
+                          : {},
+                    },
+                  }),
+            },
+            textGenerationModelSelection: selection,
+          });
+          const fs = mode === "production" ? yield* FileSystem.FileSystem : undefined;
+          const config = mode === "production" ? yield* ServerConfig.ServerConfig : undefined;
+          const before = fs && config ? yield* fs.readFileString(config.settingsPath) : undefined;
+          const result = yield* service
+            .updateSettings({
+              autoResumeLimitedThreads: true,
+              textGenerationModelSelection: { instanceId: requestedId, model: "requested-model" },
+            })
+            .pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure") {
+            assert.equal(result.failure.operation, "normalize");
+            assert.equal(result.failure.providerInstanceId, requestedId);
+          }
+          const after = yield* service.getSettings;
+          assert.deepEqual(after.textGenerationModelSelection, selection);
+          assert.isFalse(after.autoResumeLimitedThreads);
+          if (fs && config) assert.equal(yield* fs.readFileString(config.settingsPath), before);
+        }),
+      ).pipe(Effect.provide(layerExplicitSelectionSettings(mode))),
+  );
+
+  it.effect.each(["production", "test"] as const)(
+    "validates atomic provider mutations before publication in %s settings",
+    (mode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const writerId = ProviderInstanceId.make("writer_a");
+          const requestedId = ProviderInstanceId.make("foreign_b");
+          const selection = { instanceId: writerId, model: "writer-model" };
+          yield* service.updateSettings({
+            providerInstances: {
+              [writerId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+            },
+            textGenerationModelSelection: selection,
+          });
+          const mutation = {
+            operation: "create" as const,
+            instanceId: requestedId,
+            instance: { driver: ProviderDriverKind.make("codex"), enabled: false, config: {} },
+          };
+          const refused = yield* service
+            .updateProviderInstance(mutation, {
+              textGenerationModelSelection: { instanceId: requestedId, model: "new-model" },
+            })
+            .pipe(Effect.result);
+          assert.equal(refused._tag, "Failure");
+          assert.isUndefined((yield* service.getSettings).providerInstances[requestedId]);
+          assert.deepEqual((yield* service.getSettings).textGenerationModelSelection, selection);
+          const accepted = yield* service.updateProviderInstance(
+            { ...mutation, instance: { ...mutation.instance, enabled: true } },
+            { textGenerationModelSelection: { instanceId: requestedId, model: "new-model" } },
+          );
+          assert.deepEqual(accepted.textGenerationModelSelection, {
+            instanceId: requestedId,
+            model: "new-model",
+          });
+          const optionsOnly = yield* service.updateSettings({
+            textGenerationModelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+          });
+          assert.equal(optionsOnly.textGenerationModelSelection.instanceId, requestedId);
+        }),
+      ).pipe(Effect.provide(layerExplicitSelectionSettings(mode))),
   );
 });
 

@@ -1,3 +1,5 @@
+import type { ScopedThreadRef } from "@t3tools/contracts";
+
 import {
   capitalizeTerm,
   sourceControlClients,
@@ -500,4 +502,17 @@ export function isSameComposerContextPayload(
     return JSON.stringify(sortDeep(rest));
   };
   return stableKey(left) === stableKey(right);
+}
+
+export function threadContextRecord(ref: ScopedThreadRef, title: string): ThreadContextRecord {
+  const label = sanitizeComposerContextLabel(title, "thread");
+  return {
+    version: 1,
+    kind: "thread",
+    contextId: toKindScopedComposerContextId("thread", ref.threadId),
+    label,
+    environmentId: ref.environmentId,
+    threadId: ref.threadId,
+    title: label,
+  };
 }

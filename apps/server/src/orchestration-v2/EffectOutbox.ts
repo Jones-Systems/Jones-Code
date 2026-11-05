@@ -1,3 +1,6 @@
+import * as DeletionWriterFence from "../jones/cleanup/DeletionWriterFence.ts";
+import type * as Statement from "effect/sql/Statement";
+import type { SqlError } from "effect/sql/SqlError";
 import { URGENT_ACTION_EFFECT_TYPES } from "../jones/orchestration/actionWorkerAdmission.ts";
 import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
@@ -175,10 +178,15 @@ const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffect
   onExcessProperty: "error",
 });
 // An invalid native envelope must never fall back to ordinary provider execution.
+
+const decodeEffectFromJsonStringUnknown = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Unknown),
+);
+
 export const decodeOrchestrationEffectPayloadV2 = Effect.fn(
   "EffectOutbox.decodeOrchestrationEffectPayloadV2",
 )(function* (payload: string) {
-  const raw = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+  const raw = yield* decodeEffectFromJsonStringUnknown(payload);
   if (
     typeof raw === "object" &&
     raw !== null &&
@@ -210,6 +218,20 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
   EffectOutboxV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const deletionWriterFence = yield* DeletionWriterFence.make;
+    // Only the SQL statement runs under this transaction; existing publication,
+    // cancellation and wake effects remain after its commit.
+    const guardedRows = Effect.fn("EffectOutbox.withDeletionWriterFence")(function* <A>(
+      column: Statement.Fragment,
+      execute: (allowed: Statement.Fragment) => Effect.Effect<A, SqlError>,
+    ) {
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const allowed = yield* deletionWriterFence.excludeReservedThreads(column);
+          return yield* execute(allowed);
+        }),
+      );
+    });
     const available = yield* Queue.dropping<void>(64);
     const completionChanges = yield* PubSub.sliding<void>(64);
     const cancellationSignals = new Map<string, Deferred.Deferred<void>>();
@@ -427,7 +449,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         function* ({ threadId, effectTypes, reason }) {
           if (effectTypes.length === 0) return [];
           const now = DateTime.formatIso(yield* DateTime.now);
-          const rows = yield* sql<{ readonly effect_id: string }>`
+          const rows = yield* guardedRows(
+            sql`orchestration_v2_effect_outbox.thread_id`,
+            (allowed) => sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'cancelled',
@@ -438,8 +462,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE thread_id = ${threadId}
               AND status IN ('pending', 'running')
               AND effect_type IN ${sql.in(effectTypes)}
+              AND ${allowed}
             RETURNING effect_id
-          `;
+          `,
+          );
           if (rows.length > 0) yield* PubSub.publish(completionChanges, undefined);
           return rows.map(({ effect_id }) => effect_id);
         },
@@ -474,7 +500,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       }),
       reconcileAfterProcessLoss: Effect.gen(function* () {
         const now = DateTime.formatIso(yield* DateTime.now);
-        const cancelledRows = yield* sql<{ readonly effect_id: string }>`
+        const cancelledRows = yield* guardedRows(
+          sql`orchestration_v2_effect_outbox.thread_id`,
+          (allowed) => sql<{ readonly effect_id: string }>`
           UPDATE orchestration_v2_effect_outbox
           SET
             status = 'cancelled',
@@ -484,9 +512,13 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Cancelled because the server process ended before the effect completed.'
           WHERE status IN ('pending', 'running')
             AND effect_type IN ${sql.in(PROCESS_BOUND_EFFECT_TYPES)}
+            AND ${allowed}
           RETURNING effect_id
-        `;
-        const requeuedRows = yield* sql<{ readonly effect_id: string }>`
+        `,
+        );
+        const requeuedRows = yield* guardedRows(
+          sql`orchestration_v2_effect_outbox.thread_id`,
+          (allowed) => sql<{ readonly effect_id: string }>`
           UPDATE orchestration_v2_effect_outbox
           SET
             status = 'pending',
@@ -496,14 +528,19 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             last_error = 'Requeued after the previous server process ended.'
           WHERE status = 'running'
             AND effect_type IN ${sql.in(REPLAY_SAFE_EFFECT_TYPES_AFTER_PROCESS_LOSS)}
+            AND ${allowed}
           RETURNING effect_id
-        `;
-        const preparedRows = yield* sql<{ readonly effect_id: string }>`
+        `,
+        );
+        const preparedRows = yield* guardedRows(
+          sql`orchestration_v2_effect_outbox.thread_id`,
+          (allowed) => sql<{ readonly effect_id: string }>`
           UPDATE orchestration_v2_effect_outbox SET
             payload_json = json_set(payload_json, '$.preparedForRestart', json('false')),
             available_at = ${now}, updated_at = ${now}
           WHERE status = 'pending' AND effect_type = 'provider-runtime.continue'
-            AND json_extract(payload_json, '$.preparedForRestart') = 1 RETURNING effect_id`;
+            AND json_extract(payload_json, '$.preparedForRestart') = 1 AND ${allowed} RETURNING effect_id`,
+        );
         if (requeuedRows.length + preparedRows.length > 0)
           yield* notifyAvailable(requeuedRows.length + preparedRows.length);
         if (cancelledRows.length > 0) yield* PubSub.publish(completionChanges, undefined);
@@ -518,11 +555,18 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       ),
       // The worker polls for the next effect even when there is no work to claim.
       claimNext: Effect.fnUntraced(
-        function* ({ workerId, excludeRestartContinuations = false }) {
+        function* ({
+          workerId,
+          excludeRestartContinuations = false,
+          excludeTitleGeneration = false,
+          urgentOnly = false,
+        }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           // Idle claims return empty; tracing their full SQL on every poll overwhelms useful traces.
-          const claimStatement = sql<EffectRow>`
+          const claimStatement = guardedRows(
+            sql`candidate.thread_id`,
+            (allowed) => sql<EffectRow>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'running',
@@ -534,12 +578,14 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               SELECT candidate.effect_id
               FROM orchestration_v2_effect_outbox AS candidate
               WHERE ${claimableCandidatePredicate(nowIso, excludeRestartContinuations, excludeTitleGeneration, urgentOnly)}
+                AND ${allowed}
                 AND ${excludeRestartContinuations ? sql`candidate.effect_type != 'provider-runtime.continue'` : sql`1 = 1`}
               ORDER BY candidate.available_at ASC, candidate.created_at ASC, candidate.effect_id ASC
               LIMIT 1
             )
             RETURNING *
-          `;
+          `,
+          );
           const rows = yield* claimStatement.pipe(Effect.withTracerEnabled(false));
           const row = rows[0];
           if (row === undefined) return Option.none();
@@ -553,11 +599,15 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           readonly excludeTitleGeneration?: boolean;
           readonly urgentOnly?: boolean;
         }) {
-          const rows = yield* sql<{ readonly available_at: string | null }>`
+          const rows = yield* guardedRows(
+            sql`candidate.thread_id`,
+            (allowed) => sql<{ readonly available_at: string | null }>`
             SELECT MIN(candidate.available_at) AS available_at
             FROM orchestration_v2_effect_outbox AS candidate
             WHERE ${claimableCandidatePredicate(undefined, false, input?.excludeTitleGeneration, input?.urgentOnly)}
-          `.pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
+              AND ${allowed}
+          `,
+          ).pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
           const availableAt = rows[0]?.available_at;
           if (availableAt === undefined || availableAt === null) return Option.none();
           const parsed = DateTime.make(availableAt);
@@ -578,7 +628,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       succeed: Effect.fn("EffectOutbox.succeed")(
         function* ({ effectId, workerId }) {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const settle = (guard: typeof ordinaryPayload) => sql<{ readonly effect_id: string }>`
+          const settle = (guard: typeof ordinaryPayload) =>
+            guardedRows(
+              sql`orchestration_v2_effect_outbox.thread_id`,
+              (allowed) => sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'succeeded',
@@ -590,14 +643,19 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               AND status = 'running'
               AND lease_owner = ${workerId}
               AND ${guard}
+              AND ${allowed}
             RETURNING effect_id
-          `;
+          `,
+            );
           let rows = yield* settle(ordinaryPayload);
           if (rows.length === 0) {
-            const current = yield* sql<{ readonly payload_json: string }>`
+            const current = yield* guardedRows(
+              sql`orchestration_v2_effect_outbox.thread_id`,
+              (allowed) => sql<{ readonly payload_json: string }>`
               SELECT payload_json FROM orchestration_v2_effect_outbox
-              WHERE effect_id = ${effectId} AND status = 'running' AND lease_owner = ${workerId}
-            `;
+              WHERE effect_id = ${effectId} AND status = 'running' AND lease_owner = ${workerId} AND ${allowed}
+            `,
+            );
             // A native envelope must pass the strict decode and its proof. The
             // payload match binds that proof to the row that was decoded.
             if (
@@ -631,7 +689,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           const availableAt = DateTime.formatIso(
             DateTime.add(now, { milliseconds: Math.max(0, delayMs) }),
           );
-          const rows = yield* sql<{ readonly effect_id: string }>`
+          const rows = yield* guardedRows(
+            sql`orchestration_v2_effect_outbox.thread_id`,
+            (allowed) => sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = CASE WHEN json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL THEN 'pending' ELSE 'failed' END,
@@ -642,8 +702,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${allowed}
             RETURNING effect_id
-          `;
+          `,
+          );
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* PubSub.publish(completionChanges, undefined);
@@ -661,7 +723,9 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
       fail: Effect.fn("EffectOutbox.fail")(
         function* ({ effectId, workerId, error }) {
           const now = DateTime.formatIso(yield* DateTime.now);
-          const rows = yield* sql<{ readonly effect_id: string }>`
+          const rows = yield* guardedRows(
+            sql`orchestration_v2_effect_outbox.thread_id`,
+            (allowed) => sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
             SET
               status = 'failed',
@@ -672,8 +736,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${allowed}
             RETURNING effect_id
-          `;
+          `,
+          );
           if (rows.length === 1) {
             cancellationSignals.delete(effectId);
             yield* signalSettled([effectId]);
@@ -694,17 +760,21 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           DateTime.subtractDuration(yield* DateTime.now, SETTLED_EFFECT_RETENTION),
         );
         // Separate batch statements release the write lock between batches.
-        const deleteBatch = sql<{ readonly effect_id: string }>`
+        const deleteBatch = guardedRows(
+          sql`settled.thread_id`,
+          (allowed) => sql<{ readonly effect_id: string }>`
           DELETE FROM orchestration_v2_effect_outbox
           WHERE rowid IN (
-            SELECT rowid
-            FROM orchestration_v2_effect_outbox
+            SELECT settled.rowid
+            FROM orchestration_v2_effect_outbox AS settled
             WHERE status IN ('succeeded', 'cancelled')
               AND completed_at < ${cutoff}
+              AND ${allowed}
             LIMIT ${PRUNE_BATCH_SIZE}
           )
           RETURNING effect_id
-        `;
+        `,
+        );
         let pruned = 0;
         while (true) {
           const deleted = (yield* deleteBatch).length;

@@ -67,8 +67,8 @@ vi.mock("../../components/ui/AppText", () => ({
 vi.mock("../../features/settings/components/SettingsSection", () => ({
   SettingsSection: ({ children }: { children: ReactNode }) => <section>{children}</section>,
 }));
-vi.mock("../../features/settings/components/SettingsActionRow", () => ({
-  SettingsActionRow: ({
+vi.mock("../../components/ui/ListActionRow", () => ({
+  ListActionRow: ({
     label,
     disabled,
     onPress,

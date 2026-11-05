@@ -187,9 +187,13 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   );
 
   return OpenCodeServerOwner.of({
-    withServer: Effect.fn("OpenCodeServerOwner.withServer")(function (use) {
+    withServer: Effect.fn("OpenCodeServerOwner.withServer")(function (
+      use,
+      creationHooks,
+      consumerKind = "other",
+    ) {
       return Effect.uninterruptibleMask((restore) =>
-        restore(acquireServer).pipe(
+        restore(acquireServer(creationHooks)).pipe(
           Effect.flatMap((server) =>
             restore(
               OpenCodeCreationPolicy.authorizeConsumption(

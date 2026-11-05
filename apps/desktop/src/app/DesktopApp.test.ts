@@ -22,6 +22,9 @@ vi.mock("../ipc/DesktopIpcHandlers.ts", () => ({
 vi.mock("../updates/DesktopRemoteUpdates.ts", () => ({ listen: Effect.void }));
 vi.mock("./DesktopStartupRecovery.ts", () => ({ listen: Effect.void }));
 
+import * as CompanionConfig from "../jones/previewCompanion/CompanionConfig.ts";
+import * as CompanionUplink from "../jones/previewCompanion/CompanionUplink.ts";
+import * as DesktopDeviceMediaTunnel from "../jones/deviceMedia/DesktopDeviceMediaTunnel.ts";
 import * as DesktopApp from "./DesktopApp.ts";
 import * as DesktopAppActivation from "./DesktopAppActivation.ts";
 import * as DesktopAppIdentity from "./DesktopAppIdentity.ts";
@@ -89,6 +92,7 @@ it.effect(
           Effect.provideService(DesktopAppIdentity.DesktopAppIdentity, {
             resolveUserDataPath: Effect.succeed("/isolated/userdata"),
             configure: record("identity"),
+            previewAutomationRuntimeIdentity: Effect.die("unexpected preview identity request"),
           } as DesktopAppIdentity.DesktopAppIdentity["Service"]),
           Effect.provideService(ElectronApp.ElectronApp, {
             setPath: () => Effect.void,
@@ -189,6 +193,17 @@ it.effect(
         Effect.provide(
           Layer.mergeAll(
             Layer.mock(BrowserImport.BrowserImport, {}),
+            Layer.mock(CompanionConfig.CompanionConfig, {
+              get: Effect.succeed({
+                enabled: false,
+                environmentId: null,
+                hostId: "synthetic-host",
+                label: "Browser host",
+                browserOnly: false,
+              }),
+            }),
+            Layer.mock(CompanionUplink.CompanionUplink, {}),
+            Layer.mock(DesktopDeviceMediaTunnel.DesktopDeviceMediaTunnel, {}),
             Layer.mock(DesktopBackendConfiguration.DesktopBackendConfiguration, {}),
             Layer.mock(DesktopCliCommand.DesktopCliCommand, {}),
             Layer.mock(DesktopClientSettings.DesktopClientSettings, {}),

@@ -1,3 +1,4 @@
+import type { WorkspacePdfSession } from "../../jones/filePreview/workspacePdfSession";
 import { useAtomValue } from "@effect/atom-react";
 import {
   type KeybindingCommand,
@@ -77,7 +78,13 @@ export const isPdfPreviewFile = (path: string): boolean =>
 const PdfViewer = lazy(() => import("./PdfViewer"));
 
 // The document stays mounted while each revision gets a fresh PDF.js document.
-function PdfDocument(props: { src: string; title: string; documentKey: string }) {
+function PdfDocument(props: {
+  src: string;
+  title: string;
+  documentKey: string;
+  pdfSession?: WorkspacePdfSession | undefined;
+  onRetry?: (() => void | Promise<void>) | undefined;
+}) {
   const [view, setView] = useState<PdfViewState>({ page: 0, offset: 0, zoom: null, left: 0 });
   return (
     <PdfDocumentRevision
@@ -86,7 +93,9 @@ function PdfDocument(props: { src: string; title: string; documentKey: string })
       title={props.title}
       positionKey={props.documentKey}
       initialView={view}
+      onRetry={props.onRetry}
       onViewChange={setView}
+      pdfSession={props.pdfSession}
     />
   );
 }
@@ -97,7 +106,9 @@ function PdfDocumentRevision(props: {
   title: string;
   positionKey: string;
   initialView: PdfViewState;
+  pdfSession?: WorkspacePdfSession | undefined;
   onViewChange: (view: PdfViewState) => void;
+  onRetry?: (() => void | Promise<void>) | undefined;
 }) {
   const [src] = useState(props.src);
   // The Electron shell does not enable PDF plugins. WebKit embeds on iOS
@@ -107,10 +118,19 @@ function PdfDocumentRevision(props: {
     navigator.pdfViewerEnabled &&
     !/iPad|iPhone|iPod/.test(navigator.userAgent) &&
     !(navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const load = props.pdfSession?.load(src);
   if (props.onRetry)
     return (
       <Suspense fallback={<FileSurfaceLoading />}>
-        <PdfPreview src={props.src} title={props.title} onRetry={props.onRetry} />
+        <PdfPreview
+          src={src}
+          title={props.title}
+          onRetry={props.onRetry}
+          initialPosition={props.pdfSession?.readPosition}
+          onPositionChange={
+            load && props.pdfSession ? (view) => props.pdfSession!.remember(load, view) : undefined
+          }
+        />
       </Suspense>
     );
   return native ? (
@@ -148,12 +168,15 @@ export function BrowserDocumentFrame(props: {
   readonly documentKey?: string | undefined;
   /** Resource identity without its revision, so PDF reloads can retain the reading position. */
   readonly documentId?: string | undefined;
+  readonly pdfSession?: WorkspacePdfSession | undefined;
 }) {
   const key = props.documentKey ?? props.src;
   return props.pdf ? (
     <PdfDocument
       key={props.documentId ?? key}
       documentKey={key}
+      pdfSession={props.pdfSession}
+      onRetry={props.onRetry}
       src={props.src}
       title={props.title}
     />

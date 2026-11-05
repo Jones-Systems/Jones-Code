@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -34,6 +35,11 @@ import {
 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.testkit.ts";
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
 import { materializeCodexReplayAppIdentity } from "../../runtimeIdentity/CodexReplayIdentity.ts";
+
+const layerNodeServicesWithCrypto = Layer.merge(NodeServices.layer, NodeCrypto.layer);
+
+const decodeCodexSettings = Schema.decodeEffect(CodexSettings);
+const decodeCodexTranscript = Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript);
 
 const rootThread = "pre-ack-thread";
 const rootTurn = "pre-ack-turn";
@@ -188,7 +194,7 @@ const turnStart = (id: number) =>
     },
   });
 const makeTranscript = (outcome: Outcome) =>
-  Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTranscript)(
+  decodeCodexTranscript(
     materializeCodexReplayAppIdentity({
       provider: "codex",
       protocol: "codex.app-server",
@@ -397,7 +403,7 @@ describe("Codex pre-ACK item reader progress", () => {
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const adapter = yield* CodexAdapterV2.makeCodexAdapterV2({
         instanceId: modelSelection.instanceId,
-        settings: yield* Schema.decodeEffect(CodexSettings)({}),
+        settings: yield* decodeCodexSettings({}),
         environment: {},
         digest: yield* Digest.Digest,
         fileSystem,
@@ -756,7 +762,7 @@ describe("Codex pre-ACK item reader progress", () => {
           IdAllocator.layer,
           McpProviderSessions.layer,
           ControlAdmission.layer,
-          NodeServices.layer,
+          layerNodeServicesWithCrypto,
         ),
       ),
     ),

@@ -1,3 +1,6 @@
+import { MonitorController } from "./jones/threadMonitor/MonitorController";
+import { FleetController } from "./jones/fleetUpdates/FleetController";
+import { CompanionController } from "./jones/previewCompanion/CompanionController";
 import { InstallPlanController } from "./jones/installStatus/InstallPlanController";
 import { RouterProvider } from "@tanstack/react-router";
 

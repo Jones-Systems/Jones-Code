@@ -1,3 +1,4 @@
+import * as ProviderRegistry from "../../../provider/ProviderRegistry.ts";
 import { assert, it } from "@effect/vitest";
 import {
   CommandId,
@@ -106,6 +107,7 @@ function harness(
     }),
   ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" })));
   const dependencies = Layer.mergeAll(
+    Layer.mock(ProviderRegistry.ProviderRegistry)({ getProviders: Effect.succeed([]) }),
     database,
     NodeCrypto.layer,
     NodeServices.layer,

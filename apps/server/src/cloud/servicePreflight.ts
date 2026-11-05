@@ -62,7 +62,23 @@ export function runServicePreflight(input: {
     };
   }
 
-  return { status: "ready", version, launcherProtocol: SERVICE_LAUNCHER_PROTOCOL };
+  if (input.migrationPlanResult?.status === "blocked") {
+    return { status: "blocked", version, reason: input.migrationPlanResult.reason };
+  }
+  return {
+    status: "ready",
+    version,
+    launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+    ...(input.migrationPlanResult?.status === "ready"
+      ? { migrationPlan: input.migrationPlanResult.migrationPlan }
+      : {}),
+    ...(input.startupGateProtocol === undefined
+      ? {}
+      : { startupGateProtocol: input.startupGateProtocol }),
+    ...(input.qualifiedRecoveryProtocol === undefined
+      ? {}
+      : { qualifiedRecoveryProtocol: input.qualifiedRecoveryProtocol }),
+  };
 }
 
 /** Migrations a newer build recorded, or null when the database exists but cannot be read.

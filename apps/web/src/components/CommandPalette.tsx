@@ -1,4 +1,4 @@
-import { useSidebarProjectGroups } from "../hooks/useSidebarProjectGroups";
+import { useSortedProjectGroups } from "./CommandPaletteLookups";
 import { sortEnvironmentOptions } from "../jones/presentationOrder/environmentOrder";
 import { useUiStateStore } from "../uiStateStore";
 import { useCurrentRuntimeStop } from "../hooks/useCurrentRuntimeStop";
@@ -524,7 +524,7 @@ function OpenCommandPaletteDialog(props: {
   const [isRemoteProjectLookingUp, setIsRemoteProjectLookingUp] = useState(false);
   const [isRemoteProjectCloning, setIsRemoteProjectCloning] = useState(false);
   const { environmentLabelById, projectEnvironmentLocationById } = useEnvironmentLookups();
-  const projectGroups = useSidebarProjectGroups();
+  const projectGroups = useSortedProjectGroups();
   const contextualProjectRef = resolveThreadActionProjectRef({
     activeDraftThread,
     activeThread: activeThread ?? undefined,

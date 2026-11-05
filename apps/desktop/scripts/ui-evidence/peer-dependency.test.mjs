@@ -102,8 +102,10 @@ NodeTest.test("staged transitive required peers resolve through their consuming 
       await NodeFSP.realpath(peerLink),
       NodePath.join(stage, "deps", String(protobufIndex)),
     );
-    const require = NodeModule.createRequire(NodePath.join(stage, "app/apps/server/package.json"));
-    NodeAssert.equal(require("consumer"), "peer resolved");
+    const fixtureRequire = NodeModule.createRequire(
+      NodePath.join(stage, "app/apps/server/package.json"),
+    );
+    NodeAssert.equal(fixtureRequire("consumer"), "peer resolved");
   }),
 );
 

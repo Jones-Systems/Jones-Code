@@ -801,7 +801,7 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
               }),
             );
 
-            yield* runDevRunnerWithInput({ ...devServerInput, t3Home: undefined }).pipe(
+            yield* runDevRunnerWithInput({ ...devServerInput, t3Home: undefined, seed: true }).pipe(
               Effect.provide([
                 emptyConfigLayer,
                 netServiceLayer,
@@ -848,6 +848,137 @@ it.layer(NodeServices.layer)("dev-runner", (it) => {
               assert.include(warnings[0]!, "vp run migrate-dev-db");
             }
           }).pipe(Effect.scoped),
+      );
+
+      it.effect.each([
+        { name: "default startup", args: [], env: {}, seed: false },
+        { name: "explicit flag opt-in", args: ["--seed"], env: {}, seed: true },
+        { name: "environment opt-in", args: [], env: { T3CODE_DEV_SEED: "1" }, seed: true },
+        { name: "environment opt-out", args: [], env: { T3CODE_DEV_SEED: "0" }, seed: false },
+        {
+          name: "flag opt-in overrides environment fallback",
+          args: ["--seed"],
+          env: { T3CODE_DEV_SEED: "0" },
+          seed: true,
+        },
+        {
+          name: "flag opt-out overrides environment opt-in",
+          args: ["--no-seed"],
+          env: { T3CODE_DEV_SEED: "1" },
+          seed: false,
+        },
+        {
+          name: "explicit isolated home is not auto-seeded",
+          args: ["--seed"],
+          env: {},
+          seed: false,
+          explicitHome: true,
+        },
+        { name: "dry run with opt-in", args: ["--seed", "--dry-run"], env: {}, seed: false },
+        {
+          name: "existing V1 data with opt-in",
+          args: ["--seed"],
+          env: {},
+          seed: false,
+          existingDatabase: "state.sqlite",
+        },
+        {
+          name: "existing V2 data with opt-in",
+          args: ["--seed"],
+          env: {},
+          seed: false,
+          existingDatabase: "statev2.sqlite",
+        },
+      ])("Jones seed privacy: $name", (scenario) =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const fs = yield* FileSystem.FileSystem;
+          const root = yield* makeWorktree;
+          const home = path.join(root, "synthetic-home");
+          const privateRoot = path.join(home, ".t3");
+          const source = path.join(privateRoot, "userdata", "statev2.sqlite");
+          NodeFS.mkdirSync(path.dirname(source), { recursive: true });
+          NodeFS.writeFileSync(source, "synthetic-source-unchanged");
+          const existingDatabase =
+            "existingDatabase" in scenario && scenario.existingDatabase
+              ? path.join(root, ".t3", "userdata", scenario.existingDatabase)
+              : undefined;
+          if (existingDatabase !== undefined) {
+            NodeFS.mkdirSync(path.dirname(existingDatabase), { recursive: true });
+            NodeFS.writeFileSync(existingDatabase, "existing-worktree-data");
+          }
+          const sourceAccesses: string[] = [];
+          const observe = (file: string) => {
+            if (file === privateRoot || file.startsWith(`${privateRoot}${path.sep}`)) {
+              sourceAccesses.push(file);
+            }
+          };
+          const observedFs: FileSystem.FileSystem = {
+            ...fs,
+            exists: (file) => {
+              observe(file);
+              return fs.exists(file);
+            },
+            stat: (file) => {
+              observe(file);
+              return fs.stat(file);
+            },
+            readFile: (file) => {
+              observe(file);
+              return fs.readFile(file);
+            },
+            readFileString: (file, encoding) => {
+              observe(file);
+              return fs.readFileString(file, encoding);
+            },
+          };
+          const spawned: Array<ReadonlyArray<string>> = [];
+          const spawnerLayer = Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) => {
+              spawned.push((command as unknown as { readonly args: ReadonlyArray<string> }).args);
+              return Effect.succeed(mockProcess(0));
+            }),
+          );
+          const args = ["dev:server", "--port", "13773", ...scenario.args];
+          if ("explicitHome" in scenario) {
+            args.push("--home-dir", path.join(root, "isolated-destination"));
+          }
+          yield* Command.runWith(devRunnerCli, { version: "0.0.0" })(args).pipe(
+            Effect.provide(
+              Layer.mergeAll(
+                ConfigProvider.layer(ConfigProvider.fromEnv({ env: scenario.env })),
+                netServiceLayer,
+                spawnerLayer,
+              ),
+            ),
+            Effect.provideService(FileSystem.FileSystem, observedFs),
+            Effect.provideService(HostProcess.Platform, "linux"),
+            Effect.provideService(HostProcess.WorkingDirectory, root),
+            Effect.provideService(HostProcess.HomeDirectory, home),
+            Effect.provideService(HostProcess.Environment, scenario.env),
+          );
+          const seedCommands = spawned.filter((args) =>
+            args.some((arg) => arg.endsWith("migrate-dev-db.ts")),
+          );
+          if (scenario.seed) {
+            assert.deepStrictEqual(sourceAccesses, [source]);
+            assert.equal(seedCommands.length, 1);
+            assert.deepStrictEqual(seedCommands[0]?.slice(1), [
+              "--base-dir",
+              path.join(root, ".t3"),
+              "--source",
+              source,
+            ]);
+          } else {
+            assert.deepStrictEqual(sourceAccesses, []);
+            assert.deepStrictEqual(seedCommands, []);
+          }
+          assert.equal(NodeFS.readFileSync(source, "utf8"), "synthetic-source-unchanged");
+          if (existingDatabase !== undefined) {
+            assert.equal(NodeFS.readFileSync(existingDatabase, "utf8"), "existing-worktree-data");
+          }
+        }).pipe(Effect.scoped),
       );
 
       it.effect("falls back to an ambient T3CODE_HOME outside a worktree", () =>

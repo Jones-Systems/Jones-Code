@@ -6,13 +6,14 @@ import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import {
   EnvironmentId,
   NodeId,
+  ProviderSessionId,
   RuntimeRequestId,
   ThreadId,
   TurnItemId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import { makeThreadRequestsResolvedAnnouncer } from "@t3tools/client-runtime/state/thread-requests";
-import { useLayoutEffect, useRef, type ComponentProps } from "react";
+import { useLayoutEffect, useState, type ComponentProps } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { userEvent } from "vite-plus/test/browser";
 
@@ -135,8 +136,6 @@ interface ProbeProps {
 }
 
 function useProbeRequests({ environmentId, projection, loading = false }: ProbeProps) {
-  const promptRef = useRef("");
-  const composerRef = useRef(null);
   return usePendingThreadRequests({
     environmentId,
     activeThreadId: projection.thread.id,
@@ -145,8 +144,6 @@ function useProbeRequests({ environmentId, projection, loading = false }: ProbeP
     composerDraftTarget: { environmentId, threadId: projection.thread.id },
     setComposerDraftPrompt: (target, prompt) =>
       useComposerDraftStore.getState().setPrompt(target, prompt),
-    promptRef,
-    composerRef,
     setThreadError: () => {},
   });
 }
@@ -202,11 +199,19 @@ it("tells the user when an option click moves their typed answer into the hidden
   const draftTarget = { environmentId, threadId: threadRef.threadId };
   const draftPrompt = () => useComposerDraftStore.getState().getComposerDraft(draftTarget)?.prompt;
   using toast = vi.spyOn(toastManager, "add");
+  const projection = questionProjection(threadRef.threadId);
+  const liveProjection = {
+    ...projection,
+    runtimeRequests: projection.runtimeRequests.map((request) => ({
+      ...request,
+      responseCapability: {
+        type: "live" as const,
+        providerSessionId: ProviderSessionId.make("navigation-live-provider"),
+      },
+    })),
+  };
   await using _screen = await render(
-    <PendingRequestsProbe
-      environmentId={environmentId}
-      projection={questionProjection(threadRef.threadId)}
-    />,
+    <PendingRequestsProbe environmentId={environmentId} projection={liveProjection} />,
   );
 
   await act(() => requests.onSelectActivePendingUserInputOption("question-0", "Incremental"));

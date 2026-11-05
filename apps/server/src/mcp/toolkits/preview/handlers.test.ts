@@ -1,3 +1,6 @@
+import * as McpToolAccessTestkit from "../../McpToolAccess.testkit.ts";
+import * as TestClock from "effect/testing/TestClock";
+import * as Fiber from "effect/Fiber";
 import { describe, expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -24,7 +27,7 @@ import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { liveThreadsLayer } from "../../McpToolAccess.testkit.ts";
 import * as PreviewAutomationBroker from "../../PreviewAutomationBroker.ts";
-import { claimPreviewRecording, layerStandard } from "./handlers.ts";
+import { normalizePreviewOpenInput, claimPreviewRecording, layerStandard } from "./handlers.ts";
 import { PreviewStandardToolkit } from "./tools.ts";
 
 it.effect("preview_open navigates the opened tab to a dev server in one tool call", () =>
@@ -244,7 +247,7 @@ it.effect("returns a successful click once when its decorative status never repl
         ),
       );
       const result = yield* toolkit
-        .handle("preview_click", { x: 1, y: 1 })
+        .handle("preview_act", { action: "click", x: 1, y: 1 })
         .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies), Effect.forkScoped);
       yield* Deferred.await(statusReady);
       yield* TestClock.adjust(500);
@@ -258,7 +261,37 @@ it.effect("returns a successful click once when its decorative status never repl
     Effect.provide(
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-preview-handler-" }).pipe(
         Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(NodeCrypto.layer),
       ),
     ),
   ),
 );
+
+describe("normalizePreviewOpenInput", () => {
+  it("leaves an unstated visibility for the client preference to decide", () => {
+    // Filling `open` in here would outrank `browserAutoShowFloatingPreview`,
+    // which is desktop-local and cannot be read from the server.
+    expect(normalizePreviewOpenInput({})).toEqual({ reuseExistingTab: true });
+  });
+
+  it("preserves an explicit background-only opt-out", () => {
+    expect(normalizePreviewOpenInput({ open: false })).toEqual({
+      open: false,
+      reuseExistingTab: true,
+      show: false,
+    });
+  });
+
+  it("supports show as a legacy alias while preferring open", () => {
+    expect(normalizePreviewOpenInput({ show: false })).toEqual({
+      open: false,
+      reuseExistingTab: true,
+      show: false,
+    });
+    expect(normalizePreviewOpenInput({ open: true, show: false })).toEqual({
+      open: true,
+      reuseExistingTab: true,
+      show: true,
+    });
+  });
+});

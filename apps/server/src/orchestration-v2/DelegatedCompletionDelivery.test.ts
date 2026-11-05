@@ -101,6 +101,8 @@ const providerInstance = {
 const layerTestProviderInstanceRegistry = Layer.succeed(
   ProviderInstanceRegistry.ProviderInstanceRegistry,
   {
+    getCatalogSource: (instanceId) =>
+      instanceId === providerInstance.instanceId ? providerInstance : undefined,
     getInstance: (instanceId) =>
       Effect.succeed(instanceId === providerInstance.instanceId ? providerInstance : undefined),
     listInstances: Effect.succeed([providerInstance]),

@@ -8,7 +8,13 @@ import * as InstallPlanIpc from "../jones/installPlan/ipc.ts";
 import * as JonesUpdatesIpc from "../jones/updates/ipcMethods.ts";
 import { installNotificationBadge } from "./methods/notificationBadge.ts";
 import { getClientSettings, setClientSettings } from "./methods/clientSettings.ts";
-import { getConnectionCatalog, setConnectionCatalog } from "./methods/connectionCatalog.ts";
+import {
+  getConnectionCatalog,
+  setConnectionCatalog,
+  getConnectionCatalogSnapshot,
+  listConnectionCompatibilityHints,
+  setConnectionCompatibilityHint,
+} from "./methods/connectionCatalog.ts";
 import {
   getLocalEnvironmentEnabled,
   setLocalEnvironmentEnabled,
@@ -100,6 +106,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handleSync(takeLegacyLocalStorage);
   yield* ipc.handle(completeLegacyLocalStorage);
   yield* ipc.handleSync(getAppBranding);
+  yield* ipc.handle(getPreviewAutomationRuntimeIdentity);
   yield* installRelayTelemetryEnabled();
   yield* ipc.handleSync(getSystemLocale);
   yield* ipc.handleSync(getWindowFullscreenState);

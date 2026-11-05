@@ -343,7 +343,7 @@ const makeReader = Effect.fnUntraced(function* (
         readonly connection: Connection;
         readonly started: Promise<ReaderStartup>;
         readonly stop: (message: string) => void;
-        readonly settled: () => Promise<void>;
+        readonly settled: () => Promise<void> | undefined;
         readonly ready: () => boolean;
         readonly stopped: () => boolean;
         readonly exited: () => boolean;
@@ -560,9 +560,12 @@ const makeReader = Effect.fnUntraced(function* (
       ready: () => ready,
       stopped: () => stoppedMessage !== undefined,
       exited: () => exited,
-      settled: async () => {
-        if (pending.size !== 0) await new Promise<void>((resolve) => settledWaiters.add(resolve));
-      },
+      // Already received replies need no asynchronous barrier. A live request still
+      // registers a waiter before its slot can be reused or retired.
+      settled: () =>
+        pending.size === 0
+          ? undefined
+          : new Promise<void>((resolve) => settledWaiters.add(resolve)),
     };
     return current;
   };
@@ -674,8 +677,9 @@ const makeReader = Effect.fnUntraced(function* (
               ),
     );
   });
-  const awaitRetirement = Effect.promise(async () => {
-    await retiring;
+  const awaitRetirement = Effect.suspend(() => {
+    const pending = retiring;
+    return pending === undefined ? Effect.void : Effect.promise(() => pending);
   });
   const managed = <A>(effect: Effect.Effect<A>) =>
     management === undefined ? effect : management.withPermits(1)(effect);
@@ -687,12 +691,16 @@ const makeReader = Effect.fnUntraced(function* (
         )
       : acquire,
   );
+  const readyConnection = () =>
+    current?.ready() && !closed && !unavailable && retiring === undefined
+      ? current.connection
+      : undefined;
   return {
-    acquire: Effect.suspend(() =>
-      current?.ready() && !closed && !unavailable && retiring === undefined
-        ? Effect.succeed(current.connection)
-        : coldAcquire,
-    ),
+    readyConnection,
+    acquire: Effect.suspend(() => {
+      const connection = readyConnection();
+      return connection === undefined ? coldAcquire : Effect.succeed(connection);
+    }),
     generation: () => generation,
     available: () =>
       !closed &&
@@ -703,9 +711,8 @@ const makeReader = Effect.fnUntraced(function* (
       managed(turnOff(current, reason, false).pipe(Effect.andThen(awaitRetirement))),
     settled: Effect.gen(function* () {
       const reader = current;
-      yield* Effect.promise(async () => {
-        await reader?.settled();
-      });
+      const pending = reader?.settled();
+      if (pending !== undefined) yield* Effect.promise(() => pending);
       if (reader !== undefined && reader.stopped() && !reader.exited()) {
         yield* managed(
           turnOff(reader, "SQLite reader stopped without exit proof", false).pipe(

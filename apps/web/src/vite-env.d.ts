@@ -1,5 +1,6 @@
 /// <reference types="vite-plus/client" />
 
+import type { DesktopThreadMonitorPeerBridge } from "@t3tools/contracts/jones/desktopThreadMonitor";
 import type { DesktopBridge, ThreadId } from "@t3tools/contracts";
 
 interface ImportMetaEnv {
@@ -28,6 +29,7 @@ interface ImportMeta {
 declare global {
   interface Window {
     desktopBridge?: DesktopBridge;
+    threadMonitor?: DesktopThreadMonitorPeerBridge;
     /** Dev builds only, from DevReplayHost. Agents call these from the browser console. */
     t3dev?: {
       readonly replayScenarios: () => ReadonlyArray<string>;

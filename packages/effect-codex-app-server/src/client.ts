@@ -228,10 +228,13 @@ export const make = Effect.fn("effect-codex-app-server/CodexAppServerClient.make
     ...(options.logIncoming !== undefined ? { logIncoming: options.logIncoming } : {}),
     ...(options.logOutgoing !== undefined ? { logOutgoing: options.logOutgoing } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
-    ...(options.onTermination ? { onTermination: options.onTermination } : {}),
     onNotification: dispatchNotification,
     onRequest: dispatchRequest,
-    onTermination: (error) => Deferred.fail(termination, error).pipe(Effect.asVoid),
+    onTermination: (error) =>
+      Deferred.fail(termination, error).pipe(
+        Effect.andThen(options.onTermination?.(error) ?? Effect.void),
+        Effect.asVoid,
+      ),
   });
 
   const request = <M extends CodexRpc.ClientRequestMethod>(

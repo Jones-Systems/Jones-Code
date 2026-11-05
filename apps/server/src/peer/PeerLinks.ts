@@ -1,3 +1,4 @@
+import * as InFlight from "../jones/peerTransport/InFlight.ts";
 import { peerEnvironmentLinksTable } from "../jones/peerPersistence/table.ts";
 import {
   AuthMcpClientAccess,
@@ -6,6 +7,7 @@ import {
   EnvironmentHttpApi,
   EnvironmentId,
   type ExecutionEnvironmentCapabilities,
+  type ExecutionEnvironmentDescriptor,
   MCP_PEER_LINK_SOFTWARE_ID,
   type PeerLink,
   type PeerLinkCreateInput,
@@ -57,6 +59,7 @@ export interface ResolvedPeerLink {
   /** The first address that answered as this peer. */
   readonly url: string;
   readonly token: string;
+  readonly generation: string;
 }
 
 export const LINKED_ENVIRONMENTS_OFF =
@@ -94,9 +97,13 @@ export class PeerLinks extends Context.Service<
     readonly resolve: (
       environmentId: EnvironmentId,
     ) => Effect.Effect<ResolvedPeerLink, PeerLinkError>;
+    readonly currentGeneration: (
+      environmentId: EnvironmentId,
+    ) => Effect.Effect<Option.Option<string>, PeerLinkError>;
     /** Records the outcome of a call, so listing shows whether the peer answered last time. */
     readonly recordOutcome: (
       environmentId: EnvironmentId,
+      generation: string,
       outcome: { readonly error: string | null },
     ) => Effect.Effect<void>;
   }
@@ -139,7 +146,7 @@ const failStorage = (cause: unknown) =>
  * code and then the link's token travel to it, so plain http is accepted only
  * where the network already encrypts: this machine, or a Tailscale address.
  */
-const peerOrigin = (url: string) => {
+const peerOrigin = (url: string): Effect.Effect<string, PeerLinkError> => {
   const parsed = URL.parse(url);
   if (parsed === null || (parsed.protocol !== "https:" && parsed.protocol !== "http:")) {
     return Effect.fail(
@@ -167,6 +174,9 @@ const peerOrigin = (url: string) => {
 /** Whether a peer holds a linked agent to its limits and keeps its work within its link. */
 const linkLimitsHold = (peer: { readonly capabilities: ExecutionEnvironmentCapabilities }) =>
   peer.capabilities.mcpModeLimitHeader === true && peer.capabilities.linkFence === true;
+
+const isAuthMcpRegistrationError = Schema.is(AuthMcpRegistrationError);
+const isAuthMcpTokenError = Schema.is(AuthMcpTokenError);
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -198,12 +208,25 @@ const make = Effect.gen(function* () {
       Effect.provideService(HttpClient.HttpClient, peerHttpClient),
     );
 
+  const descriptorReads = yield* InFlight.make<
+    Option.Option<ExecutionEnvironmentDescriptor>,
+    never
+  >({ cancelWhenUnused: true });
+
   /** The environment answering at `origin`, or nothing when it does not answer as T3 Code. */
-  const describe = (origin: string) =>
-    clientFor(origin).pipe(
-      Effect.flatMap((client) => client.metadata.descriptor()),
-      Effect.timeout(probeTimeout(origin)),
-      Effect.option,
+  const describe = (url: string): Effect.Effect<Option.Option<ExecutionEnvironmentDescriptor>> =>
+    peerOrigin(url).pipe(
+      Effect.flatMap((origin) =>
+        descriptorReads.run(
+          origin,
+          clientFor(origin).pipe(
+            Effect.flatMap((client) => client.metadata.descriptor()),
+            Effect.timeout(probeTimeout(origin)),
+            Effect.option,
+          ),
+        ),
+      ),
+      Effect.orElseSucceed(() => Option.none()),
     );
 
   const toLink = Effect.fn("PeerLinks.toLink")(function* (row: PeerLinkRow) {
@@ -233,6 +256,15 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => Option.fromNullishOr(rows[0])),
     );
 
+  const currentGeneration: PeerLinks["Service"]["currentGeneration"] = (environmentId) =>
+    sql<{ readonly secret_name: string }>`
+      SELECT secret_name FROM ${sql(peerEnvironmentLinksTable)}
+      WHERE environment_id = ${environmentId}
+    `.pipe(
+      Effect.catch(failStorage),
+      Effect.map((rows) => Option.fromNullishOr(rows[0]?.secret_name)),
+    );
+
   /** Signs in to the peer's `/mcp` with a pairing code: register, decide, exchange. */
   const signIn = Effect.fn("PeerLinks.signIn")(
     function* (origin: string, input: PeerLinkCreateInput, clientName: string) {
@@ -249,7 +281,7 @@ const make = Effect.gen(function* () {
         })
         .pipe(
           // A plain Schema.Error has no tag to catch by.
-          Effect.catchIf(Schema.is(AuthMcpRegistrationError), (error) =>
+          Effect.catchIf(isAuthMcpRegistrationError, (error) =>
             Effect.fail(
               new PeerLinkError({
                 reason: "pairing_rejected",
@@ -315,7 +347,7 @@ const make = Effect.gen(function* () {
           },
         })
         .pipe(
-          Effect.catchIf(Schema.is(AuthMcpTokenError), (error) =>
+          Effect.catchIf(isAuthMcpTokenError, (error) =>
             Effect.fail(
               new PeerLinkError({
                 reason: "pairing_rejected",
@@ -592,22 +624,31 @@ const make = Effect.gen(function* () {
           message: `${link.label} runs a T3 Code version that cannot keep a linked agent's limits. Update it, then link again.`,
         });
       }
-      return { link, url: url.value, token: new TextDecoder().decode(stored.value) };
+      return {
+        link,
+        url: url.value,
+        token: new TextDecoder().decode(stored.value),
+        generation: row.value.secret_name,
+      };
     },
   );
 
-  const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (environmentId, outcome) =>
+  const recordOutcome: PeerLinks["Service"]["recordOutcome"] = (
+    environmentId,
+    generation,
+    outcome,
+  ) =>
     DateTime.now.pipe(
       Effect.flatMap((now) =>
         outcome.error === null
           ? sql`
               UPDATE ${sql(peerEnvironmentLinksTable)}
               SET last_reached_at = ${DateTime.formatIso(now)}, last_error = NULL
-              WHERE environment_id = ${environmentId}
+              WHERE environment_id = ${environmentId} AND secret_name = ${generation}
             `
           : sql`
               UPDATE ${sql(peerEnvironmentLinksTable)} SET last_error = ${outcome.error}
-              WHERE environment_id = ${environmentId}
+              WHERE environment_id = ${environmentId} AND secret_name = ${generation}
             `,
       ),
       Effect.asVoid,
@@ -622,6 +663,7 @@ const make = Effect.gen(function* () {
     get,
     unlink,
     resolve,
+    currentGeneration,
     recordOutcome,
   });
 });

@@ -4,6 +4,7 @@ import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled"
 import type { EnvironmentScopeAccess } from "../state/session";
 
 export type ThreadActionMenuId =
+  | "environment-access-status"
   | "find"
   | "new-thread-on-branch"
   | "filter-by-project"
@@ -75,6 +76,7 @@ export function buildDraftActionMenuItems(options: {
 export interface ThreadActionMenuState {
   readonly assignmentItems?: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> | undefined;
   readonly canOperate: boolean;
+  readonly environmentAccessStatus?: EnvironmentScopeAccess["status"];
   readonly canFind?: boolean;
   readonly branch: string | null;
   readonly projectFilter: {
@@ -132,7 +134,9 @@ export function buildThreadActionMenuItems(
     ...(state.canFind
       ? [{ id: "find" as const, label: "Find in thread", icon: "text-search" }]
       : []),
-    ...(state.branch
+    ...(!state.canOperate &&
+    state.environmentAccessStatus &&
+    state.environmentAccessStatus !== "granted"
       ? [
           {
             id: "environment-access-status" as const,

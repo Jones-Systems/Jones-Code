@@ -245,6 +245,7 @@ function queuedMessage(): QueuedThreadMessage {
     messageId: MessageId.make("message-1"),
     commandId: CommandId.make("command-1"),
     text: "Look at this",
+    issuance: { state: "unissued" },
     attachments: drafts.getComposerDraftSnapshot(draftKey).attachments,
     createdAt: "2026-10-17T00:00:00.000Z",
   };
@@ -310,7 +311,12 @@ it.each(["decode", "write"] as const)(
     const message = queuedMessage();
     expect(message.attachments[0]?.uploadedAttachmentId).toBe("pending-1");
     await enqueueThreadOutboxMessage(message);
-    const prepared = await prepareQueuedMessageAttachments(message);
+    const queued = appAtomRegistry.get(threadOutboxManager.queuedMessagesByThreadKeyAtom)[
+      draftKey
+    ]?.[0];
+    expect(queued).toEqual(message);
+    if (!queued) throw new Error("Expected the durable queued upload");
+    const prepared = await prepareQueuedMessageAttachments(queued);
     expect(prepared.status).toBe("ready");
     if (prepared.status !== "ready") throw new Error("Outbox preparation abandoned");
     expect(prepared.prepared.pendingAttachmentIds).toEqual(["pending-1"]);

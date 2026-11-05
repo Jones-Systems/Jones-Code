@@ -74,6 +74,7 @@ function claudeLine(
   outputTokens: number,
   model = "claude-fable-5",
   sessionId = "session-1",
+  timestamp = "2026-08-01T10:00:00Z",
 ): string {
   return `${JSON.stringify({
     type: "assistant",

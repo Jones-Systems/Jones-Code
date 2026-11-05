@@ -263,6 +263,7 @@ export function NewTaskDraftScreen(props: {
       states: uploadStates,
     });
   const queuesInsteadOfStarting = !environmentConnected || attachmentsUploading;
+  const startLatchRef = useRef(createProjectThreadStartLatch());
   const promptInputRef = useRef<ComposerEditorHandle>(null);
   const loadedBranchesProjectKeyRef = useRef<string | null>(null);
   const [isReturningToProjectPicker, setIsReturningToProjectPicker] = useState(false);

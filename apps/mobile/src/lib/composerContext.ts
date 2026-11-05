@@ -1,3 +1,4 @@
+import { serializeLegacyContextMessage } from "@t3tools/shared/composerContextLegacySend";
 import { isProviderSkillUserInvocable } from "@t3tools/client-runtime/providerSkills";
 import { sourceControlClients } from "@t3tools/client-runtime/source-control-clients";
 import { filePreviewKind } from "@t3tools/shared/filePreview";
@@ -257,9 +258,12 @@ export function reidentifyComposerContext(
 export function serializeComposerMessageForServer(
   composerText: string,
   context: OrchestrationMessageContext | undefined,
+  inlineMessageContext = true,
 ): { text: string; context?: OrchestrationMessageContext } {
   const text = isImageReferencesOnly(composerText)
     ? ATTACHMENT_ONLY_BOOTSTRAP_PROMPT
     : composerText;
-  return { text, ...(context ? { context } : {}) };
+  return !inlineMessageContext && context
+    ? { text: serializeLegacyContextMessage({ text, records: context.records }) }
+    : { text, ...(context ? { context } : {}) };
 }

@@ -1,3 +1,4 @@
+import { useThreadReferenceCapture } from "../../jones/threadReferenceExcerpt/useThreadReferenceCapture";
 import {
   ConnectionBlockedError,
   ConnectionTransientError,
@@ -94,7 +95,6 @@ export function useComposerContextImport(input: {
 }) {
   const {
     environmentId,
-    linkedEnvironments,
     activeThread,
     activeThreadId,
     composerDraftTarget,
@@ -119,7 +119,11 @@ export function useComposerContextImport(input: {
   const addComposerDraftPreviewAnnotation = useComposerDraftStore(
     (store) => store.addPreviewAnnotation,
   );
-  const addComposerDraftThreadContexts = useComposerDraftStore((store) => store.addThreadContexts);
+  const captureThreadContexts = useThreadReferenceCapture(
+    attachmentDraftTarget,
+    questionAttachmentTarget,
+  );
+  const captureComposerThreadContexts = useThreadReferenceCapture(composerDraftTarget);
   const addComposerDraftEnvironmentContexts = useComposerDraftStore(
     (store) => store.addEnvironmentContexts,
   );
@@ -391,16 +395,13 @@ export function useComposerContextImport(input: {
           break;
         }
         case "thread": {
-          // The agent reads threads on its own server and the machines it links to; a pasted
-          // thread from any other machine is dropped.
-          if (
-            record.environmentId !== environmentId &&
-            !linkedEnvironments.has(record.environmentId)
-          )
-            break;
-          addComposerDraftThreadContexts(threadDraftTarget, [record], {
-            appendReference: false,
-          });
+          // Jones captures an authorized source excerpt for a foreign machine instead of
+          // asking the destination agent to resolve a reference on that machine.
+          const capture =
+            threadDraftTarget === attachmentDraftTarget
+              ? captureThreadContexts
+              : captureComposerThreadContexts;
+          capture([record], { appendReference: false });
           rewritten.set(record.contextId, record.contextId);
           break;
         }

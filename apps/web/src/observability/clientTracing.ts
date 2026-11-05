@@ -73,17 +73,25 @@ let activeScope: Scope.Closeable | null = null;
 let activeConfigKey: string | null = null;
 let pendingConfiguration = Promise.resolve();
 
-export function configureClientTracing(): Promise<void> {
-  if (activeConfigKey !== null) {
+export function configureClientTracing(
+  options: { readonly exportIntervalMs?: number } = {},
+): Promise<void> {
+  if (
+    activeConfigKey !== null &&
+    ClientTracer.hasDelegate() &&
+    options.exportIntervalMs === undefined
+  ) {
     return pendingConfiguration;
   }
-  pendingConfiguration = pendingConfiguration.finally(() => applyClientTracingConfig());
+  pendingConfiguration = pendingConfiguration.finally(() => applyClientTracingConfig(options));
   return pendingConfiguration;
 }
 
-async function applyClientTracingConfig(): Promise<void> {
+async function applyClientTracingConfig(options: {
+  readonly exportIntervalMs?: number;
+}): Promise<void> {
   const otlpTracesUrl = resolvePrimaryEnvironmentHttpUrl("/api/observability/v1/traces");
-  const exportIntervalMs = DEFAULT_EXPORT_INTERVAL_MS;
+  const exportIntervalMs = options.exportIntervalMs ?? DEFAULT_EXPORT_INTERVAL_MS;
   const nextConfigKey = `${otlpTracesUrl}|${exportIntervalMs}`;
 
   if (activeConfigKey === nextConfigKey && ClientTracer.hasDelegate()) {
@@ -102,7 +110,7 @@ async function applyClientTracingConfig(): Promise<void> {
   await disposeTracerRuntime(previousRuntime, previousScope);
 
   const runtime = ManagedRuntime.make(layerDelegateRuntime);
-  const scope = runtime.runSync(Scope.make());
+  const scope = await runtime.runPromise(Scope.make());
 
   const delegateResult = await settleAsyncResult(() =>
     runtime.runPromiseExit(

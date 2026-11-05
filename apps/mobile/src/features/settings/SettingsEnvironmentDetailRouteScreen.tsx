@@ -1,4 +1,3 @@
-import { findEnvironmentUpdate as findJonesEnvironmentUpdate } from "../../jones/updates/environmentMaintenance";
 import { JonesBuildVersion } from "../../jones/updates/JonesBuildVersion";
 import { mobileJonesBuildRef, mobileJonesBuildDescription } from "../../jones/updates/buildVersion";
 import { WorkModeSettings } from "../../jones/workMode/WorkModeSettings";
@@ -103,6 +102,8 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
   const version = config?.environment.serverVersion;
   const checkedRelease = release?.fromVersion === version ? release : null;
   const capabilities = config?.environment.capabilities;
+  const buildRef = (value: string) => mobileJonesBuildRef(value, config?.environment, jonesState);
+  const buildDescription = (value: string) => mobileJonesBuildDescription(buildRef(value));
   const managedPolicy = config?.managedPolicy;
   const supportUrl = managedPolicy?.supportUrl;
   // The server refuses checks and installs; say so instead of offering them.
@@ -249,7 +250,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
               <>
                 <SettingsSection title="T3 Code">
                   <View className="gap-1 p-4">
-                    <Text className="text-base text-foreground">Version {version}</Text>
+                    <JonesBuildVersion build={buildRef(config.environment.serverVersion)} />
                     {managedPolicy ? (
                       <Text className="text-sm text-foreground-muted">
                         Managed by {managedPolicy.organization}
@@ -293,7 +294,7 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                       onPress={() => void Linking.openURL(supportUrl).catch(() => undefined)}
                     />
                   ) : null}
-                  {updatesDenial ? null : (
+                  {updatesDenial || isJonesEnvironment ? null : (
                     <SettingsActionRow
                       icon="arrow.clockwise"
                       label="Check for updates"
@@ -311,11 +312,12 @@ function EnvironmentDetail({ environmentId }: { readonly environmentId: Environm
                     />
                   )}
                   {checkedRelease?.targetVersion &&
+                  !isJonesEnvironment &&
                   !updatesDenial &&
                   supportsEnvironmentUpdate(config.environment.capabilities) ? (
                     <SettingsActionRow
                       icon="arrow.up.circle"
-                      label={`Update to ${checkedRelease.targetVersion}`}
+                      label={`Update to ${buildDescription(checkedRelease.targetVersion)}`}
                       disabled={disabled}
                       loading={pending === "server" || running}
                       onPress={requestServerUpdate}

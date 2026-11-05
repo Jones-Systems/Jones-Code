@@ -171,3 +171,17 @@ describe("handoff preloads", () => {
     }
   });
 });
+
+it("transfers pending previews to the delivery owner before the view releases its blobs", () => {
+  const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  try {
+    const previews = createOptimisticBlobPreviews();
+    previews.track(threadA, message("pending", "blob:pending"));
+    previews.track(threadA, message("local", "blob:local"));
+    previews.transfer(threadA, ["blob:pending"]);
+    previews.revokeThread(threadA);
+    expect(revoke.mock.calls).toEqual([["blob:local"]]);
+  } finally {
+    revoke.mockRestore();
+  }
+});

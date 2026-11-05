@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import {
   CommandId,
   ThreadId,
@@ -226,7 +227,9 @@ it.effect(
           ),
         ).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );
 
 it.effect(
@@ -246,7 +249,9 @@ it.effect(
         yield* Boundary.beforeCleanupPath(f.linked).pipe(Effect.provide(f.configured()));
         expect(f.calls).toEqual([]);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );
 
 it.effect(
@@ -271,5 +276,7 @@ it.effect(
         expect(f.calls).toEqual([]);
         expect(Option.isNone(yield* Effect.serviceOption(Lifecycle.WorkspaceLifecycle))).toBe(true);
       }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+    ).pipe(
+      Effect.provide(Layer.merge(memory, Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+    ),
 );

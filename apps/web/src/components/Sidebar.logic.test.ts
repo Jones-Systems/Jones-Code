@@ -1,3 +1,4 @@
+import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { backgroundWorkHoldsCompletion as upstreamBackgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { defaultAnimateLayoutChanges, type AnimateLayoutChanges } from "@dnd-kit/sortable";
 import {
@@ -1185,9 +1186,9 @@ describe("unseen completion with background work", () => {
     {
       roster: "legacy Jones monitor",
       task: { kind: "monitor" },
-      status: "ready",
-      receded: false,
-      pill: "Completed",
+      status: "waiting",
+      receded: true,
+      pill: "Waiting",
     },
     {
       roster: "awaited command",

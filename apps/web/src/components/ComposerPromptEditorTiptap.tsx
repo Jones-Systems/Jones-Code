@@ -1029,7 +1029,7 @@ function ComposerPromptEditorTiptapInner(
   };
 
   const handleEditorChange = (updated: TiptapEditor) => {
-    const map = serializeEditorDoc(updated.state.doc);
+    const map = readEditorDoc(updated);
     const contextIds = literalText ? [] : [...map.contextIds];
     const { from, to } = updated.state.selection;
     const fromFlat = pmToFlat(map, from);

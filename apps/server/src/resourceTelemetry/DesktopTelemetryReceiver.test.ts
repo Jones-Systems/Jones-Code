@@ -9,6 +9,7 @@ import * as Cause from "effect/Cause";
 import * as FileSystem from "effect/FileSystem";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { describe, expect } from "vite-plus/test";
@@ -17,6 +18,8 @@ import {
   makeApplyDesktopShellEnvironmentSnapshot,
   requireDesktopTelemetryWriteProgress,
 } from "./DesktopTelemetryReceiver.ts";
+
+class StaleParent extends Schema.TaggedError<StaleParent>()("StaleParent", {}) {}
 
 describe("DesktopTelemetryReceiver", () => {
   it.live(
@@ -187,6 +190,43 @@ NodeAssert.deepEqual(fingerprints(NodeTls.getCACertificates("default")), expecte
           UNRELATED: "keep",
           ...(pending ? { T3CODE_DESKTOP_SHELL_DISCOVERY_PENDING: "1" } : {}),
         });
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect.each([
+    { witnessed: true, discovered: true, platform: "darwin", applied: true },
+    { witnessed: false, discovered: true, platform: "darwin", applied: false },
+    { witnessed: true, discovered: false, platform: "darwin", applied: false },
+    { witnessed: true, discovered: true, platform: "win32", applied: false },
+  ])(
+    "requires current parent custody for private activation: $witnessed/$discovered/$platform",
+    ({ witnessed, discovered, platform, applied }) =>
+      Effect.gen(function* () {
+        const environment: NodeJS.ProcessEnv = { T3_WORKSTREAM_OWNER_ID: "", UNRELATED: "keep" };
+        const message = {
+          version: 1,
+          type: "shellEnvironment",
+          platform: platform as "darwin" | "win32",
+          discovered,
+          environment: { PATH: "/fresh/bin" },
+          jonesWorkstreamActivation: {
+            T3_WORKSTREAM_OWNER_ID: "must-not-override",
+            T3_WORKSTREAM_SIGNING_SECRET: "synthetic-private-value",
+          },
+        } as const;
+        yield* makeApplyDesktopShellEnvironmentSnapshot(
+          environment,
+          "darwin",
+          witnessed ? Effect.void : Effect.fail(new StaleParent({})),
+        )(message);
+        expect(environment.T3_WORKSTREAM_OWNER_ID).toBe("");
+        expect(environment.T3_WORKSTREAM_SIGNING_SECRET).toBe(
+          applied ? "synthetic-private-value" : undefined,
+        );
+        expect(environment.UNRELATED).toBe("keep");
+        const noWitness: NodeJS.ProcessEnv = {};
+        yield* makeApplyDesktopShellEnvironmentSnapshot(noWitness, "darwin")(message);
+        expect(noWitness.T3_WORKSTREAM_SIGNING_SECRET).toBeUndefined();
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 

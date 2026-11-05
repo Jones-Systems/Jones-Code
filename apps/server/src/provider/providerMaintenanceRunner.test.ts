@@ -491,7 +491,11 @@ describe("providerMaintenanceRunner", () => {
 
       const result = yield* updater.updateProvider(CODEX_DRIVER);
       assert.deepStrictEqual(calls, [{ command: "claude", args: ["update"] }]);
-      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+      assert.strictEqual(result.providers[0]?.updateState?.status, "unchanged");
+      assert.strictEqual(
+        result.providers[0]?.updateState?.message,
+        "Update command completed, but T3 Code could not verify the provider version.",
+      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -507,7 +511,7 @@ describe("providerMaintenanceRunner", () => {
   });
 
   it.effect(
-    "keeps a successful update when the binary is present but its version is unreadable",
+    "reports an unverified update when the binary is present but its version is unreadable",
     () => {
       return Effect.gen(function* () {
         const { registry, providersRef } = yield* makeRegistry(baseNativeCliProvider);
@@ -520,7 +524,8 @@ describe("providerMaintenanceRunner", () => {
         });
 
         const result = yield* updater.updateProvider(NATIVE_CLI_DRIVER);
-        assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+        assert.strictEqual(result.providers[0]?.updateState?.status, "unchanged");
+        assert.match(result.providers[0]?.updateState?.message ?? "", /could not verify/);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -528,6 +533,24 @@ describe("providerMaintenanceRunner", () => {
             layerLatestVersionHttpClient("1.0.0"),
             layerMockSpawner(() => ({ stdout: "updated" })),
           ),
+        ),
+      );
+    },
+  );
+
+  it.effect("reports unchanged when the latest version is unavailable", () =>
+    Effect.gen(function* () {
+      const { registry } = yield* makeRegistry();
+      const updater = yield* makeTestRunner(registry);
+      const result = yield* updater.updateProvider(CODEX_DRIVER);
+      assert.strictEqual(result.providers[0]?.updateState?.status, "unchanged");
+      assert.match(result.providers[0]?.updateState?.message ?? "", /could not verify/);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          layerNonWindowsPlatform,
+          layerLatestVersionHttpClient(""),
+          layerMockSpawner(() => ({ stdout: "updated" })),
         ),
       ),
     ),
@@ -565,10 +588,7 @@ describe("providerMaintenanceRunner", () => {
         Layer.mergeAll(
           layerNonWindowsPlatform,
           layerLatestVersionHttpClient("1.0.0"),
-          layerMockSpawner((_command, _args, options) => {
-            seen.push(options.env);
-            return { stdout: "updated" };
-          }),
+          layerMockSpawner(() => ({ stdout: "updated" })),
         ),
       ),
     ),
@@ -1292,6 +1312,61 @@ describe("providerMaintenanceRunner", () => {
                 args: childProcess.args,
                 shell: childProcess.options.shell,
                 env: childProcess.options.env,
+              });
+              return Effect.succeed(mockHandle({ stdout: "updated" }));
+            }),
+          ),
+        ),
+      ),
+    );
+  });
+
+  it.effect("resolves npm to a .cmd shim and routes through the shell on win32", () => {
+    const captured: Array<{
+      readonly command: string;
+      readonly args: ReadonlyArray<string>;
+      readonly shell: boolean | string | undefined;
+    }> = [];
+    return Effect.gen(function* () {
+      const { registry } = yield* makeRegistry(baseProvider);
+      const runner = yield* makeTestRunner(registry);
+
+      const result = yield* runner.updateProvider(CODEX_DRIVER);
+
+      assert.strictEqual(captured.length, 1);
+      const call = captured[0];
+      assert.ok(call, "expected the spawner to be invoked once");
+      assert.strictEqual(
+        call.command,
+        '^"C:\\fake\\npm\\npm.cmd^" ^"install^" ^"-g^" ^"@openai/codex@latest^"',
+      );
+      assert.deepEqual(call.args, []);
+      assert.strictEqual(call.shell, true);
+      assert.strictEqual(result.providers[0]?.updateState?.status, "succeeded");
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          Layer.succeed(HostProcess.Platform, "win32"),
+          Layer.succeed(HostProcess.Environment, {
+            PATH: "C:\\fake\\npm",
+            PATHEXT: ".COM;.EXE;.BAT;.CMD",
+          }),
+          Layer.succeed(SpawnExecutableResolution, (command) =>
+            command === "npm" ? "C:\\fake\\npm\\npm.cmd" : undefined,
+          ),
+          layerLatestVersionHttpClient("0.0.0"),
+          Layer.succeed(
+            ChildProcessSpawner.ChildProcessSpawner,
+            ChildProcessSpawner.make((command) => {
+              const childProcess = command as unknown as {
+                readonly command: string;
+                readonly args: ReadonlyArray<string>;
+                readonly options: { readonly shell?: boolean | string | undefined };
+              };
+              captured.push({
+                command: childProcess.command,
+                args: childProcess.args,
+                shell: childProcess.options.shell,
               });
               return Effect.succeed(mockHandle({ stdout: "updated" }));
             }),

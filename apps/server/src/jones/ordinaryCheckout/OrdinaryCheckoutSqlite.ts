@@ -1,3 +1,4 @@
+import { decodeOrchestrationEffectPayloadV2 } from "../../orchestration-v2/EffectOutbox.ts";
 import { ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -46,10 +47,12 @@ const decode = <S extends Schema.Codec<unknown, unknown, never, never>>(
   Schema.decodeUnknownEffect(schema, { onExcessProperty: "error" })(value).pipe(
     Effect.mapError((cause) => new CheckoutError({ reason: "identity", cause })),
   );
+const isCheckoutError = Schema.is(CheckoutError);
+
 const safe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
     Effect.mapError((cause) =>
-      Schema.is(CheckoutError)(cause) ? cause : new CheckoutError({ reason: "storage", cause }),
+      isCheckoutError(cause) ? cause : new CheckoutError({ reason: "storage", cause }),
     ),
   );
 
@@ -61,6 +64,22 @@ const directoryWitness = (target: Target) =>
     gitDirectoryIdentity: target.gitDirectoryIdentity,
     gitCommonIdentity: target.gitCommonIdentity,
   });
+
+type Store = "legacy" | "process_v2";
+type StoredUse = Use & {
+  readonly store: Store;
+  readonly command_id: string | null;
+  readonly thread_id: string | null;
+  readonly run_id: string | null;
+  readonly claimed_at: string | null;
+  readonly request_digest: string | null;
+};
+const useTable = (row: { readonly store: Store }) =>
+  row.store === "legacy" ? "jones_ordinary_checkout_uses" : "jones_ordinary_checkout_process_uses";
+const eventTable = (row: { readonly store: Store }) =>
+  row.store === "legacy"
+    ? "jones_ordinary_checkout_lifecycle_events"
+    : "jones_ordinary_checkout_process_events";
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -77,7 +96,7 @@ const make = Effect.gen(function* () {
     );
   const use = Effect.fn("OrdinaryCheckoutSqlite.use")(function* (id: string) {
     const rows =
-      yield* sql<Use>`SELECT * FROM jones_ordinary_checkout_uses WHERE operation_id=${id}`;
+      yield* sql<StoredUse>`SELECT * FROM jones_ordinary_checkout_all_uses WHERE operation_id=${id}`;
     if (rows.length !== 1) return yield* new CheckoutError({ reason: "unavailable" });
     return rows[0]!;
   });
@@ -304,8 +323,8 @@ const make = Effect.gen(function* () {
       SELECT command_id,thread_id,payload_json FROM orchestration_v2_effect_outbox WHERE effect_id=${effectId}`;
     const row = rows[0];
     if (!row) return null;
-    const request = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
-      row.payload_json,
+    const { request } = yield* decodeOrchestrationEffectPayloadV2(row.payload_json).pipe(
+      Effect.mapError((cause) => new CheckoutError({ reason: "identity", cause })),
     );
     return { ...row, request };
   });
@@ -332,8 +351,8 @@ const make = Effect.gen(function* () {
   });
   const pendingAdmissions = (key: string) => sql<{ readonly admission_id: string }>`
     SELECT a.admission_id FROM jones_ordinary_checkout_admissions a WHERE a.checkout_key=${key}
-      AND (NOT EXISTS(SELECT 1 FROM jones_ordinary_checkout_uses u WHERE u.admission_id=a.admission_id)
-        OR EXISTS(SELECT 1 FROM jones_ordinary_checkout_uses u WHERE u.admission_id=a.admission_id AND u.state NOT IN ('completed','no_effect')))`;
+      AND (NOT EXISTS(SELECT 1 FROM jones_ordinary_checkout_all_uses u WHERE u.admission_id=a.admission_id)
+        OR EXISTS(SELECT 1 FROM jones_ordinary_checkout_all_uses u WHERE u.admission_id=a.admission_id AND u.state NOT IN ('completed','no_effect')))`;
   const accept = (input: Accept) =>
     transaction(
       Effect.gen(function* () {
@@ -469,18 +488,27 @@ const make = Effect.gen(function* () {
           role: input.link.role,
           recorded_at: input.now,
         })}`;
-        const updated = yield* sql<Use>`UPDATE jones_ordinary_checkout_uses SET revision=revision+1
+        const updated = yield* sql<StoredUse>`UPDATE ${sql(useTable(row))} SET revision=revision+1
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} RETURNING *`;
         if (updated.length !== 1) return yield* new CheckoutError({ reason: "stale" });
-        return updated[0]!;
+        return yield* use(row.operation_id);
       }),
     );
-  const events = (id: string) =>
-    sql<LifecycleEvent>`SELECT * FROM jones_ordinary_checkout_lifecycle_events WHERE operation_id=${id} ORDER BY ordinal`;
-  const latestAssociations = (id: string) => sql<LifecycleEvent>`
-    SELECT e.* FROM jones_ordinary_checkout_lifecycle_events e WHERE e.operation_id=${id}
-      AND e.ordinal=(SELECT MAX(last.ordinal) FROM jones_ordinary_checkout_lifecycle_events last
-        WHERE last.operation_id=e.operation_id AND last.association_id=e.association_id)`;
+  const events = Effect.fn("OrdinaryCheckoutSqlite.events")(function* (id: string) {
+    const row = yield* use(id);
+    return yield* sql<LifecycleEvent>`SELECT * FROM jones_ordinary_checkout_all_events
+      WHERE store=${row.store} AND operation_id=${id} ORDER BY ordinal`;
+  });
+  const latestAssociations = Effect.fn("OrdinaryCheckoutSqlite.latestAssociations")(function* (
+    id: string,
+    owningStore?: Store,
+  ) {
+    const store = owningStore ?? (yield* use(id)).store;
+    return yield* sql<LifecycleEvent>`SELECT e.* FROM jones_ordinary_checkout_all_events e
+      WHERE e.store=${store} AND e.operation_id=${id}
+      AND e.ordinal=(SELECT MAX(last.ordinal) FROM jones_ordinary_checkout_all_events last
+        WHERE last.store=e.store AND last.operation_id=e.operation_id AND last.association_id=e.association_id)`;
+  });
   const assertCoveredLinks = Effect.fn("OrdinaryCheckoutSqlite.assertCoveredLinks")(function* (
     a: Admission,
     participants: readonly LifecycleEvent[],
@@ -488,28 +516,40 @@ const make = Effect.gen(function* () {
     const coveredEffects = new Set<string>();
     for (const participant of participants) {
       const bound = yield* decode(Schema.fromJsonString(Binding), participant.binding_json);
-      if (bound.source.kind === "outbox") coveredEffects.add(bound.source.effectId);
+      if (bound.source.kind === "outbox" || bound.source.kind === "outbox_process_v2")
+        coveredEffects.add(bound.source.effectId);
     }
     const links = yield* sql<{
       readonly effect_id: string;
     }>`SELECT effect_id FROM jones_ordinary_checkout_effect_links WHERE admission_id=${a.admission_id}`;
     for (const link of links) {
       if (coveredEffects.has(link.effect_id)) continue;
-      const settled =
-        yield* sql`SELECT operation_id FROM jones_ordinary_checkout_uses WHERE admission_id=${a.admission_id}
-        AND effect_id=${link.effect_id} AND state IN ('completed','no_effect') LIMIT 1`;
-      if (settled.length === 0) return yield* new CheckoutError({ reason: "unknown" });
+      const settled = yield* sql<{
+        readonly state: Use["state"];
+      }>`SELECT state FROM jones_ordinary_checkout_all_uses WHERE admission_id=${a.admission_id}
+        AND effect_id=${link.effect_id}`;
+      if (settled.length === 0 || settled.some((item) => !terminal(item.state)))
+        return yield* new CheckoutError({ reason: "unknown" });
     }
   });
-  const sourceMatches = (row: Use, source: Source) =>
+  const sourceMatches = (row: StoredUse, source: Source) =>
     row.source_kind === source.kind &&
     (source.kind === "outbox"
       ? row.effect_id === source.effectId &&
         row.worker_id === source.workerId &&
         row.attempt_count === source.attempt &&
         row.claim_expires_at === source.claimExpiresAt
-      : row.producer_id === source.producerId);
-  const verifyBinding = (row: Use, binding: Binding, a: Admission, joining = false) => {
+      : source.kind === "outbox_process_v2"
+        ? row.effect_id === source.effectId &&
+          row.worker_id === source.workerId &&
+          row.attempt_count === source.attempt &&
+          row.command_id === source.commandId &&
+          row.thread_id === source.threadId &&
+          row.run_id === source.runId &&
+          row.claimed_at === source.claimedAt &&
+          row.request_digest === source.requestDigest
+        : row.producer_id === source.producerId);
+  const verifyBinding = (row: StoredUse, binding: Binding, a: Admission, joining = false) => {
     const runCaptured = Effect.fn("OrdinaryCheckoutSqlite.verifyBinding")(function* () {
       yield* decode(Binding, binding);
       if (
@@ -520,7 +560,7 @@ const make = Effect.gen(function* () {
           (binding.provider === null || binding.relation.runId === null))
       )
         return yield* new CheckoutError({ reason: "identity" });
-      const prior = (yield* latestAssociations(row.operation_id)).find(
+      const prior = (yield* latestAssociations(row.operation_id, row.store)).find(
         (event) => event.association_id === associationId(binding),
       );
       if (prior) {
@@ -542,7 +582,7 @@ const make = Effect.gen(function* () {
     a: Admission,
     source: Source,
   ) {
-    if (source.kind !== "outbox") return;
+    if (source.kind !== "outbox" && source.kind !== "outbox_process_v2") return;
     const actual = yield* effectRequest(source.effectId);
     const links = yield* sql<{
       readonly request_digest: string;
@@ -561,16 +601,29 @@ const make = Effect.gen(function* () {
     source: Source,
     now: string,
   ) {
+    // Legacy expiry-bound sources remain readable and retireable, never invocation-capable.
+    if (source.kind === "outbox") return yield* new CheckoutError({ reason: "stale" });
+    yield* decode(Utc, now);
     yield* verifyLinkedSource(a, source);
-    if (source.kind !== "outbox") return;
-    const claims =
-      yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE effect_id=${source.effectId}
+    if (source.kind !== "outbox_process_v2") return;
+    const actual = yield* effectRequest(source.effectId);
+    if (
+      source.threadId !== a.subject_thread_id ||
+      actual === null ||
+      digest(actual.request) !== source.requestDigest ||
+      actual.command_id !== source.commandId ||
+      actual.thread_id !== source.threadId ||
+      ("runId" in actual.request ? actual.request.runId : null) !== source.runId
+    )
+      return yield* new CheckoutError({ reason: "identity" });
+    const claims = yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox
+      WHERE effect_id=${source.effectId} AND command_id=${source.commandId} AND thread_id=${source.threadId}
       AND status='running' AND lease_owner=${source.workerId} AND attempt_count=${source.attempt}
-      AND lease_expires_at=${source.claimExpiresAt} AND lease_expires_at>${now}`;
+      AND updated_at=${source.claimedAt}`;
     if (claims.length !== 1) return yield* new CheckoutError({ reason: "stale" });
   });
   const append = (
-    row: Use,
+    row: StoredUse,
     input: EventInput,
     kind: LifecycleEvent["event_kind"],
     state: Use["state"] = row.state,
@@ -590,7 +643,7 @@ const make = Effect.gen(function* () {
       const evidenceJson = canonical(input.evidence);
       if (bindingJson.length > 8192 || evidenceJson.length > 8192)
         return yield* new CheckoutError({ reason: "identity" });
-      yield* sql`INSERT INTO jones_ordinary_checkout_lifecycle_events ${sql.insert({
+      yield* sql`INSERT INTO ${sql(eventTable(row))} ${sql.insert({
         operation_id: row.operation_id,
         ordinal: row.last_event_ordinal + 1,
         predecessor_ordinal: row.last_event_ordinal,
@@ -601,13 +654,13 @@ const make = Effect.gen(function* () {
         recorded_at: input.evidence.observedAt,
       })}`;
       const updated =
-        yield* sql<Use>`UPDATE jones_ordinary_checkout_uses SET state=${state}, revision=revision+1,
+        yield* sql<StoredUse>`UPDATE ${sql(useTable(row))} SET state=${state}, revision=revision+1,
       last_event_ordinal=last_event_ordinal+1,
       started_at=${state === "started" && row.started_at === null ? input.evidence.observedAt : row.started_at},
       settled_at=${terminal(state) ? input.evidence.observedAt : null}
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} AND owner_epoch=${row.owner_epoch} RETURNING *`;
       if (updated.length !== 1) return yield* new CheckoutError({ reason: "stale" });
-      return updated[0]!;
+      return yield* use(row.operation_id);
     });
     return runCaptured();
   };
@@ -620,20 +673,32 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         yield* decode(Source, input.source);
         yield* decode(Utc, input.now);
+        if (input.source.kind === "outbox" || input.binding.source.kind === "outbox")
+          return yield* new CheckoutError({ reason: "stale" });
         const a = yield* liveAdmission(input.admissionId);
         const id = operationId(a.admission_id, input.source);
-        const row: Use = {
+        const row: StoredUse = {
+          store: input.source.kind === "outbox_process_v2" ? "process_v2" : "legacy",
+          command_id: input.source.kind === "outbox_process_v2" ? input.source.commandId : null,
+          thread_id: input.source.kind === "outbox_process_v2" ? input.source.threadId : null,
+          run_id: input.source.kind === "outbox_process_v2" ? input.source.runId : null,
+          claimed_at: input.source.kind === "outbox_process_v2" ? input.source.claimedAt : null,
+          request_digest:
+            input.source.kind === "outbox_process_v2" ? input.source.requestDigest : null,
           operation_id: id,
           admission_id: a.admission_id,
           checkout_key: a.checkout_key,
           lease_id: a.lease_id,
           owner_epoch: a.owner_epoch,
           source_kind: input.source.kind,
-          effect_id: input.source.kind === "outbox" ? input.source.effectId : null,
-          worker_id: input.source.kind === "outbox" ? input.source.workerId : null,
-          attempt_count: input.source.kind === "outbox" ? input.source.attempt : null,
-          claim_expires_at: input.source.kind === "outbox" ? input.source.claimExpiresAt : null,
-          producer_id: input.source.kind === "outbox" ? null : input.source.producerId,
+          effect_id: input.source.kind === "outbox_process_v2" ? input.source.effectId : null,
+          worker_id: input.source.kind === "outbox_process_v2" ? input.source.workerId : null,
+          attempt_count: input.source.kind === "outbox_process_v2" ? input.source.attempt : null,
+          claim_expires_at: null,
+          producer_id:
+            input.source.kind === "prepared_run" || input.source.kind === "prepared_launch"
+              ? input.source.producerId
+              : null,
           state: "reserved",
           revision: 0,
           last_event_ordinal: 0,
@@ -649,8 +714,9 @@ const make = Effect.gen(function* () {
         yield* authority.assertCurrent(input.binding);
         yield* authority.reconcile(input.binding, input.evidence);
         const prior =
-          yield* sql<Use>`SELECT * FROM jones_ordinary_checkout_uses WHERE operation_id=${id}`;
+          yield* sql<StoredUse>`SELECT * FROM jones_ordinary_checkout_all_uses WHERE operation_id=${id}`;
         if (prior.length > 0) {
+          if (prior.length !== 1) return yield* new CheckoutError({ reason: "identity" });
           if (
             canonical({ ...prior[0], revision: 0, last_event_ordinal: 0 }) !== canonical(row) ||
             !(yield* events(id)).some(
@@ -662,10 +728,32 @@ const make = Effect.gen(function* () {
           return prior[0]!;
         }
         // Joining a running operation uses its participant journal, never a second independent writer.
-        const active = yield* sql`SELECT operation_id FROM jones_ordinary_checkout_uses
+        const active = yield* sql`SELECT operation_id FROM jones_ordinary_checkout_all_uses
       WHERE checkout_key=${a.checkout_key} AND state NOT IN ('completed','no_effect') LIMIT 1`;
         if (active.length > 0) return yield* new CheckoutError({ reason: "conflict" });
-        yield* sql`INSERT INTO jones_ordinary_checkout_uses ${sql.insert({ ...row })}`;
+        const {
+          store: _store,
+          claim_expires_at: _expiry,
+          producer_id: _producer,
+          command_id: _command,
+          thread_id: _thread,
+          run_id: _run,
+          claimed_at: _claimed,
+          request_digest: _digest,
+          ...common
+        } = row;
+        yield* sql`INSERT INTO ${sql(useTable(row))} ${sql.insert(
+          row.store === "process_v2"
+            ? {
+                ...common,
+                command_id: row.command_id,
+                thread_id: row.thread_id,
+                run_id: row.run_id,
+                claimed_at: row.claimed_at,
+                request_digest: row.request_digest,
+              }
+            : { ...common, claim_expires_at: row.claim_expires_at, producer_id: row.producer_id },
+        )}`;
         return yield* append(row, { ...input, expectedRevision: 0 }, "bind");
       }),
     );
@@ -685,6 +773,8 @@ const make = Effect.gen(function* () {
         )
       )
         return yield* new CheckoutError({ reason: "unknown" });
+      if (!allowUnknown && (row.source_kind === "outbox" || input.binding.source.kind === "outbox"))
+        return yield* new CheckoutError({ reason: "stale" });
       const a = yield* liveAdmission(row.admission_id, allowUnknown);
       yield* verifyBinding(row, input.binding, a, joining);
       yield* decode(Evidence, input.evidence);
@@ -735,8 +825,8 @@ const make = Effect.gen(function* () {
           return yield* new CheckoutError({ reason: "stale" });
         if (!admitsInvocation(input.evidence))
           return yield* new CheckoutError({ reason: "identity" });
-        const existing = yield* sql`SELECT ordinal FROM jones_ordinary_checkout_lifecycle_events
-      WHERE operation_id=${row.operation_id} AND association_id=${associationId(input.binding)} LIMIT 1`;
+        const existing = yield* sql`SELECT ordinal FROM jones_ordinary_checkout_all_events
+      WHERE store=${row.store} AND operation_id=${row.operation_id} AND association_id=${associationId(input.binding)} LIMIT 1`;
         if (existing.length > 0) return yield* new CheckoutError({ reason: "stale" });
         yield* verifyClaim(a, input.binding.source, input.evidence.observedAt);
         const authority = yield* CheckoutExecutorAuthority;
@@ -749,6 +839,7 @@ const make = Effect.gen(function* () {
     transaction(
       Effect.gen(function* () {
         const { row, admission: a } = yield* currentEvent(input);
+        yield* verifyClaim(a, input.binding.source, input.evidence.observedAt);
         const lease = yield* currentOwner(a);
         yield* currentTarget(input.target);
         if (input.target.threadId !== a.subject_thread_id || !matchesTarget(lease, input.target))
@@ -787,7 +878,8 @@ const make = Effect.gen(function* () {
         const candidate = yield* use(input.binding.operationId);
         const cancellingLink =
           candidate.started_at === null &&
-          input.binding.source.kind === "outbox" &&
+          (input.binding.source.kind === "outbox" ||
+            input.binding.source.kind === "outbox_process_v2") &&
           input.evidence.outcome === "not_invoked" &&
           input.evidence.coverage === "complete";
         const { row, admission: a } = yield* currentEvent(input, true, cancellingLink);
@@ -813,8 +905,8 @@ const make = Effect.gen(function* () {
         if (input.evidence.outcome !== "quiescent" && input.evidence.outcome !== "not_invoked")
           return yield* new CheckoutError({ reason: "identity" });
         if (input.evidence.outcome === "not_invoked") {
-          const activated = yield* sql`SELECT ordinal FROM jones_ordinary_checkout_lifecycle_events
-          WHERE operation_id=${row.operation_id} AND association_id=${associationId(input.binding)}
+          const activated = yield* sql`SELECT ordinal FROM jones_ordinary_checkout_all_events
+          WHERE store=${row.store} AND operation_id=${row.operation_id} AND association_id=${associationId(input.binding)}
           AND event_kind='activate' LIMIT 1`;
           if (activated.length > 0) return yield* new CheckoutError({ reason: "unknown" });
         }
@@ -862,10 +954,10 @@ const make = Effect.gen(function* () {
         // A checkpoint/follow-up link cannot disappear behind outbox success or a root participant's retirement.
         yield* assertCoveredLinks(a, participants);
         const updated =
-          yield* sql<Use>`UPDATE jones_ordinary_checkout_uses SET state=${row.started_at === null ? "no_effect" : "completed"},
+          yield* sql<StoredUse>`UPDATE ${sql(useTable(row))} SET state=${row.started_at === null ? "no_effect" : "completed"},
       settled_at=${input.now},revision=revision+1 WHERE operation_id=${row.operation_id} AND revision=${row.revision} RETURNING *`;
         if (updated.length !== 1) return yield* new CheckoutError({ reason: "stale" });
-        return updated[0]!;
+        return yield* use(row.operation_id);
       }),
     );
   const markRestartUnknown: OrdinaryCheckout["Service"]["markRestartUnknown"] = (input) =>
@@ -879,7 +971,7 @@ const make = Effect.gen(function* () {
         let ordinal = row.last_event_ordinal;
         for (const event of yield* latestAssociations(row.operation_id)) {
           if (event.event_kind === "retire") continue;
-          yield* sql`INSERT INTO jones_ordinary_checkout_lifecycle_events ${sql.insert({
+          yield* sql`INSERT INTO ${sql(eventTable(row))} ${sql.insert({
             operation_id: row.operation_id,
             ordinal: ++ordinal,
             predecessor_ordinal: ordinal - 1,
@@ -898,14 +990,14 @@ const make = Effect.gen(function* () {
           })}`;
         }
         const rows =
-          yield* sql<Use>`UPDATE jones_ordinary_checkout_uses SET state='unknown',revision=revision+1,last_event_ordinal=${ordinal}
+          yield* sql<StoredUse>`UPDATE ${sql(useTable(row))} SET state='unknown',revision=revision+1,last_event_ordinal=${ordinal}
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} RETURNING *`;
         if (rows.length !== 1) return yield* new CheckoutError({ reason: "stale" });
-        return rows[0]!;
+        return yield* use(row.operation_id);
       }),
     );
   const transitionOperation = Effect.fn("OrdinaryCheckoutSqlite.transitionOperation")(function* (
-    row: Use,
+    row: StoredUse,
   ) {
     const history = yield* events(row.operation_id);
     if (history.length === 0) return yield* new CheckoutError({ reason: "identity" });
@@ -949,7 +1041,7 @@ const make = Effect.gen(function* () {
         )
           return yield* new CheckoutError({ reason: "unknown" });
         const others =
-          yield* sql`SELECT operation_id FROM jones_ordinary_checkout_uses WHERE checkout_key=${row.checkout_key}
+          yield* sql`SELECT operation_id FROM jones_ordinary_checkout_all_uses WHERE checkout_key=${row.checkout_key}
       AND operation_id!=${row.operation_id} AND state NOT IN ('completed','no_effect') LIMIT 1`;
         if (others.length > 0) return yield* new CheckoutError({ reason: "unknown" });
         yield* verifyBinding(row, input.binding, a);
@@ -991,7 +1083,7 @@ const make = Effect.gen(function* () {
         };
         // Only the dedicated transition operation can settle and advance this ownership boundary.
         const last = (yield* events(row.operation_id)).at(-1)?.ordinal ?? 0;
-        yield* sql`INSERT INTO jones_ordinary_checkout_lifecycle_events ${sql.insert({
+        yield* sql`INSERT INTO ${sql(eventTable(row))} ${sql.insert({
           operation_id: row.operation_id,
           ordinal: last + 1,
           predecessor_ordinal: last,
@@ -1002,7 +1094,7 @@ const make = Effect.gen(function* () {
           recorded_at: input.evidence.observedAt,
         })}`;
         const advanced =
-          yield* sql`UPDATE jones_ordinary_checkout_uses SET revision=revision+1,last_event_ordinal=${last + 1},
+          yield* sql`UPDATE ${sql(useTable(row))} SET revision=revision+1,last_event_ordinal=${last + 1},
       state=${terminal(row.state) ? row.state : row.started_at === null ? "no_effect" : "completed"},
       settled_at=${row.settled_at ?? input.evidence.observedAt}
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} RETURNING operation_id`;
@@ -1079,7 +1171,7 @@ const make = Effect.gen(function* () {
           },
         };
         const ordinal = row.last_event_ordinal + 1;
-        yield* sql`INSERT INTO jones_ordinary_checkout_lifecycle_events ${sql.insert({
+        yield* sql`INSERT INTO ${sql(eventTable(row))} ${sql.insert({
           operation_id: row.operation_id,
           ordinal,
           predecessor_ordinal: ordinal - 1,
@@ -1090,7 +1182,7 @@ const make = Effect.gen(function* () {
           recorded_at: input.evidence.observedAt,
         })}`;
         const advanced =
-          yield* sql`UPDATE jones_ordinary_checkout_uses SET revision=revision+1,last_event_ordinal=${ordinal}
+          yield* sql`UPDATE ${sql(useTable(row))} SET revision=revision+1,last_event_ordinal=${ordinal}
       WHERE operation_id=${row.operation_id} AND revision=${row.revision} RETURNING operation_id`;
         if (advanced.length !== 1) return yield* new CheckoutError({ reason: "stale" });
         const changed =
@@ -1104,10 +1196,10 @@ const make = Effect.gen(function* () {
       }),
     );
   return OrdinaryCheckout.of({
-    replay: (input) => safe(replay(input)),
+    replay: Effect.fn("OrdinaryCheckout.replay")((input) => safe(replay(input))),
     accept,
     linkDerived,
-    acceptMany: (inputs) =>
+    acceptMany: Effect.fn("OrdinaryCheckout.acceptMany")((inputs) =>
       transaction(
         Effect.gen(function* () {
           if (
@@ -1137,16 +1229,18 @@ const make = Effect.gen(function* () {
           return rows;
         }),
       ),
-    readOwner: (key) => safe(owner(key)),
-    readConflict: (key) => safe(conflicts(key)),
-    readAdmission: (id) =>
+    ),
+    readOwner: Effect.fn("OrdinaryCheckout.readOwner")((key) => safe(owner(key))),
+    readConflict: Effect.fn("OrdinaryCheckout.readConflict")((key) => safe(conflicts(key))),
+    readAdmission: Effect.fn("OrdinaryCheckout.readAdmission")((id) =>
       safe(
         Effect.gen(function* () {
           const row = yield* admission(id);
           return row !== null && (yield* accepted(row)) ? row : null;
         }),
       ),
-    readEffect: (id) =>
+    ),
+    readEffect: Effect.fn("OrdinaryCheckout.readEffect")((id) =>
       safe(
         Effect.gen(function* () {
           const actual = yield* effectRequest(id);
@@ -1164,6 +1258,7 @@ const make = Effect.gen(function* () {
           return rows;
         }),
       ),
+    ),
     reserve,
     start,
     join,
@@ -1171,19 +1266,22 @@ const make = Effect.gen(function* () {
     reconcileEvidence,
     complete,
     markRestartUnknown,
-    listUnsettled: (after, limit) =>
+    listUnsettled: Effect.fn("OrdinaryCheckout.listUnsettled")((after, limit) =>
       safe(
         Effect.gen(function* () {
           if (!Number.isInteger(limit) || limit < 1 || limit > 256)
             return yield* new CheckoutError({ reason: "identity" });
-          return yield* sql<Use>`SELECT * FROM jones_ordinary_checkout_uses WHERE state IN ('reserved','started','draining','unknown')
+          return yield* sql<StoredUse>`SELECT * FROM jones_ordinary_checkout_all_uses WHERE state IN ('reserved','started','draining','unknown')
         AND operation_id>${after ?? ""} ORDER BY operation_id LIMIT ${limit}`;
         }),
       ),
-    events: (id) => safe(events(id)),
+    ),
+    events: Effect.fn("OrdinaryCheckout.events")((id) => safe(events(id))),
     handoff,
-    release: (input) => transition(input, null),
-    transitionBranch: (input) => transition(input, input.after),
+    release: Effect.fn("OrdinaryCheckout.release")((input) => transition(input, null)),
+    transitionBranch: Effect.fn("OrdinaryCheckout.transitionBranch")((input) =>
+      transition(input, input.after),
+    ),
   });
 });
 export const layer = Layer.effect(OrdinaryCheckout, make);

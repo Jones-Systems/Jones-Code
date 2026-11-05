@@ -5,6 +5,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Option from "effect/Option";
 import * as RcMap from "effect/RcMap";
 import * as Schema from "effect/Schema";
 
@@ -108,6 +109,12 @@ export class WorkspaceEntries extends Context.Service<
       input: ProjectSearchContentsInput,
     ) => Effect.Effect<ProjectSearchContentsResult, WorkspaceEntriesError>;
     readonly refresh: (cwd: string) => Effect.Effect<void>;
+    readonly refreshContentAfterWrite: (
+      cwd: string,
+    ) => Effect.Effect<
+      void,
+      WorkspaceEntriesError | WorkspaceSearchIndex.WorkspaceSearchIndexRefreshFailed
+    >;
   }
 >()("t3/workspace/WorkspaceEntries") {}
 
@@ -206,6 +213,22 @@ export const make = Effect.gen(function* () {
       });
     },
   );
+
+  // getOption atomically retains the existing context without creating a missing finder.
+  const refreshContentAfterWrite: WorkspaceEntries["Service"]["refreshContentAfterWrite"] =
+    Effect.fn("WorkspaceEntries.refreshContentAfterWrite")((cwd) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const normalizedCwd = yield* normalizeWorkspaceRoot(cwd);
+          const context = yield* workspaceSearchIndexes.contextEffectOption(
+            WorkspaceSearchIndex.workspaceSearchIndexKey(normalizedCwd, "content"),
+          );
+          if (Option.isNone(context)) return;
+          const index = Context.get(context.value, WorkspaceSearchIndex.WorkspaceSearchIndex);
+          yield* index.refreshContent();
+        }),
+      ),
+    );
 
   const browse: WorkspaceEntries["Service"]["browse"] = Effect.fn("WorkspaceEntries.browse")(
     function* (input) {
@@ -506,7 +529,15 @@ export const make = Effect.gen(function* () {
     };
   });
 
-  return WorkspaceEntries.of({ browse, list, listIgnoredFiles, refresh, search, searchContents });
+  return WorkspaceEntries.of({
+    browse,
+    list,
+    listIgnoredFiles,
+    refresh,
+    refreshContentAfterWrite,
+    search,
+    searchContents,
+  });
 });
 
 export const layer = Layer.effect(WorkspaceEntries, make).pipe(

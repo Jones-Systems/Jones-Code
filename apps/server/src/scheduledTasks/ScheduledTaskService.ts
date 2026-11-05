@@ -153,7 +153,8 @@ export type WebhookDeliveryOutcome =
   | "filtered"
   | "not_found"
   | "blocked_by_policy"
-  | "error";
+  | "error"
+  | "unavailable";
 
 export type WebhookTriggerResult =
   | {
@@ -459,9 +460,7 @@ export const layer = Layer.effect(
       webhookPolicyBlock !== undefined && task.schedule.type === "webhook"
         ? { ...task, blockedByPolicy: webhookPolicyBlock }
         : task;
-    const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, Semaphore.Semaphore>>(
-      new Map(),
-    );
+    const webhookPermits = yield* Ref.make<ReadonlyMap<ScheduledTaskId, FifoPermit>>(new Map());
     // Include creation time so late deliveries cannot decrement a recreated task's count.
     const webhookQueued = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
     const webhookRateWindows = yield* Ref.make<ReadonlyMap<ScheduledTaskId, RateWindow>>(new Map());
@@ -1897,13 +1896,18 @@ export const layer = Layer.effect(
       );
     });
 
+    // Jones bookkeeping is shared by direct deliveries and the worker that already owns this task's permit.
+    const runWebhookDeliveryWithPermitHeld = Effect.fn(
+      "ScheduledTaskService.runWebhookDeliveryWithPermitHeld",
+    )((task: ScheduledTask, deliveryId: string, prompt: string) =>
+      dispatchWebhookDelivery(task, deliveryId, prompt).pipe(
+        Effect.tap((settled) => (settled ? pendingWebhookRuns.settle(deliveryId) : Effect.void)),
+      ),
+    );
     const runWebhookDelivery = Effect.fn("ScheduledTaskService.runAcceptedWebhookDelivery")(
       function* (task: ScheduledTask, deliveryId: string, prompt: string) {
         const permit = yield* webhookPermit(task.id);
-        yield* dispatchWebhookDelivery(task, deliveryId, prompt).pipe(
-          Effect.flatMap((settled) =>
-            settled ? pendingWebhookRuns.settle(deliveryId) : Effect.void,
-          ),
+        return yield* runWebhookDeliveryWithPermitHeld(task, deliveryId, prompt).pipe(
           permit.withPermit,
         );
       },
@@ -2339,7 +2343,7 @@ export const layer = Layer.effect(
                 Effect.andThen(observe("unavailable")),
                 Effect.as({ _tag: "unavailable" as const }),
               ),
-            onSuccess: (result) =>
+            onSuccess: Effect.fn("onSuccess")((result) =>
               Effect.gen(function* () {
                 if (acceptedRun !== undefined) {
                   yield* observe("accepted");
@@ -2350,6 +2354,7 @@ export const layer = Layer.effect(
                 }
                 return result;
               }),
+            ),
           }),
         ),
       );
@@ -2419,7 +2424,14 @@ export const layer = Layer.effect(
                 yield* releaseFailedDelivery(entry.delivery_id);
               } else {
                 yield* sql`UPDATE scheduled_task_webhook_deliveries SET outcome = 'accepted', error = NULL, rendered_prompt = ${rendered.prompt.slice(0, WEBHOOK_DELIVERY_LOG_PROMPT_LIMIT)}, missing_fields_json = ${encodeMissingFieldsJson(rendered.missing)} WHERE delivery_id = ${entry.delivery_id}`;
-                if (!(yield* runWebhookDelivery(task, entry.delivery_id, rendered.prompt))) return;
+                if (
+                  !(yield* runWebhookDeliveryWithPermitHeld(
+                    task,
+                    entry.delivery_id,
+                    rendered.prompt,
+                  ))
+                )
+                  return;
               }
               yield* remove;
             }
@@ -2434,7 +2446,7 @@ export const layer = Layer.effect(
             (reserved) =>
               reserved
                 ? webhookPermit(taskId).pipe(
-                    Effect.flatMap((permit) => dispatch.pipe(permit.withPermits(1))),
+                    Effect.flatMap((permit) => dispatch.pipe(permit.withPermit)),
                     Effect.catch((cause) =>
                       Effect.logWarning("Pending webhook dispatch failed", { cause }),
                     ),

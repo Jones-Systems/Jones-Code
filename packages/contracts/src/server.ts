@@ -920,6 +920,7 @@ export class ServerNpmReleaseError extends Schema.TaggedError<ServerNpmReleaseEr
 }
 
 export const ServerSelfUpdateInput = Schema.Struct({
+  continueRunningThreads: Schema.optionalKey(Schema.Boolean),
   /** Exact npm version, never a dist-tag, so server and client agree on the request. */
   targetVersion: TrimmedNonEmptyString,
   /** Desktop-managed hosts move their app to this update track first. Sent only for a track switch. */

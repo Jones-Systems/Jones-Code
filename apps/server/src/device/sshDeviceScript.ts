@@ -209,6 +209,14 @@ const inspectPlatforms = () => {
   const hubFile = path.join(state, 'hub.json');
   const daemonFile = path.join(state, 'daemon.json');
   const agentFile = path.join(state, 'agent.json');
+  const gatewayFile = path.join(state, 'direct-gateway.json');
+  if (mode === 'stop-direct') {
+    if (!direct) throw Error('Missing captured direct generation.');
+    const gateway = readGateway(gatewayFile);
+    if (gateway?.owner === owner && gateway.generation === direct.generation) await stopGateway(gateway);
+    else if (!gateway && fs.existsSync(path.join(state, 'direct-gateway-' + direct.generation + '.cjs'))) throw Error('Direct gateway startup effect is unconfirmed.');
+    return;
+  }
   const stopAgent = () => {
     const entry = read(agentFile)?.entryPath || path.join(root, 'tools', 'agent-device@' + agentVersion, 'node_modules', 'agent-device', 'bin', 'agent-device.mjs');
     if (fs.existsSync(entry)) return run(process.execPath, [entry, 'daemon', 'stop', '--state-dir', state]).status === 0;
@@ -236,6 +244,7 @@ const inspectPlatforms = () => {
     if (!stopAgent()) throw Error('Could not stop the agent-device daemon in ' + state);
     fs.rmSync(daemonFile, { force: true });
   }
+  const { ios, android, platforms } = inspectPlatforms();
   if (!ios && !android) throw Error(platforms.map(p => p.reason).join(' '));
   fs.mkdirSync(state, { recursive: true, mode: 0o700 });
   const hubEntry = await install('expo-device-hub', hubVersion, 'dist/server/cli.mjs');

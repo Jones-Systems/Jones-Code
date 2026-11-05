@@ -1,3 +1,4 @@
+import { ComposerQuickControls } from "../../jones/composer/ComposerQuickControls";
 import type { ChatComposerProps } from "./ChatComposer";
 import type { PromptUltrathink } from "./TraitsPicker";
 import type { ProviderInstanceEntry } from "../../providerInstances";
@@ -256,22 +257,32 @@ export function ComposerControlsBar(props: {
     />
   );
   return showProviderUnavailable ? (
-    <ComposerControl
-      type="button"
-      disabled={!providerSetupInstanceId}
-      onClick={() => {
-        if (providerSetupInstanceId) {
-          onOpenProviderSetup(providerSetupInstanceId);
-        }
-      }}
-      data-chat-provider-unavailable="true"
-      className="shrink-0"
-    >
-      <CircleAlertIcon className="size-4" />
-      {providerSetupInstanceId ? "Open provider settings" : "No provider available"}
-    </ComposerControl>
+    <>
+      <ComposerControl
+        type="button"
+        aria-label={providerSetupInstanceId ? "Open provider settings" : undefined}
+        disabled={!providerSetupInstanceId}
+        onClick={() => {
+          if (providerSetupInstanceId) {
+            onOpenProviderSetup(providerSetupInstanceId);
+          }
+        }}
+        data-chat-provider-unavailable="true"
+        className="shrink-0"
+      >
+        <CircleAlertIcon className="size-4" />
+        {providerSetupInstanceId ? "Provider unavailable" : "No provider available"}
+      </ComposerControl>
+      {composerModelPicker}
+    </>
   ) : (
     <>
+      {traitsInput ? (
+        <ComposerQuickControls
+          {...traitsInput}
+          hidden={composerControlsHidden || providerCatalogPending || isSendBusy}
+        />
+      ) : null}
       {composerModelPicker}
 
       <>
@@ -297,7 +308,6 @@ export function ComposerControlsBar(props: {
             </div>
           );
         })}
-        <ComposerQuickControls {...providerTraitsPickerInput} hidden={composerControlsHidden} />
         <div
           data-resting-controls-overflow
           aria-hidden={hiddenRestingBlockIds.length === 0 || undefined}

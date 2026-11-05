@@ -1,9 +1,7 @@
-import { resolveGitCommitHash } from "./build-desktop-artifact.ts";
 import { statFile } from "@electron/asar";
 // @effect-diagnostics nodeBuiltinImport:off - Tests use Node path and crypto APIs for isolated packaged-artifact fixtures.
 import * as NodeCrypto from "node:crypto";
 import * as NodePath from "node:path";
-import { createPackageWithOptions, extractFile } from "@electron/asar";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { createPackageWithOptions, extractFile } from "@electron/asar";
@@ -760,8 +758,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }
       assert.notProperty(planned.dependencies, "effect");
       assert.equal(
-        input.workspace.patchedDependencies?.["effect@4.0.5"],
-        "patches/effect@4.0.5.patch",
+        input.workspace.patchedDependencies?.["effect@4.1.2"],
+        "patches/effect@4.1.2.patch",
       );
       const overrides = resolveCatalogDependencies(
         input.workspace.overrides ?? {},
@@ -885,6 +883,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
 
   it.effect("packages Mac resources without the retired standalone bootstrap", () =>
     Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const repoRoot = path.resolve(import.meta.dirname, "..");
       for (const variant of [undefined, "preview-companion"] as const) {
         const config = yield* createBuildConfig(
           "mac",
@@ -899,7 +899,10 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           variant,
         );
         assert.deepStrictEqual(config.extraResources, DESKTOP_EXTRA_RESOURCES);
-        assert.notProperty(config, "afterPack");
+        assert.equal(
+          config.afterPack,
+          path.join(repoRoot, "scripts/prepare-server-compile-cache.cjs"),
+        );
       }
     }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );

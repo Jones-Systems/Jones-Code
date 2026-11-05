@@ -1,3 +1,8 @@
+function fileOptions(container: HTMLElement) {
+  return [...container.querySelectorAll("button")]
+    .map((button) => button.getAttribute("aria-label"))
+    .filter((label) => label?.startsWith("File options for "));
+}
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { searchableMessageSegments } from "@t3tools/shared/threadFindText";
 import { countThreadSearchOccurrences } from "@t3tools/shared/threadSearch";
@@ -132,6 +137,9 @@ it("keeps compact audio playback loaded across signed URL renewals", async () =>
 });
 
 function setup() {
+  using resources = new DisposableStack();
+  resources.defer(() => vi.restoreAllMocks());
+  resources.defer(() => CSS.highlights.clear());
   appearance.value = "light";
   parsedSources.length = 0;
   settingsOverrides.mathRenderingEnabled = false;
@@ -678,8 +686,13 @@ describe("ChatMarkdown skill chips", () => {
         cwd="/tmp/project"
         text={text}
         skills={[
-          { name: "2spec", displayName: "2Spec" },
-          { name: "20k", displayName: "MoneySkill" },
+          { name: "2spec", displayName: "2Spec", path: "/synthetic/2spec/SKILL.md", enabled: true },
+          {
+            name: "20k",
+            displayName: "MoneySkill",
+            path: "/synthetic/20k/SKILL.md",
+            enabled: true,
+          },
         ]}
       />,
     );
@@ -1033,7 +1046,14 @@ describe("ChatMarkdown thread find", () => {
     "highlights the indexed occurrences of $query in $text",
     async ({ text, query, count, lineBreaks, user, withTemplate }) => {
       using _fixture = setup();
-      const skills = [{ name: "test-t3-app", displayName: "T3 App Testing" }];
+      const skills = [
+        {
+          name: "test-t3-app",
+          displayName: "T3 App Testing",
+          path: "/synthetic/test-t3-app/SKILL.md",
+          enabled: true,
+        },
+      ];
       const container = document.createElement("div");
       await using screen = await render(null, { container });
       await act(() =>

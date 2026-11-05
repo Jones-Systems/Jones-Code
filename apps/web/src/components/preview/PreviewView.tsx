@@ -1,3 +1,5 @@
+import { CompanionToolbar } from "../../jones/previewCompanion/HostControls";
+import { useCompanionBindings } from "../../jones/previewCompanion/state";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { settlePromise } from "@t3tools/client-runtime/state/runtime";
 import { previewStreamDownloadUrl } from "@t3tools/client-runtime/preview/server-browser-stream";

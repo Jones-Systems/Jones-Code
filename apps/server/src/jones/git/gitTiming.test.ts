@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -63,7 +64,7 @@ describe("Git timing on existing spans", () => {
         yield* fixture.releaseAll;
         yield* Fiber.join(holders);
       }),
-    ),
+    ).pipe(Effect.provide(NodeCrypto.layer)),
   );
 
   it.effect.each([
@@ -98,7 +99,7 @@ describe("Git timing on existing spans", () => {
           yield* Fiber.join(holders);
           expect(fixture.started).not.toContain("cancelled");
         }),
-      ),
+      ).pipe(Effect.provide(NodeCrypto.layer)),
   );
 
   it.effect("records worktree spawn and exit while retaining the long-timeout bypass", () =>
@@ -131,7 +132,7 @@ describe("Git timing on existing spans", () => {
             .sort(),
         ).toEqual(["GitVcsDriver.createWorktree", "runGitCommand"]);
       }),
-    ),
+    ).pipe(Effect.provide(NodeCrypto.layer)),
   );
 
   it.effect("records execution time on interruption without changing permit return", () =>
@@ -151,6 +152,6 @@ describe("Git timing on existing spans", () => {
         yield* fixture.releaseAll;
         yield* Fiber.join(next);
       }),
-    ),
+    ).pipe(Effect.provide(NodeCrypto.layer)),
   );
 });

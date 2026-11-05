@@ -25,7 +25,7 @@ export const makeExistingEnrollmentSecretStore = (
   location: ExistingEnrollmentSecretLocation,
 ): ServerSecretStore["Service"] =>
   ServerSecretStore.of({
-    get: (name) =>
+    get: Effect.fn("ServerSecretStore.get")((name) =>
       Effect.tryPromise({
         try: async () => {
           if (
@@ -76,23 +76,28 @@ export const makeExistingEnrollmentSecretStore = (
         },
         catch: readError,
       }),
-    set: () =>
+    ),
+    set: Effect.fn("ServerSecretStore.set")(() =>
       Effect.fail(
         new SecretStorePersistError({ resource, cause: "enrollment_secret_store_read_only" }),
       ),
-    create: () =>
+    ),
+    create: Effect.fn("ServerSecretStore.create")(() =>
       Effect.fail(
         new SecretStorePersistError({ resource, cause: "enrollment_secret_store_read_only" }),
       ),
-    getOrCreateRandom: () =>
+    ),
+    getOrCreateRandom: Effect.fn("ServerSecretStore.getOrCreateRandom")(() =>
       Effect.fail(
         new SecretStoreRandomGenerationError({
           resource,
           cause: "enrollment_secret_store_read_only",
         }),
       ),
-    remove: () =>
+    ),
+    remove: Effect.fn("ServerSecretStore.remove")(() =>
       Effect.fail(
         new SecretStoreRemoveError({ resource, cause: "enrollment_secret_store_read_only" }),
       ),
+    ),
   });

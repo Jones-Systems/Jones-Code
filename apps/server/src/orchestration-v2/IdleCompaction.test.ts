@@ -1,3 +1,4 @@
+import * as Sqlite from "../persistence/Sqlite.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -250,6 +251,7 @@ describe("IdleCompactionService", () => {
             },
           });
           const dependencies = Layer.mergeAll(
+            Sqlite.layerMemory,
             Layer.mock(Orchestrator.OrchestratorV2)({
               streamDomainEvents: Stream.make({
                 id: EventId.make("idle-completed"),
@@ -353,6 +355,7 @@ describe("IdleCompactionService", () => {
         const dispatched: Array<string> = [];
         const streamDone = yield* Deferred.make<void>();
         const dependencies = Layer.mergeAll(
+          Sqlite.layerMemory,
           Layer.mock(Orchestrator.OrchestratorV2)({
             // A delegated completion on the earlier run lands after the later run completed.
             streamDomainEvents: Stream.make(completed(laterRun), completed(earlierRun)).pipe(

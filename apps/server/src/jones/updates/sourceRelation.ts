@@ -111,7 +111,7 @@ export function make(options: {
   };
 
   return JonesSourceRelation.of({
-    relation: ({ base, head }) =>
+    relation: Effect.fn("JonesSourceRelation.relation")(({ base, head }) =>
       Effect.promise(async (): Promise<JonesSourceRelationResult> => {
         const result = (observed: Observed | undefined): JonesSourceRelationResult => ({
           repository: REPOSITORY,
@@ -128,6 +128,7 @@ export function make(options: {
           });
         return result(await observe(base, head));
       }),
+    ),
   });
 }
 

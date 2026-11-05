@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -127,7 +128,7 @@ it.effect.each(["matching", "missing", "head-changed", "successor", "native-chan
           expect(f.calls.some((call) => call.startsWith("provider-"))).toBe(false);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const)(
@@ -194,7 +195,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           expect(f.state.resumes).toBe(1);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const)(
@@ -248,5 +249,5 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           expect(f.state.resumes).toBe(1);
         }).pipe(Effect.provide(f.layer));
       }),
-    ).pipe(Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

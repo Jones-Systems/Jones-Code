@@ -1,25 +1,9 @@
-import { RemoteSubagentRow, RemoteParentRow } from "../../jones/remoteAgentLineage/RemoteRows";
-import { groupLineageRows } from "../../jones/remoteAgentLineage/model";
-import { useMachineLocation } from "../../jones/remoteAgentLineage/useMachineLocation";
-import { useParentLink } from "../../jones/remoteAgentLineage/useParentLink";
-import {
-  LinkedThreadsSection,
-  LinkedContinuationFocusContext,
-} from "../../jones/linkedThreads/LinkedThreadsSection";
-import { LinkedLineageGroups } from "../../jones/linkedThreads/LinkedLineageGroups";
-import { buildLinkedEntries, type LinkedEntry } from "../../jones/linkedThreads/model";
-import {
-  LinkedThreadRow,
-  LinkedEntryLabels,
-  LinkedEntryActions,
-} from "../../jones/linkedThreads/LinkedThreadRow";
-import { LinkedThreadsActions } from "../../jones/linkedThreads/LinkedThreadsActions";
-import { useLinkedThreads } from "../../jones/linkedThreads/useLinkedThreads";
+import { JonesLinkedRelationshipsPanel } from "../../jones/linkedThreads/JonesLinkedRelationshipsPanel";
 import { useAtomValue } from "@effect/atom-react";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
-
+import { ThreadDetailsSection } from "./ThreadDetailsSection";
 import { SectionHeaderStatus } from "../ui/collapsible-section-header";
 import { SubagentTooltipContent } from "./SubagentTooltipContent";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
@@ -39,6 +23,7 @@ import {
   orderWebThreadLineageRows,
   resolveMergeBackTargetThreadId,
   type ThreadRelationshipEdge,
+  type ThreadRelationshipWalkRow,
 } from "@t3tools/client-runtime/state/thread-relationships";
 import {
   canDetachThreadProviderSession,
@@ -57,6 +42,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { deriveSubagentElapsedMs } from "@t3tools/shared/orchestrationTiming";
+import { groupBy } from "effect/Array";
 import * as DateTime from "effect/DateTime";
 import { useNavigate } from "@tanstack/react-router";
 import {
@@ -69,6 +55,7 @@ import {
   MoreHorizontalIcon,
   PlusIcon,
   SquareIcon,
+  UnplugIcon,
 } from "lucide-react";
 import { useRef, useState, type ReactNode } from "react";
 
@@ -96,6 +83,7 @@ import { ThreadRelationshipIcon, threadRelationshipStatusLabel } from "./ThreadR
 import { ThreadLineageWorkflowRow } from "./ThreadLineageWorkflowRow";
 import { openSideChatTab } from "../../lib/sideChatPane";
 
+import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { toastManager } from "../ui/toast";
 import { Spinner } from "../ui/spinner";
@@ -150,42 +138,21 @@ function ThreadLineageRowList(props: {
 
 function ThreadLineageGroup(props: {
   readonly label: string | null;
-  readonly id: string;
-  readonly rows: ReadonlyArray<LinkedEntry>;
+  readonly rows: ReadonlyArray<ThreadRelationshipWalkRow>;
   readonly expanded: boolean;
-  readonly children: (rows: ReadonlyArray<LinkedEntry>) => ReactNode;
+  readonly children: (rows: ReadonlyArray<ThreadRelationshipWalkRow>) => ReactNode;
 }) {
-  const [manuallyExpanded, setManuallyExpanded] = useState(props.expanded);
-  const [manualFocusRequest, setManualFocusRequest] = useState(0);
-  const focusRequest = useContext(LinkedContinuationFocusContext);
-  const hasContinuation = props.rows.some((entry) =>
-    entry.relations.some((relation) => relation.link.kind === "continuation"),
-  );
-  const expanded = manuallyExpanded || (hasContinuation && focusRequest > manualFocusRequest);
-  const handledFocus = useRef(0);
-  const element = useRef<HTMLDivElement>(null);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Focus the continuation control after its asynchronous lineage becomes available for the pending focus request.
-  useEffect(() => {
-    if (focusRequest <= handledFocus.current || !hasContinuation) return;
-    handledFocus.current = focusRequest;
-    element.current?.querySelector<HTMLButtonElement>("button")?.focus();
-  }, [focusRequest, hasContinuation]);
+  const [expanded, setExpanded] = useState(props.expanded);
   const [visibleCount, setVisibleCount] = useState(THREAD_LINEAGE_INITIAL_COUNT);
   const { visibleRows, hiddenCount } = resolveThreadLineageWindow(props.rows, visibleCount);
-  const failedCount = props.rows.filter((entry) =>
-    entry.lineage.some(({ status }) => status === "failed" || status === "error"),
+  const failedCount = props.rows.filter(
+    ({ edge }) => edge.status === "failed" || edge.status === "error",
   ).length;
   if (props.rows.length === 0) return null;
   return (
-    <div ref={element} data-linked-group={props.id}>
+    <div>
       {props.label ? (
-        <ThreadDetailsControl
-          aria-expanded={expanded}
-          onClick={() => {
-            setManuallyExpanded(!expanded);
-            setManualFocusRequest(focusRequest);
-          }}
-        >
+        <ThreadDetailsControl aria-expanded={expanded} onClick={() => setExpanded(!expanded)}>
           <BotIcon aria-hidden className={THREAD_DETAILS_PANEL_ICON_CLASS} />
           <span className={cn(THREAD_DETAILS_PANEL_LABEL_CLASS, "min-w-0 flex-1 truncate")}>
             {props.label}
@@ -412,7 +379,7 @@ function DelegatedFromRow(props: {
   );
 }
 
-export function ThreadRelationshipsPanel(props: {
+function NativeThreadRelationshipsPanel(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
   readonly showLineage: boolean;
@@ -420,7 +387,6 @@ export function ThreadRelationshipsPanel(props: {
 }) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const projection = useThreadProjection(ref)?.projection ?? null;
-  const parentLink = useParentLink(props.environmentId, projection?.thread);
   const providersByEnvironment = useEnvironmentProviders();
   const settings = useAtomValue(serverEnvironment.settingsValueAtom(props.environmentId));
   const relationshipShells = useThreadRelationshipShells(ref);
@@ -431,17 +397,10 @@ export function ThreadRelationshipsPanel(props: {
   const archivedShells = archived.snapshots.find(
     (entry) => entry.environmentId === props.environmentId,
   )?.snapshot.threads;
-  const currentShell =
+  const currentThread =
+    projection?.thread ??
     relationshipShells.find((thread) => thread.id === props.threadId) ??
     archivedShells?.find((thread) => thread.id === props.threadId);
-  const currentThread = projection?.thread ?? currentShell;
-  const linked = useLinkedThreads(
-    ref,
-    currentShell?.activityRunStatus != null ||
-      currentShell?.status === "running" ||
-      currentShell?.status === "queued",
-    currentShell?.latestRunRequestedAt ? DateTime.formatIso(currentShell.latestRunRequestedAt) : "",
-  );
   const parentThreadId =
     currentThread?.forkedFrom?.type === "run"
       ? currentThread.forkedFrom.threadId
@@ -486,7 +445,7 @@ export function ThreadRelationshipsPanel(props: {
   const byId = new Map(runtimeSubagents.map((agent) => [agent.id, agent]));
   const subagentsByThreadId = new Map(
     projected
-      .filter((subagent) => subagent.childThreadId !== null && subagent.remoteChild === undefined)
+      .filter((subagent) => subagent.childThreadId !== null)
       .map((subagent) => [
         subagent.childThreadId,
         {
@@ -592,6 +551,7 @@ export function ThreadRelationshipsPanel(props: {
 
   if (!lineageVisible && !sideChatsVisible) {
     return null;
+  }
 
   // Idle children can be omitted from the shell; opening one loads its own detail.
   const openThread = (threadId: ThreadId) => {
@@ -1011,6 +971,29 @@ export function ThreadRelationshipsPanel(props: {
           </ThreadLineageGroup>
         </ThreadDetailsSection>
       ) : null}
+    </>
+  );
+}
+
+export function ThreadRelationshipsPanel(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly showLineage?: boolean;
+  readonly showSideChats?: boolean;
+}) {
+  return (
+    <>
+      {props.showLineage !== false ? (
+        <JonesLinkedRelationshipsPanel
+          environmentId={props.environmentId}
+          threadId={props.threadId}
+        />
+      ) : null}
+      <NativeThreadRelationshipsPanel
+        {...props}
+        showLineage={false}
+        showSideChats={props.showSideChats !== false}
+      />
     </>
   );
 }

@@ -154,6 +154,7 @@ const assertOrdinal = (startOrdinal: number) =>
     : Effect.fail(
         new DeletionWorktreeRemovalPreconditionError({ reason: "invalid_start_ordinal" }),
       );
+const decodeDeletionWorktreeRemovalStartV1 = Schema.decodeEffect(DeletionWorktreeRemovalStartV1);
 
 /** Reports observations only. Durable start, consent, reservation and outcome qualification belong to EventSink. */
 const makeDeletionWorktreeRemoval = Effect.gen(function* () {
@@ -257,7 +258,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
   )(function* (original, startOrdinal, revalidateStart) {
     yield* assertOrdinal(startOrdinal);
     const start = frozenStart(
-      yield* Schema.decodeEffect(DeletionWorktreeRemovalStartV1)(original, {
+      yield* decodeDeletionWorktreeRemovalStartV1(original, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -354,7 +355,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
   )(function* (original, startOrdinal) {
     yield* assertOrdinal(startOrdinal);
     const start = frozenStart(
-      yield* Schema.decodeEffect(DeletionWorktreeRemovalStartV1)(original, {
+      yield* decodeDeletionWorktreeRemovalStartV1(original, {
         onExcessProperty: "error",
       }).pipe(
         Effect.mapError(
@@ -457,6 +458,9 @@ export class QualifiedDeletionWorktreeRemoval extends Context.Service<
     >;
   }
 >()("t3/jones/cleanup/DeletionWorktreeRemoval/QualifiedDeletionWorktreeRemoval") {}
+const isDeletionWorktreeRemovalPreconditionError = Schema.is(
+  DeletionWorktreeRemovalPreconditionError,
+);
 
 // Only the durable EventSink owner can admit a start or qualify an observation.
 // Missing owner composition denies before Git; recovery only observes the original start.
@@ -503,7 +507,7 @@ export const layer = Layer.effect(
         return observed;
       },
       Effect.mapError((cause) =>
-        Schema.is(DeletionWorktreeRemovalPreconditionError)(cause)
+        isDeletionWorktreeRemovalPreconditionError(cause)
           ? cause
           : new DeletionWorktreeRemovalPreconditionError({
               reason: "native_deletion_owner_refused",
@@ -512,8 +516,10 @@ export const layer = Layer.effect(
       ),
     );
     return QualifiedDeletionWorktreeRemoval.of({
-      execute: (id, rules, live) => run(id, true, rules, live),
-      observe: (id) => run(id, false),
+      execute: Effect.fn("QualifiedDeletionWorktreeRemoval.execute")((id, rules, live) =>
+        run(id, true, rules, live),
+      ),
+      observe: Effect.fn("QualifiedDeletionWorktreeRemoval.observe")((id) => run(id, false)),
     });
   }),
 );
@@ -523,6 +529,8 @@ export const gitLayer = Layer.effect(
   DeletionWorktreeGit,
   Effect.gen(function* () {
     const git = yield* GitDriver.GitVcsDriver;
-    return DeletionWorktreeGit.of({ execute: (input) => git.execute(input) });
+    return DeletionWorktreeGit.of({
+      execute: Effect.fn("DeletionWorktreeGit.execute")((input) => git.execute(input)),
+    });
   }),
 );

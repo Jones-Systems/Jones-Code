@@ -1,3 +1,6 @@
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import { EventId } from "@t3tools/contracts";
 
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
@@ -6022,6 +6025,9 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
   );
   const sinkLayer = EventSink.layer.pipe(Layer.provide(stores));
   const ingestorDependencies = Layer.mergeAll(
+    Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+      getCatalogSource: () => undefined,
+    }),
     stores,
     TurnItemPositionStore.layer.pipe(Layer.provide(database)),
     sinkLayer,
@@ -6349,3 +6355,21 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
     );
   }).pipe(Effect.provide(testLayer));
 });
+
+it.effect("emits run_interrupt_result when hard-stop finalizes the active attempt", () =>
+  Effect.gen(function* () {
+    const { written, observed, committedEffects } = yield* captureRootRunTermination({
+      key: "hard-stop",
+      shouldFinalizeRun: () => Effect.succeed(true),
+    });
+    assert.deepEqual(
+      written.map((item) => item.type),
+      ["run_interrupt_result"],
+    );
+    assert.deepEqual(observed, ["run:interrupted", "pull-requests-refreshed"]);
+    assert.deepEqual(
+      committedEffects.map((effect) => effect.request.type),
+      ["checkpoint.capture"],
+    );
+  }),
+);

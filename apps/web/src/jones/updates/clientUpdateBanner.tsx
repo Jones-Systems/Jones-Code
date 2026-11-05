@@ -59,7 +59,7 @@ export function useClientUpdateBanners({
       {
         id: key,
         variant: "default",
-        priority: "notice",
+        group: "environment",
         icon: <InfoIcon />,
         title: `${environment.label}: ${notice.kind === "server-newer" ? "Client update available" : notice.kind === "client-newer" ? "Server update available" : "Preview build identity mismatch"}`,
         description: (

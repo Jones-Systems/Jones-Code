@@ -16,6 +16,7 @@ import { commandLabel } from "./KeybindingsSettings.logic";
 import type { ResolvedSettingsScope } from "./settingsScope";
 
 export type SettingsPath =
+  | "/settings/jones-code"
   | "/settings/projects"
   | "/settings/general"
   | "/settings/diagnostics"
@@ -151,7 +152,13 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: null,
-    paths: ["/settings/maintenance", "/settings/labs", "/settings/about", "/settings/archived"],
+    paths: [
+      "/settings/jones-code",
+      "/settings/maintenance",
+      "/settings/labs",
+      "/settings/about",
+      "/settings/archived",
+    ],
   },
 ];
 
@@ -881,7 +888,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "agent-decision-snapshot-access",
     title: "Agent decision snapshot access",
-    to: "/settings/integrations",
+    to: "/settings/devices",
     scope: "project-defaults",
     searchTerms: [
       "allow mcp decision snapshot usage cpu memory claude allowance host project override",

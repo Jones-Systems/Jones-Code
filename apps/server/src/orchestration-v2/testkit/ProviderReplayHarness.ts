@@ -1,3 +1,4 @@
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as RestartPreparation from "../../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import type * as CheckoutIntent from "../../jones/ordinaryCheckout/CheckoutIntent.ts";
@@ -207,6 +208,9 @@ export function runOrchestratorV2ProviderReplayScenario<
     >;
     readonly runEffectWorker?: boolean;
     readonly configureMcp?: boolean;
+    readonly onSessionDetached?: (
+      input: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>[0],
+    ) => Effect.Effect<void>;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -251,6 +255,9 @@ export function layerProviderReplay<Transcript extends ProviderReplayTranscript,
     >;
     readonly runEffectWorker?: boolean;
     readonly configureMcp?: boolean;
+    readonly onSessionDetached?: (
+      input: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>[0],
+    ) => Effect.Effect<void>;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -331,6 +338,9 @@ export function layerWithRegistryAndServices<Error>(
     >;
     readonly runEffectWorker?: boolean;
     readonly configureMcp?: boolean;
+    readonly onSessionDetached?: (
+      input: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["detach"]>[0],
+    ) => Effect.Effect<void>;
     readonly runContinuationWorker?: boolean;
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
@@ -407,6 +417,7 @@ export function layerWithRegistryAndServices<Error>(
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
           // @effect-diagnostics-next-line effectSucceedWithVoid:off - Optional instances require undefined rather than void.
           getInstance: () => Effect.succeed(undefined),
+          getCatalogSource: () => undefined,
         }),
         layerStores,
         layerEventSinkProvided,
@@ -512,6 +523,7 @@ export function layerWithRegistryAndServices<Error>(
         }),
         layerServerSettings,
         Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: () => undefined,
           getInstance: (id) => Effect.succeed(new Map<string, ProviderInstance>().get(id)),
         }),
         layerRunExecutionServiceProvided,

@@ -34,10 +34,13 @@ export class BinaryDataFactory {
 // Without a shared worker, pdf.js starts a worker and recompiles its 1.3 MB script for every document.
 let worker: PDFWorker | undefined;
 
+export function sharedPdfWorker() {
+  return (worker ??= new PDFWorker());
+}
+
 export function openPdf(bytes: ArrayBuffer) {
-  worker ??= new PDFWorker();
   return getDocument({
-    worker,
+    worker: sharedPdfWorker(),
     data: new Uint8Array(bytes),
     useSystemFonts: true,
     useWorkerFetch: false,

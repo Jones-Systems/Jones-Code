@@ -5,6 +5,7 @@ import * as NodeWorkerThreads from "node:worker_threads";
 import type { Preprocessor } from "knip";
 // Knip needs the legacy compiler API, which TypeScript 7 no longer exports.
 import ts from "typescript-legacy";
+import checkedForeignBindings from "./jones/analysis/foreignBindings.ts";
 
 const schemaTypeId = "~effect/Schema/Schema";
 
@@ -110,6 +111,7 @@ const WORKERS = Math.min(3, NodeOS.availableParallelism());
 
 // Drops unused-export issues whose every symbol is an Effect schema.
 const preprocess = async (options: Parameters<Preprocessor>[0]) => {
+  await checkedForeignBindings(options);
   const categories = ["exports", "nsExports", "duplicates"] as const;
   const projects = new Map<string | undefined, Map<string, Set<string>>>();
   for (const category of categories) {

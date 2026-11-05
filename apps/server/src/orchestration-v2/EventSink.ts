@@ -1,3 +1,7 @@
+import {
+  validateRuntimeUseAttachmentPublication,
+  revalidateRuntimeUseAttachmentBeforePublication,
+} from "../jones/cleanup/RuntimeUseAttachment.ts";
 import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
@@ -476,8 +480,18 @@ export class EventSinkV2 extends Context.Service<EventSinkV2, EventSinkV2Shape>(
 /**
  * IMPLEMENTATIONS
  */
+
+const isDispatchGuardRejected2 = Schema.is(DispatchGuardRejected);
+
 const isDispatchGuardRejected = (value: unknown): value is DispatchGuardRejected =>
-  Schema.is(DispatchGuardRejected)(value);
+  isDispatchGuardRejected2(value);
+
+const toEquivalenceOrchestrationV2LegacyPreflightBinding = Schema.toEquivalence(
+  OrchestrationV2LegacyPreflightBinding,
+);
+const decodeEffectFromJsonStringQueueDispatchCommand = Schema.decodeEffect(
+  Schema.fromJsonString(QueueDispatchCommand),
+);
 
 const layerBase: Layer.Layer<
   EventSinkV2,
@@ -831,6 +845,14 @@ const layerBase: Layer.Layer<
       Effect.fnUntraced(function* (
         storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
       ) {
+        // The raw session owner freezes its expected target/caller before any
+        // attachment work. Revalidate in this owning transaction before publish.
+        for (const { event } of storedEvents) {
+          if (event.type === "provider-session.attached")
+            yield* validateRuntimeUseAttachmentPublication(event.threadId, event.payload.id).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
+        }
         // Jones: capture settlement before the projection replaces the prior state.
         if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
           yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
@@ -900,6 +922,14 @@ const layerBase: Layer.Layer<
         "orchestration_v2.event_count": input.events.length,
         "orchestration_v2.thread_id": input.events[0]?.threadId ?? null,
       });
+
+      for (const event of input.events) {
+        if (event.type === "provider-session.attached")
+          yield* revalidateRuntimeUseAttachmentBeforePublication(
+            event.threadId,
+            event.payload.id,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+      }
 
       const { committed } = yield* commitThenPublish(
         Effect.gen(function* () {
@@ -1296,16 +1326,61 @@ const layerBase: Layer.Layer<
             return { ...existing, committed: false as const, cancelledEffectIds: [] };
           }
 
+          if (input.threadSelfConfiguration)
+            input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
+          if (input.codexFailover?.revalidate)
+            input = { ...input, events: yield* input.codexFailover.revalidate(input) };
+          if (input.providerConversationReselection)
+            yield* input.providerConversationReselection.revalidate(input);
+          if (input.taskContinuation) yield* input.taskContinuation.accept(input);
+          if (input.threadTitle) yield* input.threadTitle.accept;
+
+          if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
+            const receipt: CommandReceiptStore.CommandReceiptV2 = {
+              commandId: input.commandId,
+              threadId: input.threadId,
+              commandType: input.commandType,
+              acceptedAt: input.acceptedAt,
+              resultSequence: 0,
+              status: "rejected",
+              error: choice.rejectionReason,
+            };
+            yield* commandReceipts.upsert(receipt);
+            yield* ImportedChoice.recordImportedHistoryOutcome({
+              commandId: input.commandId,
+              threadId: input.threadId,
+              actorSessionId: imported.principal.sessionId,
+              commandDigest: choice.identity.commandDigest,
+              deliveryDigest: choice.identity.deliveryDigest,
+              reviewedBasis: imported.command.reviewedBasis,
+              status: "rejected",
+              runId: null,
+              effectId: null,
+              reason: choice.rejectionReason,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            return {
+              receipt,
+              storedEvents: [],
+              outcomes: [],
+              committed: true as const,
+              cancelledEffectIds: [],
+            };
+          }
+          if (ordinary !== undefined && Option.isSome(checkoutIntent))
+            yield* checkoutIntent.value.validate(ordinary);
+          yield* WorkspaceLifecycle.validateCommand(input.ordinaryCheckoutCommand, input.events);
           const runId = input.updateDelegatedCompletionOnlyRunId;
           const normalized = yield* normalizeEvents(
             runId === undefined
               ? input.events
               : yield* updateDelegatedCompletionOnly(input.events, (id) => id === runId),
           );
-          const storedEvents = yield* eventStore.append({
-            commandId: input.commandId,
-            events: normalized,
-          });
+          const storedEvents = yield* eventStore
+            .append({
+              commandId: input.commandId,
+              events: normalized,
+            })
+            .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
           // A Stop that changes nothing can still queue the stop of its delegated tasks.
           const sequence =
             storedEvents.at(-1)?.sequence ??
@@ -1516,7 +1591,7 @@ const layerBase: Layer.Layer<
       };
     });
 
-    const samePreflightBinding = Schema.toEquivalence(OrchestrationV2LegacyPreflightBinding);
+    const samePreflightBinding = toEquivalenceOrchestrationV2LegacyPreflightBinding;
     const readPreflight = (commandId: CommandId) =>
       eventStore.readByCommandId({ commandId }).pipe(
         Stream.runCollect,
@@ -1533,7 +1608,7 @@ const layerBase: Layer.Layer<
         const intentId = CommandId.make(`${policy.createCommandId}:preflight-intent`);
         const outcomeId = CommandId.make(`${policy.createCommandId}:preflight-outcome`);
         const reject = (detail: string) => new Error(detail);
-        const payload = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
+        const payload = yield* decodeEffectFromJsonStringQueueDispatchCommand(
           binding.canonicalPayload,
         );
         if (
@@ -2116,7 +2191,10 @@ const layerBase: Layer.Layer<
         // Even a no-write commit traverses the publication lane. Retry the DB
         // admission once after an earlier commit has installed its locator.
         return attempt.pipe(
-          Effect.flatMap((result) => (result.deferred ? attempt : Effect.succeed(result))),
+          Effect.filterOrElse(
+            (result) => !result.deferred,
+            () => attempt,
+          ),
           Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 1, cause })),
         );
       },

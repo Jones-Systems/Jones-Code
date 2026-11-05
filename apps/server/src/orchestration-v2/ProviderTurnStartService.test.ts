@@ -1,3 +1,9 @@
+import * as ContinuityAdmissionTestkit from "../jones/goals/continuity/admission.testkit.ts";
+import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
+import * as RestartPreparation from "../jones/orchestration/RestartPreparation.ts";
+import * as ProviderSwitchService from "./ProviderSwitchService.ts";
+import type { ContinuityRequirement } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
+import { DEFAULT_SERVER_SETTINGS } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as PlannedUpdateContinuity from "../jones/updates/PlannedUpdateContinuity.ts";
@@ -22,6 +28,7 @@ import {
   ProjectId,
   type ModelSelection,
   type ServerProviderModel,
+  type ServerProvider,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
@@ -36,6 +43,7 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
@@ -45,6 +53,7 @@ import { layerRealGit } from "./ProviderTurnStartService.testkit.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ContextHandoffService from "./ContextHandoffService.ts";
 import { withInlineContext } from "./ContextHandoffDelivery.ts";
@@ -228,7 +237,9 @@ function startWithMissingWorktree(
         }),
         Layer.mock(RunExecutionService.RunExecutionServiceV2)({ startRootRun }),
         ServerSettings.layerTest(),
-        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({}),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: () => undefined,
+        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({}),
       ),
     ),
@@ -412,6 +423,8 @@ function makeLocalCommandHarness(input: {
     ownerNodeId: null,
     nativeThreadRef:
       input.plannedResume === undefined &&
+      input.unknownResumeBinding !== true &&
+      !("historyReadFailureAfterFallback" in input) &&
       (input.nativeResume === undefined || input.nativeResume === "missing")
         ? null
         : {
@@ -451,6 +464,46 @@ function makeLocalCommandHarness(input: {
     createdAt: now,
     updatedAt: now,
   };
+  const providerInstances = new Map<ProviderInstanceId, ProviderInstance>();
+  for (const instanceId of new Set([
+    newInstanceId,
+    run.modelSelection.instanceId,
+    ProviderInstanceId.make("codex-work"),
+  ])) {
+    const driverKind = ProviderDriverKind.make("codex");
+    providerInstances.set(instanceId, {
+      instanceId,
+      driverKind,
+      continuationIdentity: { driverKind, continuationKey: instanceId },
+      displayName: undefined,
+      enabled: true,
+      snapshot: {
+        getSnapshot: Effect.succeed({
+          instanceId,
+          driver: driverKind,
+          enabled: true,
+          installed: true,
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-09-04T12:00:00Z",
+          version: null,
+          models: input.effortProof?.models ?? [],
+          slashCommands: [],
+          skills: [],
+        } satisfies ServerProvider),
+        refresh: Effect.die("Turn-start fixtures must not refresh providers."),
+        resolveMaintenance: () => Effect.die("Turn-start fixtures must not resolve maintenance."),
+        streamChanges: Stream.empty,
+        applyUsageLimits: () => Effect.die("Turn-start fixtures must not apply usage limits."),
+      },
+      get orchestrationAdapter(): ProviderInstance["orchestrationAdapter"] {
+        throw new Error("Turn-start fixtures use their provided session manager.");
+      },
+      get textGeneration(): ProviderInstance["textGeneration"] {
+        throw new Error("Turn-start fixtures must not generate text.");
+      },
+    });
+  }
   let projection: OrchestrationV2ThreadProjection = {
     thread: {
       id: threadId,
@@ -893,48 +946,135 @@ function makeLocalCommandHarness(input: {
     forkThread,
     startTurn,
   };
-  const open = vi.fn(() =>
-    input.sideChat !== undefined
-      ? Effect.succeed(sideChatSession as never)
-      : input.interruptOpen === true
-        ? Effect.interrupt
-        : "historyReadFailureAfterFallback" in input
-          ? Effect.succeed(resumeFallbackSession as never)
-          : "ensureThreadFailure" in input
-            ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
-            : "openFailure" in input
-              ? Effect.sync(() => {
-                  if (input.interruptRunBeforeOpenFailure === true) interruptRun();
-                }).pipe(
-                  Effect.andThen(
-                    Effect.fail(
-                      new ProviderSessionManager.ProviderSessionOpenError({
-                        instanceId: newInstanceId,
-                        providerSessionId,
-                        cause: input.openFailure,
-                      }),
+  const dispatched: Array<ProviderAdapter.ProviderAdapterV2TurnInput> = [];
+  const successEnsure = vi.fn(() =>
+    Effect.succeed(
+      input.effortProof?.duringHandoff === undefined
+        ? providerThread
+        : {
+            ...providerThread,
+            nativeThreadRef: {
+              driver: providerThread.driver,
+              nativeId: "effort-handoff-native",
+              strength: "strong" as const,
+            },
+          },
+    ),
+  );
+  const open = vi.fn(
+    (
+      _openInput: Parameters<ProviderSessionManager.ProviderSessionManagerV2["Service"]["open"]>[0],
+    ) =>
+      input.sideChat !== undefined
+        ? Effect.succeed(sideChatSession as never)
+        : input.interruptOpen === true
+          ? Effect.interrupt
+          : "historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true
+            ? Effect.succeed(resumeFallbackSession as never)
+            : "ensureThreadFailure" in input
+              ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
+              : "openFailure" in input
+                ? Effect.sync(() => {
+                    if (input.interruptRunBeforeOpenFailure === true) interruptRun();
+                  }).pipe(
+                    Effect.andThen(
+                      Effect.fail(
+                        new ProviderSessionManager.ProviderSessionOpenError({
+                          instanceId: newInstanceId,
+                          providerSessionId,
+                          cause: input.openFailure,
+                        }),
+                      ),
                     ),
-                  ),
-                )
-              : input.failReadsAfterRunning === true || input.previousTurn !== undefined
-                ? Effect.succeed({
-                    driver: providerThread.driver,
-                    providerSession,
-                    ensureThread: () => Effect.succeed(providerThread),
-                    resumeThread: () => Effect.succeed(projection.providerThreads[0]),
-                  } as never)
-                : Effect.die("A local command must not open a native session."),
+                  )
+                : input.failReadsAfterRunning === true ||
+                    input.effortProof !== undefined ||
+                    input.previousTurn !== undefined ||
+                    input.plannedResume !== undefined ||
+                    input.nativeResume !== undefined
+                  ? Effect.succeed({
+                      driver: providerThread.driver,
+                      providerSession: {
+                        id: providerSessionId,
+                        driver: providerThread.driver,
+                        providerInstanceId: newInstanceId,
+                        status: "ready",
+                        cwd: "/tmp/native-account-command",
+                        model: null,
+                        capabilities: CodexProviderCapabilitiesV2,
+                        createdAt: now,
+                        updatedAt: now,
+                        lastError: null,
+                      },
+                      ensureThread: successEnsure,
+                      resumeThread: () =>
+                        Effect.succeed(
+                          input.previousTurn !== undefined
+                            ? projection.providerThreads[0]
+                            : {
+                                ...providerThread,
+                                nativeThreadRef: {
+                                  driver: providerThread.driver,
+                                  nativeId:
+                                    input.plannedResume === "changed" ||
+                                    input.nativeResume === "changed"
+                                      ? "different-native-thread"
+                                      : "planned-native-thread",
+                                  strength: "strong" as const,
+                                },
+                              },
+                        ),
+                      ...(input.handoffRecovery?.compact === undefined
+                        ? {}
+                        : { compactForContextHandoff: input.handoffRecovery.compact }),
+                      ...(input.handoffRecovery !== undefined ||
+                      input.effortProof?.duringHandoff === undefined
+                        ? {}
+                        : {
+                            injectHistory: () =>
+                              input.effortProof!.duringHandoff!.pipe(Effect.as(true)),
+                          }),
+                      startTurn: (value: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+                        Effect.sync(() => {
+                          dispatched.push(value);
+                        }),
+                    } as never)
+                  : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
-  >((runInput) =>
+  >((startInput) =>
     input.sideChat !== undefined
-      ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
-      : input.failReadsAfterRunning === true || input.previousTurn !== undefined
-        ? Effect.suspend(() =>
-            providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,
-          )
-        : Effect.die("A local command must not start a native turn."),
+      ? startInput.session.startTurn(startInput as never).pipe(Effect.orDie)
+      : input.effortProof !== undefined
+        ? Effect.gen(function* () {
+            yield* input.effortProof!.beforeDispatch ?? Effect.void;
+            yield* startInput.session
+              .startTurn({
+                appThread: startInput.appThread,
+                threadId,
+                runId,
+                runOrdinal: startInput.run.ordinal,
+                providerTurnOrdinal: startInput.providerTurnOrdinal,
+                attemptId,
+                rootNodeId,
+                providerThread: startInput.providerThread,
+                message: startInput.message,
+                modelSelection: startInput.modelSelection,
+                runtimePolicy: startInput.runtimePolicy,
+              })
+              .pipe(Effect.orDie);
+          })
+        : input.failReadsAfterRunning === true ||
+            input.plannedResume !== undefined ||
+            input.nativeResume !== undefined ||
+            input.previousTurn !== undefined
+          ? Effect.suspend(() =>
+              providerBusy
+                ? Effect.die("The previous provider turn is still running.")
+                : Effect.void,
+            )
+          : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -971,7 +1111,7 @@ function makeLocalCommandHarness(input: {
             current.status === expectedStatus;
           if (committed) {
             for (const event of incoming) {
-              expect(isDomainEvent(event)).toBe(true);
+              expect(isDomainEvent(event), JSON.stringify(event)).toBe(true);
               events.push(event);
               projection = ProjectionStore.applyToProjection(projection, event);
             }
@@ -1049,6 +1189,8 @@ function makeLocalCommandHarness(input: {
               }
               return [];
             }),
+          assertRuntimeStopStartAllowed: () => Effect.void,
+          assertImportedHistoryStartAllowed: () => Effect.void,
         }),
         IdAllocator.layer,
         layerWorktreeLocation(input.worktreesDir),
@@ -1081,7 +1223,7 @@ function makeLocalCommandHarness(input: {
               ),
             }),
           getTurnStartHistory: () =>
-            input.sideChat !== undefined
+            input.sideChat !== undefined || input.historyReadFailureAfterFallback === undefined
               ? Effect.succeed([])
               : Effect.fail(
                   new ProjectionStore.ProjectionStoreReadError({
@@ -1122,6 +1264,14 @@ function makeLocalCommandHarness(input: {
           turnCompleted: () => Effect.void,
           runSettled: (report) => Effect.sync(() => void settledRuns.push(report.status)),
         }),
+
+        Layer.mock(ServerSettings.ServerSettingsService)({
+          getSettings: input.effortProof?.getSettings ?? Effect.succeed(DEFAULT_SERVER_SETTINGS),
+        }),
+        Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+          getCatalogSource: (instanceId) => providerInstances.get(instanceId),
+          getInstance: (instanceId) => Effect.succeed(providerInstances.get(instanceId)),
+        }),
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
@@ -1140,7 +1290,9 @@ function makeLocalCommandHarness(input: {
     open,
     fallbackEnsure: resumeFallbackSession.ensureThread,
     ensureThread,
+    interruptRun,
     successEnsure,
+    dispatched,
     unknownResumeFailure,
     writeIfRunCurrent,
     startRootRun,
@@ -1266,7 +1418,7 @@ effectIt.effect(
           failReadsAfterRunning: true,
         });
         const open = harness.open.getMockImplementation()!;
-        harness.open.mockImplementation(() =>
+        harness.open.mockImplementation((openInput) =>
           Effect.gen(function* () {
             expect(yield* git(worktreePath, ["branch", "--show-current"])).toBe("feature/restore");
             expect(yield* git(worktreePath, ["rev-parse", "HEAD"])).toBe(expected.tip);
@@ -1284,7 +1436,7 @@ effectIt.effect(
               ).toBe(expected.upstream);
             }
             expect(yield* branchConfig("t3-merge-base")).toBe(expected.base);
-            return yield* open();
+            return yield* open(openInput);
           }).pipe(Effect.orDie),
         );
 

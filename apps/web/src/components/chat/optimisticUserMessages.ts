@@ -80,6 +80,7 @@ export interface OptimisticBlobPreviews {
   readonly revoke: (threadId: ThreadId, previewUrls: ReadonlyArray<string>) => void;
   readonly release: (threadId: ThreadId, message: ChatMessage) => void;
   readonly revokeThread: (threadId: ThreadId) => void;
+  readonly transfer: (threadId: ThreadId, urls: ReadonlyArray<string>) => void;
 }
 
 export function createOptimisticBlobPreviews(): OptimisticBlobPreviews {
@@ -94,6 +95,12 @@ export function createOptimisticBlobPreviews(): OptimisticBlobPreviews {
     }
   };
   return {
+    transfer: (threadId, urls) => {
+      for (const url of urls) {
+        ownedByThread.get(threadId)?.delete(url);
+        handedOff.delete(url);
+      }
+    },
     track: (threadId, message) => {
       const previewUrls = collectUserMessageBlobPreviewUrls(message);
       if (previewUrls.length === 0) return;

@@ -1,4 +1,5 @@
 import { interactiveRead } from "../jones/serverParallelism/readClassification.ts";
+import { withRuntimeUseClaim } from "../jones/cleanup/RuntimeUseClaim.ts";
 import {
   GoalNotificationDeliveryUnknown,
   isGoalNotificationDeliveryUnknown,
@@ -124,7 +125,20 @@ export const layerExecutor: Layer.Layer<
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
     return OrchestrationEffectExecutorV2.of({
+      recordNonRetryableFailure: restartPreparation.recordSteerFailure,
       execute: Effect.fn("OrchestrationEffectExecutorV2.execute")(function (effect, options) {
+        if (effect.nativeCreationExecutionReference !== undefined) {
+          return executeNativeProviderEffect(effect).pipe(
+            Effect.mapError(
+              (cause) =>
+                new OrchestrationEffectExecutionError({
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  cause,
+                }),
+            ),
+          );
+        }
         const willRetry = options?.willRetry ?? false;
         switch (effect.request.type) {
           case "provider-runtime.continue": {
@@ -906,7 +920,12 @@ export const layerWithOptions = (
           urgentOnly = false,
         ) {
           const claimExit = yield* Effect.exit(
-            outbox.claimNext({ workerId, excludeRestartContinuations }),
+            outbox.claimNext({
+              workerId,
+              excludeRestartContinuations,
+              excludeTitleGeneration,
+              urgentOnly,
+            }),
           );
           yield* increment(orchestrationEffectClaimsTotal, {
             result: Exit.isFailure(claimExit)
@@ -953,7 +972,52 @@ export const layerWithOptions = (
 
           const execution = executor
             .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(boundExecution(effect), Effect.as("executed" as const));
+            .pipe(
+              (execution) =>
+                withOriginalTransition(
+                  `effect:${effect.id}`,
+                  {
+                    commandId: effect.commandId,
+                    threadId: effect.threadId,
+                    request: effect.request,
+                  },
+                  execution,
+                ),
+              (execution) =>
+                withOperation(
+                  {
+                    id: `effect:${effect.id}`,
+                    kind: "effect",
+                    threadId: effect.threadId,
+                    boundaries: ["start", "resume", "recreate"],
+                    sqlOnly: true,
+                    check: Effect.gen(function* () {
+                      const current = yield* outbox.get(effect.id);
+                      if (
+                        Option.isNone(current) ||
+                        current.value.status !== "running" ||
+                        current.value.leaseOwner !== workerId ||
+                        current.value.attemptCount !== effect.attemptCount ||
+                        current.value.commandId !== effect.commandId ||
+                        !sameOperationRequest(current.value.request, effect.request)
+                      )
+                        return yield* new OrchestrationEffectWorkerError({
+                          operation: "workspace-custody",
+                          effectId: effect.id,
+                        });
+                    }),
+                  },
+                  execution,
+                ),
+              Effect.annotateSpans({
+                "orchestration.effect.claimed_at_ms": claimedAt,
+                "orchestration.effect.available_at_ms": availableAt,
+                "orchestration.effect.queue_wait_ms": Math.max(0, claimedAt - availableAt),
+              }),
+              boundExecution(effect),
+              (execution) => withRuntimeUseClaim(effect, workerId, execution),
+              Effect.as("executed" as const),
+            );
           const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
             Effect.ensuring(outbox.clearCancellation(effect.id)),
           );

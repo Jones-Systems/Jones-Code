@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 // @effect-diagnostics nodeBuiltinImport:off - realpathSync.native resolves Windows 8.3 short names, which the Effect realPath does not.
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -242,7 +243,9 @@ describe("resolveRemoteTrackingCommitIfExists", () => {
           if (!ChildProcess.isStandardCommand(command)) {
             return Effect.die("expected a standard Git command");
           }
-          commands.push(command.args);
+          commands.push(
+            command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word)),
+          );
           return Effect.succeed(
             ChildProcessSpawner.makeHandle({
               ...makeSuccessfulHandle(exitCode === 0 ? `${commitSha}\n` : ""),
@@ -278,7 +281,14 @@ describe("resolveRemoteTrackingCommitIfExists", () => {
           ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/release/stable^{commit}"],
         ]);
       }),
-    ).pipe(Effect.provide(layerServerConfig.pipe(Layer.provideMerge(NodeServices.layer)))),
+    ).pipe(
+      Effect.provide(
+        layerServerConfig.pipe(
+          Layer.provideMerge(NodeServices.layer),
+          Layer.provideMerge(NodeCrypto.layer),
+        ),
+      ),
+    ),
   );
 });
 
@@ -4313,7 +4323,9 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
           Effect.gen(function* () {
             if (!ChildProcess.isStandardCommand(command))
               return yield* Effect.die("Unexpected pipeline");
-            const args = [...command.args];
+            const args = command.args.map((word) =>
+              Redacted.isRedacted(word) ? Redacted.value(word) : word,
+            );
             commands.push(args);
             if (args.includes("add")) {
               yield* fs.makeDirectory(owned);

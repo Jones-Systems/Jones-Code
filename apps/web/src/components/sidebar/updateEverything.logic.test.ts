@@ -8,6 +8,7 @@ import {
   collectServerUpdateTargets,
   describeUpdateCapsule,
   describeUpdateEverything,
+  getUpdateEverythingToastView,
   runUpdateEverything,
   type UpdateEverythingMachine,
 } from "./updateEverything.logic";
@@ -370,6 +371,54 @@ describe("describeUpdateEverything", () => {
       ["alvin", null, "needs a manual update", ["Claude"]],
       ["TheoRoom", null, "not connected", []],
     ]);
+  });
+});
+
+describe("Jones Update Everything handoff result", () => {
+  it("keeps each Jones target in the current row summary beside provider and npm work", () => {
+    const vps = EnvironmentId.make("jones-vps");
+    const mini = EnvironmentId.make("jones-mini");
+    const npm = EnvironmentId.make("upstream-npm");
+    const view = describeUpdateEverything({
+      localVersion: null,
+      localMachines: [],
+      jonesMachines: [
+        { environmentId: vps, label: "VPS" },
+        { environmentId: mini, label: "Mini" },
+      ],
+      servers: [
+        { environmentId: npm, serverLabel: "npm", selfUpdate: "respawn", targetVersion: "0.1.0" },
+      ],
+      providerMachines: [{ environmentId: vps, label: "VPS", providers: ["Codex"] }],
+      skipped: [],
+    });
+    expect(view.summary).toContain("2 Jones machines");
+    expect(view.rows.map((row) => row.label)).toEqual(["npm", "VPS", "Mini"]);
+    expect(view.rows.find((row) => row.environmentId === vps)?.providers).toEqual(["Codex"]);
+    expect(view.rows.find((row) => row.environmentId === mini)?.app).toBeNull();
+  });
+
+  it("retains reviewed Jones handoffs beside completed server and provider results", () => {
+    const result = getUpdateEverythingToastView(
+      {
+        localVersion: null,
+        updatedServers: 1,
+        updatedProviders: 1,
+        failures: [],
+        restarting: [],
+        jones: [
+          { label: "VPS", message: "Handed to Install status" },
+          {
+            label: "Mini",
+            message: "Update from Connections after Laptop is verified — unsupported operations",
+          },
+        ],
+      },
+      "0.1.0",
+    );
+    expect(result?.description).toContain("VPS: Handed to Install status");
+    expect(result?.description).toContain("Mini: Update from Connections");
+    expect(result?.title).toBe("Updated 1 server and 1 provider");
   });
 });
 

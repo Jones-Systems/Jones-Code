@@ -1,3 +1,4 @@
+import { usePendingSends } from "../jones/pendingSends/hooks";
 import { useAtomValue } from "@effect/atom-react";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { parseThreadKey, threadKey } from "@t3tools/client-runtime/state/entities";
@@ -50,6 +51,15 @@ export function ThreadRouteView({
   const serverThreadShell = useQuietThreadShell(serverThreadRef);
   const shellStatus = useEnvironmentShellStatus(serverThreadRef?.environmentId ?? null);
   const environmentThreadRefs = useEnvironmentThreadRefs(serverThreadRef?.environmentId ?? null);
+  const pendingSends = usePendingSends();
+  const pendingThreadExists =
+    serverThreadRef !== null &&
+    pendingSends.some(
+      (entry) =>
+        entry.environmentId === serverThreadRef.environmentId &&
+        entry.threadId === serverThreadRef.threadId &&
+        entry.sidebarThread !== undefined,
+    );
   const bootstrapComplete = isThreadRouteSnapshotAuthoritative(shellStatus);
   const draftThread = useComposerDraftStore((store) =>
     serverThreadRef ? store.getDraftThreadByRef(serverThreadRef) : null,
@@ -115,7 +125,7 @@ export function ThreadRouteView({
     serverThreadExists: serverThreadShell !== null,
     serverThreadDeleted: serverThreadShell?.deletedAt != null,
     unlistedThreadDetail,
-    draftThreadExists: draftThread !== null,
+    draftThreadExists: draftThread !== null || pendingThreadExists,
   });
   const environmentHasAnyThreads = environmentThreadRefs.length > 0 || environmentHasDraftThreads;
 

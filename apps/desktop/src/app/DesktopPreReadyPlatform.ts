@@ -145,6 +145,7 @@ export const make = Effect.gen(function* () {
       }
       // Chromium caches portal identity; set it before any asynchronous initialization.
       Electron.app.setDesktopName(linux.linuxDesktopEntryName);
+      if (companion) Electron.app.commandLine.appendSwitch("class", "jones-preview-companion");
       if (linux.passwordStore !== null && linuxPasswordStoreCommandLine === null) {
         Electron.app.commandLine.appendSwitch("password-store", linux.passwordStore);
       }

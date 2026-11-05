@@ -1,3 +1,4 @@
+import * as DeviceDirectGrants from "../jones/device/DeviceDirectGrants.ts";
 import { describe, expect, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
@@ -1927,3 +1928,97 @@ describe("locating a device id across hosts", () => {
     ),
   );
 });
+
+it.effect.each(["shutdown", "close"] as const)(
+  "%s releases iOS capture so reopening uses a fresh session",
+  (operation) =>
+    Effect.gen(function* () {
+      const deviceId = DeviceId.make("11111111-1111-1111-1111-111111111111");
+      const threadId = ThreadId.make("capture-recovery");
+      let booted = true;
+      let capture: number | null = null;
+      let generation = 0;
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          const path = new URL(request.url).pathname;
+          if (path === "/api/devices") {
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({
+                emulators: [],
+                simulators: [
+                  {
+                    id: deviceId,
+                    name: "iPhone",
+                    platform: "ios",
+                    version: "26",
+                    physical: false,
+                    booted,
+                  },
+                ],
+              }),
+            );
+          }
+          if (path === "/vendor/serve-sim/grid/api/start") capture ??= ++generation;
+          else if (path === "/vendor/serve-sim/grid/api/shutdown") {
+            if (request.body._tag !== "Uint8Array") throw new Error("Missing shutdown body");
+            expect(decodeJson(new TextDecoder().decode(request.body.body))).toEqual({
+              udid: deviceId,
+            });
+            capture = null;
+            booted = false;
+          } else if (path === "/api/devices/shutdown") {
+            // This route powers off without releasing serve-sim's cached capture.
+            booted = false;
+          } else if (path === "/api/devices/boot") booted = true;
+          else throw new Error(`Unexpected hub path: ${path}`);
+          return HttpClientResponse.fromWeb(request, Response.json({ ok: true, id: deviceId }));
+        }),
+      );
+      const run = () => Effect.succeed({ code: 0, stdout: "", stderr: "" });
+      const ready: DeviceHost.DeviceHostReady = {
+        nodePath: process.execPath,
+        hub: { origin: "http://device.test" },
+        devices: makeDeviceHubOperations({
+          hostId: LOCAL_DEVICE_HOST_ID,
+          origin: "http://device.test",
+          http,
+          run,
+          androidAvailable: Effect.succeed(true),
+        }),
+        helpers: { serveSimAxSettings: null, serveSimCli: null },
+        run,
+      };
+      const host: DeviceHost.DeviceHost["Service"] = {
+        id: LOCAL_DEVICE_HOST_ID,
+        label: "This machine",
+        summary: Effect.succeed({
+          id: LOCAL_DEVICE_HOST_ID,
+          kind: "local",
+          label: "Simulator host",
+          platforms: [{ platform: "ios", available: true }],
+          hubInstalled: true,
+          agentDeviceInstalled: false,
+        }),
+        platformAvailability: (platform) => Effect.succeed({ platform, available: true }),
+        ensureReady: () => Effect.succeed(ready),
+        ensureAgentReady: () => Effect.die("Agent access is not used in this test"),
+        current: Effect.succeed(ready),
+        stopAgent: Effect.void,
+        stop: Effect.void,
+      };
+      const service = yield* DeviceService.makeWithHosts(new Map([[host.id, host]])).pipe(
+        Effect.provide(NodeCrypto.layer),
+      );
+      const input = { threadId, deviceId, platform: "ios" as const };
+      yield* service.open(input);
+      expect(capture).toBe(1);
+      if (operation === "shutdown") yield* service.shutdown(input);
+      else yield* service.close({ threadId, deviceId, shutdown: true });
+      expect(capture).toBeNull();
+      expect((yield* service.state).sessions).toEqual([]);
+      yield* service.open(input);
+      expect(capture).toBe(2);
+      expect((yield* service.state).sessions).toHaveLength(1);
+    }).pipe(Effect.provide(ServerSettings.layerTest({ enableDeviceSupport: true })), Effect.scoped),
+);

@@ -1,3 +1,4 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -21,7 +22,6 @@ import { TestClock } from "effect/testing";
 
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
-import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProjectService from "./ProjectService.ts";
 import * as ProjectSetupScriptRunner from "./ProjectSetupScriptRunner.ts";
 
@@ -209,7 +209,19 @@ describe("ProjectSetupScriptRunner", () => {
         expect(listeners.size).toBe(0);
       }),
   );
+
+  it.effect("does not type into a shell that exits during startup", () =>
+    Effect.gen(function* () {
+      const { completion, writes, emit } = yield* setup();
+      yield* emit({ ...event, type: "exited", exitCode: 1, exitSignal: null });
+      expect(yield* completion).toMatchObject({ exitCode: null });
+      yield* TestClock.adjust("1 minute");
+      expect(yield* Queue.size(writes)).toBe(0);
+    }),
+  );
 });
+
+const decodeEffectLegacyOwnedTerminalControl = Schema.decodeEffect(LegacyOwnedTerminalControl);
 
 const makeOwnedHarness = Effect.fn(function* (
   mode: "legacy" | "native",
@@ -405,7 +417,7 @@ const makeOwnedHarness = Effect.fn(function* (
     Effect.sync(() => {
       milestones.push("completion");
     });
-  const binding = yield* Schema.decodeEffect(LegacyOwnedTerminalControl)({
+  const binding = yield* decodeEffectLegacyOwnedTerminalControl({
     version: 1,
     threadId,
     runId: "run",

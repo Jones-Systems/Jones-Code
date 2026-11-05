@@ -1,3 +1,7 @@
+import {
+  DESKTOP_NATIVE_OWNER_INPUT_FD,
+  DESKTOP_NATIVE_OWNER_OUTPUT_FD,
+} from "@t3tools/shared/jones/desktopNativeOwner";
 import * as NodeOS from "node:os";
 
 import { parsePersistedServerObservabilitySettings } from "@t3tools/shared/serverSettings";
@@ -503,7 +507,10 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
     const bootstrap = {
       ...(jonesDesktopOwner === undefined
         ? {}
-        : { desktopNativeOwnerInputFd: 8, desktopNativeOwnerOutputFd: 9 }),
+        : {
+            desktopNativeOwnerInputFd: DESKTOP_NATIVE_OWNER_INPUT_FD,
+            desktopNativeOwnerOutputFd: DESKTOP_NATIVE_OWNER_OUTPUT_FD,
+          }),
       mode: "desktop" as const,
       noBrowser: true,
       port: backendExposure.port,

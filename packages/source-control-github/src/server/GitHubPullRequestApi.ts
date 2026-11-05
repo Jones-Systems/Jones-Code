@@ -1732,15 +1732,18 @@ export const make = Effect.gen(function* () {
   return GitHubPullRequestApi.of({
     withVerifiedCredential,
     revalidateChecks,
-    getPullRequestCheckObservation: (input) =>
-      readCheckObservation(input).pipe(
+    getPullRequestCheckObservation: Effect.fn(
+      "GitHubPullRequestApi.getPullRequestCheckObservation",
+    )(function (input) {
+      return readCheckObservation(input).pipe(
         Effect.mapError((cause) =>
           cause._tag === "GitHubApiRateLimitError" ||
           cause._tag === "SourceControlRateLimitPausedError"
             ? cause
             : readError(input.cwd, "getPullRequestCheckObservation", cause),
         ),
-      ),
+      );
+    }),
     getRoutingIdentity,
     getViewerLogin: Effect.fn("GitHubPullRequestApi.getViewerLogin")(function (input) {
       return getRoutingIdentity(input).pipe(Effect.map((identity) => identity.viewer));

@@ -1,0 +1,16 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "private-synthetic-presentation",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/testing/SyntheticPresentation.ts",
+    "apps/server/src/jones/testing/SyntheticPresentation.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/serverRuntimeStartup.ts",
+      "to": "apps/server/src/jones/testing/SyntheticPresentation.ts"
+    }
+  ]
+}

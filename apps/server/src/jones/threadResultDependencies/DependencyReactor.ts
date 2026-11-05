@@ -161,6 +161,9 @@ const make = Effect.gen(function* () {
   const start = Effect.fn("DependencyReactor.start")(function* () {
     const scope = yield* Effect.scope;
     const subscription = yield* changes.subscribe;
+    // Pin committed history before forking: the live-only stream samples its cursor later,
+    // so an event committed after start returns could otherwise become its excluded baseline.
+    const afterSequence = yield* store.sequence.pipe(Effect.orDie);
     const reconcile = Effect.fn("DependencyReactor.reconcile")(function* (
       threadIds?: ReadonlyArray<ThreadId>,
     ) {
@@ -225,7 +228,8 @@ const make = Effect.gen(function* () {
       ),
       Effect.forkScoped,
     );
-    yield* orchestrator.streamDomainEvents.pipe(
+    yield* orchestrator.streamStoredEventsFrom({ afterSequence }).pipe(
+      Stream.map((stored) => stored.event),
       Stream.filter(
         (event) =>
           event.type === "run.updated" ||

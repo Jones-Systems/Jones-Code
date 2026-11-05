@@ -204,7 +204,7 @@ describe("desktop install IPC decoding", () => {
 
   effectIt.effect("routes the handle through the real IPC decoder to the staged installer", () =>
     Effect.gen(function* () {
-      const { invoke, installStaged, install } = harness();
+      const { invoke, installStaged, install } = harness(true);
       yield* invoke("staged-build-123");
       expect(installStaged).toHaveBeenCalledExactlyOnceWith("staged-build-123");
       expect(install).not.toHaveBeenCalled();

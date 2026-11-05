@@ -1,3 +1,4 @@
+import * as DeletionWriterFence from "../jones/cleanup/DeletionWriterFence.ts";
 import {
   type ApplicationProjectEvent,
   IsoDateTime,
@@ -28,6 +29,8 @@ export class ProjectStoreV2Error extends Schema.TaggedError<ProjectStoreV2Error>
     return `Project store operation '${this.operation}' failed.`;
   }
 }
+
+const isProjectStoreV2Error = Schema.is(ProjectStoreV2Error);
 
 export const ProjectRow = Schema.Struct({
   projectId: ProjectId,
@@ -103,6 +106,7 @@ export class ProjectStoreV2 extends Context.Service<
 /** @public */
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const deletionWriterFence = yield* DeletionWriterFence.make;
   const encodeRow = Schema.encodeEffect(ProjectDbRow);
 
   const selectRows = SqlSchema.findAll({
@@ -275,6 +279,16 @@ export const make = Effect.gen(function* () {
         updatedAt: payload.updatedAt,
       }).pipe(mapError("apply"));
     },
+    (effect, event) =>
+      sql
+        .withTransaction(deletionWriterFence.assertProject(event).pipe(Effect.andThen(effect)))
+        .pipe(
+          Effect.mapError((cause) =>
+            isProjectStoreV2Error(cause)
+              ? cause
+              : new ProjectStoreV2Error({ operation: "apply", cause }),
+          ),
+        ),
   );
 
   return ProjectStoreV2.of({

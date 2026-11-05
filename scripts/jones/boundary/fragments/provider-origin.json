@@ -4,7 +4,8 @@
   "jonesOwnedPaths": [
     "packages/provider-core/src/server/jones/runtimeTypes.ts",
     "packages/provider-core/src/server/jones/ProviderEventOrigin.ts",
-    "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
+    "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts",
+    "apps/server/src/jones/provider/claudeQueryExitObserver.ts"
   ],
   "hookPaths": [
     "packages/provider-acp/src/server/adapter.ts",
@@ -15,7 +16,8 @@
     "packages/provider-core/src/server/ProviderAdapter.ts",
     "apps/server/src/orchestration-v2/RunExecutionService.ts",
     "apps/server/src/orchestration-v2/assistantStreaming.ts",
-    "packages/provider-core/src/server/failure.ts"
+    "packages/provider-core/src/server/failure.ts",
+    "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -78,6 +80,14 @@
     {
       "from": "packages/provider-core/src/server/failure.ts",
       "to": "packages/provider-core/src/server/jones/ProviderRuntimeBindingDiagnostics.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/claudeQueryExitObserver.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+      "to": "apps/server/src/jones/provider/claudeQueryExitObserver.ts"
     }
   ]
 }

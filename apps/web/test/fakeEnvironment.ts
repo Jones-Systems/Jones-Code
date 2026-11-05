@@ -351,6 +351,18 @@ let sendHandler:
   | null = null;
 
 const handlers: Record<string, (input: never) => unknown> = {
+  [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (input: OrchestrationV2Command) =>
+    input.type === "message.dispatch"
+      ? (sendHandler?.(ORCHESTRATION_V2_WS_METHODS.dispatchCommand, input) ?? Effect.never)
+      : Effect.succeed({ sequence: ++sequence }),
+  [ORCHESTRATION_V2_WS_METHODS.launchThread]: (input: OrchestrationV2ThreadLaunchInput) =>
+    sendHandler?.(ORCHESTRATION_V2_WS_METHODS.launchThread, input) ?? Effect.never,
+  [ORCHESTRATION_V2_WS_METHODS.getThreadProjection]: (input: { readonly threadId: ThreadId }) =>
+    Effect.sync(() => {
+      const thread = threads.find((thread) => thread.id === input.threadId);
+      if (!thread) throw new Error("Unknown synthetic thread");
+      return projectionOf(thread);
+    }),
   [WS_METHODS.subscribeTerminalMetadata]: () =>
     subscribe<TerminalMetadataStreamEvent>([{ type: "snapshot", terminals: [] }], (queue) => {
       terminalMetadataSubscriber = queue;
@@ -527,4 +539,126 @@ export { userItem };
 export async function emitVcsStatus(event: VcsStatusStreamEvent): Promise<void> {
   if (vcsStatusSubscriber === null) throw new Error("No VCS status subscription");
   await Effect.runPromise(Queue.offer(vcsStatusSubscriber, event));
+}
+
+export interface DeferredFakeSend {
+  readonly method: string;
+  readonly payload: OrchestrationV2Command | OrchestrationV2ThreadLaunchInput;
+  readonly commit: () => Promise<void>;
+  readonly acknowledge: () => void;
+  readonly loseAcknowledgement: () => void;
+  readonly reject: () => void;
+}
+
+// Test-only controls, held by the fixture instead of a production global or endpoint.
+// Commit and acknowledgement are independent: a lost ACK never invents committed evidence.
+export function deferFakeSends(): {
+  readonly requests: DeferredFakeSend[];
+  [Symbol.dispose]: () => void;
+} {
+  const requests: DeferredFakeSend[] = [];
+  const previous = sendHandler;
+  sendHandler = (method, payload) =>
+    Effect.callback<unknown, OrchestrationDispatchCommandError>((resume) => {
+      let committed: FakeThread | undefined;
+      const commit = async () => {
+        if (committed) return;
+        if ("type" in payload && payload.type !== "message.dispatch")
+          throw new OrchestrationDispatchCommandError({
+            message: "Expected a synthetic message dispatch",
+          });
+        const threadId = payload.threadId;
+        if (!threadId)
+          throw new OrchestrationDispatchCommandError({
+            message: "The prepared request must supply its target thread ID",
+          });
+        const initial = "initialMessage" in payload ? payload.initialMessage : undefined;
+        const messageId = "messageId" in payload ? payload.messageId : initial?.messageId;
+        const text = "text" in payload ? payload.text : initial?.text;
+        if (!messageId || text === undefined)
+          throw new OrchestrationDispatchCommandError({
+            message: "Expected captured message identity",
+          });
+        const prior = threads.find((thread) => thread.id === threadId);
+        if (prior?.runs.some((run) => run.userMessageId === messageId)) {
+          committed = prior;
+          return;
+        }
+        const runId = RunId.make(`synthetic-${messageId}`);
+        const nextRun = runningRun(threadId, runId, (prior?.runs.length ?? 0) + 1, messageId);
+        const nextItem = {
+          ...userItem(threadId, runId, messageId, prior?.items.length ?? 0, text),
+          messageId,
+        };
+        committed = {
+          id: threadId,
+          title: prior?.title ?? ("title" in payload ? payload.title : "Synthetic send"),
+          runs: [...(prior?.runs ?? []), nextRun],
+          items: [...(prior?.items ?? []), nextItem],
+        };
+        threads = [...threads.filter((thread) => thread.id !== threadId), committed];
+        sequence += 1;
+        const queue = threadSubscribers.get(threadId);
+        if (queue)
+          await Effect.runPromise(
+            Queue.offer(queue, {
+              kind: "snapshot",
+              snapshotSequence: sequence,
+              projection: projectionOf(committed),
+            }),
+          );
+        for (const shellQueue of shellSubscribers)
+          await Effect.runPromise(
+            Queue.offer(shellQueue, {
+              kind: "thread.updated",
+              location: "active",
+              sequence,
+              thread: { ...shellOf(committed), status: "running", activeRunId: runId },
+            }),
+          );
+      };
+      requests.push({
+        method,
+        payload,
+        commit,
+        acknowledge: () => {
+          if (method === ORCHESTRATION_V2_WS_METHODS.launchThread) {
+            if (!committed)
+              throw new OrchestrationDispatchCommandError({
+                message: "Commit the synthetic launch before acknowledging it",
+              });
+            resume(
+              Effect.succeed({
+                threadId: committed.id,
+                projection: projectionOf(committed),
+                resumed: false,
+              } satisfies OrchestrationV2ThreadLaunchResult),
+            );
+          } else resume(Effect.succeed({ sequence }));
+        },
+        loseAcknowledgement: () =>
+          resume(
+            Effect.fail(
+              new OrchestrationDispatchCommandError({
+                message: "Synthetic reply lost after dispatch",
+              }),
+            ),
+          ),
+        reject: () =>
+          resume(
+            Effect.fail(
+              new OrchestrationDispatchCommandError({
+                message: "Synthetic rejection; no committed evidence",
+              }),
+            ),
+          ),
+      });
+    });
+  return {
+    requests,
+    [Symbol.dispose]: () => {
+      for (const request of requests) request.reject();
+      sendHandler = previous;
+    },
+  };
 }

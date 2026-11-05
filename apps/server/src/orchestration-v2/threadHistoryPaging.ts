@@ -285,7 +285,9 @@ export function selectDeferredWorkPage<Row extends HistoryRow>(input: {
 }
 
 /** Notifications can start wake turns when they are the run's first input; match ProjectionStore run_starts. */
-function threadHistoryTurnStarts(items: ReadonlyArray<HistoryRow["item"]>): ReadonlyArray<boolean> {
+export function threadHistoryTurnStarts(
+  items: ReadonlyArray<HistoryRow["item"]>,
+): ReadonlyArray<boolean> {
   const startedRuns = new Set<string>();
   return items.map((item) => {
     if (item.type !== "user_message" && item.type !== "notification") return false;
@@ -305,6 +307,7 @@ export function createThreadHistoryPageBudget(
   policy: ThreadHistoryPagePolicy,
   hasUserTurns: boolean,
 ): {
+  readonly canAccept: () => boolean;
   readonly accept: (row: {
     userTurn: boolean;
     turnStart: boolean;
@@ -319,7 +322,15 @@ export function createThreadHistoryPageBudget(
   let encodedBytes = 0;
   let userTurns = 0;
   let rawTurns = 0;
+  const canAccept = () =>
+    selected === 0 ||
+    !(
+      selected >= maxItems ||
+      (turnLimit !== undefined &&
+        (userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS))
+    );
   return {
+    canAccept,
     accept(row) {
       if (
         selected > 0 &&
@@ -365,16 +376,15 @@ function selectOlderTimelinePage<Row extends HistoryRow>(input: {
   const budget = createThreadHistoryPageBudget(policy, hasUserTurns);
   for (let index = end - 1; index >= 0; index -= 1) {
     const row = input.items[index]!;
+    if (!budget.canAccept()) break;
     if (
-      selected.length > 0 &&
-      (selected.length >= maxItems ||
-        (turnLimit !== undefined &&
-          (userTurns >= turnLimit || rawTurns >= THREAD_HISTORY_MAX_RAW_TURNS)))
-    ) {
+      !budget.accept({
+        userTurn: isThreadHistoryUserTurn(row.item),
+        turnStart: turnStarts[index]!,
+        encodedBytes: rowCost(row),
+      })
+    )
       break;
-    }
-    const rowBytes = rowCost(row);
-    if (selected.length > 0 && encodedBytes + rowBytes > policy.maxEncodedBytes) break;
     selected.push(row);
   }
   selected.splice(budget.keep());

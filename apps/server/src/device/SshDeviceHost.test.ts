@@ -1,3 +1,4 @@
+import * as Redacted from "effect/Redacted";
 import { expect, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -260,6 +261,10 @@ it.effect("lists Android devices without probing the host again once it reports 
       label: "Test",
       target: "test.example",
     }).pipe(
+      Effect.provideService(DeviceDirectGrants, {
+        issue: () => Effect.succeed(null),
+        admit: () => Effect.succeed({ _tag: "Denied" as const }),
+      }),
       Effect.provide(Layer.mergeAll(ServerConfig.layerTest(home, home), Net.layer)),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.provideService(
@@ -308,6 +313,7 @@ it.effect("lists Android devices without probing the host again once it reports 
     expect(modes.splice(0)).toEqual(["probe"]);
 
     androidInstalled = true;
+    if (host.inspect === undefined) return yield* Effect.die("SSH fixture must support inspect");
     yield* host.inspect;
     expect(modes.splice(0)).toEqual(["probe"]);
     expect(yield* androidNames).toEqual(["Pixel_8"]);
@@ -341,7 +347,9 @@ it.effect(
           let bootstrapExit = 0;
           if (forwarding) {
             expect(command.options.stdin).toBe("pipe");
-            commands.push([...command.args]);
+            commands.push(
+              command.args.map((word) => (Redacted.isRedacted(word) ? Redacted.value(word) : word)),
+            );
             if (failForward) {
               failForward = false;
               return yield* PlatformError.systemError({
@@ -516,5 +524,5 @@ it.effect(
       expect((yield* host.ensureReady(() => Effect.void).pipe(Effect.result))._tag).toBe("Failure");
       expect(modes).toHaveLength(modesBeforeRetry + 1); // readiness probe only; no direct bootstrap retry
       expect(forwards).toBe(0);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

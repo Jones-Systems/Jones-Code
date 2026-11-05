@@ -895,13 +895,12 @@ const hasJonesRuntimeState = Effect.fn("cloud.pinned_runtime.has_jones_state")(f
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const readDirectory = (directory: string) =>
-    fs
-      .readDirectory(directory)
-      .pipe(
-        Effect.catch((error) =>
-          error.reason._tag === "NotFound" ? Effect.succeed<string[]>([]) : Effect.fail(error),
-        ),
-      );
+    fs.readDirectory(directory).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.succeed<string[]>([]),
+      ),
+    );
   const runtimeDir = path.join(baseDir, PINNED_RUNTIME_DIR);
   const entries = yield* readDirectory(runtimeDir);
   if (
@@ -928,13 +927,12 @@ const hasJonesRuntimeState = Effect.fn("cloud.pinned_runtime.has_jones_state")(f
   const versionsDir = pinnedRuntimeVersionsDir(path, baseDir);
   for (const version of yield* readDirectory(versionsDir)) {
     const directory = path.join(versionsDir, version);
-    const info = yield* fs
-      .stat(directory)
-      .pipe(
-        Effect.catch((error) =>
-          error.reason._tag === "NotFound" ? Effect.undefined : Effect.fail(error),
-        ),
-      );
+    const info = yield* fs.stat(directory).pipe(
+      Effect.catchIf(
+        (error) => error.reason._tag === "NotFound",
+        () => Effect.undefined,
+      ),
+    );
     if (info?.type !== "Directory") continue;
     const files = yield* readDirectory(directory);
     if (

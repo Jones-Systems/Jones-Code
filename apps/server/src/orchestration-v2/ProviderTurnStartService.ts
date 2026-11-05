@@ -78,7 +78,8 @@ import {
   historicalMessage,
   latestNativeContextUsage,
 } from "@t3tools/provider-core/server/handoffBudget";
-import { deliverContextHandoffs, withInlineContext } from "./ContextHandoffDelivery.ts";
+import { deliverContextHandoffs } from "./ContextHandoffDelivery.ts";
+import { deliverWithHandoffRecovery } from "../jones/provider/codex/ContextHandoffRecovery.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import {
@@ -206,6 +207,11 @@ export const layer: Layer.Layer<
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
     const eventSink = yield* EventSink.EventSinkV2;
+    const goalContinuity = yield* GoalContinuity.GoalContinuity;
+    const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
+    const selectionTransitions = yield* ProviderSwitchService.ProviderSwitchServiceV2;
+    const restartPreparation = yield* RestartPreparation.RestartPreparation;
+    const controlAdmission = yield* ControlAdmission.ControlAdmission;
     const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const contextHandoffService = yield* ContextHandoffService.ContextHandoffServiceV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
@@ -258,17 +264,20 @@ export const layer: Layer.Layer<
         readonly cwd: string;
         readonly worktreePath: string;
         readonly branch: string;
+        readonly beforeCreate: ReturnType<typeof WorkspaceLifecycle.beforeUse>;
       }) {
         const { cwd, worktreePath, branch } = input;
         yield* gitWorkflow.pruneWorktrees({ cwd });
         const localBranchNames = yield* gitWorkflow.listLocalBranchNames(cwd);
         if (localBranchNames.includes(branch)) {
+          yield* input.beforeCreate;
           yield* gitWorkflow.createWorktree({ cwd, refName: branch, path: worktreePath });
           return;
         }
         // Push keeps the tracking ref current, so recovery reads it without fetching.
         const pushedRef = `refs/remotes/origin/${branch}`;
         if (yield* gitWorkflow.hasCommit({ cwd, refName: pushedRef })) {
+          yield* input.beforeCreate;
           yield* gitWorkflow.createWorktree({
             cwd,
             refName: pushedRef,
@@ -281,6 +290,7 @@ export const layer: Layer.Layer<
         if (base === null) {
           return yield* new WorktreeRecreateNoBaseError({ worktreePath, branch });
         }
+        yield* input.beforeCreate;
         yield* gitWorkflow.createWorktree({
           cwd,
           refName: base.refName,
@@ -502,6 +512,7 @@ export const layer: Layer.Layer<
           cause: `Run ${runId} is missing its execution projection state.`,
         });
       }
+      const initialProviderThreadId = providerThread.id;
       if (input.nativeCreationGuard !== undefined) {
         yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
           threadId: input.threadId,
@@ -636,7 +647,7 @@ export const layer: Layer.Layer<
             status: "failed",
             now: yield* DateTime.now,
             providerInstanceId: run.providerInstanceId,
-            itemProviderThreadId: providerThread.id,
+            itemProviderThreadId: providerThread?.id ?? initialProviderThreadId,
             item: {
               type: "error",
               title: failed.title,
@@ -870,11 +881,29 @@ export const layer: Layer.Layer<
               branch,
             });
             const recreateResult = yield* Effect.result(
-              recreateMissingWorktree({
-                cwd: project.workspaceRoot,
-                worktreePath,
-                branch,
+              WorkspaceLifecycle.beforeUse({
+                threadId: input.threadId,
+                boundary: "recreate",
+                fallback: {
+                  id: `turn-start:${runId}`,
+                  request: { runId, threadId: input.threadId },
+                },
               }).pipe(
+                Effect.andThen(
+                  recreateMissingWorktree({
+                    cwd: project.workspaceRoot,
+                    worktreePath,
+                    branch,
+                    beforeCreate: WorkspaceLifecycle.beforeUse({
+                      threadId: input.threadId,
+                      boundary: "recreate",
+                      fallback: {
+                        id: `turn-start:${runId}`,
+                        request: { runId, threadId: input.threadId },
+                      },
+                    }),
+                  }),
+                ),
                 Effect.mapError((cause) =>
                   cause._tag === "WorktreeRecreateNoBaseError"
                     ? cause
@@ -913,7 +942,47 @@ export const layer: Layer.Layer<
       const inheritedBackgroundTurnItems = yield* projectionStore
         .getRuntimeRecoveryProjection(projection.thread.id)
         .pipe(Effect.map(selectInheritedBackgroundItems));
+      const revalidateReplacement = Effect.gen(function* () {
+        const current = yield* projectionStore.getRuntimeRecoveryProjection(run.threadId);
+        const latest = current.runs.find((candidate) => candidate.id === run.id);
+        if (
+          latest?.activeAttemptId !== attempt.id ||
+          latest.status !== "starting" ||
+          latest.providerInstanceId !== run.providerInstanceId ||
+          !modelSelectionsEqual(latest.modelSelection, run.modelSelection)
+        )
+          return yield* new ProviderTurnStartError({
+            runId,
+            cause: "The run attempt or provider selection changed during retirement.",
+          });
+      }).pipe(Effect.mapError((cause) => new ExecutionSessionRevalidationError({ runId, cause })));
+      const preparation = yield* Effect.result(
+        prepareExecutionSession(run, providerThread, projection, revalidateReplacement).pipe(
+          Effect.provideService(ProviderSessionManager.ProviderSessionManagerV2, providerSessions),
+          Effect.provideService(EventSink.EventSinkV2, eventSink),
+          Effect.provideService(
+            ProviderSwitchService.ProviderSwitchServiceV2,
+            selectionTransitions,
+          ),
+          Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
+        ),
+      );
+      if (preparation._tag === "Failure") {
+        if (input.willRetry === true) return yield* preparation.failure;
+        yield* settleStartFailure({
+          signal: "provider-writer-retirement-failure",
+          title: "Previous provider writer could not retire",
+          error: preparation.failure,
+        });
+        return;
+      }
+      providerThread = preparation.success;
       const providerSessionId = providerThread.providerSessionId;
+      if (providerSessionId === null)
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: "Prepared execution session has no provider session identity.",
+        });
       const runControls = makeRunControls({
         threadId: projection.thread.id,
         runId: run.id,
@@ -1115,10 +1184,12 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = projectComposerContextForProvider({
-        text: message.text,
-        records: message.context?.records ?? [],
-      });
+      const userText = workModeProviderPrompt(
+        projectComposerContextForProvider({
+          text: message.text,
+          records: message.context?.records ?? [],
+        }),
+      );
       // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.
       const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
       const goalCommand = goalDriver && parseGoalCommand(message) !== null;
@@ -1279,7 +1350,20 @@ export const layer: Layer.Layer<
             !deliveredAttemptIds.has(source.activeAttemptId),
         );
         const missedRunIds = new Set(missedRuns.map((source) => source.id));
+        const budgetAfter = (
+          contextUsage: NonNullable<OrchestrationV2ProviderThread["contextUsage"]>,
+        ) =>
+          handoffBudget({
+            tokenCap,
+            modelContextWindow,
+            userText: restartNote === "" ? userText : `${restartNote}\n\n${userText}`,
+            attachments: message.attachments,
+            providerThread: { ...budgetProviderThread, contextUsage },
+            nativeContextEstimate: 0,
+          });
         return {
+          budgetAfter,
+          reclaimableBudget: budgetAfter({ ...budgetProviderThread.contextUsage, usedTokens: 0 }),
           sameNativeThread,
           handoffUsage,
           deliveredItemIds,
@@ -1557,6 +1641,17 @@ export const layer: Layer.Layer<
                 runtimePolicy: resolvedRuntimePolicy,
               }),
         );
+        if (
+          resumed._tag === "Failure" &&
+          (keepWarm ||
+            preserveNativeConversation ||
+            guarded ||
+            continuityRequired ||
+            findSteerFailure(resumed.failure) !== undefined ||
+            hasUnknownRuntimeBinding(resumed.failure))
+        ) {
+          return yield* loadFromProvider(Effect.fail(resumed.failure));
+        }
         if (resumed._tag === "Success") {
           const context = handoffContextForThread(resumed.success);
           context.budget = yield* Effect.cached(context.budget);
@@ -1574,6 +1669,17 @@ export const layer: Layer.Layer<
             Effect.catchTags({ ContextHandoffBudgetError: () => Effect.succeed(false) }),
           );
           if (fits) return resumed.success;
+          // Jones owns the bounded compaction/revalidation retry below. Keep
+          // its admitted native conversation through that attempt; a fresh
+          // summary must not bypass native-goal or continuation custody.
+          if (
+            keepWarm ||
+            preserveNativeConversation ||
+            guarded ||
+            continuityRequired ||
+            session.compactForContextHandoff !== undefined
+          )
+            return resumed.success;
           const freshThread = { ...resumed.success, nativeThreadRef: null };
           const freshContext = handoffContextForThread(freshThread);
           const { handoff } = yield* recoveryHandoff;
@@ -1888,6 +1994,159 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
+      const assertContinuity = Effect.fn("ProviderTurnStartService.checkGoalContinuity")(
+        function* () {
+          const requirement = yield* goalContinuity.requirementFor(
+            environmentId,
+            projection.thread.id,
+          );
+          if (
+            continuityAdmissionRefusal(requirement, continuityOwner(runningProviderThread)) !==
+            undefined
+          )
+            return yield* new ProviderAdapterTurnStartError({
+              driver: session.driver,
+              threadId: projection.thread.id,
+              providerThreadId: runningProviderThread.id,
+              runId: run.id,
+              cause: "Goal continuity changed or recovery remains held before dispatch.",
+            });
+        },
+        Effect.mapError((cause) =>
+          cause._tag === "ProviderAdapterTurnStartError"
+            ? cause
+            : new ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: projection.thread.id,
+                providerThreadId: runningProviderThread.id,
+                runId: run.id,
+                cause,
+              }),
+        ),
+      );
+      const startWithConfiguredEffort = (
+        turnInput: Parameters<typeof session.startTurn>[0],
+        compact = false,
+      ) => {
+        const startWithConfiguredEffortEffect = Effect.fn(
+          "ProviderTurnStartService.startWithConfiguredEffort",
+        )(
+          function* () {
+            let dispatchInput = turnInput;
+            if (
+              session.driver === "codex" &&
+              !turnInput.modelSelection.options?.some((option) => option.id === "reasoningEffort")
+            ) {
+              const settingsResult = yield* currentSettings.getSettings.pipe(Effect.option);
+              if (Option.isSome(settingsResult)) {
+                const project = yield* projects
+                  .getById(projection.thread.projectId)
+                  .pipe(Effect.catch(() => Effect.succeedNone));
+                const settings = resolveProjectSettings(
+                  settingsResult.value,
+                  projection.thread.projectId,
+                  Option.getOrUndefined(project),
+                ).settings;
+                const defaultSelection = settings.defaultModelSelection ?? undefined;
+                const selected = yield* instanceRegistry.getInstance(
+                  turnInput.modelSelection.instanceId,
+                );
+                const snapshot =
+                  selected === undefined ? undefined : yield* selected.snapshot.getSnapshot;
+                const defaultInstance =
+                  defaultSelection === undefined
+                    ? undefined
+                    : yield* instanceRegistry.getInstance(defaultSelection.instanceId);
+                const canonical = normalizeModelSlug(
+                  codexModelFamily(turnInput.modelSelection.model),
+                  session.driver,
+                );
+                const model =
+                  snapshot?.models.find(
+                    (candidate) => candidate.slug === turnInput.modelSelection.model,
+                  ) ??
+                  snapshot?.models.find((candidate) =>
+                    [candidate.slug, ...(candidate.aliases ?? [])].some(
+                      (slug) =>
+                        normalizeModelSlug(codexModelFamily(slug), session.driver) === canonical,
+                    ),
+                  );
+                const effort = getConfiguredReasoningEffort({
+                  modelSelection: turnInput.modelSelection,
+                  driverKind: session.driver,
+                  capabilities: model?.capabilities ?? undefined,
+                  defaultModelSelection: defaultSelection,
+                  defaultDriverKind:
+                    defaultSelection === undefined
+                      ? undefined
+                      : (settings.providerInstances[defaultSelection.instanceId]?.driver ??
+                        defaultInstance?.driverKind),
+                });
+                if (effort !== undefined)
+                  dispatchInput = { ...turnInput, configuredReasoningEffort: effort };
+              }
+            }
+            // A settings read can outlive the attempt. Never dispatch its stale prompt.
+            if (!(yield* isCurrentAttemptInStatus("running"))) return;
+            const stopRuntimeGeneration = loadedProviderThread.runtimeIdentity?.runtimeGeneration;
+            dispatchInput = {
+              ...dispatchInput,
+              revalidateStartAdmission:
+                eventSink.assertRuntimeStopStartAllowed === undefined
+                  ? Effect.void
+                  : eventSink
+                      .assertRuntimeStopStartAllowed({
+                        threadId: input.threadId,
+                        runId,
+                        providerThreadId: providerThread.id,
+                        ...(stopRuntimeGeneration === undefined
+                          ? {}
+                          : {
+                              runtimeGeneration: stopRuntimeGeneration,
+                            }),
+                      })
+                      .pipe(
+                        Effect.mapError(
+                          (cause) =>
+                            new ProviderAdapterTurnStartError({
+                              driver: session.driver,
+                              threadId: input.threadId,
+                              providerThreadId: providerThread.id,
+                              runId,
+                              cause,
+                            }),
+                        ),
+                      ),
+            };
+            const start = compact ? session.compactThread! : session.startTurn;
+            if (eventSink.assertRuntimeStopStartAllowed)
+              yield* eventSink.assertRuntimeStopStartAllowed({
+                threadId: input.threadId,
+                runId,
+                providerThreadId: providerThread.id,
+                ...(stopRuntimeGeneration === undefined
+                  ? {}
+                  : { runtimeGeneration: stopRuntimeGeneration }),
+              });
+            yield* assertContinuity();
+            yield* start(dispatchInput).pipe(
+              Effect.provideService(RequiredNativeSession, requiredNativeSession),
+            );
+          },
+          Effect.mapError((cause) =>
+            cause._tag === "ProviderAdapterTurnStartError"
+              ? cause
+              : new ProviderAdapterTurnStartError({
+                  driver: session.driver,
+                  threadId: projection.thread.id,
+                  providerThreadId: providerThread.id,
+                  runId: run.id,
+                  cause,
+                }),
+          ),
+        );
+        return startWithConfiguredEffortEffect();
+      };
       const persistHandoff = Effect.fn("ProviderTurnStartService.persist")(function* (
         handoff: OrchestrationV2ContextHandoff,
       ) {
@@ -1910,20 +2169,28 @@ export const layer: Layer.Layer<
       });
       const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
-          const delivery = yield* deliverContextHandoffs({
-            handoffs: [...effectiveHandoffs, ...retryHandoff],
-            deferInline: compact || goalCommand,
-            providerThread: runningProviderThread,
-            budget,
-            alreadyDeliveredItemIds: deliveredItemIds,
-            ...(session.injectHistory === undefined
-              ? {}
-              : {
-                  inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
-                    session.injectHistory!({
-                      providerThread: runningProviderThread,
-                      ...history,
-                    }),
+          const revalidateHandoff = Effect.gen(function* () {
+            if (!(yield* isCurrentAttemptInStatus("running")))
+              return yield* new ProviderAdapterTurnStartError({
+                driver: session.driver,
+                threadId: input.threadId,
+                providerThreadId: providerThread.id,
+                runId,
+              });
+            if (eventSink.assertRuntimeStopStartAllowed)
+              yield* eventSink.assertRuntimeStopStartAllowed({
+                threadId: input.threadId,
+                runId,
+                providerThreadId: providerThread.id,
+                ...(loadedProviderThread.runtimeIdentity?.runtimeGeneration === undefined
+                  ? {}
+                  : { runtimeGeneration: loadedProviderThread.runtimeIdentity.runtimeGeneration }),
+              });
+            yield* assertContinuity();
+            if (input.nativeCreationGuard !== undefined)
+              yield* NativeProvider.revalidateNativeProviderGuard(input.nativeCreationGuard, {
+                threadId: input.threadId,
+                cwd: projection.thread.worktreePath,
               });
           }).pipe(
             Effect.mapError(
@@ -1935,10 +2202,35 @@ export const layer: Layer.Layer<
                   runId,
                   cause,
                 }),
-            persist: persistHandoff,
-          });
+            ),
+          );
+          const delivery = yield* deliverWithHandoffRecovery(
+            {
+              handoffs: [...effectiveHandoffs, ...retryHandoff],
+              deferInline: compact || goalCommand,
+              providerThread: runningProviderThread,
+              budget,
+              alreadyDeliveredItemIds: deliveredItemIds,
+              ...(session.injectHistory === undefined
+                ? {}
+                : {
+                    inject: (history: ProviderAdapter.ProviderAdapterV2HistoricalContext) =>
+                      session.injectHistory!({
+                        providerThread: runningProviderThread,
+                        ...history,
+                      }),
+                  }),
+              persist: persistHandoff,
+            },
+            {
+              input: turnInput,
+              compact: compact || goalCommand ? undefined : session.compactForContextHandoff,
+              revalidate: revalidateHandoff,
+              budgetAfter: handoffContext.budgetAfter,
+              reclaimableBudget: handoffContext.reclaimableBudget,
+            },
+          );
           if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          const start = compact ? session.compactThread! : session.startTurn;
           // Like history, the side chat context waits for a turn that sends a prompt.
           const sideChatContext =
             sideChatHandoff === undefined || compact || goalCommand
@@ -1947,14 +2239,17 @@ export const layer: Layer.Layer<
           const context = [delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
-          const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          yield* start({
-            ...(noteContinuation ? promptedInput : turnInput),
-            message: {
-              ...turnInput.message,
-              text: goalCommand ? userText : withInlineContext(context, userText),
-            },
-          }).pipe(
+          yield* startWithConfiguredEffort(
+            goalCommand
+              ? { ...turnInput, message: { ...turnInput.message, text: userText } }
+              : continuationPrompt(turnInput, {
+                  sameNativeThread,
+                  noteContinuation,
+                  context,
+                  userText,
+                }),
+            compact,
+          ).pipe(
             // Clear pending handoff markers for refused prompts so the next turn retains the native session.
             Effect.tapError((error) =>
               refusedBeforePrompt(error)

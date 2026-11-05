@@ -1,3 +1,4 @@
+import { JonesPrivateWorkstreamShellActivation } from "./jones/workstreamShellActivation.ts";
 import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -332,7 +333,9 @@ export const ShellEnvironmentPatch = Schema.Struct({
 });
 export type ShellEnvironmentPatch = typeof ShellEnvironmentPatch.Type;
 
+// Private captured desktop telemetry fd only; never a renderer snapshot.
 export const DesktopShellEnvironmentSnapshot = Schema.Struct({
+  jonesWorkstreamActivation: Schema.optionalKey(JonesPrivateWorkstreamShellActivation),
   version: Schema.Literal(1),
   type: Schema.Literal("shellEnvironment"),
   discovered: Schema.Boolean,

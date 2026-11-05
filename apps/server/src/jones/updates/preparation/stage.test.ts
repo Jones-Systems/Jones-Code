@@ -192,6 +192,121 @@ const blocked =
 const listing = (path: string) => NodeFSP.readdir(path).catch(() => []);
 
 describe("off-process stage job", () => {
+  it.each(["failure", "cancel"] as const)(
+    "does not download after a stage import %s and joins the actual worker",
+    async (mode) => {
+      const fixture = await makePreparationHome();
+      const actions = await actionsFixture(fixture, { hang: true });
+      const entered = NodePath.join(fixture.tools, "import-entered");
+      const interrupted = NodePath.join(fixture.tools, "import-interrupted");
+      const release = NodePath.join(fixture.tools, "import-release");
+      const loader = NodePath.join(fixture.tools, "stage-import-loader.mjs");
+      // A child-only loader gates the real module evaluation; the production worker has no seam.
+      const prelude = `import * as stageImportFS from "node:fs";
+process.on("SIGTERM", () => stageImportFS.writeFileSync(${JSON.stringify(interrupted)}, "observed"));
+await new Promise((resolve, reject) => {
+  const watcher = stageImportFS.watch(${JSON.stringify(fixture.tools)}, (_event, name) => {
+    if (name === "import-release") { watcher.close(); resolve(); }
+  });
+  watcher.once("error", reject);
+  stageImportFS.writeFileSync(${JSON.stringify(entered)}, "entered");
+  if (stageImportFS.existsSync(${JSON.stringify(release)})) { watcher.close(); resolve(); }
+});\n`;
+      await NodeFSP.writeFile(
+        loader,
+        `import { registerHooks } from "node:module";
+import * as fs from "node:fs";
+registerHooks({ load(url, context, nextLoad) {
+  if (url !== ${JSON.stringify(new URL("./stageArtifact.ts", import.meta.url).href)}) return nextLoad(url, context);
+  if (${JSON.stringify(mode)} === "failure") {
+    fs.writeFileSync(${JSON.stringify(entered)}, "entered");
+    throw new Error("Synthetic stage module load failure.");
+  }
+  const result = nextLoad(url, context);
+  return { ...result, source: ${JSON.stringify(prelude)} + result.source };
+}});\n`,
+      );
+      const exits: PreparationWorkerExit[] = [];
+      const phases: PreparationPhase[] = [];
+      const controller = new AbortController();
+      const supervisor = makePreparationSupervisor({
+        baseDir: fixture.base,
+        cacheRoot: fixture.cacheRoot,
+        command: {
+          file: sourceWorkerCommand.file,
+          args: ["--import", loader, ...sourceWorkerCommand.args],
+        },
+        env: { ...actions.env, XDG_CACHE_HOME: NodePath.join(fixture.root, "compile-cache") },
+        observe: (exit) => exits.push(exit),
+      });
+      const running = supervisor.start(stageJob(fixture, actions), {
+        jobId: NodeCrypto.randomUUID(),
+        signal: controller.signal,
+        onPhase: (phase) => phases.push(phase),
+      });
+      const outcome = running.outcome.catch((cause: unknown) => cause);
+      const closeFixture = async (primaryFailure: unknown) => {
+        try {
+          await NodeFSP.writeFile(release, "release");
+          controller.abort(new Error("Stage import fixture teardown."));
+          const joined = await running.settled;
+          if (joined.kind !== "failed" && joined.kind !== "stopped")
+            throw new Error(`Stage import cleanup is unconfirmed; retained ${fixture.root}.`);
+          await supervisor.sweep();
+          if ((await supervisor.unreleasedJobs?.())?.length !== 0)
+            throw new Error(`Stage import jobs remain unresolved; retained ${fixture.root}.`);
+          await fixture.remove();
+        } catch (cleanupFailure) {
+          if (primaryFailure !== undefined)
+            throw new AggregateError(
+              [primaryFailure, cleanupFailure],
+              "Stage import and cleanup failed.",
+              { cause: cleanupFailure },
+            );
+          throw cleanupFailure;
+        }
+      };
+      let primaryFailure: unknown;
+      try {
+        await vi.waitFor(() => expect(NodeFSP.readFile(entered, "utf8")).resolves.toBe("entered"), {
+          timeout: 20_000,
+        });
+        expect(phases).toEqual(["downloading"]);
+        if (mode === "cancel") {
+          controller.abort(new Error("Cancelled during stage import."));
+          await vi.waitFor(
+            () => expect(NodeFSP.readFile(interrupted, "utf8")).resolves.toBe("observed"),
+            { timeout: 20_000 },
+          );
+          await NodeFSP.writeFile(release, "release");
+        }
+        expect(await outcome).toBeInstanceOf(Error);
+        expect(await outcome).toMatchObject({
+          message:
+            mode === "failure"
+              ? "Synthetic stage module load failure."
+              : "Cancelled during stage import.",
+        });
+        expect(await running.settled).toMatchObject({
+          kind: mode === "failure" ? "failed" : "stopped",
+        });
+        await supervisor.sweep();
+        expect(exits.map((exit) => exit.kind)).toEqual(["stage", "sweep", "sweep"]);
+        expect(exits.every((exit) => exit.reaped)).toBe(true);
+        expect(exits[0]).toMatchObject({ code: 0, signal: null });
+        expect(await NodeFSP.readFile(actions.pids, "utf8").catch(() => undefined)).toBeUndefined();
+        expect(await listing(NodePath.join(fixture.cacheRoot, "attempts"))).toEqual([]);
+        expect(await listing(NodePath.join(fixture.base, "runtime", "staged-updates"))).toEqual([]);
+        expect(await listing(preparationJobsDirectory(fixture.base))).toEqual([]);
+      } catch (cause) {
+        primaryFailure = cause;
+        throw cause;
+      } finally {
+        await closeFixture(primaryFailure);
+      }
+    },
+  );
+
   it("downloads, extracts, preflights and stages a candidate, and the parent adopts only its durable receipt", async () => {
     const fixture = await home();
     const actions = await actionsFixture(fixture);

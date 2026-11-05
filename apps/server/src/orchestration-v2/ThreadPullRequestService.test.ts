@@ -224,17 +224,22 @@ describe("ThreadPullRequestServiceV2 reads", () => {
         const childLookup = yield* Deferred.make<void>();
         const lookups: Array<{ readonly branch: string; readonly refresh: boolean }> = [];
         const dependencies = Layer.mergeAll(
+          Layer.mock(ThreadMetadataReads.ThreadMetadataReads)({
+            list: (query) =>
+              query?.threadIds === undefined
+                ? Queue.offer(sweeps, undefined).pipe(
+                    Effect.as({ snapshotSequence: 1, threads: [parent, child] }),
+                  )
+                : Effect.succeed({
+                    snapshotSequence: 1,
+                    threads: [parent, child].filter((thread) =>
+                      query.threadIds!.includes(thread.id),
+                    ),
+                  }),
+          }),
           Layer.mock(Orchestrator.OrchestratorV2)({
             streamDomainEvents: Stream.fromQueue(domainEvents),
-            getShellSnapshot: () =>
-              Queue.offer(sweeps, undefined).pipe(
-                Effect.as({
-                  schemaVersion: 2,
-                  snapshotSequence: 1,
-                  threads: [parent, child],
-                  archivedThreads: [],
-                }),
-              ),
+            getShellSnapshot: () => Effect.die("PR refresh must use the bounded metadata port"),
             getThreadEventSequence: () => Effect.succeed(1),
             getThreadShell: (threadId) =>
               Effect.succeed([parent, child].find((thread) => thread.id === threadId) ?? null),

@@ -1,3 +1,5 @@
+import * as Scheduler from "./scheduling/Scheduler.ts";
+import * as WorkMode from "./jones/workMode/WorkMode.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
 import * as DependencyReactor from "./jones/threadResultDependencies/DependencyReactor.ts";
 import * as ThreadResultMcpDependencies from "./jones/threadResultDependencies/McpDependencies.ts";
@@ -12,6 +14,7 @@ import * as FleetUpdates from "./jones/fleetUpdates/service.ts";
 import { fleetUpdatesHttpApiLayer } from "./jones/fleetUpdates/http.ts";
 import { importedHistoryHttpApiLayer } from "./jones/importedHistory/http.ts";
 import * as DeviceDirectGrants from "./jones/device/DeviceDirectGrants.ts";
+import * as DesktopNativeOwner from "./jones/workstreams/DesktopNativeOwner.ts";
 import * as JonesHttp from "./jones/http/registration.ts";
 import * as JonesUpdates from "./jones/updates/service.ts";
 import { jonesUpdatesHttpApiLayer } from "./jones/updates/http.ts";
@@ -39,7 +42,7 @@ import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import type * as Crypto from "effect/Crypto";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 import type * as FileSystem from "effect/FileSystem";
 import type * as Path from "effect/Path";
 import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
@@ -128,6 +131,7 @@ import * as EnvironmentTheme from "./environmentTheme.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerOwnership from "./serverOwnership.ts";
+import { HeldRuntimeOwner } from "./jones/cleanup/CheckedRuntimeOwner.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import * as ServerSettings from "./serverSettings.ts";
@@ -245,12 +249,7 @@ import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
 import * as NetService from "@t3tools/shared/Net";
 import * as RelayClient from "@t3tools/shared/relayClient";
-import {
-  disableTailscaleServe,
-  ensureTailscaleServe,
-  readTailscaleServeRoutesTo,
-  readTailscaleStatus,
-} from "@t3tools/tailscale";
+import { acquireServeMapping, releaseServeMapping } from "@t3tools/tailscale";
 import * as ServerActivation from "./serverActivation.ts";
 
 // Escaped MCP handoff provenance can exceed find-my-way's 100-character segment default.
@@ -301,6 +300,7 @@ const layerNativeTelemetry = NativeTelemetryClient.layer.pipe(
   Layer.provide(ResourceMonitorBinary.layer),
 );
 const layerDesktopTelemetryReceiver = DesktopTelemetryReceiver.layer.pipe(
+  Layer.provide(DesktopNativeOwner.layer),
   Layer.provideMerge(layerServerSettings),
 );
 
@@ -540,6 +540,9 @@ const layerTerminal = TerminalManager.layer.pipe(
 const layerPreview = Layer.empty.pipe(
   Layer.provideMerge(PreviewManager.layer),
   Layer.provideMerge(layerPortScanner),
+  Layer.provideMerge(
+    JonesHttp.previewCompanionServicesLayer.pipe(Layer.provide(DesktopBrowserChannel.layer)),
+  ),
 );
 
 const layerDevice = DeviceService.layer.pipe(
@@ -798,6 +801,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
   Layer.provideMerge(layerRepositoryIdentityResolver),
   Layer.provideMerge(CodexManagedTokenBroker.layer),
   Layer.provideMerge(layerServerEnvironment),
+  Layer.provideMerge(workstreamNativeAuthorityLayerLive),
   Layer.provideMerge(layerAuth),
   Layer.provideMerge(ServerSecretStore.layer),
   Layer.provideMerge(
@@ -849,7 +853,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(importedHistoryHttpApiLayer),
       Layer.provide(JonesHttp.remoteAdmissionHttpApiLayer),
       Layer.provide(providerQueueHttpApiLayer),
-      Layer.provide(queueCompatibilityHttpApiLayer.pipe(Layer.provide(QueueCompatibility.layer))),
+      Layer.provide(queueCompatibilityHttpApiLayer),
       JonesHttp.provideConversationAndVoiceReview,
       Layer.provide(workstreamHttpApiLayer),
       Layer.provide(NativeWorkstreams.nativeWorkstreamsHttpApiLayer),
@@ -881,36 +885,57 @@ const layerMakeRoutes = Layer.mergeAll(
   Layer.effectDiscard(
     RemoteDelegation.RemoteDelegation.pipe(Effect.flatMap((remote) => remote.start())),
   ),
-).pipe(
-  Layer.provide(
-    PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
-  ),
-  // delegate_task to a linked environment, from /mcp and the follower above.
-  Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
-  // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
-  Layer.provide(PeerLinkRequests.layer),
-  // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
-  Layer.provide(layerPullRequestService),
-  // The same activity instance RunExecutionService reports to, by layer memoization.
-  Layer.provide(
-    ServerBrowser.layer.pipe(
-      Layer.provide(Layer.merge(DesktopBrowserChannel.layer, PreviewAgentActivity.layer)),
+)
+  .pipe(
+    Layer.provide(
+      JonesHttp.remoteAdmissionServicesLayer.pipe(
+        Layer.provide(TextGeneration.layer.pipe(Layer.provide(layerSourceControlProviderRegistry))),
+      ),
     ),
-  ),
-  Layer.provide(PreviewBrowser.layer),
-  // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
-  Layer.provide(
-    PeerForwarding.layer.pipe(
-      Layer.provideMerge(PeerMcpClient.layer),
-      Layer.provideMerge(PeerLinks.layer),
+    Layer.provide(DependencyReactor.layer),
+    Layer.provide(ThreadResultMcpDependencies.layer),
+    Layer.provide(ShellMaterialization.layer),
+    Layer.provide(workstreamOperationsLayerLive),
+    Layer.provide(workstreamGatewayLayerLive),
+    Layer.provide(workstreamRegistrationContextLayerLive),
+    Layer.provide(workstreamNativeAuthorityLayerLive),
+    Layer.provide(ThreadHandoff.layer.pipe(Layer.provide(HandoffLaunch.layer))),
+    Layer.provide(LinkedThreads.layer),
+    Layer.provide(workstreamResponseHeadersLayer),
+    Layer.provide(
+      PullRequestReviewGuideService.layer.pipe(Layer.provide(PullRequestReviewGuides.layer)),
     ),
-  ),
-  Layer.provide(PreviewAutomationBroker.layer),
-  Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
-  Layer.provide(layerCommandReadiness),
-  Layer.provide(ServerHttp.layerBrowserApiCors),
-  Layer.provide(ServerHttp.layerHttpCompression),
-);
+    // delegate_task to a linked environment, from /mcp and the follower above.
+    Layer.provide(RemoteDelegation.layer.pipe(Layer.provide(ProjectionStoreV2.layer))),
+    // Links agents ask for: shown in a thread from /mcp, answered over WebSocket.
+    Layer.provide(PeerLinkRequests.layer),
+    // Share the service so HTTP/WS clients single-flight reads and invalidate each other's cached patches.
+    Layer.provide(layerPullRequestService),
+    // The same activity instance RunExecutionService reports to, by layer memoization.
+    Layer.provide(
+      ServerBrowser.layer.pipe(
+        Layer.provide(Layer.merge(DesktopBrowserChannel.layer, PreviewAgentActivity.layer)),
+      ),
+    ),
+    Layer.provide(PreviewBrowser.layer),
+    // Links to other environments, shared by Settings (WebSocket) and agents (/mcp).
+    Layer.provide(
+      PeerForwarding.layer.pipe(
+        Layer.provideMerge(PeerMcpClient.layer),
+        Layer.provideMerge(PeerLinks.layer),
+      ),
+    ),
+    Layer.provide(PreviewAutomationBroker.layer),
+  )
+  .pipe(
+    Layer.provide(FleetUpdates.layer.pipe(Layer.provide(JonesSourceRelation.layer))),
+    Layer.provide(layerJonesUpdates),
+    Layer.provide(layerServerSelfUpdate),
+    Layer.provide(layerCommandReadiness),
+    Layer.provide(ServerHttp.layerBrowserApiCors),
+    Layer.provide(ServerHttp.layerHttpCompression),
+    Layer.provide(QueueCompatibility.layer.pipe(Layer.provide(layerProjectCloneTracker))),
+  );
 
 const layerMakeServer = Layer.unwrap(
   Effect.gen(function* () {
@@ -975,19 +1000,17 @@ const layerMakeServer = Layer.unwrap(
               }
 
               const localPort = address.port;
-              const localHost = loopbackUrlHostForAddress(address);
-              return yield* ensureTailscaleServe({
-                localPort,
+              const claim = {
                 servePort: config.tailscaleServePort,
-                localHost,
-              }).pipe(
-                Effect.as({
-                  localPort,
-                  localHost: localHost.replace(/^\[|\]$/gu, ""),
-                  servePort: config.tailscaleServePort,
-                }),
-                Effect.tap(() =>
-                  Effect.logInfo("Tailscale Serve configured", {
+                expectedTarget: `http://${loopbackUrlHostForAddress(address)}:${String(localPort)}`,
+              };
+              const acquired = yield* acquireServeMapping(claim);
+              if ("skipped" in acquired) {
+                yield* Effect.logWarning(
+                  "Tailscale Serve skipped; inspect the route with tailscale serve status --json and remove a stale owned route explicitly",
+                  {
+                    state: acquired.skipped._tag,
+                    reason: "reason" in acquired.skipped ? acquired.skipped.reason : undefined,
                     localPort,
                     servePort: claim.servePort,
                   },
@@ -1003,50 +1026,21 @@ const layerMakeServer = Layer.unwrap(
             }),
             (configured) =>
               configured
-                ? Effect.all(
-                    [
-                      readTailscaleServeRoutesTo({
-                        host: configured.localHost,
-                        port: configured.localPort,
-                      }),
-                      readTailscaleStatus,
-                    ],
-                    { concurrency: 2 },
-                  ).pipe(
-                    // Another service may hold the root route by now, or it may sit under a
-                    // former name, where `off` would act on the current one; only ours goes.
-                    Effect.map(([routes, status]) =>
-                      routes.some(
-                        (route) =>
-                          route.servePort === configured.servePort &&
-                          route.mount === "/" &&
-                          route.owner === undefined &&
-                          route.ambiguous === undefined &&
-                          route.host?.toLowerCase() === status.magicDnsName?.toLowerCase(),
-                      ),
-                    ),
-                    Effect.orElseSucceed(() => false),
-                    Effect.flatMap((ours) =>
-                      ours
-                        ? disableTailscaleServe({ servePort: configured.servePort }).pipe(
-                            Effect.tap(() =>
-                              Effect.logInfo("Tailscale Serve disabled", {
+                ? releaseServeMapping(configured).pipe(
+                    Effect.flatMap((outcome) =>
+                      outcome === "disabled"
+                        ? Effect.logInfo("Tailscale Serve disabled", {
+                            servePort: configured.servePort,
+                          })
+                        : configured.created
+                          ? Effect.logWarning(
+                              "Tailscale Serve release skipped or effect unknown; inspect tailscale serve status --json before removing the route",
+                              {
+                                outcome,
                                 servePort: configured.servePort,
-                              }),
-                            ),
-                          )
-                        : Effect.logInfo(
-                            "Tailscale Serve left on; its root route is not known to be ours",
-                            {
-                              servePort: configured.servePort,
-                            },
-                          ),
-                    ),
-                    Effect.catch((cause) =>
-                      Effect.logWarning("Failed to disable Tailscale Serve", {
-                        cause,
-                        servePort: configured.servePort,
-                      }),
+                              },
+                            )
+                          : Effect.void,
                     ),
                   )
                 : Effect.void,
@@ -1293,6 +1287,8 @@ const layerMakeServer = Layer.unwrap(
       Layer.provide(ProcessRunner.layer),
       Layer.provideMerge(ProcessPlacementRuntime.layer),
       Layer.provideMerge(layerPlatformServices),
+      Layer.provide(NetService.layer),
+      Layer.provide(Layer.succeed(HeldRuntimeOwner, { token: ownership.heldRuntimeOwner })),
     );
   }),
 ).pipe(Layer.provide(Layer.fresh(ProcessRunner.layer)));
@@ -1303,7 +1299,7 @@ export const runServer: Effect.Effect<
   never,
   Layer.Error<typeof layerMakeServer>,
   | ChildProcessSpawner.ChildProcessSpawner
-  | Crypto.Crypto
+  | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | Path.Path
   | ServerConfig.ServerConfig

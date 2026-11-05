@@ -25,16 +25,6 @@ const baseState: ThreadActionMenuState = {
   ],
 };
 
-function ids(state: ThreadActionMenuState): string[] {
-  return buildThreadActionMenuItems(state).map((item) => item.id);
-}
-
-function allIds(state: ThreadActionMenuState): string[] {
-  const flatten = (items: ReturnType<typeof buildThreadActionMenuItems>): string[] =>
-    items.flatMap((item) => [item.id, ...(item.children ? flatten(item.children) : [])]);
-  return flatten(buildThreadActionMenuItems(state));
-}
-
 describe("buildThreadActionMenuItems", () => {
   it.each(["checking", "check_failed", "signed_out", "scope_missing"] as const)(
     "explains disabled environment access (%s) without changing authorized menus",

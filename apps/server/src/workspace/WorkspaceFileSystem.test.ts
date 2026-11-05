@@ -697,6 +697,7 @@ it.layer(layerTest, { excludeTestServices: true })("WorkspaceFileSystemLive", (i
             Layer.provide(
               Layer.mock(WorkspaceEntries.WorkspaceEntries)({
                 refresh: () => Effect.die("An overwrite rescanned the workspace."),
+                refreshContentAfterWrite: () => Effect.void,
               }),
             ),
           ),

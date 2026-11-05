@@ -16,6 +16,37 @@ const testState = vi.hoisted(() => ({
   clipboard: vi.fn(),
   sessionAtom: null as unknown,
   serverVersions: new Map<string, string>(),
+  continueThreadsAfterServerUpdate: false,
+  jonesEnvironmentIds: new Set<string>(),
+  launcherUnsupported: false,
+}));
+
+vi.mock(import("~/jones/updates/jonesUpdates"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    jonesUpdates: {
+      ...actual.jonesUpdates,
+      value: ((environmentId: string) =>
+        Atom.make(
+          testState.jonesEnvironmentIds.has(environmentId)
+            ? {
+                source: "jones-actions",
+                channel: "jones-main",
+                phase: "blocked",
+                capability: { check: false, download: false, install: false },
+                ...(testState.launcherUnsupported
+                  ? { launcherSettlement: "unsupported", launcherRefresh: "recommended" }
+                  : {}),
+              }
+            : null,
+        )) as never,
+    },
+  };
+});
+vi.mock(import("@tanstack/react-router"), async (original) => ({
+  ...(await original()),
+  useNavigate: (() => vi.fn()) as never,
 }));
 
 vi.mock(import("~/hooks/useCopyToClipboard"), async (original) => ({
@@ -27,6 +58,16 @@ vi.mock(import("~/hooks/useCopyToClipboard"), async (original) => ({
     },
     isCopied: false,
   })) as never,
+}));
+vi.mock(import("~/hooks/useSettings"), async (original) => ({
+  ...(await original()),
+  useEnvironmentSettings: ((
+    _environmentId: EnvironmentId,
+    selector: (settings: { continueThreadsAfterServerUpdate: boolean }) => unknown,
+  ) =>
+    selector({
+      continueThreadsAfterServerUpdate: testState.continueThreadsAfterServerUpdate,
+    })) as never,
 }));
 vi.mock(import("~/state/session"), async (original) => {
   const actual = await original();
@@ -99,6 +140,7 @@ function setup(): Disposable {
   testState.toast.mockReset();
   testState.clipboard.mockReset();
   testState.serverVersions.clear();
+  testState.continueThreadsAfterServerUpdate = false;
   sessionAtom = Atom.make<SessionResult>(AsyncResult.success(currentSession));
   testState.sessionAtom = sessionAtom;
   resetConfirmDialogForTests();

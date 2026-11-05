@@ -1688,6 +1688,12 @@ export function PullRequestDetailPanel({
         ) : null}
       </div>
 
+      <PullRequestReadPauseBanner
+        detailFailure={detailQuery.failure}
+        activityFailure={activityQuery.failure}
+        hasDetail={detail !== null}
+        observedAt={detail?.observedAt}
+      />
       <SourceControlAppAccessNotice
         environmentId={environmentId}
         provider={detail?.provider ?? repositoryIdentity?.provider}

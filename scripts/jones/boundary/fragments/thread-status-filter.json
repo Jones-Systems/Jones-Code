@@ -12,19 +12,14 @@
     "apps/web/src/jones/threadStatusFilter/ThreadActivitySettings.browser.test.tsx"
   ],
   "hookPaths": [],
-  "tombstones": ["apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx"],
+  "tombstones": [
+    "apps/web/src/components/sidebar/SidebarActiveThreadsPill.tsx",
+    "apps/web/src/components/LegacySidebar.tsx"
+  ],
   "allowedImports": [
     {
       "from": "apps/web/src/components/Sidebar.tsx",
       "to": "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.ts"
-    },
-    {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
-      "to": "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.ts"
-    },
-    {
-      "from": "apps/web/src/components/LegacySidebar.tsx",
-      "to": "apps/web/src/jones/threadStatusFilter/model.ts"
     },
     {
       "from": "apps/web/src/components/sidebar/SidebarChrome.tsx",

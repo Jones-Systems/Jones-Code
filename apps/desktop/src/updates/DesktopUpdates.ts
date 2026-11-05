@@ -485,7 +485,7 @@ export const make = Effect.gen(function* () {
     environment.platform === "darwin" &&
     environment.isPackaged &&
     !environment.isDevelopment &&
-    !config.mockUpdates &&
+    !mockUpdates &&
     /-preview\.\d{8}\.\d+(?:\.\d+)?$/.test(environment.appVersion)
   ) {
     const context = yield* Effect.context<never>();
@@ -543,7 +543,7 @@ export const make = Effect.gen(function* () {
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
       platform: environment.platform,
       initialState: yield* Ref.get(updateStateRef),
-      disabledByEnv: config.disableAutoUpdate,
+      disabledByEnv: config.disableAutoUpdate || policy.mode === "off",
       onState: async (state) => {
         await Effect.runPromiseWith(context)(setState(state));
         // Native state changes wake all windows; no renderer observation is accepted as Laptop proof.
@@ -642,41 +642,56 @@ export const make = Effect.gen(function* () {
           Effect.forkScoped,
         );
       }),
-      setChannel: () => Ref.get(updateStateRef),
-      check: () => check.pipe(Effect.map((checked) => ({ checked, state: controller.state }))),
+      setChannel: Effect.fn("DesktopUpdates.setChannel")(function () {
+        return Ref.get(updateStateRef);
+      }),
+      check: Effect.fn("DesktopUpdates.check")(function () {
+        return check.pipe(Effect.map((checked) => ({ checked, state: controller.state })));
+      }),
       download: Effect.promise(() => background.track(() => controller.download())).pipe(
         Effect.map((result) => ({ ...result, state: controller.state })),
       ),
-      downloadSelected: (selection) =>
-        Effect.promise(() => background.track(() => controller.download(selection))).pipe(
+      downloadSelected: Effect.fn("DesktopUpdates.downloadSelected")(function (selection) {
+        return Effect.promise(() => background.track(() => controller.download(selection))).pipe(
           Effect.map((result) => ({ ...result, state: controller.state })),
-        ),
+        );
+      }),
       install: install().pipe(
         Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
       ),
-      discardStaged: (handle) =>
-        Effect.promise(() => background.discard(handle)).pipe(
+      discardStaged: Effect.fn("DesktopUpdates.discardStaged")(function (handle) {
+        return Effect.promise(() => background.discard(handle)).pipe(
           Effect.map((result) => ({ ...result, state: controller.state })),
-        ),
-      setBackgroundPreparation: (enabled) =>
-        Effect.promise(() => background.setEnabled(enabled)).pipe(
-          Effect.map(() => controller.state),
-        ),
-      installPlan: (request) => Effect.promise(() => coordinator!.request(request)),
-      fleetUpdates: (request) => Effect.promise(() => fleet.request(request)),
-      installStaged: (handle, campaignId) =>
-        install(handle, campaignId).pipe(
+        );
+      }),
+      setBackgroundPreparation: Effect.fn("DesktopUpdates.setBackgroundPreparation")(
+        function (enabled) {
+          return Effect.promise(() => background.setEnabled(enabled)).pipe(
+            Effect.map(() => controller.state),
+          );
+        },
+      ),
+      installPlan: Effect.fn("DesktopUpdates.installPlan")(function (request) {
+        return Effect.promise(() => coordinator!.request(request));
+      }),
+      fleetUpdates: Effect.fn("DesktopUpdates.fleetUpdates")(function (request) {
+        return Effect.promise(() => fleet.request(request));
+      }),
+      installStaged: Effect.fn("DesktopUpdates.installStaged")(function (handle, campaignId) {
+        return install(handle, campaignId).pipe(
           Effect.map(({ accepted, completed, state }) => ({ accepted, completed, state })),
-        ),
-      installPrepared: (version, handle) =>
-        controller.state.downloadedVersion === version
+        );
+      }),
+      installPrepared: Effect.fn("DesktopUpdates.installPrepared")(function (version, handle) {
+        return controller.state.downloadedVersion === version
           ? install(handle)
           : Effect.succeed({
               accepted: false,
               completed: false,
               failed: false,
               state: controller.state,
-            }),
+            });
+      }),
     });
   }
 

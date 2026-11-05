@@ -10,6 +10,9 @@ import {
   RuntimeMode,
   type ServerAuthSessionMethod,
 } from "@t3tools/contracts";
+import { makeSessionPresentation } from "../jones/auth/SessionPresentation.ts";
+import type { JonesAuthClientPresentation } from "@t3tools/contracts/jones/authClientPresentation";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
@@ -409,6 +412,10 @@ export class SessionStore extends Context.Service<
       ReadonlyArray<AuthClientSession>,
       SessionCredentialInternalError
     >;
+    readonly recordClientConnection: (
+      sessionId: AuthSessionId,
+      hints: JonesAuthClientPresentation,
+    ) => Effect.Effect<void, SessionCredentialVerificationError>;
     readonly streamChanges: Stream.Stream<SessionCredentialChange>;
     /** Completes when a live socket's session is revoked or expires without a renewal for its DPoP key. */
     readonly awaitInvalidation: (
@@ -491,12 +498,111 @@ function toAuthClientSession(input: Omit<AuthClientSession, "current">): AuthCli
   };
 }
 
-const make = Effect.gen(function* () {
+const encodeEffectFromJsonStringSessionClaims = Schema.encodeEffect(
+  Schema.fromJsonString(SessionClaims),
+);
+const encodeEffectFromJsonStringWebSocketClaims = Schema.encodeEffect(
+  Schema.fromJsonString(WebSocketClaims),
+);
+
+export const matchesReservedAuthSession = (
+  record: AuthSessions.AuthSessionRecord,
+  expected: AuthSessions.CreateAuthSessionInput,
+): boolean =>
+  record.sessionId === expected.sessionId &&
+  record.subject === expected.subject &&
+  record.method === expected.method &&
+  JSON.stringify(record.scopes) === JSON.stringify(expected.scopes) &&
+  record.issuedAt.epochMilliseconds === expected.issuedAt.epochMilliseconds &&
+  record.expiresAt.epochMilliseconds === expected.expiresAt.epochMilliseconds &&
+  record.client.label === expected.client.label &&
+  record.client.ipAddress === expected.client.ipAddress &&
+  record.client.userAgent === expected.client.userAgent &&
+  record.client.deviceType === expected.client.deviceType &&
+  record.client.os === expected.client.os &&
+  record.client.browser === expected.client.browser;
+
+const encodeReservedSessionClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
+
+/**
+ * Sign enrollment bearers only for reserved, unrevoked, current sessions matching the exact reservation.
+ * Never create sessions or widen scopes. Read the existing signing key; SessionStore startup owns creation.
+ */
+export const makeReservedBearerSessionMaterializer = Effect.gen(function* () {
+  const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const secrets = yield* ServerSecretStore.ServerSecretStore;
+  const secret = yield* secrets
+    .get(SIGNING_SECRET_NAME)
+    .pipe(Effect.mapError((cause) => new SessionCredentialIssueError({ cause })));
+  if (Option.isNone(secret) || secret.value.byteLength !== 32)
+    return yield* new SessionCredentialIssueError({ cause: "signing_key_missing" });
+  const signingSecret = secret.value;
+  return (expected: AuthSessions.CreateAuthSessionInput) =>
+    Effect.gen(function* () {
+      const row = yield* authSessions
+        .getById({ sessionId: expected.sessionId })
+        .pipe(
+          Effect.mapError(
+            (cause) => new SessionCredentialIssueError({ sessionId: expected.sessionId, cause }),
+          ),
+        );
+      const now = yield* DateTime.now;
+      if (
+        expected.method !== "bearer-access-token" ||
+        Option.isNone(row) ||
+        row.value.revokedAt !== null ||
+        !matchesReservedAuthSession(row.value, expected) ||
+        expected.issuedAt.epochMilliseconds > now.epochMilliseconds ||
+        expected.expiresAt.epochMilliseconds <= now.epochMilliseconds ||
+        expected.expiresAt.epochMilliseconds <= expected.issuedAt.epochMilliseconds
+      ) {
+        return yield* new SessionCredentialIssueError({
+          sessionId: expected.sessionId,
+          cause: "reserved_session_mismatch",
+        });
+      }
+      const payload = yield* encodeReservedSessionClaims({
+        v: 1,
+        kind: "session",
+        sid: expected.sessionId,
+        sub: expected.subject,
+        scopes: expected.scopes,
+        method: "bearer-access-token",
+        iat: expected.issuedAt.epochMilliseconds,
+        exp: expected.expiresAt.epochMilliseconds,
+      }).pipe(
+        Effect.map(base64UrlEncode),
+        Effect.mapError(
+          (cause) =>
+            new SessionCredentialIssueError({
+              sessionId: expected.sessionId,
+              cause: new SessionClaimsEncodingError({
+                sessionId: expected.sessionId,
+                operation: "encode_session_claims",
+                cause,
+              }),
+            }),
+        ),
+      );
+      return {
+        sessionId: expected.sessionId,
+        token: `${payload}.${signPayload(payload, signingSecret)}`,
+        method: "bearer-access-token",
+        client: toClientMetadata(expected.client),
+        expiresAt: expected.expiresAt,
+        scopes: expected.scopes,
+      } satisfies IssuedSession;
+    });
+});
+
+export const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironmentIdentity;
   const secretStore = yield* ServerSecretStore.ServerSecretStore;
   const authSessions = yield* AuthSessions.AuthSessionRepository;
+  const sql = yield* SqlClient.SqlClient;
+  const presentation = yield* makeSessionPresentation;
   const signingSecret = yield* secretStore.getOrCreateRandom(SIGNING_SECRET_NAME, 32);
   const connectedSessionsRef = yield* Ref.make(new Map<AuthSessionId, number>());
   const changesPubSub = yield* PubSub.unbounded<SessionCredentialChange>();
@@ -566,17 +672,19 @@ const make = Effect.gen(function* () {
       return Option.none<AuthClientSession>();
     }
     return Option.some(
-      toAuthClientSession({
-        sessionId: row.value.sessionId,
-        subject: row.value.subject,
-        scopes: row.value.scopes,
-        method: row.value.method,
-        client: toClientMetadata(row.value.client),
-        issuedAt: row.value.issuedAt,
-        expiresAt: row.value.expiresAt,
-        lastConnectedAt: row.value.lastConnectedAt,
-        connected,
-      }),
+      yield* presentation.overlay(
+        toAuthClientSession({
+          sessionId: row.value.sessionId,
+          subject: row.value.subject,
+          scopes: row.value.scopes,
+          method: row.value.method,
+          client: toClientMetadata(row.value.client),
+          issuedAt: row.value.issuedAt,
+          expiresAt: row.value.expiresAt,
+          lastConnectedAt: row.value.lastConnectedAt,
+          connected,
+        }),
+      ),
     );
   });
 
@@ -640,7 +748,7 @@ const make = Effect.gen(function* () {
       Effect.withSpan("SessionStore.markDisconnected"),
     );
 
-  const encodeClaims = Schema.encodeEffect(Schema.fromJsonString(SessionClaims));
+  const encodeClaims = encodeEffectFromJsonStringSessionClaims;
   const issue: SessionStore["Service"]["issue"] = Effect.fn("SessionStore.issue")(
     function* (input) {
       const sessionId = AuthSessionId.make(
@@ -849,7 +957,7 @@ const make = Effect.gen(function* () {
     },
   );
 
-  const encodeWsClaims = Schema.encodeEffect(Schema.fromJsonString(WebSocketClaims));
+  const encodeWsClaims = encodeEffectFromJsonStringWebSocketClaims;
   const issueWebSocketToken: SessionStore["Service"]["issueWebSocketToken"] = Effect.fn(
     "SessionStore.issueWebSocketToken",
   )(function* (sessionId, input) {
@@ -969,18 +1077,20 @@ const make = Effect.gen(function* () {
         connectedSessionIds: Array.from(connectedSessions.keys()),
       });
 
-      return rows.map((row) =>
-        toAuthClientSession({
-          sessionId: row.sessionId,
-          subject: row.subject,
-          scopes: row.scopes,
-          method: row.method,
-          client: toClientMetadata(row.client),
-          issuedAt: row.issuedAt,
-          expiresAt: row.expiresAt,
-          lastConnectedAt: row.lastConnectedAt,
-          connected: connectedSessions.has(row.sessionId),
-        }),
+      return yield* Effect.forEach(rows, (row) =>
+        presentation.overlay(
+          toAuthClientSession({
+            sessionId: row.sessionId,
+            subject: row.subject,
+            scopes: row.scopes,
+            method: row.method,
+            client: toClientMetadata(row.client),
+            issuedAt: row.issuedAt,
+            expiresAt: row.expiresAt,
+            lastConnectedAt: row.lastConnectedAt,
+            connected: connectedSessions.has(row.sessionId),
+          }),
+        ),
       );
     },
     Effect.mapError((cause) => new ActiveSessionsListError({ cause })),
@@ -1100,6 +1210,26 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const recordClientConnection: SessionStore["Service"]["recordClientConnection"] = (
+    sessionId,
+    hints,
+  ) =>
+    sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const actual = yield* authSessions.getById({ sessionId });
+          if (Option.isNone(actual))
+            return yield* new SessionCredentialVerificationError({
+              sessionId,
+              cause: "Missing underlying session",
+            });
+          yield* presentation.write(actual.value, hints);
+        }),
+      )
+      .pipe(
+        Effect.mapError((cause) => new SessionCredentialVerificationError({ sessionId, cause })),
+      );
+
   return SessionStore.of({
     cookieName,
     legacyCookieName,
@@ -1108,6 +1238,7 @@ const make = Effect.gen(function* () {
     issueWebSocketToken,
     verifyWebSocketToken,
     listActive,
+    recordClientConnection,
     awaitInvalidation,
     get streamChanges() {
       return Stream.fromPubSub(changesPubSub);

@@ -25,7 +25,8 @@
     "apps/web/src/pendingUserInput.ts",
     "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
     "apps/mobile/src/features/threads/QuestionAttachments.tsx",
-    "apps/mobile/src/state/use-selected-thread-requests.ts"
+    "apps/mobile/src/state/use-selected-thread-requests.ts",
+    "apps/web/src/components/chat/usePendingThreadRequests.ts"
   ],
   "tombstones": [],
   "allowedImports": [
@@ -88,6 +89,22 @@
     {
       "from": "apps/web/src/pendingUserInput.ts",
       "to": "packages/contracts/src/jones/userResponseRequest.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/PendingUserInputCard.tsx",
+      "to": "apps/mobile/src/jones/questionAnswer/answers.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-selected-thread-requests.ts",
+      "to": "apps/mobile/src/jones/questionAnswer/answers.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/usePendingThreadRequests.ts",
+      "to": "apps/web/src/jones/questionAnswer/pendingAnswers.ts"
+    },
+    {
+      "from": "apps/web/src/pendingUserInput.ts",
+      "to": "apps/web/src/jones/questionAnswer/pendingAnswers.ts"
     }
   ]
 }

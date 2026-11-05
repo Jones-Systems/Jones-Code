@@ -6,6 +6,12 @@ import { defineConfig, normalizePath } from "vite-plus";
 import "vite-plus/test/config";
 
 const reactTests = [
+  "src/features/workstreams/Controls.operations.test.tsx",
+  "src/jones/updates/actionJournal.test.ts",
+  "src/jones/updates/JonesUpdateControls.test.tsx",
+  "src/features/workstreams/useWorkstreams.authorization.test.tsx",
+  "src/jones/descendantApproval/DescendantApprovalCard.test.tsx",
+  "src/jones/descendantApproval/PendingApprovalStack.test.tsx",
   "src/features/threads/git/GitBranchesSheet.test.tsx",
   "src/features/threads/new-task-flow-provider.test.tsx",
   "src/features/workspace/workspace-tabs-state.test.ts",

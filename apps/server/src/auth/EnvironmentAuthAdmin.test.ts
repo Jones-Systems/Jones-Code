@@ -1,4 +1,4 @@
-import { AuthStandardClientScopes, type ManagedPolicyDocument } from "@t3tools/contracts";
+import { AuthAdministrativeScopes, type ManagedPolicyDocument } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
@@ -164,11 +164,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))(
         const listedAfterRevoke = yield* environmentAuth.listSessions();
 
         expect(issued.method).toBe("bearer-access-token");
-        expect(issued.scopes).toEqual(AuthStandardClientScopes);
+        expect(issued.scopes).toEqual(AuthAdministrativeScopes);
         expect(issued.client.deviceType).toBe("bot");
         expect(issued.client.label).toBe("deploy-bot");
         expect(verified.sessionId).toBe(issued.sessionId);
-        expect(verified.scopes).toEqual(AuthStandardClientScopes);
+        expect(verified.scopes).toEqual(AuthAdministrativeScopes);
         expect(verified.method).toBe("bearer-access-token");
         expect(listedBeforeRevoke).toHaveLength(1);
         expect(listedBeforeRevoke[0]?.sessionId).toBe(issued.sessionId);

@@ -192,7 +192,14 @@ const makeHarness = Effect.fn("makeWorkModeSettlementHarness")(function* (option
     yield* Queue.take(candidateReads);
     yield* service.drain;
     return { commands: yield* Ref.get(commands), recordReads: yield* Ref.get(recordReads) };
-  }).pipe(Effect.provide(ThreadSettlementService.layer.pipe(Layer.provide(dependencies))));
+  }).pipe(
+    Effect.provide(
+      Layer.effect(
+        ThreadSettlementService.ThreadSettlementServiceV2,
+        ThreadSettlementService.make,
+      ).pipe(Layer.provide(dependencies)),
+    ),
+  );
 
   // Changes settings once the sweep is reading history, then lets the read finish.
   const changeSettingsDuringRecordRead = (next: ContractServerSettings) =>

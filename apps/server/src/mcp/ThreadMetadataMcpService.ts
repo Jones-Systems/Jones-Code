@@ -158,6 +158,12 @@ const make = Effect.gen(function* () {
     if (shell === null || shell.deletedAt !== null) {
       return yield* threadNotFound(threadManagement, threadId, `Thread ${threadId} was not found.`);
     }
+    if (input.action === "allow_thread_messages" && threadId !== scope.thread?.threadId) {
+      return yield* failure(
+        "capability_denied",
+        "Only the calling thread can allow incoming thread messages for itself.",
+      );
+    }
     const requestKey =
       input.clientRequestId === undefined ? yield* random.uuidV4() : input.clientRequestId;
     const updateCommandId = commandId({

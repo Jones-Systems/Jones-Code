@@ -1,7 +1,6 @@
 import { fileBasename } from "@t3tools/shared/path";
 import { fileLinkLabel } from "@t3tools/shared/fileLinks";
 import {
-  inlineCodeFilePathCandidate,
   normalizeMarkdownLinkDestination,
   parseMarkdownFileLink,
 } from "@t3tools/shared/markdownLinks";
@@ -285,13 +284,4 @@ export function resolveMarkdownLinkPresentation(href: string): MarkdownLinkPrese
         ? normalized
         : null,
   };
-}
-
-export function resolveMarkdownInlineCodePresentation(
-  content: string,
-): Extract<MarkdownLinkPresentation, { readonly kind: "file" }> | null {
-  const candidate = inlineCodeFilePathCandidate(content);
-  if (candidate === null) return null;
-  const presentation = resolveMarkdownLinkPresentation(candidate);
-  return presentation.kind === "file" ? presentation : null;
 }

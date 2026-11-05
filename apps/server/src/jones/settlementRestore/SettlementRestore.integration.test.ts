@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { SETTLEMENT_RESTORE_CAPABILITY } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -80,7 +81,7 @@ const providerInstance = {
 } satisfies ProviderInstance;
 
 const Platform = Layer.merge(
-  NodeServices.layer,
+  Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -122,6 +123,8 @@ const runtimeFor = <EC, ED, RD>(
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+        getCatalogSource: (instanceId) =>
+          instanceId === providerInstance.instanceId ? providerInstance : undefined,
         getInstance: (instanceId) =>
           Effect.succeed(instanceId === providerInstance.instanceId ? providerInstance : undefined),
         listInstances: Effect.succeed([providerInstance]),
@@ -151,7 +154,7 @@ const runtimeFor = <EC, ED, RD>(
 
 const scratchConfig = Layer.unwrap(
   Effect.map(makeScratch, (baseDir) => ServerConfig.layerTest(process.cwd(), baseDir)),
-).pipe(Layer.provide(NodeServices.layer));
+).pipe(Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)));
 const TestLayer = runtimeFor(scratchConfig, SqlitePersistence.layerMemory);
 
 const createThread = Effect.fnUntraced(function* (prefix: string) {
@@ -800,7 +803,9 @@ it.effect("the record survives restart and event compaction on the same database
       const baseDir = yield* makeScratch;
       const runtime = () =>
         runtimeFor(
-          ServerConfig.layerTest(process.cwd(), baseDir).pipe(Layer.provide(NodeServices.layer)),
+          ServerConfig.layerTest(process.cwd(), baseDir).pipe(
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+          ),
           SqlitePersistence.layerConfig,
         );
       const threadId = ThreadId.make("restart-thread");
@@ -901,5 +906,5 @@ it.effect("the record survives restart and event compaction on the same database
         });
       }).pipe(Effect.scoped, Effect.provide(runtime()));
     }),
-  ).pipe(Effect.provide(NodeServices.layer)),
+  ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );

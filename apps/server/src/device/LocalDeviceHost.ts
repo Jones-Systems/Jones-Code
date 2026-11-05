@@ -658,11 +658,33 @@ export const make = Effect.fn("LocalDeviceHost.make")(function* () {
     onPhase: (phase: "installing" | "starting", detail?: string) => Effect.Effect<void>,
   ): Effect.fn.Return<RunningHost, DeviceHost.DeviceHostError | NodeRuntimeUnavailableError> {
     const running = yield* Ref.get(runningRef);
+    const nodePath =
+      running?.hub.nodePath ??
+      (yield* resolveNodeExecutable("Local device support", hostEnvironment).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.provideService(HostProcess.Platform, hostPlatform),
+      ));
+    const platforms = yield* Effect.all([
+      platformAvailability("ios"),
+      platformAvailability("android"),
+    ]);
+    if (!platforms.some((platform) => platform.available)) {
+      // Retain the record for close: an agent daemon can outlive the stopped hub.
+      if (running) yield* stopHub(running.hub);
+      return yield* new DeviceHost.DeviceHostError({
+        hostId,
+        step: unavailablePlatformReason(platforms),
+        cause: platforms,
+      });
+    }
+    const platform = availableHubPlatform(platforms);
     // A dead hub's record stays until a replacement is published: the agent
     // daemon outlives the hub, and close needs its endpoint if the restart fails.
     if (running) {
       const alive = yield* running.hub.child.isRunning.pipe(Effect.orElseSucceed(() => false));
-      if (alive) return running;
+      if (alive && running.hub.platform === platform) return running;
+      if (alive) yield* stopHub(running.hub);
     }
     const installed = yield* isDeviceHubInstalled(config.baseDir).pipe(
       Effect.provideService(FileSystem.FileSystem, fs),

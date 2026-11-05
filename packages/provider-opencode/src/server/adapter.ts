@@ -3152,7 +3152,7 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                 now: createdAt,
               });
               const existing = threadInput.existingProviderThread;
-              const providerThread =
+              const providerThread = yield* bindAdoption(
                 existing === undefined
                   ? created
                   : {
@@ -3162,7 +3162,8 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
                       nativeConversationHeadRef: created.nativeConversationHeadRef,
                       status: created.status,
                       updatedAt: created.updatedAt,
-                    };
+                    },
+              );
               registerThread(nativeSession, providerThread, null).permission = permission;
               return providerThread;
             },
@@ -3187,12 +3188,12 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               );
               const nativeSession = unwrapData("session.get", response);
               const resumedAt = yield* DateTime.now;
-              const providerThread = {
+              const providerThread = yield* bindAdoption({
                 ...threadInput.providerThread,
                 providerSessionId: input.providerSessionId,
                 status: "idle" as const,
                 updatedAt: dateTimeFromEpoch(nativeSession.time.updated, resumedAt),
-              };
+              });
               const state = registerThread(nativeSession, providerThread, null);
               if (threadInput.runtimePolicy !== undefined) {
                 yield* applyPermissionRules(state, threadInput.runtimePolicy);
@@ -3773,23 +3774,26 @@ export const makeOpenCodeAdapterV2 = Effect.fn("makeOpenCodeAdapterV2")(function
               );
               const nativeSession = unwrapData("session.fork", response);
               const forkedAt = yield* DateTime.now;
-              const providerThread = makeProviderThread({
-                idAllocator,
-                providerInstanceId: options.instanceId,
-                providerSessionId: input.providerSessionId,
-                appThreadId: forkInput.targetThreadId,
-                ...(forkInput.ownerNodeId === undefined
-                  ? {}
-                  : { ownerNodeId: forkInput.ownerNodeId }),
-                nativeSession,
-                forkedFrom: {
-                  providerThreadId: forkInput.sourceProviderThread.id,
-                  ...(forkInput.providerTurnId === undefined
+              yield* requireAdoption;
+              const providerThread = yield* bindAdoption(
+                makeProviderThread({
+                  idAllocator,
+                  providerInstanceId: options.instanceId,
+                  providerSessionId: input.providerSessionId,
+                  appThreadId: forkInput.targetThreadId,
+                  ...(forkInput.ownerNodeId === undefined
                     ? {}
-                    : { providerTurnId: forkInput.providerTurnId }),
-                },
-                now: forkedAt,
-              });
+                    : { ownerNodeId: forkInput.ownerNodeId }),
+                  nativeSession,
+                  forkedFrom: {
+                    providerThreadId: forkInput.sourceProviderThread.id,
+                    ...(forkInput.providerTurnId === undefined
+                      ? {}
+                      : { providerTurnId: forkInput.providerTurnId }),
+                  },
+                  now: forkedAt,
+                }),
+              );
               registerThread(nativeSession, providerThread, null);
               return providerThread;
             },

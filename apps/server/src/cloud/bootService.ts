@@ -260,8 +260,9 @@ export interface BootServiceManager {
 function systemdManager(input: {
   readonly path: Path.Path;
   readonly unitDir: string;
+  readonly identity: BootServiceIdentity;
 }): BootServiceManager {
-  const unitPath = input.path.join(input.unitDir, BOOT_SERVICE_UNIT_FILE);
+  const unitPath = input.path.join(input.unitDir, input.identity.systemdUnitFile);
   const prepareActivation = [
     {
       step: "reloading systemd user units",
@@ -423,6 +424,7 @@ function selectBootServiceManager(input: {
   if (input.platform === "linux") {
     return systemdManager({
       path: input.path,
+      identity: input.identity,
       unitDir:
         input.systemdUnitDir ??
         input.path.join(
@@ -700,6 +702,23 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
     ),
   ).join(":");
 
+  const launcherPointer = yield* Effect.tryPromise({
+    try: async () => {
+      const pointer = await readLauncherPointer(input.baseDir);
+      if (pointer !== undefined) {
+        for (const version of [pointer.currentVersion, pointer.pendingVersion]) {
+          if (version !== undefined)
+            await readQualifiedRuntimeReceipt(input.baseDir, version, {
+              platform,
+              architecture: arch,
+            });
+        }
+      }
+      return pointer;
+    },
+    catch: (cause) => new BootServiceInstallError({ cause }),
+  });
+
   const systemdUnitDir = platform === "linux" ? yield* readSystemdUnitDirectory() : undefined;
   const detectedManager = selectBootServiceManager({
     platform,
@@ -734,22 +753,7 @@ export const make = Effect.fn("cloud.boot_service.make")(function* (input: {
         );
       }),
     ).pipe(Effect.mapError((cause) => new BootServiceInstallError({ cause })));
-  const launcherPointer = yield* Effect.tryPromise({
-    try: async () => {
-      const pointer = await readLauncherPointer(input.baseDir);
-      if (pointer !== undefined) {
-        for (const version of [pointer.currentVersion, pointer.pendingVersion]) {
-          if (version !== undefined)
-            await readQualifiedRuntimeReceipt(input.baseDir, version, {
-              platform,
-              architecture: arch,
-            });
-        }
-      }
-      return pointer;
-    },
-    catch: (cause) => new BootServiceInstallError({ cause }),
-  });
+
   const plan: BootServicePlan = {
     program: [launcherPointer?.program ?? runtimePaths.entryPath, "__service-launcher"],
     baseDir: input.baseDir,

@@ -2,7 +2,6 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
   ProjectScript,
-  keepUnknownOverrideKeys,
   ProjectSettingsOverrides,
   type ProviderInstanceConfig,
   type ProviderInstanceMutation,
@@ -42,7 +41,7 @@ import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import { resolveSymlinkTarget } from "@t3tools/shared/symlink";
 import * as ServerConfig from "./config.ts";
 import { type DeepPartial, deepMerge } from "@t3tools/shared/Struct";
-import { fromJsonStringPretty } from "@t3tools/shared/schemaJson";
+import { fromJsonStringPretty, fromLenientJson } from "@t3tools/shared/schemaJson";
 import {
   applyServerSettingsPatch,
   deriveLegacyProjectOverrides,
@@ -328,46 +327,6 @@ export const layerTest = (
   managedPolicy?: ManagedPolicySummary,
 ) => Layer.effect(ServerSettingsService, makeTest(overrides, managedPolicy));
 
-// Accept retired token delivery only on load so one old value cannot reset all settings.
-const PersistedResponseStreamingMode = Schema.Union([
-  ResponseStreamingMode,
-  Schema.Literal("token"),
-]).pipe(
-  Schema.decodeTo(
-    ResponseStreamingMode,
-    SchemaTransformation.transform({
-      decode: (mode) => (mode === "token" ? "paragraph" : mode),
-      encode: (mode) => mode,
-    }),
-  ),
-);
-const PersistedServerSettings = Schema.Struct({
-  ...ServerSettings.fields,
-  responseStreamingMode: PersistedResponseStreamingMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
-  ),
-  projectSettingsOverrides: Schema.Record(
-    ProjectId,
-    keepUnknownOverrideKeys(
-      Schema.Struct({
-        ...ProjectSettingsOverrides.fields,
-        responseStreamingMode: Schema.optionalKey(PersistedResponseStreamingMode),
-      }),
-    ),
-  ).pipe(Schema.withDecodingDefault(Effect.succeed({}))),
-});
-// Parse first and decode second, so a managed policy can fill its defaults in between.
-const decodeSettingsFileJsonExit = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown));
-const decodePersistedServerSettingsExit = Schema.decodeUnknownExit(PersistedServerSettings);
-const LegacyProviderSettingsJson = fromLenientJson(
-  Schema.Struct({
-    providers: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    bitbucket: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    github: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-  }),
-);
-const decodeLegacyProviderSettingsJsonExit = Schema.decodeUnknownExit(LegacyProviderSettingsJson);
-
 const LEGACY_BITBUCKET_SECRET_NAMES: Readonly<Record<string, string>> = {
   accessToken: "bitbucket-access-token",
   apiToken: "bitbucket-api-token",
@@ -485,6 +444,31 @@ function selectionSupportsTextGeneration(
 
 type DriverAllowed = (driver: ProviderDriverKind) => boolean;
 const anyDriver: DriverAllowed = () => true;
+
+function validateExplicitTextGenerationSelection(
+  settings: ServerSettings,
+  patch: ServerSettingsPatch,
+  settingsPath: string,
+): Effect.Effect<void, ServerSettingsError> {
+  const selectionPatch = patch.textGenerationModelSelection;
+  if (
+    selectionPatch === undefined ||
+    Object.keys(selectionPatch).length === 0 ||
+    (isModelSelectionProviderEnabled(settings, settings.textGenerationModelSelection) &&
+      selectionSupportsTextGeneration(settings, settings.textGenerationModelSelection))
+  )
+    return Effect.void;
+  return Effect.fail(
+    new ServerSettingsError({
+      settingsPath,
+      operation: "normalize",
+      providerInstanceId: settings.textGenerationModelSelection.instanceId,
+      cause: new Error(
+        "Explicit text-generation selection requires an enabled provider with text-generation support.",
+      ),
+    }),
+  );
+}
 
 function resolveTextGenerationProvider(
   settings: ServerSettings,
@@ -696,6 +680,8 @@ const make = Effect.gen(function* () {
     ),
   );
 
+  const decodeSettingsFileJsonExit = Schema.decodeUnknownExit(fromLenientJson(Schema.Unknown));
+
   // The file before this write, parsed; only read when policy defaults need it.
   const readStoredSettings = Effect.gen(function* () {
     if (!(yield* readConfigExists)) return undefined;
@@ -763,47 +749,23 @@ const make = Effect.gen(function* () {
   );
 
   const loadSettingsFromDisk = Effect.gen(function* () {
-    let settings = managed.defaults;
-    let legacyProviders: Readonly<Record<string, unknown>> | undefined;
-    let legacySourceControl: Parameters<typeof migrateLegacySourceControlSettings>[1] = {};
-    let parseFailure = Option.none<unknown>();
-
-    if (yield* readConfigExists) {
-      const raw = yield* readRawConfig;
-      const parsed = decodeSettingsFileJsonExit(raw);
-      const decoded = Exit.isFailure(parsed)
-        ? parsed
-        : decodePersistedServerSettingsExit(managed.withDefaults(parsed.value));
-      const legacySettings = decodeLegacyProviderSettingsJsonExit(raw);
-      if (legacySettings._tag === "Success") {
-        legacyProviders = legacySettings.value.providers;
-        legacySourceControl = {
-          bitbucket: legacySettings.value.bitbucket,
-          github: legacySettings.value.github,
-        };
-      }
-      if (decoded._tag === "Failure" || legacySettings._tag === "Failure") {
-        const failure = decoded._tag === "Failure" ? decoded : legacySettings;
-        // The file may hold an opt-out we can no longer read; never resume threads on a guess.
-        settings = { ...managed.defaults, continueThreadsAfterServerUpdate: false };
-        if (failure._tag === "Failure") {
-          parseFailure = Option.some(Cause.squash(failure.cause));
-          yield* Effect.logWarning("failed to parse settings.json, using defaults", {
-            path: settingsPath,
-            issues: Cause.pretty(failure.cause),
-            cause: failure.cause,
-          });
-        }
-      } else {
-        settings = decoded.value;
-      }
-    }
+    const raw = (yield* readConfigExists) ? yield* readRawConfig : undefined;
+    const decoded = decodePersistedServerSettings(raw, managed);
+    const legacyProviders = decoded.legacy.providers;
+    const legacySourceControl = decoded.legacy;
+    const settingsFileTrusted = decoded.settingsFileTrusted;
     const parseFailure =
-      cause === undefined ? Option.none<unknown>() : Option.some(Cause.squash(cause));
-    // Settings saved by a server that kept the mode in `compactIdleThreads` move
-    // it to `idleCompaction`, so that switch goes to clients as a boolean. The
-    // defaults gain the field too, which tells clients this server reads modes.
-    const settings = withIdleCompaction(persistedSettings, globalIdleCompaction(persistedSettings));
+      decoded.cause === undefined
+        ? Option.none<unknown>()
+        : Option.some(Cause.squash(decoded.cause));
+    if (decoded.cause !== undefined) {
+      yield* Effect.logWarning("failed to parse settings.json, using defaults", {
+        path: settingsPath,
+        issues: Cause.pretty(decoded.cause),
+        cause: decoded.cause,
+      });
+    }
+    const settings = withIdleCompaction(decoded.settings, globalIdleCompaction(decoded.settings));
 
     const providerHistory = yield* sql<{
       readonly providerName: string;
@@ -1140,7 +1102,6 @@ const make = Effect.gen(function* () {
   const updateAndPersistSettings = (
     patch: ServerSettingsPatch,
     update: (current: ServerSettings) => Effect.Effect<ServerSettings, ServerSettingsError>,
-    patch: ServerSettingsPatch,
   ): Effect.Effect<ServerSettings, ServerSettingsError> =>
     writeSemaphore.withPermits(1)(
       Effect.gen(function* () {
@@ -1181,6 +1142,11 @@ const make = Effect.gen(function* () {
             managedBy: managedPolicy?.organization,
           });
         }
+        yield* validateExplicitTextGenerationSelection(
+          vettedProviders.settings,
+          patch,
+          settingsPath,
+        );
         const persisted = yield* persistSettingsSecrets(current, vettedProviders.settings);
         const next = yield* normalizeServerSettings(persisted.settings);
         const materializedNext = yield* Effect.uninterruptibleMask(() =>
