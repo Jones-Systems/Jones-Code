@@ -838,9 +838,13 @@ const layerBase: Layer.Layer<
           concurrency: 1,
         });
         if (Option.isSome(provenance))
-          yield* provenance.value.events(storedEvents.map((stored) => stored.event)).pipe(
-            Effect.catch((cause) => Effect.logWarning("Workspace provenance facts held", { reason: cause.reason })),
-          );
+          yield* provenance.value
+            .events(storedEvents.map((stored) => stored.event))
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Workspace provenance facts held", { reason: cause.reason }),
+              ),
+            );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);

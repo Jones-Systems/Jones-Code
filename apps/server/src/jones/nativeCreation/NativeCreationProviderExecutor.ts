@@ -83,7 +83,13 @@ export const layer = Layer.effect(
               return yield* new Execution.NativeCreationProviderExecutionError({
                 message: "Native executor has no original verified workspace",
               });
-            yield* captureProvenance({ threadId: effect.threadId, reason: "launch", createdBy: "system", runId: effect.request.runId, baseRef: original.history.intent.binding.baseBranch });
+            yield* captureProvenance({
+              threadId: effect.threadId,
+              reason: "launch",
+              createdBy: "system",
+              runId: effect.request.runId,
+              baseRef: original.history.intent.binding.baseBranch,
+            });
             const guard = yield* Guard.issueNativeProviderGuard({
               context,
               resources: original.history.intent.resources,

@@ -36,8 +36,15 @@ const handlers = {
         .listRefs({ ...refs, cwd: thread.worktreePath ?? project.value.workspaceRoot })
         .pipe(Effect.mapError(unavailable));
       const lookup = yield* WorkspaceProvenance.optionalLookup;
-      const provenance = yield* lookup(provenancePath === undefined ? { threadId: thread.id } : { path: provenancePath }).pipe(Effect.mapError(unavailable));
-      return { ...result, ...(provenance === undefined ? {} : { provenance: provenance.filter((p) => p.projectId === thread.projectId) }) };
+      const provenance = yield* lookup(
+        provenancePath === undefined ? { threadId: thread.id } : { path: provenancePath },
+      ).pipe(Effect.mapError(unavailable));
+      return {
+        ...result,
+        ...(provenance === undefined
+          ? {}
+          : { provenance: provenance.filter((p) => p.projectId === thread.projectId) }),
+      };
     }),
   ),
   t3_worktree_handoff: McpToolAccess.actsAsCaller((input) =>

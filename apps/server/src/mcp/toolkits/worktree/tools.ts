@@ -73,7 +73,10 @@ const WorktreeListTool = Tool.make("t3_worktree_list", {
     refKind: VcsListRefsInput.fields.refKind,
     includeMatchingRemoteRefs: VcsListRefsInput.fields.includeMatchingRemoteRefs,
   }),
-  success: Schema.Struct({ ...VcsListRefsResult.fields, provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)) }),
+  success: Schema.Struct({
+    ...VcsListRefsResult.fields,
+    provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
+  }),
   failure: OrchestratorMcpFailure,
   failureMode: "return",
   dependencies: [

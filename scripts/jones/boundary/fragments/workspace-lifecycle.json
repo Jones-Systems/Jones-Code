@@ -22,9 +22,7 @@
     "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
     "apps/server/src/jones/workspaceLifecycle/NativeStart.testkit.ts",
     "apps/server/src/jones/workspaceLifecycle/Provenance.ts",
-    "packages/contracts/src/jones/workspaceProvenance.test.ts",
-    "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",
-    "apps/server/src/jones/persistence/Migrations/136_JonesWorkspaceProvenance.ts"
+    "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],

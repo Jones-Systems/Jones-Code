@@ -224,7 +224,11 @@ const make = Effect.gen(function* () {
       }
     }
 
-    yield* captureProvenance({ threadId: scope.thread.threadId, reason: "reference", createdBy: "agent" });
+    yield* captureProvenance({
+      threadId: scope.thread.threadId,
+      reason: "reference",
+      createdBy: "agent",
+    });
     const ids = yield* handoffIds(scope);
 
     // Mask interruption after worktree creation through setup; binding can detach and interrupt the caller.
@@ -334,7 +338,15 @@ const make = Effect.gen(function* () {
           );
 
         const continuation = yield* recheckAndBind.pipe(
-          Effect.andThen(captureProvenance({ threadId: scope.thread.threadId, reason: "handoff", createdBy: "agent", baseRef: baseRefName, baseIsCurrentHead: true })),
+          Effect.andThen(
+            captureProvenance({
+              threadId: scope.thread.threadId,
+              reason: "handoff",
+              createdBy: "agent",
+              baseRef: baseRefName,
+              baseIsCurrentHead: true,
+            }),
+          ),
           Effect.andThen(queueContinuation),
         );
 
@@ -424,7 +436,9 @@ const make = Effect.gen(function* () {
 
       const defaultStartFromOrigin = yield* readDefaultStartFromOrigin;
 
-      const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId }).pipe(asOperationFailed("Unable to read workspace provenance"));
+      const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId }).pipe(
+        asOperationFailed("Unable to read workspace provenance"),
+      );
       const result: WorktreeMcpStatusResult = {
         attached: projection.thread.worktreePath !== null,
         worktreePath: projection.thread.worktreePath,

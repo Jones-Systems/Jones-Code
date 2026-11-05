@@ -1501,8 +1501,11 @@ const make = Effect.gen(function* () {
       }
       workspaceRecorded = true;
       yield* captureProvenance({
-        threadId, reason: input.workspaceStrategy.type === "worktree" ? "launch" : "reference",
-        createdBy: "system", baseRef: provenanceBaseRef, baseIsCurrentHead: provenanceBaseRef !== null && reused === undefined,
+        threadId,
+        reason: input.workspaceStrategy.type === "worktree" ? "launch" : "reference",
+        createdBy: "system",
+        baseRef: provenanceBaseRef,
+        baseIsCurrentHead: provenanceBaseRef !== null && reused === undefined,
         ...(runId === null ? {} : { runId }),
       });
       if (input.idleWorktreeAdmission !== undefined) {

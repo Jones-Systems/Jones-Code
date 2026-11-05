@@ -742,7 +742,11 @@ export const layer: Layer.Layer<
                   path: worktreePath,
                 }),
               ),
-              Effect.tap(() => Effect.sync(() => { recreatedWorkspace = true; })),
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  recreatedWorkspace = true;
+                }),
+              ),
               Effect.catchCause((cause) =>
                 Cause.hasInterruptsOnly(cause)
                   ? Effect.failCause(cause)
@@ -761,7 +765,12 @@ export const layer: Layer.Layer<
         boundary: "start",
         fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
       }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
-      yield* captureProvenance({ threadId: input.threadId, reason: recreatedWorkspace ? "recreate" : "reference", createdBy: "system", runId });
+      yield* captureProvenance({
+        threadId: input.threadId,
+        reason: recreatedWorkspace ? "recreate" : "reference",
+        createdBy: "system",
+        runId,
+      });
       const selectInheritedBackgroundItems = (
         current: ProjectionStore.ProjectionRuntimeRecoveryState,
       ): ReturnType<typeof RunExecutionService.selectInheritedBackgroundTurnItems> =>

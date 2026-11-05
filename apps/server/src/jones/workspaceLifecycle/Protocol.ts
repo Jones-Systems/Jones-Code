@@ -122,9 +122,13 @@ export class LifecycleError extends Schema.TaggedError<LifecycleError>()(
   }
 }
 
-
 export const ProvenanceReason = Schema.Literals([
-  "launch", "delegate", "handoff", "recreate", "reference", "backfill",
+  "launch",
+  "delegate",
+  "handoff",
+  "recreate",
+  "reference",
+  "backfill",
 ]);
 export type ProvenanceReason = typeof ProvenanceReason.Type;
 export const Provenance = Schema.Struct({
@@ -136,7 +140,9 @@ export const Provenance = Schema.Struct({
   created_at: Utc,
   created_by: text(1024),
   base_ref: Schema.NullOr(text(1024)),
-  base_head: Schema.NullOr(Schema.String.check(Schema.isPattern(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u))),
+  base_head: Schema.NullOr(
+    Schema.String.check(Schema.isPattern(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u)),
+  ),
   birth: Target.fields.directoryIdentity,
   admin_id: Schema.NullOr(Target.fields.directoryIdentity),
   predecessor: Schema.NullOr(text(1024)),
@@ -150,8 +156,13 @@ export const ProvenanceFact = Schema.Struct({
   incarnation_id: text(1024),
   thread_id: text(1024),
   kind: Schema.Literals([
-    "first_meaningful_write", "production", "pr_link", "pr_merge",
-    "settlement_outcome", "receipt", "recreation",
+    "first_meaningful_write",
+    "production",
+    "pr_link",
+    "pr_merge",
+    "settlement_outcome",
+    "receipt",
+    "recreation",
   ]),
   recorded_at: Utc,
   reference: text(2048),
