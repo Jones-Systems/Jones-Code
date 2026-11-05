@@ -4,6 +4,11 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "dev-proxy-cookie-auth",
+      "tests": ["apps/server/src/jones/auth/devProxy.test.ts"],
+      "scope": "Preserve the original browser Host for /api in the existing shared Vite development proxy policy. This accepted shared one-entry policy edit avoids a second proxy policy or backend authentication exception. Jones-owned disposable Vite proxy fixtures use production EnvironmentAuth, synthetic cookie sessions and in-memory persistence to cover preview/device upgrades, media/API HTTP, /ws, media tickets and missing/invalid credentials plus foreign-origin refusal. No Vite config, backend auth, browser lifecycle, wire or installed-runtime change; final live Browser verification is separately owned."
+    },
+    {
       "id": "thread-content-evidence",
       "tests": [
         "packages/contracts/src/jones/threadContentEvidence.test.ts",
