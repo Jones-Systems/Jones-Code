@@ -408,6 +408,7 @@ const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
   Layer.provide(layerRestartPreparationProvided),
   Layer.provide(
     Layer.mergeAll(
+      layerCommandReceiptStoreProvided,
       layerRunFinalizationServiceProvided,
       layerCheckpointRollbackServiceProvided,
       layerProviderSessionManagerProvided,

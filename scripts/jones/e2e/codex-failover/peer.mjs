@@ -9,8 +9,9 @@ const options = {};
 for (let i = 0; i < args.length; i++) {
   const arg = args[i];
   if (arg === "app-server") continue;
-  if (arg === "--hold" || arg === "--version") options[arg] = true;
-  else if (["--state-dir", "--account", "--mode"].includes(arg) && args[i + 1])
+  if (["--hold", "--version", "--defer-close", "--shared-producer"].includes(arg))
+    options[arg] = true;
+  else if (["--state-dir", "--account", "--mode", "--outcome"].includes(arg) && args[i + 1])
     options[arg] = args[++i];
   else throw new Error("Unsupported synthetic CLI argument");
 }
@@ -20,6 +21,8 @@ if (options["--version"]) {
 }
 const instance = options["--account"];
 const mode = options["--mode"] ?? "chain";
+if (options["--outcome"] !== undefined && options["--outcome"] !== "success")
+  throw new Error("Unsupported synthetic outcome");
 const requestedRoot = options["--state-dir"];
 if (
   !/[ABCDE]/.test(instance ?? "") ||
@@ -36,6 +39,23 @@ if (root === NodePath.parse(root).root) throw new Error("State root must be isol
 const processId = NodeCrypto.randomUUID();
 const model = "synthetic-codex-model";
 const safeToken = (value) => typeof value === "string" && /^[a-zA-Z0-9_-]{1,96}$/.test(value);
+const currentInputMarker = (text) => {
+  if (typeof text !== "string" || Buffer.byteLength(text) > 65536) return null;
+  const directMarker = (value) =>
+    /^SYNTHETIC_[A-Z0-9_]{1,80}$/.test(value)
+      ? value
+      : value === "Continue where you left off."
+        ? "SYNTHETIC_CONTINUATION"
+        : null;
+  const direct = directMarker(text);
+  if (direct !== null) return direct;
+  // Unsupported history injection falls back to one text containing context and the current input.
+  const separator = "\n\nUser message:\n";
+  const boundary = text.lastIndexOf(separator);
+  return text.startsWith("Context handoff (") && boundary > 0
+    ? directMarker(text.slice(boundary + separator.length))
+    : null;
+};
 const output = (name) => {
   if (!safeToken(name.replaceAll(".", "_"))) throw new Error("Invalid synthetic filename");
   const target = NodePath.resolve(root, name);
@@ -67,6 +87,53 @@ let sequence = 0;
 let thread;
 let active;
 let timer;
+let closing;
+let closeTimer;
+const ownedLocks = new Set();
+const lockName = (id) => {
+  if (!safeToken(id)) throw new Error("Invalid synthetic lock identity");
+  return `lock-${id}`;
+};
+const takeWriter = (id) => {
+  const name = lockName(id);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      NodeFS.writeFileSync(output(name), JSON.stringify({ pid: process.pid, processId }), {
+        flag: "wx",
+        mode: 0o600,
+      });
+      ownedLocks.add(id);
+      return true;
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const holder = JSON.parse(read(name));
+      if (
+        !Number.isSafeInteger(holder.pid) ||
+        holder.pid <= 0 ||
+        typeof holder.processId !== "string"
+      )
+        throw new Error("Invalid synthetic writer holder");
+      if (holder.pid === process.pid && holder.processId === processId) return true;
+      try {
+        process.kill(holder.pid, 0);
+        return false;
+      } catch (probe) {
+        if (probe.code !== "ESRCH") return false;
+      }
+      // Only a verified dead holder in this isolated fixture can be reclaimed.
+      if (read(name) === JSON.stringify(holder)) NodeFS.unlinkSync(output(name));
+    }
+  }
+  return false;
+};
+const releaseWriter = (id) => {
+  if (!ownedLocks.has(id)) return;
+  const holder = JSON.parse(read(lockName(id)));
+  if (holder.pid !== process.pid || holder.processId !== processId)
+    throw new Error("Synthetic writer ownership changed");
+  NodeFS.unlinkSync(output(lockName(id)));
+  ownedLocks.delete(id);
+};
 const trace = (method, extra = {}) => {
   if (++sequence > 512) throw new Error("Synthetic trace limit reached");
   const fd = NodeFS.openSync(
@@ -122,13 +189,13 @@ const finish = (status) => {
   clearTimeout(timer);
   let error = null;
   if (status !== "interrupted") {
-    if (instance === "A")
+    if (options["--outcome"] !== "success" && instance === "A")
       error = {
         message: "SYNTHETIC_A_USAGE_LIMIT",
         codexErrorInfo: "usageLimitExceeded",
         additionalDetails: null,
       };
-    else if (instance === "B" || mode === "all-unavailable")
+    else if (options["--outcome"] !== "success" && (instance === "B" || mode === "all-unavailable"))
       error = {
         message: `SYNTHETIC_${instance}_UNAVAILABLE`,
         codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 503 } },
@@ -174,23 +241,47 @@ const finish = (status) => {
     status,
     marker:
       error?.message ??
-      (status === "interrupted" ? "SYNTHETIC_INTERRUPTED" : "SYNTHETIC_C_COMPLETED"),
+      (status === "interrupted" ? "SYNTHETIC_INTERRUPTED" : `SYNTHETIC_${instance}_COMPLETED`),
   });
   notify("turn/completed", { threadId: thread.id, turn: active });
   active = undefined;
 };
 const release = () => {
-  if (!active) return;
+  if (!active || !options["--hold"]) return;
   try {
-    if (read(`release-${active.id}`) === "SYNTHETIC_RELEASE\n") return finish("completed");
+    if (read(`release-${active.id}`) === "SYNTHETIC_RELEASE\n") finish("completed");
   } catch (error) {
-    if (error.code !== "ENOENT") return fail();
+    if (error.code !== "ENOENT") fail();
   }
-  if (Date.now() > active.deadline) return fail();
-  timer = setTimeout(release, 25);
 };
+const closeThread = () => {
+  if (!closing) return;
+  if (options["--defer-close"]) {
+    try {
+      if (read(`close-${closing}`) !== "SYNTHETIC_CLOSE\n") return;
+    } catch (error) {
+      if (error.code === "ENOENT") return;
+      return fail();
+    }
+  }
+  clearTimeout(closeTimer);
+  const id = closing;
+  closing = undefined;
+  releaseWriter(id);
+  trace("synthetic/closed", { nativeThreadId: id });
+  notify("thread/closed", { threadId: id });
+};
+const watcher = NodeFS.watch(root, () => {
+  try {
+    release();
+    closeThread();
+  } catch {
+    fail();
+  }
+});
 const fail = () => {
   clearTimeout(timer);
+  clearTimeout(closeTimer);
   process.stderr.write("Synthetic peer state or protocol failure\n");
   process.exitCode = 1;
   lines.close();
@@ -260,6 +351,7 @@ const handle = ({ id, method, params = {} }) => {
       status: { type: "idle" },
       turns: [],
     };
+    if (!takeWriter(thread.id)) throw new Error("New synthetic conversation already owned");
     thread.sessionId = thread.id;
     persist();
     trace(method);
@@ -272,7 +364,18 @@ const handle = ({ id, method, params = {} }) => {
   }
   if (method === "thread/resume") {
     if (active) throw new Error("Turn already active");
-    thread = load(params.threadId);
+    const resumed = load(params.threadId);
+    if (!takeWriter(resumed.id)) {
+      trace("synthetic/writer-refused", { nativeThreadId: resumed.id });
+      return write({
+        id,
+        error: {
+          code: -32000,
+          message: "Thread already has an active writer in another Codex process",
+        },
+      });
+    }
+    thread = resumed;
     trace(method);
     return respond(threadResult());
   }
@@ -284,9 +387,7 @@ const handle = ({ id, method, params = {} }) => {
       !Array.isArray(input) ||
       input.length !== 1 ||
       input[0]?.type !== "text" ||
-      typeof input[0].text !== "string" ||
-      (!/^SYNTHETIC_[A-Z0-9_]{1,80}$/.test(input[0].text) &&
-        input[0].text !== "Continue where you left off.")
+      currentInputMarker(input[0].text) === null
     )
       throw new Error("Require synthetic input marker");
     const selection = (value) => (safeToken(value) ? value : null);
@@ -312,15 +413,15 @@ const handle = ({ id, method, params = {} }) => {
       model: selection(params.model),
       effort: selection(params.effort),
       serviceTier: selection(params.serviceTier),
-      inputMarker:
-        input[0].text === "Continue where you left off." ? "SYNTHETIC_CONTINUATION" : input[0].text,
+      inputMarker: currentInputMarker(input[0].text),
+      recoveredContext: input[0].text.startsWith("Context handoff ("),
     });
     respond({ turn: active });
     notify("turn/started", { threadId: thread.id, turn: active });
     if (options["--hold"]) {
       trace("synthetic/held");
-      Object.defineProperty(active, "deadline", { value: Date.now() + 30000 });
-      timer = setTimeout(release, 25);
+      timer = setTimeout(fail, 30000);
+      release();
     } else
       timer = setTimeout(() => {
         try {
@@ -329,6 +430,21 @@ const handle = ({ id, method, params = {} }) => {
           fail();
         }
       }, 0);
+    return;
+  }
+  if (method === "thread/loaded/list")
+    return respond({
+      data: [...ownedLocks, ...(options["--shared-producer"] ? ["synthetic-sibling"] : [])],
+      nextCursor: null,
+    });
+  if (method === "thread/backgroundTerminals/list") return respond({ data: [], nextCursor: null });
+  if (method === "thread/unsubscribe") {
+    if (!thread || params.threadId !== thread.id) throw new Error("Unknown synthetic thread");
+    trace("synthetic/unsubscribe");
+    respond({ status: "unsubscribed" });
+    closing = thread.id;
+    if (options["--defer-close"]) closeTimer = setTimeout(fail, 60000);
+    closeThread();
     return;
   }
   if (method === "turn/interrupt") {
@@ -352,14 +468,41 @@ lines.on("line", (line) => {
   }
   try {
     handle(message);
-  } catch {
+  } catch (error) {
+    trace("synthetic/request-rejected", {
+      requestMethod: typeof message?.method === "string" ? message.method.slice(0, 80) : null,
+      rejectionReason: error instanceof Error ? error.message.slice(0, 200) : "Unknown rejection",
+      inputCount: Array.isArray(message?.params?.input) ? message.params.input.length : null,
+      textLength:
+        typeof message?.params?.input?.[0]?.text === "string"
+          ? message.params.input[0].text.length
+          : null,
+    });
     write({
       id: message?.id ?? null,
       error: { code: -32602, message: "Invalid synthetic request or state" },
     });
   }
 });
-lines.on("close", () => {
+let cleaned = false;
+const cleanup = () => {
+  if (cleaned) return;
+  cleaned = true;
   clearTimeout(timer);
+  clearTimeout(closeTimer);
+  watcher.close();
+  for (const id of ownedLocks) releaseWriter(id);
+  trace("synthetic/exit");
+};
+lines.on("close", () => {
+  cleanup();
   process.stdin.destroy();
+});
+process.on("SIGTERM", () => {
+  cleanup();
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  cleanup();
+  process.exit(0);
 });

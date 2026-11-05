@@ -2758,6 +2758,11 @@
     {
       "id": "provider-writer-retirement",
       "tests": [
+        "apps/server/src/jones/threadConfiguration/SharedSessionWorkspace.test.ts",
+        "apps/server/src/jones/providerRetirement/accountTransferRetirement.test.ts",
+        "apps/server/src/jones/providerRetirement/AccountTransferRetirement.integration.test.ts",
+        "apps/server/src/orchestration-v2/RunFinalizationQueue.test.ts",
+        "apps/server/src/jones/codexFailover/CodexFailover.integration.test.ts",
         "apps/server/src/jones/provider/codex/CodexStartup.test.ts",
         "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts",
         "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
@@ -2773,7 +2778,7 @@
         "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
-      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes. Codex startup uses an injectable caller deadline while exact-producer response observers retain uncertain native outcomes. New admissions are fenced before permit release, existing bound sessions retain events and controls, and unknown load outcomes cannot retry or fall back to a fresh conversation. The sixty-second default is a conservative design assumption, with no added healthy-path RPC."
+      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. Loaded account-transfer detaches are gated by their accepted command receipt in EffectWorker and guarded inside ProviderSessionManager before capture. They return after capture; in-memory conversation keys limit preparation and attach/open barriers to shared native history, while unknown destinations fail closed. Permanent runtime/thread markers force a fresh normal-start key after cancellation or completion. CommandReceiptStore is an explicit executor requirement, including runtime and replay composition; the replay executor observer exposes typed attempt receipts for the delayed-proof retry case. Jones account-transfer integration cases remain in the existing manager and executor harnesses to prove attachment-lock, revocation and executor wiring; the new subprocess integration stays Jones-owned. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes. Codex startup uses an injectable caller deadline while exact-producer response observers retain uncertain native outcomes. New admissions are fenced before permit release, existing bound sessions retain events and controls, and unknown load outcomes cannot retry or fall back to a fresh conversation. The sixty-second default is a conservative design assumption, with no added healthy-path RPC."
     },
     {
       "id": "packaged-recovery-harness",

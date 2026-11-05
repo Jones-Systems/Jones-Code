@@ -537,6 +537,9 @@ function layerTest(input: {
   readonly scopeCloseReached?: Deferred.Deferred<void>;
   readonly serverSettingsLayer?: ReturnType<typeof ServerSettings.layerTest>;
   readonly projectServiceLayer?: Layer.Layer<ProjectService.ProjectService>;
+  readonly getMetadata?: NonNullable<
+    ProviderAdapterRegistry.ProviderAdapterRegistryV2Shape["getMetadata"]
+  >;
 }) {
   const layerConfiguredEventSink =
     input.flakyReleaseWrites !== undefined
@@ -591,7 +594,37 @@ function layerTest(input: {
       ...(input.scopeCloseReached === undefined
         ? {}
         : { scopeCloseReached: input.scopeCloseReached }),
-    }).pipe(Effect.map(ProviderAdapterRegistry.layerSingle)),
+    }).pipe(
+      Effect.map((adapter) =>
+        input.getMetadata === undefined
+          ? ProviderAdapterRegistry.layerSingle(adapter)
+          : Layer.succeed(ProviderAdapterRegistry.ProviderAdapterRegistryV2, {
+              getMetadata: input.getMetadata,
+              list: () => Effect.succeed([modelSelection.instanceId]),
+              get: (id) =>
+                input.getMetadata!(id).pipe(
+                  Effect.map((metadata) => ({
+                    ...adapter,
+                    instanceId: id,
+                    driver: metadata.driver,
+                    openSession: (open: ProviderAdapterV2OpenSessionInput) =>
+                      adapter.openSession(open).pipe(
+                        Effect.map((runtime) => ({
+                          ...runtime,
+                          instanceId: id,
+                          driver: metadata.driver,
+                          providerSession: {
+                            ...runtime.providerSession,
+                            providerInstanceId: id,
+                            driver: metadata.driver,
+                          },
+                        })),
+                      ),
+                  })),
+                ),
+            }),
+      ),
+    ),
   );
   const layerConfiguredMcpRegistry =
     input.pauseResolve === undefined
@@ -6850,4 +6883,299 @@ it.effect("failed partial initialization retains its thread fence beyond scope-c
       ),
     );
   }),
+);
+
+// Jones account-transfer cases use this harness to exercise the real attachment lock and credential owner.
+it.effect(
+  "account-transfer capture releases the caller before proof, scopes destination barriers and preserves archive revocation",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const reached = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const target = ProviderInstanceId.make("account-B");
+      const unrelated = ProviderInstanceId.make("other-driver");
+      const differentHistory = ProviderInstanceId.make("other-codex-history");
+      const unknown = ProviderInstanceId.make("unknown");
+      const getMetadata: NonNullable<
+        ProviderAdapterRegistry.ProviderAdapterRegistryV2Shape["getMetadata"]
+      > = (id) =>
+        id === unknown
+          ? Effect.fail(
+              new ProviderAdapterRegistry.ProviderAdapterRegistryLookupError({ instanceId: id }),
+            )
+          : Effect.succeed({
+              driver: id === unrelated ? ProviderDriverKind.make("claudeAgent") : CODEX_DRIVER,
+              continuationKey: id === unrelated ? "" : id === differentHistory ? "other" : "K",
+              enabled: true,
+              capabilities: CodexCapabilities,
+            });
+      const proof: NonNullable<ProviderAdapterV2SessionRuntime["retireThreadForTransfer"]> = ({
+        providerThread,
+        allowProducerRetirement,
+      }) =>
+        Effect.gen(function* () {
+          assert.isFalse(allowProducerRetirement);
+          yield* Deferred.succeed(reached, undefined);
+          yield* Deferred.await(release);
+          return {
+            binding: runtimeBinding(
+              providerThread,
+              providerThread.runtimeIdentity!.runtimeGeneration!,
+            )!,
+            evidence: "thread_closed" as const,
+          };
+        });
+      yield* Effect.gen(function* () {
+        const fixture = yield* openTransferFixture("account-transfer-barrier");
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        yield* fixture.runtime.resumeThread({
+          providerThread: fixture.providerThread,
+          threadId: fixture.threadId,
+        });
+        const sibling = ThreadId.make("account-transfer-sibling");
+        yield* fixture.sink.write({
+          events: [
+            yield* makeThreadCreatedEvent({
+              idAllocator: fixture.idAllocator,
+              threadId: sibling,
+              now: fixture.now,
+            }),
+          ],
+        });
+        yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
+        yield* store.apply({
+          id: EventId.make("account-transfer:select-B"),
+          type: "thread.model-selection-updated",
+          threadId: fixture.threadId,
+          occurredAt: fixture.now,
+          payload: {
+            ...(yield* store.getThread(fixture.threadId)),
+            modelSelection: { ...modelSelection, instanceId: target },
+            providerInstanceId: target,
+          },
+        });
+        yield* fixture.manager.detach({
+          providerSessionId: fixture.providerSessionId,
+          threadId: fixture.threadId,
+          retireOnAccountTransfer: true,
+        });
+        yield* Deferred.await(reached);
+        assert.isTrue(
+          yield* fixture.manager.hasRetiredWriter!({
+            providerSessionId: fixture.providerSessionId,
+            threadId: fixture.threadId,
+          }),
+        );
+        assert.strictEqual(
+          yield* fixture.manager.open({ ...fixture.input, threadId: sibling }),
+          fixture.runtime,
+        );
+        for (const instanceId of [unrelated, differentHistory]) {
+          yield* fixture.manager.awaitThreadRetirement!({ threadId: fixture.threadId, instanceId });
+          const input = {
+            ...fixture.input,
+            providerSessionId: ProviderSessionId.make(`unrelated:${instanceId}`),
+            modelSelection: { ...modelSelection, instanceId },
+          };
+          const opened = yield* fixture.manager.open(input);
+          assert.equal(opened.instanceId, instanceId);
+          assert.strictEqual(yield* fixture.manager.open(input), opened);
+        }
+        const matchingInput = {
+          ...fixture.input,
+          providerSessionId: ProviderSessionId.make("matching:B"),
+          modelSelection: { ...modelSelection, instanceId: target },
+        };
+        for (const instanceId of [target, unknown]) {
+          const blocked = yield* Effect.exit(
+            fixture.manager.open({
+              ...matchingInput,
+              modelSelection: { ...modelSelection, instanceId },
+            }),
+          );
+          assert.isTrue(Exit.isFailure(blocked));
+        }
+        const firstWait = yield* fixture.manager.awaitThreadRetirement!({
+          threadId: fixture.threadId,
+          instanceId: target,
+        }).pipe(Effect.exit, Effect.forkChild);
+        yield* TestClock.adjust("10 seconds");
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(firstWait)));
+        const waiting = yield* fixture.manager.awaitThreadRetirement!({
+          threadId: fixture.threadId,
+          instanceId: target,
+        }).pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        assert.isFalse(yield* Deferred.isDone(release));
+        yield* Fiber.interrupt(waiting);
+        const mcp = yield* McpProviderSessions.McpProviderSessions;
+        assert.isDefined(yield* mcp.read(fixture.threadId));
+        yield* fixture.manager.detach({
+          providerSessionId: fixture.providerSessionId,
+          threadId: fixture.threadId,
+          revokeMcpCredential: true,
+          retireOnAccountTransfer: true,
+        });
+        assert.isUndefined(yield* mcp.read(fixture.threadId));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.open(matchingInput))));
+        yield* Deferred.succeed(release, undefined);
+        yield* fixture.manager.awaitThreadRetirement!({
+          threadId: fixture.threadId,
+          instanceId: target,
+        });
+        yield* fixture.manager.open(matchingInput);
+        assert.isTrue(
+          yield* fixture.manager.hasRetiredWriter!({
+            providerSessionId: fixture.providerSessionId,
+            threadId: fixture.threadId,
+          }),
+        );
+        assert.equal((yield* Ref.get(state)).closeCount, 0);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(release, undefined)),
+        Effect.provide(
+          layerTest({ state, idleTimeoutMs: 60_000, retireThreadForTransfer: proof, getMetadata }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "an idle unload racing account-transfer capture keeps the supplied loaded key and publishes no retirement fence",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const metadataReached = yield* Deferred.make<void>();
+      const releaseMetadata = yield* Deferred.make<void>();
+      const unloaded = yield* Deferred.make<void>();
+      let armed = false;
+      let retirementCount = 0;
+      const getMetadata: NonNullable<
+        ProviderAdapterRegistry.ProviderAdapterRegistryV2Shape["getMetadata"]
+      > = () =>
+        Effect.gen(function* () {
+          if (armed) {
+            armed = false;
+            yield* Deferred.succeed(metadataReached, undefined);
+            yield* Deferred.await(releaseMetadata);
+          }
+          return {
+            driver: CODEX_DRIVER,
+            continuationKey: "K",
+            enabled: true,
+            capabilities: CodexCapabilities,
+          };
+        });
+      yield* Effect.gen(function* () {
+        const fixture = yield* openTransferFixture("account-transfer-unload-race");
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        yield* fixture.runtime.resumeThread({
+          providerThread: fixture.providerThread,
+          threadId: fixture.threadId,
+        });
+        const queue = (yield* Ref.get(state)).eventQueues.get(String(fixture.providerSessionId))!;
+        yield* Queue.offer(queue, {
+          type: "turn.terminal",
+          driver: CODEX_DRIVER,
+          providerThreadId: fixture.providerThread.id,
+          providerTurnId: ProviderTurnId.make("race-terminal"),
+          runOrdinal: 1,
+          status: "completed",
+          failure: null,
+          threadDisposition: "reusable",
+        });
+        yield* store.apply({
+          id: EventId.make("account-transfer:race-B"),
+          type: "thread.model-selection-updated",
+          threadId: fixture.threadId,
+          occurredAt: fixture.now,
+          payload: {
+            ...(yield* store.getThread(fixture.threadId)),
+            modelSelection: { ...modelSelection, instanceId: ProviderInstanceId.make("account-B") },
+            providerInstanceId: ProviderInstanceId.make("account-B"),
+          },
+        });
+        armed = true;
+        const input = {
+          providerSessionId: fixture.providerSessionId,
+          threadId: fixture.threadId,
+          retireOnAccountTransfer: true as const,
+        };
+        const detaching = yield* fixture.manager.detach(input).pipe(Effect.exit, Effect.forkChild);
+        yield* Deferred.await(metadataReached);
+        yield* TestClock.adjust("1 second");
+        yield* Deferred.await(unloaded);
+        yield* Deferred.succeed(releaseMetadata, undefined);
+        assert.isTrue(Exit.isFailure(yield* Fiber.join(detaching)));
+        assert.equal(retirementCount, 0);
+        assert.isFalse(yield* fixture.manager.hasRetiredWriter!(input));
+        yield* fixture.manager.detach(input);
+        assert.equal(retirementCount, 0);
+        yield* fixture.manager.open(fixture.input);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(releaseMetadata, undefined)),
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 1000,
+            getMetadata,
+            hasPendingBackgroundWork: Effect.succeed(true),
+            beforeUnload: Deferred.succeed(unloaded, undefined).pipe(Effect.asVoid),
+            retireThreadForTransfer: () =>
+              Effect.sync(() => {
+                retirementCount++;
+                throw new Error("unloaded source must stay ordinary");
+              }),
+          }),
+        ),
+      );
+    }),
+);
+
+it.effect(
+  "switching back before account-transfer capture takes the ordinary detach path and reuses the source",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const fixture = yield* openTransferFixture("account-transfer-switch-back");
+        yield* fixture.runtime.resumeThread({
+          providerThread: fixture.providerThread,
+          threadId: fixture.threadId,
+        });
+        yield* fixture.manager.detach({
+          providerSessionId: fixture.providerSessionId,
+          threadId: fixture.threadId,
+          retireOnAccountTransfer: true,
+        });
+        assert.isFalse(
+          yield* fixture.manager.hasRetiredWriter!({
+            providerSessionId: fixture.providerSessionId,
+            threadId: fixture.threadId,
+          }),
+        );
+        assert.strictEqual(yield* fixture.manager.open(fixture.input), fixture.runtime);
+        yield* fixture.runtime.resumeThread({
+          providerThread: fixture.providerThread,
+          threadId: fixture.threadId,
+        });
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            getMetadata: () =>
+              Effect.succeed({
+                driver: CODEX_DRIVER,
+                continuationKey: "K",
+                enabled: true,
+                capabilities: CodexCapabilities,
+              }),
+            retireThreadForTransfer: () => Effect.die("switch-back must remain ordinary"),
+          }),
+        ),
+      );
+    }),
 );
