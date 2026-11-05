@@ -4,6 +4,19 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "packaged-desktop-recovery-harness",
+      "tests": [
+        "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
+        "scripts/jones/updates/packaged-desktop-pair.node-test.mjs"
+      ],
+      "scope": "Unchanged packaged macOS app-pair identity binding, external one-shot helper preparation faults, captured-PID startup/dialog and protected-mutation refusal orchestration. Executable source controls do not prove Apple interpreter, native dialog, packaged matrix, process descendants outside the captured group or installed continuity; those remain separately admitted acceptance."
+    },
+    {
+      "id": "dev-proxy-cookie-auth",
+      "tests": ["apps/server/src/jones/auth/devProxy.test.ts"],
+      "scope": "Preserve the original browser Host for /api in the existing shared Vite development proxy policy. This accepted shared one-entry policy edit avoids a second proxy policy or backend authentication exception. Jones-owned disposable Vite proxy fixtures use production EnvironmentAuth, synthetic cookie sessions and in-memory persistence to cover preview/device upgrades, media/API HTTP, /ws, media tickets and missing/invalid credentials plus foreign-origin refusal. No Vite config, backend auth, browser lifecycle, wire or installed-runtime change; final live Browser verification is separately owned."
+    },
+    {
       "id": "thread-content-evidence",
       "tests": [
         "packages/contracts/src/jones/threadContentEvidence.test.ts",
@@ -1961,7 +1974,7 @@
         "apps/web/src/jones/remoteAgentLineage/ThreadRelationships.browser.test.tsx",
         "apps/web/src/jones/remoteAgentLineage/MachineIdentity.browser.test.tsx"
       ],
-      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. Task and continuation location labels use the desktop client’s primary or desktop-managed local connection identity; local destinations omit the location while remote and unknown destinations retain it, independent of the subject thread’s environment. Browser clients retain explicit locations. No server, schema, authentication or lifecycle changes in this UI fold."
+      "scope": "Jones-owned scoped parent resolution and bounded machine presentation shared by header, timeline and Linked. The shared relationship panel combines local and remote rows before its existing group/window rendering; Jones-owned wrappers fold ancestry and delegated tasks into one default-closed Linked section that resets on thread selection. BranchToolbar changes only its panel presentation; project icons and toolbar controls remain owned by their existing components. Existing browser harness exceptions exercise mixed history pagination, status transitions, remote navigation, unavailable parents, collapse and task controls. Task and continuation location labels use the desktop client\u2019s primary or desktop-managed local connection identity; local destinations omit the location while remote and unknown destinations retain it, independent of the subject thread\u2019s environment. Browser clients retain explicit locations. No server, schema, authentication or lifecycle changes in this UI fold."
     },
     {
       "id": "incremental-typecheck",

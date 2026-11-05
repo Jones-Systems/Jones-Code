@@ -162,7 +162,11 @@ export function cleanLaunchEnvironment(environment, temporary) {
 
 // Only captured child process groups are signalled. A leader's close is followed
 // by group absence, including on timeout, output overflow, and cancellation.
-export function runOwnedChild(command, args, { signal, timeout = 15000, ...options } = {}) {
+export function runOwnedChild(
+  command,
+  args,
+  { signal, timeout = 15000, onSpawn, ...options } = {},
+) {
   return new Promise((resolve, reject) => {
     const child = NodeChildProcess.spawn(command, args, {
       ...options,
@@ -171,11 +175,13 @@ export function runOwnedChild(command, args, { signal, timeout = 15000, ...optio
     });
     if (child.pid !== undefined) outstandingGroups.add(child.pid);
     let failure;
+    let childClosed = false;
+    let spawnWork = Promise.resolve();
     let stdout = "";
     let stderr = "";
     const stop = (error) => {
       failure ??= error;
-      if (child.pid !== undefined) {
+      if (!childClosed && child.pid !== undefined) {
         try {
           process.kill(-child.pid, "SIGKILL");
         } catch (cause) {
@@ -190,6 +196,15 @@ export function runOwnedChild(command, args, { signal, timeout = 15000, ...optio
     );
     signal?.addEventListener("abort", abort, { once: true });
     if (signal?.aborted) abort();
+    child.once("spawn", () => {
+      const requestStop = () => {
+        if (childClosed || child.exitCode !== null || child.signalCode !== null) return false;
+        return child.kill("SIGTERM");
+      };
+      spawnWork = Promise.resolve()
+        .then(() => onSpawn?.(child.pid, Object.freeze({ requestStop })))
+        .catch(stop);
+    });
     child.once("error", (error) => {
       failure = error;
     });
@@ -202,10 +217,11 @@ export function runOwnedChild(command, args, { signal, timeout = 15000, ...optio
       if (stderr.length > 1024 * 1024) stop(new Error("Native startup stderr exceeded its bound."));
     });
     child.once("close", (code, exitSignal) => {
+      childClosed = true;
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
       const drained = child.pid === undefined ? Promise.resolve() : drainGroup(child.pid);
-      void drained.then(() => {
+      void Promise.all([spawnWork, drained]).then(() => {
         if (failure) reject(failure);
         else resolve({ code, signal: exitSignal, stdout, stderr });
       }, reject);
