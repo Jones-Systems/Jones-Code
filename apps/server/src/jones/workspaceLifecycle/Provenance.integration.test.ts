@@ -11,6 +11,7 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  type VcsStatusResult,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -73,6 +74,7 @@ it.effect(
         yield* fs.makeDirectory(templates);
         const config = ServerConfig.layerTest(root, path.join(root, "state")).pipe(
           Layer.provide(NodeServices.layer),
+          Layer.orDie,
         );
         const gitLayer = Git.layer.pipe(Layer.provide(config), Layer.provide(NodeServices.layer));
         const database = SqlitePersistence.layerMemory;
@@ -214,7 +216,12 @@ it.effect(
             });
           const sourceRun = RunId.make("run:source");
           yield* completeRun(threadId, sourceRun);
-          yield* p.capture({ threadId, reason: "reference", createdBy: "system", runId: sourceRun });
+          yield* p.capture({
+            threadId,
+            reason: "reference",
+            createdBy: "system",
+            runId: sourceRun,
+          });
           yield* sink.write({
             events: [
               {
@@ -269,11 +276,9 @@ it.effect(
               },
             ],
           });
-          expect((yield* p.lookup({ path: moved }))[0]?.facts.map((fact) => fact.kind).sort()).toEqual([
-            "first_meaningful_write",
-            "pr_link",
-            "pr_merge",
-          ]);
+          expect(
+            (yield* p.lookup({ path: moved }))[0]?.facts.map((fact) => fact.kind).sort(),
+          ).toEqual(["first_meaningful_write", "pr_link", "pr_merge"]);
           yield* orchestrator.dispatch({
             type: "thread.fork",
             commandId: CommandId.make("fork:conversation"),
@@ -390,14 +395,37 @@ it.effect(
                 }),
               localStatus: () => Effect.succeed({ refName: "main", isRepo: true } as never),
               createWorktree: (input) =>
-                run(repo, ["worktree", "add", "-b", input.newRefName!, handoffPath, input.refName]).pipe(
-                  Effect.as({ worktree: { path: handoffPath, refName: input.newRefName! } } as never),
+                run(repo, [
+                  "worktree",
+                  "add",
+                  "-b",
+                  input.newRefName!,
+                  handoffPath,
+                  input.refName,
+                ]).pipe(
+                  Effect.as({
+                    worktree: { path: handoffPath, refName: input.newRefName! },
+                  } as never),
                 ),
             }),
             Layer.mock(ProjectSetup.ProjectSetupScriptRunner)({
               runForThread: () => Effect.die("Setup disabled"),
             }),
-            Layer.mock(VcsStatus.VcsStatusBroadcaster)({ refreshStatus: () => Effect.void }),
+            Layer.mock(VcsStatus.VcsStatusBroadcaster)({
+              refreshStatus: () =>
+                Effect.succeed({
+                  isRepo: true,
+                  hasPrimaryRemote: false,
+                  isDefaultRef: false,
+                  refName: "handoff",
+                  hasWorkingTreeChanges: false,
+                  workingTree: { files: [], insertions: 0, deletions: 0 },
+                  hasUpstream: false,
+                  aheadCount: 0,
+                  behindCount: 0,
+                  pr: null,
+                } satisfies VcsStatusResult),
+            }),
           );
           const service = yield* WorktreeMcp.WorktreeMcpService.pipe(
             Effect.provide(WorktreeMcp.layer.pipe(Layer.provide(external))),
@@ -419,11 +447,17 @@ it.effect(
           yield* run(repo, ["worktree", "add", "--detach", detachedPath, "main"]);
           const detachedThreadId = ThreadId.make("thread:detached");
           yield* create(detachedThreadId, null, detachedPath);
-          yield* p.capture({ threadId: detachedThreadId, reason: "reference", createdBy: "system" });
+          yield* p.capture({
+            threadId: detachedThreadId,
+            reason: "reference",
+            createdBy: "system",
+          });
 
           const toolkit = yield* WorktreeToolkit.pipe(
             Effect.provide(
-              McpToolAccess.HandlersLayer.layer(WorktreeHandlers.layer).pipe(Layer.provide(external)),
+              McpToolAccess.HandlersLayer.layer(WorktreeHandlers.layer).pipe(
+                Layer.provide(external),
+              ),
             ),
           );
           const list = (input: { readonly provenancePath?: string }) =>

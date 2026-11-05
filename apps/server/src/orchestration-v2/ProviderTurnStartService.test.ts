@@ -2156,7 +2156,7 @@ effectIt.effect("terminalizes an unresolved writer retirement before opening its
 );
 
 it("recreation captures the newly created workspace before provider execution", async () => {
-  const captures: Array<{ reason: string; runId?: string }> = [];
+  const captures: Array<{ reason: string; runId: string | undefined }> = [];
   const harness = startWithMissingWorktree(
     `${managedWorktreesDir}/project/provenance`,
     undefined,

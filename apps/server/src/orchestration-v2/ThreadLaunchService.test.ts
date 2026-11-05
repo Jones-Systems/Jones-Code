@@ -157,7 +157,11 @@ const claudeAdapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 interface HarnessOptions {
-  readonly provenanceLayer?: Layer.Layer<WorkspaceProvenance.Provenance, never, SqlClient.SqlClient>;
+  readonly provenanceLayer?: Layer.Layer<
+    WorkspaceProvenance.Provenance,
+    never,
+    SqlClient.SqlClient
+  >;
   readonly idleAdmission?: (store: IdleWorktreeAdmission.Store) => IdleWorktreeAdmission.Store;
   readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
@@ -5159,7 +5163,9 @@ it.effect("launch captures provenance from the committed workspace assignment be
         return Layer.mock(WorkspaceProvenance.Provenance)({
           capture: (input) =>
             Effect.gen(function* () {
-              const rows = yield* sql<{ path: string | null }>`SELECT json_extract(payload_json, '$.worktreePath') AS path
+              const rows = yield* sql<{
+                path: string | null;
+              }>`SELECT json_extract(payload_json, '$.worktreePath') AS path
                 FROM orchestration_v2_projection_threads WHERE thread_id=${input.threadId}`;
               assert.equal(rows[0]?.path, "/repo-worktrees/feature");
               const receipts = yield* sql`SELECT 1 FROM orchestration_command_receipts
