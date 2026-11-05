@@ -84,10 +84,12 @@ describe("Codex startup caller budget", () => {
         .run(
           "fork",
           startup.withinPermit(
-            startup.observe(producer, Effect.succeed("fork-native-id")).pipe(
-              Effect.andThen(startup.observe(producer, Effect.fail(rejection), "reply")),
-              Effect.andThen(startup.completeWith(() => ++bindings)),
-            ),
+            startup
+              .observe(producer, Effect.succeed("fork-native-id"))
+              .pipe(
+                Effect.andThen(startup.observe(producer, Effect.fail(rejection), "reply")),
+                Effect.andThen(startup.completeWith(() => ++bindings)),
+              ),
           ),
         )
         .pipe(Effect.result);

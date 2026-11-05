@@ -30,108 +30,152 @@ const decodeOriginalInput = Schema.decodeEffect(
 
 it.effect.each(["ensure", "baseline"] as const)(
   "real managed %s survives multiple claim intervals without replaying its registry transition",
-  (waitAt) => Effect.scoped(Effect.gen(function* () {
-    const f = yield* fixture;
-    yield* Effect.gen(function* () {
-      yield* f.seed;
-      const entered = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const wait = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)));
-      if (waitAt === "ensure") f.state.beforeProviderEnsure = wait;
-      else f.state.beforeBaseline = wait;
-      const commandId = CommandId.make(`long-${waitAt}`);
-      yield* f.dispatch({
-        type: "message.dispatch", commandId, threadId, createdBy: "user", creationSource: "web",
-        messageId: MessageId.make(`long-${waitAt}`), text: "Synthetic long initialization",
-        attachments: [], dispatchMode: { type: "start_immediately" },
-      });
-      const outbox = yield* Outbox.EffectOutboxV2;
-      const start = (yield* outbox.listByCommandId(commandId)).find((row) => row.request.type === "provider-turn.start");
-      if (start === undefined || start.request.type !== "provider-turn.start")
-        return yield* Effect.die("Missing exact synthetic provider start");
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const admitted = yield* orchestrator.getThreadProjection(threadId);
-      const runId = start.request.runId;
-      const attemptId = admitted.runs.find((run) => run.id === runId)!.activeAttemptId;
-      const worker = yield* Worker.OrchestrationEffectWorkerV2;
-      const pending = yield* worker.drain(20).pipe(Effect.forkChild);
-      yield* Deferred.await(entered);
-      const original = Option.getOrThrow(yield* outbox.get(start.id));
-      const resumes = f.state.resumes;
-      for (let interval = 0; interval < 4; interval++) {
-        yield* TestClock.adjust("10 seconds");
-        const live = Option.getOrThrow(yield* outbox.get(start.id));
-        expect(live.status).toBe("running");
-        expect(live.leaseOwner).toBe(original.leaseOwner);
-        expect(live.attemptCount).toBe(original.attemptCount);
-        expect(live.commandId).toBe(original.commandId);
-        expect(live.payloadIdentity).toBe(original.payloadIdentity);
-        expect(DateTime.toEpochMillis(DateTime.makeUnsafe(live.leaseExpiresAt!))).toBeGreaterThan(
-          DateTime.toEpochMillis(yield* DateTime.now));
-        expect(f.state.resumes).toBe(resumes);
-        expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(0);
-      }
-      yield* Deferred.succeed(release, undefined);
-      yield* outbox.awaitCompletion([start.id]);
-      yield* Fiber.join(pending);
-      expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(1);
-      const settled = Option.getOrThrow(yield* outbox.get(start.id));
-      expect(settled.status).toBe("succeeded");
-      expect(settled.attemptCount).toBe(original.attemptCount);
-      const projection = yield* orchestrator.getThreadProjection(threadId);
-      const run = projection.runs.find((candidate) => candidate.id === runId)!;
-      expect(run.status).toBe("running");
-      expect(run.activeAttemptId).toBe(attemptId);
-      const sql = yield* SqlClient.SqlClient;
-      const transitions = yield* sql<{ readonly transition_id: string; readonly state: string }>`
+  (waitAt) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* Effect.gen(function* () {
+          yield* f.seed;
+          const entered = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const wait = Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(release)),
+          );
+          if (waitAt === "ensure") f.state.beforeProviderEnsure = wait;
+          else f.state.beforeBaseline = wait;
+          const commandId = CommandId.make(`long-${waitAt}`);
+          yield* f.dispatch({
+            type: "message.dispatch",
+            commandId,
+            threadId,
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make(`long-${waitAt}`),
+            text: "Synthetic long initialization",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+          });
+          const outbox = yield* Outbox.EffectOutboxV2;
+          const start = (yield* outbox.listByCommandId(commandId)).find(
+            (row) => row.request.type === "provider-turn.start",
+          );
+          if (start === undefined || start.request.type !== "provider-turn.start")
+            return yield* Effect.die("Missing exact synthetic provider start");
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const admitted = yield* orchestrator.getThreadProjection(threadId);
+          const runId = start.request.runId;
+          const attemptId = admitted.runs.find((run) => run.id === runId)!.activeAttemptId;
+          const worker = yield* Worker.OrchestrationEffectWorkerV2;
+          const pending = yield* worker.drain(20).pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          const original = Option.getOrThrow(yield* outbox.get(start.id));
+          const resumes = f.state.resumes;
+          for (let interval = 0; interval < 4; interval++) {
+            yield* TestClock.adjust("10 seconds");
+            const live = Option.getOrThrow(yield* outbox.get(start.id));
+            expect(live.status).toBe("running");
+            expect(live.leaseOwner).toBe(original.leaseOwner);
+            expect(live.attemptCount).toBe(original.attemptCount);
+            expect(live.commandId).toBe(original.commandId);
+            expect(live.payloadIdentity).toBe(original.payloadIdentity);
+            expect(
+              DateTime.toEpochMillis(DateTime.makeUnsafe(live.leaseExpiresAt!)),
+            ).toBeGreaterThan(DateTime.toEpochMillis(yield* DateTime.now));
+            expect(f.state.resumes).toBe(resumes);
+            expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(0);
+          }
+          yield* Deferred.succeed(release, undefined);
+          yield* outbox.awaitCompletion([start.id]);
+          yield* Fiber.join(pending);
+          expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(1);
+          const settled = Option.getOrThrow(yield* outbox.get(start.id));
+          expect(settled.status).toBe("succeeded");
+          expect(settled.attemptCount).toBe(original.attemptCount);
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          const run = projection.runs.find((candidate) => candidate.id === runId)!;
+          expect(run.status).toBe("running");
+          expect(run.activeAttemptId).toBe(attemptId);
+          const sql = yield* SqlClient.SqlClient;
+          const transitions = yield* sql<{
+            readonly transition_id: string;
+            readonly state: string;
+          }>`
         SELECT transition_id,state FROM jones_workspace_lifecycle_transitions`;
-      expect(transitions.every((transition) => transition.state === "confirmed")).toBe(true);
-      expect(new Set(transitions.map((transition) => transition.transition_id.replace(/:(start|resume)$/, ""))).size).toBe(1);
-    }).pipe(Effect.provide(f.layer));
-  })).pipe(Effect.provide(NodeServices.layer)),
+          expect(transitions.every((transition) => transition.state === "confirmed")).toBe(true);
+          expect(
+            new Set(
+              transitions.map((transition) =>
+                transition.transition_id.replace(/:(start|resume)$/, ""),
+              ),
+            ).size,
+          ).toBe(1);
+        }).pipe(Effect.provide(f.layer));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect.each(["worker", "attempt", "command", "request", "expiry"] as const)(
   "a changed claim %s during real baseline loses custody without sending or settling its successor",
-  (change) => Effect.scoped(Effect.gen(function* () {
-    const f = yield* fixture;
-    yield* Effect.gen(function* () {
-      yield* f.seed;
-      const entered = yield* Deferred.make<void>();
-      f.state.beforeBaseline = Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never));
-      const commandId = CommandId.make(`lost-${change}`);
-      yield* f.dispatch({
-        type: "message.dispatch", commandId, threadId, createdBy: "user", creationSource: "web",
-        messageId: MessageId.make(`lost-${change}`), text: "Synthetic lost claim",
-        attachments: [], dispatchMode: { type: "start_immediately" },
-      });
-      const outbox = yield* Outbox.EffectOutboxV2;
-      const start = (yield* outbox.listByCommandId(commandId)).find((row) => row.request.type === "provider-turn.start");
-      if (start === undefined || start.request.type !== "provider-turn.start")
-        return yield* Effect.die("Missing exact synthetic provider start");
-      const runId = start.request.runId;
-      const pending = yield* (yield* Worker.OrchestrationEffectWorkerV2).drain(20).pipe(Effect.forkChild);
-      yield* Deferred.await(entered);
-      const sql = yield* SqlClient.SqlClient;
-      if (change === "worker") yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_owner='successor' WHERE effect_id=${start.id}`;
-      if (change === "attempt") yield* sql`UPDATE orchestration_v2_effect_outbox SET attempt_count=attempt_count+1 WHERE effect_id=${start.id}`;
-      if (change === "command") yield* sql`UPDATE orchestration_v2_effect_outbox SET command_id='successor' WHERE effect_id=${start.id}`;
-      if (change === "request") yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json=json_set(payload_json,'$.runId','successor') WHERE effect_id=${start.id}`;
-      if (change === "expiry") {
-        const expired = DateTime.formatIso(yield* DateTime.now);
-        yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${expired} WHERE effect_id=${start.id}`;
-      }
-      const successor = yield* outbox.get(start.id);
-      yield* TestClock.adjust("10 seconds");
-      // Join the exact claimant; custody loss must reach normal run failure
-      // persistence even though the blocked baseline never returned.
-      yield* Fiber.await(pending);
-      expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(0);
-      expect(yield* outbox.get(start.id)).toEqual(successor);
-      const projection = yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(threadId);
-      expect(projection.runs.find((run) => run.id === runId)!.status).toBe("failed");
-    }).pipe(Effect.provide(f.layer));
-  })).pipe(Effect.provide(NodeServices.layer)),
+  (change) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const f = yield* fixture;
+        yield* Effect.gen(function* () {
+          yield* f.seed;
+          const entered = yield* Deferred.make<void>();
+          f.state.beforeBaseline = Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Effect.never),
+          );
+          const commandId = CommandId.make(`lost-${change}`);
+          yield* f.dispatch({
+            type: "message.dispatch",
+            commandId,
+            threadId,
+            createdBy: "user",
+            creationSource: "web",
+            messageId: MessageId.make(`lost-${change}`),
+            text: "Synthetic lost claim",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+          });
+          const outbox = yield* Outbox.EffectOutboxV2;
+          const start = (yield* outbox.listByCommandId(commandId)).find(
+            (row) => row.request.type === "provider-turn.start",
+          );
+          if (start === undefined || start.request.type !== "provider-turn.start")
+            return yield* Effect.die("Missing exact synthetic provider start");
+          const runId = start.request.runId;
+          const pending = yield* (yield* Worker.OrchestrationEffectWorkerV2)
+            .drain(20)
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(entered);
+          const sql = yield* SqlClient.SqlClient;
+          if (change === "worker")
+            yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_owner='successor' WHERE effect_id=${start.id}`;
+          if (change === "attempt")
+            yield* sql`UPDATE orchestration_v2_effect_outbox SET attempt_count=attempt_count+1 WHERE effect_id=${start.id}`;
+          if (change === "command")
+            yield* sql`UPDATE orchestration_v2_effect_outbox SET command_id='successor' WHERE effect_id=${start.id}`;
+          if (change === "request")
+            yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json=json_set(payload_json,'$.runId','successor') WHERE effect_id=${start.id}`;
+          if (change === "expiry") {
+            const expired = DateTime.formatIso(yield* DateTime.now);
+            yield* sql`UPDATE orchestration_v2_effect_outbox SET lease_expires_at=${expired} WHERE effect_id=${start.id}`;
+          }
+          const successor = yield* outbox.get(start.id);
+          yield* TestClock.adjust("10 seconds");
+          // Join the exact claimant; custody loss must reach normal run failure
+          // persistence even though the blocked baseline never returned.
+          yield* Fiber.await(pending);
+          expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(0);
+          expect(yield* outbox.get(start.id)).toEqual(successor);
+          const projection = yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(
+            threadId,
+          );
+          expect(projection.runs.find((run) => run.id === runId)!.status).toBe("failed");
+        }).pipe(Effect.provide(f.layer));
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect(

@@ -321,7 +321,7 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: false });
     let submittedDraft: ComposerThreadDraftState | null | undefined;
-    try {
+    return (async () => {
       const result = await planCreation.run({
         slot: {
           environmentId,
@@ -471,9 +471,9 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
                   : "The plan is kept. Retry this action to reconcile the same saved request.",
           }),
         );
-    } finally {
+    })().finally(() => {
       sendInFlightRef.current = false;
       resetLocalDispatch();
-    }
+    });
   };
 }

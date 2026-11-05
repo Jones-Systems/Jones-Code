@@ -93,6 +93,7 @@ import {
   TrimmedNonEmptyString,
   defaultInstanceIdForDriver,
   isCompactionCommandMessage,
+  isOrchestrationV2WorkActive,
   type ModelSelection,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2ExecutionNode,
@@ -1083,15 +1084,16 @@ export const layerQueryRunner: Layer.Layer<
             ),
           ),
         ).pipe(
-          Effect.mapError((cause) =>
-            new ClaudeAgentSdkQueryRunnerError({
-              method: cause.method,
-              cause,
-              nativeOutcome:
-                processExits.length > 0 && processExits.length === knownSpawnFailures
-                  ? "not_spawned"
-                  : "unknown",
-            }),
+          Effect.mapError(
+            (cause) =>
+              new ClaudeAgentSdkQueryRunnerError({
+                method: cause.method,
+                cause,
+                nativeOutcome:
+                  processExits.length > 0 && processExits.length === knownSpawnFailures
+                    ? "not_spawned"
+                    : "unknown",
+              }),
           ),
         );
 
@@ -4551,43 +4553,41 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         let sourceOwnerClosed = false;
         let sourceRegistration: SourceQueryRegistration | undefined;
         const retireGeneration = (generation: string) =>
-          retirementPermit
-            .withPermits(1)(
-              Effect.gen(function* () {
-                if (attemptedAbandonments.has(generation))
-                  return yield* new ProviderAdapter.ProviderAdapterProtocolError({
-                    driver: CLAUDE_PROVIDER,
-                    detail:
-                      "The previous query retirement is unconfirmed; it must not be replayed.",
-                  });
-                if (!launchedGenerations.has(generation)) return;
-                queryEventProducers.get(generation)?.retire();
-                attemptedAbandonments.add(generation);
-                yield* input.runtimeLifecycle?.abandon(generation) ?? Effect.void;
-                attemptedAbandonments.delete(generation);
-                launchedGenerations.delete(generation);
-                queryEventProducers.delete(generation);
-                if (sourceRegistration?.binding.runtimeGeneration === generation)
-                  sourceRegistration.retired = true;
-                for (const [nativeThreadId, bound] of boundQueriesByNativeThread) {
-                  if (bound.runtimeGeneration === generation) {
-                    bound.eventProducer.retire();
-                    boundQueriesByNativeThread.delete(nativeThreadId);
-                  }
+          retirementPermit.withPermits(1)(
+            Effect.gen(function* () {
+              if (attemptedAbandonments.has(generation))
+                return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                  driver: CLAUDE_PROVIDER,
+                  detail: "The previous query retirement is unconfirmed; it must not be replayed.",
+                });
+              if (!launchedGenerations.has(generation)) return;
+              queryEventProducers.get(generation)?.retire();
+              attemptedAbandonments.add(generation);
+              yield* input.runtimeLifecycle?.abandon(generation) ?? Effect.void;
+              attemptedAbandonments.delete(generation);
+              launchedGenerations.delete(generation);
+              queryEventProducers.delete(generation);
+              if (sourceRegistration?.binding.runtimeGeneration === generation)
+                sourceRegistration.retired = true;
+              for (const [nativeThreadId, bound] of boundQueriesByNativeThread) {
+                if (bound.runtimeGeneration === generation) {
+                  bound.eventProducer.retire();
+                  boundQueriesByNativeThread.delete(nativeThreadId);
                 }
-              }).pipe(
-                Effect.tapError(() =>
-                  Effect.sync(() => {
-                    queryBindingUnknown = true;
-                  }),
-                ),
-                Effect.onInterrupt(() =>
-                  Effect.sync(() => {
-                    queryBindingUnknown = true;
-                  }),
-                ),
+              }
+            }).pipe(
+              Effect.tapError(() =>
+                Effect.sync(() => {
+                  queryBindingUnknown = true;
+                }),
               ),
-            );
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  queryBindingUnknown = true;
+                }),
+              ),
+            ),
+          );
         // A worktree handoff changes the project settings even within one session.
         let bypassCache: { cwd: string | null; availability: ClaudeBypassAvailability } | null =
           null;
@@ -7612,6 +7612,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             | ProviderAdapter.ProviderAdapterV2Error
           >,
           nativeTerminationConfirmed = false,
+          retirementRequested = false,
         ) {
           const current = yield* Ref.get(activeTurn);
           // A replacement query can reuse the native thread id; only this query's turn is ours.
@@ -7620,7 +7621,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const interrupted =
             nativeTerminationConfirmed &&
             closedQuery.nativeSessionFailure === undefined &&
-            (closedQuery.retirement !== undefined ||
+            (retirementRequested ||
               (yield* Ref.get(interruptedTurns)).has(context.providerTurnId));
           const streamFailure = cause === undefined ? undefined : Cause.squash(cause);
           // Finalization can yield to a replacement process; capture ownership and outcomes first.
@@ -10236,17 +10237,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
                 return queryControlUnknown;
               }),
-              Effect.onInterrupt(() => Effect.sync(() => {
-                // Open may already have invoked the owned spawn callback. A
-                // cancelled caller is not evidence that no native process exists.
-                queryBindingUnknown = true;
-                queryControlUnknown ??= new ProviderControlOutcomeUnknown({
-                  driver: CLAUDE_PROVIDER,
-                  providerSessionId: input.providerSessionId,
-                  nativeThreadId,
-                  operation: "retire",
-                });
-              })),
+              Effect.onInterrupt(() =>
+                Effect.sync(() => {
+                  // Open may already have invoked the owned spawn callback. A
+                  // cancelled caller is not evidence that no native process exists.
+                  queryBindingUnknown = true;
+                  queryControlUnknown ??= new ProviderControlOutcomeUnknown({
+                    driver: CLAUDE_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadId,
+                    operation: "retire",
+                  });
+                }),
+              ),
               Effect.onError(() =>
                 queryBindingUnknown
                   ? Effect.void
@@ -10493,8 +10496,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             Effect.exit,
             Effect.flatMap(
               Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
+                // Cleanup caused by stream failure is not an owner-requested abort.
+                const wasStopping = context.stopping;
                 if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
-                  yield* closeCapturedQuery(context, Effect.void, true).pipe(
+                  yield* closeCapturedQuery(context).pipe(
                     Effect.ignore,
                     Effect.forkDetach({ startImmediately: true }),
                   );
@@ -10508,7 +10513,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   yield* releaseHeldRootFrames(heldContext);
                 }
                 const ownsLiveQuery = (yield* Ref.get(queryContext)) === context;
-                const wasStopping = context.stopping;
                 context.stopping = true;
                 // Stream drain and SDK close are separate from the owned child's termination.
                 const termination = yield* Effect.exit(querySession.termination);
@@ -10522,6 +10526,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         ? exit.cause
                         : undefined,
                     Exit.isSuccess(termination),
+                    wasStopping,
                   );
                   yield* endSubagentCallsOfClosedQuery(
                     context.nativeThreadId,
@@ -11162,63 +11167,69 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           );
         });
 
-        const closeCapturedQuery = Effect.fnUntraced(function* (
-          existing: ClaudeLiveQueryContext,
-          verifyOwner: Effect.Effect<
-            void,
-            ProviderAdapter.ProviderAdapterProtocolError
-          > = Effect.void,
-          cancel = false,
-        ) {
-          const inheritedDeadline = yield* ProviderControlDeadline;
-          const deadline = Math.min(
-            (yield* Clock.currentTimeMillis) + 10_000,
-            inheritedDeadline ?? Infinity,
-          );
-          yield* verifyOwner;
-          if (existing.retirement === undefined) {
-            existing.stopping = true;
-            existing.retirement = makeClaudeQueryRetirement({
-              deadline,
-              ...(cancel ? { cancel: existing.query.interrupt } : {}),
-              close: existing.query.close,
-              termination: existing.query.termination,
-              drain: Deferred.await(existing.closed).pipe(
-                Effect.andThen(existing.terminalDrain.awaitIngested),
+        const closeCapturedQuery = Effect.fnUntraced(
+          function* (
+            existing: ClaudeLiveQueryContext,
+            verifyOwner: Effect.Effect<
+              void,
+              ProviderAdapter.ProviderAdapterProtocolError
+            > = Effect.void,
+            cancel = false,
+          ) {
+            const inheritedDeadline = yield* ProviderControlDeadline;
+            const deadline = Math.min(
+              (yield* Clock.currentTimeMillis) + 10_000,
+              inheritedDeadline ?? Infinity,
+            );
+            yield* verifyOwner;
+            if (existing.retirement === undefined) {
+              existing.stopping = true;
+              existing.retirement = makeClaudeQueryRetirement({
+                deadline,
+                ...(cancel ? { cancel: existing.query.interrupt } : {}),
+                close: existing.query.close,
+                termination: existing.query.termination,
+                drain: Deferred.await(existing.closed).pipe(
+                  Effect.andThen(existing.terminalDrain.awaitIngested),
+                ),
+                retire: Effect.gen(function* () {
+                  // No producer/retirement permit is held while native exit or drain awaits.
+                  existing.acceptingEvidence = false;
+                  yield* retireGeneration(existing.runtimeGeneration);
+                  yield* Ref.update(queryContext, (current) =>
+                    current === existing ? null : current,
+                  );
+                }),
+                failure: (cause) => {
+                  queryControlUnknown ??= new ProviderControlOutcomeUnknown({
+                    driver: CLAUDE_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadId: existing.nativeThreadId,
+                    operation: cancel ? "interrupt" : "retire",
+                    ...(cause === undefined ? {} : { cause }),
+                  });
+                  return queryControlUnknown;
+                },
+                fence: () => {
+                  queryBindingUnknown = true;
+                },
+              });
+            }
+            yield* existing.retirement.start;
+            yield* existing.retirement.join.pipe(
+              Effect.interruptible,
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CLAUDE_PROVIDER,
+                    detail: "The captured Claude query retirement is unconfirmed.",
+                    cause,
+                  }),
               ),
-              retire: Effect.gen(function* () {
-                // No producer/retirement permit is held while native exit or drain awaits.
-                existing.acceptingEvidence = false;
-                yield* retireGeneration(existing.runtimeGeneration);
-                yield* Ref.update(queryContext, (current) => (current === existing ? null : current));
-              }),
-              failure: (cause) => {
-                queryControlUnknown ??= new ProviderControlOutcomeUnknown({
-                  driver: CLAUDE_PROVIDER,
-                  providerSessionId: input.providerSessionId,
-                  nativeThreadId: existing.nativeThreadId,
-                  operation: cancel ? "interrupt" : "retire",
-                  ...(cause === undefined ? {} : { cause }),
-                });
-                return queryControlUnknown;
-              },
-              fence: () => {
-                queryBindingUnknown = true;
-              },
-            });
-          }
-          yield* existing.retirement.start;
-          yield* existing.retirement.join.pipe(
-            Effect.interruptible,
-            Effect.mapError((cause) =>
-              new ProviderAdapter.ProviderAdapterProtocolError({
-                driver: CLAUDE_PROVIDER,
-                detail: "The captured Claude query retirement is unconfirmed.",
-                cause,
-              }),
-            ),
-          );
-        }, (effect) => Effect.uninterruptible(effect));
+            );
+          },
+          (effect) => Effect.uninterruptible(effect),
+        );
         const closeLiveQueryForNativeThread = Effect.fnUntraced(function* (nativeThreadId: string) {
           const existing = boundQueriesByNativeThread.get(nativeThreadId);
           if (existing !== undefined) yield* closeCapturedQuery(existing);
@@ -11382,9 +11393,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 stop: Effect.gen(function* () {
                   if (
                     captured.retirement === undefined &&
-                    !((yield* Ref.get(queryContext)) === captured &&
+                    !(
+                      (yield* Ref.get(queryContext)) === captured &&
                       captured.acceptingEvidence &&
-                      !captured.stopping)
+                      !captured.stopping
+                    )
                   )
                     return yield* new ProviderAdapter.ProviderAdapterProtocolError({
                       driver: CLAUDE_PROVIDER,

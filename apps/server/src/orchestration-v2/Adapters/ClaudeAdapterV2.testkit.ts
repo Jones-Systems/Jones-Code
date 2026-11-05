@@ -862,12 +862,14 @@ function makeReplayQueryRunner(
           assertNextOutboundFrame({ type: "query.interrupt" });
         }).pipe(Effect.andThen(retirement?.interrupt ?? Effect.void)),
         close: (retirement?.close ?? Effect.void).pipe(
-          Effect.tap(() => Effect.sync(() => {
-            // Drain queued inbound evidence, then end only this query at its next
-            // protocol boundary. A failed close retains its original raw reader.
-            closing = true;
-            wakeCursorWaiters();
-          })),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              // Drain queued inbound evidence, then end only this query at its next
+              // protocol boundary. A failed close retains its original raw reader.
+              closing = true;
+              wakeCursorWaiters();
+            }),
+          ),
         ),
       };
     },

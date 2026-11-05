@@ -76,47 +76,66 @@ export const withActiveEffectClaim = Effect.fn("ActiveEffectClaim.withActiveEffe
         let expiry = captured.leaseExpiresAt;
         const snapshot = () => ({ ...captured, leaseExpiresAt: expiry });
         const invalidate = Effect.fn("ActiveEffectClaim.invalidate")(function* (cause?: unknown) {
-            active = false;
-          yield* Deferred.succeed(loss, new EffectClaimLost({
-            effectId: captured.id,
-            ...(cause === undefined ? {} : { cause }),
-          }));
-        });
-        const check = Effect.gen(function* () {
-          if (!active) return yield* new EffectClaimLost({ effectId: captured.id });
-          const current = yield* outbox.get(captured.id).pipe(
-            Effect.mapError((cause) => new EffectClaimLost({ effectId: captured.id, cause })),
+          active = false;
+          yield* Deferred.succeed(
+            loss,
+            new EffectClaimLost({
+              effectId: captured.id,
+              ...(cause === undefined ? {} : { cause }),
+            }),
           );
+        });
+        const checkWithPermitHeld = Effect.gen(function* () {
+          if (!active) return yield* new EffectClaimLost({ effectId: captured.id });
+          const current = yield* outbox
+            .get(captured.id)
+            .pipe(
+              Effect.mapError((cause) => new EffectClaimLost({ effectId: captured.id, cause })),
+            );
           if (
-            !active || Option.isNone(current) || current.value.status !== "running" ||
+            !active ||
+            Option.isNone(current) ||
+            current.value.status !== "running" ||
             current.value.threadId !== captured.threadId ||
             current.value.commandId !== captured.commandId ||
             current.value.leaseOwner !== captured.leaseOwner ||
             current.value.attemptCount !== captured.attemptCount ||
-            current.value.leaseExpiresAt !== expiry || expiry === null ||
-            (captured.payloadIdentity !== undefined && current.value.payloadIdentity !== captured.payloadIdentity) ||
+            current.value.leaseExpiresAt !== expiry ||
+            expiry === null ||
+            (captured.payloadIdentity !== undefined &&
+              current.value.payloadIdentity !== captured.payloadIdentity) ||
             !sameOperationRequest(current.value.request, captured.request) ||
-            !sameOperationRequest(current.value.nativeCreationExecutionReference, captured.nativeCreationExecutionReference) ||
-            DateTime.toEpochMillis(DateTime.makeUnsafe(expiry)) <= DateTime.toEpochMillis(yield* DateTime.now)
+            !sameOperationRequest(
+              current.value.nativeCreationExecutionReference,
+              captured.nativeCreationExecutionReference,
+            ) ||
+            DateTime.toEpochMillis(DateTime.makeUnsafe(expiry)) <=
+              DateTime.toEpochMillis(yield* DateTime.now)
           )
             return yield* new EffectClaimLost({ effectId: captured.id });
         }).pipe(Effect.tapError((cause) => invalidate(cause)));
         const claim: CurrentEffectClaim["Service"] = {
           nativeCustody: renew,
-          check,
+          check: permit.withPermits(1)(checkWithPermitHeld),
           lost: Deferred.await(loss).pipe(Effect.flatMap(Effect.fail)),
           hasLost: Effect.sync(() => !active),
           invalidate,
-          use: (sql) => permit.withPermits(1)(
-            Effect.uninterruptible(check.pipe(Effect.andThen(Effect.suspend(() => sql(snapshot()))))),
-          ),
-          settle: (sql, allowLost = false) => permit.withPermits(1)(
-            Effect.uninterruptible(Effect.gen(function* () {
-              if (!active && !allowLost)
-                return yield* new EffectClaimLost({ effectId: captured.id });
-              return yield* sql(snapshot());
-            })),
-          ),
+          use: (sql) =>
+            permit.withPermits(1)(
+              Effect.uninterruptible(
+                checkWithPermitHeld.pipe(Effect.andThen(Effect.suspend(() => sql(snapshot())))),
+              ),
+            ),
+          settle: (sql, allowLost = false) =>
+            permit.withPermits(1)(
+              Effect.uninterruptible(
+                Effect.gen(function* () {
+                  if (!active && !allowLost)
+                    return yield* new EffectClaimLost({ effectId: captured.id });
+                  return yield* sql(snapshot());
+                }),
+              ),
+            ),
         };
         let renewal: Fiber.Fiber<void> | undefined;
         if (renew) {
@@ -124,26 +143,32 @@ export const withActiveEffectClaim = Effect.fn("ActiveEffectClaim.withActiveEffe
             while (true) {
               yield* Effect.sleep(Math.max(1, leaseDurationMs / 3));
               yield* permit.withPermits(1)(
-                Effect.uninterruptible(Effect.gen(function* () {
-                  if (!active) return yield* new EffectClaimLost({ effectId: captured.id });
-                  // An error may have followed commit. Lose custody conservatively;
-                  // never guess a new expected value or issue a replacement renewal.
-                  expiry = yield* outbox.renew({ claim: snapshot(), leaseDurationMs });
-                  if (!active) return yield* new EffectClaimLost({ effectId: captured.id });
-                })),
+                Effect.uninterruptible(
+                  Effect.gen(function* () {
+                    if (!active) return yield* new EffectClaimLost({ effectId: captured.id });
+                    // An error may have followed commit. Lose custody conservatively;
+                    // never guess a new expected value or issue a replacement renewal.
+                    expiry = yield* outbox.renew({ claim: snapshot(), leaseDurationMs });
+                    if (!active) return yield* new EffectClaimLost({ effectId: captured.id });
+                  }),
+                ),
               );
             }
           }).pipe(
-            Effect.catchCause((cause) => Cause.hasInterruptsOnly(cause) ? Effect.void : invalidate(cause)),
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause) ? Effect.void : invalidate(cause),
+            ),
             Effect.forkChild,
           );
         }
         return yield* run(claim).pipe(
           Effect.provideService(CurrentEffectClaim, claim),
-          Effect.ensuring(Effect.gen(function* () {
-            if (renewal !== undefined) yield* Fiber.interrupt(renewal);
-            active = false;
-          })),
+          Effect.ensuring(
+            Effect.gen(function* () {
+              if (renewal !== undefined) yield* Fiber.interrupt(renewal);
+              active = false;
+            }),
+          ),
         );
       }),
     );

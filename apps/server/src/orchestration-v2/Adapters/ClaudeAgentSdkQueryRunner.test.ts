@@ -234,7 +234,11 @@ it.effect("requires the captured child exit after SDK close returns", () =>
         env: {},
         signal: new AbortController().signal,
       });
-      return { close: () => { closes++; } } as unknown as ClaudeSdk.Query;
+      return {
+        close: () => {
+          closes++;
+        },
+      } as unknown as ClaudeSdk.Query;
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
     const runner = yield* ClaudeAgentSdkQueryRunner;
@@ -253,7 +257,10 @@ it.effect("requires the captured child exit after SDK close returns", () =>
     const termination = yield* session.termination.pipe(Effect.forkChild);
     yield* session.close;
     assert.equal(closes, 1);
-    assert.isUndefined(termination.pollUnsafe(), "SDK close returning does not witness process exit");
+    assert.isUndefined(
+      termination.pollUnsafe(),
+      "SDK close returning does not witness process exit",
+    );
     child.emit("exit", 0, null);
     yield* Fiber.join(termination);
   }).pipe(Effect.provide(realQueryRunner)),

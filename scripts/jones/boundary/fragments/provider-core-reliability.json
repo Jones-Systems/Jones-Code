@@ -28,8 +28,7 @@
     "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.ts",
     "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.test.ts",
     "packages/client-runtime/src/jones/planCreationOperation.ts",
-    "packages/client-runtime/src/jones/planCreationOperation.test.ts",
-    "apps/server/src/jones/orchestration/planCreationReplay.integration.test.ts"
+    "packages/client-runtime/src/jones/planCreationOperation.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],

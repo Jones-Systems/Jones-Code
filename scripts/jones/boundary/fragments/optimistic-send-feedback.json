@@ -5,9 +5,7 @@
     "apps/web/src/jones/pendingSends/",
     "packages/client-runtime/src/operations/jonesPreparedTurn.ts"
   ],
-  "hookPaths": [
-    "apps/web/src/components/ThreadRouteView.tsx"
-  ],
+  "hookPaths": ["apps/web/src/components/ThreadRouteView.tsx"],
   "tombstones": [],
   "allowedImports": [
     {

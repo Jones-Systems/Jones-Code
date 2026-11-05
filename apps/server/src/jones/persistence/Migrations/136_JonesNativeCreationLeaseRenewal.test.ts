@@ -83,31 +83,37 @@ const retainedFacts = Effect.gen(function* () {
     (rowid, effect_id, reason, held_at) VALUES (241, 'held', 'unknown', ${activeExpiry})`;
 });
 
-const readRows = (table: string) => Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  const columns = yield* sql<{ readonly name: string }>`
+const readRows = (table: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const columns = yield* sql<{ readonly name: string }>`
     SELECT name FROM pragma_table_info(${table}) ORDER BY cid`;
-  return {
-    rows: yield* sql.unsafe(`SELECT rowid AS retained_rowid, * FROM "${table}" ORDER BY rowid`),
-    storage: yield* sql.unsafe(`SELECT rowid AS retained_rowid, ${columns.map(({ name }) =>
-      `typeof("${name}") AS "${name}"`).join(", ")} FROM "${table}" ORDER BY rowid`),
-  };
-});
+    return {
+      rows: yield* sql.unsafe(`SELECT rowid AS retained_rowid, * FROM "${table}" ORDER BY rowid`),
+      storage: yield* sql.unsafe(
+        `SELECT rowid AS retained_rowid, ${columns
+          .map(({ name }) => `typeof("${name}") AS "${name}"`)
+          .join(", ")} FROM "${table}" ORDER BY rowid`,
+      ),
+    };
+  });
 
 const snapshot = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   return {
     schema: yield* sql<{ readonly name: string; readonly sql: string | null }>`
       SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name`,
-    native: yield* Effect.forEach(nativeTables, (table) => Effect.gen(function* () {
-      return {
-        table,
-        columns: yield* sql`SELECT * FROM pragma_table_info(${table}) ORDER BY cid`,
-        indexes: yield* sql`SELECT * FROM pragma_index_list(${table}) ORDER BY seq`,
-        foreignKeys: yield* sql`SELECT * FROM pragma_foreign_key_list(${table}) ORDER BY id, seq`,
-        ...(yield* readRows(table)),
-      };
-    })),
+    native: yield* Effect.forEach(nativeTables, (table) =>
+      Effect.gen(function* () {
+        return {
+          table,
+          columns: yield* sql`SELECT * FROM pragma_table_info(${table}) ORDER BY cid`,
+          indexes: yield* sql`SELECT * FROM pragma_index_list(${table}) ORDER BY seq`,
+          foreignKeys: yield* sql`SELECT * FROM pragma_foreign_key_list(${table}) ORDER BY id, seq`,
+          ...(yield* readRows(table)),
+        };
+      }),
+    ),
     upstream: yield* Effect.forEach(upstreamTables, readRows),
     upstreamLedger: yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
     jonesLedger: yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`,
@@ -119,9 +125,14 @@ it.effect("136 changes only the released update trigger and its normal ledger en
     yield* retainedFacts;
     const sql = yield* SqlClient.SqlClient;
     const before = yield* snapshot;
-    assert.strictEqual(before.schema.filter(({ name }) =>
-      nativeTables.some((table) => ["update", "delete", "replace"].some((kind) =>
-        name === `${table}_no_${kind}`))).length, 12);
+    assert.strictEqual(
+      before.schema.filter(({ name }) =>
+        nativeTables.some((table) =>
+          ["update", "delete", "replace"].some((kind) => name === `${table}_no_${kind}`),
+        ),
+      ).length,
+      12,
+    );
     assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
       [136, "NativeCreationLeaseRenewal"],
     ]);
@@ -132,41 +143,55 @@ it.effect("136 changes only the released update trigger and its normal ledger en
     assert.deepStrictEqual(after.jonesLedger.slice(0, -1), before.jonesLedger);
     assert.strictEqual(after.jonesLedger.length, before.jonesLedger.length + 1);
     assert.deepInclude(after.jonesLedger.at(-1), {
-      migration_id: 136, name: "NativeCreationLeaseRenewal",
+      migration_id: 136,
+      name: "NativeCreationLeaseRenewal",
     });
-    assert.deepStrictEqual(after.schema.filter(({ name }) => name !== changedTrigger),
-      before.schema.filter(({ name }) => name !== changedTrigger));
+    assert.deepStrictEqual(
+      after.schema.filter(({ name }) => name !== changedTrigger),
+      before.schema.filter(({ name }) => name !== changedTrigger),
+    );
     assert.strictEqual(after.schema.filter(({ name }) => name === changedTrigger).length, 1);
-    assert.notStrictEqual(after.schema.find(({ name }) => name === changedTrigger)!.sql,
-      releasedTriggerSql);
+    assert.notStrictEqual(
+      after.schema.find(({ name }) => name === changedTrigger)!.sql,
+      releasedTriggerSql,
+    );
     assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
     assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
     assert.deepStrictEqual(yield* snapshot, after);
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("only expiry advances, including one millisecond and calendar boundaries, preserve facts", () =>
-  Effect.gen(function* () {
-    yield* installReleased135;
-    yield* seedStart("active", "2026-12-31T23:59:59.998Z", 41);
-    yield* runJonesMigrations(jonesMigrationEntries);
-    const sql = yield* SqlClient.SqlClient;
-    let before = yield* readRows(starts);
-    for (const expiry of [
-      "2026-12-31T23:59:59.999Z", "2027-01-01T00:00:00.000Z",
-      "2027-01-31T23:59:59.999Z", "2027-02-01T00:00:00.000Z",
-      "2028-02-28T23:59:59.999Z", "2028-02-29T00:00:00.000Z",
-      "2028-02-29T23:59:59.999Z", "2028-03-01T00:00:00.000Z",
-    ]) {
-      const rows = yield* sql`UPDATE jones_native_creation_execution_starts
+it.effect(
+  "only expiry advances, including one millisecond and calendar boundaries, preserve facts",
+  () =>
+    Effect.gen(function* () {
+      yield* installReleased135;
+      yield* seedStart("active", "2026-12-31T23:59:59.998Z", 41);
+      yield* runJonesMigrations(jonesMigrationEntries);
+      const sql = yield* SqlClient.SqlClient;
+      let before = yield* readRows(starts);
+      for (const expiry of [
+        "2026-12-31T23:59:59.999Z",
+        "2027-01-01T00:00:00.000Z",
+        "2027-01-31T23:59:59.999Z",
+        "2027-02-01T00:00:00.000Z",
+        "2028-02-28T23:59:59.999Z",
+        "2028-02-29T00:00:00.000Z",
+        "2028-02-29T23:59:59.999Z",
+        "2028-03-01T00:00:00.000Z",
+      ]) {
+        const rows = yield* sql`UPDATE jones_native_creation_execution_starts
         SET lease_expires_at = ${expiry} WHERE effect_id = 'active' RETURNING effect_id`;
-      assert.deepStrictEqual(rows, [{ effect_id: "active" }]);
-      const after = yield* readRows(starts);
-      assert.deepStrictEqual(after.rows, before.rows.map((row) => ({ ...row, lease_expires_at: expiry })));
-      assert.deepStrictEqual(after.storage, before.storage);
-      before = after;
-    }
-  }).pipe(Effect.provide(memory)),
+        assert.deepStrictEqual(rows, [{ effect_id: "active" }]);
+        const after = yield* readRows(starts);
+        assert.deepStrictEqual(
+          after.rows,
+          before.rows.map((row) => ({ ...row, lease_expires_at: expiry })),
+        );
+        assert.deepStrictEqual(after.storage, before.storage);
+        before = after;
+      }
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect("every rejected timestamp leaves the exact start row and storage types unchanged", () =>
@@ -176,10 +201,15 @@ it.effect("every rejected timestamp leaves the exact start row and storage types
     const sql = yield* SqlClient.SqlClient;
     const before = yield* readRows(starts);
     for (const [label, value] of [
-      ["equal", `'${activeExpiry}'`], ["backward", "'2026-11-05T12:00:29.999Z'"],
-      ["NULL", "NULL"], ["integer", "123456789"], ["real", "12345.678"],
-      ["numeric text", "'20300101000000.000'"], ["BLOB", "CAST('2030-01-01T00:00:00.000Z' AS BLOB)"],
-      ["empty", "''"], ["malformed", "'not-a-timestamp'"],
+      ["equal", `'${activeExpiry}'`],
+      ["backward", "'2026-11-05T12:00:29.999Z'"],
+      ["NULL", "NULL"],
+      ["integer", "123456789"],
+      ["real", "12345.678"],
+      ["numeric text", "'20300101000000.000'"],
+      ["BLOB", "CAST('2030-01-01T00:00:00.000Z' AS BLOB)"],
+      ["empty", "''"],
+      ["malformed", "'not-a-timestamp'"],
       ["leading whitespace", "' 2030-01-01T00:00:00.000Z'"],
       ["trailing whitespace", "'2030-01-01T00:00:00.000Z '"],
       ["trailing text", "'2030-01-01T00:00:00.000Zx'"],
@@ -201,66 +231,93 @@ it.effect("every rejected timestamp leaves the exact start row and storage types
       ["minute 60", "'2028-03-01T00:60:00.000Z'"],
       ["leap second", "'2028-03-01T00:00:60.000Z'"],
     ] as const) {
-      const result = yield* Effect.exit(sql.unsafe(
-        `UPDATE ${starts} SET lease_expires_at = ${value} WHERE effect_id = 'active'`,
-      ));
+      const result = yield* Effect.exit(
+        sql.unsafe(`UPDATE ${starts} SET lease_expires_at = ${value} WHERE effect_id = 'active'`),
+      );
       assert.isTrue(Exit.isFailure(result), label);
-      if (Exit.isFailure(result)) assert.include(Cause.pretty(result.cause), "native execution facts are immutable", label);
+      if (Exit.isFailure(result))
+        assert.include(Cause.pretty(result.cause), "native execution facts are immutable", label);
       assert.deepStrictEqual(yield* readRows(starts), before, label);
     }
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
-      SET lease_expires_at = lease_expires_at WHERE effect_id = 'active'`)));
+    assert.isTrue(
+      Exit.isFailure(
+        yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
+      SET lease_expires_at = lease_expires_at WHERE effect_id = 'active'`),
+      ),
+    );
     assert.deepStrictEqual(yield* readRows(starts), before);
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("historical noncanonical expiries survive upgrade and cannot be renewed into valid values", () =>
-  Effect.gen(function* () {
-    yield* installReleased135;
-    for (const [index, expiry] of ["lease", "2028-02-30T00:00:00.000Z",
-      "2028-03-01T00:00:00Z", "2028-03-01T00:00:00.000+00:00",
-      "2028-03-01T00:00:00.0000Z", "123456789"].entries()) {
-      yield* seedStart(`old-${index}`, expiry, 41 + index * 10);
-    }
-    const sql = yield* SqlClient.SqlClient;
-    // A historical BLOB is legal under the released NOT NULL column; no constraint is disabled.
-    yield* sql`INSERT INTO jones_native_creation_execution_starts
+it.effect(
+  "historical noncanonical expiries survive upgrade and cannot be renewed into valid values",
+  () =>
+    Effect.gen(function* () {
+      yield* installReleased135;
+      for (const [index, expiry] of [
+        "lease",
+        "2028-02-30T00:00:00.000Z",
+        "2028-03-01T00:00:00Z",
+        "2028-03-01T00:00:00.000+00:00",
+        "2028-03-01T00:00:00.0000Z",
+        "123456789",
+      ].entries()) {
+        yield* seedStart(`old-${index}`, expiry, 41 + index * 10);
+      }
+      const sql = yield* SqlClient.SqlClient;
+      // A historical BLOB is legal under the released NOT NULL column; no constraint is disabled.
+      yield* sql`INSERT INTO jones_native_creation_execution_starts
       SELECT 'old-blob', claim_id, command_id, worker_id, expected_attempt,
         CAST('2028-03-01T00:00:00.000Z' AS BLOB), reference_json, fact_json
       FROM jones_native_creation_execution_starts WHERE effect_id = 'old-0'`;
-    const before = yield* readRows(starts);
-    yield* runJonesMigrations(jonesMigrationEntries);
-    assert.deepStrictEqual(yield* readRows(starts), before);
-    const ids = yield* sql<{ readonly effect_id: string }>`SELECT effect_id FROM jones_native_creation_execution_starts`;
-    for (const { effect_id: id } of ids) {
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
-        SET lease_expires_at = '2099-01-01T00:00:00.000Z' WHERE effect_id = ${id}`)), id);
-      assert.deepStrictEqual(yield* readRows(starts), before, id);
-    }
-  }).pipe(Effect.provide(memory)),
+      const before = yield* readRows(starts);
+      yield* runJonesMigrations(jonesMigrationEntries);
+      assert.deepStrictEqual(yield* readRows(starts), before);
+      const ids = yield* sql<{
+        readonly effect_id: string;
+      }>`SELECT effect_id FROM jones_native_creation_execution_starts`;
+      for (const { effect_id: id } of ids) {
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
+        SET lease_expires_at = '2099-01-01T00:00:00.000Z' WHERE effect_id = ${id}`),
+          ),
+          id,
+        );
+        assert.deepStrictEqual(yield* readRows(starts), before, id);
+      }
+    }).pipe(Effect.provide(memory)),
 );
 
-it.effect("all seven other fields and rowid reject mutation alone or with a valid expiry advance", () =>
-  Effect.gen(function* () {
-    yield* retainedFacts;
-    yield* runJonesMigrations(jonesMigrationEntries);
-    const sql = yield* SqlClient.SqlClient;
-    const before = yield* snapshot;
-    for (const mutation of [
-      "rowid = rowid + 1000", "effect_id = 'different-effect'", "claim_id = 'expired'",
-      "command_id = 'expired'", "worker_id = 'different-worker'", "expected_attempt = 2",
-      "reference_json = '{ \"tag\": 1 }'", "fact_json = '{ \"tag\": 1 }'",
-    ]) {
-      for (const expiry of ["", `, lease_expires_at = '${nextExpiry}'`]) {
-        const result = yield* Effect.exit(sql.unsafe(
-          `UPDATE ${starts} SET ${mutation}${expiry} WHERE effect_id = 'active'`,
-        ));
-        assert.isTrue(Exit.isFailure(result), mutation + expiry);
-        if (Exit.isFailure(result)) assert.include(Cause.pretty(result.cause), "native execution facts are immutable");
-        assert.deepStrictEqual(yield* snapshot, before, mutation + expiry);
+it.effect(
+  "all seven other fields and rowid reject mutation alone or with a valid expiry advance",
+  () =>
+    Effect.gen(function* () {
+      yield* retainedFacts;
+      yield* runJonesMigrations(jonesMigrationEntries);
+      const sql = yield* SqlClient.SqlClient;
+      const before = yield* snapshot;
+      for (const mutation of [
+        "rowid = rowid + 1000",
+        "effect_id = 'different-effect'",
+        "claim_id = 'expired'",
+        "command_id = 'expired'",
+        "worker_id = 'different-worker'",
+        "expected_attempt = 2",
+        "reference_json = '{ \"tag\": 1 }'",
+        "fact_json = '{ \"tag\": 1 }'",
+      ]) {
+        for (const expiry of ["", `, lease_expires_at = '${nextExpiry}'`]) {
+          const result = yield* Effect.exit(
+            sql.unsafe(`UPDATE ${starts} SET ${mutation}${expiry} WHERE effect_id = 'active'`),
+          );
+          assert.isTrue(Exit.isFailure(result), mutation + expiry);
+          if (Exit.isFailure(result))
+            assert.include(Cause.pretty(result.cause), "native execution facts are immutable");
+          assert.deepStrictEqual(yield* snapshot, before, mutation + expiry);
+        }
       }
-    }
-  }).pipe(Effect.provide(memory)),
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect("the other eleven permanent-fact guards retain their SQL and rejection behavior", () =>
@@ -270,19 +327,28 @@ it.effect("the other eleven permanent-fact guards retain their SQL and rejection
     const before = yield* snapshot;
     yield* runJonesMigrations(jonesMigrationEntries);
     const after = yield* snapshot;
-    assert.deepStrictEqual(after.schema.filter(({ name }) => name !== changedTrigger),
-      before.schema.filter(({ name }) => name !== changedTrigger));
+    assert.deepStrictEqual(
+      after.schema.filter(({ name }) => name !== changedTrigger),
+      before.schema.filter(({ name }) => name !== changedTrigger),
+    );
     for (const [table, mutation] of [
-      [nativeTables[0], "command_digest = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'"],
+      [
+        nativeTables[0],
+        "command_digest = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'",
+      ],
       [nativeTables[2], "evidence_json = '{\"changed\":true}'"],
       [nativeTables[3], "reason = 'changed'"],
     ]) {
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(sql.unsafe(`UPDATE ${table} SET ${mutation}`))));
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(sql.unsafe(`UPDATE ${table} SET ${mutation}`))),
+      );
       assert.deepStrictEqual(yield* snapshot, after);
     }
     for (const table of nativeTables) {
-      for (const mutation of [`DELETE FROM ${table}`,
-        `INSERT OR REPLACE INTO ${table} SELECT * FROM ${table}`]) {
+      for (const mutation of [
+        `DELETE FROM ${table}`,
+        `INSERT OR REPLACE INTO ${table} SELECT * FROM ${table}`,
+      ]) {
         assert.isTrue(Exit.isFailure(yield* Effect.exit(sql.unsafe(mutation))), mutation);
         assert.deepStrictEqual(yield* snapshot, after, mutation);
       }
@@ -290,52 +356,68 @@ it.effect("the other eleven permanent-fact guards retain their SQL and rejection
   }).pipe(Effect.provide(memory)),
 );
 
-it.effect("a failure after real replacement rolls back schema, facts and ledger, then retries once", () =>
-  Effect.gen(function* () {
-    yield* retainedFacts;
-    const sql = yield* SqlClient.SqlClient;
-    const before = yield* snapshot;
-    let replacementObserved = false;
-    const result = yield* Effect.exit(runJonesMigrations([
-      ...through135,
-      [136, "NativeCreationLeaseRenewal", Effect.gen(function* () {
-        yield* renewalMigration;
-        const current = yield* sql<{ readonly sql: string }>`SELECT sql FROM sqlite_master WHERE name = ${changedTrigger}`;
-        assert.notStrictEqual(current[0]!.sql, releasedTriggerSql);
-        replacementObserved = true;
-        yield* sql`SELECT * FROM missing_lease_renewal_rollback_fixture`;
-      })],
-    ]));
-    assert.isTrue(Exit.isFailure(result));
-    assert.isTrue(replacementObserved);
-    assert.deepStrictEqual(yield* snapshot, before);
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [[136, "NativeCreationLeaseRenewal"]]);
-    const after = yield* snapshot;
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
-    assert.deepStrictEqual(yield* snapshot, after);
-  }).pipe(Effect.provide(memory)),
+it.effect(
+  "a failure after real replacement rolls back schema, facts and ledger, then retries once",
+  () =>
+    Effect.gen(function* () {
+      yield* retainedFacts;
+      const sql = yield* SqlClient.SqlClient;
+      const before = yield* snapshot;
+      let replacementObserved = false;
+      const result = yield* Effect.exit(
+        runJonesMigrations([
+          ...through135,
+          [
+            136,
+            "NativeCreationLeaseRenewal",
+            Effect.gen(function* () {
+              yield* renewalMigration;
+              const current = yield* sql<{
+                readonly sql: string;
+              }>`SELECT sql FROM sqlite_master WHERE name = ${changedTrigger}`;
+              assert.notStrictEqual(current[0]!.sql, releasedTriggerSql);
+              replacementObserved = true;
+              yield* sql`SELECT * FROM missing_lease_renewal_rollback_fixture`;
+            }),
+          ],
+        ]),
+      );
+      assert.isTrue(Exit.isFailure(result));
+      assert.isTrue(replacementObserved);
+      assert.deepStrictEqual(yield* snapshot, before);
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+        [136, "NativeCreationLeaseRenewal"],
+      ]);
+      const after = yield* snapshot;
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      assert.deepStrictEqual(yield* snapshot, after);
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect.each(["missing", "unexpected body", "unexpected table"] as const)(
   "136 refuses a %s prerequisite without guessing a repair",
-  (drift) => Effect.gen(function* () {
-    yield* retainedFacts;
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`DROP TRIGGER jones_native_creation_execution_starts_no_update`;
-    if (drift === "unexpected body") {
-      yield* sql`CREATE TRIGGER jones_native_creation_execution_starts_no_update
+  (drift) =>
+    Effect.gen(function* () {
+      yield* retainedFacts;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP TRIGGER jones_native_creation_execution_starts_no_update`;
+      if (drift === "unexpected body") {
+        yield* sql`CREATE TRIGGER jones_native_creation_execution_starts_no_update
         BEFORE UPDATE ON jones_native_creation_execution_starts
         BEGIN SELECT RAISE(ABORT, 'unexpected immutable trigger'); END`;
-    } else if (drift === "unexpected table") {
-      yield* sql`CREATE TRIGGER jones_native_creation_execution_starts_no_update
+      } else if (drift === "unexpected table") {
+        yield* sql`CREATE TRIGGER jones_native_creation_execution_starts_no_update
         BEFORE UPDATE ON jones_native_creation_execution_acceptances
         BEGIN SELECT RAISE(ABORT, 'native execution facts are immutable'); END`;
-    }
-    const before = yield* snapshot;
-    const result = yield* Effect.exit(runJonesMigrations(jonesMigrationEntries));
-    assert.isTrue(Exit.isFailure(result));
-    if (Exit.isFailure(result)) assert.include(Cause.pretty(result.cause),
-      "Native lease renewal requires the released immutable start trigger.");
-    assert.deepStrictEqual(yield* snapshot, before);
-  }).pipe(Effect.provide(memory)),
+      }
+      const before = yield* snapshot;
+      const result = yield* Effect.exit(runJonesMigrations(jonesMigrationEntries));
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.include(
+          Cause.pretty(result.cause),
+          "Native lease renewal requires the released immutable start trigger.",
+        );
+      assert.deepStrictEqual(yield* snapshot, before);
+    }).pipe(Effect.provide(memory)),
 );

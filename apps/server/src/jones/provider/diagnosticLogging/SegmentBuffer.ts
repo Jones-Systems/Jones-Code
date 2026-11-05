@@ -49,9 +49,9 @@ type DrainAction =
   | { readonly kind: "wait"; readonly changed: Deferred.Deferred<void> }
   | { readonly kind: "batch"; readonly batch: LogBatch };
 
-function signal(deferred: Deferred.Deferred<void>): Deferred.Deferred<void> {
-  Deferred.doneUnsafe(deferred, Effect.void);
-  return Deferred.makeUnsafe<void>();
+function notify(changes: ReadonlyArray<Deferred.Deferred<void>>): void {
+  // Completion resumes waiters inline; publish every state/token change before notifying.
+  for (const changed of changes) Deferred.doneUnsafe(changed, Effect.void);
 }
 
 /** All methods are synchronous; callers wrap transitions in Effect.sync, never disk I/O. */
@@ -80,20 +80,24 @@ export class SegmentBuffer {
     return this.closed;
   }
 
-  private request(segment: LogSegment): ReadonlyArray<LogSegment> {
-    segment.requested = segment.accepted;
-    segment.changed = signal(segment.changed);
-    if (segment.started) return [];
-    segment.started = true;
-    return [segment];
+  private request(segments: Iterable<LogSegment>): ReadonlyArray<LogSegment> {
+    const workers: Array<LogSegment> = [];
+    const changes: Array<Deferred.Deferred<void>> = [];
+    for (const segment of segments) {
+      segment.requested = segment.accepted;
+      changes.push(segment.changed);
+      segment.changed = Deferred.makeUnsafe<void>();
+      if (!segment.started) {
+        segment.started = true;
+        workers.push(segment);
+      }
+    }
+    notify(changes);
+    return workers;
   }
 
   private requestAll(): ReadonlyArray<LogSegment> {
-    const workers: Array<LogSegment> = [];
-    for (const segment of this.segments.values()) {
-      workers.push(...this.request(segment));
-    }
-    return workers;
+    return this.request(this.segments.values());
   }
 
   admit(record: PendingRecord, filePath: string): Admission {
@@ -136,7 +140,7 @@ export class SegmentBuffer {
       watermark: segment.accepted,
       flush,
       schedule,
-      workers: flush ? this.request(segment) : [],
+      workers: flush ? this.request([segment]) : [],
     };
   }
 
@@ -175,8 +179,10 @@ export class SegmentBuffer {
     this.bytes -= batch.bytes;
     batch.segment.inFlight = false;
     batch.segment.completed = batch.watermark;
-    batch.segment.changed = signal(batch.segment.changed);
-    this.capacityChanged = signal(this.capacityChanged);
+    const changes = [batch.segment.changed, this.capacityChanged];
+    batch.segment.changed = Deferred.makeUnsafe<void>();
+    this.capacityChanged = Deferred.makeUnsafe<void>();
+    notify(changes);
   }
 
   awaitWatermark(segment: LogSegment, watermark: number): Deferred.Deferred<void> | undefined {
@@ -185,29 +191,36 @@ export class SegmentBuffer {
 
   closeAdmission(): {
     readonly workers: ReadonlyArray<LogSegment>;
-    readonly watermarks: ReadonlyArray<{ readonly segment: LogSegment; readonly watermark: number }>;
+    readonly watermarks: ReadonlyArray<{
+      readonly segment: LogSegment;
+      readonly watermark: number;
+    }>;
   } {
     this.closed = true;
     this.flushScheduled = false;
-    this.capacityChanged = signal(this.capacityChanged);
-    return {
-      workers: this.requestAll(),
-      watermarks: Array.from(this.segments.values(), (segment) => ({
-        segment,
-        watermark: segment.accepted,
-      })),
-    };
+    const capacityChanged = this.capacityChanged;
+    this.capacityChanged = Deferred.makeUnsafe<void>();
+    const watermarks = Array.from(this.segments.values(), (segment) => ({
+      segment,
+      watermark: segment.accepted,
+    }));
+    const workers = this.requestAll();
+    notify([capacityChanged]);
+    return { workers, watermarks };
   }
 
   retireIdle(): ReadonlyArray<LogSegment> {
     const retired: Array<LogSegment> = [];
+    const changes: Array<Deferred.Deferred<void>> = [];
     for (const segment of this.segments.values()) {
       if (segment.inFlight || segment.completed !== segment.accepted) continue;
       this.segments.delete(segment.filePath);
       segment.retired = true;
-      segment.changed = signal(segment.changed);
+      changes.push(segment.changed);
+      segment.changed = Deferred.makeUnsafe<void>();
       retired.push(segment);
     }
+    notify(changes);
     return retired;
   }
 

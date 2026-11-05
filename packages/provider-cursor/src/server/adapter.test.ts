@@ -54,9 +54,8 @@ describe("CursorAdapterV2", () => {
     "adapter completion",
     "native wait failure",
     "native handle unavailable",
-  ] as const)(
-    "bounds captured retirement after %s and retains its admission fence",
-    (mode) => Effect.gen(function* () {
+  ] as const)("bounds captured retirement after %s and retains its admission fence", (mode) =>
+    Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-retirement-" });
       const instanceId = ProviderInstanceId.make("cursor");
@@ -73,9 +72,10 @@ describe("CursorAdapterV2", () => {
       const nativeExit = yield* Deferred.make<void>();
       const sendEntered = yield* Deferred.make<void>();
       const releaseSend = yield* Deferred.make<void>();
-      const terminal = yield* Deferred.make<
-        Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }>
-      >();
+      const terminal =
+        yield* Deferred.make<
+          Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }>
+        >();
       const result = {
         id: "captured-cursor-run",
         requestId: "captured-cursor-request",
@@ -93,42 +93,50 @@ describe("CursorAdapterV2", () => {
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
           assertComplete: Effect.void,
-          open: () => Effect.succeed({
-            agentId: "captured-cursor-agent",
-            listMessages: Effect.succeed([]),
-            close: Effect.sync(() => {
-              closes++;
-            }).pipe(Effect.andThen(Deferred.succeed(closeStarted, undefined))),
-            send: () => Effect.gen(function* () {
-              sends++;
-              yield* Deferred.succeed(sendEntered, undefined);
-              if (mode === "native handle unavailable") yield* Deferred.await(releaseSend);
-              return {
-                agentId: "captured-cursor-agent",
-                runId: result.id,
-                wait: Deferred.await(resultGate).pipe(Effect.as(result)),
-                nativeWait:
-                  mode === "native wait failure"
-                    ? Effect.fail(new CursorAgentSdk.CursorAgentSdkRunnerError({
-                        method: "run.wait",
-                        cause: "synthetic native uncertainty",
-                      }))
-                    : Deferred.await(nativeExit).pipe(Effect.as(result)),
-                cancel: Effect.sync(() => {
-                  cancels++;
-                }).pipe(Effect.andThen(
-                  mode === "silent cancel"
-                    ? Deferred.await(cancelGate)
-                    : mode === "cancel rejection"
-                      ? Effect.fail(new CursorAgentSdk.CursorAgentSdkRunnerError({
-                          method: "run.cancel",
-                          cause: "synthetic rejection",
-                        }))
-                      : Effect.void,
-                )),
-              };
+          open: () =>
+            Effect.succeed({
+              agentId: "captured-cursor-agent",
+              listMessages: Effect.succeed([]),
+              close: Effect.sync(() => {
+                closes++;
+              }).pipe(Effect.andThen(Deferred.succeed(closeStarted, undefined))),
+              send: () =>
+                Effect.gen(function* () {
+                  sends++;
+                  yield* Deferred.succeed(sendEntered, undefined);
+                  if (mode === "native handle unavailable") yield* Deferred.await(releaseSend);
+                  return {
+                    agentId: "captured-cursor-agent",
+                    runId: result.id,
+                    wait: Deferred.await(resultGate).pipe(Effect.as(result)),
+                    nativeWait:
+                      mode === "native wait failure"
+                        ? Effect.fail(
+                            new CursorAgentSdk.CursorAgentSdkRunnerError({
+                              method: "run.wait",
+                              cause: "synthetic native uncertainty",
+                            }),
+                          )
+                        : Deferred.await(nativeExit).pipe(Effect.as(result)),
+                    cancel: Effect.sync(() => {
+                      cancels++;
+                    }).pipe(
+                      Effect.andThen(
+                        mode === "silent cancel"
+                          ? Deferred.await(cancelGate)
+                          : mode === "cancel rejection"
+                            ? Effect.fail(
+                                new CursorAgentSdk.CursorAgentSdkRunnerError({
+                                  method: "run.cancel",
+                                  cause: "synthetic rejection",
+                                }),
+                              )
+                            : Effect.void,
+                      ),
+                    ),
+                  };
+                }),
             }),
-          }),
         }),
         Effect.provide(TestProviderHost.layer({ cwd: workspace })),
       );
@@ -136,25 +144,33 @@ describe("CursorAdapterV2", () => {
       yield* Effect.addFinalizer(() =>
         Scope.close(runtimeScope, Exit.void).pipe(
           Effect.exit,
-          Effect.flatMap((exit) => Effect.sync(() => {
-            assert.isTrue(Exit.isFailure(exit));
-            if (Exit.isFailure(exit)) {
-              assert.isDefined(findProviderControlOutcomeUnknown(Cause.squash(exit.cause)));
-            }
-          })),
+          Effect.flatMap((exit) =>
+            Effect.sync(() => {
+              assert.isTrue(Exit.isFailure(exit));
+              if (Exit.isFailure(exit)) {
+                assert.isDefined(findProviderControlOutcomeUnknown(Cause.squash(exit.cause)));
+              }
+            }),
+          ),
         ),
       );
       yield* Effect.addFinalizer(() => Deferred.succeed(cancelGate, undefined));
       yield* Effect.addFinalizer(() => Deferred.succeed(nativeExit, undefined));
       yield* Effect.addFinalizer(() => Deferred.succeed(resultGate, undefined));
       yield* Effect.addFinalizer(() => Deferred.succeed(releaseSend, undefined));
-      const runtime = yield* adapter.openSession({
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("cursor-retirement-session"),
+          modelSelection,
+          runtimePolicy,
+        })
+        .pipe(Effect.provideService(Scope.Scope, runtimeScope));
+      const providerThread = yield* runtime.ensureThread({
         threadId,
-        providerSessionId: ProviderSessionId.make("cursor-retirement-session"),
         modelSelection,
         runtimePolicy,
-      }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
-      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+      });
       yield* runtime.events.pipe(
         Stream.runForEach((event) =>
           event.type === "turn.terminal" ? Deferred.succeed(terminal, event) : Effect.void,
@@ -229,7 +245,8 @@ describe("CursorAdapterV2", () => {
       }
       const stopped = yield* Fiber.join(stopping);
       assert.isTrue(Exit.isFailure(stopped));
-      if (Exit.isFailure(stopped)) assert.isDefined(findProviderControlOutcomeUnknown(stopped.cause));
+      if (Exit.isFailure(stopped))
+        assert.isDefined(findProviderControlOutcomeUnknown(stopped.cause));
       yield* Deferred.succeed(releaseSend, undefined);
       yield* Fiber.join(starting);
       yield* Deferred.succeed(resultGate, undefined);
@@ -239,15 +256,23 @@ describe("CursorAdapterV2", () => {
       assert.equal(late.evidenceKind, "provider_result");
       yield* Deferred.succeed(nativeExit, undefined);
       assert.isTrue(Exit.isFailure(yield* Effect.exit(runtime.interruptTurn(stopInput))));
-      assert.isTrue(Exit.isFailure(yield* Effect.exit(runtime.startTurn({
-        ...turn,
-        attemptId: RunAttemptId.make("blocked-successor"),
-      }))));
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(
+            runtime.startTurn({
+              ...turn,
+              attemptId: RunAttemptId.make("blocked-successor"),
+            }),
+          ),
+        ),
+      );
       assert.equal(cancels, mode === "native handle unavailable" ? 0 : 1);
       assert.equal(closes, 1);
       assert.equal(sends, 1);
     }).pipe(
-      Effect.provide(Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer)),
+      Effect.provide(
+        Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer),
+      ),
     ),
   );
 
@@ -431,11 +456,13 @@ describe("CursorAdapterV2", () => {
                 : "failed",
         );
         assert.isNotNull(rows.at(-1)?.subagent.completedAt);
-        const staleStop = yield* runtime.interruptTurn({
-          providerThread,
-          providerTurnId: ProviderTurnId.make("stale-cursor-turn"),
-          requestRuntimeRestart: true,
-        }).pipe(Effect.exit);
+        const staleStop = yield* runtime
+          .interruptTurn({
+            providerThread,
+            providerTurnId: ProviderTurnId.make("stale-cursor-turn"),
+            requestRuntimeRestart: true,
+          })
+          .pipe(Effect.exit);
         assert.isTrue(Exit.isFailure(staleStop));
         assert.equal(closes, 0, "a stale turn control must not retire the current idle agent");
       }).pipe(
@@ -1246,8 +1273,9 @@ describe("CursorAdapterV2", () => {
     ),
   );
 
-  it.effect("names a custom model Cursor's account catalog rejects", () =>
-    Effect.gen(function* () {
+  it.effect.each(["created", "resumed"] as const)(
+    "names a custom model Cursor's account catalog rejects (%s agent)",
+    (history) => Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
       const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-v2-model-" });
       const instanceId = ProviderInstanceId.make("cursor");
@@ -1259,6 +1287,9 @@ describe("CursorAdapterV2", () => {
         interactionMode: "default",
         cwd: workspace,
       });
+      const opens: Array<"create" | "resume"> = [];
+      let sends = 0;
+      let closes = 0;
       // The SDK checks every create, resume, and send model against the account catalog.
       const checkModel = (method: string, model: { readonly id: string } | undefined) =>
         model === undefined || model.id === "composer-2.5"
@@ -1281,12 +1312,22 @@ describe("CursorAdapterV2", () => {
           assertComplete: Effect.void,
           open: (input) =>
             checkModel(`agent.${input.operation}`, input.options.model).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  opens.push(input.operation);
+                }),
+              ),
               Effect.as({
                 agentId: "native-cursor-custom-model",
                 listMessages: Effect.succeed([]),
-                close: Effect.void,
+                close: Effect.sync(() => {
+                  closes++;
+                }),
                 send: (sendInput) =>
-                  checkModel("run.start", sendInput.options?.model).pipe(
+                  Effect.sync(() => {
+                    sends++;
+                  }).pipe(
+                    Effect.andThen(checkModel("run.start", sendInput.options?.model)),
                     Effect.andThen(Effect.die("unexpected Cursor run")),
                   ),
               }),
@@ -1294,12 +1335,37 @@ describe("CursorAdapterV2", () => {
         }),
         Effect.provide(TestProviderHost.layer({ cwd: workspace })),
       );
-      const runtime = yield* adapter.openSession({
+      let runtimeScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() =>
+        Scope.close(runtimeScope, Exit.void).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) =>
+            Effect.sync(() => {
+              assert.equal(closes, history === "created" ? 1 : 2);
+              if (history === "created") {
+                assert.isTrue(Exit.isSuccess(exit));
+              } else {
+                assert.isTrue(Exit.isFailure(exit));
+                if (Exit.isFailure(exit)) {
+                  const unknown = findProviderControlOutcomeUnknown(exit.cause);
+                  assert.isDefined(unknown);
+                  assert.equal(unknown?.operation, "retire");
+                  assert.equal(unknown?.nativeThreadId, "native-cursor-custom-model");
+                }
+              }
+            }),
+          ),
+        ),
+      );
+      const sessionInput = {
         threadId,
         providerSessionId: ProviderSessionId.make("cursor-custom-model-session"),
         modelSelection: catalogModel,
         runtimePolicy,
-      });
+      };
+      let runtime = yield* adapter.openSession(sessionInput).pipe(
+        Effect.provideService(Scope.Scope, runtimeScope),
+      );
       const expected =
         'Cursor cannot run the model "deepseek/deepseek-v4.1-flash". Cursor only runs models from your Cursor account. Choose one of those, or use OpenCode for OpenRouter and other API-key models.';
 
@@ -1313,6 +1379,15 @@ describe("CursorAdapterV2", () => {
         modelSelection: catalogModel,
         runtimePolicy,
       });
+      if (history === "resumed") {
+        yield* Scope.close(runtimeScope, Exit.void);
+        assert.equal(closes, 1);
+        runtimeScope = yield* Scope.make();
+        runtime = yield* adapter.openSession(sessionInput).pipe(
+          Effect.provideService(Scope.Scope, runtimeScope),
+        );
+        yield* runtime.resumeThread({ providerThread });
+      }
       const now = yield* DateTime.now;
       const sendFailure = yield* runtime
         .startTurn({
@@ -1358,6 +1433,8 @@ describe("CursorAdapterV2", () => {
         })
         .pipe(Effect.flip);
       assert.equal(makeProviderFailure({ cause: sendFailure }).message, expected);
+      assert.equal(sends, 1);
+      assert.deepEqual(opens, history === "created" ? ["create"] : ["create", "resume"]);
     }).pipe(
       Effect.scoped,
       Effect.provide(

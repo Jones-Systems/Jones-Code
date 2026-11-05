@@ -57,8 +57,14 @@ const Envelope = Schema.Struct({
 export interface PlanCreationOperation extends PlanCreationSlot {
   readonly schemaVersion: 1;
   readonly phase: typeof Envelope.Type.phase;
-  readonly create: CreateThreadInput & { readonly commandId: CommandId; readonly createdAt: string };
-  readonly prepared: Extract<PreparedThreadTurn, { readonly method: typeof ORCHESTRATION_V2_WS_METHODS.dispatchCommand }>;
+  readonly create: CreateThreadInput & {
+    readonly commandId: CommandId;
+    readonly createdAt: string;
+  };
+  readonly prepared: Extract<
+    PreparedThreadTurn,
+    { readonly method: typeof ORCHESTRATION_V2_WS_METHODS.dispatchCommand }
+  >;
 }
 
 const PLAN_CREATION_OPERATION_MAX_BYTES = 256 * 1024;
@@ -66,7 +72,9 @@ const PLAN_CREATION_OPERATION_MAX_BYTES = 256 * 1024;
 // Admit only this action's command intent; uploads and unrelated commands are held.
 export function decodePlanCreationOperation(value: unknown): PlanCreationOperation {
   const envelope = Schema.decodeUnknownSync(Envelope)(value, { onExcessProperty: "error" });
-  const prepared = Schema.decodeUnknownSync(PreparedThreadTurnJson)(envelope.prepared, { onExcessProperty: "error" });
+  const prepared = Schema.decodeUnknownSync(PreparedThreadTurnJson)(envelope.prepared, {
+    onExcessProperty: "error",
+  });
   if (
     prepared.method !== ORCHESTRATION_V2_WS_METHODS.dispatchCommand ||
     prepared.payload.type !== "message.dispatch" ||
@@ -78,12 +86,16 @@ export function decodePlanCreationOperation(value: unknown): PlanCreationOperati
     prepared.payload.sourcePlanRef?.threadId !== envelope.sourceThreadId ||
     prepared.payload.sourcePlanRef?.planId !== envelope.sourcePlanId ||
     typeof prepared.payload.modelSelectionExplicit !== "boolean" ||
-    JSON.stringify(prepared.payload.modelSelection) !== JSON.stringify(envelope.create.modelSelection)
+    JSON.stringify(prepared.payload.modelSelection) !==
+      JSON.stringify(envelope.create.modelSelection)
   ) {
     throw new Error("Saved plan action needs reconciliation. No replacement was created.");
   }
   const operation = { ...envelope, prepared };
-  if (new TextEncoder().encode(JSON.stringify(operation)).byteLength > PLAN_CREATION_OPERATION_MAX_BYTES)
+  if (
+    new TextEncoder().encode(JSON.stringify(operation)).byteLength >
+    PLAN_CREATION_OPERATION_MAX_BYTES
+  )
     throw new Error("Plan action is too large to retain safely. No further work was sent.");
   return freezePreparedTurnRequest(operation);
 }
@@ -111,7 +123,8 @@ export function advancePlanCreation(
   const allowed =
     (operation.phase === "create-pending" &&
       (phase === "create-rejected" || phase === "message-pending")) ||
-    (operation.phase === "message-pending" && (phase === "accepted" || phase === "message-rejected")) ||
+    (operation.phase === "message-pending" &&
+      (phase === "accepted" || phase === "message-rejected")) ||
     (operation.phase === "message-rejected" && phase === "accepted");
   if (!allowed) throw new Error("Plan action stage does not match its retained intent.");
   return decodePlanCreationOperation({ ...operation, phase });

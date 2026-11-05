@@ -36,13 +36,16 @@ export function createPlanCreationController(
 ) {
   const running = new Map<string, Promise<PlanCreationResult>>();
   const generations = new Map<EnvironmentId, number>();
-  const bindings = new Map<CommandId, {
-    readonly environmentId: EnvironmentId;
-    readonly callbacks: Callbacks;
-    accepted: boolean;
-    rejected: boolean;
-    settlement: Promise<unknown>;
-  }>();
+  const bindings = new Map<
+    CommandId,
+    {
+      readonly environmentId: EnvironmentId;
+      readonly callbacks: Callbacks;
+      accepted: boolean;
+      rejected: boolean;
+      settlement: Promise<unknown>;
+    }
+  >();
   const execute = async (action: PlanAction): Promise<PlanCreationResult> => {
     let operation: PlanCreationOperation | undefined;
     let entryKey: string | undefined;
@@ -57,7 +60,10 @@ export function createPlanCreationController(
       ensureCurrent();
       const captured = operation;
       const request = operation.prepared;
-      if (request.method !== "orchestration.dispatchCommand" || request.payload.type !== "message.dispatch")
+      if (
+        request.method !== "orchestration.dispatchCommand" ||
+        request.payload.type !== "message.dispatch"
+      )
         throw new Error("Saved plan message does not match its action.");
       const message = request.payload;
       if (operation.phase === "accepted") return { status: "accepted", operation };
@@ -73,38 +79,67 @@ export function createPlanCreationController(
       store.retainDurably(entryKey);
       let binding = bindings.get(operation.create.commandId);
       if (!binding) {
-        binding = { environmentId: operation.environmentId, callbacks: action.admitted(operation), accepted: false, rejected: false, settlement: Promise.resolve() };
+        binding = {
+          environmentId: operation.environmentId,
+          callbacks: action.admitted(operation),
+          accepted: false,
+          rejected: false,
+          settlement: Promise.resolve(),
+        };
         bindings.set(operation.create.commandId, binding);
         const observer = binding;
-        store.whenAccepted(operation.environmentId, operation.create.threadId, message.messageId, () => {
-          observer.settlement = observer.settlement.catch(() => undefined).then(async () => {
-            ensureCurrent();
-            await journal.advance(captured, "accepted");
-            ensureCurrent();
-            if (!observer.accepted) {
-              observer.accepted = true;
-              observer.callbacks.accepted();
-            }
-          });
-          // The durable record stays pending if persistence fails; explicit recovery replays it.
-          void observer.settlement.catch(() => undefined);
-        });
-        store.whenRejected(operation.environmentId, operation.create.threadId, message.messageId, () => {
-          observer.settlement = observer.settlement.catch(() => undefined).then(async () => {
-            ensureCurrent();
-            const current = await journal.read(captured);
-            if (!current || current.phase === "create-rejected" || current.phase === "create-pending") return;
-            const next = await journal.advance(captured, "message-rejected");
-            if (next.phase !== "accepted" && !observer.rejected) {
-              observer.rejected = true;
-              observer.callbacks.messageRejected();
-            }
-          });
-          void observer.settlement.catch(() => undefined);
-        });
+        store.whenAccepted(
+          operation.environmentId,
+          operation.create.threadId,
+          message.messageId,
+          () => {
+            observer.settlement = observer.settlement
+              .catch(() => undefined)
+              .then(async () => {
+                ensureCurrent();
+                await journal.advance(captured, "accepted");
+                ensureCurrent();
+                if (!observer.accepted) {
+                  observer.accepted = true;
+                  observer.callbacks.accepted();
+                }
+              });
+            // The durable record stays pending if persistence fails; explicit recovery replays it.
+            void observer.settlement.catch(() => undefined);
+          },
+        );
+        store.whenRejected(
+          operation.environmentId,
+          operation.create.threadId,
+          message.messageId,
+          () => {
+            observer.settlement = observer.settlement
+              .catch(() => undefined)
+              .then(async () => {
+                ensureCurrent();
+                const current = await journal.read(captured);
+                if (
+                  !current ||
+                  current.phase === "create-rejected" ||
+                  current.phase === "create-pending"
+                )
+                  return;
+                const next = await journal.advance(captured, "message-rejected");
+                if (next.phase !== "accepted" && !observer.rejected) {
+                  observer.rejected = true;
+                  observer.callbacks.messageRejected();
+                }
+              });
+            void observer.settlement.catch(() => undefined);
+          },
+        );
       }
       if (operation.phase === "message-rejected") {
-        store.confirmThreadCreation(operation.environmentId, operation.create.threadId, message.messageId);
+        store.confirmThreadCreation(
+          operation.environmentId,
+          operation.create.threadId,
+          message.messageId,
+        );
         store.finish(entryKey, "rejected");
         await binding.settlement;
         return { status: "message-rejected", operation };
@@ -113,8 +148,10 @@ export function createPlanCreationController(
         store.awaitingCreation(entryKey, () => run(action), true);
         const result = await action.create(operation.create);
         ensureCurrent();
-        const disposition = result._tag === "Success" ? "accepted" :
-          planCreateDelivery(squashAtomCommandFailure(result), operation);
+        const disposition =
+          result._tag === "Success"
+            ? "accepted"
+            : planCreateDelivery(squashAtomCommandFailure(result), operation);
         if (disposition === "unknown") {
           store.awaitingCreation(entryKey, () => run(action), false);
           return { status: "unknown", operation };
@@ -131,8 +168,16 @@ export function createPlanCreationController(
         operation = await journal.advance(operation, "message-pending");
         ensureCurrent();
       }
-      store.confirmThreadCreation(operation.environmentId, operation.create.threadId, message.messageId);
-      const delivery = store.get(operation.environmentId, operation.create.threadId, message.messageId)?.delivery;
+      store.confirmThreadCreation(
+        operation.environmentId,
+        operation.create.threadId,
+        message.messageId,
+      );
+      const delivery = store.get(
+        operation.environmentId,
+        operation.create.threadId,
+        message.messageId,
+      )?.delivery;
       if (delivery === "failed") {
         await binding.settlement.catch(() => undefined);
         operation = await journal.advance(operation, "message-rejected");
@@ -155,7 +200,12 @@ export function createPlanCreationController(
             commandId: message.commandId,
             threadId: message.threadId,
             createdAt: operation.create.createdAt,
-            message: { messageId: message.messageId, role: "user", text: message.text, attachments: [] },
+            message: {
+              messageId: message.messageId,
+              role: "user",
+              text: message.text,
+              attachments: [],
+            },
             runtimeMode: operation.create.runtimeMode,
             interactionMode: operation.create.interactionMode,
             dispatchMode: "start",
@@ -171,11 +221,21 @@ export function createPlanCreationController(
           store,
         });
         await binding.settlement;
-        operation = await journal.read(operation) ?? operation;
+        operation = (await journal.read(operation)) ?? operation;
       }
-      return { status: operation.phase === "accepted" || operation.phase === "message-rejected" ? operation.phase : "unknown", operation };
+      return {
+        status:
+          operation.phase === "accepted" || operation.phase === "message-rejected"
+            ? operation.phase
+            : "unknown",
+        operation,
+      };
     } catch {
-      if (operation?.phase === "create-pending" && entryKey && generations.get(action.slot.environmentId) === generation)
+      if (
+        operation?.phase === "create-pending" &&
+        entryKey &&
+        generations.get(action.slot.environmentId) === generation
+      )
         store.awaitingCreation(entryKey, () => run(action), false);
       return { status: "held", ...(operation ? { operation } : {}) };
     }

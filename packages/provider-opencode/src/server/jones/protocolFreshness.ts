@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import * as OpenCodeRuntime from "../OpenCodeRuntime.ts";
 
@@ -15,6 +16,29 @@ export interface ProbedOpenCode {
 
 // Admission policy, not a background polling interval. Indirect wrappers need the age bound too.
 const MAX_PROTOCOL_AGE_NANOS = 60_000_000_000n;
+
+const encodeProtocolSource = Schema.encodeSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      shell: Schema.Boolean,
+      command: Schema.String,
+      args: Schema.Array(Schema.String),
+      executable: Schema.NullOr(Schema.String),
+      target: Schema.NullOr(Schema.String),
+      info: Schema.NullOr(
+        Schema.Struct({
+          type: Schema.String,
+          dev: Schema.String,
+          ino: Schema.NullOr(Schema.String),
+          mode: Schema.Number,
+          size: Schema.String,
+          mtime: Schema.NullOr(Schema.Number),
+          birthtime: Schema.NullOr(Schema.Number),
+        }),
+      ),
+    }),
+  ),
+);
 
 export const readOpenCodeProtocolSource = Effect.fn("OpenCodeProtocolFreshness.readSource")(
   function* (
@@ -28,7 +52,9 @@ export const readOpenCodeProtocolSource = Effect.fn("OpenCodeProtocolFreshness.r
       ...(environment === undefined ? {} : { env: environment }),
       bypassNpmShim: true,
     });
-    if (command.shell) return JSON.stringify(["shell", command.command, command.args]);
+    if (command.shell) {
+      return encodeProtocolSource({ ...command, executable: null, target: null, info: null });
+    }
     // Reuse command lookup rather than walking PATH trees or reading executable contents.
     const executable = yield* resolveCommandPath(command.command, {
       ...(environment === undefined ? {} : { env: environment }),
@@ -41,30 +67,32 @@ export const readOpenCodeProtocolSource = Effect.fn("OpenCodeProtocolFreshness.r
       target === undefined
         ? undefined
         : yield* fileSystem.stat(target).pipe(Effect.orElseSucceed(() => undefined));
-    return JSON.stringify([
-      command.command,
-      command.args,
+    return encodeProtocolSource({
+      ...command,
       executable,
-      target,
-      info === undefined
-        ? null
-        : [
-            info.type,
-            info.dev,
-            Option.getOrNull(info.ino),
-            info.mode,
-            String(info.size),
-            Option.getOrNull(Option.map(info.mtime, (time) => time.getTime())),
-            Option.getOrNull(Option.map(info.birthtime, (time) => time.getTime())),
-          ],
-    ]);
+      target: target ?? null,
+      info:
+        info === undefined
+          ? null
+          : {
+              type: info.type,
+              // Device/inode metadata may be bigint; decimal fields preserve every identity bit.
+              dev: info.dev.toString(10),
+              ino: Option.getOrNull(Option.map(info.ino, (ino) => ino.toString(10))),
+              mode: info.mode,
+              size: info.size.toString(),
+              mtime: Option.getOrNull(Option.map(info.mtime, (time) => time.getTime())),
+              birthtime: Option.getOrNull(Option.map(info.birthtime, (time) => time.getTime())),
+            },
+    });
   },
 );
 
 const changedDuringProbe = () =>
   new OpenCodeRuntime.OpenCodeRuntimeError({
     operation: "probeOpenCodeRuntime",
-    detail: "The OpenCode protocol source changed while checking its version. Try the admission again.",
+    detail:
+      "The OpenCode protocol source changed while checking its version. Try the admission again.",
   });
 
 export const makeOpenCodeProtocolFreshness = <E>(

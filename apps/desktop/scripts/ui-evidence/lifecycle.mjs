@@ -131,8 +131,12 @@ export async function superviseRun({ run, start, signals = process, remove = rem
     clearTimeout(escalation);
     try {
       const currentTicks = await processIdentity(child?.pid);
-      const exited = !currentTicks || (startTicks && currentTicks !== startTicks)
-        ? true : child?.pid ? "unknown" : true;
+      const exited =
+        !currentTicks || (startTicks && currentTicks !== startTicks)
+          ? true
+          : child?.pid
+            ? "unknown"
+            : true;
       namespaceProcess = { pid: child?.pid ?? null, startTicks, exited };
       run.namespaceProcess = namespaceProcess;
       if (exited !== true) throw new Error("Namespace exit unproved; scratch retained");

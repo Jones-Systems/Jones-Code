@@ -415,12 +415,14 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       }));
       yield* Effect.gen(function* () {
         const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
-        const result = yield* Effect.exit(control.interrupt({
-          threadId,
-          providerSessionId: oldSessionId,
-          providerThreadId,
-          providerTurnId,
-        }));
+        const result = yield* Effect.exit(
+          control.interrupt({
+            threadId,
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+          }),
+        );
         assert.isTrue(Exit.isFailure(result));
         if (Exit.isFailure(result)) {
           assert.strictEqual(findProviderControlOutcomeUnknown(result.cause), unknownControl);

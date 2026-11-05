@@ -2197,123 +2197,132 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           }
         };
 
-        const retireAgent = Effect.fn("CursorAdapterV2.retireAgent")(function* (
-          agent: CursorLiveAgent,
-          cancel = false,
-        ) {
-          const inheritedDeadline = yield* ProviderControlDeadline;
-          const deadline = Math.min(
-            (yield* Clock.currentTimeMillis) + 10_000,
-            inheritedDeadline ?? Infinity,
-          );
-          if (agent.retirement === undefined) {
-            const captured = agent.lastTurn;
-            const pendingSend = agent.pendingSend;
-            const missingRunWitness = pendingSend || (captured === null && agent.openedForResume);
-            const completion = Deferred.makeUnsafe<void, ProviderControlOutcomeUnknown>();
-            let closeStarted = false;
-            const fail = (cause?: unknown) =>
-              Effect.suspend(() => {
-                if (Deferred.isDoneUnsafe(completion)) return Effect.void;
-                retirementUnknown ??= new ProviderControlOutcomeUnknown({
-                  driver: CursorAgentSdk.CURSOR_PROVIDER,
-                  providerSessionId: input.providerSessionId,
-                  nativeThreadId: agent.nativeThreadId,
-                  operation: cancel ? "interrupt" : "retire",
-                  ...(cause === undefined ? {} : { cause }),
-                });
-                Deferred.doneUnsafe(completion, Effect.fail(retirementUnknown));
-                return Effect.void;
-              });
-            const close = Effect.suspend(() => {
-              if (closeStarted) return Effect.void;
-              closeStarted = true;
-              return agent.session.close.pipe(
-                Effect.andThen(
-                  missingRunWitness
-                    ? Effect.fail(new CursorAgentSdk.CursorAgentSdkRunnerError({
-                        method: "retire",
-                        cause: "No captured native run witness confirms this agent's retirement.",
-                      }))
-                    : captured === null
-                      ? Effect.void // This owner has never issued a send on the agent.
-                      : captured.run.nativeWait,
-                ),
-                Effect.andThen(captured === null ? Effect.void : Deferred.await(captured.completed)),
-                Effect.andThen(agent.terminalDrain.awaitIngested),
-                Effect.andThen(
-                  Effect.gen(function* () {
-                    agent.eventProducer.retire();
-                    yield* Ref.update(liveAgent, (current) => (current === agent ? null : current));
-                  }),
-                ),
-                Effect.exit,
-                Effect.flatMap((exit) =>
-                  Exit.isSuccess(exit)
-                    ? Deferred.succeed(completion, undefined).pipe(Effect.asVoid)
-                    : fail(Cause.squash(exit.cause)),
-                ),
-                Effect.forkDetach({ startImmediately: true }),
-                Effect.asVoid,
-              );
-            });
-            // Install the capture before starting any async native operation.
-            agent.retirement = { deadline, completion, close };
-            yield* Effect.gen(function* () {
-              if (cancel && captured !== null && !pendingSend) {
-                const cancelled = Deferred.makeUnsafe<void>();
-                yield* captured.run.cancel.pipe(
-                  Effect.exit,
-                  Effect.andThen(Deferred.succeed(cancelled, undefined)),
-                  Effect.forkDetach({ startImmediately: true }),
-                );
-                const cancelBudget = Math.max(
-                  0,
-                  Math.min(2_000, deadline - (yield* Clock.currentTimeMillis)),
-                );
-                yield* Deferred.await(cancelled).pipe(Effect.timeoutOption(cancelBudget));
-              }
-              yield* close;
-            }).pipe(
-              Effect.interruptible,
-              Effect.ensuring(close),
-              Effect.forkDetach({ startImmediately: true }),
+        const retireAgent = Effect.fn("CursorAdapterV2.retireAgent")(
+          function* (agent: CursorLiveAgent, cancel = false) {
+            const inheritedDeadline = yield* ProviderControlDeadline;
+            const deadline = Math.min(
+              (yield* Clock.currentTimeMillis) + 10_000,
+              inheritedDeadline ?? Infinity,
             );
-          }
-          const retirement = agent.retirement;
-          const failJoin = Effect.suspend(() => {
-            if (Deferred.isDoneUnsafe(retirement.completion)) return Effect.void;
-            retirementUnknown ??= new ProviderControlOutcomeUnknown({
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              providerSessionId: input.providerSessionId,
-              nativeThreadId: agent.nativeThreadId,
-              operation: cancel ? "interrupt" : "retire",
+            if (agent.retirement === undefined) {
+              const captured = agent.lastTurn;
+              const pendingSend = agent.pendingSend;
+              const missingRunWitness = pendingSend || (captured === null && agent.openedForResume);
+              const completion = Deferred.makeUnsafe<void, ProviderControlOutcomeUnknown>();
+              let closeStarted = false;
+              const fail = (cause?: unknown) =>
+                Effect.suspend(() => {
+                  if (Deferred.isDoneUnsafe(completion)) return Effect.void;
+                  retirementUnknown ??= new ProviderControlOutcomeUnknown({
+                    driver: CursorAgentSdk.CURSOR_PROVIDER,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadId: agent.nativeThreadId,
+                    operation: cancel ? "interrupt" : "retire",
+                    ...(cause === undefined ? {} : { cause }),
+                  });
+                  Deferred.doneUnsafe(completion, Effect.fail(retirementUnknown));
+                  return Effect.void;
+                });
+              const close = Effect.suspend(() => {
+                if (closeStarted) return Effect.void;
+                closeStarted = true;
+                return agent.session.close.pipe(
+                  Effect.andThen(
+                    missingRunWitness
+                      ? Effect.fail(
+                          new CursorAgentSdk.CursorAgentSdkRunnerError({
+                            method: "retire",
+                            cause:
+                              "No captured native run witness confirms this agent's retirement.",
+                          }),
+                        )
+                      : captured === null
+                        ? Effect.void // No run started on this newly created agent.
+                        : captured.run.nativeWait,
+                  ),
+                  Effect.andThen(
+                    captured === null ? Effect.void : Deferred.await(captured.completed),
+                  ),
+                  Effect.andThen(agent.terminalDrain.awaitIngested),
+                  Effect.andThen(
+                    Effect.gen(function* () {
+                      agent.eventProducer.retire();
+                      yield* Ref.update(liveAgent, (current) =>
+                        current === agent ? null : current,
+                      );
+                    }),
+                  ),
+                  Effect.exit,
+                  Effect.flatMap((exit) =>
+                    Exit.isSuccess(exit)
+                      ? Deferred.succeed(completion, undefined).pipe(Effect.asVoid)
+                      : fail(Cause.squash(exit.cause)),
+                  ),
+                  Effect.forkDetach({ startImmediately: true }),
+                  Effect.asVoid,
+                );
+              });
+              // Install the capture before starting any async native operation.
+              agent.retirement = { deadline, completion, close };
+              yield* Effect.gen(function* () {
+                if (cancel && captured !== null && !pendingSend) {
+                  const cancelled = Deferred.makeUnsafe<void>();
+                  yield* captured.run.cancel.pipe(
+                    Effect.exit,
+                    Effect.andThen(Deferred.succeed(cancelled, undefined)),
+                    Effect.forkDetach({ startImmediately: true }),
+                  );
+                  const cancelBudget = Math.max(
+                    0,
+                    Math.min(2_000, deadline - (yield* Clock.currentTimeMillis)),
+                  );
+                  yield* Deferred.await(cancelled).pipe(Effect.timeoutOption(cancelBudget));
+                }
+                yield* close;
+              }).pipe(
+                Effect.interruptible,
+                Effect.ensuring(close),
+                Effect.forkDetach({ startImmediately: true }),
+              );
+            }
+            const retirement = agent.retirement;
+            const failJoin = Effect.suspend(() => {
+              if (Deferred.isDoneUnsafe(retirement.completion)) return Effect.void;
+              retirementUnknown ??= new ProviderControlOutcomeUnknown({
+                driver: CursorAgentSdk.CURSOR_PROVIDER,
+                providerSessionId: input.providerSessionId,
+                nativeThreadId: agent.nativeThreadId,
+                operation: cancel ? "interrupt" : "retire",
+              });
+              Deferred.doneUnsafe(retirement.completion, Effect.fail(retirementUnknown));
+              return Effect.void;
             });
-            Deferred.doneUnsafe(retirement.completion, Effect.fail(retirementUnknown));
-            return Effect.void;
-          });
-          const remaining = Math.max(0, retirement.deadline - (yield* Clock.currentTimeMillis));
-          yield* Deferred.await(retirement.completion).pipe(
-            Effect.timeoutOrElse({
-              duration: remaining,
-              orElse: () =>
-                failJoin.pipe(
-                  Effect.andThen(retirement.close),
-                  Effect.andThen(Deferred.await(retirement.completion)),
-                ),
-            }),
-            Effect.interruptible,
-            Effect.onInterrupt(() => failJoin.pipe(Effect.andThen(retirement.close))),
-          );
-        }, (effect) =>
-          effect.pipe(
-            Effect.uninterruptible,
-            Effect.mapError((cause) => new ProviderAdapter.ProviderAdapterProtocolError({
-              driver: CursorAgentSdk.CURSOR_PROVIDER,
-              detail: "The captured Cursor agent retirement is unconfirmed.",
-              cause,
-            })),
-          ),
+            const remaining = Math.max(0, retirement.deadline - (yield* Clock.currentTimeMillis));
+            yield* Deferred.await(retirement.completion).pipe(
+              Effect.timeoutOrElse({
+                duration: remaining,
+                orElse: () =>
+                  failJoin.pipe(
+                    Effect.andThen(retirement.close),
+                    Effect.andThen(Deferred.await(retirement.completion)),
+                  ),
+              }),
+              Effect.interruptible,
+              Effect.onInterrupt(() => failJoin.pipe(Effect.andThen(retirement.close))),
+            );
+          },
+          (effect) =>
+            effect.pipe(
+              Effect.uninterruptible,
+              Effect.mapError(
+                (cause) =>
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: CursorAgentSdk.CURSOR_PROVIDER,
+                    detail: "The captured Cursor agent retirement is unconfirmed.",
+                    cause,
+                  }),
+              ),
+            ),
         );
 
         const openAgent = Effect.fnUntraced(function* (openInput: {
@@ -2516,7 +2525,20 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   );
                 },
               })
-              .pipe(Effect.mapError(classifyCursorModelRejection(turnInput.modelSelection)));
+              .pipe(
+                Effect.mapError((cause) => {
+                  const rejection = classifyCursorModelRejection(turnInput.modelSelection)(cause);
+                  if (
+                    cause.method === "run.start" &&
+                    rejection instanceof CursorModelUnavailableError &&
+                    pendingUpdates.length === 0
+                  ) {
+                    // Catalog validation rejects before native start; other failures stay unknown.
+                    agent.pendingSend = false;
+                  }
+                  return rejection;
+                }),
+              );
             const startedAt = yield* DateTime.now;
             const completed = yield* Deferred.make<void, never>();
             const providerTurnId = idAllocator.derive.providerTurn({
@@ -2795,7 +2817,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               const capturedAgent = yield* Ref.get(liveAgent);
               if (
                 capturedAgent !== null &&
-                capturedAgent.nativeThreadId === turnInput.providerThread.nativeThreadRef?.nativeId &&
+                capturedAgent.nativeThreadId ===
+                  turnInput.providerThread.nativeThreadRef?.nativeId &&
                 (capturedAgent.pendingSend ||
                   (retirementUnknown !== undefined && capturedAgent.retirement === undefined))
               ) {
@@ -2816,7 +2839,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               if (context === null && turnInput.requestRuntimeRestart === true) {
                 if (
                   capturedAgent !== null &&
-                  capturedAgent.nativeThreadId === turnInput.providerThread.nativeThreadRef?.nativeId
+                  capturedAgent.nativeThreadId ===
+                    turnInput.providerThread.nativeThreadRef?.nativeId
                 ) {
                   if (
                     capturedAgent.lastTurn !== null &&

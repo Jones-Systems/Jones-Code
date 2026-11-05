@@ -8,21 +8,38 @@ import { processIdentity } from "./lifecycle.mjs";
 
 export function classifyNativeFailure(phase, error, assertions = [], steps = []) {
   if (phase !== "scenario") return "unknown";
-  const failed = assertions.filter(item => item.status === "failed");
-  if (error?.constructor === Error && failed.length === 1 &&
-    error.message === `Scenario assertion failed: ${failed[0].name}`) return "assertion-failed";
-  return error instanceof AssertionError && error.code === "ERR_ASSERTION" && failed.length === 0 &&
-    steps.some(step => step.status === "failed") ? "assertion-failed" : "unknown";
+  const failed = assertions.filter((item) => item.status === "failed");
+  if (
+    error?.constructor === Error &&
+    failed.length === 1 &&
+    error.message === `Scenario assertion failed: ${failed[0].name}`
+  )
+    return "assertion-failed";
+  return error instanceof AssertionError &&
+    error.code === "ERR_ASSERTION" &&
+    failed.length === 0 &&
+    steps.some((step) => step.status === "failed")
+    ? "assertion-failed"
+    : "unknown";
 }
 
-const identity = value => Number.isSafeInteger(value?.pid) && value.pid > 0 &&
-  /^\d+$/.test(value.startTicks ?? "");
+const identity = (value) =>
+  Number.isSafeInteger(value?.pid) && value.pid > 0 && /^\d+$/.test(value.startTicks ?? "");
 
 // Safety deliberately has no successful-journey assertion or generation count.
 // Those remain in each original oracle; a partial journey must close every
 // generation it actually opened, including its auxiliary service lifetimes.
-export function validateNativeBoundary({ result, manifest, inner, record, receipt,
-  receiptSha256, current, expected, parent }) {
+export function validateNativeBoundary({
+  result,
+  manifest,
+  inner,
+  record,
+  receipt,
+  receiptSha256,
+  current,
+  expected,
+  parent,
+}) {
   validateManifest(manifest);
   const runId = manifest.runId;
   assert.match(runId, /^[a-f0-9-]{36}$/);
@@ -76,8 +93,13 @@ export function validateNativeBoundary({ result, manifest, inner, record, receip
   assert.equal(inner.boundary.schema, "jones-native-boundary/v1");
   assert.equal(inner.boundary.teardown, "complete");
   assert.equal(inner.pendingElectronLaunch, false);
-  for (const key of ["closeError", "startupDiagnosticsError", "secretServiceTeardownError",
-    "secretServiceCancellationCleanup", "auxiliaryCloseError"])
+  for (const key of [
+    "closeError",
+    "startupDiagnosticsError",
+    "secretServiceTeardownError",
+    "secretServiceCancellationCleanup",
+    "auxiliaryCloseError",
+  ])
     assert.equal(inner[key], undefined, `Unproved cleanup: ${key}`);
   assert.ok(inner.processGenerations.length > 0);
   for (const [index, generation] of inner.processGenerations.entries()) {
@@ -124,12 +146,15 @@ export function validateNativeBoundary({ result, manifest, inner, record, receip
     assert.equal(result.status, "failed");
     assert.equal(result.code, 1);
     assert.equal(inner.boundary.kind, "assertion-failed");
-    if (classifyNativeFailure(inner.boundary.phase, new Error(inner.error), inner.assertions) !== "assertion-failed") {
+    if (
+      classifyNativeFailure(inner.boundary.phase, new Error(inner.error), inner.assertions) !==
+      "assertion-failed"
+    ) {
       assert.equal(inner.boundary.phase, "scenario");
       assert.equal(inner.boundary.failure.name, "AssertionError");
       assert.equal(inner.boundary.failure.code, "ERR_ASSERTION");
-      assert.ok(inner.assertions.every(item => item.status === "passed"));
-      const failed = inner.steps.filter(step => step.status === "failed");
+      assert.ok(inner.assertions.every((item) => item.status === "passed"));
+      const failed = inner.steps.filter((step) => step.status === "failed");
       assert.ok(failed.length > 0);
       assert.equal(failed.at(-1).name, inner.boundary.failure.step);
     }
@@ -139,8 +164,10 @@ export function validateNativeBoundary({ result, manifest, inner, record, receip
 
 async function readNativeCapture(file) {
   const stat = await fs.lstat(file);
-  assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 2 * 1024 * 1024,
-    "Native evidence must be a bounded regular file");
+  assert.ok(
+    stat.isFile() && !stat.isSymbolicLink() && stat.size <= 2 * 1024 * 1024,
+    "Native evidence must be a bounded regular file",
+  );
   const bytes = await fs.readFile(file);
   assert.ok(bytes.length <= 2 * 1024 * 1024, "Native evidence grew beyond its bound");
   return { value: JSON.parse(bytes), sha256: sha256(bytes) };
@@ -174,31 +201,68 @@ export async function validateNativeBoundaryFiles(expected) {
   await fs.mkdir(boundaryArtifacts, { mode: 0o700 });
   const registryCopy = path.join(boundaryArtifacts, "registry.json");
   await fs.writeFile(registryCopy, JSON.stringify(record), { flag: "wx", mode: 0o600 });
-  captured.registry = { file: path.relative(output, registryCopy), sha256: sha256(JSON.stringify(record)) };
-  const current = await collectProvenance({ source, harness: source, artifacts: boundaryArtifacts,
-    buildReceipt: receiptPath, buildPaths: { desktop: path.join(source, "apps/desktop/dist-electron"),
-      server: path.join(source, "apps/server/dist"), web: path.join(source, "apps/server/dist/client") } });
-  const proof = validateNativeBoundary({ result, manifest, inner, record, receipt,
-    receiptSha256, current, expected, parent });
+  captured.registry = {
+    file: path.relative(output, registryCopy),
+    sha256: sha256(JSON.stringify(record)),
+  };
+  const current = await collectProvenance({
+    source,
+    harness: source,
+    artifacts: boundaryArtifacts,
+    buildReceipt: receiptPath,
+    buildPaths: {
+      desktop: path.join(source, "apps/desktop/dist-electron"),
+      server: path.join(source, "apps/server/dist"),
+      web: path.join(source, "apps/server/dist/client"),
+    },
+  });
+  const proof = validateNativeBoundary({
+    result,
+    manifest,
+    inner,
+    record,
+    receipt,
+    receiptSha256,
+    current,
+    expected,
+    parent,
+  });
   if (expected.queueCase) {
     const fixture = inner.fixture;
-    const ledger = await readNativeEvidence(path.join(artifacts, `je06-${fixture.runId}-ledger.json`));
+    const ledger = await readNativeEvidence(
+      path.join(artifacts, `je06-${fixture.runId}-ledger.json`),
+    );
     assert.equal(ledger.runId, fixture.runId);
     assert.deepEqual(ledger.cleanup, fixture.stubCleanup);
-    assert.ok(ledger.ledger.every(row => row.runId === fixture.runId));
+    assert.ok(ledger.ledger.every((row) => row.runId === fixture.runId));
     const starts = ledger.cleanup.starts;
     assert.ok(Array.isArray(starts));
-    assert.equal(ledger.ledger.filter(row => row.event === "start").length, starts.length);
-    assert.equal(new Set(starts.map(row => row.processId)).size, starts.length);
+    assert.equal(ledger.ledger.filter((row) => row.event === "start").length, starts.length);
+    assert.equal(new Set(starts.map((row) => row.processId)).size, starts.length);
     for (const start of starts) {
       assert.ok(identity(start));
-      assert.equal(ledger.ledger.filter(row => row.event === "start" && row.processId === start.processId &&
-        row.pid === start.pid && row.startTicks === start.startTicks).length, 1);
-      assert.equal(ledger.ledger.filter(row => row.event === "close" && row.processId === start.processId).length, 1);
+      assert.equal(
+        ledger.ledger.filter(
+          (row) =>
+            row.event === "start" &&
+            row.processId === start.processId &&
+            row.pid === start.pid &&
+            row.startTicks === start.startTicks,
+        ).length,
+        1,
+      );
+      assert.equal(
+        ledger.ledger.filter((row) => row.event === "close" && row.processId === start.processId)
+          .length,
+        1,
+      );
     }
   }
   await assert.rejects(fs.lstat(record.root), { code: "ENOENT" });
   assert.deepEqual(await fs.readdir(path.join(parent, "scratch")), [], "Unaccounted scratch roots");
-  assert.notEqual(await processIdentity(manifest.namespaceProcess.pid), manifest.namespaceProcess.startTicks);
+  assert.notEqual(
+    await processIdentity(manifest.namespaceProcess.pid),
+    manifest.namespaceProcess.startTicks,
+  );
   return { ...proof, evidence: { ...captured, buildReceiptSha256: receiptSha256 } };
 }

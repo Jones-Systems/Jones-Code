@@ -29,10 +29,15 @@ type Owner = Pick<
   Repository.NativeCreationRepository["Service"],
   "readHistory" | "getReservedCommand"
 >;
-const decodeStartPayload = Schema.decodeEffect(Schema.fromJsonString(Schema.Struct({
-  request: Schema.Struct({ type: Schema.Literal("provider-turn.start"), runId: RunId }),
-  nativeCreationExecutionReference: NativeCreationExecutionReferenceV2,
-})), { onExcessProperty: "error" });
+const decodeStartPayload = Schema.decodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      request: Schema.Struct({ type: Schema.Literal("provider-turn.start"), runId: RunId }),
+      nativeCreationExecutionReference: NativeCreationExecutionReferenceV2,
+    }),
+  ),
+  { onExcessProperty: "error" },
+);
 
 // These methods extend the existing claim owner; they create no independent claim or grant ledger.
 export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owner) => {
@@ -239,21 +244,31 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
       return yield* unresolved("Native renewal must share its outbox transaction");
     const resolved = yield* resolve(input.reference);
     const now = DateTime.formatIso(yield* DateTime.now);
-    if (input.oldExpiry <= now || input.newExpiry <= input.oldExpiry ||
-        resolved.command.type !== "prepared-run.release" ||
-        input.reference.effectId !== `effect:${resolved.command.commandId}:provider-turn.start:${resolved.command.runId}`)
+    if (
+      input.oldExpiry <= now ||
+      input.newExpiry <= input.oldExpiry ||
+      resolved.command.type !== "prepared-run.release" ||
+      input.reference.effectId !==
+        `effect:${resolved.command.commandId}:provider-turn.start:${resolved.command.runId}`
+    )
       return yield* unresolved("Native renewal differs from its live provider-start claim");
     const held = yield* sql`SELECT effect_id FROM jones_native_creation_execution_holds
       WHERE effect_id=${input.reference.effectId}`;
     if (held.length !== 0) return yield* unresolved("Native renewal has an unknown hold");
-    const renewed = yield* sql<{ readonly payload_json: string }>`SELECT payload_json FROM orchestration_v2_effect_outbox
+    const renewed = yield* sql<{
+      readonly payload_json: string;
+    }>`SELECT payload_json FROM orchestration_v2_effect_outbox
       WHERE effect_id=${input.reference.effectId} AND command_id=${input.reference.stageCommandId}
         AND thread_id=${resolved.history.intent.threadId} AND status='running' AND effect_type='provider-turn.start'
         AND lease_owner=${input.workerId} AND attempt_count=${input.expectedAttempt} AND lease_expires_at=${input.newExpiry}`;
-    if (renewed.length !== 1) return yield* unresolved("Native renewal lacks its exact outbox transaction update");
+    if (renewed.length !== 1)
+      return yield* unresolved("Native renewal lacks its exact outbox transaction update");
     const payload = yield* decodeStartPayload(renewed[0]!.payload_json);
-    if (payload.request.runId !== resolved.command.runId ||
-        nativeCreationCanonicalJson(payload.nativeCreationExecutionReference) !== nativeCreationCanonicalJson(input.reference))
+    if (
+      payload.request.runId !== resolved.command.runId ||
+      nativeCreationCanonicalJson(payload.nativeCreationExecutionReference) !==
+        nativeCreationCanonicalJson(input.reference)
+    )
       return yield* unresolved("Native renewal differs from its persisted envelope");
     const prior = yield* sql`SELECT effect_id FROM jones_native_creation_execution_starts
       WHERE effect_id=${input.reference.effectId}`;
@@ -289,7 +304,8 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
             return yield* unresolved(
               "Native execution already started; reconcile its original attempt",
             );
-          const held = yield* sql`SELECT effect_id FROM jones_native_creation_execution_holds WHERE effect_id=${reference.effectId}`;
+          const held =
+            yield* sql`SELECT effect_id FROM jones_native_creation_execution_holds WHERE effect_id=${reference.effectId}`;
           if (held.length !== 0) return yield* unresolved("Native execution has an unknown hold");
           const now = DateTime.formatIso(yield* DateTime.now);
           const rows = yield* sql<{
@@ -336,15 +352,19 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
         }),
       )
       .pipe(
-        (start) => Effect.gen(function* () {
-          const claim = yield* Effect.serviceOption(CurrentEffectClaim);
-          return yield* Option.isNone(claim) ? start : claim.value.use((current) =>
-            current.nativeCreationExecutionReference !== undefined &&
-            nativeCreationCanonicalJson(current.nativeCreationExecutionReference) === nativeCreationCanonicalJson(reference)
+        (start) =>
+          Effect.gen(function* () {
+            const claim = yield* Effect.serviceOption(CurrentEffectClaim);
+            return yield* Option.isNone(claim)
               ? start
-              : Effect.fail(unresolved("Native issue differs from its claiming worker")),
-          );
-        }),
+              : claim.value.use((current) =>
+                  current.nativeCreationExecutionReference !== undefined &&
+                  nativeCreationCanonicalJson(current.nativeCreationExecutionReference) ===
+                    nativeCreationCanonicalJson(reference)
+                    ? start
+                    : Effect.fail(unresolved("Native issue differs from its claiming worker")),
+                );
+          }),
         Effect.mapError((cause) =>
           isRepositoryError(cause) || Schema.is(NativeCreationAuthorityError)(cause)
             ? cause
@@ -394,8 +414,9 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
               "Native confirmation lacks complete correlated whole-operation evidence",
             );
           const now = DateTime.formatIso(yield* DateTime.now);
-          const owned =
-            yield* sql<{ readonly payload_json: string }>`SELECT effect.payload_json FROM orchestration_v2_effect_outbox effect
+          const owned = yield* sql<{
+            readonly payload_json: string;
+          }>`SELECT effect.payload_json FROM orchestration_v2_effect_outbox effect
       JOIN jones_native_creation_execution_starts start ON start.effect_id=effect.effect_id
       WHERE effect.effect_id=${input.reference.effectId} AND effect.status='running'
       AND effect.lease_owner=${input.workerId} AND effect.attempt_count=${input.expectedAttempt}
@@ -410,8 +431,11 @@ export const makeNativeExecutionMethods = (sql: SqlClient.SqlClient, owner: Owne
               "Native confirmation lost its exact captured claim or has an unknown hold",
             );
           const payload = yield* decodeStartPayload(owned[0]!.payload_json);
-          if (payload.request.runId !== resolved.command.runId ||
-              nativeCreationCanonicalJson(payload.nativeCreationExecutionReference) !== nativeCreationCanonicalJson(input.reference))
+          if (
+            payload.request.runId !== resolved.command.runId ||
+            nativeCreationCanonicalJson(payload.nativeCreationExecutionReference) !==
+              nativeCreationCanonicalJson(input.reference)
+          )
             return yield* unresolved("Native confirmation differs from its persisted envelope");
           const runtime = yield* sql`SELECT run.run_id FROM orchestration_v2_projection_runs run
       JOIN orchestration_v2_projection_run_attempts attempt ON attempt.run_id=run.run_id

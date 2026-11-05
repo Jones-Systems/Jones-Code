@@ -1804,7 +1804,9 @@ describe("CodexAdapterV2 session initialize", () => {
       assert.equal(yield* Queue.size(session.events), 0);
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
     ),
   );
 
@@ -2174,7 +2176,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                                 ? goalRequest(method, params)
                                 : (options.onRawRequest?.(method, params) ?? Effect.void).pipe(
                                     Effect.andThen(client.raw.request(method, params)),
-                                    Effect.tap(() => options.onRawResponse?.(method) ?? Effect.void),
+                                    Effect.tap(
+                                      () => options.onRawResponse?.(method) ?? Effect.void,
+                                    ),
                                   ),
                           },
                           request: (method, params) =>
@@ -14957,7 +14961,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                 frame: {
                   id: 5,
                   result: {
-                    data: [{ id: "later-native-turn", items: [], status: "completed", error: null }],
+                    data: [
+                      { id: "later-native-turn", items: [], status: "completed", error: null },
+                    ],
                     nextCursor: null,
                   },
                 },
@@ -15086,7 +15092,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const input = {
         sourceProviderThread: harness.providerThread,
         targetThreadId,
-        ...(fallback ? { providerTurnId: boundary.id, sourceProviderTurns: [boundary, later] } : {}),
+        ...(fallback
+          ? { providerTurnId: boundary.id, sourceProviderTurns: [boundary, later] }
+          : {}),
       };
       const caller = yield* harness.runtime.forkThread(input).pipe(Effect.result, Effect.forkChild);
       const queued =
@@ -15142,9 +15150,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(result.failure));
       }
       assert.deepEqual(requests, beforeRefusal);
-      const control = yield* harness.runtime
-        .unloadThread!({ providerThread: harness.providerThread })
-        .pipe(Effect.forkChild({ startImmediately: true }));
+      const control = yield* harness.runtime.unloadThread!({
+        providerThread: harness.providerThread,
+      }).pipe(Effect.forkChild({ startImmediately: true }));
       yield* Deferred.succeed(release, undefined);
       if (test.outcome === "silent" && test.stage !== "runtime") yield* Deferred.await(observed);
       yield* Fiber.join(control);
@@ -15179,7 +15187,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.equal(closes, 0);
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
     ),
   );
 
@@ -15229,15 +15239,17 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         providerThreadId: harness.providerThread.id,
         now: yield* DateTime.now,
       });
-      const owner = yield* harness.runtime.rollbackThread({
-        providerThread: harness.providerThread,
-        providerThreadTurns: [turn],
-        target: {
-          type: "thread_start",
-          checkpointId: CheckpointId.make("fork-permit-checkpoint"),
-          appRunOrdinal: 0,
-        },
-      }).pipe(Effect.result, Effect.forkChild);
+      const owner = yield* harness.runtime
+        .rollbackThread({
+          providerThread: harness.providerThread,
+          providerThreadTurns: [turn],
+          target: {
+            type: "thread_start",
+            checkpointId: CheckpointId.make("fork-permit-checkpoint"),
+            appRunOrdinal: 0,
+          },
+        })
+        .pipe(Effect.result, Effect.forkChild);
       yield* Deferred.await(held);
       const input = {
         sourceProviderThread: harness.providerThread,
@@ -15259,7 +15271,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.deepEqual(requests, ["initialize", "thread/start", "thread/read", "thread/fork"]);
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
     ),
   );
 
@@ -15280,16 +15294,20 @@ describe("CodexAdapterV2 post-settle continuation", () => {
               nativeThreadId: "healthy-after-fork-rejection",
               nativeTurnId: "unused",
               prompt: "unused",
-            }).slice(3, 5).map((entry) => withReplayRequestId(entry, 4)),
+            })
+              .slice(3, 5)
+              .map((entry) => withReplayRequestId(entry, 4)),
           ],
         }),
         undefined,
         (method) => Effect.sync(() => requests.push(method)).pipe(Effect.asVoid),
       );
-      const rejected = yield* harness.runtime.forkThread({
-        sourceProviderThread: harness.providerThread,
-        targetThreadId: ThreadId.make("rejected-fork-target"),
-      }).pipe(Effect.result);
+      const rejected = yield* harness.runtime
+        .forkThread({
+          sourceProviderThread: harness.providerThread,
+          targetThreadId: ThreadId.make("rejected-fork-target"),
+        })
+        .pipe(Effect.result);
       assert.equal(rejected._tag, "Failure");
       if (rejected._tag === "Failure")
         assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(rejected.failure));
@@ -15303,7 +15321,9 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       assert.deepEqual(requests, ["initialize", "thread/start", "thread/fork", "thread/start"]);
     }).pipe(
       Effect.scoped,
-      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
     ),
   );
 
@@ -15397,19 +15417,21 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         assert.notInclude(requests, "turn/start");
       }
       if (selectionFirst) {
-        const changed = yield* harness.runtime.startTurn({
-          ...makeCodexTestTurnInput({
-            threadId: targetThreadId,
-            providerThread: row,
-            now,
-            attemptId: RunAttemptId.make(`attempt-${transcript.scenario}-changed-selection`),
-            text: "Continue in the fork",
-          }),
-          modelSelection: {
-            ...CODEX_TEST_MODEL_SELECTION,
-            options: [{ id: "reasoningEffort", value: "high" }],
-          },
-        }).pipe(Effect.result);
+        const changed = yield* harness.runtime
+          .startTurn({
+            ...makeCodexTestTurnInput({
+              threadId: targetThreadId,
+              providerThread: row,
+              now,
+              attemptId: RunAttemptId.make(`attempt-${transcript.scenario}-changed-selection`),
+              text: "Continue in the fork",
+            }),
+            modelSelection: {
+              ...CODEX_TEST_MODEL_SELECTION,
+              options: [{ id: "reasoningEffort", value: "high" }],
+            },
+          })
+          .pipe(Effect.result);
         assert.equal(changed._tag, "Failure");
         assert.notInclude(requests, "turn/start");
       }

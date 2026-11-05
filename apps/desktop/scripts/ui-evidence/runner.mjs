@@ -478,9 +478,17 @@ export async function runInner() {
   } catch (error) {
     result.error = error.message;
     const failedScenario = ctx?.results();
-    result.boundary.kind = classifyNativeFailure(phase, error, failedScenario?.assertions, failedScenario?.steps);
-    result.boundary.failure = { name: error.name, code: error.code ?? null,
-      step: failedScenario?.steps.findLast(step => step.status === "failed")?.name ?? null };
+    result.boundary.kind = classifyNativeFailure(
+      phase,
+      error,
+      failedScenario?.assertions,
+      failedScenario?.steps,
+    );
+    result.boundary.failure = {
+      name: error.name,
+      code: error.code ?? null,
+      step: failedScenario?.steps.findLast((step) => step.status === "failed")?.name ?? null,
+    };
     if (secretService) {
       try {
         await NodeFSP.writeFile(
@@ -606,11 +614,21 @@ export async function runInner() {
           result.startupDiagnostics = await progress(
             generations.at(-1)?.index ?? 0,
             "final-diagnostics",
-            () => writeStartupDiagnostics({ artifacts: "/artifacts", processCapture, logs, readiness, phase }),
+            () =>
+              writeStartupDiagnostics({
+                artifacts: "/artifacts",
+                processCapture,
+                logs,
+                readiness,
+                phase,
+              }),
           );
       } catch (error) {
         result.startupDiagnosticsError = error.message;
-        if (code === 0) { code = 1; result.status = "failed"; }
+        if (code === 0) {
+          code = 1;
+          result.status = "failed";
+        }
       }
       for (const generation of generations) {
         if (generation.closed) continue;
@@ -658,7 +676,10 @@ export async function runInner() {
           } catch (error) {
             generation.closeError ??= error.message;
             result.closeError ??= error.message;
-            if (code === 0) { code = 1; result.status = "failed"; }
+            if (code === 0) {
+              code = 1;
+              result.status = "failed";
+            }
           }
         }
       }
@@ -743,12 +764,22 @@ export async function runInner() {
           }
         }
       }
-      if (result.auxiliaryCloseError && code === 0) { code = 1; result.status = "failed"; }
-      if (!result.closeError && !result.startupDiagnosticsError && !result.auxiliaryCloseError &&
-          !result.secretServiceTeardownError && !result.secretServiceCancellationCleanup &&
-          result.boundary.xvfbClosed === true && !result.pendingElectronLaunch &&
-          generations.length > 0 && generations.every(g => g.closed === true && g.processes) &&
-          (!secretService || result.secretService?.status === "closed"))
+      if (result.auxiliaryCloseError && code === 0) {
+        code = 1;
+        result.status = "failed";
+      }
+      if (
+        !result.closeError &&
+        !result.startupDiagnosticsError &&
+        !result.auxiliaryCloseError &&
+        !result.secretServiceTeardownError &&
+        !result.secretServiceCancellationCleanup &&
+        result.boundary.xvfbClosed === true &&
+        !result.pendingElectronLaunch &&
+        generations.length > 0 &&
+        generations.every((g) => g.closed === true && g.processes) &&
+        (!secretService || result.secretService?.status === "closed")
+      )
         result.boundary.teardown = "complete";
       await NodeFSP.writeFile("/artifacts/inner.json", JSON.stringify(result, null, 2), {
         mode: 0o600,

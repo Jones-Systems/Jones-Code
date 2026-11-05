@@ -62,8 +62,14 @@ import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
 import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
-import { EffectClaimLost, findEffectClaimLost } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
-import { ProviderControlOutcomeUnknown, findProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
+import {
+  EffectClaimLost,
+  findEffectClaimLost,
+} from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
+import {
+  ProviderControlOutcomeUnknown,
+  findProviderControlOutcomeUnknown,
+} from "@t3tools/provider-core/server/jones/providerControlOutcome";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -624,7 +630,11 @@ function makeLocalCommandHarness(input: {
     checkpoints: [],
     updatedAt: now,
   };
-  if ("historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true || "resumeFailure" in input) {
+  if (
+    "historyReadFailureAfterFallback" in input ||
+    input.unknownResumeBinding === true ||
+    "resumeFailure" in input
+  ) {
     const nativeThreadRef = {
       driver: providerThread.driver,
       nativeId: "native-resume-thread",
@@ -693,7 +703,10 @@ function makeLocalCommandHarness(input: {
     Effect.gen(function* () {
       expect(request.providerTurnId).toBe(previousTurnId);
       expect(request.providerThread.id).toBe(providerThreadId);
-      if (input.previousTurn?.interruptFailure || input.previousTurn?.interruptCause !== undefined) {
+      if (
+        input.previousTurn?.interruptFailure ||
+        input.previousTurn?.interruptCause !== undefined
+      ) {
         return yield* new ProviderAdapter.ProviderAdapterInterruptError({
           driver: providerThread.driver,
           providerThreadId,
@@ -766,7 +779,9 @@ function makeLocalCommandHarness(input: {
     ) =>
       input.interruptOpen === true
         ? Effect.interrupt
-        : "historyReadFailureAfterFallback" in input || input.unknownResumeBinding === true || "resumeFailure" in input
+        : "historyReadFailureAfterFallback" in input ||
+            input.unknownResumeBinding === true ||
+            "resumeFailure" in input
           ? Effect.succeed(resumeFallbackSession as never)
           : "ensureThreadFailure" in input
             ? Effect.succeed({ driver: providerThread.driver, ensureThread } as never)
@@ -1496,67 +1511,93 @@ effectIt.effect("terminalizes a starting run when its provider session cannot op
 
 effectIt.effect.each(["open", "ensure", "resume", "retirement", "recovery"] as const)(
   "terminalizes captured custody loss during %s even when retry is allowed",
-  (stage) => Effect.gen(function* () {
-    const loss = new EffectClaimLost({ effectId: `effect:original-${stage}` });
-    const harness = makeLocalCommandHarness({
-      text: "Continue once",
-      ...(stage === "open" ? { openFailure: loss } : {}),
-      ...(stage === "ensure" ? { ensureThreadFailure: loss } : {}),
-      ...(stage === "resume" ? { resumeFailure: loss, previousNativeSession: true } : {}),
-      ...(stage === "retirement" ? { retirementFailure: loss } : {}),
-      ...(stage === "recovery" ? { previousTurn: { runStatus: "failed" as const, turnStatus: "running" as const, interruptCause: loss } } : {}),
-    });
-    const failed = yield* harness.startWithRetry.pipe(Effect.result);
-    expect(failed._tag).toBe("Failure");
-    if (failed._tag === "Failure") expect(findEffectClaimLost(failed.failure)).toBeDefined();
-    yield* harness.startWithRetry;
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.fallbackEnsure).not.toHaveBeenCalled();
-    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-    expect(harness.projection().attempts.find((attempt) => attempt.id === harness.attemptId)?.status).toBe("failed");
-    expect(harness.events.filter((event) => event.type === "run.updated" && event.payload.status === "failed")).toHaveLength(1);
-  }),
+  (stage) =>
+    Effect.gen(function* () {
+      const loss = new EffectClaimLost({ effectId: `effect:original-${stage}` });
+      const harness = makeLocalCommandHarness({
+        text: "Continue once",
+        ...(stage === "open" ? { openFailure: loss } : {}),
+        ...(stage === "ensure" ? { ensureThreadFailure: loss } : {}),
+        ...(stage === "resume" ? { resumeFailure: loss, previousNativeSession: true } : {}),
+        ...(stage === "retirement" ? { retirementFailure: loss } : {}),
+        ...(stage === "recovery"
+          ? {
+              previousTurn: {
+                runStatus: "failed" as const,
+                turnStatus: "running" as const,
+                interruptCause: loss,
+              },
+            }
+          : {}),
+      });
+      const failed = yield* harness.startWithRetry.pipe(Effect.result);
+      expect(failed._tag).toBe("Failure");
+      if (failed._tag === "Failure") expect(findEffectClaimLost(failed.failure)).toBeDefined();
+      yield* harness.startWithRetry;
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.fallbackEnsure).not.toHaveBeenCalled();
+      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+      expect(
+        harness.projection().attempts.find((attempt) => attempt.id === harness.attemptId)?.status,
+      ).toBe("failed");
+      expect(
+        harness.events.filter(
+          (event) => event.type === "run.updated" && event.payload.status === "failed",
+        ),
+      ).toHaveLength(1);
+    }),
 );
 
 effectIt.effect("keeps typed retirement uncertainty terminal during retryable opening", () =>
   Effect.gen(function* () {
-    const unknown = new ProviderControlOutcomeUnknown({ driver: "claudeAgent", providerSessionId: "original-session", nativeThreadId: "original-native", operation: "retire" });
+    const unknown = new ProviderControlOutcomeUnknown({
+      driver: "claudeAgent",
+      providerSessionId: "original-session",
+      nativeThreadId: "original-native",
+      operation: "retire",
+    });
     const harness = makeLocalCommandHarness({ text: "Continue once", retirementFailure: unknown });
     const failed = yield* harness.startWithRetry.pipe(Effect.result);
     expect(failed._tag).toBe("Failure");
-    if (failed._tag === "Failure") expect(findProviderControlOutcomeUnknown(failed.failure)).toBeDefined();
+    if (failed._tag === "Failure")
+      expect(findProviderControlOutcomeUnknown(failed.failure)).toBeDefined();
     expect(harness.open).not.toHaveBeenCalled();
     expect(harness.startRootRun).not.toHaveBeenCalled();
     expect(harness.projection().runs.at(-1)?.status).toBe("failed");
   }),
 );
 
-effectIt.effect.each([false, true])("pre-issue failure retains its captured attempt (successor=%s)", (successor) =>
-  Effect.gen(function* () {
-    const harness = makeLocalCommandHarness({ text: "Prepared native prompt" });
-    const original = harness.projection();
-    const fail = yield* harness.captureStartFailure;
-    const successorAttempt = RunAttemptId.make("attempt:successor-after-native-validation");
-    if (successor) harness.setProjection({
-      ...original,
-      runs: original.runs.map((run) => ({ ...run, activeAttemptId: successorAttempt })),
-      attempts: [...original.attempts, { ...original.attempts[0]!, id: successorAttempt }],
-    });
-    yield* fail(new EffectClaimLost({ effectId: "effect:before-native-issue" }));
-    yield* fail(new Error("late issue response"));
-    expect(harness.open).not.toHaveBeenCalled();
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(expect.objectContaining({ activeAttemptId: harness.attemptId, expectedStatus: "starting" }));
-    if (successor) {
-      expect(harness.projection().runs.at(-1)?.activeAttemptId).toBe(successorAttempt);
-      expect(harness.projection().runs.at(-1)?.status).toBe("starting");
-      expect(harness.events).toEqual([]);
-    } else {
-      expect(harness.projection().runs.at(-1)?.status).toBe("failed");
-      expect(harness.projection().attempts[0]?.status).toBe("failed");
-      expect(harness.events.filter((event) => event.type === "run.updated")).toHaveLength(1);
-    }
-  }),
+effectIt.effect.each([false, true])(
+  "pre-issue failure retains its captured attempt (successor=%s)",
+  (successor) =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({ text: "Prepared native prompt" });
+      const original = harness.projection();
+      const fail = yield* harness.captureStartFailure;
+      const successorAttempt = RunAttemptId.make("attempt:successor-after-native-validation");
+      if (successor)
+        harness.setProjection({
+          ...original,
+          runs: original.runs.map((run) => ({ ...run, activeAttemptId: successorAttempt })),
+          attempts: [...original.attempts, { ...original.attempts[0]!, id: successorAttempt }],
+        });
+      yield* fail(new EffectClaimLost({ effectId: "effect:before-native-issue" }));
+      yield* fail(new Error("late issue response"));
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+      expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
+        expect.objectContaining({ activeAttemptId: harness.attemptId, expectedStatus: "starting" }),
+      );
+      if (successor) {
+        expect(harness.projection().runs.at(-1)?.activeAttemptId).toBe(successorAttempt);
+        expect(harness.projection().runs.at(-1)?.status).toBe("starting");
+        expect(harness.events).toEqual([]);
+      } else {
+        expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+        expect(harness.projection().attempts[0]?.status).toBe("failed");
+        expect(harness.events.filter((event) => event.type === "run.updated")).toHaveLength(1);
+      }
+    }),
 );
 
 effectIt.effect("leaves the run starting when a session-open failure will be retried", () =>

@@ -1894,8 +1894,8 @@ export const layer: Layer.Layer<
               ),
               Effect.andThen(
                 input.nativeCreationGuard === undefined &&
-                findEffectClaimLost(cause) === undefined &&
-                findProviderControlOutcomeUnknown(cause) === undefined
+                  findEffectClaimLost(cause) === undefined &&
+                  findProviderControlOutcomeUnknown(cause) === undefined
                   ? Effect.void
                   : Effect.fail(
                       new RunExecutionStartError({

@@ -201,58 +201,60 @@ describe("OpenCode version probe", () => {
     }),
   );
 
-  it.effect("ages authenticated external evidence without inspecting or running a local binary", () =>
-    Effect.gen(function* () {
-      const paths: Array<string> = [];
-      let responses: typeof OPENCODE_1_RESPONSES | typeof OPENCODE_2_RESPONSES =
-        OPENCODE_1_RESPONSES;
-      let password = "secret";
-      const http = HttpClient.make((request) =>
-        replayOpenCodeServer(responses, password, paths).execute(request),
-      );
-      const settings = { binaryPath: "/must-not-inspect/opencode", serverUrl: SERVER_URL };
-      const probe = yield* makeOpenCodeRuntimeProbe(
-        probeServer(SERVER_URL, "secret", http),
-        readOpenCodeProtocolSource(settings).pipe(
-          Effect.provideService(
-            FileSystem.FileSystem,
-            FileSystem.makeNoop({
-              stat: () => Effect.die("An external source must not stat the local binary"),
-              realPath: () => Effect.die("An external source must not resolve the local binary"),
-            }),
+  it.effect(
+    "ages authenticated external evidence without inspecting or running a local binary",
+    () =>
+      Effect.gen(function* () {
+        const paths: Array<string> = [];
+        let responses: typeof OPENCODE_1_RESPONSES | typeof OPENCODE_2_RESPONSES =
+          OPENCODE_1_RESPONSES;
+        let password = "secret";
+        const http = HttpClient.make((request) =>
+          replayOpenCodeServer(responses, password, paths).execute(request),
+        );
+        const settings = { binaryPath: "/must-not-inspect/opencode", serverUrl: SERVER_URL };
+        const probe = yield* makeOpenCodeRuntimeProbe(
+          probeServer(SERVER_URL, "secret", http),
+          readOpenCodeProtocolSource(settings).pipe(
+            Effect.provideService(
+              FileSystem.FileSystem,
+              FileSystem.makeNoop({
+                stat: () => Effect.die("An external source must not stat the local binary"),
+                realPath: () => Effect.die("An external source must not resolve the local binary"),
+              }),
+            ),
+            Effect.provide(Path.layer),
           ),
-          Effect.provide(Path.layer),
-        ),
-      );
-      assert.strictEqual((yield* probe.get).generation, "v1");
-      assert.deepStrictEqual(paths, ["/api/info", "/global/health"]);
-      responses = OPENCODE_2_RESPONSES;
-      assert.strictEqual((yield* probe.get).generation, "v1");
-      assert.strictEqual(paths.length, 2);
-      yield* TestClock.adjust("60 seconds");
-      assert.strictEqual((yield* probe.get).generation, "v2");
-      assert.strictEqual(paths.length, 3);
-      responses = OPENCODE_1_RESPONSES;
-      yield* TestClock.adjust("60 seconds");
-      assert.strictEqual((yield* probe.get).generation, "v1");
-      assert.strictEqual(paths.length, 5);
+        );
+        assert.strictEqual((yield* probe.get).generation, "v1");
+        assert.deepStrictEqual(paths, ["/api/info", "/global/health"]);
+        responses = OPENCODE_2_RESPONSES;
+        assert.strictEqual((yield* probe.get).generation, "v1");
+        assert.strictEqual(paths.length, 2);
+        yield* TestClock.adjust("60 seconds");
+        assert.strictEqual((yield* probe.get).generation, "v2");
+        assert.strictEqual(paths.length, 3);
+        responses = OPENCODE_1_RESPONSES;
+        yield* TestClock.adjust("60 seconds");
+        assert.strictEqual((yield* probe.get).generation, "v1");
+        assert.strictEqual(paths.length, 5);
 
-      password = "changed-secret";
-      yield* TestClock.adjust("60 seconds");
-      const error = yield* Effect.flip(probe.get);
-      assert.strictEqual(
-        error.detail,
-        "401 Unauthorized: the OpenCode server rejected the password.",
-      );
-      assert.notInclude(error.detail, password);
-      assert.strictEqual(paths.length, 6);
-      assert.deepStrictEqual(
-        yield* probe.lastSuccess,
-        Option.some({ generation: "v1", version: "1.18.32" }),
-      );
-      yield* Effect.flip(probe.get);
-      assert.strictEqual(paths.length, 7);
-    }),
+        password = "changed-secret";
+        yield* TestClock.adjust("60 seconds");
+        const error = yield* Effect.flip(probe.get);
+        assert.strictEqual(
+          error.detail,
+          "401 Unauthorized: the OpenCode server rejected the password.",
+        );
+        assert.notInclude(error.detail, password);
+        assert.strictEqual(paths.length, 6);
+        assert.deepStrictEqual(
+          yield* probe.lastSuccess,
+          Option.some({ generation: "v1", version: "1.18.32" }),
+        );
+        yield* Effect.flip(probe.get);
+        assert.strictEqual(paths.length, 7);
+      }),
   );
 
   it.effect("retains the bounded binary and authenticated server probe deadlines", () =>
@@ -266,7 +268,10 @@ describe("OpenCode version probe", () => {
         serverPassword: "",
       }).pipe(
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
-        Effect.provideService(HttpClient.HttpClient, HttpClient.make(() => Effect.never)),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.never),
+        ),
         Effect.flip,
         Effect.forkChild,
       );
@@ -274,10 +279,7 @@ describe("OpenCode version probe", () => {
         SERVER_URL,
         "secret",
         HttpClient.make(() => Effect.never),
-      ).pipe(
-        Effect.flip,
-        Effect.forkChild,
-      );
+      ).pipe(Effect.flip, Effect.forkChild);
       yield* TestClock.adjust("5 seconds");
       assert.strictEqual(
         (yield* Fiber.join(remote)).detail,

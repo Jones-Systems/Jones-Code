@@ -28,14 +28,14 @@ function parseDiff(bytes) {
   if (!text.endsWith("\0")) throw new Error("Truncated native diff");
   const fields = text.slice(0, -1).split("\0");
   const paths = [];
-  for (let index = 0; index < fields.length; ) {
+  for (let index = 0; index < fields.length;) {
     const status = fields[index++];
     if (!/^(?:[ACDMRTUXB]|[RC]\d{1,3})$/.test(status))
       throw new Error("Invalid native diff status");
     const count = /^[RC]/.test(status) ? 2 : 1;
     for (let n = 0; n < count; n++) {
       const path = fields[index++];
-      if (!path || path.startsWith("/") || path.split("/").some(p => p === "." || p === ".."))
+      if (!path || path.startsWith("/") || path.split("/").some((p) => p === "." || p === ".."))
         throw new Error("Invalid native diff path");
       paths.push(path);
     }
@@ -47,17 +47,20 @@ function selectNative({ eventName, labelled, diff }) {
   if (eventName !== "pull_request") return true;
   if (labelled !== true) return false;
   try {
-    return parseDiff(diff).some(path => roots.some(pattern => pattern.test(path)));
+    return parseDiff(diff).some((path) => roots.some((pattern) => pattern.test(path)));
   } catch {
     return true;
   }
 }
 
 function changedPaths(base, head, execute = execFileSync) {
-  if (![base, head].every(value => /^[a-f0-9]{40}$/.test(value ?? ""))) return null;
+  if (![base, head].every((value) => /^[a-f0-9]{40}$/.test(value ?? ""))) return null;
   try {
-    return execute("git", ["diff", "--name-status", "-z", "--find-renames", `${base}...${head}`, "--"],
-      { maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] });
+    return execute(
+      "git",
+      ["diff", "--name-status", "-z", "--find-renames", `${base}...${head}`, "--"],
+      { maxBuffer: 64 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"] },
+    );
   } catch {
     return null;
   }
@@ -65,8 +68,10 @@ function changedPaths(base, head, execute = execFileSync) {
 
 module.exports = { parseDiff, selectNative, changedPaths };
 if (require.main === module) {
-  const changed = selectNative({ eventName: process.env.EVENT_NAME,
+  const changed = selectNative({
+    eventName: process.env.EVENT_NAME,
     labelled: process.env.NATIVE_LABELLED === "true",
-    diff: changedPaths(process.env.BASE_SHA, process.env.HEAD_SHA) });
+    diff: changedPaths(process.env.BASE_SHA, process.env.HEAD_SHA),
+  });
   fs.appendFileSync(process.env.GITHUB_OUTPUT, `changed=${changed}\n`);
 }

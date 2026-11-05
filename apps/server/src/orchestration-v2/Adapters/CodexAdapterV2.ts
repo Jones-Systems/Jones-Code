@@ -9896,9 +9896,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 issuer,
                 issuer.client.request("thread/fork", {
                   threadId,
-                  ...(boundary.lastTurnId === undefined
-                    ? {}
-                    : { lastTurnId: boundary.lastTurnId }),
+                  ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
                   ...codexThreadRuntimeParams({
                     mcpSession,
                     ...(threadInput.modelSelection === undefined
@@ -10484,8 +10482,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ? Effect.fail(
                       new ProviderRuntimeBindingError({
                         driver: CODEX_PROVIDER,
-                        detail:
-                          "Codex has an unconfirmed native effect; reforking is not safe.",
+                        detail: "Codex has an unconfirmed native effect; reforking is not safe.",
                       }),
                     )
                   : assertThreadNotRetiring(value.sourceProviderThread).pipe(

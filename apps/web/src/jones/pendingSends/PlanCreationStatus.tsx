@@ -74,29 +74,31 @@ export function PlanCreationStatus(props: {
     );
   return (
     <div className="flex flex-col gap-1 text-xs text-muted-foreground">
-      {snapshot.operations.filter((operation) => operation.phase !== "create-rejected").map((operation) => {
-        const key = planCreationSlotKey(operation);
-        const open = operation.phase === "accepted" || operation.phase === "message-rejected";
-        return (
-          <div key={key} className="flex items-center gap-2">
-            <span role="status">
-              {open ? "Implementation thread saved" : "Plan delivery needs confirmation"}
-            </span>
-            <button
-              type="button"
-              className="underline"
-              disabled={props.disabled || inFlight !== null}
-              onClick={() => {
-                setInFlight(key);
-                const finish = () => setInFlight((current) => (current === key ? null : current));
-                void props.onResume(operation).then(finish, finish);
-              }}
-            >
-              {open ? "Open" : "Retry"}: {operation.create.title}
-            </button>
-          </div>
-        );
-      })}
+      {snapshot.operations
+        .filter((operation) => operation.phase !== "create-rejected")
+        .map((operation) => {
+          const key = planCreationSlotKey(operation);
+          const open = operation.phase === "accepted" || operation.phase === "message-rejected";
+          return (
+            <div key={key} className="flex items-center gap-2">
+              <span role="status">
+                {open ? "Implementation thread saved" : "Plan delivery needs confirmation"}
+              </span>
+              <button
+                type="button"
+                className="underline"
+                disabled={props.disabled || inFlight !== null}
+                onClick={() => {
+                  setInFlight(key);
+                  const finish = () => setInFlight((current) => (current === key ? null : current));
+                  void props.onResume(operation).then(finish, finish);
+                }}
+              >
+                {open ? "Open" : "Retry"}: {operation.create.title}
+              </button>
+            </div>
+          );
+        })}
     </div>
   );
 }

@@ -239,10 +239,7 @@ export const layer: Layer.Layer<
               requestRuntimeRestart: true,
             })
             .pipe(Effect.provideService(ProviderControlDeadline, interruptDeadline));
-          const remaining = Math.max(
-            0,
-            interruptDeadline - (yield* Clock.currentTimeMillis),
-          );
+          const remaining = Math.max(0, interruptDeadline - (yield* Clock.currentTimeMillis));
           // Use real time; ingestion fibers do not advance TestClock and would leave Stop blocked.
           yield* Effect.gen(function* () {
             const deadline = (yield* Clock.currentTimeMillis) + Math.min(remaining, 2_000);

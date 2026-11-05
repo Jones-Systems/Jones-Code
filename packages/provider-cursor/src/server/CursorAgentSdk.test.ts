@@ -148,16 +148,17 @@ describe("CursorAgentSdkRunner", () => {
       cursorSdkMock.setStaleRunActive(false);
       cursorSdkMock.agentClose.mockClear();
       cursorSdkMock.runCancel.mockClear();
-      const runner = yield* CursorAgentSdk.makeCursorAgentSdkRunner(() => (event) =>
-        event.payload.type === (operation === "cancel" ? "run.cancel" : "agent.close")
-          ? Deferred.succeed(diagnosticStarted, undefined).pipe(
-              Effect.andThen(
-                sink === "blocked"
-                  ? Deferred.await(releaseDiagnostic)
-                  : Effect.die("synthetic diagnostic failure"),
-              ),
-            )
-          : Effect.void,
+      const runner = yield* CursorAgentSdk.makeCursorAgentSdkRunner(
+        () => (event) =>
+          event.payload.type === (operation === "cancel" ? "run.cancel" : "agent.close")
+            ? Deferred.succeed(diagnosticStarted, undefined).pipe(
+                Effect.andThen(
+                  sink === "blocked"
+                    ? Deferred.await(releaseDiagnostic)
+                    : Effect.die("synthetic diagnostic failure"),
+                ),
+              )
+            : Effect.void,
       );
       const session = yield* runner.open({
         operation: "create",
@@ -189,12 +190,13 @@ describe("CursorAgentSdkRunner", () => {
       yield* Effect.addFinalizer(() => Deferred.succeed(releaseDiagnostic, undefined));
       cursorSdkMock.runWait.mockClear();
       cursorSdkMock.setStaleRunActive(false);
-      const runner = yield* CursorAgentSdk.makeCursorAgentSdkRunner(() => (event) =>
-        event.payload.type === "run.completed"
-          ? Deferred.succeed(diagnosticStarted, undefined).pipe(
-              Effect.andThen(Deferred.await(releaseDiagnostic)),
-            )
-          : Effect.void,
+      const runner = yield* CursorAgentSdk.makeCursorAgentSdkRunner(
+        () => (event) =>
+          event.payload.type === "run.completed"
+            ? Deferred.succeed(diagnosticStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseDiagnostic)),
+              )
+            : Effect.void,
       );
       const session = yield* runner.open({
         operation: "create",

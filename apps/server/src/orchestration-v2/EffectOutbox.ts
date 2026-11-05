@@ -623,18 +623,25 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           if (claim.payloadIdentity === undefined)
             return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
           const payload = yield* decodeOrchestrationEffectPayloadV2(claim.payloadIdentity);
-          const reference = "nativeCreationExecutionReference" in payload
-            ? payload.nativeCreationExecutionReference : undefined;
-          if (!sameOperationRequest(payload.request, claim.request) ||
-              !sameOperationRequest(reference, claim.nativeCreationExecutionReference))
+          const reference =
+            "nativeCreationExecutionReference" in payload
+              ? payload.nativeCreationExecutionReference
+              : undefined;
+          if (
+            !sameOperationRequest(payload.request, claim.request) ||
+            !sameOperationRequest(reference, claim.nativeCreationExecutionReference)
+          )
             return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
-          return yield* sql.withTransaction(Effect.gen(function* () {
-            const now = yield* DateTime.now;
-            const nowIso = DateTime.formatIso(now);
-            const next = DateTime.formatIso(DateTime.add(now, {
-              milliseconds: Math.max(1, leaseDurationMs),
-            }));
-            const rows = yield* sql<{ readonly lease_expires_at: string }>`
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              const nowIso = DateTime.formatIso(now);
+              const next = DateTime.formatIso(
+                DateTime.add(now, {
+                  milliseconds: Math.max(1, leaseDurationMs),
+                }),
+              );
+              const rows = yield* sql<{ readonly lease_expires_at: string }>`
               UPDATE orchestration_v2_effect_outbox
               SET lease_expires_at = ${next}, updated_at = ${nowIso}
               WHERE effect_id = ${claim.id} AND status = 'running'
@@ -642,28 +649,34 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
                 AND lease_expires_at < ${next}
               RETURNING lease_expires_at
             `;
-            if (rows.length !== 1)
-              return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
-            if (claim.nativeCreationExecutionReference !== undefined) {
-              const repository = yield* Effect.serviceOption(NativeCreationRepository.NativeCreationRepository);
-              if (Option.isNone(repository) || repository.value.renewExecutionClaim === undefined)
+              if (rows.length !== 1)
                 return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
-              yield* repository.value.renewExecutionClaim({
-                reference: claim.nativeCreationExecutionReference,
-                workerId: claim.leaseOwner!,
-                expectedAttempt: claim.attemptCount,
-                oldExpiry: claim.leaseExpiresAt!,
-                newExpiry: rows[0]!.lease_expires_at,
-              });
-            }
-            return rows[0]!.lease_expires_at;
-          }));
+              if (claim.nativeCreationExecutionReference !== undefined) {
+                const repository = yield* Effect.serviceOption(
+                  NativeCreationRepository.NativeCreationRepository,
+                );
+                if (Option.isNone(repository) || repository.value.renewExecutionClaim === undefined)
+                  return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
+                yield* repository.value.renewExecutionClaim({
+                  reference: claim.nativeCreationExecutionReference,
+                  workerId: claim.leaseOwner!,
+                  expectedAttempt: claim.attemptCount,
+                  oldExpiry: claim.leaseExpiresAt!,
+                  newExpiry: rows[0]!.lease_expires_at,
+                });
+              }
+              return rows[0]!.lease_expires_at;
+            }),
+          );
         },
-        (effect, { claim }) => effect.pipe(Effect.mapError((cause) =>
-          Schema.is(EffectClaimRenewalRefused)(cause) || isEffectOutboxError(cause)
-            ? cause
-            : new EffectOutboxError({ operation: "renew", effectId: claim.id, cause }),
-        )),
+        (effect, { claim }) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              Schema.is(EffectClaimRenewalRefused)(cause) || isEffectOutboxError(cause)
+                ? cause
+                : new EffectOutboxError({ operation: "renew", effectId: claim.id, cause }),
+            ),
+          ),
       ),
       succeed: Effect.fn("EffectOutbox.succeed")(
         function* ({ effectId, workerId, claim }) {

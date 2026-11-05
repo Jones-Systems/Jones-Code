@@ -366,33 +366,59 @@ it.effect("136 preserves canonical and historical starts with upstream isolation
     const trigger = "jones_native_creation_execution_starts_no_update";
     const before = yield* readObjects;
     const tables = [...rebuiltTables, ...rebuiltChildren];
-    const rows = yield* Effect.forEach(tables, (table) => readTable(table).pipe(
-      Effect.map(({ triggers, ...data }) => ({ ...data,
-        triggers: triggers.filter((row) => row.name !== trigger),
-      })),
-    ));
+    const rows = yield* Effect.forEach(tables, (table) =>
+      readTable(table).pipe(
+        Effect.map(({ triggers, ...data }) => ({
+          ...data,
+          triggers: triggers.filter((row) => row.name !== trigger),
+        })),
+      ),
+    );
     const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [[136, "NativeCreationLeaseRenewal"]]);
-    assert.deepStrictEqual((yield* readObjects).filter(({ name }) => name !== trigger),
-      before.filter(({ name }) => name !== trigger));
-    assert.deepStrictEqual(yield* Effect.forEach(tables, (table) => readTable(table).pipe(
-      Effect.map(({ triggers, ...data }) => ({ ...data,
-        triggers: triggers.filter((row) => row.name !== trigger),
-      })),
-    )), rows);
-    assert.deepStrictEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`, upstream);
-    assert.deepStrictEqual(yield* sql`UPDATE jones_native_creation_execution_starts
+    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+      [136, "NativeCreationLeaseRenewal"],
+    ]);
+    assert.deepStrictEqual(
+      (yield* readObjects).filter(({ name }) => name !== trigger),
+      before.filter(({ name }) => name !== trigger),
+    );
+    assert.deepStrictEqual(
+      yield* Effect.forEach(tables, (table) =>
+        readTable(table).pipe(
+          Effect.map(({ triggers, ...data }) => ({
+            ...data,
+            triggers: triggers.filter((row) => row.name !== trigger),
+          })),
+        ),
+      ),
+      rows,
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+      upstream,
+    );
+    assert.deepStrictEqual(
+      yield* sql`UPDATE jones_native_creation_execution_starts
       SET lease_expires_at = '2026-11-05T12:00:30.001Z' WHERE effect_id = 'canonical-effect'
-      RETURNING rowid AS retained_rowid`, [{ retained_rowid: 401 }]);
-    assert.isTrue(Exit.isFailure(yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
-      SET lease_expires_at = '2026-11-05T12:00:30.001Z' WHERE effect_id = 'effect'`)));
+      RETURNING rowid AS retained_rowid`,
+      [{ retained_rowid: 401 }],
+    );
+    assert.isTrue(
+      Exit.isFailure(
+        yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
+      SET lease_expires_at = '2026-11-05T12:00:30.001Z' WHERE effect_id = 'effect'`),
+      ),
+    );
     assert.strictEqual(yield* pruneSettled, 1);
     yield* sql`DELETE FROM orchestration_events WHERE event_id = 'event'`;
     yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id = 'command'`;
     yield* sql`DROP TABLE orchestration_command_receipts`;
     assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
-    assert.deepStrictEqual(yield* sql`SELECT lease_expires_at FROM jones_native_creation_execution_starts
-      WHERE effect_id = 'effect'`, [{ lease_expires_at: "lease" }]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT lease_expires_at FROM jones_native_creation_execution_starts
+      WHERE effect_id = 'effect'`,
+      [{ lease_expires_at: "lease" }],
+    );
   }).pipe(Effect.provide(memory)),
 );
 

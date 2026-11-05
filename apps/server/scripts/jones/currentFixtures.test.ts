@@ -194,6 +194,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 133, name: "ThreadResultDependencies" },
           { id: 134, name: "GoalContinuity" },
           { id: 135, name: "IdleWorktreeAdmission" },
+          { id: 136, name: "NativeCreationLeaseRenewal" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

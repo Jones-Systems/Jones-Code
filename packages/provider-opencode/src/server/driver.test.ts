@@ -5,7 +5,12 @@ import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { ProviderDriverKind, ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { OpenCodeSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -291,7 +296,8 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
         ),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
           ...openCode2Runtime,
-          runOpenCodeCommand: () => Effect.die("External maintenance must not run a local executable"),
+          runOpenCodeCommand: () =>
+            Effect.die("External maintenance must not run a local executable"),
         }),
       );
       const maintenance = yield* instance.snapshot.resolveMaintenance({ fresh: true });
@@ -322,7 +328,8 @@ function selectionAdapter(
     instanceId: selectionInstance,
     driver: ProviderDriverKind.make("opencode"),
     getCapabilities: () => Effect.die("Capability shape is outside this admission seam"),
-    planSelectionTransition: () => Effect.die("Selection transition is outside this admission seam"),
+    planSelectionTransition: () =>
+      Effect.die("Selection transition is outside this admission seam"),
     openSession: (input) =>
       Effect.gen(function* () {
         opened.push(`${generation}:${input.providerSessionId}`);
@@ -444,68 +451,71 @@ describe("OpenCode driver admission hooks", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("rejects new sessions and text helpers after external auth expires despite lastSuccess", () =>
-    Effect.gen(function* () {
-      let password = "secret";
-      const paths: Array<string> = [];
-      const probe = yield* makeOpenCodeRuntimeProbe(
-        probeOpenCodeRuntime({
-          binaryPath: "/must-not-run/opencode",
-          serverUrl: "http://127.0.0.1:4096",
-          serverPassword: "secret",
-        }).pipe(
-          Effect.provideService(
-            HttpClient.HttpClient,
-            HttpClient.make((request) =>
-              replayOpenCodeServer(OPENCODE_2_RESPONSES, password, paths).execute(request),
+  it.effect(
+    "rejects new sessions and text helpers after external auth expires despite lastSuccess",
+    () =>
+      Effect.gen(function* () {
+        let password = "secret";
+        const paths: Array<string> = [];
+        const probe = yield* makeOpenCodeRuntimeProbe(
+          probeOpenCodeRuntime({
+            binaryPath: "/must-not-run/opencode",
+            serverUrl: "http://127.0.0.1:4096",
+            serverPassword: "secret",
+          }).pipe(
+            Effect.provideService(
+              HttpClient.HttpClient,
+              HttpClient.make((request) =>
+                replayOpenCodeServer(OPENCODE_2_RESPONSES, password, paths).execute(request),
+              ),
             ),
+            Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
+              ...openCode2Runtime,
+              runOpenCodeCommand: () =>
+                Effect.die("An external admission must not run a local binary"),
+            }),
           ),
-          Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
-            ...openCode2Runtime,
-            runOpenCodeCommand: () => Effect.die("An external admission must not run a local binary"),
+        );
+        const opened: Array<string> = [];
+        const closed: Array<string> = [];
+        const textCalls: Array<string> = [];
+        const adapter = selectOpenCodeRuntimeAdapter({
+          probe,
+          v1: selectionAdapter("v1", opened, closed),
+          v2: selectionAdapter("v2", opened, closed),
+        });
+        const text = selectOpenCodeRuntimeTextGeneration(
+          probe,
+          selectionTextGeneration("v1", textCalls),
+          selectionTextGeneration("v2", textCalls),
+        );
+        const input = selectionInput("old");
+        const old = yield* adapter.openSession(input);
+        assert.deepStrictEqual(opened, ["v2:old"]);
+        password = "changed-secret";
+        yield* TestClock.adjust("60 seconds");
+        const sessionError = yield* Effect.flip(adapter.openSession(selectionInput("refused")));
+        assert.strictEqual(sessionError._tag, "ProviderAdapterOpenSessionError");
+        const textError = yield* Effect.flip(
+          text.generateThreadTitle({
+            cwd: "/work",
+            message: "hello",
+            modelSelection: input.modelSelection,
           }),
-        ),
-      );
-      const opened: Array<string> = [];
-      const closed: Array<string> = [];
-      const textCalls: Array<string> = [];
-      const adapter = selectOpenCodeRuntimeAdapter({
-        probe,
-        v1: selectionAdapter("v1", opened, closed),
-        v2: selectionAdapter("v2", opened, closed),
-      });
-      const text = selectOpenCodeRuntimeTextGeneration(
-        probe,
-        selectionTextGeneration("v1", textCalls),
-        selectionTextGeneration("v2", textCalls),
-      );
-      const input = selectionInput("old");
-      const old = yield* adapter.openSession(input);
-      assert.deepStrictEqual(opened, ["v2:old"]);
-      password = "changed-secret";
-      yield* TestClock.adjust("60 seconds");
-      const sessionError = yield* Effect.flip(adapter.openSession(selectionInput("refused")));
-      assert.strictEqual(sessionError._tag, "ProviderAdapterOpenSessionError");
-      const textError = yield* Effect.flip(
-        text.generateThreadTitle({
-          cwd: "/work",
-          message: "hello",
-          modelSelection: input.modelSelection,
-        }),
-      );
-      assert.strictEqual(textError._tag, "TextGenerationError");
-      assert.strictEqual(textError.detail, "Couldn't verify a fresh OpenCode protocol version.");
-      assert.notInclude(textError.message, password);
-      assert.deepStrictEqual(opened, ["v2:old"]);
-      assert.deepStrictEqual(textCalls, []);
-      assert.deepStrictEqual(closed, []);
-      assert.strictEqual(old.getModelContextWindow?.(input.modelSelection), 2);
-      assert.deepStrictEqual(
-        yield* probe.lastSuccess,
-        Option.some({ generation: "v2", version: "2.0.18" }),
-      );
-      assert.deepStrictEqual(paths, ["/api/info", "/api/info", "/api/info"]);
-    }).pipe(Effect.scoped),
+        );
+        assert.strictEqual(textError._tag, "TextGenerationError");
+        assert.strictEqual(textError.detail, "Couldn't verify a fresh OpenCode protocol version.");
+        assert.notInclude(textError.message, password);
+        assert.deepStrictEqual(opened, ["v2:old"]);
+        assert.deepStrictEqual(textCalls, []);
+        assert.deepStrictEqual(closed, []);
+        assert.strictEqual(old.getModelContextWindow?.(input.modelSelection), 2);
+        assert.deepStrictEqual(
+          yield* probe.lastSuccess,
+          Option.some({ generation: "v2", version: "2.0.18" }),
+        );
+        assert.deepStrictEqual(paths, ["/api/info", "/api/info", "/api/info"]);
+      }).pipe(Effect.scoped),
   );
 });
 

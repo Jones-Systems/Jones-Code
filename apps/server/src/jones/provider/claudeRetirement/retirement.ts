@@ -85,10 +85,7 @@ export function makeClaudeQueryRetirement(input: {
         Effect.timeoutOrElse({
           duration: remaining,
           orElse: () =>
-            fail().pipe(
-              Effect.andThen(startClose),
-              Effect.andThen(Deferred.await(completion)),
-            ),
+            fail().pipe(Effect.andThen(startClose), Effect.andThen(Deferred.await(completion))),
         }),
       );
     }).pipe(Effect.onInterrupt(() => fail().pipe(Effect.andThen(startClose)))),

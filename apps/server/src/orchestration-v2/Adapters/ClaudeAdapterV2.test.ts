@@ -1539,6 +1539,7 @@ describe("ClaudeAdapterV2 attachments", () => {
                     return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
                       method: "open",
                       cause: "rejected open",
+                      nativeOutcome: "not_spawned",
                     });
                   }
                   const messages = yield* Queue.unbounded<SDKMessage>();
@@ -2824,26 +2825,34 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
       });
       const threadId = ThreadId.make("thread-claude-wake");
-      const runtimeScope = options?.expectUncertainCleanup === true
-        ? yield* Scope.make()
-        : yield* Effect.scope;
+      const runtimeScope =
+        options?.expectUncertainCleanup === true ? yield* Scope.make() : yield* Effect.scope;
       if (options?.expectUncertainCleanup === true) {
-        yield* Effect.addFinalizer(() => Scope.close(runtimeScope, Exit.void).pipe(
-          Effect.exit,
-          Effect.flatMap((exit) => Effect.sync(() => {
-            assert.isTrue(Exit.isFailure(exit), "unknown native cleanup cannot produce a successful scope receipt");
-            if (Exit.isFailure(exit)) {
-              assert.isDefined(findProviderControlOutcomeUnknown(Cause.squash(exit.cause)));
-            }
-          })),
-        ));
+        yield* Effect.addFinalizer(() =>
+          Scope.close(runtimeScope, Exit.void).pipe(
+            Effect.exit,
+            Effect.flatMap((exit) =>
+              Effect.sync(() => {
+                assert.isTrue(
+                  Exit.isFailure(exit),
+                  "unknown native cleanup cannot produce a successful scope receipt",
+                );
+                if (Exit.isFailure(exit)) {
+                  assert.isDefined(findProviderControlOutcomeUnknown(Cause.squash(exit.cause)));
+                }
+              }),
+            ),
+          ),
+        );
       }
-      const runtime = yield* adapter.openSession({
-        threadId,
-        providerSessionId: ProviderSessionId.make("provider-session-claude-wake"),
-        modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-        runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-      }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
+      const runtime = yield* adapter
+        .openSession({
+          threadId,
+          providerSessionId: ProviderSessionId.make("provider-session-claude-wake"),
+          modelSelection: CLAUDE_TEST_MODEL_SELECTION,
+          runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
+        })
+        .pipe(Effect.provideService(Scope.Scope, runtimeScope));
       const providerThread = yield* runtime.ensureThread({
         threadId,
         modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -3605,61 +3614,85 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
       it.effect.each(["cancel rejection", "silent cancel"] as const)(
         "bounds %s, retains late terminals, and refuses every new admission",
-        (mode) => Effect.gen(function* () {
-          const cancelGate = yield* Deferred.make<void>();
-          const nativeExit = yield* Deferred.make<void>();
-          const closeStarted = yield* Deferred.make<void>();
-          let cancels = 0;
-          let closes = 0;
-          const harness = yield* makeWakeHarnessWithOptions({
-            freshQueueOnReopen: true,
-            expectUncertainCleanup: true,
-            termination: Deferred.await(nativeExit),
-            interrupt: Effect.sync(() => { cancels++; }).pipe(
-              Effect.andThen(mode === "cancel rejection"
-                ? Effect.fail(new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({ method: "interrupt", cause: "synthetic rejection" }))
-                : Deferred.await(cancelGate)),
-            ),
-            close: () => Effect.sync(() => { closes++; }).pipe(Effect.andThen(Deferred.succeed(closeStarted, undefined))),
-          });
-          yield* Effect.addFinalizer(() => Deferred.succeed(cancelGate, undefined));
-          yield* Effect.addFinalizer(() => Deferred.succeed(nativeExit, undefined));
-          yield* Effect.addFinalizer(() => Queue.shutdown(harness.sdkMessages));
-          const turn = yield* turnFor(harness);
-          yield* harness.runtime.startTurn(turn);
-          const stopInput = {
-            providerThread: harness.providerThread,
-            providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              nativeTurnId: `turn:${turn.attemptId}`,
-            }),
-            requestRuntimeRestart: true,
-          };
-          const stop = yield* harness.runtime.interruptTurn(stopInput).pipe(Effect.exit, Effect.forkChild);
-          yield* TestClock.adjust("2 seconds");
-          assert.equal(closes, 1);
-          yield* Deferred.await(closeStarted);
-          assert.lengthOf(harness.terminalEvents(), 0, "close invocation is not an attributed terminal");
-          yield* TestClock.adjust("8 seconds");
-          const stopped = yield* Fiber.join(stop);
-          assert.isTrue(Exit.isFailure(stopped));
-          if (Exit.isFailure(stopped)) assert.isDefined(findProviderControlOutcomeUnknown(stopped.cause));
-          const retry = yield* Effect.exit(harness.runtime.interruptTurn(stopInput));
-          assert.isTrue(Exit.isFailure(retry));
-          yield* harness.offerAndWait(makeResultFrame({ uuid: "late-stop-result", result: "Native result arrived late." }));
-          const terminal = yield* Queue.take(harness.terminalReceipts);
-          assert.equal(terminal.providerTurnId, stopInput.providerTurnId);
-          assert.equal(terminal.status, "completed");
-          assert.equal(terminal.evidenceKind, "provider_result");
-          yield* Deferred.succeed(nativeExit, undefined);
-          yield* Queue.shutdown(harness.sdkMessages);
-          const rejected = yield* harness.runtime.startTurn(yield* turnFor(harness, 2)).pipe(Effect.flip);
-          assert.equal(rejected._tag, "ProviderAdapterTurnStartError");
-          assert.equal(cancels, 1);
-          assert.equal(closes, 1);
-          assert.lengthOf(harness.processQueues, 1);
-          assert.lengthOf(harness.offeredMessages, 1);
-        }),
+        (mode) =>
+          Effect.gen(function* () {
+            const cancelGate = yield* Deferred.make<void>();
+            const nativeExit = yield* Deferred.make<void>();
+            const closeStarted = yield* Deferred.make<void>();
+            let cancels = 0;
+            let closes = 0;
+            const harness = yield* makeWakeHarnessWithOptions({
+              freshQueueOnReopen: true,
+              expectUncertainCleanup: true,
+              termination: Deferred.await(nativeExit),
+              interrupt: Effect.sync(() => {
+                cancels++;
+              }).pipe(
+                Effect.andThen(
+                  mode === "cancel rejection"
+                    ? Effect.fail(
+                        new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                          method: "interrupt",
+                          cause: "synthetic rejection",
+                        }),
+                      )
+                    : Deferred.await(cancelGate),
+                ),
+              ),
+              close: () =>
+                Effect.sync(() => {
+                  closes++;
+                }).pipe(Effect.andThen(Deferred.succeed(closeStarted, undefined))),
+            });
+            yield* Effect.addFinalizer(() => Deferred.succeed(cancelGate, undefined));
+            yield* Effect.addFinalizer(() => Deferred.succeed(nativeExit, undefined));
+            yield* Effect.addFinalizer(() => Queue.shutdown(harness.sdkMessages));
+            const turn = yield* turnFor(harness);
+            yield* harness.runtime.startTurn(turn);
+            const stopInput = {
+              providerThread: harness.providerThread,
+              providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+                driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+                nativeTurnId: `turn:${turn.attemptId}`,
+              }),
+              requestRuntimeRestart: true,
+            };
+            const stop = yield* harness.runtime
+              .interruptTurn(stopInput)
+              .pipe(Effect.exit, Effect.forkChild);
+            yield* TestClock.adjust("2 seconds");
+            assert.equal(closes, 1);
+            yield* Deferred.await(closeStarted);
+            assert.lengthOf(
+              harness.terminalEvents(),
+              0,
+              "close invocation is not an attributed terminal",
+            );
+            yield* TestClock.adjust("8 seconds");
+            const stopped = yield* Fiber.join(stop);
+            assert.isTrue(Exit.isFailure(stopped));
+            if (Exit.isFailure(stopped))
+              assert.isDefined(findProviderControlOutcomeUnknown(stopped.cause));
+            const retry = yield* Effect.exit(harness.runtime.interruptTurn(stopInput));
+            assert.isTrue(Exit.isFailure(retry));
+            yield* harness.offerAndWait(
+              makeResultFrame({ uuid: "late-stop-result", result: "Native result arrived late." }),
+            );
+            const terminal = yield* Queue.take(harness.terminalReceipts);
+            assert.equal(terminal.providerTurnId, stopInput.providerTurnId);
+            assert.equal(terminal.status, "completed");
+            assert.equal(terminal.evidenceKind, "provider_result");
+            yield* Deferred.succeed(nativeExit, undefined);
+            yield* Queue.shutdown(harness.sdkMessages);
+            const rejected = yield* harness.runtime
+              .startTurn(yield* turnFor(harness, 2))
+              .pipe(Effect.flip);
+            assert.equal(rejected._tag, "ProviderAdapterTurnStartError");
+            assert.equal(cancels, 1);
+            assert.equal(closes, 1);
+            assert.lengthOf(harness.processQueues, 1);
+            assert.lengthOf(harness.offeredMessages, 1);
+          }),
       );
 
       it.effect("ordinary policy replacement cannot reopen after an unconfirmed close", () =>
@@ -3668,21 +3701,35 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const harness = yield* makeWakeHarnessWithOptions({
             freshQueueOnReopen: true,
             expectUncertainCleanup: true,
-            close: () => Effect.sync(() => { closes++; }).pipe(Effect.andThen(Effect.fail(
-              new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({ method: "close", cause: "synthetic close rejection" }),
-            ))),
+            close: () =>
+              Effect.sync(() => {
+                closes++;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+                      method: "close",
+                      cause: "synthetic close rejection",
+                    }),
+                  ),
+                ),
+              ),
           });
           yield* harness.runtime.startTurn(yield* turnFor(harness));
           yield* harness.offerAndWait(turnOneResult);
           yield* Queue.take(harness.terminalReceipts);
           const next = yield* turnFor(harness, 2);
-          const rejected = yield* harness.runtime.startTurn({
-            ...next,
-            runtimePolicy: { ...next.runtimePolicy, interactionMode: "plan" },
-          }).pipe(Effect.flip);
+          const rejected = yield* harness.runtime
+            .startTurn({
+              ...next,
+              runtimePolicy: { ...next.runtimePolicy, interactionMode: "plan" },
+            })
+            .pipe(Effect.flip);
           assert.isDefined(findProviderControlOutcomeUnknown(rejected));
           yield* Queue.shutdown(harness.sdkMessages);
-          const retry = yield* harness.runtime.startTurn(yield* turnFor(harness, 3)).pipe(Effect.flip);
+          const retry = yield* harness.runtime
+            .startTurn(yield* turnFor(harness, 3))
+            .pipe(Effect.flip);
           assert.equal(retry._tag, "ProviderAdapterTurnStartError");
           assert.equal(closes, 1);
           assert.lengthOf(harness.processQueues, 1);
@@ -3903,10 +3950,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           yield* harness.runtime.startTurn(yield* turnFor(harness));
           yield* harness.offerAndWait(wakeTurnInit);
           yield* harness.offerAndWait(turnOneResult);
-          yield* Queue.take(harness.terminalReceipts);
+          const terminal = yield* Queue.take(harness.terminalReceipts);
           yield* harness.runtime.interruptTurn({
             providerThread: harness.providerThread,
-            providerTurnId: ProviderTurnId.make("idle-release"),
+            providerTurnId: terminal.providerTurnId,
             requestRuntimeRestart: true,
           });
           yield* startGuarded(harness, yield* turnFor(harness, 2));
@@ -6873,7 +6920,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     "settles unfinished compaction before the $outcome terminal receipt",
     ({ outcome, turnStatus, itemStatus }) =>
       Effect.gen(function* () {
+        let interrupts = 0;
         const harness = yield* makeWakeHarnessWithOptions({
+          interrupt: Effect.sync(() => {
+            interrupts++;
+          }),
           close: (sdkMessages) => Queue.shutdown(sdkMessages),
         });
         const attemptId = RunAttemptId.make(`claude-compact-${outcome}`);
@@ -6918,6 +6969,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }
         const terminal = yield* Queue.take(harness.terminalReceipts);
         assert.equal(terminal.status, turnStatus);
+        assert.equal(interrupts, outcome === "interrupt" ? 1 : 0);
         const updates = harness.events.flatMap((event) =>
           event.type === "turn_item.updated" && event.turnItem.type === "compaction"
             ? [event.turnItem]
@@ -8472,21 +8524,27 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           .pipe(Effect.forkScoped);
         yield* Deferred.await(firstCloseRequested);
 
-        yield* runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId,
-            providerThread: { ...providerThread, status: "active" },
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-settled-stop-replaced-b"),
-            text: "Start another background build.",
-            attachments: [],
-            providerTurnOrdinal: 2,
-            modelSelection: {
-              ...CLAUDE_TEST_MODEL_SELECTION,
-              model: "claude-haiku-4-5-20251001",
-            },
-          }),
-        );
+        const replacement = yield* runtime
+          .startTurn(
+            makeClaudeTestTurnInput({
+              threadId,
+              providerThread: { ...providerThread, status: "active" },
+              now,
+              attemptId: RunAttemptId.make("attempt-claude-settled-stop-replaced-b"),
+              text: "Start another background build.",
+              attachments: [],
+              providerTurnOrdinal: 2,
+              modelSelection: {
+                ...CLAUDE_TEST_MODEL_SELECTION,
+                model: "claude-haiku-4-5-20251001",
+              },
+            }),
+          )
+          .pipe(Effect.forkChild({ startImmediately: true }));
+        assert.lengthOf(processQueues, 1);
+        assert.isUndefined(replacement.pollUnsafe());
+        yield* Queue.shutdown(processQueues[0]!);
+        yield* Fiber.join(replacement);
         assert.lengthOf(processQueues, 2);
         const replacementTaskId = "replacement-task";
         yield* Queue.offer(
@@ -8503,8 +8561,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               ?.taskId === replacementTaskId,
         );
 
-        yield* Queue.shutdown(processQueues[0]!);
         yield* Fiber.join(stop);
+        const staleStop = yield* runtime
+          .interruptTurn({
+            providerThread: settledThread ?? providerThread,
+            providerTurnId: settledTurn!.providerTurnId,
+            requestRuntimeRestart: true,
+          })
+          .pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(staleStop));
         assert.isTrue(yield* hasPendingBackgroundWork);
         yield* yieldTicks(50);
         const latestThread = providerThreadRosterEvents(events).at(-1)?.providerThread;
@@ -9775,66 +9840,64 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect(
-    "preserves one positive task-notification terminal racing Stop",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const closeGate = yield* Deferred.make<void>();
-          const testScope = yield* Scope.Scope;
-          yield* Scope.addFinalizer(testScope, Deferred.succeed(closeGate, undefined));
-          const interruptStarted = yield* Deferred.make<void>();
-          const harness = yield* makeWakeHarnessWithOptions({
-            close: (sdkMessages) =>
-              Deferred.await(closeGate).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
-            stopTask: () => Effect.void,
-            interrupt: Deferred.succeed(interruptStarted, undefined),
-          });
-          const idAllocator = yield* IdAllocator.IdAllocatorV2;
-          const now = yield* DateTime.now;
-          const attemptId = RunAttemptId.make("attempt-claude-interrupt-positive-notif");
-          const providerTurnId = idAllocator.derive.providerTurn({
-            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-            nativeTurnId: `turn:${attemptId}`,
-          });
+  it.effect("preserves one positive task-notification terminal racing Stop", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const closeGate = yield* Deferred.make<void>();
+        const testScope = yield* Scope.Scope;
+        yield* Scope.addFinalizer(testScope, Deferred.succeed(closeGate, undefined));
+        const interruptStarted = yield* Deferred.make<void>();
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) =>
+            Deferred.await(closeGate).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
+          stopTask: () => Effect.void,
+          interrupt: Deferred.succeed(interruptStarted, undefined),
+        });
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const attemptId = RunAttemptId.make("attempt-claude-interrupt-positive-notif");
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
 
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now,
-              attemptId,
-              text: "Stop this task.",
-              attachments: [],
-            }),
-          );
-          yield* harness.runtime
-            .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
-            .pipe(Effect.forkScoped);
-          yield* Deferred.await(interruptStarted);
-          yield* Queue.offer(
-            harness.sdkMessages,
-            makeResultFrame({
-              uuid: "00000000-0000-4000-8000-000000000115",
-              result: "Late result after interrupt.",
-              numTurns: 7,
-              origin: { kind: "task-notification" },
-            }),
-          );
-          const terminalized = Exit.isSuccess(yield* harness.awaitTerminal(1).pipe(Effect.exit));
-          yield* Deferred.succeed(closeGate, undefined);
-          assert.isTrue(terminalized);
-          // A successful native result is evidence of completion. Stop intent
-          // and SDK cancellation acknowledgement alone do not prove an abort.
-          assert.equal(harness.terminalEvents()[0]?.status, "completed");
-          assert.equal(harness.terminalEvents()[0]?.evidenceKind, "provider_result");
-          assert.lengthOf(harness.terminalEvents(), 1);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
-          ),
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId,
+            text: "Stop this task.",
+            attachments: [],
+          }),
+        );
+        yield* harness.runtime
+          .interruptTurn({ providerThread: harness.providerThread, providerTurnId })
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(interruptStarted);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000115",
+            result: "Late result after interrupt.",
+            numTurns: 7,
+            origin: { kind: "task-notification" },
+          }),
+        );
+        const terminalized = Exit.isSuccess(yield* harness.awaitTerminal(1).pipe(Effect.exit));
+        yield* Deferred.succeed(closeGate, undefined);
+        assert.isTrue(terminalized);
+        // A successful native result is evidence of completion. Stop intent
+        // and SDK cancellation acknowledgement alone do not prove an abort.
+        assert.equal(harness.terminalEvents()[0]?.status, "completed");
+        assert.equal(harness.terminalEvents()[0]?.evidenceKind, "provider_result");
+        assert.lengthOf(harness.terminalEvents(), 1);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
         ),
       ),
+    ),
   );
 
   it.effect("settles a continuation turn immediately when no wake output is buffered", () =>
@@ -11440,10 +11503,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 stopped.push(taskId);
               }).pipe(Effect.andThen(Deferred.succeed(stopRequested, undefined))),
             interrupt: Effect.die("A child stop must not interrupt its owner"),
-            close: () =>
+            close: (sdkMessages) =>
               Effect.sync(() => {
                 closes++;
-              }),
+              }).pipe(Effect.andThen(Queue.shutdown(sdkMessages))),
           });
           yield* harness.runtime.startTurn(
             makeClaudeTestTurnInput({
@@ -13717,18 +13780,22 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         prefix: "t3-claude-retirement-",
       });
       const sessionScope = yield* Scope.make();
-      const closeOutcome = yield* Effect.cached(Scope.close(sessionScope, Exit.void).pipe(Effect.exit));
-      const close = closeOutcome.pipe(Effect.flatMap((exit) => {
-        if (!options.expectUncertainCleanup) {
-          return Exit.isFailure(exit) ? Effect.failCause(exit.cause) : Effect.void;
-        }
-        return Effect.sync(() => {
-          assert.isTrue(Exit.isFailure(exit), "unknown retirement cannot confirm scope cleanup");
-          if (Exit.isFailure(exit)) {
-            assert.isDefined(findProviderControlOutcomeUnknown(exit.cause));
+      const closeOutcome = yield* Effect.cached(
+        Scope.close(sessionScope, Exit.void).pipe(Effect.exit),
+      );
+      const close = closeOutcome.pipe(
+        Effect.flatMap((exit) => {
+          if (!options.expectUncertainCleanup) {
+            return Exit.isFailure(exit) ? Effect.failCause(exit.cause) : Effect.void;
           }
-        });
-      }));
+          return Effect.sync(() => {
+            assert.isTrue(Exit.isFailure(exit), "unknown retirement cannot confirm scope cleanup");
+            if (Exit.isFailure(exit)) {
+              assert.isDefined(findProviderControlOutcomeUnknown(exit.cause));
+            }
+          });
+        }),
+      );
       yield* Effect.addFinalizer(() => close);
       const terminalOffered = yield* Deferred.make<void>();
       const consumeTerminal = yield* Deferred.make<void>();
@@ -14036,34 +14103,36 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       };
     });
 
-  it.effect("keeps a captured query bound until its queued terminal ingestion receipt is released", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const h = yield* makeRetirementHarness({ holdTerminal: true });
-        yield* h.start(h.source, 1);
-        yield* h.complete(0, 1);
-        yield* Deferred.await(h.terminalOffered);
-        yield* h.end(0);
-        const pending = yield* h
-          .fork(h.source, "claude-held-terminal-retirement")
-          .pipe(Effect.forkScoped);
-        yield* Effect.yieldNow;
-        assert.lengthOf(h.forks, 0);
-        assert.isFalse(
-          h.chronology.some((entry) => entry.startsWith("abandon:")),
-          "stream drain cannot retire a producer before terminal ingestion",
-        );
-        yield* Deferred.succeed(h.consumeTerminal, undefined);
-        const terminal = yield* Queue.take(h.terminalReceipts);
-        assert.equal(terminal.type, "turn.terminal");
-        yield* Fiber.join(pending);
-        assert.lengthOf(h.forks, 1);
-      }),
-    ).pipe(
-      Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+  it.effect(
+    "keeps a captured query bound until its queued terminal ingestion receipt is released",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const h = yield* makeRetirementHarness({ holdTerminal: true });
+          yield* h.start(h.source, 1);
+          yield* h.complete(0, 1);
+          yield* Deferred.await(h.terminalOffered);
+          yield* h.end(0);
+          const pending = yield* h
+            .fork(h.source, "claude-held-terminal-retirement")
+            .pipe(Effect.forkScoped);
+          yield* Effect.yieldNow;
+          assert.lengthOf(h.forks, 0);
+          assert.isFalse(
+            h.chronology.some((entry) => entry.startsWith("abandon:")),
+            "stream drain cannot retire a producer before terminal ingestion",
+          );
+          yield* Deferred.succeed(h.consumeTerminal, undefined);
+          const terminal = yield* Queue.take(h.terminalReceipts);
+          assert.equal(terminal.type, "turn.terminal");
+          yield* Fiber.join(pending);
+          assert.lengthOf(h.forks, 1);
+        }),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
       ),
-    ),
   );
 
   it.effect.each([
@@ -14241,11 +14310,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const oldTurnId = h.events.flatMap((event) =>
           event.type === "turn.terminal" ? [event.providerTurnId] : [],
         )[0]!;
-        assert.isTrue(Exit.isFailure(yield* Effect.exit(h.runtime.interruptTurn({
-          providerThread: h.claim(replacement),
-          providerTurnId: oldTurnId,
-          requestRuntimeRestart: true,
-        }))));
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(
+              h.runtime.interruptTurn({
+                providerThread: h.claim(replacement),
+                providerTurnId: oldTurnId,
+                requestRuntimeRestart: true,
+              }),
+            ),
+          ),
+        );
         assert.equal(h.queries[1]?.closeCount, 0, "stale Stop cannot retire the idle G2 query");
         yield* h.fork(replacement, "claude-replacement-generation-fork");
         yield* h.close;

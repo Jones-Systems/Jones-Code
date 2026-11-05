@@ -350,13 +350,17 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(configured),
     Layer.provide(platform),
   );
-  const checkpoints = Layer.effect(CheckpointStore.CheckpointStore, Effect.gen(function* () {
-    const store = yield* CheckpointStore.CheckpointStore;
-    return CheckpointStore.CheckpointStore.of({
-      ...store,
-      captureCheckpoint: (input) => state.beforeBaseline.pipe(Effect.andThen(store.captureCheckpoint(input))),
-    });
-  })).pipe(Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcs))));
+  const checkpoints = Layer.effect(
+    CheckpointStore.CheckpointStore,
+    Effect.gen(function* () {
+      const store = yield* CheckpointStore.CheckpointStore;
+      return CheckpointStore.CheckpointStore.of({
+        ...store,
+        captureCheckpoint: (input) =>
+          state.beforeBaseline.pipe(Effect.andThen(store.captureCheckpoint(input))),
+      });
+    }),
+  ).pipe(Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcs))));
   const runtime = Layer.mergeAll(
     Runtime.layer,
     Runtime.layerEventSink,

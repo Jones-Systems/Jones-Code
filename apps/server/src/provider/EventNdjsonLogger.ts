@@ -590,79 +590,89 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
       buffer.isClosed ||
       retentionRunning ||
       now - lastRetentionAt < resolved.retentionCheckIntervalMs
-    ) return;
+    )
+      return;
     retentionRunning = true;
     yield* retain().pipe(
-      Effect.ensuring(Effect.sync(() => {
-        retentionRunning = false;
-      })),
+      Effect.ensuring(
+        Effect.sync(() => {
+          retentionRunning = false;
+        }),
+      ),
       Effect.forkIn(retentionScope, { startImmediately: true }),
     );
   }, Effect.uninterruptible);
 
   // These per-batch/per-record paths share the caller's provider span.
-  const writeBatch = Effect.fnUntraced(function* (batch: LogBatch) {
-    const startedAt = yield* Clock.currentTimeMillis;
-    const attributionByStream = new Map<EventNdjsonStream, AttributionSummary>();
-    const written = yield* Effect.gen(function* () {
-      let sink = sinks.get(batch.segment);
-      if (!sink) {
-        sink = yield* makeSink(batch.segment.filePath);
-        sinks.set(batch.segment, sink);
-      }
-      yield* writeBatchedMessages(sink, batch.records, resolved.maxBytes, (records) => {
-        for (const record of records) {
-          const previous = attributionByStream.get(record.stream);
-          attributionByStream.set(record.stream, {
-            stream: record.stream,
-            count: (previous?.count ?? 0) + 1,
-            logicalWriteBytes: (previous?.logicalWriteBytes ?? 0) + record.bytes,
-          });
+  const writeBatch = Effect.fnUntraced(
+    function* (batch: LogBatch) {
+      const startedAt = yield* Clock.currentTimeMillis;
+      const attributionByStream = new Map<EventNdjsonStream, AttributionSummary>();
+      const written = yield* Effect.gen(function* () {
+        let sink = sinks.get(batch.segment);
+        if (!sink) {
+          sink = yield* makeSink(batch.segment.filePath);
+          sinks.set(batch.segment, sink);
         }
-      });
-    }).pipe(Effect.exit);
-    if (Exit.isFailure(written)) {
-      sinks.delete(batch.segment);
-      yield* logWarning("provider event log write or retention failed", {
-        filePath: batch.segment.filePath,
-        errorTag: errorTag(Cause.squash(written.cause)),
-      });
-    }
+        yield* writeBatchedMessages(sink, batch.records, resolved.maxBytes, (records) => {
+          for (const record of records) {
+            const previous = attributionByStream.get(record.stream);
+            attributionByStream.set(record.stream, {
+              stream: record.stream,
+              count: (previous?.count ?? 0) + 1,
+              logicalWriteBytes: (previous?.logicalWriteBytes ?? 0) + record.bytes,
+            });
+          }
+        });
+      }).pipe(Effect.exit);
+      if (Exit.isFailure(written)) {
+        sinks.delete(batch.segment);
+        yield* logWarning("provider event log write or retention failed", {
+          filePath: batch.segment.filePath,
+          errorTag: errorTag(Cause.squash(written.cause)),
+        });
+      }
 
-    if (resolved.attribution && attributionByStream.size > 0) {
-      const completedAt = yield* Clock.currentTimeMillis;
-      const durationMs = Math.max(0, completedAt - startedAt);
-      const attributions = Array.from(attributionByStream.values());
-      const totalBytes = attributions.reduce((total, entry) => total + entry.logicalWriteBytes, 0);
-      yield* Effect.forEach(
-        attributions,
-        (entry) =>
-          resolved.attribution?.record({
-            component: "provider-event-log",
-            operation: `${entry.stream}.append`,
-            logicalWriteBytes: entry.logicalWriteBytes,
-            count: entry.count,
-            durationMs:
-              totalBytes === 0
-                ? 0
-                : Math.round(durationMs * (entry.logicalWriteBytes / totalBytes)),
-          }) ?? Effect.void,
-        { discard: true },
-      );
-    }
-  }, (effect, batch) =>
-    effect.pipe(
-      Effect.catchCause((cause) =>
-        Effect.sync(() => sinks.delete(batch.segment)).pipe(
-          Effect.andThen(logWarning("provider event log batch failed", {
-            filePath: batch.segment.filePath,
-            errorTag: errorTag(Cause.squash(cause)),
-          })),
+      if (resolved.attribution && attributionByStream.size > 0) {
+        const completedAt = yield* Clock.currentTimeMillis;
+        const durationMs = Math.max(0, completedAt - startedAt);
+        const attributions = Array.from(attributionByStream.values());
+        const totalBytes = attributions.reduce(
+          (total, entry) => total + entry.logicalWriteBytes,
+          0,
+        );
+        yield* Effect.forEach(
+          attributions,
+          (entry) =>
+            resolved.attribution?.record({
+              component: "provider-event-log",
+              operation: `${entry.stream}.append`,
+              logicalWriteBytes: entry.logicalWriteBytes,
+              count: entry.count,
+              durationMs:
+                totalBytes === 0
+                  ? 0
+                  : Math.round(durationMs * (entry.logicalWriteBytes / totalBytes)),
+            }) ?? Effect.void,
+          { discard: true },
+        );
+      }
+    },
+    (effect, batch) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => sinks.delete(batch.segment)).pipe(
+            Effect.andThen(
+              logWarning("provider event log batch failed", {
+                filePath: batch.segment.filePath,
+                errorTag: errorTag(Cause.squash(cause)),
+              }),
+            ),
+          ),
         ),
+        Effect.ensuring(Effect.sync(() => buffer.complete(batch))),
+        Effect.uninterruptible,
       ),
-      Effect.ensuring(Effect.sync(() => buffer.complete(batch))),
-      Effect.uninterruptible,
-    ),
   );
 
   const drainSegment = Effect.fnUntraced(function* (segment: LogSegment) {
@@ -681,10 +691,11 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
   const startWorkers = (segments: ReadonlyArray<LogSegment>) =>
     Effect.forEach(
       segments,
-      (segment) => Effect.forkIn(drainSegment(segment), workerScope, {
-        startImmediately: true,
-        uninterruptible: false,
-      }),
+      (segment) =>
+        Effect.forkIn(drainSegment(segment), workerScope, {
+          startImmediately: true,
+          uninterruptible: false,
+        }),
       { discard: true },
     );
 
@@ -699,10 +710,12 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
   const scheduleFlush = Effect.fnUntraced(function* () {
     yield* Effect.forkIn(
       Effect.sleep(resolved.batchWindowMs).pipe(
-        Effect.andThen(Effect.sync(() => buffer.timerFired()).pipe(
-          Effect.flatMap(startWorkers),
-          Effect.uninterruptible,
-        )),
+        Effect.andThen(
+          Effect.sync(() => buffer.timerFired()).pipe(
+            Effect.flatMap(startWorkers),
+            Effect.uninterruptible,
+          ),
+        ),
       ),
       timerScope,
       { startImmediately: true, uninterruptible: false },

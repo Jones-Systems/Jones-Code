@@ -32,7 +32,10 @@ export function createPlanCreationStorage(storage: PlanStorage) {
     const run = (queues.get(environmentId) ?? Promise.resolve()).then(() =>
       storage.withLock ? storage.withLock(planCreationStorageKey(environmentId), work) : work(),
     );
-    queues.set(environmentId, run.catch(() => undefined));
+    queues.set(
+      environmentId,
+      run.catch(() => undefined),
+    );
     return run;
   };
   const read = async (environmentId: EnvironmentId): Promise<Document> => {
@@ -42,24 +45,36 @@ export function createPlanCreationStorage(storage: PlanStorage) {
       throw new Error("Saved plan actions need reconciliation. No further work was sent.");
     const value: unknown = JSON.parse(raw);
     if (
-      typeof value !== "object" || value === null ||
-      !("schemaVersion" in value) || value.schemaVersion !== 1 ||
-      !("current" in value) || !Array.isArray(value.current) ||
-      !("history" in value) || !Array.isArray(value.history) ||
+      typeof value !== "object" ||
+      value === null ||
+      !("schemaVersion" in value) ||
+      value.schemaVersion !== 1 ||
+      !("current" in value) ||
+      !Array.isArray(value.current) ||
+      !("history" in value) ||
+      !Array.isArray(value.history) ||
       Object.keys(value).some((key) => !["schemaVersion", "current", "history"].includes(key)) ||
       value.current.length + value.history.length > maxOperations
-    ) throw new Error("Saved plan actions need reconciliation. No further work was sent.");
+    )
+      throw new Error("Saved plan actions need reconciliation. No further work was sent.");
     const current = value.current.map(decodePlanCreationOperation);
     const history = value.history.map(decodePlanCreationOperation);
     const all = [...current, ...history];
     if (
       all.some((operation) => operation.environmentId !== environmentId) ||
       history.some((operation) => operation.phase !== "create-rejected") ||
-      new Set(all.flatMap((operation) => [operation.create.commandId, operation.prepared.payload.commandId])).size !== all.length * 2 ||
+      new Set(
+        all.flatMap((operation) => [
+          operation.create.commandId,
+          operation.prepared.payload.commandId,
+        ]),
+      ).size !==
+        all.length * 2 ||
       new Set(all.map((operation) => operation.create.threadId)).size !== all.length ||
       new Set(all.map((operation) => operation.prepared.payload.messageId)).size !== all.length ||
       new Set(current.map(planCreationSlotKey)).size !== current.length
-    ) throw new Error("Saved plan action identities conflict. No further work was sent.");
+    )
+      throw new Error("Saved plan action identities conflict. No further work was sent.");
     return { schemaVersion: 1, current, history };
   };
   const write = async (environmentId: EnvironmentId, document: Document) => {
@@ -74,7 +89,7 @@ export function createPlanCreationStorage(storage: PlanStorage) {
       throw new Error("Plan action history is full. Earlier actions were retained.");
     // StateStorage may be asynchronous. A debounced/memory acknowledgement is not sufficient.
     await storage.setItem(planCreationStorageKey(environmentId), raw);
-    if (await storage.getItem(planCreationStorageKey(environmentId)) !== raw)
+    if ((await storage.getItem(planCreationStorageKey(environmentId))) !== raw)
       throw new Error("Plan action could not be saved. Nothing further was sent.");
     publish(environmentId);
   };
@@ -90,7 +105,9 @@ export function createPlanCreationStorage(storage: PlanStorage) {
     },
     readSource(environmentId: EnvironmentId, sourceThreadId: PlanCreationSlot["sourceThreadId"]) {
       return exclusive(environmentId, async () =>
-        (await read(environmentId)).current.filter((operation) => operation.sourceThreadId === sourceThreadId),
+        (await read(environmentId)).current.filter(
+          (operation) => operation.sourceThreadId === sourceThreadId,
+        ),
       );
     },
     read(slot: PlanCreationSlot) {
@@ -110,13 +127,22 @@ export function createPlanCreationStorage(storage: PlanStorage) {
         if (document.current.length + document.history.length >= maxOperations)
           throw new Error("Plan action history is full. Earlier actions were retained.");
         const operation = decodePlanCreationOperation(await allocate());
-        if (operation.phase !== "create-pending" || planCreationSlotKey(operation) !== planCreationSlotKey(slot))
+        if (
+          operation.phase !== "create-pending" ||
+          planCreationSlotKey(operation) !== planCreationSlotKey(slot)
+        )
           throw new Error("Plan action does not match its source.");
-        if ([...document.current, ...document.history].some((row) =>
-          row.create.threadId === operation.create.threadId ||
-          row.prepared.payload.messageId === operation.prepared.payload.messageId ||
-          [row.create.commandId, row.prepared.payload.commandId].some((id) =>
-            id === operation.create.commandId || id === operation.prepared.payload.commandId)))
+        if (
+          [...document.current, ...document.history].some(
+            (row) =>
+              row.create.threadId === operation.create.threadId ||
+              row.prepared.payload.messageId === operation.prepared.payload.messageId ||
+              [row.create.commandId, row.prepared.payload.commandId].some(
+                (id) =>
+                  id === operation.create.commandId || id === operation.prepared.payload.commandId,
+              ),
+          )
+        )
           throw new Error("Plan action identity is already retained.");
         await write(slot.environmentId, {
           schemaVersion: 1,
@@ -129,21 +155,27 @@ export function createPlanCreationStorage(storage: PlanStorage) {
     advance(operation: PlanCreationOperation, phase: PlanCreationOperation["phase"]) {
       return exclusive(operation.environmentId, async () => {
         const document = await read(operation.environmentId);
-        const prior = document.current.find((row) => row.create.commandId === operation.create.commandId);
-        if (!prior || JSON.stringify({ ...prior, phase: operation.phase }) !== JSON.stringify(operation))
+        const prior = document.current.find(
+          (row) => row.create.commandId === operation.create.commandId,
+        );
+        if (
+          !prior ||
+          JSON.stringify({ ...prior, phase: operation.phase }) !== JSON.stringify(operation)
+        )
           throw new Error("Saved plan action changed. Reconcile its existing identity.");
         const next = advancePlanCreation(prior, phase);
-        if (next !== prior) await write(operation.environmentId, {
-          ...document,
-          current: document.current.map((row) => row === prior ? next : row),
-        });
+        if (next !== prior)
+          await write(operation.environmentId, {
+            ...document,
+            current: document.current.map((row) => (row === prior ? next : row)),
+          });
         return next;
       });
     },
     clearEnvironment(environmentId: EnvironmentId) {
       return exclusive(environmentId, async () => {
         await storage.removeItem(planCreationStorageKey(environmentId));
-        if (await storage.getItem(planCreationStorageKey(environmentId)) !== null)
+        if ((await storage.getItem(planCreationStorageKey(environmentId))) !== null)
           throw new Error("Saved plan actions could not be removed.");
         publish(environmentId);
       });

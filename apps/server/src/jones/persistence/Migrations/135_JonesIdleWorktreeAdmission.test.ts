@@ -19,9 +19,7 @@ it.effect(
       const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       const objects = yield* sql`SELECT type, name, tbl_name, sql FROM sqlite_master
       WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`;
-      assert.deepEqual(yield* runJonesMigrations(through135), [
-        [135, "IdleWorktreeAdmission"],
-      ]);
+      assert.deepEqual(yield* runJonesMigrations(through135), [[135, "IdleWorktreeAdmission"]]);
       assert.deepEqual(
         yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
         ledger,
