@@ -364,6 +364,7 @@ export class ThreadMonitorHost {
       title: "Jones Code Thread Monitor",
       backgroundColor: "#17171c",
       autoHideMenuBar: true,
+      ...(this.options.platform === "darwin" ? { type: "panel" as const } : {}),
       webPreferences: {
         session,
         preload: NodePath.join(this.options.bundleDirectory, "jones/threadMonitor/preload.cjs"),
@@ -394,7 +395,11 @@ export class ThreadMonitorHost {
     markThreadMonitorWindow(peer);
     peer.setMenu(null);
     if (this.options.platform === "darwin")
-      peer.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      peer.setVisibleOnAllWorkspaces(true, {
+        visibleOnFullScreen: true,
+        // Electron's workspace transform can hide the entire app's Dock icon and menu bar.
+        skipTransformProcessType: true,
+      });
     peer.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     bind(peer.webContents, "will-navigate", (event: Electron.Event) => event.preventDefault());
     bind(peer.webContents, "will-redirect", (event: Electron.Event) => event.preventDefault());
