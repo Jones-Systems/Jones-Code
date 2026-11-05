@@ -7,6 +7,8 @@ import {
 import type { MobileWorkstreams } from "../../features/workstreams/types";
 import type { MobileWorkstreamSnapshot } from "../../features/workstreams/projection";
 
+const loadAttachmentSharing = () => import("../../lib/attachmentDownload");
+
 export function MobileWorkstreamExport({
   api,
   snapshot,
@@ -64,7 +66,7 @@ function ExportAction({
             .exportNative(snapshot, { signal: request.signal })
             .then(async (result) => {
               if (request.signal.aborted || job.current !== request) return;
-              const { shareGeneratedAttachment } = await import("../../lib/attachmentDownload");
+              const { shareGeneratedAttachment } = await loadAttachmentSharing();
               if (request.signal.aborted || job.current !== request) return;
               const shared = await shareGeneratedAttachment({
                 bytes: result.bytes,
