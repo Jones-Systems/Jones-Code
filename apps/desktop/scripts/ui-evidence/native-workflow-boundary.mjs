@@ -109,14 +109,21 @@ export function validateNativeBoundary({
     NodeAssert.strict.equal(generation.exit.code, 0);
     NodeAssert.strict.equal(generation.exit.signal, null);
     for (const role of ["electron", "server"])
-      NodeAssert.strict.ok(identity(generation.processes[role]), `Missing ${role} generation capture`);
+      NodeAssert.strict.ok(
+        identity(generation.processes[role]),
+        `Missing ${role} generation capture`,
+      );
   }
   NodeAssert.strict.equal(inner.boundary.xvfbClosed, true);
   if (inner.windowManager) NodeAssert.strict.equal(inner.windowManager.closed, true);
   NodeAssert.strict.equal(inner.fixture?.nodeCleanupFailed, undefined);
   if (inner.fixture?.nodeClient)
     for (const key of ["removed", "credentialsCleared", "projectionCleared", "socketClosed"])
-      NodeAssert.strict.equal(inner.fixture.nodeClient[key], true, `Node client cleanup unproved: ${key}`);
+      NodeAssert.strict.equal(
+        inner.fixture.nodeClient[key],
+        true,
+        `Node client cleanup unproved: ${key}`,
+      );
   if (expected.queueCase) {
     NodeAssert.strict.equal(inner.fixture.queueCase, expected.queueCase);
     NodeAssert.strict.match(inner.fixture.runId ?? "", /^[a-f0-9-]{36}$/);
@@ -180,7 +187,10 @@ export async function validateNativeBoundaryFiles(expected) {
   const { output, artifacts, source, stateHome } = expected;
   const parent = NodePath.join(stateHome, "jones-code-ui-evidence");
   NodeAssert.strict.equal(await NodeFSP.realpath(parent), parent);
-  NodeAssert.strict.equal(await NodeFSP.realpath(NodePath.join(parent, "registry")), NodePath.join(parent, "registry"));
+  NodeAssert.strict.equal(
+    await NodeFSP.realpath(NodePath.join(parent, "registry")),
+    NodePath.join(parent, "registry"),
+  );
   const captured = {};
   const read = async (key, file) => {
     const capture = await readNativeCapture(file);
@@ -191,7 +201,9 @@ export async function validateNativeBoundaryFiles(expected) {
   NodeAssert.strict.match(result.runId ?? "", /^[a-f0-9-]{36}$/);
   const manifest = await read("manifest", NodePath.join(artifacts, "manifest.json"));
   const inner = await read("inner", NodePath.join(artifacts, "inner.json"));
-  const registry = await readNativeCapture(NodePath.join(parent, "registry", `${result.runId}.json`));
+  const registry = await readNativeCapture(
+    NodePath.join(parent, "registry", `${result.runId}.json`),
+  );
   const record = registry.value;
   const receiptPath = NodePath.join(output, "build/receipt.json");
   const receipt = await readNativeEvidence(receiptPath);
@@ -236,7 +248,10 @@ export async function validateNativeBoundaryFiles(expected) {
     NodeAssert.strict.ok(ledger.ledger.every((row) => row.runId === fixture.runId));
     const starts = ledger.cleanup.starts;
     NodeAssert.strict.ok(Array.isArray(starts));
-    NodeAssert.strict.equal(ledger.ledger.filter((row) => row.event === "start").length, starts.length);
+    NodeAssert.strict.equal(
+      ledger.ledger.filter((row) => row.event === "start").length,
+      starts.length,
+    );
     NodeAssert.strict.equal(new Set(starts.map((row) => row.processId)).size, starts.length);
     for (const start of starts) {
       NodeAssert.strict.ok(identity(start));
@@ -258,7 +273,11 @@ export async function validateNativeBoundaryFiles(expected) {
     }
   }
   await NodeAssert.strict.rejects(NodeFSP.lstat(record.root), { code: "ENOENT" });
-  NodeAssert.strict.deepEqual(await NodeFSP.readdir(NodePath.join(parent, "scratch")), [], "Unaccounted scratch roots");
+  NodeAssert.strict.deepEqual(
+    await NodeFSP.readdir(NodePath.join(parent, "scratch")),
+    [],
+    "Unaccounted scratch roots",
+  );
   NodeAssert.strict.notEqual(
     await processIdentity(manifest.namespaceProcess.pid),
     manifest.namespaceProcess.startTicks,

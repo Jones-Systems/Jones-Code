@@ -180,7 +180,7 @@ describe("CursorAgentSdkRunner", () => {
       );
       yield* Deferred.succeed(releaseDiagnostic, undefined);
       yield* Fiber.join(signal);
-    }).pipe(Effect.provide(CursorSdk.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(CursorSdk.layer, NodeServices.layer))),
   );
 
   it.effect("observes native completion independently of blocked completion diagnostics", () =>
@@ -213,7 +213,7 @@ describe("CursorAgentSdkRunner", () => {
       assert.isUndefined(drained.pollUnsafe());
       yield* Deferred.succeed(releaseDiagnostic, undefined);
       yield* Fiber.join(drained);
-    }).pipe(Effect.provide(CursorSdk.layer), Effect.provide(NodeServices.layer)),
+    }).pipe(Effect.provide(Layer.mergeAll(CursorSdk.layer, NodeServices.layer))),
   );
 
   it.effect("retries a resumed send after cancelling its abandoned local run", () =>

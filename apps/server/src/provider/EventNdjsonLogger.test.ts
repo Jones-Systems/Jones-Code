@@ -530,10 +530,7 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
             if (batchWindowMs > 0) yield* TestClock.adjust(batchWindowMs);
             yield* Deferred.await(secondWritten);
             yield* Fiber.join(secondWrite);
-            assert.include(
-              NodeFS.readFileSync(ownedLogPath(basePath, "free"), "utf8"),
-              '"second"',
-            );
+            assert.include(NodeFS.readFileSync(ownedLogPath(basePath, "free"), "utf8"), '"second"');
 
             const input = yield* Queue.unbounded<Uint8Array>();
             const output = yield* Queue.unbounded<string>();
@@ -563,10 +560,7 @@ it.layer(NodeServices.layer)("EventNdjsonLogger", (it) => {
               params: { threadId: "synthetic-B" },
             });
             assert.equal(yield* Deferred.isDone(release), false);
-            yield* Queue.offer(
-              input,
-              new TextEncoder().encode('{"id":1,"result":{"ok":true}}\n'),
-            );
+            yield* Queue.offer(input, new TextEncoder().encode('{"id":1,"result":{"ok":true}}\n'));
             assert.deepEqual(yield* Fiber.join(request), { ok: true });
 
             const closed = yield* Deferred.make<void>();

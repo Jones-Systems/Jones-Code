@@ -298,7 +298,11 @@ export async function attemptNativeVariant({
       row.reason = "cancelled";
       return row;
     }
-    NodeAssert.strict.equal(controller.groupAbsent, true, "Owned controller group closure unproved");
+    NodeAssert.strict.equal(
+      controller.groupAbsent,
+      true,
+      "Owned controller group closure unproved",
+    );
     NodeAssert.strict.equal(controller.signalError, undefined);
     const proof = await validate({ ...expected, exitCode: controller.code });
     NodeAssert.strict.equal(proof.safe, true);
@@ -366,12 +370,17 @@ export async function readNativeWorkflowRows(output) {
     for (const suffix of ["attempt", "outcome"]) {
       let captured;
       try {
-        const value = await readNativeEvidence(NodePath.join(output, `${variant.id}-${suffix}.json`));
+        const value = await readNativeEvidence(
+          NodePath.join(output, `${variant.id}-${suffix}.json`),
+        );
         captured = value;
         NodeAssert.strict.equal(value.id, variant.id);
         if (suffix === "outcome") {
           NodeAssert.strict.ok(attempt, "Outcome without first attempt");
-          NodeAssert.strict.deepEqual(value, finishNativeVariant(variant, attempt, value.oracleCode));
+          NodeAssert.strict.deepEqual(
+            value,
+            finishNativeVariant(variant, attempt, value.oracleCode),
+          );
         } else if (value.safe === true) {
           NodeAssert.strict.equal(value.attempted, true);
           NodeAssert.strict.ok([0, 1].includes(value.nativeCode));
@@ -475,10 +484,12 @@ async function main([command, id, value]) {
   const output = NodePath.resolve(process.env.JCUE_OUTPUT);
   const rows = await readNativeWorkflowRows(output);
   if (command === "aggregate") {
-    const cleanup = await readNativeEvidence(NodePath.join(output, "cleanup.json")).catch((error) => ({
-      outcome: "unknown",
-      reason: error.message,
-    }));
+    const cleanup = await readNativeEvidence(NodePath.join(output, "cleanup.json")).catch(
+      (error) => ({
+        outcome: "unknown",
+        reason: error.message,
+      }),
+    );
     const report = aggregateNative(rows, process.env.JCUE_CANCELLED === "true", cleanup);
     await save(NodePath.join(output, "native-aggregate.json"), report);
     return report.status === "passed" ? 0 : 1;
@@ -517,10 +528,14 @@ async function main([command, id, value]) {
       persist: (row) => save(NodePath.join(output, `${id}-attempt.json`), row),
     });
     if (attempt.nativeCode !== null)
-      await NodeFSP.writeFile(NodePath.join(output, `${id}-exit-code.txt`), `${attempt.nativeCode}\n`, {
-        flag: "wx",
-        mode: 0o600,
-      });
+      await NodeFSP.writeFile(
+        NodePath.join(output, `${id}-exit-code.txt`),
+        `${attempt.nativeCode}\n`,
+        {
+          flag: "wx",
+          mode: 0o600,
+        },
+      );
   } else if (command === "external") {
     NodeAssert.strict.equal(id, "two-servers");
     const controller = await readNativeEvidence(NodePath.join(output, `${id}-controller.json`));
