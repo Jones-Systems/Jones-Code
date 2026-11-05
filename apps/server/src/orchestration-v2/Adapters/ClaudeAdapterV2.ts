@@ -10497,13 +10497,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               Effect.fnUntraced(function* (exit: ClaudeQueryStreamExit) {
                 // Cleanup caused by stream failure is not an owner-requested abort.
                 const wasStopping = context.stopping;
-                if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+                const heldContext = yield* Ref.get(activeTurn);
+                // A completed query keeps its binding for queued SQL terminals and source forks.
+                if (
+                  Exit.isFailure(exit) &&
+                  Cause.hasInterruptsOnly(exit.cause) &&
+                  heldContext !== null &&
+                  heldContext === context.lastTurn
+                ) {
                   yield* closeCapturedQuery(context).pipe(
                     Effect.ignore,
                     Effect.forkDetach({ startImmediately: true }),
                   );
                 }
-                const heldContext = yield* Ref.get(activeTurn);
                 if (
                   (yield* Ref.get(queryContext))?.query === querySession &&
                   heldContext !== null &&

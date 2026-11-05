@@ -74,6 +74,7 @@ export const withActiveEffectClaim = Effect.fn("ActiveEffectClaim.withActiveEffe
         const loss = yield* Deferred.make<EffectClaimLost>();
         let active = true;
         let expiry = captured.leaseExpiresAt;
+        let useFiberId: number | undefined;
         const snapshot = () => ({ ...captured, leaseExpiresAt: expiry });
         const invalidate = Effect.fn("ActiveEffectClaim.invalidate")(function* (cause?: unknown) {
           active = false;
@@ -116,14 +117,29 @@ export const withActiveEffectClaim = Effect.fn("ActiveEffectClaim.withActiveEffe
         }).pipe(Effect.tapError((cause) => invalidate(cause)));
         const claim: CurrentEffectClaim["Service"] = {
           nativeCustody: renew,
-          check: permit.withPermits(1)(checkWithPermitHeld),
+          // Native SQL rechecks run inside use; child fibers still need the permit.
+          check: Effect.flatMap(Effect.fiberId, (fiberId) =>
+            useFiberId === fiberId
+              ? checkWithPermitHeld
+              : permit.withPermits(1)(checkWithPermitHeld),
+          ),
           lost: Deferred.await(loss).pipe(Effect.flatMap(Effect.fail)),
           hasLost: Effect.sync(() => !active),
           invalidate,
           use: (sql) =>
             permit.withPermits(1)(
               Effect.uninterruptible(
-                checkWithPermitHeld.pipe(Effect.andThen(Effect.suspend(() => sql(snapshot())))),
+                Effect.gen(function* () {
+                  useFiberId = yield* Effect.fiberId;
+                  return yield* checkWithPermitHeld.pipe(
+                    Effect.andThen(Effect.suspend(() => sql(snapshot()))),
+                    Effect.ensuring(
+                      Effect.sync(() => {
+                        useFiberId = undefined;
+                      }),
+                    ),
+                  );
+                }),
               ),
             ),
           settle: (sql, allowLost = false) =>

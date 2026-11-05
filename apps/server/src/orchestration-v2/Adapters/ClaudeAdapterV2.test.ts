@@ -12741,6 +12741,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           const SUBAGENT_SUMMARY = "SUB_BUFFER_REPLACE_DONE";
           const releaseRetiredFrame = yield* Deferred.make<void>();
           const retiredFrameHandled = yield* Deferred.make<void>();
+          const firstCloseStarted = yield* Deferred.make<void>();
           const subagentTaskStarted = claudeSdkFrame({
             type: "system",
             subtype: "task_started",
@@ -12851,7 +12852,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                     termination: Effect.void,
                     interrupt: Effect.void,
                     close: isFirstQuery
-                      ? Queue.end(sdkMessages).pipe(Effect.asVoid)
+                      ? Queue.end(sdkMessages).pipe(
+                          Effect.andThen(Deferred.succeed(firstCloseStarted, undefined)),
+                          Effect.asVoid,
+                        )
                       : Queue.shutdown(sdkMessages),
                   };
                 }),
@@ -12869,6 +12873,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
             runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
           });
+          yield* Effect.addFinalizer(() =>
+            Deferred.succeed(releaseRetiredFrame, undefined).pipe(Effect.asVoid),
+          );
           const providerThread = yield* runtime.ensureThread({
             threadId,
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -12936,21 +12943,26 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           assert.equal(continuationRequests[0]?.detail, SUBAGENT_SUMMARY);
 
           const alternateModel = CLAUDE_TEST_RESTART_MODEL_SELECTION;
-          yield* runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId,
-              providerThread: { ...providerThread, status: "active" },
-              now,
-              attemptId: RunAttemptId.make("attempt-claude-subagent-buffer-replace-user"),
-              text: "Switch model while the subagent completes.",
-              attachments: [],
-              providerTurnOrdinal: 2,
-              modelSelection: alternateModel,
-            }),
-          );
-          assert.equal(processQueues.length, 2);
+          const replacing = yield* runtime
+            .startTurn(
+              makeClaudeTestTurnInput({
+                threadId,
+                providerThread: { ...providerThread, status: "active" },
+                now,
+                attemptId: RunAttemptId.make("attempt-claude-subagent-buffer-replace-user"),
+                text: "Switch model while the subagent completes.",
+                attachments: [],
+                providerTurnOrdinal: 2,
+                modelSelection: alternateModel,
+              }),
+            )
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(firstCloseStarted);
+          assert.equal(processQueues.length, 1, "replacement waits for the captured stream drain");
           yield* Deferred.succeed(releaseRetiredFrame, undefined);
           yield* Deferred.await(retiredFrameHandled);
+          yield* Fiber.join(replacing);
+          assert.equal(processQueues.length, 2);
           const secondProcess = processQueues[1]!;
           yield* Queue.offer(
             secondProcess,
@@ -13514,6 +13526,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   return Effect.fail(
                     new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
                       method: "open",
+                      nativeOutcome: "not_spawned",
                       cause: "forced replacement open failure",
                     }),
                   );
@@ -13712,6 +13725,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               Effect.fail(
                 new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
                   method: "open",
+                  nativeOutcome: "not_spawned",
                   cause: "forced first open failure",
                 }),
               ),
@@ -14118,6 +14132,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             .pipe(Effect.forkScoped);
           yield* Effect.yieldNow;
           assert.lengthOf(h.forks, 0);
+          const queuedTerminal = h.events.find((event) => event.type === "turn.terminal");
+          assert.isDefined(queuedTerminal);
+          yield* ProviderEventOrigin.revalidateProviderEventOrigin(queuedTerminal!, h.runtime);
           assert.isFalse(
             h.chronology.some((entry) => entry.startsWith("abandon:")),
             "stream drain cannot retire a producer before terminal ingestion",
@@ -15064,6 +15081,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           },
         });
         const threadId = ThreadId.make(`claude-runtime-rewind-${reset}`);
+        // Keep SQL receipt consumption alive until the runtime's query cleanup finishes.
+        const eventScope = yield* Effect.acquireRelease(Scope.make(), (scope) =>
+          Scope.close(scope, Exit.void),
+        );
         const runtime = yield* adapter.openSession({
           threadId,
           providerSessionId: ProviderSessionId.make(`claude-runtime-rewind-${reset}`),
@@ -15088,7 +15109,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               confirmProviderControlTerminalIngested(event, 1);
             }).pipe(Effect.andThen(changes.notify)),
           ),
-          Effect.forkScoped,
+          Effect.forkIn(eventScope),
         );
         const start = (ordinal: number) =>
           Effect.scoped(
@@ -15660,10 +15681,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           interrupt: Effect.sync(() => {
             interrupted = true;
           }),
-          close: () =>
+          close: (messages) =>
             Effect.sync(() => {
               closed = true;
-            }),
+            }).pipe(Effect.andThen(Queue.shutdown(messages))),
         });
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({

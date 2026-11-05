@@ -168,6 +168,7 @@ it.effect(
       const { outbox, captured } = yield* fixture;
       const issued = yield* Deferred.make<void>();
       const finishIssue = yield* Deferred.make<void>();
+      const childChecked = yield* Deferred.make<void>();
       const renewed = yield* Deferred.make<void>();
       const observed = {
         ...outbox,
@@ -178,11 +179,21 @@ it.effect(
         Effect.gen(function* () {
           const issue = yield* claim
             .use(() =>
-              Deferred.succeed(issued, undefined).pipe(Effect.andThen(Deferred.await(finishIssue))),
+              Effect.gen(function* () {
+                yield* claim.check;
+                const child = yield* claim.check.pipe(
+                  Effect.andThen(Deferred.succeed(childChecked, undefined)),
+                  Effect.forkChild,
+                );
+                yield* Deferred.succeed(issued, undefined);
+                yield* Deferred.await(finishIssue);
+                return child;
+              }),
             )
-            .pipe(Effect.forkChild);
+            .pipe(Effect.flatMap((child) => Fiber.join(child)), Effect.forkChild);
           yield* Deferred.await(issued);
           yield* TestClock.adjust("10 seconds");
+          assert.isFalse(yield* Deferred.isDone(childChecked));
           assert.strictEqual(
             Option.getOrThrow(yield* outbox.get(captured.id)).leaseExpiresAt,
             captured.leaseExpiresAt,
@@ -203,6 +214,56 @@ it.effect(
         }).pipe(Effect.ensuring(Deferred.succeed(finishIssue, undefined))),
       );
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a public check inside claim SQL still rejects changed payload bytes and latches loss", () =>
+  Effect.gen(function* () {
+    const { outbox, captured } = yield* fixture;
+    const sql = yield* SqlClient.SqlClient;
+    yield* withActiveEffectClaim(outbox, captured, 30_000, true, (claim) =>
+      Effect.gen(function* () {
+        const changed = yield* claim.use(() =>
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* claim.check;
+              yield* sql`UPDATE orchestration_v2_effect_outbox SET payload_json='{"type": "terminal.cleanup"}'
+                WHERE effect_id=${captured.id}`;
+              const current = Option.getOrThrow(yield* outbox.get(captured.id));
+              assert.deepEqual(current.request, captured.request);
+              assert.notStrictEqual(current.payloadIdentity, captured.payloadIdentity);
+              const failure = yield* claim.check.pipe(Effect.flip);
+              assert.strictEqual(failure._tag, "EffectClaimLost");
+              assert.strictEqual(failure.effectId, captured.id);
+              return current;
+            }),
+          ),
+        );
+        assert.isTrue(yield* claim.hasLost);
+        assert.strictEqual((yield* claim.lost.pipe(Effect.flip)).effectId, captured.id);
+        let writes = 0;
+        assert.strictEqual(
+          (yield* claim
+            .use(() =>
+              Effect.sync(() => {
+                writes++;
+              }),
+            )
+            .pipe(Effect.flip))._tag,
+          "EffectClaimLost",
+        );
+        assert.strictEqual(writes, 0);
+        assert.strictEqual(
+          (yield* claim
+            .settle((current) =>
+              outbox.succeed({ effectId: current.id, workerId: "worker", claim: current }),
+            )
+            .pipe(Effect.flip))._tag,
+          "EffectClaimLost",
+        );
+        assert.deepEqual(Option.getOrThrow(yield* outbox.get(captured.id)), changed);
+      }),
+    );
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

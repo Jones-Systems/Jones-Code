@@ -538,7 +538,13 @@ function layerCursorAgentSdkReplay(
           ? Effect.void
           : runner.assertComplete.pipe(Effect.orDie),
       );
-      return CursorAgentSdk.CursorAgentSdkRunner.of(runner);
+      // Adapter shutdown also checks completeness. A shared restart transcript is
+      // complete only after its final runtime; its owner asserts the original runner.
+      return CursorAgentSdk.CursorAgentSdkRunner.of(
+        options?.assertCompleteOnFinalize === false
+          ? { ...runner, assertComplete: Effect.void }
+          : runner,
+      );
     }),
   );
 }
