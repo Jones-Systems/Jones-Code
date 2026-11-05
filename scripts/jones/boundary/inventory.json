@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.test.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/AccountTransferRetirement.integration.test.ts": "jones-owned",
     "packages/contracts/src/jones/threadContentEvidence.ts": "jones-owned",
     "packages/contracts/src/jones/threadContentEvidence.test.ts": "jones-owned",
     "apps/server/src/jones/mcp/threadContentEvidence.ts": "jones-owned",
