@@ -40,6 +40,56 @@ for letter in 'bce':
     (pair / 'app-preimage').write_text('app-' + letter)
 def enable_retire():
     durable(root / 'userdata' / 'settings.json', {'storageCleanup': {'installRetention': 'retire'}})
+def warm(identifier, prior):
+    directory = manifest_path.parent / 'jones-updates' / 'transactions' / identifier
+    prior = dict({'home': str(root), 'databasePath': str(root / 'userdata' / 'state.sqlite'),
+                  'profile': str(root / 'profile'), 'appPath': str(root / 'Jones.app'), 'environmentId': 'fixture'}, **prior)
+    handle = '9' * 64
+    claim = preparation_claim(prior, handle, identifier, manifest_path.parent / 'jones-updates' / 'staging' / 'fixture.json', '0' * 64)
+    durable(directory / 'prepare-intent.json', claim)
+    durable(directory / 'prepare-dispatched.json', claim)
+    durable(directory / 'continuation.json', dict(claim, prepared=True))
+    intent = {'protocol': 1, 'transactionId': identifier, 'expected': prior, 'staged': {'handle': handle},
+              'continuationReceipt': str(directory / 'continuation.json'), 'processes': [{'pid': 1, 'identity': 'fixture'}], 'listener': 'fixture'}
+    durable(directory / 'intent.json', intent)
+    pair = directory / 'previous-pair'
+    durable(pair / 'pair.json', {'expected': prior, 'stateScope': 'database-settings'})
+    durable(directory / 'journal.json', {'intent': intent, 'phase': 'resumed', 'pairedState': str(pair)})
+    return directory
+def warm_chain():
+    active = dict(read(manifest_path), databasePath=str(root / 'userdata' / 'state.sqlite'),
+                  profile=str(root / 'profile'), appPath=str(root / 'Jones.app'), environmentId='fixture')
+    durable(manifest_path, active)
+    first, second = '1' * 64, '2' * 64
+    baseline = dict(active, generation='bootstrap', transactionId='bootstrap')
+    warm(first, baseline)
+    prior = dict(active, generation=first, transactionId=first)
+    directory = warm(second, prior)
+    pair = directory / 'previous-pair'
+    durable(pair / 'pair.json', {'expected': prior, 'stateScope': 'database-settings'})
+    (pair / 'state.sqlite').write_text('W1-state')
+    previous = pathlib.Path(active['appPath'] + '.jones-previous-' + first)
+    previous.mkdir(); (previous / 'binary').write_text('W1-app')
+    durable(directory / 'journal.json', dict(read(directory / 'journal.json'), pairedState=str(pair), previousBundle=str(previous)))
+    value = read(manual / ids['a'] / 'receipt.json')
+    expected = dict(active, generation=second, transactionId=second)
+    durable(manual / ids['a'] / 'receipt.json', dict(value, originalManifest=json.dumps(expected)))
+    durable(manual / ids['a'] / 'previous-pair' / 'pair.json', {'expected': expected, 'stateScope': 'database-settings'})
+    return active, first, second, pair, previous
+def unreferenced_warm():
+    active, _, _, _, _ = warm_chain()
+    identifier = '3' * 64
+    prior = dict(active, generation='unreferenced', transactionId='bootstrap')
+    directory = warm(identifier, prior)
+    pair = directory / 'previous-pair'
+    (pair / 'state.sqlite').write_text('unreferenced-state')
+    previous = pathlib.Path(active['appPath'] + '.jones-previous-unreferenced')
+    previous.mkdir(); (previous / 'binary').write_text('unreferenced-app')
+    durable(directory / 'journal.json', dict(read(directory / 'journal.json'), previousBundle=str(previous)))
+    acquire = globals()
+    acquire['acquire_writer_exclusion'] = lambda *args, **kwargs: []
+    acquire['prove_quiescence'] = lambda *args: None
+    return active, identifier, pair, previous
 `;
 
 async function fixture(action) {
@@ -95,16 +145,134 @@ assert install_retention_plan()['candidates'] == []
 `));
 
 test("JR33: warm recovery and embedded original manifests pin manual dependencies", () => python(String.raw`
-warm = manifest_path.parent / 'jones-updates' / 'transactions' / ('f' * 64)
-durable(warm / 'journal.json', {'phase': 'blocked', 'previous': {'generation': ids['d']}})
+warm_path = warm('f' * 64, {'generation': ids['d'], 'transactionId': 'manual-' + ids['d']})
 assert install_retention_plan()['candidates'] == []
-(warm / 'journal.json').unlink()
+shutil.rmtree(warm_path)
 value = read(manual / ids['a'] / 'receipt.json')
 value['originalManifest'] = json.dumps({'transactionId': 'manual-' + ids['d']})
 durable(manual / ids['a'] / 'receipt.json', value)
 durable(manual / ids['a'] / 'previous-pair' / 'pair.json', {'expected': json.loads(value['originalManifest']), 'stateScope': 'database-settings'})
 assert install_retention_plan()['candidates'] == []
 `));
+
+test("J6-COR-01: activation-request-only warm recovery holds manual retirement", () => python(String.raw`
+enable_retire(); plan = install_retention_plan()
+directory = manifest_path.parent / 'jones-updates' / 'transactions' / ('f' * 64)
+durable(directory / 'activation-request.json', {'protocol': 1, 'transactionId': directory.name, 'expected': {'transactionId': 'manual-' + ids['d']}})
+assert propose_install_retention()['status'] == 'held'
+try: apply_install_retention(plan)
+except RuntimeError: pass
+else: raise AssertionError('incomplete warm recovery deleted its manual dependency')
+assert (manual / ids['d'] / 'receipt.json').exists()
+assert not (manifest_path.parent / 'jones-install-retention' / (ids['d'] + '.json')).exists()
+`));
+
+test("J6-COR-01: all warm metadata pins dependencies and incomplete or unknown sets hold", () => python(String.raw`
+directory = warm('f' * 64, {'generation': 'bootstrap'})
+# This recovery guard was outside the original five-file inventory.
+guard = directory / 'advanced-state-authority-guard.json'
+durable(guard, {'protocol': 1, 'guard': {'transactionId': 'manual-' + ids['d']}})
+durable(directory / 'advanced-state' / 'retained.json', {'protocol': 1, 'previous': read(directory / 'intent.json')['expected']})
+assert install_retention_plan()['candidates'] == []
+guard.unlink(); shutil.rmtree(directory / 'advanced-state')
+for fault in ('missing-claim', 'unknown-record', 'mismatched-request', 'missing-pair'):
+    claim = directory / 'prepare-intent.json'
+    pair = directory / 'previous-pair' / 'pair.json'
+    if fault == 'missing-claim': claim.rename(root / 'saved-claim')
+    elif fault == 'unknown-record': durable(directory / 'future-recovery.json', {'transactionId': 'manual-' + ids['d']})
+    elif fault == 'mismatched-request': durable(directory / 'activation-request.json', {'transactionId': 'manual-' + ids['d']})
+    else: pair.rename(root / 'saved-pair')
+    assert propose_install_retention()['status'] == 'held', fault
+    if fault == 'missing-claim': (root / 'saved-claim').rename(claim)
+    elif fault == 'unknown-record': (directory / 'future-recovery.json').unlink()
+    elif fault == 'mismatched-request': (directory / 'activation-request.json').unlink()
+    else: (root / 'saved-pair').rename(pair)
+assert [value['transactionId'] for value in install_retention_plan()['candidates']] == [ids['d']]
+`));
+
+test("J6-COR-01: identical warm record replacement invalidates manual removal after intent", () => python(String.raw`
+directory = warm('f' * 64, {'generation': 'bootstrap'})
+enable_retire(); plan = install_retention_plan()
+original = durable
+def replace_record(path, value, exclusive=False):
+    original(path, value, exclusive)
+    if value.get('status') == 'intent':
+        claim = directory / 'prepare-intent.json'
+        raw = claim.read_bytes(); claim.rename(root / 'saved-claim'); claim.write_bytes(raw)
+durable = replace_record
+try: apply_install_retention(plan)
+except RuntimeError: pass
+else: raise AssertionError('same-content warm record replacement was ignored')
+assert (manual / ids['d'] / 'receipt.json').exists()
+assert read(manifest_path.parent / 'jones-install-retention' / (ids['d'] + '.json'))['status'] == 'held'
+assert propose_install_retention()['status'] == 'held'
+`));
+
+test("J6-COR-02: existing warm retirement preserves active manual transitive recovery", () => python(String.raw`
+active, first, second, pair, previous = warm_chain()
+acquire_writer_exclusion = lambda *args, **kwargs: []
+prove_quiescence = lambda *args: None
+for identifier in (second, first):
+    result = retirement_command('inspect-retirement', active, identifier)
+    assert result['status'] == 'refused' and result['reason'] == 'protected-recovery-parent', result
+    result = retirement_command('retire-transaction', active, identifier, '0' * 64)
+    assert result['status'] == 'refused' and result['reason'] == 'protected-recovery-parent', result
+assert (pair / 'state.sqlite').read_text() == 'W1-state'
+assert (previous / 'binary').read_text() == 'W1-app'
+`));
+
+test("J6-COR-02: a manual app preimage path alone pins the warm pair", () => python(String.raw`
+active, first, second, pair, previous = warm_chain()
+value = read(manual / ids['a'] / 'receipt.json')
+expected = {'generation': 'bootstrap'}
+durable(manual / ids['a'] / 'receipt.json', dict(value, originalManifest=json.dumps(expected), previousBundle=str(previous)))
+durable(manual / ids['a'] / 'previous-pair' / 'pair.json', {'expected': expected, 'stateScope': 'database-settings'})
+for identifier in (second, first):
+    result = retirement_command('inspect-retirement', active, identifier)
+    assert result['reason'] == 'protected-recovery-parent', result
+assert (pair / 'state.sqlite').exists() and (previous / 'binary').exists()
+`));
+
+test("J6-COR-02: unreferenced warm retirement completes and reads back its durable receipt", () => python(String.raw`
+active, identifier, pair, previous = unreferenced_warm()
+result = retirement_command('inspect-retirement', active, identifier)
+assert result['status'] == 'ready' and len(result['targets']) == 2, result
+result = retirement_command('retire-transaction', active, identifier, result['planSha256'])
+assert result['status'] == 'retired', result
+assert not (pair / 'state.sqlite').exists() and not previous.exists()
+assert (pair / 'pair.json').exists()
+assert retirement_command('retire-transaction', active, identifier, result['planSha256'])['status'] == 'retired'
+`));
+
+for (const change of ["warm-record-identity", "manual-record", "between-targets"]) {
+  test(`J6-COR-02: fresh cross-store generation refuses ${change} drift`, () => python(String.raw`
+active, identifier, pair, previous = unreferenced_warm()
+approved = retirement_command('inspect-retirement', active, identifier)
+assert approved['status'] == 'ready', approved
+original_durable, original_remove = durable, remove_retirement_payload
+def drift():
+    if '${change}' == 'warm-record-identity':
+        path = pair.parent / 'prepare-intent.json'
+        raw = path.read_bytes(); path.rename(root / 'saved-claim'); path.write_bytes(raw)
+    else:
+        path = manual / ids['a'] / 'receipt.json'
+        original_durable(path, dict(read(path), note='generation changed'))
+def after_intent(path, value, exclusive=False):
+    original_durable(path, value, exclusive)
+    if path.name == 'retirement-intent.json' and '${change}' != 'between-targets': drift()
+def after_target(target):
+    original_remove(target)
+    if '${change}' == 'between-targets': drift()
+durable, remove_retirement_payload = after_intent, after_target
+result = retirement_command('retire-transaction', active, identifier, approved['planSha256'])
+assert result['status'] == 'uncertain' and result['reason'] == 'plan-changed', result
+assert previous.exists()
+assert (pair / 'state.sqlite').exists() == ('${change}' != 'between-targets')
+directory = pair.parent
+assert (directory / 'retirement-intent.json').exists() and not (directory / 'retirement-receipt.json').exists()
+assert retirement_command('retire-transaction', active, identifier, approved['planSha256'])['status'] == 'uncertain'
+`));
+}
 
 test("JR35: real previous state and app restoration still works after superseded retention", () => python(String.raw`
 live = root / 'userdata'; live.mkdir()
@@ -252,7 +420,7 @@ lock_path = manifest_path.with_name('jones-activation.lock')
 lock_path.write_text('jones-activation-lock-v1\n')
 with open(lock_path, 'r+') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
-    for action in (['--inspect-manual-install', str(root / 'absent')], ['--reconcile-running', str(root / 'absent')], ['--inspect-install-retention']):
+    for action in (['--inspect-manual-install', str(root / 'absent')], ['--reconcile-running', str(root / 'absent')], ['--inspect-install-retention'], ['--retire-transaction', 'f' * 64]):
         value = subprocess.run([sys.executable, '-B', helper, '--manifest', str(manifest_path)] + action, capture_output=True, text=True, timeout=3)
         assert value.returncode != 0 or json.loads(value.stdout).get('reason') == 'busy', value
     assert not (manifest_path.parent / 'jones-install-retention-plan.json').exists()
