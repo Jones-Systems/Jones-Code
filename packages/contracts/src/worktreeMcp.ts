@@ -74,7 +74,28 @@ export const WorktreeMcpHandoffResult = Schema.Struct({
 });
 export type WorktreeMcpHandoffResult = typeof WorktreeMcpHandoffResult.Type;
 
+const ProvenanceDirectoryIdentity = Schema.Struct({
+  version: Schema.Literal(1), device: Schema.String, inode: Schema.String, birth: Schema.String,
+});
+export const WorktreeProvenanceEntry = Schema.Struct({
+  schema: Schema.Literal("workspace-provenance/v1"),
+  incarnationId: Schema.String, environmentId: Schema.String, projectId: Schema.String,
+  path: Schema.String, branch: Schema.NullOr(Schema.String), head: Schema.String,
+  reason: Schema.Literals(["launch", "delegate", "handoff", "recreate", "reference", "backfill"]),
+  createdAt: Schema.String, createdBy: Schema.String,
+  baseRef: Schema.NullOr(Schema.String), baseHead: Schema.NullOr(Schema.String),
+  birth: ProvenanceDirectoryIdentity, adminId: Schema.NullOr(ProvenanceDirectoryIdentity),
+  predecessor: Schema.NullOr(Schema.String),
+  threads: Schema.Array(Schema.String), tasks: Schema.Array(Schema.String),
+  facts: Schema.Array(Schema.Struct({
+    id: Schema.String, kind: Schema.String, recordedAt: Schema.String, reference: Schema.String,
+  })),
+  authorityEffect: Schema.Literal("none"),
+});
+export type WorktreeProvenanceEntry = typeof WorktreeProvenanceEntry.Type;
+
 export const WorktreeMcpStatusResult = Schema.Struct({
+  provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
   attached: Schema.Boolean,
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),
   branch: Schema.NullOr(TrimmedNonEmptyString),

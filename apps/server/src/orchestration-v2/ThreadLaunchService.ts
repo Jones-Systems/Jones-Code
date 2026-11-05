@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import {
   launchDeliveryEvidence,
@@ -305,6 +306,7 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
   const nativeBootstrapContext = yield* Effect.context<never>();
   const nativeBootstrapConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const nativeBootstrapPath = yield* Effect.serviceOption(Path.Path);
@@ -1370,6 +1372,7 @@ const make = Effect.gen(function* () {
       } else {
         branch = requestedBranch ?? null;
       }
+      let provenanceBaseRef: string | null = null;
       let worktreePath =
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
@@ -1476,6 +1479,7 @@ const make = Effect.gen(function* () {
             },
           )
           .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+        provenanceBaseRef = baseRefName;
         worktreePath = worktree.worktree.path;
         branch = worktree.worktree.refName;
         createdWorktreePath = worktreePath;
@@ -1496,6 +1500,11 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       workspaceRecorded = true;
+      yield* captureProvenance({
+        threadId, reason: input.workspaceStrategy.type === "worktree" ? "launch" : "reference",
+        createdBy: "system", baseRef: provenanceBaseRef, baseIsCurrentHead: provenanceBaseRef !== null && reused === undefined,
+        ...(runId === null ? {} : { runId }),
+      });
       if (input.idleWorktreeAdmission !== undefined) {
         if (worktreePath === null)
           return yield* mapError(

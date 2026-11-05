@@ -2163,6 +2163,9 @@
     {
       "id": "workspace-lifecycle",
       "tests": [
+        "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",
+        "apps/server/src/jones/persistence/Migrations/136_JonesWorkspaceProvenance.test.ts",
+        "packages/contracts/src/jones/workspaceProvenance.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
         "apps/server/src/jones/workspaceLifecycle/RegistryCli.test.ts",
         "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.test.ts",

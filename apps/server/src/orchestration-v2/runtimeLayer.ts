@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as TitleStore from "../jones/threadTitle/store.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
@@ -515,4 +516,5 @@ export const layerProduction = Layer.mergeAll(
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
   Layer.provideMerge(WorkspaceLifecycleRuntime.layer),
+  Layer.provideMerge(WorkspaceProvenance.layerLive),
 );

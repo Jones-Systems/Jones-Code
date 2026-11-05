@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../workspaceLifecycle/Provenance.ts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -13,6 +14,7 @@ import { withOriginalTransition } from "../workspaceLifecycle/NativeBoundary.ts"
 export const layer = Layer.effect(
   Execution.NativeCreationProviderExecutor,
   Effect.gen(function* () {
+    const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
     const repository = Option.getOrUndefined(
       yield* Effect.serviceOption(Repository.NativeCreationRepository),
     );
@@ -81,6 +83,7 @@ export const layer = Layer.effect(
               return yield* new Execution.NativeCreationProviderExecutionError({
                 message: "Native executor has no original verified workspace",
               });
+            yield* captureProvenance({ threadId: effect.threadId, reason: "launch", createdBy: "system", runId: effect.request.runId, baseRef: original.history.intent.binding.baseBranch });
             const guard = yield* Guard.issueNativeProviderGuard({
               context,
               resources: original.history.intent.resources,

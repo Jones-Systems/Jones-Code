@@ -20,7 +20,11 @@
     "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
     "apps/server/src/jones/workspaceLifecycle/ManagedConsumer.testkit.ts",
     "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
-    "apps/server/src/jones/workspaceLifecycle/NativeStart.testkit.ts"
+    "apps/server/src/jones/workspaceLifecycle/NativeStart.testkit.ts",
+    "apps/server/src/jones/workspaceLifecycle/Provenance.ts",
+    "packages/contracts/src/jones/workspaceProvenance.test.ts",
+    "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",
+    "apps/server/src/jones/persistence/Migrations/136_JonesWorkspaceProvenance.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -104,6 +108,30 @@
     {
       "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/worktree/handlers.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/TransitionStore.ts"
     }
   ]
 }

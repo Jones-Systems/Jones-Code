@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The frozen V3 contract uses absolute lexical paths, independently of filesystem observations.
 import * as NodePath from "node:path";
 import * as Schema from "effect/Schema";
+import { Target, Utc } from "../ordinaryCheckout/CheckoutProtocol.ts";
 
 const text = (max: number) =>
   Schema.String.check(
@@ -120,3 +121,46 @@ export class LifecycleError extends Schema.TaggedError<LifecycleError>()(
     return `Workspace lifecycle held: ${this.reason}.`;
   }
 }
+
+
+export const ProvenanceReason = Schema.Literals([
+  "launch", "delegate", "handoff", "recreate", "reference", "backfill",
+]);
+export type ProvenanceReason = typeof ProvenanceReason.Type;
+export const Provenance = Schema.Struct({
+  schema: Schema.Literal("workspace-provenance/v1"),
+  environment_id: text(1024),
+  project_id: text(1024),
+  incarnation_id: text(1024),
+  reason: ProvenanceReason,
+  created_at: Utc,
+  created_by: text(1024),
+  base_ref: Schema.NullOr(text(1024)),
+  base_head: Schema.NullOr(Schema.String.check(Schema.isPattern(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u))),
+  birth: Target.fields.directoryIdentity,
+  admin_id: Schema.NullOr(Target.fields.directoryIdentity),
+  predecessor: Schema.NullOr(text(1024)),
+  target: Target,
+  head: Schema.String.check(Schema.isPattern(/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u)),
+  authority_effect: Schema.Literal("none"),
+});
+export type Provenance = typeof Provenance.Type;
+export const ProvenanceFact = Schema.Struct({
+  id: text(1024),
+  incarnation_id: text(1024),
+  thread_id: text(1024),
+  kind: Schema.Literals([
+    "first_meaningful_write", "production", "pr_link", "pr_merge",
+    "settlement_outcome", "receipt", "recreation",
+  ]),
+  recorded_at: Utc,
+  reference: text(2048),
+});
+export type ProvenanceFact = typeof ProvenanceFact.Type;
+export const ProvenanceEntry = Schema.Struct({
+  provenance: Provenance,
+  threads: Schema.Array(text(1024)),
+  tasks: Schema.Array(text(1024)),
+  facts: Schema.Array(ProvenanceFact),
+});
+export type ProvenanceEntry = typeof ProvenanceEntry.Type;

@@ -1,3 +1,4 @@
+import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
 import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
@@ -491,6 +492,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const provenance = yield* Effect.serviceOption(WorkspaceProvenanceStore.ProvenanceStore);
     const idleWorktreeAdmission = IdleWorktreeAdmission.makeIdleWorktreeAdmission(sql);
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
     // Jones: keeps new provider work out of a process that is handing off to an update.
@@ -835,6 +837,10 @@ const layerBase: Layer.Layer<
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
+        if (Option.isSome(provenance))
+          yield* provenance.value.events(storedEvents.map((stored) => stored.event)).pipe(
+            Effect.catch((cause) => Effect.logWarning("Workspace provenance facts held", { reason: cause.reason })),
+          );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
