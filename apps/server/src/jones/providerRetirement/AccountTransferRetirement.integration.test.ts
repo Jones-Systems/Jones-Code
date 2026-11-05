@@ -21,6 +21,7 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -71,9 +72,22 @@ const Trace = Schema.Struct({
   serviceTier: Schema.optional(Schema.NullOr(Schema.String)),
   inputMarker: Schema.optional(Schema.String),
   status: Schema.optional(Schema.String),
+  recoveredContext: Schema.optional(Schema.Boolean),
+  requestMethod: Schema.optional(Schema.NullOr(Schema.String)),
+  rejectionReason: Schema.optional(Schema.String),
+  inputCount: Schema.optional(Schema.NullOr(Schema.Number)),
+  textLength: Schema.optional(Schema.NullOr(Schema.Number)),
 });
 const decodeSettings = Schema.decodeEffect(CodexSettings);
 const decodeTrace = Schema.decodeUnknownEffect(Schema.fromJsonString(Trace));
+const startFailureLogger = Logger.make<unknown, void>(({ message }) => {
+  if (!Array.isArray(message)) return;
+  if (message[0] !== "orchestration V2 provider turn start failed") return;
+  const detail: unknown = message[1];
+  if (typeof detail !== "object" || detail === null || !("cause" in detail)) return;
+  if (!Cause.isCause(detail.cause)) return;
+  console.error("Synthetic provider start cause", Cause.pretty(detail.cause).slice(0, 8000));
+});
 
 const catalogs: ReadonlyArray<ServerProvider> = accounts.map((account): ServerProvider => ({
   instanceId: instanceId(account),
@@ -482,6 +496,15 @@ const scenario = (
           (yield* readTraces()).filter((trace) => trace.method === "thread/start"),
           1,
         );
+        assert.isTrue(
+          (yield* readTraces()).some(
+            (trace) =>
+              trace.instance === "B" &&
+              trace.method === "turn/start" &&
+              trace.inputMarker === "SYNTHETIC_RETRY" &&
+              trace.recoveredContext === true,
+          ),
+        );
         return;
       }
       if (mode === "queued") {
@@ -664,7 +687,18 @@ const scenario = (
         );
       assert.isFalse(yield* fs.exists(path.join(homePath, "auth.json")));
     }).pipe(
+      Effect.onError(() =>
+        readTraces().pipe(
+          Effect.flatMap((traces) =>
+            Effect.logError("Synthetic peer request rejections", {
+              rejections: traces.filter((trace) => trace.method === "synthetic/request-rejected"),
+            }),
+          ),
+          Effect.orDie,
+        ),
+      ),
       Effect.provide(runtime),
+      Effect.withLogger(startFailureLogger),
       Effect.scoped,
       Effect.ensuring(
         attribution.snapshot.pipe(

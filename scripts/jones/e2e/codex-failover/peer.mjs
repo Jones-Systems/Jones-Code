@@ -39,6 +39,23 @@ if (root === NodePath.parse(root).root) throw new Error("State root must be isol
 const processId = NodeCrypto.randomUUID();
 const model = "synthetic-codex-model";
 const safeToken = (value) => typeof value === "string" && /^[a-zA-Z0-9_-]{1,96}$/.test(value);
+const currentInputMarker = (text) => {
+  if (typeof text !== "string" || Buffer.byteLength(text) > 65536) return null;
+  const directMarker = (value) =>
+    /^SYNTHETIC_[A-Z0-9_]{1,80}$/.test(value)
+      ? value
+      : value === "Continue where you left off."
+        ? "SYNTHETIC_CONTINUATION"
+        : null;
+  const direct = directMarker(text);
+  if (direct !== null) return direct;
+  // Unsupported history injection falls back to one text containing context and the current input.
+  const separator = "\n\nUser message:\n";
+  const boundary = text.lastIndexOf(separator);
+  return text.startsWith("Context handoff (") && boundary > 0
+    ? directMarker(text.slice(boundary + separator.length))
+    : null;
+};
 const output = (name) => {
   if (!safeToken(name.replaceAll(".", "_"))) throw new Error("Invalid synthetic filename");
   const target = NodePath.resolve(root, name);
@@ -370,9 +387,7 @@ const handle = ({ id, method, params = {} }) => {
       !Array.isArray(input) ||
       input.length !== 1 ||
       input[0]?.type !== "text" ||
-      typeof input[0].text !== "string" ||
-      (!/^SYNTHETIC_[A-Z0-9_]{1,80}$/.test(input[0].text) &&
-        input[0].text !== "Continue where you left off.")
+      currentInputMarker(input[0].text) === null
     )
       throw new Error("Require synthetic input marker");
     const selection = (value) => (safeToken(value) ? value : null);
@@ -398,8 +413,8 @@ const handle = ({ id, method, params = {} }) => {
       model: selection(params.model),
       effort: selection(params.effort),
       serviceTier: selection(params.serviceTier),
-      inputMarker:
-        input[0].text === "Continue where you left off." ? "SYNTHETIC_CONTINUATION" : input[0].text,
+      inputMarker: currentInputMarker(input[0].text),
+      recoveredContext: input[0].text.startsWith("Context handoff ("),
     });
     respond({ turn: active });
     notify("turn/started", { threadId: thread.id, turn: active });
@@ -453,7 +468,16 @@ lines.on("line", (line) => {
   }
   try {
     handle(message);
-  } catch {
+  } catch (error) {
+    trace("synthetic/request-rejected", {
+      requestMethod: typeof message?.method === "string" ? message.method.slice(0, 80) : null,
+      rejectionReason: error instanceof Error ? error.message.slice(0, 200) : "Unknown rejection",
+      inputCount: Array.isArray(message?.params?.input) ? message.params.input.length : null,
+      textLength:
+        typeof message?.params?.input?.[0]?.text === "string"
+          ? message.params.input[0].text.length
+          : null,
+    });
     write({
       id: message?.id ?? null,
       error: { code: -32602, message: "Invalid synthetic request or state" },
