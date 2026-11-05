@@ -1,5 +1,4 @@
 import * as NodeURL from "node:url";
-import * as NodeFS from "node:fs";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -23,6 +22,7 @@ import * as Deferred from "effect/Deferred";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
@@ -126,9 +126,7 @@ const failureState = Effect.fn("AccountTransferTest.failureState")(function* (th
       status,
       providerInstanceId,
     })),
-    failures: projection.turnItems.flatMap((item) =>
-      item.type === "error" ? [item.failure] : [],
-    ),
+    failures: projection.turnItems.flatMap((item) => (item.type === "error" ? [item.failure] : [])),
     effects: effects.map(({ id, status, attemptCount, lastError }) => ({
       id,
       status,
@@ -316,22 +314,23 @@ const scenario = (
       stage: string,
       predicate: (traces: ReadonlyArray<typeof Trace.Type>) => boolean,
     ) {
-      let changed = yield* Deferred.make<void>();
-      yield* Effect.acquireRelease(
-        Effect.sync(() => {
-          const watcher = NodeFS.watch(stateDir, () => Deferred.doneUnsafe(changed, Effect.void));
-          watcher.on("error", (error) => Deferred.doneUnsafe(changed, Effect.die(error)));
-          return watcher;
-        }),
-        (watcher) => Effect.sync(() => watcher.close()),
-      );
       return yield* Effect.gen(function* () {
+        const probe = yield* fs.makeTempFileScoped({ directory: stateDir, prefix: "watch-ready-" });
+        const changes = yield* Stream.toQueue(fs.watch(stateDir), {
+          capacity: 1,
+          strategy: "sliding",
+        });
+        // FileSystem.watch registers asynchronously; observe an event before the first snapshot.
+        yield* Effect.raceFirst(
+          Queue.take(changes),
+          Stream.tick("10 millis").pipe(
+            Stream.runForEach(() => fs.writeFileString(probe, "SYNTHETIC_WATCH_READY\n")),
+          ),
+        );
         while (true) {
-          const observed = changed;
           const traces = yield* readTraces();
           if (predicate(traces)) return traces;
-          yield* Deferred.await(observed);
-          changed = yield* Deferred.make<void>();
+          yield* Queue.take(changes);
         }
       }).pipe(
         Effect.timeout("45 seconds"),
@@ -605,7 +604,9 @@ const scenario = (
         );
         if (mode === "queued")
           assert.isFalse(
-            finished.providerSessions.some((session) => session.id === sourceThread.providerSessionId),
+            finished.providerSessions.some(
+              (session) => session.id === sourceThread.providerSessionId,
+            ),
           );
         assert.equal(
           finished.providerThreads.find((row) => row.id === finished.thread.activeProviderThreadId)!
