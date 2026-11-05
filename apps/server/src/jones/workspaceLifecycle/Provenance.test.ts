@@ -457,7 +457,7 @@ it.effect(
           "workspace-provenance.json",
         ]);
       }),
-    ).pipe(Effect.provide(memory), Effect.provide(NodeServices.layer)),
+    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
 );
 
 it.effect("unavailable provenance lookup remains absent for older compositions", () =>
