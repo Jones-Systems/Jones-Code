@@ -80,8 +80,7 @@ it.effect(
       ])
         assert.isTrue(
           yield* isAccountTransferDetach(effect(detail!), {
-            getByCommandId: () =>
-              Effect.succeedSome({ ...receipt, commandType: commandType! }),
+            getByCommandId: () => Effect.succeedSome({ ...receipt, commandType: commandType! }),
           }),
         );
       for (const detail of [
