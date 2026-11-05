@@ -1,23 +1,22 @@
 // @effect-diagnostics nodeBuiltinImport:off - Detached launcher boundary uses Node built-ins.
-/* oxlint-disable t3code/no-global-process-runtime -- Detached launcher has no Effect runtime. */
-import * as Crypto from "node:crypto";
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import { constants } from "node:fs";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeFS from "node:fs";
 import { withQualifiedRuntimeLock } from "./qualifiedRuntime.ts";
 
-const hash = (value: string) => Crypto.createHash("sha256").update(value).digest("hex");
+const hash = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
 const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
 
 async function directory(path: string) {
-  const info = await FS.lstat(path);
-  if (!info.isDirectory() || info.uid !== process.getuid?.() || (await FS.realpath(path)) !== path)
+  const info = await NodeFSP.lstat(path);
+  if (!info.isDirectory() || info.uid !== process.getuid?.() || (await NodeFSP.realpath(path)) !== path)
     throw new Error("Unknown runtime retention directory; preserved.");
   return info;
 }
 
 async function record(path: string) {
-  const file = await FS.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const file = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
   try {
     const info = await file.stat();
     if (!info.isFile() || info.uid !== process.getuid?.() || info.size > 1024 * 1024)
@@ -33,9 +32,9 @@ async function record(path: string) {
 /** Caller owns service-launcher-lock; staging takes only the nested qualified-runtime-lock. */
 export async function proposeRuntimeStagingRetention(baseDir: string): Promise<void> {
   await withQualifiedRuntimeLock(baseDir, "qualified-runtime-lock", async () => {
-    const runtime = Path.join(baseDir, "runtime");
+    const runtime = NodePath.join(baseDir, "runtime");
     await directory(runtime);
-    const versions = Path.join(runtime, "versions");
+    const versions = NodePath.join(runtime, "versions");
     const generations: {
       version: string;
       dev: number;
@@ -44,12 +43,12 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
     }[] = [];
     try {
       await directory(versions);
-      const names = (await FS.readdir(versions)).sort();
+      const names = (await NodeFSP.readdir(versions)).sort();
       if (names.length > 1000) throw new Error("Runtime generation inventory exceeds its bound.");
       for (const version of names) {
-        const path = Path.join(versions, version);
+        const path = NodePath.join(versions, version);
         const info = await directory(path);
-        const receipt = await record(Path.join(path, ".jones-runtime-receipt.json")).catch(
+        const receipt = await record(NodePath.join(path, ".jones-runtime-receipt.json")).catch(
           (error: unknown) => {
             if (absent(error)) return undefined;
             throw error;
@@ -80,13 +79,13 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
     // operation history, qualified staged handles/selections and paired recovery.
     const scan = async (path: string, depth: number): Promise<void> => {
       await directory(path);
-      const names = (await FS.readdir(path)).sort();
+      const names = (await NodeFSP.readdir(path)).sort();
       referenceEntries += names.length;
       if (referenceEntries > 1000)
         throw new Error("Runtime reference inventory exceeds its bound.");
       for (const name of names) {
-        const child = Path.join(path, name);
-        const info = await FS.lstat(child);
+        const child = NodePath.join(path, name);
+        const info = await NodeFSP.lstat(child);
         if (info.isSymbolicLink()) throw new Error("Unknown runtime reference link; preserved.");
         if (info.isDirectory()) {
           if (depth === 0) throw new Error("Runtime reference depth exceeds its bound.");
@@ -97,9 +96,9 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
         }
       }
     };
-    const state = await record(Path.join(runtime, "service-state.json"));
+    const state = await record(NodePath.join(runtime, "service-state.json"));
     add("service-state.json", JSON.stringify(state.value), state.digest);
-    const settings = await record(Path.join(baseDir, "userdata", "settings.json")).catch(
+    const settings = await record(NodePath.join(baseDir, "userdata", "settings.json")).catch(
       (error: unknown) => {
         if (absent(error)) return undefined;
         throw error;
@@ -117,13 +116,13 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
       "jones-update-history",
       "db-backup",
     ]) {
-      await scan(Path.join(runtime, root), 3).catch((error: unknown) => {
+      await scan(NodePath.join(runtime, root), 3).catch((error: unknown) => {
         if (!absent(error)) throw error;
       });
     }
     for (const name of ["current", "pending"]) {
-      const path = Path.join(runtime, "launcher", name);
-      const target = await FS.readlink(path).catch((error: unknown) => {
+      const path = NodePath.join(runtime, "launcher", name);
+      const target = await NodeFSP.readlink(path).catch((error: unknown) => {
         if (absent(error)) return undefined;
         throw error;
       });
@@ -142,25 +141,25 @@ export async function proposeRuntimeStagingRetention(baseDir: string): Promise<v
       candidates: [],
       held: generations.map(({ version }) => ({ version, reason: "unknown-runtime-consumers" })),
     };
-    const path = Path.join(runtime, "jones-runtime-retention-plan.json");
-    const scratch = `${path}.${Crypto.randomUUID()}`;
+    const path = NodePath.join(runtime, "jones-runtime-retention-plan.json");
+    const scratch = `${path}.${NodeCrypto.randomUUID()}`;
     try {
-      const file = await FS.open(scratch, "wx", 0o600);
+      const file = await NodeFSP.open(scratch, "wx", 0o600);
       try {
         await file.writeFile(`${JSON.stringify(plan)}\n`);
         await file.sync();
       } finally {
         await file.close();
       }
-      await FS.rename(scratch, path);
-      const parent = await FS.open(runtime, "r");
+      await NodeFSP.rename(scratch, path);
+      const parent = await NodeFSP.open(runtime, "r");
       try {
         await parent.sync();
       } finally {
         await parent.close();
       }
     } finally {
-      await FS.unlink(scratch).catch((error: unknown) => {
+      await NodeFSP.unlink(scratch).catch((error: unknown) => {
         if (!absent(error)) throw error;
       });
     }

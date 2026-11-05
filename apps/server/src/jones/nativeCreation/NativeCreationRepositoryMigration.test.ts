@@ -50,6 +50,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 133, name: "ThreadResultDependencies" },
         { migration_id: 134, name: "GoalContinuity" },
         { migration_id: 135, name: "IdleWorktreeAdmission" },
+        { migration_id: 136, name: "WorkspaceProvenance" },
       ],
     );
     assert.deepEqual(

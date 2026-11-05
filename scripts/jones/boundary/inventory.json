@@ -2548,7 +2548,8 @@
     "scripts/jones/updates/install-retention.node-test.mjs": "jones-owned",
     "scripts/jones/boundary/fragments/install-retention.json": "jones-owned",
     "apps/web/src/components/settings/StorageSettings.tsx": "accepted-shared",
-    "apps/web/src/components/settings/StorageSettings.browser.test.tsx": "jones-tests-in-upstream"
+    "apps/web/src/components/settings/StorageSettings.browser.test.tsx": "jones-tests-in-upstream",
+    "packages/contracts/src/worktreeMcp.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
