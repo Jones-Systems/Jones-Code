@@ -7,6 +7,13 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "scripts/jones/updates/packaged-desktop-helper-preload.py": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-helper-fault.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-pair.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-pair.node-test.mjs": "jones-owned",
+    "scripts/jones/updates/packaged-desktop-dialog-observer.m": "jones-owned",
+    "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned",
     "apps/web/src/jones/wordCiTrace.ts": "jones-owned",
     "apps/web/src/jones/wordCiTrace.test.ts": "jones-owned",
     "apps/web/test/browserSetup.ts": "hook",

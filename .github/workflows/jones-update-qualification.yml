@@ -125,6 +125,9 @@ jobs:
       - name: Check packaged recovery harness controls
         run: node --test --test-concurrency=1 scripts/jones/updates/packaged-recovery-fixture.node-test.mjs scripts/jones/updates/packaged-recovery-launcher.node-test.mjs scripts/jones/updates/packaged-recovery-preload.node-test.mjs
 
+      - name: Check packaged desktop recovery source controls
+        run: node --test --test-concurrency=1 scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs scripts/jones/updates/packaged-desktop-pair.node-test.mjs
+
       - name: Qualify Chromium-mode native startup refusal
         run: xvfb-run -a node scripts/jones/updates/native-startup-chromium.mjs
 

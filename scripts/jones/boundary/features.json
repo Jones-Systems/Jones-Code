@@ -4,6 +4,14 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "packaged-desktop-recovery-harness",
+      "tests": [
+        "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
+        "scripts/jones/updates/packaged-desktop-pair.node-test.mjs"
+      ],
+      "scope": "Unchanged packaged macOS app-pair identity binding, external one-shot helper preparation faults, captured-PID startup/dialog and protected-mutation refusal orchestration. Executable source controls do not prove Apple interpreter, native dialog, packaged matrix, process descendants outside the captured group or installed continuity; those remain separately admitted acceptance."
+    },
+    {
       "id": "historical-preparation",
       "tests": [
         "scripts/jones/performance/historical-preparation.node-test.mjs",
