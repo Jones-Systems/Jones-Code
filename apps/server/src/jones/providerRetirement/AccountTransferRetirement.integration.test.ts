@@ -316,10 +316,9 @@ const scenario = (
     ) {
       return yield* Effect.gen(function* () {
         const crypto = yield* Crypto.Crypto;
-        const probe = path.join(stateDir, `watch-ready-${yield* crypto.randomUUIDv4}`);
-        yield* Effect.acquireRelease(
-          fs.writeFileString(probe, "", { flag: "wx" }),
-          () => fs.remove(probe).pipe(Effect.orDie),
+        const probe = path.join(stateDir, `watch-ready-${yield* crypto.randomUUIDv4()}`);
+        yield* Effect.acquireRelease(fs.writeFileString(probe, "", { flag: "wx" }), () =>
+          fs.remove(probe).pipe(Effect.orDie),
         );
         const changes = yield* Stream.toQueue(fs.watch(stateDir), {
           capacity: 1,
