@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
 import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
@@ -492,6 +493,7 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const captureCommittedProvenance = yield* WorkspaceProvenance.optionalCommittedCapture;
     const provenance = yield* Effect.serviceOption(WorkspaceProvenanceStore.ProvenanceStore);
     const idleWorktreeAdmission = IdleWorktreeAdmission.makeIdleWorktreeAdmission(sql);
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
@@ -1552,6 +1554,8 @@ const layerBase: Layer.Layer<
             if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
       );
+      if (result.committed)
+        yield* captureCommittedProvenance(result.storedEvents.map((stored) => stored.event));
       return {
         receipt: result.receipt,
         storedEvents: result.storedEvents,

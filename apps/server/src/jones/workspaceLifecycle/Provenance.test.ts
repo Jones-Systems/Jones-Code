@@ -1,4 +1,6 @@
 import {
+  CommandId,
+  MessageId,
   EnvironmentId,
   EventId,
   ThreadId,
@@ -8,6 +10,7 @@ import {
   ProviderInstanceId,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import type { RecordedEvent } from "../../orchestration-v2/RecordedTypes.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -240,10 +243,38 @@ it.effect(
             },
           },
         };
-        yield* store.events([event, event]);
+        const privateEvent: RecordedEvent = {
+          id: EventId.make("private-preflight"),
+          threadId: ThreadId.make("thread"),
+          occurredAt: DateTime.makeUnsafe(at),
+          type: "legacy-bootstrap.preflight-intent",
+          payload: {
+            policy: {
+              version: 1,
+              createCommandId: CommandId.make("private-create"),
+              birthCommandId: CommandId.make("private-birth"),
+              releaseCommandId: CommandId.make("private-release"),
+              projectId: ProjectId.make("project"),
+              threadId: ThreadId.make("thread"),
+              messageId: MessageId.make("private-message"),
+              payloadHash: "a".repeat(64),
+              ownsNewThread: true,
+            },
+            canonicalPayload: "private payload is never inspected",
+            fetch: {
+              cwd: "/repo",
+              baseRef: "main",
+              startFromOrigin: false,
+              requireWorktree: true,
+              remote: "origin",
+            },
+          },
+        };
+        yield* store.events([privateEvent, event, event]);
         const entries = yield* p.lookup({ path: "/linked" });
         expect(entries[0]?.facts.map((f) => f.kind).sort()).toEqual(["pr_link", "pr_merge"]);
         expect(canonical(entries)).not.toContain("Never copied");
+        expect(canonical(entries)).not.toContain("private payload");
       }).pipe(Effect.provide(f.layer));
     }).pipe(Effect.provide(memory)),
 );
@@ -411,6 +442,11 @@ it.effect(
         expect(yield* fs.readFileString(file)).toBe(original);
         expect(yield* fs.readDirectory(root)).toEqual(["workspace-provenance.json"]);
         yield* fs.remove(file);
+        yield* fs.writeFileString(file, "{invalid-json");
+        expect(Exit.isFailure(yield* Effect.exit(sidecar.publish(payload)))).toBe(true);
+        expect(yield* fs.readFileString(file)).toBe("{invalid-json");
+        expect(yield* fs.readDirectory(root)).toEqual(["workspace-provenance.json"]);
+        yield* fs.remove(file);
         const sentinel = path.join(root, "sentinel");
         yield* fs.writeFileString(sentinel, "must remain unchanged");
         yield* fs.symlink(sentinel, file);
@@ -422,4 +458,11 @@ it.effect(
         ]);
       }),
     ).pipe(Effect.provide(memory), Effect.provide(NodeServices.layer)),
+);
+
+it.effect("unavailable provenance lookup remains absent for older compositions", () =>
+  Effect.gen(function* () {
+    const lookup = yield* Provenance.optionalLookup;
+    expect(yield* lookup({ path: "/unknown" })).toBeUndefined();
+  }),
 );

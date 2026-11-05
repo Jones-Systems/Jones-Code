@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import type { RecordedEvent } from "../../orchestration-v2/RecordedTypes.ts";
 import { ServerEnvironmentIdentity } from "../../environment/ServerEnvironment.ts";
 import { canonical, digest } from "../ordinaryCheckout/CheckoutProtocol.ts";
 import * as Targets from "../ordinaryCheckout/CheckoutTarget.ts";
@@ -36,6 +37,7 @@ interface Capture {
   readonly taskId?: string | null;
   readonly runId?: string;
   readonly expected?: Sources.CheckoutSource;
+  readonly requireExistingPhysical?: boolean;
 }
 export class Provenance extends Context.Service<
   Provenance,
@@ -54,7 +56,7 @@ export class ProvenanceSidecar extends Context.Service<
   {
     readonly publish: (record: Record) => Effect.Effect<void, LifecycleError>;
   }
->()("t3/jones/workspaceLifecycle/ProvenanceSidecar") {}
+>()("t3/jones/workspaceLifecycle/Provenance/ProvenanceSidecar") {}
 
 const publish = Effect.fn("ProvenanceSidecar.publish")((record: Record) =>
   Effect.tryPromise({
@@ -91,9 +93,9 @@ const publish = Effect.fn("ProvenanceSidecar.publish")((record: Record) =>
             const read = await input.read(bytes, 0, bytes.length, 0);
             if (read.bytesRead !== stat.size || read.bytesRead > 65536)
               throw new Error("Changed provenance sidecar");
-            const existing = Schema.decodeUnknownSync(ProvenanceRecord, {
+            const existing = await Schema.decodePromise(Schema.fromJsonString(ProvenanceRecord), {
               onExcessProperty: "error",
-            })(JSON.parse(new TextDecoder().decode(bytes.subarray(0, read.bytesRead))));
+            })(new TextDecoder().decode(bytes.subarray(0, read.bytesRead)));
             if (canonical(existing) !== canonical(record))
               throw new Error("Conflicting provenance sidecar");
           } finally {
@@ -212,8 +214,19 @@ const make = Effect.gen(function* () {
         : input.reason;
     const id = incarnation(environment, source);
     const predecessors = yield* store.lookup({ threadId: input.threadId });
+    const physicalHistory = predecessors.findLast(
+      (p) =>
+        canonical(p.provenance.birth) === canonical(target.directoryIdentity) &&
+        canonical(p.provenance.admin_id) === canonical(target.gitDirectoryIdentity) &&
+        canonical(p.provenance.target.gitCommonIdentity) === canonical(target.gitCommonIdentity),
+    )?.provenance;
+    if (input.requireExistingPhysical === true && physicalHistory === undefined)
+      return yield* new LifecycleError({ reason: "prior-lineage" });
+    const relocatedFrom =
+      physicalHistory?.target.checkoutKey !== target.checkoutKey ? physicalHistory : undefined;
     const predecessor =
       input.predecessor ??
+      relocatedFrom?.incarnation_id ??
       (input.reason === "handoff" || input.reason === "recreate"
         ? (predecessors.filter((p) => p.provenance.incarnation_id !== id).at(-1)?.provenance
             .incarnation_id ?? null)
@@ -283,7 +296,8 @@ const make = Effect.gen(function* () {
         recorded_at: record.created_at,
         reference: record.predecessor ?? record.incarnation_id,
       });
-    if (Option.isSome(sidecar)) {
+    // Relocation references share the original admin directory and its immutable birth sidecar.
+    if (Option.isSome(sidecar) && !(record.reason === "reference" && record.predecessor !== null)) {
       yield* sources.revalidate(source);
       yield* sidecar.value.publish(record);
       yield* sources.revalidate(source);
@@ -347,7 +361,9 @@ export const optionalCapture = Effect.map(
         ? service.value.capture(input).pipe(
             Effect.asVoid,
             Effect.catch((cause) =>
-              Effect.logWarning("Workspace provenance capture held", { reason: cause.reason }),
+              input.requireExistingPhysical === true && cause.reason === "prior-lineage"
+                ? Effect.void
+                : Effect.logWarning("Workspace provenance capture held", { reason: cause.reason }),
             ),
           )
         : Effect.void,
@@ -361,7 +377,7 @@ export const optionalLookup = Effect.map(
     }): Effect.Effect<readonly WorktreeProvenanceEntry[] | undefined, LifecycleError> =>
       Option.isSome(service)
         ? service.value.lookup(input).pipe(Effect.map((entries) => entries.map(toLookup)))
-        : Effect.succeed(undefined),
+        : Effect.undefined,
 );
 const toLookup = ({
   provenance: p,
@@ -393,4 +409,32 @@ const toLookup = ({
     reference: f.reference,
   })),
   authorityEffect: "none",
+});
+
+export const optionalCommittedCapture = Effect.gen(function* () {
+  const capture = yield* optionalCapture;
+  return (events: readonly RecordedEvent[]): Effect.Effect<void> =>
+    Effect.forEach(
+      events,
+      (event) => {
+        if (
+          event.type === "context-transfer.created" &&
+          (event.payload.type === "fork" || event.payload.type === "merge_back")
+        )
+          return Effect.forEach(
+            [event.payload.sourceThreadId, event.payload.targetThreadId],
+            (threadId) => capture({ threadId, reason: "reference", createdBy: "system" }),
+            { concurrency: 1, discard: true },
+          );
+        if (event.type === "thread.metadata-updated" || event.type === "thread.unsettled")
+          return capture({
+            threadId: event.threadId,
+            reason: "reference",
+            createdBy: "system",
+            requireExistingPhysical: true,
+          });
+        return Effect.void;
+      },
+      { concurrency: 1, discard: true },
+    );
 });

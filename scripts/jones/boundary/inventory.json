@@ -2542,7 +2542,8 @@
     "scripts/jones/updates/packaged-desktop-pair.mjs": "jones-owned",
     "scripts/jones/updates/packaged-desktop-pair.node-test.mjs": "jones-owned",
     "scripts/jones/updates/packaged-desktop-dialog-observer.m": "jones-owned",
-    "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned"
+    "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned",
+    "packages/contracts/src/worktreeMcp.ts": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1,4 +1,4 @@
-import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import type { RecordedEvent } from "../../orchestration-v2/RecordedTypes.ts";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -177,16 +177,14 @@ export class ProvenanceStore extends Context.Service<
       taskId: string | null,
       runId?: string,
     ) => Effect.Effect<Provenance, LifecycleError>;
-    readonly events: (
-      events: readonly OrchestrationV2DomainEvent[],
-    ) => Effect.Effect<void, LifecycleError>;
+    readonly events: (events: readonly RecordedEvent[]) => Effect.Effect<void, LifecycleError>;
     readonly fact: (fact: ProvenanceFact) => Effect.Effect<void, LifecycleError>;
     readonly lookup: (input: {
       readonly path?: string;
       readonly threadId?: string;
     }) => Effect.Effect<readonly ProvenanceEntry[], LifecycleError>;
   }
->()("t3/jones/workspaceLifecycle/ProvenanceStore") {}
+>()("t3/jones/workspaceLifecycle/TransitionStore/ProvenanceStore") {}
 
 const makeProvenanceStore = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -215,7 +213,7 @@ const makeProvenanceStore = Effect.gen(function* () {
         const facts = yield* sql<{
           fact_json: string;
         }>`SELECT fact_json FROM jones_workspace_provenance_facts WHERE incarnation_id=${provenance.incarnation_id} ORDER BY event_id`;
-        return yield* Schema.decodeUnknownEffect(ProvenanceEntry)({
+        return yield* Schema.decodeEffect(ProvenanceEntry)({
           provenance,
           threads: [...new Set(relations.map((r) => r.thread_id))],
           tasks: [...new Set(relations.map((r) => r.task_id).filter(Boolean))],
@@ -227,7 +225,7 @@ const makeProvenanceStore = Effect.gen(function* () {
     );
   }, Effect.mapError(storage));
   const fact = Effect.fn("ProvenanceStore.fact")(function* (input: ProvenanceFact) {
-    const fact = yield* Schema.decodeUnknownEffect(ProvenanceFact)(input);
+    const fact = yield* Schema.decodeEffect(ProvenanceFact)(input);
     yield* sql.withTransaction(
       Effect.gen(function* () {
         const owners =
@@ -273,8 +271,11 @@ const makeProvenanceStore = Effect.gen(function* () {
           if (runId === undefined) continue;
           facts.push({ kind: "first_meaningful_write", reference: event.id });
         }
-        if (event.type === "thread.settled")
-          facts.push({ kind: "settlement_outcome", reference: `settled:${event.id}` });
+        if (event.type === "thread.settled" || event.type === "thread.unsettled")
+          facts.push({
+            kind: "settlement_outcome",
+            reference: `${event.type === "thread.settled" ? "settled" : "unsettled"}:${event.id}`,
+          });
         const links =
           event.type === "thread.pull-request-link-updated"
             ? [event.payload]
@@ -308,7 +309,7 @@ const makeProvenanceStore = Effect.gen(function* () {
       }
     }, Effect.mapError(storage)),
     capture: Effect.fn("ProvenanceStore.capture")(function* (input, threadId, taskId, runId) {
-      const record = yield* Schema.decodeUnknownEffect(Provenance)(input);
+      const record = yield* Schema.decodeEffect(Provenance)(input);
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           const current = yield* sql<{
