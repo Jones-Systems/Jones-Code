@@ -5,6 +5,7 @@ import type {
   ThreadId,
   TurnItemId,
 } from "@t3tools/contracts";
+import { pendingControlTurnItems } from "../jones/orchestration/pendingControlItems.ts";
 
 /**
  * Every window stops at the byte budget. A window that holds a user turn also
@@ -588,6 +589,9 @@ export function buildBoundedThreadProjection(input: {
     turnItemById.set(String(item.id), item);
   }
   for (const item of dependencyTurnItems) {
+    turnItemById.set(String(item.id), item);
+  }
+  for (const item of pendingControlTurnItems(controlProjection)) {
     turnItemById.set(String(item.id), item);
   }
   const turnItems = [...turnItemById.values()];

@@ -2542,7 +2542,10 @@
     "scripts/jones/updates/packaged-desktop-pair.mjs": "jones-owned",
     "scripts/jones/updates/packaged-desktop-pair.node-test.mjs": "jones-owned",
     "scripts/jones/updates/packaged-desktop-dialog-observer.m": "jones-owned",
-    "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned"
+    "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned",
+    "apps/server/src/jones/orchestration/pendingControlItems.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/pendingControlItems.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/pending-control-items.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
