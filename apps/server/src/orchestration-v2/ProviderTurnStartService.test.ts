@@ -241,7 +241,9 @@ function startWithMissingWorktree(
   }).pipe(
     Effect.provide(
       layer.pipe(
-        Layer.provide(Layer.merge(lifecycleLayer ?? Layer.empty, provenanceLayer ?? Layer.empty)),
+        Layer.provideMerge(
+          Layer.merge(lifecycleLayer ?? Layer.empty, provenanceLayer ?? Layer.empty),
+        ),
       ),
     ),
     Effect.runPromise,
