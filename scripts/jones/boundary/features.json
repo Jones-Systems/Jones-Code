@@ -4,6 +4,16 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "thread-content-evidence",
+      "tests": [
+        "packages/contracts/src/jones/threadContentEvidence.test.ts",
+        "apps/server/src/jones/mcp/threadContentEvidence.test.ts",
+        "apps/server/src/mcp/OrchestratorMcpService.test.ts",
+        "apps/server/src/jones/mcp/taskReads.test.ts"
+      ],
+      "scope": "Opt-in content-addressed rendered-item evidence with raw UTF-16LE SHA-256, identity-bound revision framing, exact slice offsets and bounded hashing. Native read validates every result before child completion acknowledgement. Legacy DTOs, pagination, statuses, linked routing and composition remain intact. Shared contract export/schema hooks and service renderer/ack hook retain accepted-shared ownership; Jones tests reuse the actual service with mocked external dependencies. No immutable timeline, atomic metadata snapshot, retained old text or no-intermediate-edit guarantee; null compaction remains unavailable. No database, provider or installed-runtime changes."
+    },
+    {
       "id": "preview-input-isolation",
       "tests": [
         "apps/desktop/src/preview/GuestInput.test.ts",

@@ -7,6 +7,11 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "packages/contracts/src/jones/threadContentEvidence.ts": "jones-owned",
+    "packages/contracts/src/jones/threadContentEvidence.test.ts": "jones-owned",
+    "apps/server/src/jones/mcp/threadContentEvidence.ts": "jones-owned",
+    "apps/server/src/jones/mcp/threadContentEvidence.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/thread-content-evidence.json": "jones-owned",
     "apps/desktop/src/preview/GuestInput.ts": "accepted-shared",
     "apps/desktop/src/preview/GuestInput.test.ts": "accepted-shared",
     "apps/desktop/src/preview/CdpRelay.test.ts": "accepted-shared",
@@ -2622,6 +2627,18 @@
     "scripts/jones/boundary/fragments/experimental-typecheck.json"
   ],
   "allowedImports": [
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/threadContentEvidence.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/threadContentEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/mcp/threadContentEvidence.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
       "to": "apps/server/src/jones/orchestration/IdleWorktreeAdmission.ts"
