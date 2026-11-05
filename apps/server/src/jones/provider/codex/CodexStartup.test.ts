@@ -21,37 +21,121 @@ const makeProducer = Effect.fn("CodexStartup.test.makeProducer")(function* (
 });
 
 describe("Codex startup caller budget", () => {
-  it.effect("expires a lifecycle permit waiter without issuing or fencing a request", () =>
+  it.effect.each(["ensure", "fork"] as const)(
+    "expires a %s permit waiter without issuing or fencing a request",
+    (operation) =>
+      Effect.gen(function* () {
+        const startup = makeCodexStartup();
+        const producer = yield* makeProducer();
+        const permit = yield* Semaphore.make(1);
+        const held = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const owner = yield* permit
+          .withPermits(1)(
+            Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+          )
+          .pipe(Effect.forkChild);
+        yield* Deferred.await(held);
+        let dispatches = 0;
+        const request = startup.observe(
+          producer,
+          Effect.sync(() => ++dispatches),
+        );
+        const queued = yield* startup
+          .run(operation, permit.withPermits(1)(startup.withinPermit(request)))
+          .pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS);
+        const expired = yield* Fiber.join(queued);
+        assert.equal(expired._tag, "Failure");
+        if (expired._tag === "Failure")
+          assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
+        assert.equal(dispatches, 0);
+        assert.isFalse(startup.isUncertain(producer));
+        yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(owner);
+        assert.equal(yield* startup.run(operation, startup.withinPermit(request)), 1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps an explicit fork rejection known without poisoning its producer", () =>
     Effect.gen(function* () {
       const startup = makeCodexStartup();
       const producer = yield* makeProducer();
-      const permit = yield* Semaphore.make(1);
-      const held = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-      const owner = yield* permit
-        .withPermits(1)(
-          Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(release))),
+      const rejection = CodexErrors.CodexAppServerRequestError.invalidRequest("fork refused");
+      const result = yield* startup
+        .run("fork", startup.withinPermit(startup.observe(producer, Effect.fail(rejection))))
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.strictEqual(result.failure, rejection);
+        assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(result.failure));
+      }
+      assert.isFalse(startup.isUncertain(producer));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("does not erase a successful fork when a later request explicitly rejects", () =>
+    Effect.gen(function* () {
+      const startup = makeCodexStartup();
+      const producer = yield* makeProducer();
+      let bindings = 0;
+      const rejection = CodexErrors.CodexAppServerRequestError.invalidRequest("follow-up refused");
+      const result = yield* startup
+        .run(
+          "fork",
+          startup.withinPermit(
+            startup.observe(producer, Effect.succeed("fork-native-id")).pipe(
+              Effect.andThen(startup.observe(producer, Effect.fail(rejection), "reply")),
+              Effect.andThen(startup.completeWith(() => ++bindings)),
+            ),
+          ),
         )
-        .pipe(Effect.forkChild);
-      yield* Deferred.await(held);
-      let dispatches = 0;
-      const request = startup.observe(
-        producer,
-        Effect.sync(() => ++dispatches),
-      );
-      const queued = yield* startup
-        .run("ensure", permit.withPermits(1)(startup.withinPermit(request)))
+        .pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure")
+        assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(result.failure));
+      assert.equal(bindings, 0);
+      assert.isTrue(startup.isUncertain(producer));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("retains a late rollback observer without handing off an abandoned fork", () =>
+    Effect.gen(function* () {
+      const startup = makeCodexStartup();
+      const producer = yield* makeProducer();
+      const sent = yield* Deferred.make<void>();
+      const response = yield* Deferred.make<void>();
+      const observed = yield* Deferred.make<void>();
+      let bindings = 0;
+      const caller = yield* startup
+        .run(
+          "fork",
+          startup.withinPermit(
+            startup.observe(producer, Effect.succeed("fork-native-id")).pipe(
+              Effect.andThen(
+                startup.retainRequest(
+                  producer,
+                  Deferred.succeed(sent, undefined).pipe(
+                    Effect.andThen(Deferred.await(response)),
+                    Effect.tap(() => Deferred.succeed(observed, undefined)),
+                  ),
+                ),
+              ),
+              Effect.andThen(startup.completeWith(() => ++bindings)),
+            ),
+          ),
+        )
         .pipe(Effect.result, Effect.forkChild);
+      yield* Deferred.await(sent);
       yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS);
-      const expired = yield* Fiber.join(queued);
+      const expired = yield* Fiber.join(caller);
       assert.equal(expired._tag, "Failure");
       if (expired._tag === "Failure")
-        assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
-      assert.equal(dispatches, 0);
-      assert.isFalse(startup.isUncertain(producer));
-      yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(owner);
-      assert.equal(yield* startup.run("ensure", startup.withinPermit(request)), 1);
+        assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
+      yield* Deferred.succeed(response, undefined);
+      yield* Deferred.await(observed);
+      assert.equal(bindings, 0);
+      assert.isTrue(startup.isUncertain(producer));
     }).pipe(Effect.scoped),
   );
 

@@ -2532,7 +2532,16 @@
     "apps/server/src/provider/providerInstallation.test.ts": "jones-tests-in-upstream",
     "apps/server/src/jones/previewCompanion/openBinding.ts": "jones-owned",
     "apps/server/src/jones/previewCompanion/openBinding.test.ts": "jones-owned",
-    "apps/server/src/mcp/toolkits/previewControls/handlers.test.ts": "jones-tests-in-upstream"
+    "apps/server/src/mcp/toolkits/previewControls/handlers.test.ts": "jones-tests-in-upstream",
+    "packages/provider-opencode/src/server/driver.test.ts": "jones-tests-in-upstream",
+    "packages/provider-opencode/src/server/versionProbe.ts": "hook",
+    "packages/provider-opencode/src/server/versionProbe.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/EventNdjsonLogger.ts": "hook",
+    "apps/server/src/provider/EventNdjsonLogger.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/orchestration-v2/EffectOutbox.test.ts": "jones-tests-in-upstream",
+    "packages/provider-cursor/src/server/CursorAgentSdk.ts": "accepted-shared",
+    "packages/provider-cursor/src/server/CursorAgentSdk.test.ts": "jones-tests-in-upstream",
+    "packages/provider-cursor/src/server/driver.test.ts": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

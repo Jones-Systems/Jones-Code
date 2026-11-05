@@ -8,19 +8,27 @@ import {
   ProjectId,
   ProviderInstanceId,
   ProviderSessionId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import { CursorSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { findProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
@@ -40,6 +48,209 @@ import { ConfigurationError } from "./sdk.ts";
 const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 describe("CursorAdapterV2", () => {
+  it.effect.each([
+    "cancel rejection",
+    "silent cancel",
+    "adapter completion",
+    "native wait failure",
+    "native handle unavailable",
+  ] as const)(
+    "bounds captured retirement after %s and retains its admission fence",
+    (mode) => Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-retirement-" });
+      const instanceId = ProviderInstanceId.make("cursor");
+      const threadId = ThreadId.make("cursor-retirement-thread");
+      const modelSelection = { instanceId, model: "composer-2.5" };
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: workspace,
+      });
+      const cancelGate = yield* Deferred.make<void>();
+      const closeStarted = yield* Deferred.make<void>();
+      const resultGate = yield* Deferred.make<void>();
+      const nativeExit = yield* Deferred.make<void>();
+      const sendEntered = yield* Deferred.make<void>();
+      const releaseSend = yield* Deferred.make<void>();
+      const terminal = yield* Deferred.make<
+        Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "turn.terminal" }>
+      >();
+      const result = {
+        id: "captured-cursor-run",
+        requestId: "captured-cursor-request",
+        status: "finished" as const,
+        model: { id: "composer-2.5" },
+        durationMs: 1,
+      };
+      let cancels = 0;
+      let closes = 0;
+      let sends = 0;
+      const adapter = yield* makeCursorAdapterV2({
+        instanceId,
+        settings: yield* decodeCursorSettings({}),
+        environment: { HOME: workspace },
+      }).pipe(
+        Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
+          assertComplete: Effect.void,
+          open: () => Effect.succeed({
+            agentId: "captured-cursor-agent",
+            listMessages: Effect.succeed([]),
+            close: Effect.sync(() => {
+              closes++;
+            }).pipe(Effect.andThen(Deferred.succeed(closeStarted, undefined))),
+            send: () => Effect.gen(function* () {
+              sends++;
+              yield* Deferred.succeed(sendEntered, undefined);
+              if (mode === "native handle unavailable") yield* Deferred.await(releaseSend);
+              return {
+                agentId: "captured-cursor-agent",
+                runId: result.id,
+                wait: Deferred.await(resultGate).pipe(Effect.as(result)),
+                nativeWait:
+                  mode === "native wait failure"
+                    ? Effect.fail(new CursorAgentSdk.CursorAgentSdkRunnerError({
+                        method: "run.wait",
+                        cause: "synthetic native uncertainty",
+                      }))
+                    : Deferred.await(nativeExit).pipe(Effect.as(result)),
+                cancel: Effect.sync(() => {
+                  cancels++;
+                }).pipe(Effect.andThen(
+                  mode === "silent cancel"
+                    ? Deferred.await(cancelGate)
+                    : mode === "cancel rejection"
+                      ? Effect.fail(new CursorAgentSdk.CursorAgentSdkRunnerError({
+                          method: "run.cancel",
+                          cause: "synthetic rejection",
+                        }))
+                      : Effect.void,
+                )),
+              };
+            }),
+          }),
+        }),
+        Effect.provide(TestProviderHost.layer({ cwd: workspace })),
+      );
+      const runtimeScope = yield* Scope.make();
+      yield* Effect.addFinalizer(() =>
+        Scope.close(runtimeScope, Exit.void).pipe(
+          Effect.exit,
+          Effect.flatMap((exit) => Effect.sync(() => {
+            assert.isTrue(Exit.isFailure(exit));
+            if (Exit.isFailure(exit)) {
+              assert.isDefined(findProviderControlOutcomeUnknown(Cause.squash(exit.cause)));
+            }
+          })),
+        ),
+      );
+      yield* Effect.addFinalizer(() => Deferred.succeed(cancelGate, undefined));
+      yield* Effect.addFinalizer(() => Deferred.succeed(nativeExit, undefined));
+      yield* Effect.addFinalizer(() => Deferred.succeed(resultGate, undefined));
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseSend, undefined));
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("cursor-retirement-session"),
+        modelSelection,
+        runtimePolicy,
+      }).pipe(Effect.provideService(Scope.Scope, runtimeScope));
+      const providerThread = yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+      yield* runtime.events.pipe(
+        Stream.runForEach((event) =>
+          event.type === "turn.terminal" ? Deferred.succeed(terminal, event) : Effect.void,
+        ),
+        Effect.forkScoped,
+      );
+      const now = yield* DateTime.now;
+      const turn: ProviderAdapter.ProviderAdapterV2TurnInput = {
+        threadId,
+        providerThread,
+        modelSelection,
+        runtimePolicy,
+        runId: RunId.make("cursor-retirement-run"),
+        runOrdinal: 1,
+        providerTurnOrdinal: 1,
+        attemptId: RunAttemptId.make("cursor-retirement-attempt"),
+        rootNodeId: NodeId.make("cursor-retirement-root"),
+        appThread: {
+          id: threadId,
+          projectId: ProjectId.make("cursor-retirement-project"),
+          createdBy: "user",
+          creationSource: "web",
+          title: "Synthetic retirement",
+          providerInstanceId: instanceId,
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: null,
+          activeProviderThreadId: providerThread.id,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null,
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null,
+          settledOverride: null,
+          settledAt: null,
+          lastVisitedAt: null,
+          deletedAt: null,
+        },
+        message: {
+          messageId: MessageId.make("cursor-retirement-message"),
+          text: "Synthetic prompt",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          scheduledTaskId: null,
+          senderThreadId: null,
+        },
+      };
+      const starting = yield* runtime.startTurn(turn).pipe(Effect.forkChild);
+      yield* Deferred.await(sendEntered);
+      if (mode !== "native handle unavailable") yield* Fiber.join(starting);
+      const stopInput = {
+        providerThread,
+        providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
+          driver: CursorAgentSdk.CURSOR_PROVIDER,
+          nativeTurnId: result.id,
+        }),
+        requestRuntimeRestart: true,
+      };
+      const stopping = yield* runtime.interruptTurn(stopInput).pipe(Effect.exit, Effect.forkChild);
+      yield* TestClock.adjust("2 seconds");
+      assert.equal(closes, 1);
+      yield* Deferred.await(closeStarted);
+      if (mode === "adapter completion") {
+        yield* Deferred.succeed(resultGate, undefined);
+        yield* Deferred.await(terminal);
+      }
+      if (mode !== "native wait failure" && mode !== "native handle unavailable") {
+        yield* TestClock.adjust("8 seconds");
+      }
+      const stopped = yield* Fiber.join(stopping);
+      assert.isTrue(Exit.isFailure(stopped));
+      if (Exit.isFailure(stopped)) assert.isDefined(findProviderControlOutcomeUnknown(stopped.cause));
+      yield* Deferred.succeed(releaseSend, undefined);
+      yield* Fiber.join(starting);
+      yield* Deferred.succeed(resultGate, undefined);
+      const late = yield* Deferred.await(terminal);
+      assert.equal(late.providerTurnId, stopInput.providerTurnId);
+      assert.equal(late.status, "completed");
+      assert.equal(late.evidenceKind, "provider_result");
+      yield* Deferred.succeed(nativeExit, undefined);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runtime.interruptTurn(stopInput))));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(runtime.startTurn({
+        ...turn,
+        attemptId: RunAttemptId.make("blocked-successor"),
+      }))));
+      assert.equal(cancels, mode === "native handle unavailable" ? 0 : 1);
+      assert.equal(closes, 1);
+      assert.equal(sends, 1);
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, IdAllocator.layer, McpProviderSessions.layer)),
+    ),
+  );
+
   it.effect.each([
     { status: "finished", model: undefined, lateModel: undefined },
     { status: "cancelled", model: "claude-opus-4-6", lateModel: undefined },
@@ -67,6 +278,7 @@ describe("CursorAdapterV2", () => {
           browserToolsAvailable: true,
         });
         let sentWithMcpOverride = true;
+        let closes = 0;
         const modelSelection = { instanceId, model: "composer-2.5" };
         const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
           runtimeMode: "full-access",
@@ -84,7 +296,9 @@ describe("CursorAdapterV2", () => {
               Effect.succeed({
                 agentId: "native-cursor-lifecycle",
                 listMessages: Effect.succeed([]),
-                close: Effect.void,
+                close: Effect.sync(() => {
+                  closes++;
+                }),
                 send: (input) =>
                   Effect.gen(function* () {
                     sentWithMcpOverride = Object.hasOwn(input.options ?? {}, "mcpServers");
@@ -128,6 +342,13 @@ describe("CursorAdapterV2", () => {
                         requestId: "native-request",
                         status,
                         model: { id: "composer-2.5" },
+                        durationMs: 1,
+                      }),
+                      nativeWait: Effect.succeed({
+                        id: "native-cursor-run",
+                        requestId: "synthetic-request",
+                        status: "finished" as const,
+                        model: { id: "default" },
                         durationMs: 1,
                       }),
                       cancel: Effect.void,
@@ -210,6 +431,13 @@ describe("CursorAdapterV2", () => {
                 : "failed",
         );
         assert.isNotNull(rows.at(-1)?.subagent.completedAt);
+        const staleStop = yield* runtime.interruptTurn({
+          providerThread,
+          providerTurnId: ProviderTurnId.make("stale-cursor-turn"),
+          requestRuntimeRestart: true,
+        }).pipe(Effect.exit);
+        assert.isTrue(Exit.isFailure(staleStop));
+        assert.equal(closes, 0, "a stale turn control must not retire the current idle agent");
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -357,6 +585,13 @@ describe("CursorAdapterV2", () => {
                     agentId: "native-cursor-failure",
                     runId: "native-cursor-run",
                     wait,
+                    nativeWait: Effect.succeed({
+                      id: "native-cursor-run",
+                      requestId: "synthetic-request",
+                      status: "finished" as const,
+                      model: { id: "default" },
+                      durationMs: 1,
+                    }),
                     cancel: Effect.void,
                   };
                 }),
@@ -488,6 +723,13 @@ describe("CursorAdapterV2", () => {
                       ...(sendCalls === 1
                         ? { result: "Error: RetriableError: WritableIterable is closed" }
                         : {}),
+                    }),
+                    nativeWait: Effect.succeed({
+                      id: "native-cursor-run",
+                      requestId: "synthetic-request",
+                      status: "finished" as const,
+                      model: { id: "default" },
+                      durationMs: 1,
                     }),
                     cancel: Effect.void,
                   };
@@ -827,6 +1069,13 @@ describe("CursorAdapterV2", () => {
                       requestId: "native-request",
                       status: "finished" as const,
                       model: { id: "composer-2.5" },
+                      durationMs: 1,
+                    }),
+                    nativeWait: Effect.succeed({
+                      id: "native-cursor-run",
+                      requestId: "synthetic-request",
+                      status: "finished" as const,
+                      model: { id: "default" },
                       durationMs: 1,
                     }),
                     cancel: Effect.void,

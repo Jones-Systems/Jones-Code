@@ -16,6 +16,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
@@ -138,6 +139,7 @@ it.effect.each(deliveries)(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("claude-automatic-delivery");
         const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+        const syntheticTermination = yield* Deferred.make<void>();
         const offers: SDKUserMessage[] = [];
         const nativeQueue: SDKUserMessage[] = [];
         const batchAbort = new AbortController();
@@ -169,8 +171,12 @@ it.effect.each(deliveries)(
                 setPermissionMode: () => Effect.void,
                 backgroundTasks: () => Effect.succeed(false),
                 stopTask: () => Effect.void,
+                termination: Deferred.await(syntheticTermination),
                 interrupt: Effect.die("automatic delivery must never interrupt"),
-                close: Effect.void,
+                close: Queue.end(sdkMessages).pipe(
+                  Effect.andThen(Deferred.succeed(syntheticTermination, undefined)),
+                  Effect.asVoid,
+                ),
               }),
             forkSession: () => Effect.die("unused"),
             subagentLaunchToolUseId: () => Effect.succeed(null),

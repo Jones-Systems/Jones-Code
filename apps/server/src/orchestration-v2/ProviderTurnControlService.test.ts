@@ -25,7 +25,12 @@ import * as Stream from "effect/Stream";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  ProviderControlDeadline,
+  ProviderControlOutcomeUnknown,
+  findProviderControlOutcomeUnknown,
+} from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 
@@ -169,6 +174,7 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         makeProjection({ now, threadId, providerThread, providerTurnId, attemptId }),
       );
       const interruptedThread = yield* Ref.make<OrchestrationV2ProviderThread | null>(null);
+      let unknownControl: ProviderControlOutcomeUnknown | undefined;
       const providerSession = {
         id: oldSessionId,
         driver,
@@ -193,6 +199,15 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
         steerTurn: () => Effect.die("unused steerTurn"),
         interruptTurn: ({ providerThread: target, providerTurnId: targetTurnId, preserveGoal }) =>
           Effect.gen(function* () {
+            if (unknownControl !== undefined) {
+              assert.isNumber(yield* ProviderControlDeadline);
+              return yield* new ProviderAdapter.ProviderAdapterInterruptError({
+                driver,
+                providerThreadId: target.id,
+                providerTurnId: targetTurnId,
+                cause: unknownControl,
+              });
+            }
             assert.isTrue(preserveGoal);
             assert.equal(target.providerInstanceId, runtime.instanceId);
             assert.equal(target.providerSessionId, runtime.providerSessionId);
@@ -380,5 +395,36 @@ it.effect.each([providerInstanceId, ProviderInstanceId.make("codex-replacement")
       assert.deepEqual(current.providerThreads[0], providerThread);
       assert.equal(interrupted?.id, providerThreadId);
       assert.equal(interrupted?.nativeThreadRef?.nativeId, "native-thread:restart-session");
+      unknownControl = new ProviderControlOutcomeUnknown({
+        driver,
+        providerSessionId: oldSessionId,
+        nativeThreadId: "native-thread:restart-session",
+        operation: "interrupt",
+      });
+      yield* Ref.update(projection, (current) => ({
+        ...current,
+        providerThreads: current.providerThreads.map((row) => ({
+          ...row,
+          providerSessionId: oldSessionId,
+        })),
+        providerTurns: current.providerTurns.map((row) => ({
+          ...row,
+          status: "running" as const,
+          completedAt: null,
+        })),
+      }));
+      yield* Effect.gen(function* () {
+        const control = yield* ProviderTurnControlService.ProviderTurnControlServiceV2;
+        const result = yield* Effect.exit(control.interrupt({
+          threadId,
+          providerSessionId: oldSessionId,
+          providerThreadId,
+          providerTurnId,
+        }));
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) {
+          assert.strictEqual(findProviderControlOutcomeUnknown(result.cause), unknownControl);
+        }
+      }).pipe(Effect.provide(layerControl));
     }),
 );

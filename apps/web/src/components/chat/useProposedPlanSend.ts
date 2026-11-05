@@ -4,14 +4,19 @@ import { pendingNewThread } from "../../jones/pendingSends/newThread";
 import { pendingSends } from "../../jones/pendingSends/store";
 import { usePendingTurn } from "../../jones/pendingSends/usePendingTurn";
 import { createPendingPromptRecovery } from "../../jones/pendingSends/composerRecovery";
+import { planCreation } from "../../jones/pendingSends/planCreation";
+import {
+  decodePlanCreationOperation,
+  type PlanCreationSlot,
+} from "@t3tools/client-runtime/jones/planCreationOperation";
 import {
   acknowledgeComposerSelection,
   composerSelectionForDispatch,
 } from "../../jones/threadConfiguration/composerSelection";
 import {
   AuthOrchestrationOperateScope,
+  CommandId,
   type EnvironmentId,
-  type ModelSelection,
   type ProviderInteractionMode,
   type RuntimeMode,
 } from "@t3tools/contracts";
@@ -30,8 +35,12 @@ import { scopedThreadKey } from "@t3tools/client-runtime/environment";
 import { truncate } from "@t3tools/shared/String";
 import { useNavigate } from "@tanstack/react-router";
 import type { Dispatch, SetStateAction } from "react";
-import { newMessageId, newThreadId } from "~/lib/utils";
-import { useComposerDraftStore, type ComposerThreadTarget } from "../../composerDraftStore";
+import { newMessageId, newThreadId, randomUUID } from "~/lib/utils";
+import {
+  useComposerDraftStore,
+  type ComposerThreadDraftState,
+  type ComposerThreadTarget,
+} from "../../composerDraftStore";
 import type { ComposerHandleRef } from "../../composerHandleContext";
 import type { buildMessageContext } from "../../lib/composerContextRecords";
 import {
@@ -285,15 +294,21 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
   } = input;
   const navigate = useNavigate();
   const createThread = useOrchestrationCommand(threadEnvironment.create, { reportFailure: false });
-  const startThreadTurn = usePendingTurn();
+  const prepare = useOrchestrationCommand(threadEnvironment.prepareTurn, { reportFailure: false });
+  const dispatch = useOrchestrationCommand(threadEnvironment.dispatchPreparedTurn, {
+    reportFailure: false,
+  });
   const { sendInFlight: sendInFlightRef } = draftSendState(routeThreadKey);
 
-  return async () => {
+  return async (retainedSlot?: PlanCreationSlot) => {
+    const sourcePlanId = retainedSlot?.sourcePlanId ?? activeProposedPlan?.id;
     if (
       !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope) ||
       !activeThread ||
-      !activeProject ||
-      !activeProposedPlan ||
+      !sourcePlanId ||
+      (retainedSlot &&
+        (retainedSlot.environmentId !== environmentId ||
+          retainedSlot.sourceThreadId !== activeThread.id)) ||
       !isServerThread ||
       isSendBusy ||
       isConnecting ||
@@ -303,145 +318,162 @@ export function useImplementPlanInNewThread(input: ImplementPlanInNewThreadInput
       return;
     }
 
-    const sendCtx = composerRef.current?.getSendContext();
-    if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled) {
-      return;
-    }
-
-    const createdAt = new Date().toISOString();
-    const submittedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
-    const selection = composerSelectionForDispatch(sendCtx.selectedModelSelection, submittedDraft);
-    const nextThreadId = newThreadId();
-    const planMarkdown = activeProposedPlan.planMarkdown;
-    const outgoingImplementationPrompt = formatOutgoingPrompt({
-      provider: sendCtx.selectedProvider,
-      model: sendCtx.selectedModel,
-      models: sendCtx.selectedProviderModels,
-      effort: sendCtx.selectedPromptEffort,
-      text: buildPlanImplementationPrompt(planMarkdown),
-    });
-    const nextThreadTitle = truncate(buildPlanImplementationThreadTitle(planMarkdown));
-    const nextThreadModelSelection: ModelSelection = sendCtx.selectedModelSelection;
-
     sendInFlightRef.current = true;
     beginLocalDispatch({ preparingWorktree: false });
-
-    const messageId = newMessageId();
-    pendingSends.admit(environmentId, nextThreadId, {
-      id: messageId,
-      role: "user",
-      text: outgoingImplementationPrompt,
-      runId: null,
-      createdAt,
-      updatedAt: createdAt,
-      streaming: false,
-    });
-    pendingSends.attachThread(
-      environmentId,
-      nextThreadId,
-      pendingNewThread(
-        activeThread,
-        nextThreadId,
-        nextThreadTitle,
-        nextThreadModelSelection,
-        createdAt,
-      ),
-    );
-    const createResult = await createThread({
-      environmentId,
-      input: {
-        threadId: nextThreadId,
-        projectId: activeProject.id,
-        title: nextThreadTitle,
-        modelSelection: nextThreadModelSelection,
-        runtimeMode: defaultRuntimeMode,
-        interactionMode: "default",
-        branch: activeThreadBranch,
-        worktreePath: activeThread.worktreePath,
-        createdAt,
-      },
-    });
-    if (createResult._tag === "Success") {
-      pendingSends.confirmThreadCreation(environmentId, nextThreadId, messageId);
-    }
-    const recovery = createPendingPromptRecovery(
-      scopeThreadRef(environmentId, nextThreadId),
-      outgoingImplementationPrompt,
-    );
-    let accepted = false;
-    if (createResult._tag === "Success") {
-      pendingSends.whenRejected(environmentId, nextThreadId, messageId, recovery.rejected);
-    }
-    pendingSends.whenAccepted(environmentId, nextThreadId, messageId, () => {
-      accepted = true;
-      recovery.accepted();
-      acknowledgeComposerSelection(composerDraftTarget, submittedDraft);
-    });
-    const startResult =
-      createResult._tag === "Failure"
-        ? createResult
-        : await startThreadTurn({
+    let submittedDraft: ComposerThreadDraftState | null | undefined;
+    try {
+      const result = await planCreation.run({
+        slot: {
+          environmentId,
+          sourceThreadId: activeThread.id,
+          sourcePlanId,
+          action: "implement-in-new-thread",
+        },
+        // A retained action reaches neither the current picker nor mutable defaults.
+        allocate: async () => {
+          // A recovery control can only resume its retained slot, including after plan completion.
+          if (retainedSlot || !activeProject || !activeProposedPlan)
+            throw new Error("The retained plan action needs reconciliation.");
+          const sendCtx = composerRef.current?.getSendContext();
+          if (!sendCtx?.providerAvailable || !sendCtx.interactionModeEnabled)
+            throw new Error("Choose an available provider before starting this plan.");
+          submittedDraft = useComposerDraftStore.getState().getComposerDraft(composerDraftTarget);
+          const selection = composerSelectionForDispatch(
+            sendCtx.selectedModelSelection,
+            submittedDraft,
+          );
+          const createdAt = new Date().toISOString();
+          const nextThreadId = newThreadId();
+          const messageId = newMessageId();
+          const prompt = formatOutgoingPrompt({
+            provider: sendCtx.selectedProvider,
+            model: sendCtx.selectedModel,
+            models: sendCtx.selectedProviderModels,
+            effort: sendCtx.selectedPromptEffort,
+            text: buildPlanImplementationPrompt(activeProposedPlan.planMarkdown),
+          });
+          const create = {
+            commandId: CommandId.make(randomUUID()),
+            threadId: nextThreadId,
+            projectId: activeProject.id,
+            title: truncate(buildPlanImplementationThreadTitle(activeProposedPlan.planMarkdown)),
+            modelSelection: sendCtx.selectedModelSelection,
+            runtimeMode: defaultRuntimeMode,
+            interactionMode: "default" as const,
+            branch: activeThreadBranch,
+            worktreePath: activeThread.worktreePath,
+            createdAt,
+          };
+          const prepared = await prepare({
             environmentId,
             input: {
+              commandId: CommandId.make(randomUUID()),
               threadId: nextThreadId,
-              message: {
-                messageId,
-                role: "user",
-                text: outgoingImplementationPrompt,
-                attachments: [],
-              },
+              message: { messageId, role: "user", text: prompt, attachments: [] },
               ...selection,
-              titleSeed: nextThreadTitle,
               runtimeMode: defaultRuntimeMode,
               interactionMode: "default",
+              dispatchMode: "start",
               sourceProposedPlan: { threadId: activeThread.id, planId: activeProposedPlan.id },
               createdAt,
             },
           });
-    let failure: AtomCommandResult<unknown, unknown> | null =
-      startResult._tag === "Failure" && !accepted ? startResult : null;
-    accepted = accepted || startResult._tag === "Success";
-    if (createResult._tag === "Failure") {
-      pendingSends.failBeforeDispatch(environmentId, nextThreadId, messageId);
-    }
-    if (failure === null) {
-      const startedResult = await settlePromise(() =>
-        waitForStartedServerThread(scopeThreadRef(activeThread.environmentId, nextThreadId)),
-      );
-      failure = startedResult._tag === "Failure" ? startedResult : null;
-    }
-
-    if (failure === null) {
-      const navigateResult = await settlePromise(() =>
-        navigate({
-          to: "/$environmentId/$threadId",
-          params: {
-            environmentId: activeThread.environmentId,
-            threadId: nextThreadId,
-          },
-        }),
-      );
-      failure = navigateResult._tag === "Failure" ? navigateResult : null;
-    }
-
-    if (failure !== null) {
-      if (!isAtomCommandInterrupted(failure)) {
-        const error = squashAtomCommandFailure(failure);
+          if (prepared._tag === "Failure") throw squashAtomCommandFailure(prepared);
+          return decodePlanCreationOperation({
+            schemaVersion: 1,
+            environmentId,
+            sourceThreadId: activeThread.id,
+            sourcePlanId: activeProposedPlan.id,
+            action: "implement-in-new-thread",
+            phase: "create-pending",
+            create,
+            prepared: prepared.value,
+          });
+        },
+        create: (input) => createThread({ environmentId, input }),
+        dispatch: (input) => dispatch({ environmentId, input }),
+        admitted: (operation) => {
+          const request = operation.prepared;
+          if (
+            request.method !== "orchestration.dispatchCommand" ||
+            request.payload.type !== "message.dispatch"
+          )
+            throw new Error("Saved plan message needs reconciliation.");
+          const target = scopeThreadRef(environmentId, operation.create.threadId);
+          const recovery = createPendingPromptRecovery(target, request.payload.text);
+          pendingSends.attachThread(environmentId, target.threadId, {
+            ...pendingNewThread(
+              activeThread,
+              target.threadId,
+              operation.create.title,
+              operation.create.modelSelection,
+              operation.create.createdAt,
+            ),
+            runtimeMode: operation.create.runtimeMode,
+            interactionMode: operation.create.interactionMode,
+            branch: operation.create.branch,
+            worktreePath: operation.create.worktreePath,
+          });
+          const capturedDraft = submittedDraft;
+          return {
+            accepted: () => {
+              recovery.accepted();
+              // A reload has no reference witness for the original picker interaction.
+              if (capturedDraft !== undefined)
+                acknowledgeComposerSelection(composerDraftTarget, capturedDraft);
+            },
+            messageRejected: recovery.rejected,
+          };
+        },
+      });
+      const accepted = result.status === "accepted";
+      const target = result.operation?.create.threadId;
+      if (target && (accepted || result.status === "message-rejected")) {
+        const opened = await settlePromise(async () => {
+          if (accepted) await waitForStartedServerThread(scopeThreadRef(environmentId, target));
+          await navigate({
+            to: "/$environmentId/$threadId",
+            params: { environmentId, threadId: target },
+          });
+        });
+        if (opened._tag === "Success" && accepted) return;
+        if (opened._tag === "Failure") {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: accepted
+                ? "Thread started; could not open it"
+                : "Thread created; could not open it",
+              description:
+                "The saved plan action still links to this thread. Open it from the sidebar or try this action again.",
+            }),
+          );
+          return;
+        }
+      }
+      if (!accepted)
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: accepted
-              ? "Thread started; could not open it"
-              : "Thread delivery needs confirmation",
+            title:
+              result.status === "create-rejected"
+                ? "Could not create thread"
+                : result.status === "message-rejected"
+                  ? "Thread created; could not send the plan"
+                  : result.status === "held"
+                    ? "Plan action could not be saved or reconciled"
+                    : "Thread delivery needs confirmation",
             description:
-              error instanceof Error
-                ? error.message
-                : "An error occurred while creating the new thread.",
+              result.status === "create-rejected"
+                ? "The server rejected creation. You can edit the selection and try again."
+                : result.status === "message-rejected"
+                  ? "The implementation prompt is kept on the created thread."
+                  : "The plan is kept. Retry this action to reconcile the same saved request.",
           }),
         );
-      }
+    } finally {
+      sendInFlightRef.current = false;
+      resetLocalDispatch();
     }
-    sendInFlightRef.current = false;
-    resetLocalDispatch();
   };
 }

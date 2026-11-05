@@ -1,4 +1,8 @@
 import { EventId } from "@t3tools/contracts";
+import {
+  ProviderControlOutcomeUnknown,
+  makeProviderControlTerminalDrain,
+} from "@t3tools/provider-core/server/jones/providerControlOutcome";
 
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
@@ -37,12 +41,15 @@ import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
+import { CurrentEffectClaim, EffectClaimLost, findEffectClaimLost } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 
@@ -1247,7 +1254,7 @@ it.effect("starts the provider when checkpoint baseline capture fails", () =>
   }),
 );
 
-it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as const)(
+it.effect.each(["failure", "interruption", "stale-attempt", "start-guard", "baseline-typed-loss", "baseline-custody-loss", "stale-custody-loss", "start-custody-loss", "unmanaged-baseline"] as const)(
   "handles %s before the provider turn starts",
   (scenario) =>
     Effect.gen(function* () {
@@ -1267,6 +1274,12 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
       const refreshes = yield* Ref.make(0);
       const guardedWrites = yield* Ref.make(0);
       const writes = yield* Ref.make<ReadonlyArray<ReadonlyArray<OrchestrationV2DomainEvent>>>([]);
+      const custodyLoss = scenario === "baseline-typed-loss" || scenario === "baseline-custody-loss" || scenario === "stale-custody-loss" || scenario === "start-custody-loss";
+      const unmanaged = scenario === "unmanaged-baseline";
+      const entered = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const lost = yield* Deferred.make<EffectClaimLost>();
+      yield* Effect.addFinalizer(() => Deferred.succeed(release, undefined).pipe(Effect.asVoid));
       const layerTest = RunExecutionService.layer.pipe(
         Layer.provide(
           Layer.mergeAll(
@@ -1274,7 +1287,14 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
             PreviewAgentActivity.layer,
             Layer.mock(CheckpointService.CheckpointServiceV2)({
               captureBaseline: () =>
-                scenario === "start-guard" ? Effect.void : Effect.die("not reached"),
+                scenario === "baseline-typed-loss"
+                  ? Effect.fail(new CheckpointService.CheckpointBaselineCaptureError({
+                      scopeId: checkpointScope.id, ordinalWithinScope: 0,
+                      cause: new EffectClaimLost({ effectId: "effect:original-preparing-run" }),
+                    }))
+                  : (custodyLoss && scenario !== "start-custody-loss") || unmanaged
+                  ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                  : scenario === "start-guard" || scenario === "start-custody-loss" ? Effect.void : Effect.die("not reached"),
             }),
             layerTurnItemPositionsTest,
             executionEventSinkLayer({
@@ -1285,7 +1305,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
                   assert.equal(input.activeAttemptId, attemptId);
                   assert.equal(input.expectedStatus, "running");
                   yield* Ref.update(guardedWrites, (count) => count + 1);
-                  if (scenario === "stale-attempt") {
+                  if (scenario === "stale-attempt" || scenario === "stale-custody-loss") {
                     return { committed: false, storedEvents: [] };
                   }
                   yield* Ref.update(writes, (current) => [...current, input.events]);
@@ -1296,7 +1316,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
             Layer.mock(ProviderEventIngestor.ProviderEventIngestorV2)({
               ingestNormalized: () => Effect.succeed([]),
             }),
-            scenario === "start-guard"
+            scenario === "start-guard" || custodyLoss || unmanaged
               ? ServerSettings.layerTest()
               : Layer.mock(ServerSettings.ServerSettingsService)({
                   getSettings:
@@ -1318,7 +1338,13 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
         ),
       );
 
-      const result = yield* Effect.gen(function* () {
+      const layerClaim = Layer.mock(CurrentEffectClaim)({
+        nativeCustody: !unmanaged,
+        check: Effect.void,
+        lost: Deferred.await(lost).pipe(Effect.flatMap(Effect.fail)),
+      });
+
+      const pending = yield* Effect.gen(function* () {
         const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
         yield* runExecution.startRootRun({
           commandId: CommandId.make("command:run-execution-settings-failure"),
@@ -1326,7 +1352,11 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
           providerSessionId,
           session: {
             events: Stream.never,
-            startTurn: () => Ref.update(providerStarts, (count) => count + 1),
+            startTurn: () => Ref.update(providerStarts, (count) => count + 1).pipe(
+              Effect.andThen(scenario === "start-custody-loss"
+                ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                : Effect.void),
+            ),
           } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime,
           run: {
             id: runId,
@@ -1371,10 +1401,26 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
             },
           },
         });
-      }).pipe(Effect.provide(layerTest), Effect.exit);
+      }).pipe(Effect.provide(layerTest), Effect.provide(layerClaim), Effect.exit, Effect.forkChild);
+      if ((custodyLoss && scenario !== "baseline-typed-loss") || unmanaged) {
+        yield* Deferred.await(entered);
+        yield* Deferred.succeed(lost, new EffectClaimLost({ effectId: "effect:original-preparing-run" }));
+        if (unmanaged) {
+          yield* TestClock.adjust("1 minute");
+          assert.isUndefined(pending.pollUnsafe());
+          yield* Deferred.succeed(release, undefined);
+        }
+      }
+      const result = yield* Fiber.join(pending);
 
-      assert.equal(yield* Ref.get(providerStarts), 0);
+      assert.equal(yield* Ref.get(providerStarts), scenario === "start-custody-loss" || unmanaged ? 1 : 0);
       const events = (yield* Ref.get(writes)).flat();
+      if (unmanaged) {
+        assert.isTrue(Exit.isSuccess(result));
+        assert.isEmpty(events);
+        assert.equal(yield* Ref.get(guardedWrites), 0);
+        return;
+      }
       if (scenario === "interruption") {
         assert.isTrue(Exit.isFailure(result));
         if (Exit.isFailure(result)) assert.isTrue(Cause.hasInterruptsOnly(result.cause));
@@ -1383,7 +1429,10 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
         assert.isEmpty(events);
         return;
       }
-      assert.isTrue(Exit.isSuccess(result));
+      if (custodyLoss) {
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) assert.isDefined(findEffectClaimLost(result.cause));
+      } else assert.isTrue(Exit.isSuccess(result));
       if (scenario === "start-guard") {
         assert.equal(yield* Ref.get(guardedWrites), 0);
         assert.equal(yield* Ref.get(refreshes), 0);
@@ -1391,7 +1440,7 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
         return;
       }
       assert.equal(yield* Ref.get(guardedWrites), 1);
-      if (scenario === "stale-attempt") {
+      if (scenario === "stale-attempt" || scenario === "stale-custody-loss") {
         assert.equal(yield* Ref.get(refreshes), 0);
         assert.isEmpty(events);
         return;
@@ -1413,9 +1462,9 @@ it.effect.each(["failure", "interruption", "stale-attempt", "start-guard"] as co
       );
       assert.isDefined(errorItem);
       if (errorItem?.type === "turn-item.updated" && errorItem.payload.type === "error") {
-        assert.equal(errorItem.payload.failure.message, "Run preparation failed.");
+        if (scenario !== "start-custody-loss") assert.equal(errorItem.payload.failure.message, "Run preparation failed.");
       }
-    }),
+    }).pipe(Effect.scoped),
 );
 
 it.effect("ingests new member threads of an owned child after the root turn terminalizes", () =>
@@ -3836,10 +3885,11 @@ it.effect("refreshes pull requests after a provider stream exits with an error",
   }),
 );
 
-it.effect.each(["failure", "defect", "interrupt-failure", "ownership-lost"] as const)(
+it.effect.each(["failure", "defect", "interrupt-failure", "unknown-control", "ownership-lost"] as const)(
   "stops the live provider and background work before settling an ingestion %s",
   (failureMode) =>
     Effect.gen(function* () {
+      const unconfirmedInterrupt = failureMode === "interrupt-failure" || failureMode === "unknown-control";
       const started = yield* Deferred.make<void>();
       const stopped = yield* Deferred.make<void>();
       const backgroundWorkRunning = yield* Ref.make(true);
@@ -3889,19 +3939,26 @@ it.effect.each(["failure", "defect", "interrupt-failure", "ownership-lost"] as c
         interruptTurn: (input) =>
           Ref.update(interrupts, (current) => [...current, input]).pipe(
             Effect.andThen(
-              input.requestRuntimeRestart === true && failureMode !== "interrupt-failure"
+              input.requestRuntimeRestart === true && !unconfirmedInterrupt
                 ? Ref.set(backgroundWorkRunning, false)
                 : Effect.void,
             ),
             Effect.andThen(Deferred.succeed(stopped, undefined)),
             Effect.andThen(
-              failureMode === "interrupt-failure"
+              unconfirmedInterrupt
                 ? Effect.fail(
                     new ProviderAdapter.ProviderAdapterInterruptError({
                       driver,
                       providerThreadId: input.providerThread.id,
                       providerTurnId: input.providerTurnId,
-                      cause: "provider already exited",
+                      cause: failureMode === "unknown-control"
+                        ? new ProviderControlOutcomeUnknown({
+                            driver,
+                            providerSessionId: "synthetic-unknown-session",
+                            nativeThreadId: "synthetic-unknown-native-thread",
+                            operation: "interrupt",
+                          })
+                        : "provider already exited",
                     }),
                   )
                 : Effect.void,
@@ -3923,11 +3980,11 @@ it.effect.each(["failure", "defect", "interrupt-failure", "ownership-lost"] as c
       } else {
         assert.equal(
           yield* Ref.get(backgroundWorkAtFinalization),
-          failureMode === "interrupt-failure",
+          unconfirmedInterrupt,
         );
         assert.deepEqual(observed, ["run:failed", "pull-requests-refreshed"]);
         const repaired = finalEvents.find((event) => event.type === "provider-turn.updated");
-        if (failureMode === "interrupt-failure") {
+        if (unconfirmedInterrupt) {
           assert.isUndefined(repaired);
         } else {
           assert.equal(repaired?.payload.id, ids.rootProviderTurnId);
@@ -6032,6 +6089,24 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
     const done = yield* Deferred.make<void>();
     const beforeTerminal = yield* Ref.make(0);
     const terminalTurn = { ...turn, status: "interrupted" as const, completedAt: terminalAt };
+    const terminalUpdate = {
+      type: "provider_turn.updated" as const,
+      driver,
+      threadId: ids.threadId,
+      providerTurn: terminalTurn,
+    };
+    const rootTerminal = {
+      ...rootTerminalEvent(ids, "interrupted"),
+      evidenceKind: "attributed_abort" as const,
+    };
+    const terminalDrain = makeProviderControlTerminalDrain();
+    terminalDrain.capture(terminalUpdate);
+    terminalDrain.capture(rootTerminal);
+    const terminalIngested = yield* Deferred.make<void>();
+    yield* terminalDrain.awaitIngested.pipe(
+      Effect.andThen(Deferred.succeed(terminalIngested, undefined)),
+      Effect.forkChild,
+    );
     const runtimeLayer = RunExecutionService.layer.pipe(
       Layer.provide(
         Layer.mergeAll(
@@ -6092,13 +6167,8 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
                     threadId: ids.threadId,
                     providerTurn: { ...terminalTurn, runAttemptId: replacementAttemptId },
                   },
-                  {
-                    type: "provider_turn.updated",
-                    driver,
-                    threadId: ids.threadId,
-                    providerTurn: terminalTurn,
-                  },
-                  { ...rootTerminalEvent(ids, "interrupted"), evidenceKind: "attributed_abort" },
+                  terminalUpdate,
+                  rootTerminal,
                 ] satisfies ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>),
               ),
             ),
@@ -6136,6 +6206,11 @@ it.effect("persists an old attempt's raw terminal turn without settling its succ
       });
     }).pipe(Effect.provide(runtimeLayer));
     yield* Deferred.await(done);
+    yield* Effect.yieldNow;
+    assert.isTrue(
+      yield* Deferred.isDone(terminalIngested),
+      "retirement joins the persisted raw terminal and guarded root handling",
+    );
     const records = yield* projections.getThreadRecords(ids.threadId, [
       "runs",
       "attempts",

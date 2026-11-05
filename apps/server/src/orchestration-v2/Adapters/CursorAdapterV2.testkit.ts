@@ -420,34 +420,40 @@ export function makeCursorAgentSdkReplayRunner(
           const session: CursorAgentSdk.CursorAgentSdkSession = {
             agentId: opened.agentId,
             send: (sendInput) =>
-              Effect.try({
-                try: () => {
-                  assertOutbound({
-                    type: "run.start",
-                    message: sendInput.message,
-                    options: CursorAgentSdk.loggedCursorSendOptions(sendInput.options),
-                  });
-                  const started = consumeInbound("run.started");
-                  const run: CursorAgentSdk.CursorAgentSdkRun = {
-                    runId: started.runId,
-                    agentId: started.agentId,
-                    wait: waitForRun(started.runId, sendInput).pipe(
-                      Effect.mapError((cause) =>
-                        replayRunnerError(transcript, cause, "replay.run.wait"),
-                      ),
+              Effect.gen(function* () {
+                const started = yield* Effect.try({
+                  try: () => {
+                    assertOutbound({
+                      type: "run.start",
+                      message: sendInput.message,
+                      options: CursorAgentSdk.loggedCursorSendOptions(sendInput.options),
+                    });
+                    return consumeInbound("run.started");
+                  },
+                  catch: (cause) => replayRunnerError(transcript, cause, "replay.session.send"),
+                });
+                // Both ports observe one captured reader; a replay failure is no native-success witness.
+                const nativeWait = yield* Effect.cached(
+                  waitForRun(started.runId, sendInput).pipe(
+                    Effect.mapError((cause) =>
+                      replayRunnerError(transcript, cause, "replay.run.wait"),
                     ),
-                    cancel: Effect.try({
-                      try: () =>
-                        assertOutbound({
-                          type: "run.cancel",
-                          runId: started.runId,
-                        }),
-                      catch: (cause) => replayRunnerError(transcript, cause, "replay.run.cancel"),
-                    }),
-                  };
-                  return run;
-                },
-                catch: (cause) => replayRunnerError(transcript, cause, "replay.session.send"),
+                  ),
+                );
+                return {
+                  runId: started.runId,
+                  agentId: started.agentId,
+                  nativeWait,
+                  wait: nativeWait,
+                  cancel: Effect.try({
+                    try: () =>
+                      assertOutbound({
+                        type: "run.cancel",
+                        runId: started.runId,
+                      }),
+                    catch: (cause) => replayRunnerError(transcript, cause, "replay.run.cancel"),
+                  }),
+                } satisfies CursorAgentSdk.CursorAgentSdkRun;
               }),
             listMessages: Effect.try({
               try: () => {

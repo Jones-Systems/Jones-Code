@@ -8,6 +8,8 @@ import * as Authority from "./NativeCreationAuthority.ts";
 import * as Repository from "./NativeCreationRepository.ts";
 import type { NativeCreationWholeOperationEvidence } from "./NativeCreationExecutionTypes.ts";
 import type { OrchestrationEffectV2 } from "../../orchestration-v2/EffectOutbox.ts";
+import { CurrentEffectClaim } from "../workspaceLifecycle/ActiveEffectClaim.ts";
+import { sameOperationRequest } from "../workspaceLifecycle/NativeOperation.ts";
 
 export class NativeCreationProviderExecutionError extends Schema.TaggedError<NativeCreationProviderExecutionError>()(
   "NativeCreationProviderExecutionError",
@@ -35,6 +37,7 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
   const authority = yield* Effect.serviceOption(Authority.NativeCreationAuthority);
   const repository = yield* Effect.serviceOption(Repository.NativeCreationRepository);
   const executor = yield* Effect.serviceOption(NativeCreationProviderExecutor);
+  const claim = yield* Effect.serviceOption(CurrentEffectClaim);
   const reference = effect.nativeCreationExecutionReference;
   if (
     reference === undefined ||
@@ -49,7 +52,8 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
     Option.isNone(repository) ||
     repository.value.confirmExecution === undefined ||
     repository.value.holdExecution === undefined ||
-    Option.isNone(executor)
+    Option.isNone(executor) ||
+    Option.isNone(claim)
   )
     return yield* new NativeCreationProviderExecutionError({
       message: "Qualified native provider execution is unavailable",
@@ -59,6 +63,14 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
   // Once the durable start exists, cancellation and any uncertain completion retain an unknown hold.
   const issue = authority.value.issueExecution;
   const execute = executor.value.executeWholeOperation;
+  yield* claim.value.use((current) =>
+    current.id === effect.id && current.threadId === effect.threadId &&
+    current.commandId === effect.commandId && current.attemptCount === effect.attemptCount &&
+    current.leaseOwner === effect.leaseOwner && sameOperationRequest(current.request, effect.request) &&
+    sameOperationRequest(current.nativeCreationExecutionReference, reference)
+      ? Effect.void
+      : Effect.fail(new NativeCreationProviderExecutionError({ message: "Native effect differs from its claiming worker" })),
+  );
   yield* Effect.uninterruptibleMask((restore) =>
     Effect.gen(function* () {
       const context = yield* issue({
@@ -78,24 +90,20 @@ export const executeNativeProviderEffect = Effect.fn("executeNativeProviderEffec
               message: "Native executor received an unissued or mismatched context",
             });
           const evidence = yield* execute({ effect, context });
-          yield* confirm({
+          yield* claim.value.use((current) => confirm({
             reference,
-            workerId: effect.leaseOwner!,
-            expectedAttempt: effect.attemptCount,
-            leaseExpiresAt: effect.leaseExpiresAt!,
+            workerId: current.leaseOwner!,
+            expectedAttempt: current.attemptCount,
+            leaseExpiresAt: current.leaseExpiresAt!,
             evidence,
-          });
+          }));
         }),
-      ).pipe(
-        Effect.onExit((exit) =>
-          Exit.isSuccess(exit)
-            ? Effect.void
-            : hold(
-                reference,
-                "Whole native provider execution did not produce confirmed completion",
-              ),
-        ),
       );
-    }),
+    }).pipe(Effect.onExit((exit) =>
+      Exit.isSuccess(exit) ? Effect.void : hold(
+        reference,
+        "Whole native provider execution did not produce confirmed completion",
+      ),
+    )),
   );
 });

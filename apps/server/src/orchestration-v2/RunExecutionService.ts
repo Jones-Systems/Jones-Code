@@ -1,4 +1,5 @@
 import type { NativeProviderExecutionGuard } from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
+import { findEffectClaimLost, guardClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 import type { GoalContinuityContext } from "@t3tools/provider-core/server/jones/GoalContinuityContext";
 import { makeAssistantStreamingFilter } from "./assistantStreaming.ts";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
@@ -49,6 +50,10 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import {
+  confirmProviderControlTerminalIngested,
+  findProviderControlOutcomeUnknown,
+} from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import type { ProjectionStoreV2Error } from "./ProjectionStore.ts";
 import {
   makeProviderFailure,
@@ -1030,7 +1035,7 @@ export const layer: Layer.Layer<
             })
             .pipe(
               Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
+                Cause.hasInterruptsOnly(cause) || findEffectClaimLost(cause) !== undefined
                   ? Effect.failCause(cause)
                   : Effect.logWarning(
                       "orchestration V2 checkpoint baseline capture failed; starting provider without a baseline",
@@ -1046,6 +1051,7 @@ export const layer: Layer.Layer<
           }
           return responseStreamingMode;
         }).pipe(
+          guardClaim,
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
               if (Cause.hasInterruptsOnly(cause)) {
@@ -1076,6 +1082,7 @@ export const layer: Layer.Layer<
                   expectedStatus: "running",
                 },
               });
+              if (findEffectClaimLost(cause) !== undefined) return yield* Effect.failCause(cause);
               return null;
             }),
           ),
@@ -1541,6 +1548,19 @@ export const layer: Layer.Layer<
                 });
                 storedEventCount = storedEvents.length;
                 if (
+                  event.type === "turn.terminal" ||
+                  (event.type === "provider_turn.updated" &&
+                    !isOrchestrationV2WorkActive(event.providerTurn.status)) ||
+                  (event.type === "turn_item.updated" &&
+                    !isOrchestrationV2WorkActive(event.turnItem.status)) ||
+                  (event.type === "node.updated" &&
+                    !isOrchestrationV2WorkActive(event.node.status)) ||
+                  (event.type === "subagent.updated" &&
+                    !isOrchestrationV2WorkActive(event.subagent.status))
+                ) {
+                  confirmProviderControlTerminalIngested(event, storedEventCount);
+                }
+                if (
                   isRootProviderThreadUpdate &&
                   rootTerminalAlreadySeen &&
                   storedEventCount === 0
@@ -1654,9 +1674,9 @@ export const layer: Layer.Layer<
                                 { runId: input.run.id, cause: interruptCause },
                               ).pipe(Effect.as(false)),
                           ),
-                          // A failed interrupt leaves the stored turn running so the next start
-                          // retries it. The snapshot is cached before it is published, so it may
-                          // not be stored: replay a terminal one as-is.
+                          // A failed interrupt confirms no native settlement. Preserve the
+                          // stored turn; an uncertainty fence can require reconciliation before
+                          // another start. A cached terminal snapshot may still need persistence.
                           Effect.map((interrupted) =>
                             !interrupted || rootProviderTurn === null
                               ? null
@@ -1817,6 +1837,7 @@ export const layer: Layer.Layer<
           shouldStart,
           Effect.andThen(input.checkContinuity?.() ?? Effect.void, startTurn),
         ).pipe(
+          guardClaim,
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
           Effect.tap(() =>
@@ -1872,7 +1893,9 @@ export const layer: Layer.Layer<
                   }),
               ),
               Effect.andThen(
-                input.nativeCreationGuard === undefined
+                input.nativeCreationGuard === undefined &&
+                findEffectClaimLost(cause) === undefined &&
+                findProviderControlOutcomeUnknown(cause) === undefined
                   ? Effect.void
                   : Effect.fail(
                       new RunExecutionStartError({

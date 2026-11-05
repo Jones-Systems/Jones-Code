@@ -1,5 +1,10 @@
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as TestClock from "effect/testing/TestClock";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
@@ -15,6 +20,7 @@ import {
   OPENCODE_2_RESPONSES,
   replayOpenCodeServer,
 } from "./probeResponses.fixture.ts";
+import { readOpenCodeProtocolSource } from "./jones/protocolFreshness.ts";
 
 const noBinary = {
   runOpenCodeCommand: () => Effect.die("A configured server must not run the local binary"),
@@ -193,5 +199,93 @@ describe("OpenCode version probe", () => {
       assert.strictEqual((yield* probe.get).generation, "v1");
       assert.strictEqual(calls, 3);
     }),
+  );
+
+  it.effect("ages authenticated external evidence without inspecting or running a local binary", () =>
+    Effect.gen(function* () {
+      const paths: Array<string> = [];
+      let responses: typeof OPENCODE_1_RESPONSES | typeof OPENCODE_2_RESPONSES =
+        OPENCODE_1_RESPONSES;
+      let password = "secret";
+      const http = HttpClient.make((request) =>
+        replayOpenCodeServer(responses, password, paths).execute(request),
+      );
+      const settings = { binaryPath: "/must-not-inspect/opencode", serverUrl: SERVER_URL };
+      const probe = yield* makeOpenCodeRuntimeProbe(
+        probeServer(SERVER_URL, "secret", http),
+        readOpenCodeProtocolSource(settings).pipe(
+          Effect.provideService(
+            FileSystem.FileSystem,
+            FileSystem.makeNoop({
+              stat: () => Effect.die("An external source must not stat the local binary"),
+              realPath: () => Effect.die("An external source must not resolve the local binary"),
+            }),
+          ),
+          Effect.provide(Path.layer),
+        ),
+      );
+      assert.strictEqual((yield* probe.get).generation, "v1");
+      assert.deepStrictEqual(paths, ["/api/info", "/global/health"]);
+      responses = OPENCODE_2_RESPONSES;
+      assert.strictEqual((yield* probe.get).generation, "v1");
+      assert.strictEqual(paths.length, 2);
+      yield* TestClock.adjust("60 seconds");
+      assert.strictEqual((yield* probe.get).generation, "v2");
+      assert.strictEqual(paths.length, 3);
+      responses = OPENCODE_1_RESPONSES;
+      yield* TestClock.adjust("60 seconds");
+      assert.strictEqual((yield* probe.get).generation, "v1");
+      assert.strictEqual(paths.length, 5);
+
+      password = "changed-secret";
+      yield* TestClock.adjust("60 seconds");
+      const error = yield* Effect.flip(probe.get);
+      assert.strictEqual(
+        error.detail,
+        "401 Unauthorized: the OpenCode server rejected the password.",
+      );
+      assert.notInclude(error.detail, password);
+      assert.strictEqual(paths.length, 6);
+      assert.deepStrictEqual(
+        yield* probe.lastSuccess,
+        Option.some({ generation: "v1", version: "1.18.32" }),
+      );
+      yield* Effect.flip(probe.get);
+      assert.strictEqual(paths.length, 7);
+    }),
+  );
+
+  it.effect("retains the bounded binary and authenticated server probe deadlines", () =>
+    Effect.gen(function* () {
+      const runtime = {
+        runOpenCodeCommand: () => Effect.never,
+      } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
+      const local = yield* probeOpenCodeRuntime({
+        binaryPath: "opencode",
+        serverUrl: "",
+        serverPassword: "",
+      }).pipe(
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+        Effect.provideService(HttpClient.HttpClient, HttpClient.make(() => Effect.never)),
+        Effect.flip,
+        Effect.forkChild,
+      );
+      const remote = yield* probeServer(
+        SERVER_URL,
+        "secret",
+        HttpClient.make(() => Effect.never),
+      ).pipe(
+        Effect.flip,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("5 seconds");
+      assert.strictEqual(
+        (yield* Fiber.join(remote)).detail,
+        "Timed out while checking the OpenCode server version.",
+      );
+      assert.isUndefined(local.pollUnsafe());
+      yield* TestClock.adjust("5 seconds");
+      assert.match((yield* Fiber.join(local)).detail, /timed out after 10 seconds/);
+    }).pipe(Effect.scoped),
   );
 });
