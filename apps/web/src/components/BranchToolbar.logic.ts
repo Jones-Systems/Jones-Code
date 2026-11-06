@@ -182,8 +182,8 @@ export function resolveDraftEnvModeAfterBranchChange(input: {
   if (nextWorktreePath) {
     return "worktree";
   }
-  if (effectiveEnvMode === "worktree" && !currentWorktreePath) {
-    return "worktree";
+  if ((effectiveEnvMode === "worktree" || effectiveEnvMode === "auto") && !currentWorktreePath) {
+    return effectiveEnvMode;
   }
   return "local";
 }
@@ -195,7 +195,7 @@ export function resolveBranchToolbarValue(input: {
   currentGitBranch: string | null;
 }): string | null {
   const { envMode, activeWorktreePath, activeThreadBranch, currentGitBranch } = input;
-  if (envMode === "worktree" && !activeWorktreePath) {
+  if ((envMode === "worktree" || envMode === "auto") && !activeWorktreePath) {
     return activeThreadBranch ?? currentGitBranch;
   }
   return currentGitBranch ?? activeThreadBranch;
@@ -218,6 +218,7 @@ export function resolveBranchTriggerLabel(input: {
   if (!resolvedActiveBranch) {
     return "Select ref";
   }
+  if (effectiveEnvMode === "auto" && !activeWorktreePath) return `Source ${resolvedActiveBranch}`;
   if (effectiveEnvMode === "worktree" && !activeWorktreePath) {
     // Only the server can determine a local branch's configured remote.
     return startFromOrigin && resolvedActiveBranchIsRemote === false
@@ -321,7 +322,7 @@ export function resolveAutomaticWorktreeBaseBranch(input: {
 }): string | null {
   if (
     input.envLocked ||
-    input.effectiveEnvMode !== "worktree" ||
+    (input.effectiveEnvMode !== "worktree" && input.effectiveEnvMode !== "auto") ||
     input.activeWorktreePath !== null ||
     input.activeThreadBranch !== null
   ) {

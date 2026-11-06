@@ -948,7 +948,14 @@ export const layer: Layer.Layer<
       if (Option.isSome(conversations) && projection.thread.lineage.parentThreadId !== null && run.workspacePreparation === undefined && projection.thread.worktreePath === null) {
         yield* conversations.value.inherit(projection.thread.id, projection.thread.lineage.parentThreadId).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
       }
-      const conversationTurn = Option.isSome(conversations)
+      if (Option.isSome(conversations) && Option.isSome(conversationHandoffs) && projection.thread.worktreePath === null) {
+        const shared = yield* conversations.value.lookup(projection.thread.id).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+        if (shared?.state === "attached" && shared.ownerThreadId !== projection.thread.id) {
+          yield* conversationHandoffs.value.attachForTurn(projection.thread.id, run.id, message?.text ?? "", message?.attachments ?? []).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          return;
+        }
+      }
+      const conversationTurn = Option.isSome(conversations) && projection.thread.worktreePath === null
         ? yield* conversations.value.startTurn(projection.thread.id, run.id).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })))
         : null;
       if (conversationTurn !== null) {

@@ -48,6 +48,11 @@ it.effect("records launch, immutable turn commits, shared delegation, replay/unk
     assert.isTrue(yield* service.acceptsCwd(input.threadId, binding.path));
     assert.isFalse(yield* service.acceptsCwd("unrelated", binding.path));
     assert.isFalse(yield* service.acceptsCwd(input.threadId, repo));
+    assert.equal(yield* service.dispose(input.threadId, false), "disposed");
+    const resumed = yield* service.startTurn(input.threadId, "turn:resumed");
+    assert.equal(resumed!.binding.path, binding.path);
+    assert.equal(resumed!.binding.commit, next!.binding.commit);
+    assert.isTrue(yield* service.acceptsCwd(input.threadId, binding.path));
     yield* service.inherit("delegate", input.threadId);
     assert.equal((yield* service.lookup("delegate"))!.path, binding.path);
     assert.equal(yield* service.dispose("delegate", false), "shared");

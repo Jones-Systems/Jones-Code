@@ -7,7 +7,7 @@ import {
   CommandId,
   type ChatAttachment,
   MessageId,
-  type ProjectId,
+  ProjectId,
   type ThreadId,
   WorktreeMcpFailure,
   type WorktreeMcpContinuationStatus,
@@ -420,11 +420,12 @@ export const make = Effect.gen(function* () {
     const projection = yield* loadThread(scope);
     const project = yield* loadProject(scope, projection.thread.projectId);
     const binding = yield* policy.lookup(threadId).pipe(asOperationFailed("Unable to read conversation binding"));
-    const request = JSON.stringify({ branch: input.branch, baseRef: input.baseRef ?? null, startFromOrigin: input.startFromOrigin ?? null, runSetupScript: input.runSetupScript ?? true, continuationPrompt: input.continuationPrompt ?? null, continuationAttachments });
+    const journalOwner = binding?.ownerThreadId ?? threadId;
+    const request = JSON.stringify({ callerThreadId: threadId, branch: input.branch, baseRef: input.baseRef ?? null, startFromOrigin: input.startFromOrigin ?? null, runSetupScript: input.runSetupScript ?? true, continuationPrompt: input.continuationPrompt ?? null, continuationAttachments });
     const requestId = input.clientRequestId ?? `legacy:${createHash("sha256").update(request).digest("hex")}`;
     // The journal is read before the already-attached check so exact retries
     // return the original receipt after binding or provider detachment.
-    const previous = yield* policy.readHandoff(threadId).pipe(asOperationFailed("Unable to read handoff journal"));
+    const previous = yield* policy.readHandoff(journalOwner).pipe(asOperationFailed("Unable to read handoff journal"));
     if (previous !== null && (previous.requestId !== requestId || previous.request !== request)) return yield* failure("invalid_request", "Handoff request conflicts with the persisted original request.");
     if (previous?.phase === "done") return previous.result ?? (yield* failure("operation_failed", "Handoff result is missing."));
     yield* beforeWrite;
@@ -449,39 +450,51 @@ export const make = Effect.gen(function* () {
         commit = (yield* Effect.tryPromise({ try: () => resolveSource(project.workspaceRoot, revision), catch: () => failure("invalid_request", "Unable to resolve handoff commit.") })).commit;
       }
     }
-    let record = previous ?? (yield* policy.reserveHandoff({ threadId, requestId, request, commit, baseRef, startedFromOrigin }).pipe(asOperationFailed("Unable to reserve handoff")));
+    let record = previous ?? (yield* policy.reserveHandoff({ threadId: journalOwner, requestId, request, commit, baseRef, startedFromOrigin, members: yield* policy.sharing(threadId).pipe(asOperationFailed("Unable to resolve shared conversation bindings")) }).pipe(asOperationFailed("Unable to reserve handoff")));
     if (projection.thread.archivedAt !== null) return yield* failure("invalid_request", "Archived threads cannot attach a checkout.");
     const step = (patch: Parameters<typeof policy.updateHandoff>[1]) => policy.updateHandoff(record, patch).pipe(asOperationFailed("Unable to record handoff progress"));
     if (record.phase === "reserved") {
       if (projection.thread.worktreePath !== null) return yield* failure("already_in_worktree", "This thread already has a checkout.");
+      const existing = yield* gitWorkflow.listRefs({ cwd: project.workspaceRoot, query: input.branch, refKind: "local" }).pipe(asOperationFailed("Unable to check the new branch"));
+      if (existing.refs.some((ref) => ref.name === input.branch && ref.isRemote !== true)) return yield* failure("invalid_request", "The requested branch already exists; it is not an issued checkout from this handoff.");
+      const currentSource = yield* Effect.tryPromise({ try: () => resolveSource(project.workspaceRoot, record.commit), catch: () => failure("invalid_request", "The project no longer contains the recorded source commit.") });
+      if (binding !== null && currentSource.commonDirectory !== binding.commonDirectory) return yield* failure("invalid_request", "The project repository changed since the conversation source was recorded.");
       record = yield* step({ phase: "checkout_issued" });
       // Intentionally no fetch: the checkout must match the already recorded source commit.
-      const created = yield* gitWorkflow.createWorktree({ cwd: project.workspaceRoot, refName: record.commit, newRefName: input.branch, baseRefName: record.baseRef, path: null }).pipe(asOperationFailed("Checkout outcome must be reconciled before retry"));
+      const created = yield* gitWorkflow.createWorktree({ cwd: project.workspaceRoot, refName: record.commit, newRefName: input.branch, baseRefName: record.baseRef, path: record.path }).pipe(asOperationFailed("Checkout outcome must be reconciled before retry"));
+      if (created.worktree.path !== record.path) return yield* failure("operation_failed", "handoff_unknown: checkout result does not match the persisted allocation path.");
       record = yield* step({ phase: "checkout_created", path: created.worktree.path });
     } else if (record.phase === "checkout_issued") {
       const refs = yield* gitWorkflow.listRefs({ cwd: project.workspaceRoot, query: input.branch, refKind: "local" }).pipe(asOperationFailed("Unable to reconcile checkout"));
       const found = refs.refs.find((ref) => ref.name === input.branch && ref.isRemote !== true);
-      if (found?.worktreePath == null) return yield* failure("handoff_in_progress", "handoff_unknown: checkout issuance has no proved result; preserve the request and reconcile its original operation.");
+      if (found?.worktreePath == null || found.worktreePath !== record.path) return yield* failure("handoff_in_progress", "handoff_unknown: checkout issuance has no proved result; preserve the request and reconcile its original operation.");
       const observed = yield* Effect.tryPromise({ try: () => resolveSource(found.worktreePath!, "HEAD"), catch: () => failure("operation_failed", "Unable to verify issued checkout.") });
-      if (observed.commit !== record.commit) return yield* failure("operation_failed", "handoff_unknown: issued checkout does not match the recorded source commit.");
+      if (observed.commit !== record.commit || (binding !== null && observed.commonDirectory !== binding.commonDirectory)) return yield* failure("operation_failed", "handoff_unknown: issued checkout does not match the recorded source commit.");
       record = yield* step({ phase: "checkout_created", path: found.worktreePath });
     }
     const worktreePath = record.path;
     if (worktreePath === null) return yield* failure("operation_failed", "Handoff journal has no checkout path.");
-    const commandKey = `conversation-handoff:${threadId}:${requestId}`;
+    const commandKey = `conversation-handoff:${encodeURIComponent(threadId)}:${encodeURIComponent(requestId)}`;
     return yield* Effect.uninterruptible(Effect.gen(function* () {
     if (record.phase === "checkout_created") {
-      const fresh = yield* loadThread(scope);
-      if (fresh.thread.worktreePath !== null && fresh.thread.worktreePath !== worktreePath) return yield* failure("already_in_worktree", "Thread binding changed during handoff.");
-      yield* threadManagement.dispatch({ type: "thread.metadata.update", commandId: CommandId.make(`${commandKey}:bind`), threadId, branch: input.branch, worktreePath }).pipe(asOperationFailed("Unable to bind handoff checkout"));
-      yield* policy.markAttached(threadId).pipe(asOperationFailed("Unable to record checkout binding"));
+      for (const member of record.members) {
+        const memberId = ThreadId.make(member);
+        const fresh = yield* loadThread({ thread: { threadId: memberId } });
+        if (fresh.thread.projectId !== project.id || (fresh.thread.worktreePath !== null && fresh.thread.worktreePath !== worktreePath)) return yield* failure("already_in_worktree", "A shared thread binding changed during handoff.");
+        yield* threadManagement.dispatch({ type: "thread.metadata.update", commandId: CommandId.make(`${commandKey}:bind:${encodeURIComponent(member)}`), threadId: memberId, branch: input.branch, worktreePath }).pipe(asOperationFailed("Unable to bind shared handoff checkout"));
+        yield* policy.markAttached(member).pipe(asOperationFailed("Unable to record shared checkout binding"));
+      }
+      for (const member of record.members) yield* policy.dispose(member, true).pipe(asOperationFailed("Unable to dispose the attached conversation directory"));
+      yield* captureProvenance({ threadId, reason: "handoff", createdBy: "agent", baseRef: record.baseRef, baseIsCurrentHead: true });
       record = yield* step({ phase: "bound" });
     }
     if (record.phase === "bound") {
       // Persist issuance before setup. An interrupted setup is never blindly rerun.
       record = yield* step({ phase: "setup_issued" });
-      const setup: WorktreeMcpSetupScriptStatus = input.runSetupScript === false ? { status: "skipped" } : yield* setupScriptRunner.runForThread({ threadId, projectId: project.id, projectCwd: project.workspaceRoot, worktreePath, project: { id: project.id, workspaceRoot: project.workspaceRoot, scripts: project.scripts } }).pipe(
-        Effect.map((result): WorktreeMcpSetupScriptStatus => result.status === "started" ? { status: "started", scriptName: result.scriptName, terminalId: result.terminalId } : result.status === "skipped-for-link" ? { status: "skipped" } : { status: "no-script" }),
+      const setup: WorktreeMcpSetupScriptStatus = input.runSetupScript === false ? { status: "skipped" } : yield* setupScriptRunner.runForThread({ threadId, projectId: project.id, projectCwd: project.workspaceRoot, worktreePath, preferredTerminalId: `conversation-setup-${createHash("sha256").update(commandKey).digest("hex").slice(0, 24)}`, project: { id: project.id, workspaceRoot: project.workspaceRoot, scripts: project.scripts } }).pipe(
+        Effect.flatMap((result) => result.status === "started"
+          ? result.writeCompletion.pipe(Effect.as<WorktreeMcpSetupScriptStatus>({ status: "started", scriptName: result.scriptName, terminalId: result.terminalId }))
+          : Effect.succeed<WorktreeMcpSetupScriptStatus>(result.status === "skipped-for-link" ? { status: "skipped" } : { status: "no-script" })),
         asOperationFailed("Setup outcome must be reconciled before retry"),
       );
       record = yield* step({ phase: "setup_done", setup });
@@ -531,7 +544,11 @@ export const make = Effect.gen(function* () {
       const defaultStartFromOrigin = yield* readDefaultStartFromOrigin;
 
       const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId });
+      const binding = Option.isSome(conversationPolicy) ? yield* conversationPolicy.value.lookup(scope.thread.threadId).pipe(asOperationFailed("Unable to read conversation status")) : null;
+      const recorded = binding === null || Option.isNone(conversationPolicy) ? null : yield* conversationPolicy.value.snapshot(scope.thread.threadId).pipe(asOperationFailed("Unable to read recorded source"));
+      const handoff = binding === null || Option.isNone(conversationPolicy) ? null : yield* conversationPolicy.value.readHandoff(binding.ownerThreadId).pipe(asOperationFailed("Unable to read handoff status"));
       const result: WorktreeMcpStatusResult = {
+        ...(binding === null || recorded === null ? {} : { conversation: { state: binding.state, directory: binding.path, ownerThreadId: binding.ownerThreadId, recordedCommit: recorded.commit, baseRef: recorded.baseRef, sourcePolicy: "broker-only" as const, handoffPhase: handoff?.phase ?? null } }),
         attached: projection.thread.worktreePath !== null,
         worktreePath: projection.thread.worktreePath,
         branch: projection.thread.branch,
@@ -543,14 +560,37 @@ export const make = Effect.gen(function* () {
     },
   );
 
+  const shareAttachedCheckout = Effect.fn("WorktreeMcpService.shareAttachedCheckout")(function* (
+    threadId: ThreadId, binding: ConversationPolicy.Binding, key: string,
+  ) {
+    if (Option.isNone(conversationPolicy)) return yield* failure("operation_failed", "Conversation binding service unavailable.");
+    const original = yield* conversationPolicy.value.readHandoff(binding.ownerThreadId).pipe(asOperationFailed("Unable to read shared handoff"));
+    if (original?.phase !== "done" || original.result === null) return yield* failure("handoff_in_progress", "The original shared handoff is not complete.");
+    const current = yield* loadThread({ thread: { threadId } });
+    if (current.thread.projectId !== binding.projectId || (current.thread.worktreePath !== null && current.thread.worktreePath !== original.result.worktreePath)) return yield* failure("invalid_request", "The shared checkout binding changed.");
+    yield* threadManagement.dispatch({ type: "thread.metadata.update", commandId: CommandId.make(`${key}:bind`), threadId, branch: original.result.branch, worktreePath: original.result.worktreePath }).pipe(asOperationFailed("Unable to share the parent's checkout"));
+    return original.result.worktreePath;
+  });
   const attachForTerminal = Effect.fn("WorktreeMcpService.attachForTerminal")(function* (threadId: ThreadId) {
     if (Option.isNone(conversationPolicy)) return null;
     const binding = yield* conversationPolicy.value.lookup(threadId).pipe(asOperationFailed("Unable to read terminal binding"));
-    if (binding === null || binding.state === "attached") return null;
+    if (binding === null) return null;
+    if (binding.state === "attached") {
+      return binding.ownerThreadId === threadId ? null : yield* shareAttachedCheckout(threadId, binding, `conversation-terminal-share:${encodeURIComponent(threadId)}`);
+    }
     const result = yield* durableHandoff(threadId, { branch: `work/conversation-${createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`, clientRequestId: `terminal:${threadId}`, runSetupScript: true });
     return result.worktreePath;
   });
   const attachForTurn = Effect.fn("WorktreeMcpService.attachForTurn")(function* (threadId: ThreadId, runId: string, text: string, attachments: ReadonlyArray<ChatAttachment>) {
+    if (Option.isSome(conversationPolicy)) {
+      const binding = yield* conversationPolicy.value.lookup(threadId).pipe(asOperationFailed("Unable to read shared checkout binding"));
+      if (binding !== null && binding.ownerThreadId !== threadId && binding.state === "attached") {
+        const key = `conversation-share:${encodeURIComponent(threadId)}:${encodeURIComponent(runId)}`;
+        yield* shareAttachedCheckout(threadId, binding, key);
+        yield* threadManagement.sendToThread({ projectId: ProjectId.make(binding.projectId), commandId: CommandId.make(`${key}:continue`), threadId, messageId: MessageId.make(`${key}:message`), text: text || "Continue the previous request in the shared checkout.", attachments, mode: "queue", createdBy: "agent", creationSource: "mcp" }).pipe(asOperationFailed("Unable to continue in the shared checkout"));
+        return;
+      }
+    }
     yield* durableHandoff(threadId, { branch: `work/conversation-${createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`, clientRequestId: `adapter-fallback:${runId}`, continuationPrompt: text || "Continue the previous request in the attached checkout.", runSetupScript: true }, Effect.void, attachments);
   });
   return WorktreeMcpService.of({ handoff, status, attachForTerminal, attachForTurn });

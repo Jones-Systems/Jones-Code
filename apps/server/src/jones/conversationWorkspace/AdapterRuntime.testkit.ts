@@ -17,6 +17,9 @@ import * as ServerConfig from "../../config.ts";
 import * as Codex from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Claude from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 
+const codexSettings = Schema.decodeSync(CodexSettings)({});
+const claudeSettings = Schema.decodeSync(ClaudeSettings)({});
+
 /** Exercises the shipped adapter runtime. The synthetic transport proves only
  * request routing/configuration and bounded fixture behavior, not live providers. */
 export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(function* (
@@ -55,13 +58,13 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
     handleServerNotification: () => Effect.void,
     handleUnknownServerRequest: () => Effect.void,
     handleUnknownServerNotification: () => Effect.void,
-    raw: { request: respond, notify: () => Effect.void, respond: unused, respondError: unused, requests: Stream.empty, notifications: Stream.empty },
+    raw: { request: respond as CodexClient.CodexAppServerClient["Service"]["raw"]["request"], notify: () => Effect.void, respond: unused, respondError: unused, requests: Stream.empty, notifications: Stream.empty },
   };
   const adapter = driver === "codex" ? yield* Codex.makeCodexAdapterV2({
-    instanceId: modelSelection.instanceId, settings: Schema.decodeSync(CodexSettings)({ homePath: config.stateDir }), environment: {}, crypto, fileSystem, idAllocator, serverConfig: config,
+    instanceId: modelSelection.instanceId, settings: { ...codexSettings, homePath: config.stateDir }, environment: {}, crypto, fileSystem, idAllocator, serverConfig: config,
     clientFactory: { open: () => Effect.succeed(codexClient) },
   }) : yield* Claude.makeClaudeAdapterV2({
-    instanceId: modelSelection.instanceId, settings: Schema.decodeSync(ClaudeSettings)({ homePath: config.stateDir }), environment: {}, attachmentsDir: config.attachmentsDir, crypto, fileSystem, path: paths, idAllocator,
+    instanceId: modelSelection.instanceId, settings: { ...claudeSettings, homePath: config.stateDir }, environment: {}, attachmentsDir: config.attachmentsDir, crypto, fileSystem, path: paths, idAllocator,
     queryRunner: {
       allocateSessionId: Effect.succeed("native-c9"),
       open: (input) => Effect.sync(() => {

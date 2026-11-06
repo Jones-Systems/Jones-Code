@@ -1195,7 +1195,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     prepareRootRunScope: (input) => Effect.gen(function* () {
       const parent = yield* ConversationPolicy.ParentConversation;
       const binding = Option.isSome(conversationPolicy) ? yield* conversationPolicy.value.lookup(parent ?? input.threadId).pipe(Effect.mapError((cause) => new CheckpointRootScopePrepareError({ threadId: input.threadId, runId: input.runId, cause }))) : null;
-      return yield* baseCheckpointService.prepareRootRunScope(binding === null || binding.state === "attached" ? input : { ...input, cwd: binding.path });
+      const current = yield* projectionStore.getThreadShell(parent ?? input.threadId).pipe(Effect.mapError((cause) => new CheckpointRootScopePrepareError({ threadId: input.threadId, runId: input.runId, cause })));
+      return yield* baseCheckpointService.prepareRootRunScope(binding === null || binding.state === "attached" || current?.worktreePath !== null ? input : { ...input, cwd: binding.path });
     }),
   };
   const commandPolicy = yield* CommandPolicyV2;

@@ -88,6 +88,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedPermissions = useScopedSettingsMixed(["defaultRuntimeMode"]);
   const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
+  const mixedAllocation = useScopedSettingsMixed(["worktreeAllocation"]);
   const mixedSubmodules = useScopedSettingsMixed(["worktreeSubmodules"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedAgentCredits = useScopedSettingsMixed(["removeAgentCreditsOnMerge"]);
@@ -227,6 +228,27 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     />
   );
 
+  const allocationRow = representative?.serverConfig?.environment.capabilities.conversationWorkspace === true ? (
+    <SettingsRow
+      serverScoped
+      settingKeys={["worktreeAllocation"]}
+      mixed={mixedAllocation}
+      title="Worktree allocation"
+      description="On write starts a conversation and attaches a worktree before mutation. Explicit workspace choices still apply."
+      control={
+        <Select value={mixedAllocation ? null : settings.worktreeAllocation} onValueChange={(value) => {
+          if (value === "on-write" || value === "eager") updateSettings({ worktreeAllocation: value });
+        }}>
+          <SelectTrigger size="sm" aria-label="Worktree allocation"><SelectValue /></SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            <SelectItem value="on-write">On write</SelectItem>
+            <SelectItem value="eager">At launch</SelectItem>
+          </SelectPopup>
+        </Select>
+      }
+    />
+  ) : null;
+
   return (
     <SettingsSection
       id={category === "source-control" ? "source-control-defaults" : "project-defaults"}
@@ -236,6 +258,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         <>
           {modelRow}
           {workspaceRow}
+          {allocationRow}
         </>
       ) : category === "general" ? (
         <>
@@ -302,6 +325,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             }
           />
           {workspaceRow}
+          {allocationRow}
           <SettingsRow
             serverScoped
             settingKeys={["worktreeSubmodules"]}

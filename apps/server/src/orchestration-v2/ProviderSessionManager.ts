@@ -2319,9 +2319,16 @@ export const layerWithOptions = (
       ) {
         // Conversation bindings have no checkout lifecycle row, so their exact
         // assignment still needs this recheck when checkout admission selects out.
-        if (Option.isSome(conversationPolicy) && (conversationPolicy.value.ownsPath(cwd ?? null) || (yield* conversationPolicy.value.lookup(threadId)) !== null)) yield* check;
-        if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)))
-          return yield* WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" });
+        const conversation = Option.isSome(conversationPolicy) && (
+          conversationPolicy.value.ownsPath(cwd ?? null) ||
+          ((yield* conversationPolicy.value.lookup(threadId))?.state === "conversation")
+        );
+        if (conversation) yield* check;
+        if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService))) {
+          yield* WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" });
+          if (conversation) yield* check;
+          return;
+        }
         const invocation = yield* idAllocator.allocate.event({ threadId, providerSessionId });
         yield* withOperation(
           {
@@ -2337,6 +2344,7 @@ export const layerWithOptions = (
             WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" }),
           ),
         );
+        if (conversation) yield* check;
       });
 
       const withSessionInvocation = Effect.fn("ProviderSessionManager.withWorkspaceInvocation")(

@@ -7240,19 +7240,19 @@ it.effect(
 );
 
 
-it.effect.each(["conversation", "absent", "mismatched", "attached", "disposed", "conversation_dir_nonempty", "attachment-drift"] as const)(
+it.effect.each(["conversation", "absent", "mismatched", "unrelated", "attached", "disposed", "conversation_dir_nonempty", "attachment-drift"] as const)(
   "rechecks the exact %s conversation assignment before provider open",
   (kind) => Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const cwd = yield* fs.makeTempDirectoryScoped();
     const state = yield* Ref.make(emptyState);
     const threadId = ThreadId.make(`thread-c9-${kind}`);
-    const binding = { threadId, projectId: "test", ownerThreadId: threadId, path: kind === "mismatched" ? `${cwd}/other` : cwd, device: "fixture", inode: "fixture", commonDirectory: "/objects", commit: "a".repeat(40), baseRef: "main", state: kind === "attached" || kind === "disposed" || kind === "conversation_dir_nonempty" ? kind : "conversation" } as const;
-    let reads = 0;
+    const binding = { threadId: kind === "unrelated" ? "unrelated-thread" : threadId, projectId: "test", ownerThreadId: threadId, path: kind === "mismatched" ? `${cwd}/other` : cwd, device: "fixture", inode: "fixture", commonDirectory: "/objects", commit: "a".repeat(40), baseRef: "main", state: kind === "attached" || kind === "disposed" || kind === "conversation_dir_nonempty" ? kind : "conversation" } as const;
+    let reads = 0; let assignmentChecks = 0;
     const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
       ownsPath: () => true,
       lookup: () => Effect.sync(() => { reads++; return kind === "absent" ? null : binding; }),
-      acceptsCwd: (id, requested) => Effect.sync(() => { reads++; return id === binding.threadId && binding.state === "conversation" && requested === binding.path && kind !== "attachment-drift"; }),
+      acceptsCwd: (id, requested) => Effect.sync(() => { reads++; assignmentChecks++; return id === binding.threadId && binding.state === "conversation" && requested === binding.path && (kind !== "attachment-drift" || assignmentChecks === 1); }),
     });
     yield* Effect.gen(function* () {
       const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
@@ -7264,6 +7264,7 @@ it.effect.each(["conversation", "absent", "mismatched", "attached", "disposed", 
       if (kind === "conversation") assert.equal(result._tag, "Success");
       else { assert.equal(result._tag, "Failure"); assert.equal((yield* Ref.get(state)).openCount, 0); }
       assert.isAbove(reads, 0);
+      if (kind === "attachment-drift") assert.equal(assignmentChecks, 2);
     }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, conversationLayer })));
   }).pipe(Effect.provide(NodeServices.layer)),
 );

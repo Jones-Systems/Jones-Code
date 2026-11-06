@@ -70,6 +70,10 @@
     {
       "from": "apps/server/src/terminal/Manager.ts",
       "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
     }
   ]
 }

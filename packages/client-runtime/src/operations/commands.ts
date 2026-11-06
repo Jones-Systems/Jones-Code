@@ -731,7 +731,7 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
     const thread = bootstrap ?? existingProjection!.thread;
     const workspaceStrategy =
       input.bootstrap?.conversation === true
-        ? { type: "auto" as const }
+        ? { type: "auto" as const, ...(bootstrap?.branch == null ? {} : { baseRef: bootstrap.branch }) }
         : prepareWorktree !== undefined
         ? {
             type: "worktree" as const,

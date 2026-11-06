@@ -177,7 +177,7 @@ export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput): ThreadEnv
 export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput & { readonly preferConversation?: boolean }): ThreadEnvMode | "auto" {
   const configured = input.preferConversation && input.projectSettings.settings.worktreeAllocation !== "eager" ? "auto" : input.projectSettings.settings.defaultThreadEnvMode;
   if (
-    configured === "local" || configured === "auto" ||
+    configured === "local" ||
     input.projectHasThreads ||
     input.projectSettings.sources.defaultThreadEnvMode !== "environment" ||
     input.workspaceRoot === null ||

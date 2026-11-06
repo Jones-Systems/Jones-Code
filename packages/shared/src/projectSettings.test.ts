@@ -221,6 +221,16 @@ describe("resolveNewThreadEnvMode", () => {
     projectHasThreads: false,
   };
 
+  it("defaults capable interactive launches to on-write while preserving named-project and eager defaults", () => {
+    expect(DEFAULT_SERVER_SETTINGS.worktreeAllocation).toBe("on-write");
+    expect(resolveNewThreadEnvMode({ ...newProject, preferConversation: true })).toBe("local");
+    expect(resolveNewThreadEnvMode({ ...newProject, projectHasThreads: true, preferConversation: true })).toBe("auto");
+    const eager = resolveProjectSettings({ ...DEFAULT_SERVER_SETTINGS, projectSettingsOverrides: { [projectId]: { worktreeAllocation: "eager" } } }, projectId);
+    expect(eager.sources.worktreeAllocation).toBe("project");
+    expect(resolveNewThreadEnvMode({ ...newProject, projectSettings: eager, projectHasThreads: true, preferConversation: true })).toBe("worktree");
+    expect(resolveSendEnvMode({ requestedEnvMode: "auto", isGitRepo: false })).toBe("local");
+  });
+
   it("starts a new project's first thread in its checkout", () => {
     expect(resolveNewThreadEnvMode(newProject)).toBe("local");
     expect(

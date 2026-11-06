@@ -1,5 +1,7 @@
 import { WorktreeMcpHandoffResult, WorktreeMcpSetupScriptStatus } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as Crypto from "effect/Crypto";
+import * as Path from "effect/Path";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -16,6 +18,8 @@ export interface Binding extends DirectoryIdentity, SourceSnapshot {
   readonly ownerThreadId: string;
 }
 export interface HandoffRecord {
+  readonly revision: number;
+  readonly members: readonly string[];
   readonly threadId: string;
   readonly requestId: string;
   readonly request: string;
@@ -35,6 +39,8 @@ const BindingRecord = Schema.Struct({
 });
 const SnapshotRecord = Schema.Struct({ commonDirectory: Schema.String, commit: Schema.String, baseRef: Schema.String });
 const HandoffRecordSchema = Schema.Struct({
+  revision: Schema.Int,
+  members: Schema.Array(Schema.String),
   threadId: Schema.String, requestId: Schema.String, request: Schema.String,
   commit: Schema.String, baseRef: Schema.String, startedFromOrigin: Schema.Boolean,
   phase: Schema.Literals(["reserved", "checkout_issued", "checkout_created", "bound", "setup_issued", "setup_done", "continuation_issued", "done"]),
@@ -58,6 +64,7 @@ export class ConversationPolicy extends Context.Service<ConversationPolicy, {
   readonly lookup: (threadId: string) => Effect.Effect<Binding | null, ConversationWorkspaceError>;
   readonly allocate: (input: { threadId: string; projectId: string; projectRoot: string; baseRef?: string; excluded?: readonly string[] }) => Effect.Effect<Binding, ConversationWorkspaceError>;
   readonly fallback: (threadId: string, driver: string, reason: string) => Effect.Effect<void, ConversationWorkspaceError>;
+  readonly sharing: (threadId: string) => Effect.Effect<readonly string[], ConversationWorkspaceError>;
   readonly inherit: (threadId: string, parentThreadId: string) => Effect.Effect<void, ConversationWorkspaceError>;
   readonly startTurn: (threadId: string, runId: string) => Effect.Effect<{ binding: Binding; context: string } | null, ConversationWorkspaceError>;
   readonly snapshot: (threadId: string) => Effect.Effect<SourceSnapshot, ConversationWorkspaceError>;
@@ -67,14 +74,16 @@ export class ConversationPolicy extends Context.Service<ConversationPolicy, {
   readonly acceptsCwd: (threadId: string, cwd: string | null) => Effect.Effect<boolean, ConversationWorkspaceError>;
   readonly markAttached: (threadId: string) => Effect.Effect<void, ConversationWorkspaceError>;
   readonly dispose: (threadId: string, attached: boolean) => Effect.Effect<string | null, ConversationWorkspaceError>;
-  readonly assertAttached: (threadId: string) => Effect.Effect<void, ConversationWorkspaceError>;
-  readonly reserveHandoff: (input: { threadId: string; requestId: string; request: string; commit: string; baseRef: string; startedFromOrigin: boolean }) => Effect.Effect<HandoffRecord, ConversationWorkspaceError>;
+  readonly assertAttached: (threadId: string, cwd?: string) => Effect.Effect<void, ConversationWorkspaceError>;
+  readonly reserveHandoff: (input: { threadId: string; requestId: string; request: string; commit: string; baseRef: string; startedFromOrigin: boolean; members?: readonly string[] }) => Effect.Effect<HandoffRecord, ConversationWorkspaceError>;
   readonly updateHandoff: (record: HandoffRecord, patch: Partial<Pick<HandoffRecord, "phase" | "path" | "setup" | "result">>) => Effect.Effect<HandoffRecord, ConversationWorkspaceError>;
 }>()("jones/conversationWorkspace/ConversationPolicy") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const config = yield* ServerConfig.ServerConfig;
+  const crypto = yield* Crypto.Crypto;
+  const paths = yield* Path.Path;
   const directoryLocks = yield* KeyedLock.make<string>();
   const wrap = (threadId: string) => Effect.mapError((cause: unknown) => Schema.is(ConversationWorkspaceError)(cause) ? cause : new ConversationWorkspaceError({ threadId, reason: "storage", cause }));
   const lookup = Effect.fn("ConversationPolicy.lookup")(function* (threadId: string) {
@@ -103,8 +112,18 @@ const make = Effect.gen(function* () {
   const inherit = Effect.fn("ConversationPolicy.inherit")(function* (threadId: string, parentThreadId: string) {
     if ((yield* lookup(threadId)) !== null) return;
     const binding = yield* lookup(parentThreadId);
-    if (binding !== null && binding.state !== "attached") yield* save({ ...binding, threadId });
+    if (binding !== null) {
+      const handoff = yield* readHandoff(binding.ownerThreadId);
+      if (handoff !== null && handoff.phase !== "done") return yield* new ConversationWorkspaceError({ threadId, reason: "attach_required" });
+      yield* save({ ...binding, threadId });
+    }
   });
+  const sharing = Effect.fn("ConversationPolicy.sharing")(function* (threadId: string) {
+    const binding = yield* lookup(threadId);
+    if (binding === null) return [threadId];
+    const rows = yield* sql<{ thread_id: string }>`SELECT b.thread_id FROM jones_conversation_bindings b JOIN orchestration_v2_projection_threads t ON t.thread_id=b.thread_id WHERE json_extract(b.binding, '$.path')=${binding.path} AND t.deleted_at IS NULL ORDER BY b.thread_id`;
+    return rows.map((row) => row.thread_id);
+  }, (effect, threadId) => effect.pipe(wrap(threadId)));
   const startTurn = Effect.fn("ConversationPolicy.startTurn")(function* (threadId: string, runId: string) {
     let binding = yield* lookup(threadId);
     if (binding === null || binding.state === "attached") return null;
@@ -146,7 +165,7 @@ const make = Effect.gen(function* () {
   });
   const dispose = Effect.fn("ConversationPolicy.dispose")(function* (threadId: string, attached: boolean) {
     const binding = yield* lookup(threadId);
-    if (binding === null) return null;
+    if (binding === null || (binding.state === "attached" && !attached)) return null;
     // Shared delegates keep the directory until every binding has attached or settled.
     const peers = yield* sql`SELECT 1 FROM jones_conversation_bindings WHERE thread_id != ${threadId} AND json_extract(binding, '$.path') = ${binding.path} AND json_extract(binding, '$.state') NOT IN ('attached','disposed') LIMIT 1`;
     const shared = peers.length !== 0;
@@ -159,28 +178,28 @@ const make = Effect.gen(function* () {
     }
     return outcome;
   }, (effect, threadId) => effect.pipe(wrap(threadId)));
-  const assertAttached = Effect.fn("ConversationPolicy.assertAttached")(function* (threadId: string) {
+  const assertAttached = Effect.fn("ConversationPolicy.assertAttached")(function* (threadId: string, cwd?: string) {
     const binding = yield* lookup(threadId);
-    if (binding !== null && binding.state !== "attached") return yield* new ConversationWorkspaceError({ threadId, reason: "attach_required" });
+    if (ownsConversationPath(config.stateDir, cwd ?? null) || (binding !== null && binding.state !== "attached")) return yield* new ConversationWorkspaceError({ threadId, reason: "attach_required" });
   });
   const readHandoff = Effect.fn("ConversationPolicy.readHandoff")(function* (threadId: string) {
     const rows = yield* sql<{ record: string }>`SELECT record FROM jones_conversation_handoffs WHERE thread_id=${threadId}`;
     return rows[0] === undefined ? null : yield* decodeHandoff(rows[0].record);
   }, (effect, threadId) => effect.pipe(wrap(threadId)));
-  const reserveHandoff = Effect.fn("ConversationPolicy.reserveHandoff")(function* (input: { threadId: string; requestId: string; request: string; commit: string; baseRef: string; startedFromOrigin: boolean }) {
+  const reserveHandoff = Effect.fn("ConversationPolicy.reserveHandoff")(function* (input: { threadId: string; requestId: string; request: string; commit: string; baseRef: string; startedFromOrigin: boolean; members?: readonly string[] }) {
     const rows = yield* sql<{ record: string }>`SELECT record FROM jones_conversation_handoffs WHERE thread_id=${input.threadId}`;
     if (rows[0]) {
       const record = yield* decodeHandoff(rows[0].record);
       if (record.requestId !== input.requestId || record.request !== input.request) return yield* new ConversationWorkspaceError({ threadId: input.threadId, reason: "handoff_conflict" });
       return record;
     }
-    const record: HandoffRecord = { ...input, phase: "reserved", path: null, setup: null, result: null };
+    const record: HandoffRecord = { ...input, members: input.members ?? [input.threadId], revision: 0, phase: "reserved", path: paths.join(config.worktreesDir, `conversation-${yield* crypto.randomUUIDv4().pipe(Effect.orDie)}`), setup: null, result: null };
     yield* sql`INSERT INTO jones_conversation_handoffs(thread_id,record) VALUES(${input.threadId},${JSON.stringify(record)})`;
     return record;
   }, (effect, input) => effect.pipe(sql.withTransaction, wrap(input.threadId)));
   const updateHandoff = Effect.fn("ConversationPolicy.updateHandoff")(function* (record: HandoffRecord, patch: Partial<Pick<HandoffRecord, "phase" | "path" | "setup" | "result">>) {
-    const next = { ...record, ...patch };
-    const rows = yield* sql`UPDATE jones_conversation_handoffs SET record=${JSON.stringify(next)} WHERE thread_id=${record.threadId} AND record=${JSON.stringify(record)} RETURNING thread_id`;
+    const next = { ...record, ...patch, revision: record.revision + 1 };
+    const rows = yield* sql`UPDATE jones_conversation_handoffs SET record=${JSON.stringify(next)} WHERE thread_id=${record.threadId} AND json_extract(record, '$.revision')=${record.revision} RETURNING thread_id`;
     if (rows.length !== 1) return yield* new ConversationWorkspaceError({ threadId: record.threadId, reason: "handoff_conflict" });
     return next;
   }, (effect, record) => effect.pipe(wrap(record.threadId)));
@@ -193,7 +212,7 @@ const make = Effect.gen(function* () {
     const binding = yield* lookup(threadId);
     if (binding !== null) yield* save({ ...binding, state: "attached" });
   });
-  return ConversationPolicy.of({ ownsPath: (cwd) => ownsConversationPath(config.stateDir, cwd), lookup, allocate: (input) => directoryLocks.withLock(input.threadId, allocate(input).pipe(Effect.uninterruptible, wrap(input.threadId))), inherit, startTurn: (threadId, runId) => directoryLocks.withLock(threadId, startTurn(threadId, runId)), snapshot, readHandoff, source, acceptsCwd, markAttached, dispose, assertAttached, reserveHandoff, updateHandoff,
+  return ConversationPolicy.of({ ownsPath: (cwd) => ownsConversationPath(config.stateDir, cwd), lookup, sharing, allocate: (input) => directoryLocks.withLock(input.threadId, allocate(input).pipe(Effect.uninterruptible, wrap(input.threadId))), inherit, startTurn: (threadId, runId) => directoryLocks.withLock(threadId, startTurn(threadId, runId)), snapshot, readHandoff, source, acceptsCwd, markAttached, dispose, assertAttached, reserveHandoff, updateHandoff,
     fallback: Effect.fn("ConversationPolicy.fallback")((threadId: string, driver: string, reason: string) => sql`INSERT OR IGNORE INTO jones_conversation_fallbacks(thread_id,driver,reason) VALUES(${threadId},${driver},${reason})`.pipe(Effect.asVoid, wrap(threadId))),
   });
 });

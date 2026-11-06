@@ -14,7 +14,7 @@ async function fixture(run: (root: string) => Promise<void>) {
   try { await run(root); }
   finally { await fs.rm(root, { recursive: true, force: true }); assert.equal(await fs.stat(root).catch(() => null), null); }
 }
-const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "init.defaultBranch=main", "-c", "user.name=C9 Fixture", "-c", "user.email=c9@example.invalid", ...args], { cwd, encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 1024 * 1024 }).trim();
+const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "init.defaultBranch=main", "-c", "user.name=C9 Fixture", "-c", "user.email=c9@example.invalid", ...args], { cwd, encoding: "utf8", timeout: 3000, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" }, maxBuffer: 1024 * 1024 }).trim();
 async function treeDigest(root: string) {
   const hash = createHash("sha256");
   async function visit(directory: string) {

@@ -3034,6 +3034,20 @@
         "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
       ],
       "scope": "C10 manual-install transitive recovery closure, exact-plan retention under the existing activation/admission/startup lock, per-candidate identity and generation comparison, durable intent and held partial effects. Retained external app bundles and launcher generations remain held for unknown consumers. Shared settings/schema/UI edits add propose-default and explicit retire plus optional capability negotiation. The small launcher hooks only publish bounded proposals under launcher ownership and the staging lock. No next-install admission relaxation, native receipt rewrite, runtime adoption, operational disposal authority or external bundle removal. Protocol fixtures use real source functions and CLI contention with synthetic native boundaries; Node/Python source evidence is distinct from packaged macOS acceptance."
+    },
+    {
+      "id": "conversation-workspace",
+      "tests": [
+        "apps/server/src/jones/conversationWorkspace/SourceBroker.test.ts",
+        "apps/server/src/jones/conversationWorkspace/SourceBroker.node-test.mjs",
+        "apps/server/src/jones/conversationWorkspace/ConversationPolicy.test.ts",
+        "apps/server/src/jones/conversationWorkspace/AdapterProof.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "packages/shared/src/projectSettings.test.ts",
+        "apps/web/src/components/BranchToolbar.logic.test.ts"
+      ],
+      "scope": "C9 broker-only conversation allocation with per-turn Git object snapshots, exact empty-directory identity and lifecycle, durable compare-and-swap handoff, shared delegation, terminal/setup admission and additive project allocation settings. Synthetic Codex and Claude transport fixtures exercise shipped adapter seams; configured passing evidence is required before counting adapter coverage. Shared provider/session/checkpoint/MCP/UI hooks retain their existing owners; no OS barrier, runtime adoption or provider automatic instructions claim."
     }
   ]
 }

@@ -23,6 +23,7 @@ export async function createConversationDirectory(stateDirectory: string, exclud
   await fs.mkdir(root, { recursive: true, mode: 0o700 });
   const rootStat = await fs.lstat(root);
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink() || await fs.realpath(root) !== root) throw new Error("Invalid conversation root");
+  // @effect-diagnostics-next-line cryptoRandomUUID:off -- Node-only exclusive directory allocation; the persisted filesystem identity is the binding.
   const directory = path.join(root, randomUUID());
   await fs.mkdir(directory, { mode: 0o700 });
   const stat = await fs.lstat(directory, { bigint: true });

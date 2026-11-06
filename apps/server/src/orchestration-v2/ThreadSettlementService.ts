@@ -585,7 +585,7 @@ export const make = Effect.gen(function* () {
       yield* terminals.closeIdle({ threadId });
       const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
       const afterClose = yield* projections.getThread(threadId);
-      if (afterClose.settledOverride !== "settled" || afterClose.settledAt !== settled.settledAt || afterClose.updatedAt !== settled.updatedAt) return;
+      if (afterClose.settledOverride !== "settled" || toMillis(afterClose.settledAt) !== toMillis(settled.settledAt) || toMillis(afterClose.updatedAt) !== toMillis(settled.updatedAt)) return;
       if (Option.isSome(conversations)) yield* conversations.value.dispose(threadId, false);
       const worktreePath = settled.worktreePath;
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;

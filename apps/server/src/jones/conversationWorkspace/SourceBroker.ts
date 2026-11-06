@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Bounded, killed-and-reaped Git object reader; no checkout or shell is used.
 import { spawn } from "node:child_process";
+import { setTimeout, clearTimeout } from "node:timers";
 import * as path from "node:path";
 
 export interface SourceSnapshot {

@@ -5227,6 +5227,7 @@ it.effect.each(["message", "empty", "eager", "explicit", "unsupported"] as const
     yield* Effect.gen(function* () {
       const launches = yield* ThreadLaunch.ThreadLaunchService;
       const result = yield* launches.launch(launchInput({ command: `command:c9:${kind}`, thread: `thread:c9:${kind}`, workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" }, ...(kind === "empty" ? {} : { message: "Inspect the source." }) }));
+      if (kind !== "empty") yield* preparationSettled(result.threadId);
       const isConversation = kind === "empty" || kind === "message";
       assert.equal(allocated, isConversation ? 1 : 0);
       assert.equal(fallback, kind === "eager" || kind === "unsupported" ? 1 : 0);

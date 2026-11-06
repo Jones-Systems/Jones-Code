@@ -112,6 +112,15 @@ export const WorktreeProvenanceEntry = Schema.Struct({
 export type WorktreeProvenanceEntry = typeof WorktreeProvenanceEntry.Type;
 
 export const WorktreeMcpStatusResult = Schema.Struct({
+  conversation: Schema.optional(Schema.Struct({
+    state: Schema.Literals(["conversation", "attached", "disposed", "conversation_dir_nonempty"]),
+    directory: Schema.String,
+    ownerThreadId: Schema.String,
+    recordedCommit: Schema.String,
+    baseRef: Schema.String,
+    sourcePolicy: Schema.Literal("broker-only"),
+    handoffPhase: Schema.NullOr(Schema.String),
+  })),
   provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
   attached: Schema.Boolean,
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),

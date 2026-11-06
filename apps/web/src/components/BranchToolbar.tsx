@@ -198,6 +198,7 @@ const RunContextSelector = memo(function RunContextSelector({
   addTargets,
   onAddToMachine,
 }: RunContextSelectorProps) {
+  const conversationAvailable = useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.conversationWorkspace === true;
   const composerFloatingLayerProps = useComposerMenuProps();
   const activeEnvironment =
     availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null;
@@ -211,13 +212,15 @@ const RunContextSelector = memo(function RunContextSelector({
     ? resolveEnvModeLabel("worktree")
     : envModeLocked
       ? resolveLockedWorkspaceLabel(activeWorktreePath, effectiveEnvMode)
-      : effectiveEnvMode === "worktree"
+      : effectiveEnvMode === "auto"
+        ? resolveEnvModeLabel("auto")
+        : effectiveEnvMode === "worktree"
         ? resolveEnvModeLabel("worktree")
         : resolveCurrentWorkspaceLabel(activeWorktreePath);
   const isPanel = displayMode === "panel";
   const isLocked = envLocked || (envModeLocked && (!isPanel || !showEnvironmentPicker));
   const workspacePath =
-    forceNewWorktree || (effectiveEnvMode === "worktree" && !activeWorktreePath)
+    forceNewWorktree || effectiveEnvMode === "auto" || (effectiveEnvMode === "worktree" && !activeWorktreePath)
       ? null
       : (activeWorktreePath ?? workspaceRoot);
   const handleContextMenu = (event: ReactMouseEvent) => {
@@ -441,6 +444,11 @@ const RunContextSelector = memo(function RunContextSelector({
                 <MiddleTruncate value={resolveCurrentWorkspaceLabel(activeWorktreePath)} />
               </span>
             </MenuRadioItem>
+            {conversationAvailable ? (
+              <MenuRadioItem disabled={envModeLocked || forceNewWorktree} value="auto" closeOnClick>
+                <span className="flex min-w-0 items-center gap-1.5"><FolderIcon className="size-3" />On write</span>
+              </MenuRadioItem>
+            ) : null}
             <MenuRadioItem disabled={envModeLocked} value="worktree" closeOnClick>
               <span className="flex min-w-0 items-center gap-1.5">
                 <FolderGit2Icon className="size-3" />

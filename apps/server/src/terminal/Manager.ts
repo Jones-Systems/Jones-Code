@@ -1637,7 +1637,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError | TerminalCwdStatError
     > {
       const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
-      if (Option.isSome(conversations)) yield* conversations.value.assertAttached(input.threadId).pipe(Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd ?? "", cause })));
+      if (Option.isSome(conversations)) yield* conversations.value.assertAttached(input.threadId, input.cwd).pipe(Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd ?? "", cause })));
       if (input.providerInstanceId === undefined) return input;
       const resolver = options.resolveProviderInstanceEnvironment;
       if (resolver === undefined) {
