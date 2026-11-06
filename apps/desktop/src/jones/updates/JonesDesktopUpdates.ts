@@ -6,6 +6,7 @@ import {
   type RecoveryReview,
 } from "./recoveryPreflight.ts";
 import type { JonesInstallPlanLaptopEvidence } from "@t3tools/contracts/jones/installPlan";
+import type { JonesNativeWriterAdmission } from "@t3tools/shared/jones/nativeWriterFence";
 import type { LaptopInstallBinding, LaptopNativeOutcome } from "../installPlan/coordinator.ts";
 import { JonesStagingStopped, JonesStagingExitUnproved } from "./stagingWorkerProtocol.ts";
 import type { JonesPreparationCancel } from "./stagingWorkerClient.ts";
@@ -13,6 +14,7 @@ import type { DesktopFleetStore } from "../fleetUpdates/store.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import {
@@ -457,6 +459,14 @@ export interface JonesDesktopUpdateOptions {
   >;
   readonly listener: () => Promise<string>;
   readonly timestamp: () => Promise<string>;
+  readonly ordinaryRecoveryReadiness?: () => Promise<
+    | {
+        readonly owner: JonesNativeWriterAdmission;
+        readonly backendPid: number;
+        readonly run: object;
+      }
+    | undefined
+  >;
   readonly client?: Pick<JonesActionsClient, "check" | "stage">;
   /** Test adapter; production reads the installed bundle through the native plist boundary. */
   readonly readInstalledBundleIdentity?: typeof readMacBundleIdentity;
@@ -611,6 +621,13 @@ export class JonesDesktopUpdateController {
           }),
     };
     if (
+      this.#bootstrap !== undefined &&
+      this.#bootstrap.transactionId === `manual-${this.#bootstrap.generation}` &&
+      !base.activationBlocked &&
+      this.#busy === null
+    )
+      return this.#ordinaryRecoveryEvidence(base, this.#bootstrap);
+    if (
       this.#bootstrap === undefined ||
       this.#activeCommittedTransaction === undefined ||
       base.activationBlocked
@@ -649,6 +666,347 @@ export class JonesDesktopUpdateController {
       return { ...base, committedTransactionId: journal.intent.transactionId };
     } catch {
       return { ...base, activationBlocked: true };
+    }
+  }
+
+  async #ordinaryRecoveryEvidence(
+    base: JonesInstallPlanLaptopEvidence,
+    bootstrap: ActiveInstall,
+  ): Promise<JonesInstallPlanLaptopEvidence> {
+    try {
+      if (!/^[a-f0-9]{64}$/.test(bootstrap.generation)) return base;
+      const before = await this.#options.ordinaryRecoveryReadiness?.();
+      if (before === undefined || !Number.isSafeInteger(before.backendPid) || before.backendPid <= 1)
+        return base;
+      before.owner.assertCurrent();
+      const path = NodePath.join(
+        this.#options.home, "runtime", "jones-manual-installs", bootstrap.generation, "receipt.json",
+      );
+      if ((await NodeFSP.realpath(path)) !== path) return base;
+      const read = async (file: string) => {
+        const input = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+        try {
+          const stat = await input.stat();
+          if (
+            !stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024 ||
+            stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0
+          )
+            throw new Error("Ordinary recovery proof ownership or bounds changed.");
+          const bytes = Buffer.alloc(1024 * 1024 + 1);
+          const { bytesRead } = await input.read(bytes, 0, bytes.length, 0);
+          if (bytesRead > 1024 * 1024) throw new Error("Ordinary recovery proof exceeds its bound.");
+          return bytes.subarray(0, bytesRead);
+        } finally {
+          await input.close();
+        }
+      };
+      const manifestRaw = await read(this.manifestPath);
+      const manifest = JSON.parse(manifestRaw.toString("utf8"));
+      const active = decodeActiveInstall(manifest);
+      const receiptRaw = await read(path);
+      const receipt = Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: Schema.Literal(1),
+          operation: Schema.Literal("manual-install"),
+          phase: Schema.Literal("launched"),
+          automaticContinuationRequested: Schema.Literal(false),
+          transactionId: Schema.String,
+          nextActive: JonesActiveInstall,
+          candidate: Schema.Struct({
+            appPath: Schema.String,
+            executablePath: Schema.String,
+            sourceSha: Schema.String,
+            sourceTree: Schema.String,
+            version: Schema.String,
+            appDigest: Schema.String,
+            bundleIdentifier: Schema.optionalKey(Schema.String),
+          }),
+        }),
+      )(JSON.parse(receiptRaw.toString("utf8")));
+      const hash = (raw: NodeCrypto.BinaryLike) =>
+        NodeCrypto.createHash("sha256").update(raw).digest("hex");
+      const manifestSha256 = hash(JSON.stringify(manifest));
+      const owner = before.owner.binding;
+      const executable = NodePath.relative(receipt.candidate.appPath, receipt.candidate.executablePath);
+      // A launched receipt needs the present native owner and ready backend run.
+      if (
+        !NodeUtil.isDeepStrictEqual(active, bootstrap) ||
+        !NodeUtil.isDeepStrictEqual(receipt.nextActive, active) ||
+        receipt.transactionId !== active.generation ||
+        active.transactionId !== `manual-${active.generation}` ||
+        receipt.candidate.sourceSha !== active.sourceSha ||
+        receipt.candidate.sourceTree !== active.sourceTree ||
+        receipt.candidate.version !== active.version ||
+        receipt.candidate.appDigest !== active.appDigest ||
+        receipt.candidate.bundleIdentifier !== active.bundleIdentifier ||
+        !NodePath.isAbsolute(receipt.candidate.appPath) ||
+        !NodePath.isAbsolute(receipt.candidate.executablePath) ||
+        !executable || executable === ".." || executable.startsWith(`..${NodePath.sep}`) ||
+        NodePath.isAbsolute(executable) ||
+        NodePath.join(active.appPath, executable) !== active.executablePath ||
+        owner.manifestSha256 !== manifestSha256 ||
+        owner.home !== active.home || owner.databasePath !== active.databasePath ||
+        owner.profile !== active.profile || owner.environmentId !== active.environmentId ||
+        owner.sourceSha !== active.sourceSha || owner.sourceTree !== active.sourceTree ||
+        owner.version !== active.version
+      )
+        return base;
+      const after = await this.#options.ordinaryRecoveryReadiness?.();
+      if (
+        after === undefined || after.backendPid !== before.backendPid ||
+        after.run !== before.run ||
+        after.owner !== before.owner || !NodeUtil.isDeepStrictEqual(after.owner.binding, owner)
+      )
+        return base;
+      after.owner.assertCurrent();
+      if (
+        !(await read(this.manifestPath)).equals(manifestRaw) ||
+        !(await read(path)).equals(receiptRaw) ||
+        this.#bootstrap !== bootstrap || this.#busy !== null || this.#activationBlocked
+      )
+        return base;
+      after.owner.assertCurrent();
+      return {
+        ...base,
+        ordinaryRecovery: {
+          transactionId: active.transactionId,
+          activeGeneration: active.generation,
+          manifestSha256,
+          receiptSha256: hash(receiptRaw),
+        },
+      };
+    } catch {
+      return base;
+    }
+  }
+
+  async retiredLaptopInstall(binding: LaptopInstallBinding): Promise<boolean> {
+    if (
+      this.#busy !== null ||
+      this.#activationBlocked ||
+      this.#bootstrap === undefined ||
+      !/^[a-f0-9]{64}$/.test(binding.transactionId)
+    )
+      return false;
+    try {
+      const directory = NodePath.join(this.updaterRoot, "retired-preparations", binding.transactionId);
+      if ((await NodeFSP.realpath(directory)) !== directory) return false;
+      const info = await NodeFSP.lstat(directory);
+      if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
+        return false;
+      const absent = async (path: string) => {
+        try {
+          await NodeFSP.lstat(path);
+          return false;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") return true;
+          throw cause;
+        }
+      };
+      if (!(await absent(NodePath.join(this.updaterRoot, "transactions", binding.transactionId))))
+        return false;
+      const read = async (path: string) => {
+        const input = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+        try {
+          const stat = await input.stat();
+          if (
+            !stat.isFile() ||
+            stat.nlink !== 1 ||
+            stat.size > 1024 * 1024 ||
+            stat.uid !== process.getuid?.() ||
+            (stat.mode & 0o077) !== 0
+          )
+            throw new Error("Retirement proof ownership or bounds changed.");
+          const bytes = Buffer.alloc(1024 * 1024 + 1);
+          const { bytesRead } = await input.read(bytes, 0, bytes.length, 0);
+          if (bytesRead > 1024 * 1024) throw new Error("Retirement proof exceeds its bound.");
+          const raw = bytes.subarray(0, bytesRead);
+          return { raw, value: JSON.parse(raw.toString("utf8")) as Record<string, unknown> };
+        } finally {
+          await input.close();
+        }
+      };
+      const hash = (raw: NodeCrypto.BinaryLike) =>
+        NodeCrypto.createHash("sha256").update(raw).digest("hex");
+      const canonical = (value: unknown): unknown =>
+        Array.isArray(value)
+          ? value.map(canonical)
+          : typeof value === "object" && value !== null
+            ? Object.fromEntries(
+                Object.keys(value).sort().map((key) => [
+                  key,
+                  canonical((value as Record<string, unknown>)[key]),
+                ]),
+              )
+            : value;
+      const intent = await read(NodePath.join(directory, "preparation-retirement.json"));
+      const receipt = await read(NodePath.join(directory, "preparation-retirement-receipt.json"));
+      const plan = intent.value.plan as Record<string, unknown>;
+      const active = decodeActiveInstall(plan.activeBinding);
+      // The archive proves the old attempt ended; it says nothing about the running target.
+      if (
+        active.generation !== binding.fromGeneration ||
+        active.home !== this.#bootstrap.home ||
+        active.databasePath !== this.#bootstrap.databasePath ||
+        active.profile !== this.#bootstrap.profile ||
+        active.environmentId !== this.#bootstrap.environmentId ||
+        plan.protocol !== 1 ||
+        plan.transactionId !== binding.transactionId ||
+        plan.retiredPath !== directory ||
+        intent.value.protocol !== 1 ||
+        !["withdrawn", "backend-refused", "requester-exited", "writers-quiescent"].includes(
+          String(intent.value.evidence),
+        )
+      )
+        return false;
+      // Match the native helper's sorted, ASCII-escaped retirement digest.
+      const canonicalPlan = JSON.stringify(canonical(plan)).replace(
+        /[^\x00-\x7f]/g,
+        (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+      );
+      if (
+        intent.value.planSha256 !== hash(canonicalPlan) ||
+        !NodeUtil.isDeepStrictEqual(receipt.value, {
+          protocol: 1,
+          transactionId: binding.transactionId,
+          planSha256: intent.value.planSha256,
+          status: "retired",
+          evidence: intent.value.evidence,
+        })
+      )
+        return false;
+      const records = plan.records as Record<string, string>;
+      const allowed = new Set([
+        "prepare-intent.json",
+        "prepare-request.json",
+        "prepare-refused.json",
+        "prepare-failure.json",
+        "prepare-dispatched.json",
+        "continuation.json",
+        "activation-request.json",
+        "preparation-withdrawal.json",
+      ]);
+      if (records === null || typeof records !== "object" || Object.keys(records).length > allowed.size)
+        return false;
+      const expectedNames = new Set([
+        ...Object.keys(records),
+        "preparation-retirement.json",
+        "preparation-retirement-receipt.json",
+        "attempt-selection.json",
+      ]);
+      const names = await NodeFSP.readdir(directory);
+      if (names.length !== expectedNames.size || names.some((name) => !expectedNames.has(name)))
+        return false;
+      for (const [name, digest] of Object.entries(records)) {
+        if (!allowed.has(name) || hash((await read(NodePath.join(directory, name))).raw) !== digest)
+          return false;
+      }
+      const claim = await read(NodePath.join(directory, "prepare-intent.json"));
+      const attempt = await read(NodePath.join(directory, "attempt-selection.json"));
+      const value = claim.value;
+      if (
+        records["prepare-intent.json"] !== hash(claim.raw) ||
+        plan.attemptSha256 !== hash(attempt.raw) ||
+        value.protocol !== 1 ||
+        value.transactionId !== binding.transactionId ||
+        value.stagedHandle !== binding.stagedHandle ||
+        typeof value.selectionPath !== "string" ||
+        NodePath.dirname(value.selectionPath) !== NodePath.join(this.updaterRoot, "staging") ||
+        typeof value.selectionSha256 !== "string"
+      )
+        return false;
+      if (
+        ![2, 3].includes(value.preparationClaimProtocol as number) ||
+        !NodeUtil.isDeepStrictEqual(value, {
+          protocol: 1,
+          preparationClaimProtocol: value.preparationClaimProtocol,
+          stagedHandle: binding.stagedHandle,
+          transactionId: binding.transactionId,
+          selectionPath: value.selectionPath,
+          selectionSha256: value.selectionSha256,
+          home: active.home,
+          databasePath: active.databasePath,
+          profile: active.profile,
+          environmentId: active.environmentId,
+        })
+      )
+        return false;
+      if (!NodeUtil.isDeepStrictEqual(attempt.value, {
+        protocol: 1,
+        transactionId: binding.transactionId,
+        stagedHandle: binding.stagedHandle,
+        selectionPath: value.selectionPath,
+        selectionSha256: value.selectionSha256,
+        expected: active,
+      }))
+        return false;
+      const attemptPath = NodePath.join(
+        this.updaterRoot,
+        "attempt-selections",
+        `${hash(`${value.selectionPath}\n${value.selectionSha256}`)}.json`,
+      );
+      if (plan.attemptSelection !== attemptPath) return false;
+      if ((await NodeFSP.realpath(value.selectionPath)) !== value.selectionPath) return false;
+      const selection = await read(value.selectionPath);
+      const staged = decodeStageSelection(selection.value).app;
+      if (
+        hash(selection.raw) !== value.selectionSha256 ||
+        staged.handle !== binding.stagedHandle ||
+        staged.sourceSha !== binding.targetSource ||
+        staged.sourceTree !== binding.targetTree
+      )
+        return false;
+      if (intent.value.evidence === "withdrawn") {
+        if (
+          value.preparationClaimProtocol !== 3 ||
+          !NodeUtil.isDeepStrictEqual(
+            (await read(NodePath.join(directory, "preparation-withdrawal.json"))).value,
+            {
+              protocol: 1,
+              withdrawalProtocol: 1,
+              transactionId: binding.transactionId,
+              claimSha256: hash(claim.raw),
+              claim: value,
+              expected: active,
+              evidence: "withdrawal-protocol",
+            },
+          )
+        )
+          return false;
+      } else if (
+        ["prepare-dispatched.json", "continuation.json", "activation-request.json"].some(
+          (name) => name in records,
+        )
+      )
+        return false;
+      const helper = NodePath.join(this.updaterRoot, `activate-v1-${hash(jonesNativeHelperSource)}.py`);
+      const helperInfo = await NodeFSP.lstat(helper);
+      if (
+        !helperInfo.isFile() ||
+        helperInfo.isSymbolicLink() ||
+        helperInfo.nlink !== 1 ||
+        helperInfo.uid !== process.getuid?.() ||
+        (helperInfo.mode & 0o777) !== 0o700 ||
+        (await NodeFSP.readFile(helper, "utf8")) !== jonesNativeHelperSource
+      )
+        return false;
+      const inspection = decodeNativePreparationResult(JSON.parse(await runNativeCommand(
+        "/usr/bin/python3",
+        [helper, "--manifest", this.manifestPath, "--inspect-preparation", binding.transactionId],
+      )));
+      return (
+        inspection.operation === "inspect-preparation" &&
+        inspection.status === "retired" &&
+        inspection.transactionId === binding.transactionId &&
+        inspection.planSha256 === intent.value.planSha256 &&
+        this.#busy === null &&
+        !this.#activationBlocked &&
+        (await absent(NodePath.join(this.updaterRoot, "transactions", binding.transactionId))) &&
+        (await absent(NodePath.join(directory, "intent.json"))) &&
+        (await absent(NodePath.join(directory, "journal.json")))
+      );
+    } catch {
+      return false;
     }
   }
 

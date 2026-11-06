@@ -32,6 +32,7 @@ import {
   prepareJonesNativeInstall,
 } from "../jones/updates/jonesNativePreparation.ts";
 import { createJonesDesktopPreparation } from "../jones/updates/desktopPreparationRuntime.ts";
+import { currentJonesDesktopOwner } from "../jones/updates/jonesNativeStartup.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -506,6 +507,29 @@ export const make = Effect.gen(function* () {
         void coordinator?.request({ type: "read" });
       },
       timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
+      ordinaryRecoveryReadiness: async () => {
+        const primary = await Effect.runPromiseWith(context)(pool.primary);
+        const before = await Effect.runPromiseWith(context)(primary.snapshot);
+        const config = await Effect.runPromiseWith(context)(primary.currentConfig);
+        if (
+          !before.ready || Option.isNone(before.activePid) || Option.isNone(config) ||
+          config.value.jonesColdBackendPermit !== undefined || config.value.bootstrapDelivery !== "fd3"
+        )
+          return undefined;
+        const owner = config.value.jonesDesktopOwner?.();
+        if (owner === undefined || currentJonesDesktopOwner()?.() !== owner) return undefined;
+        owner.assertCurrent();
+        const after = await Effect.runPromiseWith(context)(primary.snapshot);
+        const current = await Effect.runPromiseWith(context)(primary.currentConfig);
+        if (
+          !after.ready || Option.isNone(after.activePid) ||
+          after.activePid.value !== before.activePid.value ||
+          Option.isNone(current) || current.value !== config.value
+        )
+          return undefined;
+        owner.assertCurrent();
+        return { owner, backendPid: after.activePid.value, run: config.value };
+      },
       prepareNative: async (handle, transactionId, active) => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
         const backend = await Effect.runPromiseWith(context)(primary.currentConfig);

@@ -373,8 +373,24 @@ export async function legacyConnectionsGate(targetSource: string): Promise<strin
     plan.laptop.gate !== undefined &&
     plan.laptop.gateClosed === undefined &&
     !result.state.laptop.activationBlocked &&
+    result.state.laptop.environmentId === plan.laptop.environmentId &&
     result.state.laptop.activeSource === targetSource &&
-    result.state.laptop.committedTransactionId === plan.laptop.gate.transactionId
+    plan.laptop.gate.activeSource === targetSource &&
+    result.state.laptop.activeTree === plan.laptop.gate.activeTree &&
+    result.state.laptop.activeGeneration === plan.laptop.gate.activeGeneration &&
+    (plan.laptop.gate.verificationKind === "ordinary-recovery"
+      ? result.state.laptop.committedTransactionId === undefined &&
+        result.state.laptop.ordinaryRecovery !== undefined &&
+        plan.laptop.gate.ordinaryRecovery?.transactionId === plan.laptop.gate.transactionId &&
+        plan.laptop.gate.ordinaryRecovery.activeGeneration === plan.laptop.gate.activeGeneration &&
+        result.state.laptop.ordinaryRecovery.transactionId === `manual-${plan.laptop.gate.activeGeneration}` &&
+        result.state.laptop.ordinaryRecovery.transactionId === plan.laptop.gate.transactionId &&
+        result.state.laptop.ordinaryRecovery.activeGeneration === plan.laptop.gate.activeGeneration &&
+        result.state.laptop.ordinaryRecovery.manifestSha256 === plan.laptop.gate.ordinaryRecovery?.manifestSha256 &&
+        result.state.laptop.ordinaryRecovery.receiptSha256 === plan.laptop.gate.ordinaryRecovery?.receiptSha256
+      : result.state.laptop.ordinaryRecovery === undefined &&
+        plan.laptop.gate.ordinaryRecovery === undefined &&
+        result.state.laptop.committedTransactionId === plan.laptop.gate.transactionId)
     ? null
     : "Update from Connections after Laptop is updated and verified for this source.";
 }

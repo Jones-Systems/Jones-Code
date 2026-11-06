@@ -12,6 +12,7 @@ import {
   routeLaptopDownload,
   routeLaptopInstall,
   partitionUpdateEverything,
+  legacyConnectionsGate,
 } from "./entrypoints";
 import { createInstallStatusStore, installStatusStore } from "./panelUi";
 import { bindInstallPlanServices, type InstallPlanServices } from "./services";
@@ -82,6 +83,46 @@ const desktop: DesktopUpdateState = {
 };
 
 describe("install entrypoint routing", () => {
+  it("requires the full matching ordinary gate proof for legacy Connections", async () => {
+    const ordinaryRecovery = {
+      transactionId: `manual-${"d".repeat(64)}`,
+      activeGeneration: "d".repeat(64),
+      manifestSha256: "e".repeat(64),
+      receiptSha256: "f".repeat(64),
+    };
+    const gate = {
+      openedAt: "2026-10-27T04:00:00Z", basis: "prior-verified" as const,
+      verificationKind: "ordinary-recovery" as const, ordinaryRecovery,
+      transactionId: ordinaryRecovery.transactionId, activeGeneration: ordinaryRecovery.activeGeneration,
+      activeSource: source, activeTree: target.sourceTree,
+    };
+    let state = native({ ...plan, laptop: { ...plan.laptop, gate } });
+    state = { ...state, laptop: { ...state.laptop, ordinaryRecovery,
+      activeGeneration: ordinaryRecovery.activeGeneration, activeSource: source, activeTree: target.sourceTree } };
+    const installPlan = vi.fn(async (): Promise<JonesInstallPlanResult> => ({ state }));
+    const unused = async () => { throw new Error("No host mutation is allowed."); };
+    const services: InstallPlanServices = {
+      bridge: { installPlan, getUpdateState: async () => desktop, onUpdateState: () => () => {} },
+      devices: () => [], observe: unused, legacy: unused, operation: unused,
+      stop: unused, host: unused, confirm: unused, chooseRecovery: unused, now: () => 0,
+    };
+    vi.stubGlobal("window", { desktopBridge: services.bridge });
+    const unbind = bindInstallPlanServices(services, createInstallStatusStore());
+    try {
+      expect(await legacyConnectionsGate(source)).toBeNull();
+      const valid = state;
+      const { ordinaryRecovery: _gateProof, ...unprovedGate } = gate;
+      for (const ordinary of [undefined, { ...ordinaryRecovery, transactionId: "manual-" + "9".repeat(64) },
+        { ...ordinaryRecovery, activeGeneration: "9".repeat(64) }]) {
+        state = { ...valid, current: { ...plan, laptop: { ...plan.laptop,
+          gate: ordinary === undefined ? unprovedGate : { ...gate, ordinaryRecovery: ordinary } } } };
+        expect(await legacyConnectionsGate(source)).not.toBeNull();
+      }
+      const { ordinaryRecovery: _liveProof, ...unproved } = valid.laptop;
+      state = { ...valid, laptop: unproved };
+      expect(await legacyConnectionsGate(source)).not.toBeNull();
+    } finally { unbind(); vi.unstubAllGlobals(); }
+  });
   it("never serializes a client-only legacy review into native Laptop IPC", async () => {
     const bridge = { installPlan: vi.fn() };
     await expect(

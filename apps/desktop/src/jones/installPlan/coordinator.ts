@@ -82,6 +82,16 @@ const sameKeys = (a: readonly string[], b: readonly string[]) =>
 const MAX_OPERATIONS = 16;
 const LEASE_MS = 120_000;
 
+const ordinaryProof = (evidence: JonesInstallPlanLaptopEvidence) => {
+  const proof = evidence.ordinaryRecovery;
+  return proof !== undefined &&
+    evidence.committedTransactionId === undefined &&
+    proof.activeGeneration === evidence.activeGeneration &&
+    proof.transactionId === `manual-${proof.activeGeneration}`
+    ? proof
+    : undefined;
+};
+
 const commandBody = (request: JonesInstallPlanRequest) =>
   NodeCrypto.createHash("sha256").update(canonicalJonesCommand(request)).digest("hex");
 
@@ -147,6 +157,7 @@ export function createInstallPlanCoordinator(options: {
     | "state"
     | "busy"
     | "laptopEvidence"
+    | "retiredLaptopInstall"
     | "download"
     | "stopDownload"
     | "install"
@@ -190,11 +201,16 @@ export function createInstallPlanCoordinator(options: {
     if (plan.laptop.gateClosed !== undefined) return plan;
     const old = plan.laptop.gate;
     const identity = evidence.environmentId === plan.laptop.environmentId;
+    const ordinary = ordinaryProof(evidence);
+    const transactionId = evidence.committedTransactionId ?? ordinary?.transactionId;
     if (old !== undefined) {
       if (
         !identity ||
         evidence.activationBlocked ||
-        old.transactionId !== evidence.committedTransactionId ||
+        (old.verificationKind === "ordinary-recovery"
+          ? ordinary === undefined || !same(old.ordinaryRecovery, ordinary)
+          : old.ordinaryRecovery !== undefined || evidence.ordinaryRecovery !== undefined) ||
+        old.transactionId !== transactionId ||
         old.activeGeneration !== evidence.activeGeneration ||
         old.activeSource !== evidence.activeSource ||
         old.activeTree !== evidence.activeTree
@@ -212,7 +228,8 @@ export function createInstallPlanCoordinator(options: {
     if (
       !identity ||
       evidence.activationBlocked ||
-      evidence.committedTransactionId === undefined ||
+      (evidence.ordinaryRecovery !== undefined && ordinary === undefined) ||
+      transactionId === undefined ||
       evidence.activeGeneration === undefined ||
       evidence.activeSource !== plan.target.sourceSha ||
       evidence.activeTree !== plan.target.sourceTree
@@ -226,10 +243,14 @@ export function createInstallPlanCoordinator(options: {
         gate: {
           openedAt: now(),
           basis:
-            plan.laptop.binding?.transactionId === evidence.committedTransactionId
+            ordinary === undefined && plan.laptop.binding?.transactionId === transactionId
               ? "plan-install"
               : "prior-verified",
-          transactionId: evidence.committedTransactionId,
+          ...(ordinary === undefined ? {} : {
+            verificationKind: "ordinary-recovery" as const,
+            ordinaryRecovery: ordinary,
+          }),
+          transactionId,
           activeGeneration: evidence.activeGeneration,
           activeSource: evidence.activeSource,
           activeTree: evidence.activeTree,
@@ -237,57 +258,101 @@ export function createInstallPlanCoordinator(options: {
       },
     };
   };
-  const reconcile = (plan: JonesInstallPlan): JonesInstallPlan => {
+  const reconcile = async (
+    plan: JonesInstallPlan,
+    evidence: JonesInstallPlanLaptopEvidence,
+  ): Promise<JonesInstallPlan> => {
     let changed = false;
-    const operations = plan.laptop.operations.map((operation): JonesInstallPlanLaptopOperation => {
-      if (
-        active.has(operation.operationId) ||
-        (operation.of !== undefined && active.has(operation.of)) ||
-        !localPending(operation) ||
-        operation.step === "install"
-      )
-        return operation;
-      const staged = options.controller.isStaged({
-        targetSource: plan.target.sourceSha,
-        targetTree: plan.target.sourceTree,
-      });
-      let status: NonNullable<JonesInstallPlanLaptopOperation["result"]>["status"] = "held";
-      const original =
-        operation.of === undefined
-          ? operation
-          : (plan.laptop.operations.find((entry) => entry.operationId === operation.of) ??
-            operation);
-      const worker = operation.worker ?? original.worker;
-      const copyAdmitted = [operation.result?.code, original.result?.code].some(
-        (code) => code === "copy-admitted" || code === "copy-unconfirmed",
-      );
-      let code = copyAdmitted ? "copy-unconfirmed" : "preparation-unconfirmed";
-      if (staged && operation.step === "download") {
-        status = "completed";
-        code = "stage-confirmed";
-      } else if (staged && operation.step === "stop") {
-        status = "completed";
-        code = "stage-confirmed";
-      } else if (
-        !copyAdmitted &&
-        worker !== undefined &&
-        (options.workerAbsent ?? workerAbsent)(worker)
-      ) {
-        status =
-          operation.step === "stop" ||
-          plan.laptop.operations.some((o) => o.of === operation.operationId)
-            ? "stopped"
-            : "interrupted";
-        code = "worker-exited";
-      }
-      if (operation.result?.status === status && operation.result.code === code) return operation;
-      changed = true;
-      return {
-        ...operation,
-        ...(worker === undefined ? {} : { worker }),
-        result: { status, code, at: now() },
-      };
-    });
+    const operations = await Promise.all(
+      plan.laptop.operations.map(async (operation): Promise<JonesInstallPlanLaptopOperation> => {
+        if (
+          active.has(operation.operationId) ||
+          (operation.of !== undefined && active.has(operation.of)) ||
+          !localPending(operation)
+        )
+          return operation;
+        if (operation.step === "install") {
+          if (operation.result?.code === "native-binding-changed") return operation;
+          const binding = plan.laptop.binding;
+          const nativeReady =
+            options.controller.busy === null &&
+            !evidence.activationBlocked &&
+            evidence.environmentId === plan.laptop.environmentId &&
+            evidence.activeGeneration !== undefined;
+          const targetVerified =
+            nativeReady &&
+            evidence.committedTransactionId === evidence.activeGeneration &&
+            evidence.activeSource === plan.target.sourceSha &&
+            evidence.activeTree === plan.target.sourceTree;
+          const bound = binding?.operationId === operation.operationId;
+          const committed =
+            targetVerified &&
+            bound &&
+            evidence.activeGeneration === binding.transactionId &&
+            evidence.activeGeneration !== binding.fromGeneration;
+          const retired =
+            nativeReady &&
+            bound &&
+            (await options.controller.retiredLaptopInstall(binding));
+          // Another verified transaction proves the target, never this attempt's success.
+          const external =
+            targetVerified && (!bound || evidence.activeGeneration !== binding.transactionId);
+          const result: NonNullable<JonesInstallPlanLaptopOperation["result"]> = committed
+            ? { status: "committed", at: now() }
+            : external || retired
+              ? {
+                  status: "interrupted",
+                  code: external ? "target-verified-elsewhere" : "install-not-active",
+                  at: now(),
+                }
+              : { status: "held", code: "native-unconfirmed", at: now() };
+          if (operation.result?.status === result.status && operation.result.code === result.code)
+            return operation;
+          changed = true;
+          return { ...operation, result };
+        }
+        const staged = options.controller.isStaged({
+          targetSource: plan.target.sourceSha,
+          targetTree: plan.target.sourceTree,
+        });
+        let status: NonNullable<JonesInstallPlanLaptopOperation["result"]>["status"] = "held";
+        const original =
+          operation.of === undefined
+            ? operation
+            : (plan.laptop.operations.find((entry) => entry.operationId === operation.of) ??
+              operation);
+        const worker = operation.worker ?? original.worker;
+        const copyAdmitted = [operation.result?.code, original.result?.code].some(
+          (code) => code === "copy-admitted" || code === "copy-unconfirmed",
+        );
+        let code = copyAdmitted ? "copy-unconfirmed" : "preparation-unconfirmed";
+        if (staged && operation.step === "download") {
+          status = "completed";
+          code = "stage-confirmed";
+        } else if (staged && operation.step === "stop") {
+          status = "completed";
+          code = "stage-confirmed";
+        } else if (
+          !copyAdmitted &&
+          worker !== undefined &&
+          (options.workerAbsent ?? workerAbsent)(worker)
+        ) {
+          status =
+            operation.step === "stop" ||
+            plan.laptop.operations.some((o) => o.of === operation.operationId)
+              ? "stopped"
+              : "interrupted";
+          code = "worker-exited";
+        }
+        if (operation.result?.status === status && operation.result.code === code) return operation;
+        changed = true;
+        return {
+          ...operation,
+          ...(worker === undefined ? {} : { worker }),
+          result: { status, code, at: now() },
+        };
+      }),
+    );
     return changed
       ? { ...plan, revision: plan.revision + 1, laptop: { ...plan.laptop, operations } }
       : plan;
@@ -311,14 +376,17 @@ export function createInstallPlanCoordinator(options: {
       return work(snapshot, evidence);
     });
   const nativeChange = async (
-    change: (plan: JonesInstallPlan) => JonesInstallPlan,
+    change: (
+      plan: JonesInstallPlan,
+      evidence: JonesInstallPlanLaptopEvidence,
+    ) => JonesInstallPlan,
     required = false,
   ) => {
     const state = await transact(async (snapshot, evidence) => {
       if (snapshot.readOnly !== undefined) throw new Error("Native plan journal is read-only.");
       const plan = snapshot.document.current;
       if (required && plan === null) throw new Error("The native install has no current plan.");
-      const next = plan === null ? null : change(plan);
+      const next = plan === null ? null : change(plan, evidence);
       const document = refreshCommands(
         next === plan ? snapshot.document : { ...snapshot.document, current: next },
       );
@@ -422,14 +490,22 @@ export function createInstallPlanCoordinator(options: {
             ...(effect.review!.recovery === undefined ? {} : { recovery: effect.review!.recovery }),
           }),
         );
-        // A bound attempt may already have native effects even if the caller returned a refusal.
-        await nativeChange((plan) => {
-          if (
-            plan.planId !== effect.planId ||
-            result.accepted ||
-            plan.laptop.binding?.operationId === effect.operationId
-          )
-            return plan;
+        await nativeChange((plan, evidence) => {
+          if (plan.planId !== effect.planId || result.accepted) return plan;
+          const operation = plan.laptop.operations.find(
+            (entry) => entry.operationId === effect.operationId,
+          );
+          if (operation === undefined || !localPending(operation)) return plan;
+          const binding = plan.laptop.binding;
+          const bound = binding?.operationId === effect.operationId;
+          // A refused call alone cannot settle a bound handoff with unknown native effects.
+          const failedBeforeActivation =
+            result.failed &&
+            options.controller.busy === null &&
+            !evidence.activationBlocked &&
+            evidence.environmentId === plan.laptop.environmentId &&
+            (!bound || evidence.activeGeneration === binding.fromGeneration);
+          const status = failedBeforeActivation ? "failed" : bound ? "held" : "refused";
           return {
             ...plan,
             revision: plan.revision + 1,
@@ -440,8 +516,12 @@ export function createInstallPlanCoordinator(options: {
                   ? {
                       ...operation,
                       result: {
-                        status: "refused",
-                        code: result.refusal ?? "install-refused",
+                        status,
+                        code: failedBeforeActivation
+                          ? "install-failed"
+                          : bound
+                            ? "native-unconfirmed"
+                            : (result.refusal ?? "install-refused"),
                         at: now(),
                       },
                     }
@@ -522,7 +602,7 @@ export function createInstallPlanCoordinator(options: {
         let dispositions = snapshot.dispositions;
         let plan = document.current;
         if (plan !== null && snapshot.readOnly === undefined) {
-          const next = gate(reconcile(plan), evidence);
+          const next = gate(await reconcile(plan, evidence), evidence);
           if (next !== plan) {
             plan = next;
             document = { ...document, current: plan };
@@ -792,14 +872,15 @@ export function createInstallPlanCoordinator(options: {
               ? "unavailable"
               : dispositions.targets.some((target) => target.targetSource === evidence.activeSource)
                 ? "plan-managed"
-                : evidence.committedTransactionId === undefined
+                : evidence.committedTransactionId === undefined &&
+                    (req.acceptOrdinaryRecovery !== 1 || ordinaryProof(evidence) === undefined)
                   ? "unproved"
                   : undefined;
           extras = {
             publication:
               code === undefined
                 ? {
-                    kind: "committed",
+                    kind: evidence.committedTransactionId === undefined ? "ordinary-verified" : "committed",
                     source: {
                       repository: "Jones-Systems/Jones-Code",
                       sha: evidence.activeSource!,
@@ -810,14 +891,14 @@ export function createInstallPlanCoordinator(options: {
                     kind: "withheld",
                     code,
                     message:
-                      "Follower publication requires an unmanaged, natively committed active build.",
+                      "Follower publication requires an unmanaged, natively verified active build.",
                   },
           };
         } else if (req.type === "start") {
           const environmentId = options.localEnvironmentId();
           const prior =
             evidence.environmentId === environmentId &&
-            evidence.committedTransactionId !== undefined &&
+            (evidence.committedTransactionId !== undefined || ordinaryProof(evidence) !== undefined) &&
             !evidence.activationBlocked &&
             evidence.activeSource === req.target.sourceSha &&
             evidence.activeTree === req.target.sourceTree;
