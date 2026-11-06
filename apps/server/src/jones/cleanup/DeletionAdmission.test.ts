@@ -371,7 +371,8 @@ it.effect(
         operation: { kind: "reconciled", completion: "unknown" },
         before,
         after: before,
-        observedAt: DateTime.formatIso(yield* DateTime.now),
+        // Historical fixture chronology is independent of Effect's epoch-zero test clock.
+        observedAt: start.startedAt,
       };
       yield* recovered.qualify(observation);
       assert.strictEqual(
@@ -385,12 +386,16 @@ it.effect(
       legacy.rules.worktreeOnMerge = true;
       assert.isTrue(
         Exit.isFailure(
-          yield* sql`UPDATE jones_deletion_worktree_admissions SET binding_json=${nativeCreationCanonicalJson(legacy)} WHERE effect_id=${start.effectId}`.pipe(Effect.exit),
+          yield* sql`UPDATE jones_deletion_worktree_admissions SET binding_json=${nativeCreationCanonicalJson(legacy)} WHERE effect_id=${start.effectId}`.pipe(
+            Effect.exit,
+          ),
         ),
       );
       assert.isTrue(
         Exit.isFailure(
-          yield* sql`DELETE FROM jones_deletion_worktree_admissions WHERE effect_id=${start.effectId}`.pipe(Effect.exit),
+          yield* sql`DELETE FROM jones_deletion_worktree_admissions WHERE effect_id=${start.effectId}`.pipe(
+            Effect.exit,
+          ),
         ),
       );
       assert.deepStrictEqual(yield* recovered.read(start.effectId), { start, ordinal: 0 });
@@ -429,15 +434,17 @@ it.effect("historical binding tampering is rejected without rewriting protected 
     };
     assert.isTrue(
       Exit.isFailure(
-        yield* recovered.qualify({
-          version: 1,
-          start,
-          startOrdinal: 0,
-          operation: { kind: "reconciled", completion: "unknown" },
-          before,
-          after: before,
-          observedAt: DateTime.formatIso(yield* DateTime.now),
-        }).pipe(Effect.exit),
+        yield* recovered
+          .qualify({
+            version: 1,
+            start,
+            startOrdinal: 0,
+            operation: { kind: "reconciled", completion: "unknown" },
+            before,
+            after: before,
+            observedAt: DateTime.formatIso(yield* DateTime.now),
+          })
+          .pipe(Effect.exit),
       ),
     );
     assert.strictEqual((yield* sql`SELECT * FROM jones_deletion_worktree_observations`).length, 0);
@@ -521,13 +528,14 @@ it.effect(
       );
       yield* sql`DELETE FROM jones_workspace_retirement_state WHERE worktree=${target.path}`;
       assert.strictEqual(
-        (yield* readback.pipe(
-          Effect.provideService(RetirementReservationOwner, own),
-          Effect.flip,
-        )).reason,
+        (yield* readback.pipe(Effect.provideService(RetirementReservationOwner, own), Effect.flip))
+          .reason,
         "retirement_ownership_lost",
       );
-      assert.strictEqual((yield* sql`SELECT * FROM jones_deletion_worktree_observations`).length, 0);
+      assert.strictEqual(
+        (yield* sql`SELECT * FROM jones_deletion_worktree_observations`).length,
+        0,
+      );
       assert.deepStrictEqual(yield* sql`SELECT state FROM jones_deletion_worktree_admissions`, [
         { state: "started" },
       ]);

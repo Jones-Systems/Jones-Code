@@ -2,7 +2,7 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeWorker from "node:worker_threads";
 import { performance } from "node:perf_hooks";
-import { scheduler } from "node:timers/promises";
+import { setTimeout as wait } from "node:timers/promises";
 import * as Context from "effect/Context";
 import { nativePlatform } from "./Filesystem.ts";
 import type { DutyIdentity } from "./DutyIdentity.ts";
@@ -25,12 +25,7 @@ const path = require('node:path');
 `;
 const observing = new Set<number>();
 async function observe(pid: number, physical: DutyIdentity | undefined): Promise<string | null> {
-  if (
-    !Number.isSafeInteger(pid) ||
-    pid <= 0 ||
-    physical?.status !== "bound" ||
-    observing.has(pid)
-  )
+  if (!Number.isSafeInteger(pid) || pid <= 0 || physical?.status !== "bound" || observing.has(pid))
     return null;
   observing.add(pid);
   const started = performance.now();
@@ -81,7 +76,7 @@ async function observe(pid: number, physical: DutyIdentity | undefined): Promise
       worker.once("message", (value) => void finish(value));
       worker.once("error", () => void finish(null));
       worker.once("exit", () => void finish(null));
-      void scheduler.wait(remaining, { signal: deadline.signal, ref: false }).then(
+      void wait(remaining, undefined, { signal: deadline.signal, ref: false }).then(
         () => void finish(null),
         () => {
           if (!deadline.signal.aborted) void finish(null);

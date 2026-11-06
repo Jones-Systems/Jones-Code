@@ -162,6 +162,9 @@ export async function observeNativeOwner(
       return rows.some((p) => p.pid === owner.host.pid && p.start === owner.host.process_start)
         ? "present"
         : "unknown";
+    const originalPid = rows.find((process) => process.pid === owner.pid);
+    if (originalPid && (originalPid.start !== owner.start || originalPid.session !== owner.session))
+      return "unknown";
     // The terminal/provider's entire observed native session must be gone. A dead
     // launcher with children in that session remains present after server restart.
     if (rows.some((p) => p.session === owner.session)) return "present";

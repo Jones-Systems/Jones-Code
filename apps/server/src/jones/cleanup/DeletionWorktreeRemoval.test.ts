@@ -148,7 +148,12 @@ it.effect("invokes only the exact captured command after durable owner revalidat
       assert.isTrue(
         Exit.isFailure(
           yield* producer
-            .executeStarted(start, 7, () => Effect.void, () => Effect.void)
+            .executeStarted(
+              start,
+              7,
+              () => Effect.void,
+              () => Effect.void,
+            )
             .pipe(Effect.exit),
         ),
       );
@@ -162,14 +167,24 @@ it.effect("unknown completion is observed without another invocation", () =>
     const f = fixture({ unknown: true });
     yield* Effect.gen(function* () {
       const producer = yield* Removal.DeletionWorktreeRemoval;
-      const observed = yield* producer.executeStarted(start, 1, () => Effect.void, () => Effect.void);
+      const observed = yield* producer.executeStarted(
+        start,
+        1,
+        () => Effect.void,
+        () => Effect.void,
+      );
       assert.deepStrictEqual(observed.operation, {
         kind: "executed",
         exitCode: 0,
         completion: "unknown",
       });
       const repeated = yield* producer
-        .executeStarted(start, 1, () => Effect.void, () => Effect.void)
+        .executeStarted(
+          start,
+          1,
+          () => Effect.void,
+          () => Effect.void,
+        )
         .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(repeated));
       const recovery = yield* producer.observeStarted(start, 1);
@@ -184,7 +199,12 @@ it.effect("already absent requires both Git registration and lstat absence", () 
     const f = fixture({ initiallyAbsent: true });
     const observed = yield* Effect.gen(function* () {
       const producer = yield* Removal.DeletionWorktreeRemoval;
-      return yield* producer.executeStarted(start, 1, () => Effect.void, () => Effect.void);
+      return yield* producer.executeStarted(
+        start,
+        1,
+        () => Effect.void,
+        () => Effect.void,
+      );
     }).pipe(Effect.provide(f.layer));
     assert.deepStrictEqual(observed.operation, {
       kind: "already_absent",
@@ -205,7 +225,12 @@ it.effect.each([
     yield* Effect.gen(function* () {
       const producer = yield* Removal.DeletionWorktreeRemoval;
       const result = yield* producer
-        .executeStarted(start, 1, () => Effect.die("invalid target must not revalidate"), () => Effect.void)
+        .executeStarted(
+          start,
+          1,
+          () => Effect.die("invalid target must not revalidate"),
+          () => Effect.void,
+        )
         .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(result));
       assert.strictEqual(f.removals().length, 0);
@@ -219,10 +244,13 @@ it.effect("stale owner start refuses execution", () =>
     yield* Effect.gen(function* () {
       const producer = yield* Removal.DeletionWorktreeRemoval;
       const result = yield* producer
-        .executeStarted(start, 1, () =>
-          Effect.fail(
-            new EventSink.EventSinkWriteError({ eventCount: 0, cause: "stale-original-task" }),
-          ),
+        .executeStarted(
+          start,
+          1,
+          () =>
+            Effect.fail(
+              new EventSink.EventSinkWriteError({ eventCount: 0, cause: "stale-original-task" }),
+            ),
           () => Effect.void,
         )
         .pipe(Effect.exit);
@@ -237,7 +265,14 @@ it.effect("invalid start ordinal fails without filesystem or Git access", () =>
     const f = fixture();
     yield* Effect.gen(function* () {
       const producer = yield* Removal.DeletionWorktreeRemoval;
-      const result = yield* producer.executeStarted(start, -1, () => Effect.void, () => Effect.void).pipe(Effect.exit);
+      const result = yield* producer
+        .executeStarted(
+          start,
+          -1,
+          () => Effect.void,
+          () => Effect.void,
+        )
+        .pipe(Effect.exit);
       assert.isTrue(Exit.isFailure(result));
       assert.strictEqual(f.calls.length, 0);
     }).pipe(Effect.provide(f.layer));
@@ -402,7 +437,12 @@ it.effect.each([
       const producer = yield* Removal.DeletionWorktreeRemoval;
       const original = { ...start, startedAt };
       const execution = yield* producer
-        .executeStarted(original, 1, () => Effect.void, () => Effect.void)
+        .executeStarted(
+          original,
+          1,
+          () => Effect.void,
+          () => Effect.void,
+        )
         .pipe(Effect.flip);
       const observation = yield* producer.observeStarted(original, 1).pipe(Effect.flip);
       assert.strictEqual(execution.reason, "invalid_original_start_time");

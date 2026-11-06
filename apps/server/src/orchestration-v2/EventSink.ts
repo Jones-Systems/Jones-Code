@@ -2250,9 +2250,9 @@ const layerBase: Layer.Layer<
           .start(input)
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       checkRetainedDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
-        deletionAdmission.checkRetained(start, ordinal, rules, live).pipe(
-          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
-        ),
+        deletionAdmission
+          .checkRetained(start, ordinal, rules, live)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readDeletionWorktreeRemovalStart: (effectId) =>
         deletionAdmission
           .read(effectId)

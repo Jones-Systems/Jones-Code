@@ -1,5 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Exact disposable fixtures execute production storage, qualification, reservation and unlink/removal paths.
 import { canonical } from "./Filesystem.ts";
+import { ClaimAbsence } from "./ClaimReconciliation.ts";
+import type { RetirementReceipt } from "./Receipts.ts";
 import * as Schema from "effect/Schema";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import { DutyIdentityJson, NativeDutyOwnerJson, RetirementReceiptJson } from "./DurableCodecs.ts";
@@ -21,7 +23,7 @@ import {
 import { binding, incarnation } from "./OutputAttestation.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { enumerateDisposal, disposePath } from "./Disposal.ts";
-import { dutyIdentity } from "./DutyIdentity.ts";
+import { dutyIdentity, terminalWorkspace, revalidateTerminalWorkspace } from "./DutyIdentity.ts";
 import { captureNativeOwner, observeNativeOwner, type NativeOwnerIO } from "./NativeDutyOwner.ts";
 import { nativePid } from "./Reservation.ts";
 import { nativeServices, type ServiceIO } from "./NativeConsumers.ts";
@@ -82,6 +84,67 @@ async function fixtureSql(
   return { sql, db, close: () => db.close() };
 }
 export const retirementCases: Record<string, () => Promise<void>> = {
+  "receipt codecs retain absent hold/unknown qualification evidence and reject invalid authority fields": () =>
+    fixture(async ({ input }) => {
+      for (const outcome of ["hold", "unknown"] as const) {
+        const receipt: RetirementReceipt = {
+          schema: "worktree-retirement/v1",
+          id: "codec-fixture",
+          cause: "sweep",
+          state: "not_retired",
+          binding: input.expected,
+          incarnation: incarnation(input.expected),
+          qualification: {
+            schema: "workspace-qualification/v1",
+            authority_effect: "none",
+            outcome,
+            level: null,
+            reasons: ["native_binding_unavailable"],
+            decision: outcome,
+            observationMs: 0,
+          },
+          coverage: {},
+          preservationRefs: [],
+          journal: "codec-fixture",
+          disposed: [],
+          reasons: ["native_binding_unavailable"],
+          limits: [],
+          bytes: { logical: null, allocated: null, statvfs_delta: null },
+        };
+        const encoded = await Effect.runPromise(
+          Schema.encodeEffect(RetirementReceiptJson)(receipt),
+        );
+        const decoded = await Effect.runPromise(
+          Schema.decodeEffect(RetirementReceiptJson)(encoded),
+        );
+        NodeAssert.deepEqual(decoded, receipt);
+        NodeAssert.equal(Object.hasOwn(decoded.qualification, "binding"), false);
+        NodeAssert.equal(Object.hasOwn(decoded.qualification, "head"), false);
+        await NodeAssert.rejects(
+          Effect.runPromise(
+            Schema.decodeEffect(RetirementReceiptJson)(canonical({ ...receipt, binding: null })),
+          ),
+        );
+      }
+    }),
+  "default absence decoding retains malformed and missing native holder proof": async () => {
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const absence = yield* ClaimAbsence;
+        for (const native_owner_json of [null, "broken", '{"schema":"unexpected"}']) {
+          const result = yield* absence.observe({
+            claim_id: "synthetic-claim",
+            worktree: "/synthetic/checkout",
+            kind: "session",
+            owner: "synthetic-owner",
+            holder_json: '"unchanged-holder"',
+            native_owner_json,
+          });
+          NodeAssert.deepEqual(result, { holder: '"unchanged-holder"', status: "unknown" });
+        }
+      }),
+    );
+  },
   "production138 DDL is atomic in actual SQLite and retries without inventing duty identity": () =>
     fixture(async ({ base }) => {
       const f = await fixtureSql(NodePath.join(base, "migration.sqlite3"), undefined, false);
@@ -255,6 +318,23 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         await NodeFSP.symlink(NodePath.join(base, "old-checkout"), worktree);
         NodeAssert.equal((await dutyIdentity(worktree)).status, "unbound");
       }),
+  "terminal native admission normalizes subdirectory roots and rejects hints or replaced cwd": () =>
+    fixture(async ({ worktree, base }) => {
+      const subdir = NodePath.join(worktree, "subdir");
+      await NodeFSP.mkdir(subdir);
+      const observed = await terminalWorkspace(subdir);
+      NodeAssert.equal(observed.worktree, worktree);
+      NodeAssert.equal(observed.identity?.status, "bound");
+      if (observed.identity?.status === "bound") NodeAssert.equal(observed.identity.binding.path, worktree);
+      await revalidateTerminalWorkspace(observed);
+      await NodeAssert.rejects(terminalWorkspace(subdir, base), /terminal_worktree_hint_mismatch/);
+      const ordinary = await terminalWorkspace(base);
+      NodeAssert.equal(ordinary.worktree, null);
+      NodeAssert.equal(ordinary.identity, null);
+      await NodeFSP.rename(subdir, NodePath.join(worktree, "old-subdir"));
+      await NodeFSP.symlink(NodePath.join(worktree, "old-subdir"), subdir);
+      await NodeAssert.rejects(revalidateTerminalWorkspace(observed), /terminal_cwd_identity_changed/);
+    }),
   "native owner reconciliation retains children after launcher/server exit and never clears unknown":
     async () => {
       const host = {
@@ -297,6 +377,8 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         }),
         "unknown",
       );
+      listing = "12345 replacement-session reused-parent-pid\n";
+      NodeAssert.equal(await observeNativeOwner(owner, io), "unknown");
       listing = "12346 unrelated-session reused-pid\n";
       NodeAssert.equal(await observeNativeOwner(owner, io), "verified_absent");
       NodeAssert.equal(
@@ -423,8 +505,14 @@ export const retirementCases: Record<string, () => Promise<void>> = {
                   "SELECT identity_json,native_owner_json FROM jones_workspace_duty_identity WHERE claim_id='session'",
                 )
                 .get()!;
-              NodeAssert.equal(Schema.decodeSync(DutyIdentityJson)(String(facts.identity_json)).status, "bound");
-              NodeAssert.equal(Schema.decodeSync(NativeDutyOwnerJson)(String(facts.native_owner_json)).type, "unresolved");
+              NodeAssert.equal(
+                (yield* Schema.decodeEffect(DutyIdentityJson)(String(facts.identity_json))).status,
+                "bound",
+              );
+              NodeAssert.equal(
+                (yield* Schema.decodeEffect(NativeDutyOwnerJson)(String(facts.native_owner_json))).type,
+                "unresolved",
+              );
               const rejected = yield* store
                 .reconcileClaim("session", '{"native":"fixture"}', false)
                 .pipe(Effect.result);
@@ -499,19 +587,27 @@ export const retirementCases: Record<string, () => Promise<void>> = {
               reads++;
               NodeAssert.equal(own.worktree, worktree);
               const common = new NodeSqlite.DatabaseSync(
-                NodePath.join(input.expected.git_common_dir, "workspace-lifecycle", "reservations.sqlite3"),
+                NodePath.join(
+                  input.expected.git_common_dir,
+                  "workspace-lifecycle",
+                  "reservations.sqlite3",
+                ),
                 { readOnly: true },
               );
               try {
                 NodeAssert.equal(
-                  common.prepare("SELECT record FROM reservations WHERE admin_id=?").get(own.record.admin_id)?.record,
+                  common
+                    .prepare("SELECT record FROM reservations WHERE admin_id=?")
+                    .get(own.record.admin_id)?.record,
                   canonical(own.record),
                 );
               } finally {
                 common.close();
               }
               const current = f.db
-                .prepare("SELECT incarnation_id,receipt_id FROM jones_workspace_retirement_state WHERE worktree=?")
+                .prepare(
+                  "SELECT incarnation_id,receipt_id FROM jones_workspace_retirement_state WHERE worktree=?",
+                )
                 .get(worktree);
               NodeAssert.equal(current?.incarnation_id, own.record.incarnation);
               NodeAssert.equal(current?.receipt_id, own.record.receipt);
@@ -527,9 +623,7 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         NodeAssert.ok(reads >= 2);
         NodeAssert.equal(mutations, 1);
         NodeAssert.equal(
-          await Effect.runPromise(Effect.gen(function* () {
-            return yield* RetirementReservationOwner;
-          })),
+          await Effect.runPromise(RetirementReservationOwner),
           null,
         );
       } finally {
@@ -557,16 +651,24 @@ export const retirementCases: Record<string, () => Promise<void>> = {
                   if (own === null || altered) return;
                   altered = true;
                   const common = new NodeSqlite.DatabaseSync(
-                    NodePath.join(input.expected.git_common_dir, "workspace-lifecycle", "reservations.sqlite3"),
+                    NodePath.join(
+                      input.expected.git_common_dir,
+                      "workspace-lifecycle",
+                      "reservations.sqlite3",
+                    ),
                   );
                   try {
                     if (mode === "missing")
-                      common.prepare("DELETE FROM reservations WHERE admin_id=?").run(own.record.admin_id);
+                      common
+                        .prepare("DELETE FROM reservations WHERE admin_id=?")
+                        .run(own.record.admin_id);
                     else
-                      common.prepare("UPDATE reservations SET record=? WHERE admin_id=?").run(
-                        canonical({ ...own.record, receipt: "different-receipt" }),
-                        own.record.admin_id,
-                      );
+                      common
+                        .prepare("UPDATE reservations SET record=? WHERE admin_id=?")
+                        .run(
+                          canonical({ ...own.record, receipt: "different-receipt" }),
+                          own.record.admin_id,
+                        );
                   } finally {
                     common.close();
                   }
@@ -580,7 +682,9 @@ export const retirementCases: Record<string, () => Promise<void>> = {
           );
           NodeAssert.equal(altered, true);
           NodeAssert.equal(mutations, 0);
-          const saved = f.db.prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts").get();
+          const saved = f.db
+            .prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts")
+            .get();
           NodeAssert.deepEqual(
             Schema.decodeSync(RetirementReceiptJson)(String(saved?.receipt_json)).reasons,
             ["reservation_ownership_lost"],

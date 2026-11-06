@@ -10,10 +10,7 @@ import { nativeServices, nativeWorkloads } from "./NativeConsumers.ts";
 export class NativeObservations extends Context.Reference<{
   readonly services: (target: string) => Promise<Probe>;
   readonly processes: (target: string) => Promise<Probe>;
-  readonly workloads: (
-    sql: SqlClient.SqlClient,
-    target: string,
-  ) => Effect.Effect<Probe, SqlError>;
+  readonly workloads: (sql: SqlClient.SqlClient, target: string) => Effect.Effect<Probe, SqlError>;
   readonly temporaryRoots: readonly string[];
 }>("jones/workspaceRetirement/NativeObservations", {
   defaultValue: () => ({

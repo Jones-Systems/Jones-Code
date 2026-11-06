@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
 import { DutyIdentityJson, QueuedHolderJson } from "./DurableCodecs.ts";
-import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import type { RecordedEvent } from "../../orchestration-v2/RecordedTypes.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
@@ -9,10 +9,7 @@ import { dutyIdentity } from "./DutyIdentity.ts";
 
 // Called within EventSink's transaction, before projections change. Read-only native
 // binding performs no optional enrichment and acquires no common-store writer lock.
-export const events = (
-  sql: SqlClient.SqlClient,
-  values: readonly OrchestrationV2DomainEvent[],
-) =>
+export const events = (sql: SqlClient.SqlClient, values: readonly RecordedEvent[]) =>
   Effect.gen(function* () {
     const batchPaths = new Map<string, string | null>();
     for (const event of values) {
@@ -22,12 +19,8 @@ export const events = (
         event.type !== "run.updated"
       )
         continue;
-      const payload = event.payload as unknown as {
-        worktreePath?: string | null;
-        id?: string;
-        status?: string;
-        projectId?: string;
-      };
+      const payload = event.payload;
+      const nextPath = "worktreePath" in payload ? payload.worktreePath : undefined;
       let prior: { worktreePath: string | null } | null = null;
       if (event.type !== "thread.created") {
         if (batchPaths.has(event.threadId))
@@ -43,7 +36,7 @@ export const events = (
       }
       const paths = [
         ...new Set(
-          [prior?.worktreePath, payload.worktreePath].filter(
+          [prior?.worktreePath, nextPath].filter(
             (p): p is string => typeof p === "string",
           ),
         ),
@@ -56,7 +49,7 @@ export const events = (
           return yield* new RetirementError({ reason: "retiring", target: worktree });
       }
       if (event.type === "thread.created" || Object.hasOwn(payload, "worktreePath"))
-        batchPaths.set(event.threadId, payload.worktreePath ?? null);
+        batchPaths.set(event.threadId, nextPath ?? null);
       if (event.type === "thread.settled" && prior?.worktreePath) {
         if (event.payload.settledAt === null)
           return yield* new RetirementError({

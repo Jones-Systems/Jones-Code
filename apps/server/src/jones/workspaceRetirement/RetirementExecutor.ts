@@ -116,7 +116,8 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
                 const after = await NodeFSP.lstat(path);
                 if (
                   db.prepare("PRAGMA user_version").get()?.user_version !== 1 ||
-                  db.prepare("SELECT sql FROM sqlite_master WHERE name='reservations'").get()?.sql !== RESERVATION_DDL ||
+                  db.prepare("SELECT sql FROM sqlite_master WHERE name='reservations'").get()
+                    ?.sql !== RESERVATION_DDL ||
                   !row ||
                   before.dev !== after.dev ||
                   before.ino !== after.ino ||

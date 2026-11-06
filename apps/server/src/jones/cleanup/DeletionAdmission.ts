@@ -139,7 +139,9 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     // The original canonical bytes own receipt identity. Decoding a legacy
     // policy may add defaults; that resolved view must never replace its digest.
     if (
-      nativeCreationCanonicalJson(yield* Schema.decodeEffect(Schema.UnknownFromJsonString)(savedBinding)) !== savedBinding ||
+      nativeCreationCanonicalJson(
+        yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(savedBinding),
+      ) !== savedBinding ||
       start.effectId !== effectId ||
       savedBindingSha256 !== start.bindingSha256
     )
@@ -267,9 +269,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     if (currentRules === undefined || currentLive === undefined)
       return yield* failure("current_policy_owner_unavailable");
     const rules = yield* Schema.decodeEffect(WorktreeCleanupRules)(yield* currentRules);
-    const resolvedBindingRules = yield* Schema.decodeEffect(WorktreeCleanupRules)(
-      binding.rules,
-    );
+    const resolvedBindingRules = yield* Schema.decodeEffect(WorktreeCleanupRules)(binding.rules);
     if (!rules.worktreeOnDelete || !same(rules, resolvedBindingRules))
       return yield* failure("original_worktree_policy_changed");
     if (!(yield* currentLive))

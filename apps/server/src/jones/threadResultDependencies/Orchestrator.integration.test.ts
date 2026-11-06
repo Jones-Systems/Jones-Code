@@ -7,6 +7,8 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Console from "effect/Console";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
@@ -231,10 +233,12 @@ it.effect.each(["pending", "running"] as const)(
       const finalized = yield* Queue.unbounded<boolean>();
       const recordedStages = new Set<string>();
       const stage = (value: string) =>
-        Effect.sync(() => {
-          if (recordedStages.has(value)) return;
+        Effect.suspend(() => {
+          if (recordedStages.has(value)) return Effect.void;
           recordedStages.add(value);
-          console.info("CR-R1", continuationStatus, child.id, interrupted.id, value);
+          return Effect.logInfo("CR-R1", continuationStatus, child.id, interrupted.id, value).pipe(
+            Effect.provideService(Console.Console, Console.Console.defaultValue()),
+          );
         });
       // Transparent instrumentation waits for the real consumer; neither API is stubbed.
       let finalizerCalls = 0;
@@ -247,18 +251,51 @@ it.effect.each(["pending", "running"] as const)(
           Effect.andThen(effect),
           Effect.tap(() => receipt("exit")),
           Effect.tap(() =>
-            orchestrator.restartContinuationPending(interrupted).pipe(
-              Effect.flatMap((pending) =>
-                receipt(`pending:${pending}`).pipe(
-                  Effect.andThen(Queue.offer(finalized, pending)),
+            orchestrator
+              .restartContinuationPending(interrupted)
+              .pipe(
+                Effect.flatMap((pending) =>
+                  receipt(`pending:${pending}`).pipe(
+                    Effect.andThen(Queue.offer(finalized, pending)),
+                  ),
+                ),
+              ),
+          ),
+        );
+      };
+      // Delay only consumption of the actual captured stream, never its baseline.
+      // The run update commits before this gate opens, forcing real EventSink replay.
+      const consumeDomainEvents = yield* Deferred.make<void>();
+      let acquired = false;
+      let fixturePublished = false;
+      const observed = Layer.succeed(Orchestrator.OrchestratorV2, {
+        ...orchestrator,
+        acquireDomainEvents: stage("domain-acquire-enter").pipe(
+          Effect.andThen(orchestrator.acquireDomainEvents),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              assert.isFalse(fixturePublished);
+              acquired = true;
+            }).pipe(Effect.andThen(stage("domain-acquire-exit"))),
+          ),
+          Effect.map((stream) =>
+            Stream.unwrap(
+              stage("domain-consume-enter").pipe(
+                Effect.andThen(Deferred.await(consumeDomainEvents)),
+                Effect.tap(() => stage("domain-consume-released")),
+                Effect.as(
+                  stream.pipe(
+                    Stream.tap((event) =>
+                      event.type === "run.updated" && event.threadId === child.id
+                        ? stage("domain-run-received")
+                        : Effect.void,
+                    ),
+                  ),
                 ),
               ),
             ),
           ),
-        );
-      };
-      const observed = Layer.succeed(Orchestrator.OrchestratorV2, {
-        ...orchestrator,
+        ),
         finalizeDelegatedTask: (id) => signal(id, orchestrator.finalizeDelegatedTask(id)),
         recoverDelegatedTask: (id, runId) =>
           signal(id, orchestrator.recoverDelegatedTask(id, runId)),
@@ -268,6 +305,7 @@ it.effect.each(["pending", "running"] as const)(
         yield* stage("reactor-start-enter");
         yield* reactor.start();
         yield* stage("reactor-start-exit");
+        assert.isTrue(acquired);
         // A run update on a child with no dependencies still reaches the reactor.
         yield* stage("sink-write-enter");
         yield* f.sink.write({
@@ -280,7 +318,9 @@ it.effect.each(["pending", "running"] as const)(
             }),
           ],
         });
+        fixturePublished = true;
         yield* stage("sink-write-exit");
+        yield* Deferred.succeed(consumeDomainEvents, undefined);
         yield* stage("first-queue-enter");
         assert.isTrue(yield* Queue.take(finalized));
         yield* stage("first-queue-exit");

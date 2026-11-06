@@ -21,18 +21,17 @@ export class ClaimAbsence extends Context.Reference<{
 }>("jones/workspaceRetirement/ClaimAbsence", {
   defaultValue: () => ({
     observe: (claim) =>
-      Effect.promise(async () => {
-        try {
-          return {
-            holder: claim.holder_json,
-            status:
-              claim.native_owner_json === null
-                ? ("unknown" as const)
-                : await observeNativeOwner(Schema.decodeSync(NativeDutyOwnerJson)(claim.native_owner_json)),
-          };
-        } catch {
+      Effect.gen(function* () {
+        if (claim.native_owner_json === null)
           return { holder: claim.holder_json, status: "unknown" as const };
-        }
+        const owner = yield* Schema.decodeEffect(NativeDutyOwnerJson)(
+          claim.native_owner_json,
+        ).pipe(Effect.result);
+        // Invalid durable facts remain unknown; a decode failure never proves absence.
+        if (owner._tag === "Failure")
+          return { holder: claim.holder_json, status: "unknown" as const };
+        const status = yield* Effect.promise(() => observeNativeOwner(owner.success));
+        return { holder: claim.holder_json, status };
       }),
   }),
 }) {}

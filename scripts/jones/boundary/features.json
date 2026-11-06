@@ -17,6 +17,7 @@
         "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
         "apps/server/src/jones/platformCompatibility/project/ProjectSetupScriptRunner.test.ts",
         "apps/server/src/jones/scheduledTasks/webhookRunRecovery.test.ts",
+        "apps/server/src/jones/threadResultDependencies/DependencyReactor.test.ts",
         "apps/server/src/jones/threadResultDependencies/Orchestrator.integration.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",

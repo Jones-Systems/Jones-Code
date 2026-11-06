@@ -126,8 +126,9 @@ export const make = Effect.gen(function* () {
         }).pipe(
           Effect.provide(context),
           Effect.catch((error) => {
-            const reason =
-              Schema.is(RetirementError)(error) ? error.reason : "target_observation_unavailable";
+            const reason = Schema.is(RetirementError)(error)
+              ? error.reason
+              : "target_observation_unavailable";
             return Effect.succeed({
               state: "held" as const,
               reasons: [reason],

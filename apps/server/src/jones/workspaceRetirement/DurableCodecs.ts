@@ -86,7 +86,11 @@ const detail = Schema.Struct({
   target: Schema.String,
   root: Schema.String,
   category: Schema.Literals([
-    "active_use", "unique_work", "missing_proof", "unavailable_observation", "protection",
+    "active_use",
+    "unique_work",
+    "missing_proof",
+    "unavailable_observation",
+    "protection",
   ]),
   fact: Schema.String,
   missingFact: Schema.NullOr(Schema.String),
@@ -101,48 +105,59 @@ const qualification = Schema.Struct({
   reasons: strings,
   decision: Schema.Literals(["propose", "hold", "unknown"]),
   observationMs: Schema.Number,
-  binding: Schema.optional(binding),
-  head: Schema.optional(Schema.String),
-  branch: Schema.optional(Schema.NullOr(Schema.String)),
-  containingRefs: Schema.optional(strings),
-  preservationTips: Schema.optional(strings),
-  untrackedPaths: Schema.optional(strings),
-  ignored: Schema.optional(
-    Schema.mutable(Schema.Array(Schema.Struct({
-      path: Schema.String,
-      outcome: Schema.Literals(["disposable", "hold", "unknown"]),
-      reason: Schema.NullOr(Schema.String),
-      basis: Schema.optional(Schema.String),
-      manifestSha256: Schema.optional(Schema.String),
-      paths: Schema.optional(Schema.Array(Schema.String)),
-      count: Schema.optional(Schema.Number),
-    }))),
+  binding: Schema.optionalKey(binding),
+  head: Schema.optionalKey(Schema.String),
+  branch: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  containingRefs: Schema.optionalKey(strings),
+  preservationTips: Schema.optionalKey(strings),
+  untrackedPaths: Schema.optionalKey(strings),
+  ignored: Schema.optionalKey(
+    Schema.mutable(
+      Schema.Array(
+        Schema.Struct({
+          path: Schema.String,
+          outcome: Schema.Literals(["disposable", "hold", "unknown"]),
+          reason: Schema.NullOr(Schema.String),
+          basis: Schema.optionalKey(Schema.String),
+          manifestSha256: Schema.optionalKey(Schema.String),
+          paths: Schema.optionalKey(Schema.Array(Schema.String)),
+          count: Schema.optionalKey(Schema.Number),
+        }),
+      ),
+    ),
   ),
-  consumers: Schema.optional(Schema.Struct({
-    holds: strings,
-    unknown: strings,
-    coverage: Schema.Record(Schema.String, Schema.Struct({
-      status: Schema.String,
-      ageMs: Schema.Number,
-      limits: Schema.Array(Schema.String),
-      reason: Schema.NullOr(Schema.String),
-    })),
-    limits: Schema.Tuple([
-      Schema.Literal(CONSUMER_LIMITS[0]),
-      Schema.Literal(CONSUMER_LIMITS[1]),
-      Schema.Literal(CONSUMER_LIMITS[2]),
-      Schema.Literal(CONSUMER_LIMITS[3]),
-      Schema.Literal(CONSUMER_LIMITS[4]),
-    ]),
-  })),
-  capturedConfig: Schema.optional(fields),
-  sparsePatterns: Schema.optional(Schema.String),
-  fingerprint: Schema.optional(Schema.String),
-  details: Schema.optional(Schema.mutable(Schema.Array(detail))),
-  lineageObservation: Schema.optional(Schema.Struct({
-    status: Schema.Literals(["available", "partial", "unavailable"]),
-    lineage: Schema.mutable(Schema.Array(fields)),
-  })),
+  consumers: Schema.optionalKey(
+    Schema.Struct({
+      holds: strings,
+      unknown: strings,
+      coverage: Schema.Record(
+        Schema.String,
+        Schema.Struct({
+          status: Schema.String,
+          ageMs: Schema.Number,
+          limits: Schema.Array(Schema.String),
+          reason: Schema.NullOr(Schema.String),
+        }),
+      ),
+      limits: Schema.Tuple([
+        Schema.Literal(CONSUMER_LIMITS[0]),
+        Schema.Literal(CONSUMER_LIMITS[1]),
+        Schema.Literal(CONSUMER_LIMITS[2]),
+        Schema.Literal(CONSUMER_LIMITS[3]),
+        Schema.Literal(CONSUMER_LIMITS[4]),
+      ]),
+    }),
+  ),
+  capturedConfig: Schema.optionalKey(fields),
+  sparsePatterns: Schema.optionalKey(Schema.String),
+  fingerprint: Schema.optionalKey(Schema.String),
+  details: Schema.optionalKey(Schema.mutable(Schema.Array(detail))),
+  lineageObservation: Schema.optionalKey(
+    Schema.Struct({
+      status: Schema.Literals(["available", "partial", "unavailable"]),
+      lineage: Schema.mutable(Schema.Array(fields)),
+    }),
+  ),
 });
 export const RetirementReceiptJson = Schema.fromJsonString(
   Schema.Struct({
@@ -154,15 +169,19 @@ export const RetirementReceiptJson = Schema.fromJsonString(
     incarnation: Schema.String,
     qualification,
     coverage: Schema.Unknown,
-    preservationRefs: Schema.mutable(Schema.Array(Schema.Struct({
-      ref: Schema.String,
-      head: Schema.String,
-    }))),
+    preservationRefs: Schema.mutable(
+      Schema.Array(
+        Schema.Struct({
+          ref: Schema.String,
+          head: Schema.String,
+        }),
+      ),
+    ),
     journal: Schema.String,
     disposed: strings,
     reasons: strings,
     limits: Schema.Array(Schema.String),
-    removalDiagnostic: Schema.optional(Schema.String),
+    removalDiagnostic: Schema.optionalKey(Schema.String),
     bytes: Schema.Struct({
       logical: Schema.NullOr(Schema.Number),
       allocated: Schema.NullOr(Schema.Number),

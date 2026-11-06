@@ -1,6 +1,10 @@
 import { TerminalCwdObservation } from "../jones/workspaceRetirement/TerminalCwdObservation.ts";
 import { makeProjectScriptObserver } from "../jones/workspaceRetirement/ProjectScriptObservation.ts";
-import type { DutyIdentity } from "../jones/workspaceRetirement/DutyIdentity.ts";
+import {
+  TerminalWorkspaceAdmission,
+  TerminalWorkspaceObservation,
+  type DutyIdentity,
+} from "../jones/workspaceRetirement/DutyIdentity.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as NativeSetup from "./NativeSetupControl.ts";
 import {
@@ -1621,6 +1625,27 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const workspaceDuty = yield* WorkspaceDuty.hooks;
+  const terminalWorkspaceObservation = yield* TerminalWorkspaceObservation;
+  const withTerminalWorkspaceLease = <A, E, R>(
+    input: { cwd: string; worktreePath?: string | null | undefined },
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    Effect.gen(function* () {
+      const observed = yield* Effect.tryPromise({
+        try: () => terminalWorkspaceObservation.observe(input.cwd, input.worktreePath),
+        catch: (cause) => new TerminalCwdStatError({ cwd: input.cwd, cause }),
+      });
+      return yield* withWorkspaceLease(
+        observed.worktree ?? observed.cwd,
+        Effect.tryPromise({
+          try: () => terminalWorkspaceObservation.revalidate(observed),
+          catch: (cause) => new TerminalCwdStatError({ cwd: input.cwd, cause }),
+        }).pipe(
+          Effect.andThen(effect),
+          Effect.provideService(TerminalWorkspaceAdmission, observed),
+        ),
+      );
+    });
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
   const scriptObserver = makeProjectScriptObserver({
@@ -2427,10 +2452,13 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       nativeSetup === undefined &&
       isShellRunTerminal(session.threadId, session.terminalId);
     const startingAt = yield* nowIso;
+    const workspaceAdmission = yield* TerminalWorkspaceAdmission;
     yield* modifyManagerState((state) => {
       session.status = "starting";
       session.cwd = input.cwd;
-      session.worktreePath = input.worktreePath ?? null;
+      session.worktreePath = workspaceAdmission === null
+        ? input.worktreePath ?? null
+        : workspaceAdmission.worktree;
       session.cols = input.cols;
       session.rows = input.rows;
       session.exitCode = null;
@@ -2587,7 +2615,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             }
             const releaseWorkspaceDuty = yield* workspaceDuty
               .hold(
-                input.worktreePath ?? input.cwd,
+                workspaceAdmission === null
+                  ? input.worktreePath ?? input.cwd
+                  : workspaceAdmission.worktree,
                 session.terminalId.startsWith("settle-")
                   ? "settle-script"
                   : session.terminalId.startsWith("setup-")
@@ -2596,17 +2626,37 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 `${session.threadId}:${session.terminalId}`,
               )
               .pipe(Effect.orDie);
-            invocationEntered = true;
-            const spawnResult = yield* trySpawn(
-              legacy === undefined && nativeSetup === undefined
-                ? shellCandidates
-                : shellCandidates.slice(0, 1),
-              terminalEnv,
-              session,
-            ).pipe(Effect.onError(() => releaseWorkspaceDuty.pipe(Effect.orDie)));
-            // This independent subscription survives close/kill escalation; only a verified exit releases the claim.
+            const spawnResult = yield* Effect.gen(function* () {
+              if (workspaceAdmission !== null) {
+                yield* Effect.tryPromise({
+                  try: () => terminalWorkspaceObservation.revalidate(workspaceAdmission),
+                  catch: (cause) => new TerminalCwdStatError({ cwd: input.cwd, cause }),
+                });
+                const claimed = workspaceDuty.identity(releaseWorkspaceDuty);
+                if (
+                  workspaceDuty.claimed(releaseWorkspaceDuty) &&
+                  workspaceAdmission.identity?.status === "bound" &&
+                  (claimed?.status !== "bound" ||
+                    claimed.incarnation !== workspaceAdmission.identity.incarnation)
+                )
+                  return yield* new TerminalCwdStatError({
+                    cwd: input.cwd,
+                    cause: "terminal_checkout_claim_identity_changed",
+                  });
+              }
+              invocationEntered = true;
+              return yield* trySpawn(
+                legacy === undefined && nativeSetup === undefined
+                  ? shellCandidates
+                  : shellCandidates.slice(0, 1),
+                terminalEnv,
+                session,
+              );
+            }).pipe(Effect.onError(() => releaseWorkspaceDuty.pipe(Effect.orDie)));
+            // Parent exit is not descendant drain. This independent subscription
+            // retains the duty unless its exact captured native session is absent.
             spawnResult.process.onExit(() => {
-              runFork(releaseWorkspaceDuty.pipe(Effect.orDie));
+              runFork(workspaceDuty.observeParentExit(releaseWorkspaceDuty).pipe(Effect.orDie));
             });
             yield* workspaceDuty
               .bindNative(releaseWorkspaceDuty, spawnResult.process.pid)
@@ -3370,10 +3420,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     TerminalSessionSnapshot,
     TerminalError | LegacyTerminalControlError | LegacyTerminalInputValidationError
   > {
-    return withWorkspaceLease(
-      path.resolve(input.worktreePath ?? input.cwd),
-      openWithWorkspaceLease(input, legacy),
-    );
+    return withTerminalWorkspaceLease(input, openWithWorkspaceLease(input, legacy));
   }
 
   function open(input: TerminalOpenInput): Effect.Effect<TerminalSessionSnapshot, TerminalError>;
@@ -4040,10 +4087,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       input.threadId,
       resolveLaunchInputEnvironment(input).pipe(
         Effect.flatMap((resolved) =>
-          withWorkspaceLease(
-            path.resolve(resolved.worktreePath ?? resolved.cwd),
-            restartResolved(resolved),
-          ),
+          withTerminalWorkspaceLease(resolved, restartResolved(resolved)),
         ),
       ),
     );
@@ -4242,8 +4286,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           Effect.mapError(() => nativeSetupFailure("open")),
         );
         const resolved = yield* resolveLaunchInputEnvironment(input);
-        return yield* withWorkspaceLease(
-          path.resolve(resolved.worktreePath ?? resolved.cwd),
+        return yield* withTerminalWorkspaceLease(
+          resolved,
           openWithWorkspaceLeaseEffect(resolved, undefined, { ...hooks, control }).pipe(
             Effect.uninterruptible,
           ),

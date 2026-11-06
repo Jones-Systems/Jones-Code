@@ -28,18 +28,18 @@ export const context=()=>effect(async c=>c), serviceOption=tag=>effect(async c=>
 export const runPromise=e=>e.run(new Map());
 `,
   "effect/DateTime": `export const nowUnsafe=()=>new Date();export const toEpochMillis=value=>value.getTime();export const formatIso=value=>value.toISOString();`,
-  "effect/Context": `import {effect} from 'effect/Effect';export const Service=()=>()=>class {static of(x){return x}static *[Symbol.iterator](){return yield effect(c=>{if(!c.has(this))throw Error('Missing test service '+this.name);return c.get(this)})}};export const Reference=(_key,options)=>class {static *[Symbol.iterator](){return yield effect(c=>c.has(this)?c.get(this):options.defaultValue())}};`,
+  "effect/Context": `import {effect} from 'effect/Effect';export const Service=()=>()=>class {static of(x){return x}static *[Symbol.iterator](){return yield effect(c=>{if(!c.has(this))throw Error('Missing test service '+this.name);return c.get(this)})}};export const Reference=(_key,options)=>class {static async run(c){return c.has(this)?c.get(this):options.defaultValue()}static *[Symbol.iterator](){return yield effect(c=>this.run(c))}};`,
   "effect/Layer": `export const effect=(tag,value)=>({tag,value});`,
   // Only the finite codec subset used by these sequential fixtures is interpreted.
   // Configured Effect/Schema parsing, encoding, diagnostics and types remain CI proof.
   "effect/Schema": `import {fail as failEffect,try_ as attempt} from 'effect/Effect';
 const shape=check=>({check});export const String=shape(x=>typeof x==='string'),Number=shape(x=>typeof x==='number'),Unknown=shape(()=>true),Null=shape(x=>x===null),Defect=()=>Unknown;
-export const optional=s=>({...s,optional:true}),mutable=s=>s,Literal=x=>shape(v=>v===x),Literals=xs=>shape(v=>xs.includes(v));
-export const Struct=fields=>shape(x=>x!==null&&typeof x==='object'&&!globalThis.Array.isArray(x)&&Object.entries(fields).every(([k,s])=>x[k]===undefined?s.optional:s.check(x[k])));
+export const optional=s=>({...s,optional:true,allowUndefined:true}),optionalKey=s=>({...s,optional:true}),mutable=s=>s,Literal=x=>shape(v=>v===x),Literals=xs=>shape(v=>xs.includes(v));
+export const Struct=fields=>shape(x=>x!==null&&typeof x==='object'&&!globalThis.Array.isArray(x)&&Object.entries(fields).every(([k,s])=>!Object.hasOwn(x,k)?s.optional:x[k]===undefined&&s.allowUndefined||s.check(x[k])));
 export const Array=s=>shape(x=>globalThis.Array.isArray(x)&&x.every(s.check)),Tuple=ss=>shape(x=>globalThis.Array.isArray(x)&&x.length===ss.length&&ss.every((s,i)=>s.check(x[i]))),Union=ss=>shape(x=>ss.some(s=>s.check(x)));
 export const NullOr=s=>shape(x=>x===null||s.check(x));
 export const Record=(k,s)=>shape(x=>x!==null&&typeof x==='object'&&!globalThis.Array.isArray(x)&&Object.entries(x).every(([a,b])=>k.check(a)&&s.check(b)));
-export const fromJsonString=s=>({check:x=>typeof x==='string',json:s}),UnknownFromJsonString=fromJsonString(Unknown);
+export const fromJsonString=s=>({check:x=>typeof x==='string',json:s});
 const validate=(s,x)=>{if(!s.check(x))throw Error('fixture schema mismatch');return x};
 export const decodeSync=s=>x=>s.json?validate(s.json,JSON.parse(x)):validate(s,x),encodeSync=s=>x=>s.json?JSON.stringify(validate(s.json,x)):validate(s,x);
 export const decodeEffect=s=>x=>attempt({try:()=>decodeSync(s)(x),catch:e=>e}),encodeEffect=s=>x=>attempt({try:()=>encodeSync(s)(x),catch:e=>e});

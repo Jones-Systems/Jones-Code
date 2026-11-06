@@ -588,6 +588,10 @@ export interface OrchestratorV2Shape
     readonly afterSequence?: number;
     readonly eventType?: OrchestrationV2DomainEvent["type"];
   }) => Stream.Stream<PublicStoredEvent, OrchestratorV2Error>;
+  readonly acquireDomainEvents: Effect.Effect<
+    Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>,
+    OrchestratorV2Error
+  >;
   readonly streamDomainEvents: Stream.Stream<OrchestrationV2DomainEvent, OrchestratorV2Error>;
 }
 
@@ -16055,6 +16059,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const remoteObservationHooks = yield* RemoteObservationHooks.make(dispatchWithReceiptEffect);
 
+  // Capture the durable baseline before a caller admits later publication.
+  // EventSink's real replay/live stream covers a delayed subscription from here.
+  const acquireDomainEvents = eventSink.latestSequence().pipe(
+    Effect.map((afterSequence) =>
+      eventSink.stream({ afterSequence }).pipe(
+        Stream.map((stored) => stored.event),
+        Stream.mapError((cause) => new OrchestratorDomainEventStreamError({ cause })),
+      ),
+    ),
+    Effect.mapError((cause) => new OrchestratorDomainEventStreamError({ cause })),
+  );
+
   return OrchestratorV2.of({
     ...remoteObservationHooks,
     ...(Option.isSome(capturedStop) ? { stopCurrentThreadRuntime: capturedStop.value.stop } : {}),
@@ -16202,20 +16218,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       ),
-    // Start at the latest sequence; awareness needs no historical replay.
-    streamDomainEvents: Stream.unwrap(
-      eventSink
-        .latestSequence()
-        .pipe(Effect.map((latest) => eventSink.stream({ afterSequence: latest }))),
-    ).pipe(
-      Stream.map((stored) => stored.event),
-      Stream.mapError(
-        (cause) =>
-          new OrchestratorDomainEventStreamError({
-            cause,
-          }),
-      ),
-    ),
+    acquireDomainEvents,
+    // Convenience consumers retain their lazy, per-stream latest-baseline timing.
+    streamDomainEvents: Stream.unwrap(acquireDomainEvents),
   });
 });
 

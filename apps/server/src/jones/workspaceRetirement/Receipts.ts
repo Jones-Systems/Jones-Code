@@ -73,9 +73,7 @@ export class Receipts extends Context.Service<
   Receipts,
   {
     readonly writable: (worktree: string) => Effect.Effect<void, RetirementError>;
-    readonly claims: (
-      worktree: string,
-    ) => Effect.Effect<
+    readonly claims: (worktree: string) => Effect.Effect<
       readonly {
         claim_id: string;
         kind: string;
@@ -242,7 +240,7 @@ const make = Effect.gen(function* () {
       yield* sql`UPDATE jones_workspace_retirement_intents SET script_state=${state},script_exit_code=${exit},script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event} AND script_state='running'`;
     }, mapError("workspace")),
     outcome: Effect.fn("WorkspaceRetirement.outcome")(function* (event, result) {
-      yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(result)} WHERE event_id=${event}`;
+      yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result)} WHERE event_id=${event}`;
     }, mapError("workspace")),
     begin: Effect.fn("WorkspaceRetirement.begin")(function* (receipt) {
       yield* sql.withTransaction(
@@ -301,7 +299,9 @@ const make = Effect.gen(function* () {
       const rows = yield* sql<{
         receipt_json: string;
       }>`SELECT receipt_json FROM jones_workspace_retirement_receipts WHERE receipt_id=${id}`;
-      return rows[0] ? yield* Schema.decodeEffect(RetirementReceiptJson)(rows[0].receipt_json) : null;
+      return rows[0]
+        ? yield* Schema.decodeEffect(RetirementReceiptJson)(rows[0].receipt_json)
+        : null;
     }, mapError("workspace")),
   });
 });

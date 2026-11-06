@@ -1017,7 +1017,7 @@ const make = Effect.gen(function* () {
       }).pipe(
         (effect) => guardRetentionSettings(sql, patch, effect),
         Effect.mapError((cause) =>
-          cause instanceof ServerSettingsError
+          Schema.is(ServerSettingsError)(cause)
             ? cause
             : new ServerSettingsError({ settingsPath, operation: "write-file", cause }),
         ),

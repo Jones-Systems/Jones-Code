@@ -5,6 +5,7 @@ import * as NodePlatformCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it } from "@effect/vitest";
 import {
   ScheduledTaskUpsertInput,
+  type ScheduledTaskError,
   ScheduledTaskWebhookDeliveryId,
   SecretRequestError,
 } from "@t3tools/contracts";
@@ -1938,7 +1939,7 @@ it.effect(
               sql`SELECT * FROM scheduled_task_webhook_deliveries ORDER BY delivery_id`,
             ]);
           const before = yield* snapshot();
-          for (const operation of [
+          const operations: ReadonlyArray<Effect.Effect<unknown, ScheduledTaskError>> = [
             service.upsert(
               yield* webhookTaskInput({ workspaceStrategy: binding, title: "blocked edit" }),
             ),
@@ -1951,12 +1952,13 @@ it.effect(
             service.setEnabled({ id: disabled.task.id, enabled: true }),
             service.triggerWebhook(requestFor(task, { relayDeliveryId: "post-fc5-relay" })),
             service.triggerWebhook(requestFor(task)),
-          ]) {
+          ];
+          for (const operation of operations) {
             const result = yield* Effect.result(operation);
             assert.equal(result._tag, "Failure");
             if (result._tag === "Failure") {
               assert.equal(result.failure._tag, "ScheduledTaskError");
-              assert.isTrue(result.failure.cause instanceof RetirementError);
+              assert.isTrue(Schema.is(RetirementError)(result.failure.cause));
             }
             assert.deepEqual(yield* snapshot(), before);
           }

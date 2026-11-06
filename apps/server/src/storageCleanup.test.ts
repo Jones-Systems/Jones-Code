@@ -293,7 +293,9 @@ const cleanupFixture = (
     const deletionOwner = yield* Effect.cached(
       Effect.gen(function* () {
         const context = yield* Layer.build(
-          Receipts.layer.pipe(Layer.provideMerge(Layer.succeed(SqlClient.SqlClient, retirementSql))),
+          Receipts.layer.pipe(
+            Layer.provideMerge(Layer.succeed(SqlClient.SqlClient, retirementSql)),
+          ),
         );
         return yield* Effect.gen(function* () {
           yield* runMigrations();
@@ -842,19 +844,28 @@ it.live("keeps unpushed submodule history after checkout and deinitialization", 
       yield* recordSubmodules();
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
+      ).toMatchObject({
+        outcome: "kept",
+        reason: expect.stringContaining("Populated_submodules, submodule_gitdirs"),
+      });
       expect(yield* fs.readFileString(`${child}/tracked.txt`)).toBe("unpublished work\n");
 
       yield* command(child, ["checkout", "main"]);
       yield* recordSubmodules();
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
+      ).toMatchObject({
+        outcome: "kept",
+        reason: expect.stringContaining("Populated_submodules, submodule_gitdirs"),
+      });
       const childGit = (yield* command(child, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
       yield* command(submodule, ["submodule", "deinit", "child"]);
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
+      ).toMatchObject({
+        outcome: "kept",
+        reason: expect.stringContaining("Populated_submodules, submodule_gitdirs"),
+      });
       expect(
         (yield* command(worktree, [
           "--git-dir",
@@ -870,7 +881,10 @@ it.live("keeps unpushed submodule history after checkout and deinitialization", 
       yield* command(worktree, ["--git-dir", childGit, "branch", "-D", "local-only"]);
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
+      ).toMatchObject({
+        outcome: "kept",
+        reason: expect.stringContaining("Populated_submodules, submodule_gitdirs"),
+      });
       expect(
         (yield* command(worktree, ["--git-dir", childGit, "show", `${local}:tracked.txt`])).stdout,
       ).toBe("unpublished work\n");
@@ -887,7 +901,10 @@ it.live("keeps submodules when stored repository metadata is malformed", () =>
       yield* fs.writeFileString(`${childGit}/HEAD`, "not a ref\n");
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
+      ).toMatchObject({
+        outcome: "kept",
+        reason: expect.stringContaining("Populated_submodules, submodule_gitdirs"),
+      });
       expect(yield* fs.exists(worktree)).toBe(true);
       expect(yield* fs.readFileString(`${childGit}/HEAD`)).toBe("not a ref\n");
     }),
