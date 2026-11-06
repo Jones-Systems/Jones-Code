@@ -14,6 +14,24 @@ import { writeFileStringAtomically } from "./atomicWrite.ts";
 import * as HostProcess from "./HostProcess.ts";
 
 it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
+  it.effect("applies an explicit private mode before publishing each replacement", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
+      const root = yield* fs.makeTempDirectory({ prefix: "nw-atomic-private-" });
+      const filePath = path.join(root, "private.json");
+      yield* writeFileStringAtomically({ filePath, contents: "first", mode: 0o600 });
+      if (platform !== "win32") {
+        assert.strictEqual((yield* fs.stat(filePath)).mode & 0o777, 0o600);
+        yield* fs.chmod(filePath, 0o664);
+      }
+      yield* writeFileStringAtomically({ filePath, contents: "second", mode: 0o600 });
+      assert.strictEqual(yield* fs.readFileString(filePath), "second");
+      if (platform !== "win32") assert.strictEqual((yield* fs.stat(filePath)).mode & 0o777, 0o600);
+    }),
+  );
+
   it.effect("keeps a symlinked file linked and rewrites its destination", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -125,24 +143,14 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
       // Another process saves once the lock clears, before the waiting write retries.
       yield* writeFileStringAtomically({ filePath, contents: "newer" });
 
-      assert.isTrue(Exit.isFailure(yield* advanceUntilDone(stale)));
+      yield* TestClock.adjust("100 millis");
+      assert.isTrue(Exit.isFailure(yield* Fiber.join(stale)));
+      assert.strictEqual(attempts, 1);
       assert.strictEqual(yield* fs.readFileString(filePath), "newer");
       assert.deepStrictEqual(yield* fs.readDirectory(root), ["settings.json"]);
     }),
   );
 });
-
-// Retries stat the real target between waits, and that I/O finishes outside the
-// test clock, so the clock moves one wait at a time until the write settles.
-const advanceUntilDone = <A, E>(fiber: Fiber.Fiber<A, E>) =>
-  Effect.gen(function* () {
-    while (fiber.pollUnsafe() === undefined) {
-      yield* TestClock.adjust("100 millis");
-      // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- a macrotask boundary so the real stat I/O can finish; time moves only via TestClock
-      yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
-    }
-    return yield* Fiber.join(fiber);
-  });
 
 const renameError = (code: string, path: string) =>
   PlatformError.systemError({

@@ -144,6 +144,37 @@ describe("server ownership", () => {
     port: 3773,
   });
 
+  it.effect("publishes a private runtime descriptor on first write and replacement", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const platform = yield* HostProcess.Platform;
+      const root = yield* fs.makeTempDirectory({ prefix: "nw-private-runtime-" });
+      const statePath = path.join(root, "server-runtime.json");
+      const state = yield* makeState;
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const owner = yield* ServerOwnership.acquireServerOwnership(statePath);
+          yield* owner.publish(state);
+          if (platform !== "win32") assert.equal((yield* fs.stat(statePath)).mode & 0o777, 0o600);
+          const initial = Option.getOrThrow(
+            yield* ServerRuntimeState.readPersistedServerRuntimeState(statePath),
+          );
+          assert.equal(initial.pid, state.pid);
+          if (platform !== "win32") yield* fs.chmod(statePath, 0o664);
+          yield* owner.publish({ ...state, port: state.port + 1 });
+          if (platform !== "win32") assert.equal((yield* fs.stat(statePath)).mode & 0o777, 0o600);
+          const replaced = Option.getOrThrow(
+            yield* ServerRuntimeState.readPersistedServerRuntimeState(statePath),
+          );
+          assert.equal(replaced.port, state.port + 1);
+          assert.equal(replaced.ownerId, initial.ownerId);
+        }),
+      );
+      assert.isFalse(yield* fs.exists(statePath));
+    }).pipe(Effect.provide(layerOwnership)),
+  );
+
   it.effect("retains only the original ownership lifetime and expires it on scope exit", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

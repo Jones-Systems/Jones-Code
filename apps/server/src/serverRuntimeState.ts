@@ -74,6 +74,8 @@ export const persistServerRuntimeState = (input: {
   writeFileStringAtomically({
     filePath: input.path,
     contents: `${JSON.stringify(input.state)}\n`,
+    // Native local commands authenticate the selected runtime only from owner-controlled metadata.
+    mode: 0o600,
   }).pipe(
     Effect.mapError(
       (cause) =>

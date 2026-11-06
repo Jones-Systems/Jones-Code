@@ -31,7 +31,11 @@
   "hookPaths": [
     "apps/server/src/httpCors.ts",
     "apps/server/src/serverOwnership.ts",
-    "apps/server/src/environment/ServerEnvironment.test.ts"
+    "apps/server/src/environment/ServerEnvironment.test.ts",
+    "packages/shared/src/atomicWrite.ts",
+    "packages/shared/src/atomicWrite.test.ts",
+    "apps/server/src/serverRuntimeState.ts",
+    "apps/server/src/serverRuntimeState.test.ts"
   ],
   "tombstones": [],
   "allowedImports": [
