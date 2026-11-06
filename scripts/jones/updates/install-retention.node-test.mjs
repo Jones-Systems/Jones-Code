@@ -135,8 +135,10 @@ async function python(body) {
   });
 }
 
-NodeTest.test("JR32: active, both previous members and transitive payloads survive exact retirement", () =>
-  python(String.raw`
+NodeTest.test(
+  "JR32: active, both previous members and transitive payloads survive exact retirement",
+  () =>
+    python(String.raw`
 plan = install_retention_plan()
 assert plan['keep'] == [ids[c] for c in 'abce']
 assert [c['transactionId'] for c in plan['candidates']] == [ids['d']]
@@ -154,7 +156,8 @@ for letter in 'bce':
     assert (manual / ids[letter] / 'previous-pair' / 'app-preimage').read_text() == 'app-' + letter
 assert not (manual / ids['d']).exists()
 assert install_retention_plan()['candidates'] == []
-`));
+`),
+);
 
 NodeTest.test("JR33: warm recovery and embedded original manifests pin manual dependencies", () =>
   python(String.raw`
@@ -166,7 +169,8 @@ value['originalManifest'] = json.dumps({'transactionId': 'manual-' + ids['d']})
 durable(manual / ids['a'] / 'receipt.json', value)
 durable(manual / ids['a'] / 'previous-pair' / 'pair.json', {'expected': json.loads(value['originalManifest']), 'stateScope': 'database-settings'})
 assert install_retention_plan()['candidates'] == []
-`));
+`),
+);
 
 NodeTest.test("J6-COR-01: activation-request-only warm recovery holds manual retirement", () =>
   python(String.raw`
@@ -179,10 +183,13 @@ except RuntimeError: pass
 else: raise AssertionError('incomplete warm recovery deleted its manual dependency')
 assert (manual / ids['d'] / 'receipt.json').exists()
 assert not (manifest_path.parent / 'jones-install-retention' / (ids['d'] + '.json')).exists()
-`));
+`),
+);
 
-NodeTest.test("J6-COR-01: all warm metadata pins dependencies and incomplete or unknown sets hold", () =>
-  python(String.raw`
+NodeTest.test(
+  "J6-COR-01: all warm metadata pins dependencies and incomplete or unknown sets hold",
+  () =>
+    python(String.raw`
 directory = warm('f' * 64, {'generation': 'bootstrap'})
 # This recovery guard was outside the original five-file inventory.
 guard = directory / 'advanced-state-authority-guard.json'
@@ -203,10 +210,13 @@ for fault in ('missing-claim', 'unknown-record', 'mismatched-request', 'missing-
     elif fault == 'mismatched-request': (directory / 'activation-request.json').unlink()
     else: (root / 'saved-pair').rename(pair)
 assert [value['transactionId'] for value in install_retention_plan()['candidates']] == [ids['d']]
-`));
+`),
+);
 
-NodeTest.test("J6-COR-01: identical warm record replacement invalidates manual removal after intent", () =>
-  python(String.raw`
+NodeTest.test(
+  "J6-COR-01: identical warm record replacement invalidates manual removal after intent",
+  () =>
+    python(String.raw`
 directory = warm('f' * 64, {'generation': 'bootstrap'})
 enable_retire(); plan = install_retention_plan()
 original = durable
@@ -222,10 +232,13 @@ else: raise AssertionError('same-content warm record replacement was ignored')
 assert (manual / ids['d'] / 'receipt.json').exists()
 assert read(manifest_path.parent / 'jones-install-retention' / (ids['d'] + '.json'))['status'] == 'held'
 assert propose_install_retention()['status'] == 'held'
-`));
+`),
+);
 
-NodeTest.test("J6-COR-02: existing warm retirement preserves active manual transitive recovery", () =>
-  python(String.raw`
+NodeTest.test(
+  "J6-COR-02: existing warm retirement preserves active manual transitive recovery",
+  () =>
+    python(String.raw`
 active, first, second, pair, previous = warm_chain()
 acquire_writer_exclusion = lambda *args, **kwargs: []
 prove_quiescence = lambda *args: None
@@ -236,7 +249,8 @@ for identifier in (second, first):
     assert result['status'] == 'refused' and result['reason'] == 'protected-recovery-parent', result
 assert (pair / 'state.sqlite').read_text() == 'W1-state'
 assert (previous / 'binary').read_text() == 'W1-app'
-`));
+`),
+);
 
 NodeTest.test("J6-COR-02: a manual app preimage path alone pins the warm pair", () =>
   python(String.raw`
@@ -249,11 +263,14 @@ for identifier in (second, first):
     result = retirement_command('inspect-retirement', active, identifier)
     assert result['reason'] == 'protected-recovery-parent', result
 assert (pair / 'state.sqlite').exists() and (previous / 'binary').exists()
-`));
+`),
+);
 
 for (const target of ["held", "dependency"]) {
-  NodeTest.test(`J6-COR-R2-01: old warm retirement preserves ${target} recovery under an unresolved hold`, () =>
-    python(String.raw`
+  NodeTest.test(
+    `J6-COR-R2-01: old warm retirement preserves ${target} recovery under an unresolved hold`,
+    () =>
+      python(String.raw`
 active, dependency, pair, previous = unreferenced_warm()
 held = '4' * 64
 prior = dict(active, generation=dependency, transactionId=dependency)
@@ -279,11 +296,14 @@ assert not (pair.parent / 'retirement-intent.json').exists()
 manual_plan = install_retention_plan()
 assert held in manual_plan['snapshot']['warmKeep'] and dependency in manual_plan['snapshot']['warmKeep']
 assert ids['d'] in manual_plan['keep'] and manual_plan['candidates'] == []
-`));
+`),
+  );
 }
 
-NodeTest.test("J6-COR-02: unreferenced warm retirement completes and reads back its durable receipt", () =>
-  python(String.raw`
+NodeTest.test(
+  "J6-COR-02: unreferenced warm retirement completes and reads back its durable receipt",
+  () =>
+    python(String.raw`
 active, identifier, pair, previous = unreferenced_warm()
 result = retirement_command('inspect-retirement', active, identifier)
 assert result['status'] == 'ready' and len(result['targets']) == 2, result
@@ -292,7 +312,8 @@ assert result['status'] == 'retired', result
 assert not (pair / 'state.sqlite').exists() and not previous.exists()
 assert (pair / 'pair.json').exists()
 assert retirement_command('retire-transaction', active, identifier, result['planSha256'])['status'] == 'retired'
-`));
+`),
+);
 
 for (const change of ["warm-record-identity", "manual-record", "between-targets"]) {
   NodeTest.test(`J6-COR-02: fresh cross-store generation refuses ${change} drift`, () =>
@@ -322,11 +343,14 @@ assert (pair / 'state.sqlite').exists() == ('${change}' != 'between-targets')
 directory = pair.parent
 assert (directory / 'retirement-intent.json').exists() and not (directory / 'retirement-receipt.json').exists()
 assert retirement_command('retire-transaction', active, identifier, approved['planSha256'])['status'] == 'uncertain'
-`));
+`),
+  );
 }
 
-NodeTest.test("JR35: real previous state and app restoration still works after superseded retention", () =>
-  python(String.raw`
+NodeTest.test(
+  "JR35: real previous state and app restoration still works after superseded retention",
+  () =>
+    python(String.raw`
 live = root / 'userdata'; live.mkdir()
 database = live / 'state.sqlite'; database.write_text('advanced-state')
 stable, previous, incoming = root / 'active.app', root / 'previous.app', root / 'incoming.app'
@@ -350,7 +374,8 @@ assert database.read_text() == 'previous-state'
 assert (stable / 'binary').read_text() == 'previous-app'
 assert (incoming / 'binary').read_text() == 'new-app'
 assert (manual / ids['a'] / 'advanced-state' / 'state.sqlite').read_text() == 'advanced-state'
-`));
+`),
+);
 
 NodeTest.test("JR33: unfinished, unknown and held records keep their full dependency closure", () =>
   python(String.raw`
@@ -360,7 +385,8 @@ receipt('f', 'future-phase', [{'generation': ids['d']}])
 assert install_retention_plan()['candidates'] == []
 (manual / ids['f'] / 'receipt.json').unlink()
 assert propose_install_retention()['status'] == 'held'
-`));
+`),
+);
 
 NodeTest.test("JR33: the three latest failed receipts and logs remain present", () =>
   python(String.raw`
@@ -372,7 +398,8 @@ for index in range(4):
 plan = install_retention_plan()
 assert all(str(index) * 64 in plan['keep'] for index in range(4))
 assert all((manual / (str(index) * 64) / 'manual-install.log').is_file() for index in range(4))
-`));
+`),
+);
 
 for (const change of ["manifest", "receipt", "replacement", "symlink"]) {
   NodeTest.test(`JR36: per-candidate CAS refuses ${change} drift`, () =>
@@ -393,11 +420,14 @@ except (RuntimeError, OSError): pass
 else: raise AssertionError('stale plan removed material')
 assert candidate.exists()
 assert not (manifest_path.parent / 'jones-install-retention' / (ids['d'] + '.json')).exists()
-`));
+`),
+  );
 }
 
-NodeTest.test("JR36: change after intent publication refuses removal and holds unknown effect", () =>
-  python(String.raw`
+NodeTest.test(
+  "JR36: change after intent publication refuses removal and holds unknown effect",
+  () =>
+    python(String.raw`
 enable_retire(); plan = install_retention_plan()
 original = durable
 def concurrent_change(path, value, exclusive=False):
@@ -412,10 +442,13 @@ assert (manual / ids['d'] / 'receipt.json').exists()
 marker = manifest_path.parent / 'jones-install-retention' / (ids['d'] + '.json')
 assert read(marker)['status'] == 'held'
 assert propose_install_retention()['status'] == 'held'
-`));
+`),
+);
 
-NodeTest.test("JR36: link payload never follows outside the candidate and partial effects never replay", () =>
-  python(String.raw`
+NodeTest.test(
+  "JR36: link payload never follows outside the candidate and partial effects never replay",
+  () =>
+    python(String.raw`
 enable_retire()
 external = root / 'outside'; external.write_text('preserved')
 (manual / ids['d'] / 'previous-pair').mkdir(exist_ok=True)
@@ -426,7 +459,8 @@ except RuntimeError: pass
 else: raise AssertionError('symlink payload was removed')
 assert external.read_text() == 'preserved'
 assert propose_install_retention()['status'] == 'held'
-`));
+`),
+);
 
 NodeTest.test("JR36: replacement at the destructive open seam refuses symlink traversal", () =>
   python(String.raw`
@@ -445,10 +479,13 @@ except OSError: pass
 else: raise AssertionError('replacement at destructive seam was accepted')
 assert (external / 'secret').read_text() == 'untouched'
 assert read(manifest_path.parent / 'jones-install-retention' / (ids['d'] + '.json'))['status'] == 'held'
-`));
+`),
+);
 
-NodeTest.test("JR36: each removal compares the remaining closure rather than trusting a batch", () =>
-  python(String.raw`
+NodeTest.test(
+  "JR36: each removal compares the remaining closure rather than trusting a batch",
+  () =>
+    python(String.raw`
 receipt('f'); enable_retire(); plan = install_retention_plan()
 original = durable
 def change_after_first_removal(path, value, exclusive=False):
@@ -462,22 +499,36 @@ else: raise AssertionError('second candidate used a stale batch closure')
 assert (manual / ids['f'] / 'receipt.json').exists()
 assert not (manual / ids['d']).exists()
 assert propose_install_retention()['status'] == 'held'
-`));
+`),
+);
 
-NodeTest.test("JR34/36: real admission, startup recovery and retention entries share lock; process exit releases it", () =>
-  fixture(async (root) => {
-    const helper = NodePath.join(root, "helper.py");
-    // Only the platform dispatch gate is adapted. No native action is reached.
-    await NodeFSP.writeFile(
-      helper,
-      jonesNativeHelperSource.replace("if sys.platform != 'darwin':", "if False:"),
-    );
-    NodeChildProcess.execFileSync("python3", ["-B", "-", root, helper], {
-      encoding: "utf8",
-      timeout: 15000,
-      input:
-        `${definitions}\n${seed}\n` +
-        String.raw`
+NodeTest.test(
+  "JR34/36: real admission, startup recovery and retention entries share lock; process exit releases it",
+  () =>
+    fixture(async (root) => {
+      const helper = NodePath.join(root, "helper.py");
+      const platformGuard =
+        "\nif sys.platform != 'darwin': raise SystemExit('The Jones native helper requires macOS.')\n";
+      NodeAssert.strict.equal(jonesNativeHelperSource.split(platformGuard).length, 2);
+      // Adapt only the unique CLI gate in this disposable copy. Kernel guards stay intact.
+      await NodeFSP.writeFile(helper, jonesNativeHelperSource.replace(platformGuard, "\n"));
+      if (process.platform !== "darwin") {
+        const guardManifest = NodePath.join(root, "guard-manifest.json");
+        await NodeFSP.writeFile(guardManifest, "{}");
+        const native = NodeChildProcess.spawnSync(
+          "python3",
+          ["-B", "-", "--manifest", guardManifest, "--inspect-install-retention"],
+          { input: jonesNativeHelperSource, encoding: "utf8", timeout: 3000 },
+        );
+        NodeAssert.strict.notEqual(native.status, 0);
+        NodeAssert.strict.match(native.stderr, /The Jones native helper requires macOS\./);
+      }
+      NodeChildProcess.execFileSync("python3", ["-B", "-", root, helper], {
+        encoding: "utf8",
+        timeout: 15000,
+        input:
+          `${definitions}\n${seed}\n` +
+          String.raw`
 helper = sys.argv[2]
 retention_lock.close()
 retention_exclusion_held = False
@@ -490,7 +541,7 @@ with open(lock_path, 'r+') as lock:
     fcntl.flock(lock, fcntl.LOCK_EX)
     for action in (['--inspect-manual-install', str(root / 'absent')], ['--reconcile-running', str(root / 'absent')], ['--inspect-install-retention'], ['--retire-transaction', 'f' * 64]):
         value = subprocess.run([sys.executable, '-B', helper, '--manifest', str(manifest_path)] + action, capture_output=True, text=True, timeout=3)
-        assert value.returncode != 0 or json.loads(value.stdout).get('reason') == 'busy', value
+        assert (value.returncode == 0 and json.loads(value.stdout).get('reason') == 'busy') or (value.returncode != 0 and 'BlockingIOError' in value.stderr and 'Resource temporarily unavailable' in value.stderr), value
     assert not (manifest_path.parent / 'jones-install-retention-plan.json').exists()
 value = subprocess.run([sys.executable, '-B', helper, '--manifest', str(manifest_path), '--inspect-install-retention'], capture_output=True, text=True, timeout=3)
 assert value.returncode == 0, value.stderr
@@ -503,38 +554,42 @@ durable(plan_path, {'protocol': 1, 'restart': 'ordinary', 'expectedManifestSha25
 value = subprocess.run([sys.executable, '-B', helper, '--manifest', str(manifest_path), '--inspect-manual-install', str(plan_path), '--plan-sha256', digest(plan_path)], capture_output=True, text=True, timeout=3)
 assert value.returncode != 0 and 'Unfinished manual installation requires reconciliation.' in value.stderr, value.stderr
 `,
-    });
-  }));
+      });
+    }),
+);
 
-NodeTest.test("runtime generations: known state and staged references are reported; unknown consumers hold", () =>
-  fixture(async (root) => {
-    const runtime = NodePath.join(root, "runtime");
-    await NodeFSP.mkdir(NodePath.join(runtime, "versions", "old"), { recursive: true });
-    await NodeFSP.mkdir(NodePath.join(runtime, "versions", "active"));
-    await NodeFSP.writeFile(
-      NodePath.join(runtime, "service-state.json"),
-      JSON.stringify({ activeVersion: "active", update: { fromVersion: "old" } }),
-    );
-    await NodeFSP.mkdir(NodePath.join(runtime, "staged-updates"));
-    await NodeFSP.writeFile(
-      NodePath.join(runtime, "staged-updates", "stage.json"),
-      JSON.stringify({ receipt: { version: "old" } }),
-    );
-    await proposeRuntimeStagingRetention(root);
-    const plan = JSON.parse(
-      await NodeFSP.readFile(NodePath.join(runtime, "jones-runtime-retention-plan.json"), "utf8"),
-    );
-    NodeAssert.strict.equal(plan.held.length, 2);
-    NodeAssert.strict.deepEqual(plan.candidates, []);
-    NodeAssert.strict.deepEqual(plan.references[0].versions, ["active", "old"]);
-    await withQualifiedRuntimeLock(root, "qualified-runtime-lock", async () => {
-      await NodeAssert.strict.rejects(proposeRuntimeStagingRetention(root), /already owns/);
-    });
-    await proposeRuntimeStagingRetention(root);
-    NodeAssert.strict.equal(
-      (await NodeFSP.readdir(runtime)).filter((name) =>
-        name.startsWith("jones-runtime-retention-plan.json."),
-      ).length,
-      0,
-    );
-  }));
+NodeTest.test(
+  "runtime generations: known state and staged references are reported; unknown consumers hold",
+  () =>
+    fixture(async (root) => {
+      const runtime = NodePath.join(root, "runtime");
+      await NodeFSP.mkdir(NodePath.join(runtime, "versions", "old"), { recursive: true });
+      await NodeFSP.mkdir(NodePath.join(runtime, "versions", "active"));
+      await NodeFSP.writeFile(
+        NodePath.join(runtime, "service-state.json"),
+        JSON.stringify({ activeVersion: "active", update: { fromVersion: "old" } }),
+      );
+      await NodeFSP.mkdir(NodePath.join(runtime, "staged-updates"));
+      await NodeFSP.writeFile(
+        NodePath.join(runtime, "staged-updates", "stage.json"),
+        JSON.stringify({ receipt: { version: "old" } }),
+      );
+      await proposeRuntimeStagingRetention(root);
+      const plan = JSON.parse(
+        await NodeFSP.readFile(NodePath.join(runtime, "jones-runtime-retention-plan.json"), "utf8"),
+      );
+      NodeAssert.strict.equal(plan.held.length, 2);
+      NodeAssert.strict.deepEqual(plan.candidates, []);
+      NodeAssert.strict.deepEqual(plan.references[0].versions, ["active", "old"]);
+      await withQualifiedRuntimeLock(root, "qualified-runtime-lock", async () => {
+        await NodeAssert.strict.rejects(proposeRuntimeStagingRetention(root), /already owns/);
+      });
+      await proposeRuntimeStagingRetention(root);
+      NodeAssert.strict.equal(
+        (await NodeFSP.readdir(runtime)).filter((name) =>
+          name.startsWith("jones-runtime-retention-plan.json."),
+        ).length,
+        0,
+      );
+    }),
+);

@@ -10,7 +10,11 @@ const absent = (error: unknown) => (error as NodeJS.ErrnoException).code === "EN
 
 async function directory(path: string) {
   const info = await NodeFSP.lstat(path);
-  if (!info.isDirectory() || info.uid !== process.getuid?.() || (await NodeFSP.realpath(path)) !== path)
+  if (
+    !info.isDirectory() ||
+    info.uid !== process.getuid?.() ||
+    (await NodeFSP.realpath(path)) !== path
+  )
     throw new Error("Unknown runtime retention directory; preserved.");
   return info;
 }
