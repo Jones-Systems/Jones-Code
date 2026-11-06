@@ -55,7 +55,7 @@ const registry = ProviderAdapterRegistry.layerFromAdapters([
 ]);
 
 it.effect(
-  "committed rename, fork, merge-back, handoff and restore retain workspace provenance",
+  "explicit capture after committed rename, fork, merge-back, handoff and restore retains provenance",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -178,6 +178,12 @@ it.effect(
             worktreePath: moved,
             expectedWorktreePath: linked,
           });
+          yield* p.capture({
+            threadId,
+            reason: "reference",
+            createdBy: "system",
+            requireExistingPhysical: true,
+          });
           const relocated = (yield* p.lookup({ path: moved }))[0]!.provenance;
           expect(relocated.predecessor).toBe(initial.incarnation_id);
           expect(relocated.birth).toEqual(initial.birth);
@@ -288,6 +294,7 @@ it.effect(
             createdBy: "user",
             creationSource: "mcp",
           });
+          yield* p.capture({ threadId: forkId, reason: "reference", createdBy: "system" });
           expect((yield* p.lookup({ threadId: forkId }))[0]?.provenance.incarnation_id).toBe(
             relocated.incarnation_id,
           );
@@ -319,6 +326,7 @@ it.effect(
               (transfer) => transfer.type === "merge_back" && transfer.sourceThreadId === forkId,
             ),
           ).toBe(true);
+          yield* p.capture({ threadId: forkId, reason: "reference", createdBy: "system" });
           const forkHistory = yield* p.lookup({ threadId: forkId });
           expect(forkHistory.map((entry) => entry.provenance.target.checkoutKey)).toEqual([
             moved,
@@ -430,11 +438,13 @@ it.effect(
           const service = yield* WorktreeMcp.WorktreeMcpService.pipe(
             Effect.provide(WorktreeMcp.layer.pipe(Layer.provide(external))),
           );
+          yield* p.capture({ threadId: rootThreadId, reason: "reference", createdBy: "agent" });
           yield* service.handoff(scope, {
             branch: "handoff",
             startFromOrigin: false,
             runSetupScript: false,
           });
+          yield* p.capture({ threadId: rootThreadId, reason: "handoff", createdBy: "agent" });
           const handed = yield* p.lookup({ threadId: rootThreadId });
           expect(handed).toHaveLength(2);
           expect(handed[1]?.provenance.reason).toBe("handoff");
