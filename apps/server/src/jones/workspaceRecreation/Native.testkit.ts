@@ -12,6 +12,7 @@ import {
   RecreationHold,
   knownRecreation,
   acknowledgeInvalidation,
+  generationInvalidated,
   type RecreationInput,
   type RecreationSource,
 } from "./Native.ts";
@@ -123,6 +124,89 @@ const fixture = withNativeFixture;
 const held = (reason: RecreationHold["reason"]) => (cause: unknown) =>
   cause instanceof RecreationHold && cause.reason === reason;
 export const nativeCases: Record<string, () => Promise<void>> = {
+  "acknowledged manual recreation permits amend in the same active incarnation": () =>
+    fixture(async ({ repo, checkout, input }) => {
+      await NodeFSP.rm(checkout, { recursive: true });
+      const source = await missingSource(repo, checkout);
+      const result = await recreate({ ...input, source });
+      const physical = incarnation(await binding(checkout));
+      await acknowledgeInvalidation(result);
+      await g(checkout, [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "commit",
+        "--amend",
+        "--allow-empty",
+        "-qm",
+        "amended active commit",
+      ]);
+      const head = await g(checkout, ["rev-parse", "HEAD"]);
+      NodeAssert.notEqual(head, result.head);
+      await NodeAssert.rejects(
+        g(repo, ["merge-base", "--is-ancestor", result.head, head]),
+        (cause: unknown) => cause instanceof Error && "code" in cause && cause.code === 1,
+      );
+      const before = await g(repo, ["worktree", "list", "--porcelain", "-z"]);
+      NodeAssert.equal(await generationInvalidated(result), true);
+      NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
+      NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
+      await NodeAssert.rejects(recreate({ ...input, source }), held("unknown"));
+      NodeAssert.equal(incarnation(await binding(checkout)), physical);
+      NodeAssert.deepEqual(await readBreadcrumb((await binding(checkout)).git_dir), result);
+      NodeAssert.equal(await generationInvalidated(result), true);
+      NodeAssert.equal(await g(checkout, ["rev-parse", "HEAD"]), head);
+      NodeAssert.equal(await g(repo, ["worktree", "list", "--porcelain", "-z"]), before);
+      NodeAssert.equal(await exists(input.alternatePath), false);
+    }),
+  "acknowledged manual recreation permits rebase in the same active incarnation": () =>
+    fixture(async ({ repo, checkout, input }) => {
+      await NodeFSP.writeFile(NodePath.join(checkout, "topic"), "retained topic work\n");
+      await g(checkout, ["add", "topic"]);
+      await commit(checkout, "topic before recreation");
+      await NodeFSP.rm(checkout, { recursive: true });
+      const source = await missingSource(repo, checkout);
+      const result = await recreate({ ...input, source });
+      const physical = incarnation(await binding(checkout));
+      await acknowledgeInvalidation(result);
+      await NodeFSP.writeFile(NodePath.join(repo, "upstream"), "updated main\n");
+      await g(repo, ["add", "upstream"]);
+      await commit(repo, "advance fixture main");
+      await g(checkout, [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.invalid",
+        "rebase",
+        "main",
+      ]);
+      const head = await g(checkout, ["rev-parse", "HEAD"]);
+      NodeAssert.notEqual(head, result.head);
+      await NodeAssert.rejects(
+        g(repo, ["merge-base", "--is-ancestor", result.head, head]),
+        (cause: unknown) => cause instanceof Error && "code" in cause && cause.code === 1,
+      );
+      const before = await g(repo, ["worktree", "list", "--porcelain", "-z"]);
+      NodeAssert.equal(await generationInvalidated(result), true);
+      NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
+      NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
+      await NodeAssert.rejects(recreate({ ...input, source }), held("unknown"));
+      NodeAssert.equal(incarnation(await binding(checkout)), physical);
+      NodeAssert.deepEqual(await readBreadcrumb((await binding(checkout)).git_dir), result);
+      NodeAssert.equal(await generationInvalidated(result), true);
+      NodeAssert.equal(await g(checkout, ["rev-parse", "HEAD"]), head);
+      NodeAssert.equal(await g(repo, ["worktree", "list", "--porcelain", "-z"]), before);
+      NodeAssert.equal(
+        await NodeFSP.readFile(NodePath.join(checkout, "topic"), "utf8"),
+        "retained topic work\n",
+      );
+      NodeAssert.equal(
+        await NodeFSP.readFile(NodePath.join(checkout, "upstream"), "utf8"),
+        "updated main\n",
+      );
+      NodeAssert.equal(await exists(input.alternatePath), false);
+    }),
   "acknowledged manual recreation allows the next descendant commit only in the same incarnation":
     () =>
       fixture(async ({ repo, checkout, input, root }) => {

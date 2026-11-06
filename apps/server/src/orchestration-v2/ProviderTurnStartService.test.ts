@@ -1486,9 +1486,9 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
           ).pipe(Effect.orDie);
           expect(head.toString().trim()).toBe(f.source.head);
           if (order === "cleanup-first") {
-            const current = yield* nativeFixtureOperation(() =>
-              checkoutBinding(worktreePath),
-            ).pipe(Effect.orDie);
+            const current = yield* nativeFixtureOperation(() => checkoutBinding(worktreePath)).pipe(
+              Effect.orDie,
+            );
             expect(checkoutIncarnation(current)).not.toBe(checkoutIncarnation(prior));
           }
           yield* Deferred.succeed(openEntered, undefined);

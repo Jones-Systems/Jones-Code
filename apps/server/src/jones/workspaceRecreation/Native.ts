@@ -430,12 +430,7 @@ async function createdReadback(
       (await commit(cwd, reg.head)) !== reg.head
     )
       return null;
-    try {
-      await git(cwd, ["merge-base", "--is-ancestor", result.head, reg.head]);
-    } catch (cause) {
-      if (cause instanceof Error && "code" in cause && cause.code === 1) return null;
-      throw cause;
-    }
+    // Acknowledged completion follows this exact physical incarnation through HEAD rewrites.
   }
   const physical = await physicalIdentity(result.path);
   if (result.physical !== undefined && canonical(physical) !== canonical(result.physical))

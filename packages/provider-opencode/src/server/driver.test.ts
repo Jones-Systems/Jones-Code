@@ -13,6 +13,7 @@ import {
 } from "@t3tools/contracts";
 import type { OpenCodeSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Console from "effect/Console";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -90,16 +91,61 @@ const noHttp = HttpClient.make(() => Effect.die("A local binary must not be prob
 it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
   it.effect("never starts a 1.x server for an OpenCode 2 instance", () =>
     Effect.gen(function* () {
-      serverStarts.length = 0;
-      const instance = yield* create({}, noHttp);
-      yield* Effect.flip(
+      const initialStart = yield* Deferred.make<void>();
+      const caseStarts: Array<string> = [];
+      const operations: Array<{
+        readonly sequence: number;
+        readonly stage: "initial-discovery" | "title";
+        readonly operation: "start" | "connect";
+        readonly verifyPresent?: boolean;
+      }> = [];
+      let stage: "initial-discovery" | "title" = "initial-discovery";
+      let connectCount = 0;
+      const reachedCaseServer = (operation: "start" | "connect", verifyPresent?: boolean) =>
+        Effect.gen(function* () {
+          caseStarts.push(operation);
+          operations.push({
+            sequence: operations.length + 1,
+            stage,
+            operation,
+            ...(verifyPresent === undefined ? {} : { verifyPresent }),
+          });
+          if (operation === "start") yield* Deferred.succeed(initialStart, undefined);
+          else connectCount += 1;
+          return yield* Effect.fail(
+            new OpenCodeRuntime.OpenCodeRuntimeError({
+              operation,
+              detail: "reached a 1.x server path",
+            }),
+          );
+        });
+      const caseRuntime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
+        ...openCode2Runtime,
+        startOpenCodeServerProcess: (input) =>
+          reachedCaseServer("start", input.verify !== undefined),
+        connectToOpenCodeServer: () => reachedCaseServer("connect"),
+      };
+      const instance = yield* create({}, noHttp).pipe(
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, caseRuntime),
+      );
+      yield* Deferred.await(initialStart);
+      stage = "title";
+      const failure = yield* Effect.flip(
         instance.textGeneration.generateThreadTitle({
           cwd: process.cwd(),
           message: "hello",
           modelSelection: { instanceId: instance.instanceId, model: "opencode/big-pickle" },
         }),
       );
-      assert.deepStrictEqual(serverStarts, ["start"]);
+      const receipt = {
+        operations,
+        connectCount,
+        titleFailure: { tag: failure._tag, operation: failure.operation, detail: failure.detail },
+      };
+      yield* Console.log("OpenCode runtime selection diagnostic", JSON.stringify(receipt)).pipe(
+        Effect.provideService(Console.Console, Console.Console.defaultValue()),
+      );
+      assert.deepStrictEqual(caseStarts, ["start"], JSON.stringify(receipt));
     }).pipe(Effect.scoped),
   );
 

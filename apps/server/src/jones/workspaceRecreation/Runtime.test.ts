@@ -24,10 +24,9 @@ import { recreate, RecreationHold, type RecreationInput } from "./Native.ts";
 import { acquireNativeFixture, releaseNativeFixture, partialSource } from "./Native.testkit.ts";
 import { deferRestore, prepareTurn, withTurnClaims } from "./Runtime.ts";
 
-class NativeFixtureError extends Schema.TaggedError<NativeFixtureError>()(
-  "NativeFixtureError",
-  { cause: Schema.Defect() },
-) {
+class NativeFixtureError extends Schema.TaggedError<NativeFixtureError>()("NativeFixtureError", {
+  cause: Schema.Defect(),
+}) {
   override get message() {
     return "Native J4 fixture operation failed";
   }
@@ -79,12 +78,14 @@ it.effect(
         expect(yield* store.claims(f.checkout)).toEqual([]);
       }).pipe(
         Effect.provide(
-          Layer.mock(Git.GitVcsDriver)({
-            recreateCheckout: (input: RecreationInput) =>
-              Effect.sync(() => nativeCalls++).pipe(Effect.andThen(nativeRecreate(input))),
-          }),
+          Layer.provideMerge(
+            Layer.mock(Git.GitVcsDriver)({
+              recreateCheckout: (input: RecreationInput) =>
+                Effect.sync(() => nativeCalls++).pipe(Effect.andThen(nativeRecreate(input))),
+            }),
+            Sqlite.layerMemory,
+          ),
         ),
-        Effect.provide(Sqlite.layerMemory),
       );
       expect(providerUses).toBe(0);
       expect(nativeCalls).toBe(0);
@@ -198,7 +199,7 @@ it.effect(
               ?.state,
           ).toBe("retired");
         }),
-      ).pipe(Effect.provide(nativeDriver), Effect.provide(Sqlite.layerMemory));
+      ).pipe(Effect.provide(Layer.provideMerge(nativeDriver, Sqlite.layerMemory)));
     }).pipe(Effect.scoped),
 );
 
@@ -293,13 +294,17 @@ it.effect(
           projects: new Map(),
         }),
         Effect.provide(
-          Layer.mock(WorkspaceLifecycle)({
-            resume: () => Effect.die("restore must defer registry and checkout work"),
-            validate: () => Effect.die("restore must defer registry work"),
-          }),
+          Layer.provideMerge(
+            Layer.provideMerge(
+              Layer.mock(WorkspaceLifecycle)({
+                resume: () => Effect.die("restore must defer registry and checkout work"),
+                validate: () => Effect.die("restore must defer registry work"),
+              }),
+              nativeDriver,
+            ),
+            Sqlite.layerMemory,
+          ),
         ),
-        Effect.provide(nativeDriver),
-        Effect.provide(Sqlite.layerMemory),
       );
     }).pipe(Effect.scoped),
 );
@@ -368,7 +373,10 @@ it.effect("a completed manual recreation permits the next claimed turn after a n
     );
     expect(yield* store.claims(f.checkout)).toEqual([]);
     expect(yield* nativeOperation(() => exists(f.input.alternatePath))).toBe(false);
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer), Effect.provide(Sqlite.layerMemory)),
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(Layer.provideMerge(NodeServices.layer, Sqlite.layerMemory)),
+  ),
 );
 
 function nativeRecreate(input: RecreationInput) {
