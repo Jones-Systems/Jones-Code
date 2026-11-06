@@ -1092,35 +1092,34 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-        const traceRecovery = Effect.fn("CodexStartupTest.traceCacheHandoff")(
-          function* (stage: string, failure?: string) {
-            if (!cancelledHandoff) return "";
-            const projection = yield* orchestrator.getThreadProjection(threadId);
-            const replayState = yield* Ref.get(replay.state);
-            const diagnostic = yield* Schema.encodeEffect(
-              Schema.fromJsonString(Schema.Unknown),
-            )({
-              stage,
-              failure,
-              runs: projection.runs,
-              errors: projection.turnItems.flatMap((item) =>
-                item.type === "error" ? [{ title: item.title, failure: item.failure }] : [],
-              ),
-              publicationLookups,
-              requests,
-              replay: {
-                cursor: replayState.cursor,
-                failureMessage: replayState.failure?.message ?? null,
-                entries: replay.transcript.entries.length,
-              },
-            });
-            yield* Effect.logInfo("Synthetic cache handoff checkpoint", diagnostic).pipe(
-              Effect.provideService(References.MinimumLogLevel, "Info"),
-              Effect.withLogger(Logger.consoleLogFmt),
-            );
-            return diagnostic;
-          },
-        );
+        const traceRecovery = Effect.fn("CodexStartupTest.traceCacheHandoff")(function* (
+          stage: string,
+          failure?: string,
+        ) {
+          if (!cancelledHandoff) return "";
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          const replayState = yield* Ref.get(replay.state);
+          const diagnostic = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+            stage,
+            failure,
+            runs: projection.runs,
+            errors: projection.turnItems.flatMap((item) =>
+              item.type === "error" ? [{ title: item.title, failure: item.failure }] : [],
+            ),
+            publicationLookups,
+            requests,
+            replay: {
+              cursor: replayState.cursor,
+              failureMessage: replayState.failure?.message ?? null,
+              entries: replay.transcript.entries.length,
+            },
+          });
+          yield* Effect.logInfo("Synthetic cache handoff checkpoint", diagnostic).pipe(
+            Effect.provideService(References.MinimumLogLevel, "Info"),
+            Effect.withLogger(Logger.consoleLogFmt),
+          );
+          return diagnostic;
+        });
         const selection = { instanceId, model: "gpt-5.4" };
         yield* orchestrator.dispatch({
           type: "thread.create",
