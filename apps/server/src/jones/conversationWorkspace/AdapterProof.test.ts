@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic Git repositories and exact fixture teardown; no provider executable or installed state.
-import * as NodeFs from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import * as NodeOs from "node:os";
+import * as NodeOS from "node:os";
 import * as NodeChildProcess from "node:child_process";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -77,20 +77,20 @@ it.effect.each([
     Effect.gen(function* () {
       const root = yield* Effect.acquireRelease(
         Effect.promise(async () => {
-          const cache = NodePath.join(NodeOs.homedir(), "Library", "Caches");
-          await NodeFs.mkdir(cache, { recursive: true });
-          return NodeFs.mkdtemp(NodePath.join(cache, "jones-c9-adapter-"));
+          const cache = NodePath.join(NodeOS.homedir(), "Library", "Caches");
+          await NodeFSP.mkdir(cache, { recursive: true });
+          return NodeFSP.mkdtemp(NodePath.join(cache, "jones-c9-adapter-"));
         }),
-        (root) => Effect.promise(() => NodeFs.rm(root, { recursive: true, force: true })),
+        (root) => Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
       );
       const repo = NodePath.join(root, "repo");
       const state = NodePath.join(root, "state");
       let checkout = NodePath.join(root, "checkout");
       yield* Effect.promise(async () => {
-        await NodeFs.mkdir(repo);
-        await NodeFs.mkdir(state);
+        await NodeFSP.mkdir(repo);
+        await NodeFSP.mkdir(state);
         git(repo, "init", "--template=");
-        await NodeFs.writeFile(NodePath.join(repo, "AGENTS.md"), "Read the recorded source.\n");
+        await NodeFSP.writeFile(NodePath.join(repo, "AGENTS.md"), "Read the recorded source.\n");
         git(repo, "add", ".");
         git(repo, "commit", "-qm", "source");
       });
@@ -287,7 +287,7 @@ it.effect.each([
         };
         if (scenario === "nonempty")
           yield* Effect.promise(() =>
-            NodeFs.writeFile(NodePath.join(binding.path, "owner-note"), "retain"),
+            NodeFSP.writeFile(NodePath.join(binding.path, "owner-note"), "retain"),
           );
         if (scenario === "checkout-interruption") {
           assert.equal((yield* worktree.handoff(scope, input).pipe(Effect.result))._tag, "Failure");
@@ -343,7 +343,7 @@ it.effect.each([
         if (scenario === "nonempty") {
           assert.equal(
             yield* Effect.promise(() =>
-              NodeFs.readFile(NodePath.join(binding.path, "owner-note"), "utf8"),
+              NodeFSP.readFile(NodePath.join(binding.path, "owner-note"), "utf8"),
             ),
             "retain",
           );
@@ -353,7 +353,7 @@ it.effect.each([
           );
         } else
           assert.equal(
-            yield* Effect.promise(() => NodeFs.stat(binding.path).catch(() => null)),
+            yield* Effect.promise(() => NodeFSP.stat(binding.path).catch(() => null)),
             null,
           );
         if (scenario === "shared") {

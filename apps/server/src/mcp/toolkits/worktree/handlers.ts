@@ -13,26 +13,25 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as WorktreeMcpService from "../../WorktreeMcpService.ts";
 import { WorktreeToolkit } from "./tools.ts";
 
-const source = (request: SourceRequest) =>
-  Effect.gen(function* () {
-    const scope = yield* McpInvocationContext.McpInvocationContext;
-    if (scope.thread === undefined || !scope.capabilities.has("worktree"))
-      return yield* new OrchestratorMcpFailure({
-        code: "capability_denied",
-        message: "Source tools require this conversation's worktree capability.",
-      });
-    const policy = yield* ConversationPolicy.ConversationPolicy;
-    return yield* policy.source(scope.thread.threadId, request).pipe(
-      Effect.mapError(
-        () =>
-          new OrchestratorMcpFailure({
-            code: "invalid_request",
-            message:
-              "Source request failed or exceeded its bounds; use this turn's recorded commit and a smaller request.",
-          }),
-      ),
-    );
-  });
+const source = Effect.fn("WorktreeHandlers.source")(function* (request: SourceRequest) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (scope.thread === undefined || !scope.capabilities.has("worktree"))
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "Source tools require this conversation's worktree capability.",
+    });
+  const policy = yield* ConversationPolicy.ConversationPolicy;
+  return yield* policy.source(scope.thread.threadId, request).pipe(
+    Effect.mapError(
+      () =>
+        new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "Source request failed or exceeded its bounds; use this turn's recorded commit and a smaller request.",
+        }),
+    ),
+  );
+});
 const handlers = {
   t3_source_read: McpToolAccess.readsAsCaller((input) => source({ operation: "read", ...input })),
   t3_source_list: McpToolAccess.readsAsCaller((input) => source({ operation: "list", ...input })),

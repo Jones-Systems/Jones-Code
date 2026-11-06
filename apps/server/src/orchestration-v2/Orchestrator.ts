@@ -1192,38 +1192,39 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // Jones hook: conversation runs checkpoint their empty cwd, never the project checkout.
   const checkpointService: CheckpointServiceV2["Service"] = {
     ...baseCheckpointService,
-    prepareRootRunScope: (input) =>
-      Effect.gen(function* () {
-        const parent = yield* ConversationPolicy.ParentConversation;
-        const checkpointThreadId = parent === undefined ? input.threadId : ThreadId.make(parent);
-        const binding = Option.isSome(conversationPolicy)
-          ? yield* conversationPolicy.value.lookup(parent ?? input.threadId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new CheckpointRootScopePrepareError({
-                    threadId: input.threadId,
-                    runId: input.runId,
-                    cause,
-                  }),
-              ),
-            )
-          : null;
-        const current = yield* projectionStore.getThreadShell(checkpointThreadId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new CheckpointRootScopePrepareError({
-                threadId: input.threadId,
-                runId: input.runId,
-                cause,
-              }),
-          ),
-        );
-        return yield* baseCheckpointService.prepareRootRunScope(
-          binding === null || binding.state === "attached" || current?.worktreePath !== null
-            ? input
-            : { ...input, cwd: binding.path },
-        );
-      }),
+    prepareRootRunScope: Effect.fn("orchestrationV2.Orchestrator.prepareRootRunScope")(function* (
+      input: Parameters<CheckpointServiceV2["Service"]["prepareRootRunScope"]>[0],
+    ) {
+      const parent = yield* ConversationPolicy.ParentConversation;
+      const checkpointThreadId = parent === undefined ? input.threadId : ThreadId.make(parent);
+      const binding = Option.isSome(conversationPolicy)
+        ? yield* conversationPolicy.value.lookup(parent ?? input.threadId).pipe(
+            Effect.mapError(
+              (cause) =>
+                new CheckpointRootScopePrepareError({
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  cause,
+                }),
+            ),
+          )
+        : null;
+      const current = yield* projectionStore.getThreadShell(checkpointThreadId).pipe(
+        Effect.mapError(
+          (cause) =>
+            new CheckpointRootScopePrepareError({
+              threadId: input.threadId,
+              runId: input.runId,
+              cause,
+            }),
+        ),
+      );
+      return yield* baseCheckpointService.prepareRootRunScope(
+        binding === null || binding.state === "attached" || current?.worktreePath !== null
+          ? input
+          : { ...input, cwd: binding.path },
+      );
+    }),
   };
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;

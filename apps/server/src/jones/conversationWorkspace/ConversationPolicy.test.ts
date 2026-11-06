@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Small synthetic repositories and exact cleanup belong to this fixture.
-import * as NodeFs from "node:fs/promises";
+import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import * as NodeOs from "node:os";
+import * as NodeOS from "node:os";
 import * as NodeChildProcess from "node:child_process";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -41,19 +41,19 @@ it.effect(
       Effect.gen(function* () {
         const root = yield* Effect.acquireRelease(
           Effect.promise(async () => {
-            const parent = NodePath.join(NodeOs.homedir(), "Library", "Caches");
-            await NodeFs.mkdir(parent, { recursive: true });
-            return NodeFs.mkdtemp(NodePath.join(parent, "jones-c9-policy-"));
+            const parent = NodePath.join(NodeOS.homedir(), "Library", "Caches");
+            await NodeFSP.mkdir(parent, { recursive: true });
+            return NodeFSP.mkdtemp(NodePath.join(parent, "jones-c9-policy-"));
           }),
-          (root) => Effect.promise(() => NodeFs.rm(root, { recursive: true, force: true })),
+          (root) => Effect.promise(() => NodeFSP.rm(root, { recursive: true, force: true })),
         );
         const repo = NodePath.join(root, "repo");
         const state = NodePath.join(root, "state");
         yield* Effect.promise(async () => {
-          await NodeFs.mkdir(repo);
-          await NodeFs.mkdir(state);
+          await NodeFSP.mkdir(repo);
+          await NodeFSP.mkdir(state);
           git(repo, "init", "--template=");
-          await NodeFs.writeFile(NodePath.join(repo, "AGENTS.md"), "initial instructions\n");
+          await NodeFSP.writeFile(NodePath.join(repo, "AGENTS.md"), "initial instructions\n");
           git(repo, "add", ".");
           git(repo, "commit", "-qm", "first");
         });
@@ -79,12 +79,12 @@ it.effect(
           yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('conversation','{"id":"conversation","projectId":"project"}',NULL),('delegate','{"id":"delegate","projectId":"project"}',NULL)`;
           const binding = yield* service.allocate(input);
           assert.deepEqual(yield* service.allocate(input), binding);
-          assert.deepEqual(yield* Effect.promise(() => NodeFs.readdir(binding.path)), []);
+          assert.deepEqual(yield* Effect.promise(() => NodeFSP.readdir(binding.path)), []);
           const first = yield* service.startTurn(input.threadId, "turn:first");
           assert.isNotNull(first);
           assert.include(first!.context, "AGENTS.md");
           yield* Effect.promise(async () => {
-            await NodeFs.writeFile(NodePath.join(repo, "AGENTS.md"), "second instructions\n");
+            await NodeFSP.writeFile(NodePath.join(repo, "AGENTS.md"), "second instructions\n");
             git(repo, "add", ".");
             git(repo, "commit", "-qm", "second");
           });
@@ -133,7 +133,7 @@ it.effect(
             "handoff_conflict",
           );
           yield* Effect.promise(() =>
-            NodeFs.writeFile(NodePath.join(binding.path, "owner-note"), "retained"),
+            NodeFSP.writeFile(NodePath.join(binding.path, "owner-note"), "retained"),
           );
           assert.isFalse(yield* service.acceptsCwd(input.threadId, binding.path));
           assert.equal(yield* service.dispose(input.threadId, true), "conversation_dir_nonempty");
@@ -145,7 +145,7 @@ it.effect(
           assert.deepEqual(obligations, [{ path: binding.path, thread_id: input.threadId }]);
           assert.equal(
             yield* Effect.promise(() =>
-              NodeFs.readFile(NodePath.join(binding.path, "owner-note"), "utf8"),
+              NodeFSP.readFile(NodePath.join(binding.path, "owner-note"), "utf8"),
             ),
             "retained",
           );

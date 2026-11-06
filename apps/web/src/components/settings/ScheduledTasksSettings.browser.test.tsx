@@ -153,7 +153,7 @@ it("new tasks inherit project allocation and retain explicit checkout choices", 
   state.connected = true;
   state.tasksLoaded = true;
   state.inherited = false;
-  await using screen = await render(<ScheduledTasksSettings />);
+  await using _screen = await render(<ScheduledTasksSettings />);
   await userEvent.click(page.getByRole("button", { name: "New task" }));
   const workspace = page.getByRole("dialog").getByRole("combobox", { name: "Workspace" });
   await expect.element(workspace).toHaveTextContent("Use project allocation setting");
@@ -169,7 +169,7 @@ it("reopens persisted auto without converting it to an explicit worktree", async
   state.connected = true;
   state.tasksLoaded = true;
   state.inherited = true;
-  await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+  await using _screen = await render(<ScheduledTasksSettings taskId={task.id} />);
   await expect
     .element(page.getByRole("dialog").getByRole("combobox", { name: "Workspace" }))
     .toHaveTextContent("Use project allocation setting");

@@ -1,7 +1,7 @@
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import { resolveSource } from "../jones/conversationWorkspace/SourceBroker.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Stable legacy request identity; explicit clientRequestId remains preferred.
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import {
   CommandId,
@@ -462,7 +462,8 @@ export const make = Effect.gen(function* () {
       continuationAttachments,
     }).pipe(asOperationFailed("Unable to encode handoff request"));
     const requestId =
-      input.clientRequestId ?? `legacy:${createHash("sha256").update(request).digest("hex")}`;
+      input.clientRequestId ??
+      `legacy:${NodeCrypto.createHash("sha256").update(request).digest("hex")}`;
     // The journal is read before the already-attached check so exact retries
     // return the original receipt after binding or provider detachment.
     const previous = yield* policy
@@ -654,7 +655,7 @@ export const make = Effect.gen(function* () {
                     projectId: project.id,
                     projectCwd: project.workspaceRoot,
                     worktreePath,
-                    preferredTerminalId: `conversation-setup-${createHash("sha256").update(commandKey).digest("hex").slice(0, 24)}`,
+                    preferredTerminalId: `conversation-setup-${NodeCrypto.createHash("sha256").update(commandKey).digest("hex").slice(0, 24)}`,
                     project: {
                       id: project.id,
                       workspaceRoot: project.workspaceRoot,
@@ -856,7 +857,7 @@ export const make = Effect.gen(function* () {
           );
     }
     const result = yield* durableHandoff(threadId, {
-      branch: `work/conversation-${createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`,
+      branch: `work/conversation-${NodeCrypto.createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`,
       clientRequestId: `terminal:${threadId}`,
       runSetupScript: true,
     });
@@ -894,7 +895,7 @@ export const make = Effect.gen(function* () {
     yield* durableHandoff(
       threadId,
       {
-        branch: `work/conversation-${createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`,
+        branch: `work/conversation-${NodeCrypto.createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`,
         clientRequestId: `adapter-fallback:${runId}`,
         continuationPrompt: text || "Continue the previous request in the attached checkout.",
         runSetupScript: true,
