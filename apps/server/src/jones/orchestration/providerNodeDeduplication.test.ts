@@ -72,7 +72,8 @@ const testLayer = Layer.unwrap(
 const seed = Effect.gen(function* () {
   const sink = yield* EventSink.EventSinkV2;
   const now = DateTime.makeUnsafe("2026-11-06T12:00:00.000Z");
-  const thread = Schema.decodeUnknownSync(OrchestrationV2AppThread)({
+  const providerThreadId = "provider-thread:node-dedup";
+  const thread = yield* Schema.decodeEffect(OrchestrationV2AppThread)({
     createdBy: "user",
     creationSource: "web",
     id: "thread:node-dedup",
@@ -84,7 +85,7 @@ const seed = Effect.gen(function* () {
     interactionMode: "default",
     branch: null,
     worktreePath: null,
-    activeProviderThreadId: "provider-thread:node-dedup",
+    activeProviderThreadId: providerThreadId,
     lineage: {
       parentThreadId: null,
       relationshipToParent: null,
@@ -99,8 +100,8 @@ const seed = Effect.gen(function* () {
     lastVisitedAt: null,
     deletedAt: null,
   });
-  const provider = Schema.decodeUnknownSync(OrchestrationV2ProviderThread)({
-    id: thread.activeProviderThreadId,
+  const provider = yield* Schema.decodeEffect(OrchestrationV2ProviderThread)({
+    id: providerThreadId,
     driver: "codex",
     providerInstanceId: "codex",
     providerSessionId: "session:node-dedup",
@@ -230,116 +231,121 @@ const ingestNode = Effect.fn("test.ingestProviderNode")(function* (
   });
 });
 
-it.effect.each(routes)("ingests and deduplicates nodes through %s while all readers are held", (route) =>
-  Effect.gen(function* () {
-    const fixture = yield* seed;
-    const sql = yield* SqlClient.SqlClient;
-    const release = yield* Deferred.make<void>();
-    const writerConnection = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const [connection] = yield* sql.transactionService;
-        return connection;
-      }),
-    );
-    const dedupConnections: unknown[] = [];
-    const observe: Statement.Transformer = (statement, _sql, fiber) => {
-      const [query] = statement.compile();
-      if (/orchestration_v2_projection_nodes WHERE node_id/.test(query)) {
-        dedupConnections.push(Context.getOrUndefined(fiber.context, sql.transactionService)?.[0]);
-      }
-      return Effect.succeed(statement);
-    };
-    yield* Effect.gen(function* () {
-      // Background takes the shared slot first; interactive then takes the reserved slot.
-      const holders = yield* Effect.forEach(["background", "interactive"] as const, (priority) =>
-        Effect.gen(function* () {
-          const ready = yield* Deferred.make<void>();
-          const holder = yield* Effect.forkChild(
-            Effect.scoped(
-              Effect.gen(function* () {
-                yield* sql.reserve;
-                yield* Deferred.succeed(ready, undefined);
-                yield* Deferred.await(release);
-              }),
-            ).pipe(NodeSqliteClient.readOnly, withReadPriority(priority)),
-            { startImmediately: true },
-          );
-          yield* Deferred.await(ready);
-          return holder;
-        }),
-        { concurrency: 1 },
+it.effect.each(routes)(
+  "ingests and deduplicates nodes through %s while all readers are held",
+  (route) =>
+    Effect.gen(function* () {
+      const fixture = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const release = yield* Deferred.make<void>();
+      const writerConnection = yield* sql.withTransaction(
+        Effect.withFiber((fiber) =>
+          Effect.succeed(Context.getUnsafe(fiber.context, sql.transactionService)[0]),
+        ),
       );
-      const changed = { ...fixture.node, status: "completed" as const, completedAt: fixture.now };
+      const dedupConnections: unknown[] = [];
+      const observe: Statement.Transformer = (statement, _sql, fiber) => {
+        const [query] = statement.compile();
+        if (/orchestration_v2_projection_nodes WHERE node_id/.test(query)) {
+          dedupConnections.push(Context.getOrUndefined(fiber.context, sql.transactionService)?.[0]);
+        }
+        return Effect.succeed(statement);
+      };
       yield* Effect.gen(function* () {
-        assert.lengthOf(yield* ingestNode(route, fixture, changed), 1);
-        assert.isEmpty(yield* ingestNode(route, fixture, { ...changed }));
-      }).pipe(Effect.provideService(Statement.CurrentTransformer, observe));
-      assert.equal(dedupConnections.length, 2);
-      assert.isTrue(dedupConnections.every((connection) => connection === writerConnection));
-      yield* Deferred.succeed(release, undefined);
-      for (const holder of holders) yield* Fiber.join(holder);
-      const projections = yield* ProjectionStore.ProjectionStoreV2;
-      assert.isTrue(yield* projections.isNodeStored(changed));
-    }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+        // Background takes the shared slot first; interactive then takes the reserved slot.
+        const holders = yield* Effect.forEach(
+          ["background", "interactive"] as const,
+          (priority) =>
+            Effect.gen(function* () {
+              const ready = yield* Deferred.make<void>();
+              const holder = yield* Effect.forkChild(
+                Effect.scoped(
+                  Effect.gen(function* () {
+                    yield* sql.reserve;
+                    yield* Deferred.succeed(ready, undefined);
+                    yield* Deferred.await(release);
+                  }),
+                ).pipe(NodeSqliteClient.readOnly, withReadPriority(priority)),
+                { startImmediately: true },
+              );
+              yield* Deferred.await(ready);
+              return holder;
+            }),
+          { concurrency: 1 },
+        );
+        const changed = { ...fixture.node, status: "completed" as const, completedAt: fixture.now };
+        yield* Effect.gen(function* () {
+          assert.lengthOf(yield* ingestNode(route, fixture, changed), 1);
+          assert.isEmpty(yield* ingestNode(route, fixture, { ...changed }));
+        }).pipe(Effect.provideService(Statement.CurrentTransformer, observe));
+        assert.equal(dedupConnections.length, 2);
+        assert.isTrue(dedupConnections.every((connection) => connection === writerConnection));
+        yield* Deferred.succeed(release, undefined);
+        for (const holder of holders) yield* Fiber.join(holder);
+        const projections = yield* ProjectionStore.ProjectionStoreV2;
+        assert.isTrue(yield* projections.isNodeStored(changed));
+      }).pipe(Effect.ensuring(Deferred.succeed(release, undefined)));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
-it.effect.each(routes)("keeps explicit %s writes and accepted empty deduplication distinct", (route) =>
-  Effect.gen(function* () {
-    const fixture = yield* seed;
-    const sink = yield* EventSink.EventSinkV2;
-    const event: OrchestrationV2DomainEvent = {
-      id: EventId.make("explicit:node"),
-      type: "node.updated",
-      threadId: fixture.thread.id,
-      occurredAt: fixture.now,
-      payload: fixture.node,
-    };
-    assert.lengthOf(yield* sink.write({ events: [event] }), 1);
-    const input = {
-      events: [{ ...event, id: EventId.make("duplicate:node") }],
-      skipUnchangedProviderNodes: true,
-    };
-    switch (route) {
-      case "write":
-        assert.isEmpty(yield* sink.write(input));
-        break;
-      case "writeIfRunCurrent": {
-        const result = yield* sink.writeIfRunCurrent({
-          ...input,
-          threadId: fixture.thread.id,
-          ...guardForRoute(route, fixture).writeIfRunCurrent!,
-        });
-        assert.isTrue(result.committed);
-        assert.isEmpty(result.storedEvents);
-        const stale = yield* sink.writeIfRunCurrent({
-          ...input,
-          threadId: fixture.thread.id,
-          ...guardForRoute(route, fixture).writeIfRunCurrent!,
-          expectedStatus: "completed",
-        });
-        assert.isFalse(stale.committed);
-        assert.isEmpty(stale.storedEvents);
-        break;
+it.effect.each(routes)(
+  "keeps explicit %s writes and accepted empty deduplication distinct",
+  (route) =>
+    Effect.gen(function* () {
+      const fixture = yield* seed;
+      const sink = yield* EventSink.EventSinkV2;
+      const event: OrchestrationV2DomainEvent = {
+        id: EventId.make("explicit:node"),
+        type: "node.updated",
+        threadId: fixture.thread.id,
+        occurredAt: fixture.now,
+        payload: fixture.node,
+      };
+      assert.lengthOf(yield* sink.write({ events: [event] }), 1);
+      const input = {
+        events: [{ ...event, id: EventId.make("duplicate:node") }],
+        skipUnchangedProviderNodes: true,
+      };
+      switch (route) {
+        case "write":
+          assert.isEmpty(yield* sink.write(input));
+          break;
+        case "writeIfRunCurrent": {
+          const result = yield* sink.writeIfRunCurrent({
+            ...input,
+            threadId: fixture.thread.id,
+            ...guardForRoute(route, fixture).writeIfRunCurrent!,
+          });
+          assert.isTrue(result.committed);
+          assert.isEmpty(result.storedEvents);
+          const stale = yield* sink.writeIfRunCurrent({
+            ...input,
+            threadId: fixture.thread.id,
+            ...guardForRoute(route, fixture).writeIfRunCurrent!,
+            expectedStatus: "completed",
+          });
+          assert.isFalse(stale.committed);
+          assert.isEmpty(stale.storedEvents);
+          break;
+        }
+        case "writeIfProviderThreadOwner": {
+          const result = yield* sink.writeIfProviderThreadOwner({
+            ...input,
+            ...guardForRoute(route, fixture).writeIfProviderThreadOwner!,
+          });
+          assert.isTrue(result.committed);
+          assert.isEmpty(result.storedEvents);
+          const stale = yield* sink.writeIfProviderThreadOwner({
+            ...input,
+            ...guardForRoute(route, fixture).writeIfProviderThreadOwner!,
+            expectedLastRunOrdinal: 2,
+          });
+          assert.isFalse(stale.committed);
+          assert.isEmpty(stale.storedEvents);
+          break;
+        }
       }
-      case "writeIfProviderThreadOwner": {
-        const result = yield* sink.writeIfProviderThreadOwner({
-          ...input,
-          ...guardForRoute(route, fixture).writeIfProviderThreadOwner!,
-        });
-        assert.isTrue(result.committed);
-        assert.isEmpty(result.storedEvents);
-        const stale = yield* sink.writeIfProviderThreadOwner({
-          ...input,
-          ...guardForRoute(route, fixture).writeIfProviderThreadOwner!,
-          expectedLastRunOrdinal: 2,
-        });
-        assert.isFalse(stale.committed);
-        assert.isEmpty(stale.storedEvents);
-        break;
-      }
-    }
-  }).pipe(Effect.provide(testLayer)),
+    }).pipe(Effect.provide(testLayer)),
 );
 
 it.effect("preserves node write failures and rolls back their event", () =>

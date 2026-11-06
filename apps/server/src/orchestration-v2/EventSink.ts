@@ -890,7 +890,10 @@ const layerBase: Layer.Layer<
     ) {
       const changed: Array<OrchestrationV2DomainEvent> = [];
       for (const event of events) {
-        if (event.type !== "node.updated" || !(yield* projectionStore.isNodeStored(event.payload))) {
+        if (
+          event.type !== "node.updated" ||
+          !(yield* projectionStore.isNodeStored(event.payload))
+        ) {
           changed.push(event);
         }
       }
@@ -1122,9 +1125,9 @@ const layerBase: Layer.Layer<
               .append({
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 events:
-                input.skipUnchangedProviderNodes === true
-                  ? yield* filterUnchangedProviderNodes(normalized)
-                  : normalized,
+                  input.skipUnchangedProviderNodes === true
+                    ? yield* filterUnchangedProviderNodes(normalized)
+                    : normalized,
               })
               .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
             const outcomes = yield* applyStoredEvents(storedEvents);

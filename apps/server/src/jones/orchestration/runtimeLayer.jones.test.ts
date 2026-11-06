@@ -1314,8 +1314,7 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
     (mode) =>
       Effect.gen(function* () {
         const prefix = `self-settlement-reads-${mode}`;
-        const { orchestrator, sink, threadId, run, request } =
-          yield* selfSettlementFixture(prefix);
+        const { orchestrator, sink, threadId, run, request } = yield* selfSettlementFixture(prefix);
         if (mode === "pending" || mode === "records-error")
           yield* orchestrator.requestSelfSettlement(request);
         const store = yield* ProjectionStore.ProjectionStoreV2;
@@ -1346,30 +1345,29 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         const getThreadRecords = store.getThreadRecords;
         const canStartQueuedRun = store.canStartQueuedRun;
         const withLock = executor.withLock;
-        const headerSpy = vi.spyOn(store, "getThread").mockImplementation((id) =>
-          id === threadId && mode === "header-error"
-            ? Effect.fail(readError)
-            : getThread(id),
-        );
-        const recordsSpy = vi.spyOn(store, "getThreadRecords").mockImplementation(
-          (id, fields, filter) => {
-            if (
-              id === threadId &&
-              fields.join(",") === "runs,messages,runtimeRequests,attempts"
-            ) {
+        const headerSpy = vi
+          .spyOn(store, "getThread")
+          .mockImplementation((id) =>
+            id === threadId && mode === "header-error" ? Effect.fail(readError) : getThread(id),
+          );
+        const recordsSpy = vi
+          .spyOn(store, "getThreadRecords")
+          .mockImplementation((id, fields, filter) => {
+            if (id === threadId && fields.join(",") === "runs,messages,runtimeRequests,attempts") {
               historyReads++;
               if (mode === "records-error") return Effect.fail(readError);
             }
             return getThreadRecords(id, fields, filter);
-          },
-        );
-        const promotionSpy = vi.spyOn(store, "canStartQueuedRun").mockImplementation((id) =>
-          canStartQueuedRun(id).pipe(
-            Effect.tap(() =>
-              id === threadId ? Deferred.succeed(promoted, undefined) : Effect.void,
+          });
+        const promotionSpy = vi
+          .spyOn(store, "canStartQueuedRun")
+          .mockImplementation((id) =>
+            canStartQueuedRun(id).pipe(
+              Effect.tap(() =>
+                id === threadId ? Deferred.succeed(promoted, undefined) : Effect.void,
+              ),
             ),
-          ),
-        );
+          );
         const observedLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
           id,
           effect,
@@ -1402,7 +1400,10 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
           if (Exit.isFailure(result)) {
             const failure = Cause.squash(result.cause);
             assert.instanceOf(failure, Orchestrator.OrchestratorProjectionError);
-            assert.strictEqual((failure as Orchestrator.OrchestratorProjectionError).cause, readError);
+            assert.strictEqual(
+              (failure as Orchestrator.OrchestratorProjectionError).cause,
+              readError,
+            );
           }
           assert.equal(historyReads, mode === "records-error" ? 1 : 0);
           assert.equal(dutyReads, 0);
