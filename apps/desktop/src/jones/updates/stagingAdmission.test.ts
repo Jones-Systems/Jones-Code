@@ -24,13 +24,11 @@ it("waits for the parent's decision after artifact transfer and never mounts a d
   const nativeWork = vi.fn(async () => {
     throw new Error("Mount/copy must not run.");
   });
-  const stageApp = vi.fn<typeof stageJonesMacApp>(
-    async (_artifact, _root, _platform, admit) => {
-      preflighted.resolve();
-      await admit?.();
-      return nativeWork();
-    },
-  );
+  const stageApp = vi.fn<typeof stageJonesMacApp>(async (_artifact, _root, _platform, admit) => {
+    preflighted.resolve();
+    await admit?.();
+    return nativeWork();
+  });
   const onVerifying = vi.fn();
   try {
     const pending = prepareJonesStage(
@@ -109,7 +107,7 @@ it("returns an ordinary preflight failure without requesting parent admission", 
         { artifacts: NodePath.join(root, "artifacts"), apps: NodePath.join(root, "apps") },
         "darwin",
         {
-          actions: { stage: vi.fn(async () => ({} as JonesStagedArtifact)) },
+          actions: { stage: vi.fn(async () => ({}) as JonesStagedArtifact) },
           stageApp: async () => {
             throw preflightFailure;
           },

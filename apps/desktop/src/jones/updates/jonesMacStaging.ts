@@ -385,11 +385,7 @@ async function requireNoIncompleteMacAttempts(root: string): Promise<void> {
           throw new Error("Unknown Mac stage attempt.");
         const children = await NodeFSP.readdir(attempt);
         const handle = children.find((entry) => /^[a-f0-9]{64}$/.test(entry));
-        if (
-          children.length !== 2 ||
-          !children.includes("completion.json") ||
-          handle === undefined
-        )
+        if (children.length !== 2 || !children.includes("completion.json") || handle === undefined)
           throw new Error("Unindexed Mac stage attempt.");
         const directory = NodePath.join(attempt, handle);
         const completed = await findJonesCompletedStage(root, handle, "mac-app-receipt.json");

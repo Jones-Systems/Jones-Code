@@ -131,6 +131,7 @@
     "packages/contracts/src/resourceTelemetry.ts",
     "packages/shared/package.json",
     "scripts/build-desktop-artifact.ts",
+    "scripts/smoke-cli-archive.ts",
     "apps/server/src/cli/service.ts",
     "apps/server/src/cli/servicePreflight.ts",
     "apps/server/src/cli/update.test.ts",

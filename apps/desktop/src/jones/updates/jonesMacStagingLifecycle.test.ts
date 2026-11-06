@@ -378,9 +378,7 @@ it("admits a new candidate after four completed receipt-only remnants without ch
     expect(app.handle).toBe(artifact.stagedHandle);
     expect(admit).toHaveBeenCalledTimes(1);
     expect(vi.mocked(NodeChildProcess.execFile)).toHaveBeenCalled();
-    expect(await Promise.all(remnants.map(({ attempt }) => snapshotTree(attempt)))).toEqual(
-      before,
-    );
+    expect(await Promise.all(remnants.map(({ attempt }) => snapshotTree(attempt)))).toEqual(before);
     expect(await NodeFSP.readdir(NodePath.join(root, "completed"))).toEqual([
       `${artifact.stagedHandle}.json`,
     ]);
