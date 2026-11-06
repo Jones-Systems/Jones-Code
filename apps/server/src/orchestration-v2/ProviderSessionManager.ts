@@ -12,7 +12,11 @@ import { PhysicalProcessObservation } from "@t3tools/contracts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "../jones/cloud/shutdownBudget.ts";
-import type { CapturedRuntimeRetirement, RuntimeRetirementReceipt, CapturedRuntimeStop } from "@t3tools/provider-core/server/ProviderAdapter";
+import type {
+  CapturedRuntimeRetirement,
+  RuntimeRetirementReceipt,
+  CapturedRuntimeStop,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -441,14 +445,31 @@ export const layerWithOptions = (
               Effect.map((records) => records.providerThreads.find((thread) => thread.id === id)),
             );
         const publication = makeProviderRecoveryPublication({
-          driver, instanceId, providerSessionId, reservations,
-          allocate: (threadId) => idAllocator.allocate.event({ threadId, providerSessionId }).pipe(Effect.mapError(protocolError)),
-          readThread: (threadId, id) => readThread(threadId, id).pipe(Effect.mapError(protocolError)), events: eventStore, sink: eventSink, ingestor: providerEventIngestor,
+          driver,
+          instanceId,
+          providerSessionId,
+          reservations,
+          allocate: (threadId) =>
+            idAllocator.allocate
+              .event({ threadId, providerSessionId })
+              .pipe(Effect.mapError(protocolError)),
+          readThread: (threadId, id) =>
+            readThread(threadId, id).pipe(Effect.mapError(protocolError)),
+          events: eventStore,
+          sink: eventSink,
+          ingestor: providerEventIngestor,
           physical: physicalEvidence,
           forgetTransfers: forgetCompletedThreadTransfers,
-          revalidateGuard: (threadId) => NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, { threadId }).pipe(Effect.mapError(protocolError)),
-          bindGuard: (binding) => nativeCreationGuard === undefined ? Effect.void
-            : NativeProvider.bindNativeProviderGuard(nativeCreationGuard, binding).pipe(Effect.mapError(protocolError)),
+          revalidateGuard: (threadId) =>
+            NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, { threadId }).pipe(
+              Effect.mapError(protocolError),
+            ),
+          bindGuard: (binding) =>
+            nativeCreationGuard === undefined
+              ? Effect.void
+              : NativeProvider.bindNativeProviderGuard(nativeCreationGuard, binding).pipe(
+                  Effect.mapError(protocolError),
+                ),
         });
         return {
           reserve: Effect.fn("ProviderSessionManager.reserve")((threadId) =>
@@ -2981,67 +3002,128 @@ export const layerWithOptions = (
 
       const reconcileThreadBindingPublication = Effect.fn(
         "ProviderSessionManager.reconcileThreadBindingPublication",
-      )(function* (input: {
-        readonly run: OrchestrationV2Run;
-        readonly providerThread: OrchestrationV2ProviderThread;
-      }) {
-        const { run, providerThread } = input;
-        const providerSessionId = providerThread.providerSessionId;
-        if (providerSessionId === null) return null;
-        const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
-        const reconcile = entry?.runtime.reconcileBindingPublication;
-        if (entry === undefined || reconcile === undefined || !entry.attachedThreadIds.has(run.threadId)) return null;
-        const nativeThreadId = providerThread.nativeThreadRef?.nativeId ?? null;
-        const refused = (cause: unknown) => new ProviderRuntimeBindingError({
-          driver: providerThread.driver,
-          detail: "The new run no longer owns this retained binding publication.", cause,
-        });
-        const revalidate = Effect.gen(function* () {
-          const latestEntry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
-          const current = yield* projectionStore.getTurnStartContext(run.threadId, run.id);
-          const currentRun = current.runs.find((candidate) => candidate.id === run.id);
-          const target = current.providerThreads.find((candidate) => candidate.id === providerThread.id);
+      )(
+        function* (input: {
+          readonly run: OrchestrationV2Run;
+          readonly providerThread: OrchestrationV2ProviderThread;
+        }) {
+          const { run, providerThread } = input;
+          const providerSessionId = providerThread.providerSessionId;
+          if (providerSessionId === null) return null;
+          const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+          const reconcile = entry?.runtime.reconcileBindingPublication;
           if (
-            run.activeAttemptId === null || run.status !== "starting" ||
-            run.threadId !== providerThread.appThreadId || run.providerThreadId !== providerThread.id ||
-            run.providerInstanceId !== providerThread.providerInstanceId ||
-            latestEntry === undefined || latestEntry.runtime !== entry.runtime || !latestEntry.attachedThreadIds.has(run.threadId) ||
-            entry.runtime.driver !== providerThread.driver || entry.runtime.instanceId !== providerThread.providerInstanceId ||
-            entry.runtime.providerSessionId !== providerSessionId ||
-            currentRun?.status !== "starting" || currentRun.threadId !== run.threadId || currentRun.activeAttemptId !== run.activeAttemptId ||
-            currentRun.providerThreadId !== providerThread.id || currentRun.providerInstanceId !== run.providerInstanceId ||
-            !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
-            !current.attempts.some((attempt) => attempt.id === run.activeAttemptId && attempt.runId === run.id &&
-              attempt.status === "starting" && attempt.providerThreadId === providerThread.id &&
-              attempt.providerInstanceId === run.providerInstanceId) ||
-            target?.appThreadId !== run.threadId || target.driver !== providerThread.driver ||
-            target.providerInstanceId !== providerThread.providerInstanceId || target.providerSessionId !== providerSessionId ||
-            (target.nativeThreadRef !== null && target.nativeThreadRef.driver !== providerThread.driver) ||
-            (nativeThreadId !== null && target.nativeThreadRef?.nativeId !== nativeThreadId) ||
-            current.thread.deletedAt !== null || current.thread.archivedAt !== null
-          ) return yield* refused("The captured run, attempt, target, or existing runtime changed.");
-        }).pipe(Effect.mapError(refused));
-        yield* revalidate;
-        const recovered = yield* reconcile({ threadId: run.threadId, providerThreadId: providerThread.id, nativeThreadId, revalidate });
-        yield* revalidate;
-        if (recovered === null) return null;
-        const records = yield* projectionStore.getThreadRecords(run.threadId, ["providerThreads"]);
-        const current = records.providerThreads.find((candidate) => candidate.id === providerThread.id);
-        const generation = recovered.runtimeIdentity?.runtimeGeneration;
-        const recoveredBinding = generation === undefined ? undefined : runtimeBinding(recovered, generation);
-        const currentBinding = current === undefined || generation === undefined ? undefined : runtimeBinding(current, generation);
-        if (
-          recovered.id !== providerThread.id || recovered.appThreadId !== run.threadId ||
-          recovered.providerSessionId !== providerSessionId || recovered.providerInstanceId !== providerThread.providerInstanceId ||
-          recovered.driver !== providerThread.driver || recovered.nativeThreadRef?.driver !== providerThread.driver ||
-          current === undefined || generation === undefined ||
-          recoveredBinding === undefined || currentBinding === undefined ||
-          current.runtimeIdentity?.runtimeGeneration !== generation || !equivalentBinding(recoveredBinding, currentBinding)
-        ) return yield* refused("Recovered publication does not match the current exact binding.");
-        return current;
-      }, (effect, input) => effect.pipe(Effect.mapError((cause) => new ProviderSessionLookupError({
-        providerSessionId: input.providerThread.providerSessionId!, cause,
-      }))));
+            entry === undefined ||
+            reconcile === undefined ||
+            !entry.attachedThreadIds.has(run.threadId)
+          )
+            return null;
+          const nativeThreadId = providerThread.nativeThreadRef?.nativeId ?? null;
+          const refused = (cause: unknown) =>
+            new ProviderRuntimeBindingError({
+              driver: providerThread.driver,
+              detail: "The new run no longer owns this retained binding publication.",
+              cause,
+            });
+          const revalidate = Effect.gen(function* () {
+            const latestEntry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+            const current = yield* projectionStore.getTurnStartContext(run.threadId, run.id);
+            const currentRun = current.runs.find((candidate) => candidate.id === run.id);
+            const target = current.providerThreads.find(
+              (candidate) => candidate.id === providerThread.id,
+            );
+            if (
+              run.activeAttemptId === null ||
+              run.status !== "starting" ||
+              run.threadId !== providerThread.appThreadId ||
+              run.providerThreadId !== providerThread.id ||
+              run.providerInstanceId !== providerThread.providerInstanceId ||
+              latestEntry === undefined ||
+              latestEntry.runtime !== entry.runtime ||
+              !latestEntry.attachedThreadIds.has(run.threadId) ||
+              entry.runtime.driver !== providerThread.driver ||
+              entry.runtime.instanceId !== providerThread.providerInstanceId ||
+              entry.runtime.providerSessionId !== providerSessionId ||
+              currentRun?.status !== "starting" ||
+              currentRun.threadId !== run.threadId ||
+              currentRun.activeAttemptId !== run.activeAttemptId ||
+              currentRun.providerThreadId !== providerThread.id ||
+              currentRun.providerInstanceId !== run.providerInstanceId ||
+              !modelSelectionsEqual(currentRun.modelSelection, run.modelSelection) ||
+              !current.attempts.some(
+                (attempt) =>
+                  attempt.id === run.activeAttemptId &&
+                  attempt.runId === run.id &&
+                  attempt.status === "starting" &&
+                  attempt.providerThreadId === providerThread.id &&
+                  attempt.providerInstanceId === run.providerInstanceId,
+              ) ||
+              target?.appThreadId !== run.threadId ||
+              target.driver !== providerThread.driver ||
+              target.providerInstanceId !== providerThread.providerInstanceId ||
+              target.providerSessionId !== providerSessionId ||
+              (target.nativeThreadRef !== null &&
+                target.nativeThreadRef.driver !== providerThread.driver) ||
+              (nativeThreadId !== null && target.nativeThreadRef?.nativeId !== nativeThreadId) ||
+              current.thread.deletedAt !== null ||
+              current.thread.archivedAt !== null
+            )
+              return yield* refused(
+                "The captured run, attempt, target, or existing runtime changed.",
+              );
+          }).pipe(Effect.mapError(refused));
+          yield* revalidate;
+          const recovered = yield* reconcile({
+            threadId: run.threadId,
+            providerThreadId: providerThread.id,
+            nativeThreadId,
+            revalidate,
+          });
+          yield* revalidate;
+          if (recovered === null) return null;
+          const records = yield* projectionStore.getThreadRecords(run.threadId, [
+            "providerThreads",
+          ]);
+          const current = records.providerThreads.find(
+            (candidate) => candidate.id === providerThread.id,
+          );
+          const generation = recovered.runtimeIdentity?.runtimeGeneration;
+          const recoveredBinding =
+            generation === undefined ? undefined : runtimeBinding(recovered, generation);
+          const currentBinding =
+            current === undefined || generation === undefined
+              ? undefined
+              : runtimeBinding(current, generation);
+          if (
+            recovered.id !== providerThread.id ||
+            recovered.appThreadId !== run.threadId ||
+            recovered.providerSessionId !== providerSessionId ||
+            recovered.providerInstanceId !== providerThread.providerInstanceId ||
+            recovered.driver !== providerThread.driver ||
+            recovered.nativeThreadRef?.driver !== providerThread.driver ||
+            current === undefined ||
+            generation === undefined ||
+            recoveredBinding === undefined ||
+            currentBinding === undefined ||
+            current.runtimeIdentity?.runtimeGeneration !== generation ||
+            !equivalentBinding(recoveredBinding, currentBinding)
+          )
+            return yield* refused(
+              "Recovered publication does not match the current exact binding.",
+            );
+          return current;
+        },
+        (effect, input) =>
+          effect.pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProviderSessionLookupError({
+                  providerSessionId: input.providerThread.providerSessionId!,
+                  cause,
+                }),
+            ),
+          ),
+      );
 
       const captureCurrentThreadRuntimeStop = Effect.fn(
         "ProviderSessionManager.captureCurrentThreadRuntimeStop",
@@ -3093,32 +3175,43 @@ export const layerWithOptions = (
           if (retirement !== undefined && !equivalentBinding(retirement.binding, captured.binding))
             return null;
           return {
-            ...captured, isCurrent,
-            ...(retirement === undefined ? {} : {
-              retirement: {
-                ...retirement,
-                awaitRetired: retirement.awaitRetired.pipe(Effect.flatMap((receipt) =>
-                  Effect.gen(function* () {
-                    if (!equivalentBinding(receipt.binding, captured.binding))
-                      return yield* new ProviderRuntimeBindingError({
-                        driver: captured.binding.driver,
-                        detail: "Runtime retirement did not match its captured source.",
-                      });
-                    yield* releaseEntry({
-                      providerSessionId: captured.binding.providerSessionId,
-                      onlyIfRuntime: entry.runtime,
-                      reason: "manual_shutdown",
-                      detachedThreadId: threadId,
-                    }).pipe(Effect.mapError((cause) => new ProviderRuntimeBindingError({
-                      driver: captured.binding.driver,
-                      detail: "The retired runtime's manager cleanup did not complete.", cause,
-                    })));
-                    yield* physicalEvidence.invalidate(captured.binding);
-                    return receipt;
-                  }),
-                )),
-              },
-            }),
+            ...captured,
+            isCurrent,
+            ...(retirement === undefined
+              ? {}
+              : {
+                  retirement: {
+                    ...retirement,
+                    awaitRetired: retirement.awaitRetired.pipe(
+                      Effect.flatMap((receipt) =>
+                        Effect.gen(function* () {
+                          if (!equivalentBinding(receipt.binding, captured.binding))
+                            return yield* new ProviderRuntimeBindingError({
+                              driver: captured.binding.driver,
+                              detail: "Runtime retirement did not match its captured source.",
+                            });
+                          yield* releaseEntry({
+                            providerSessionId: captured.binding.providerSessionId,
+                            onlyIfRuntime: entry.runtime,
+                            reason: "manual_shutdown",
+                            detachedThreadId: threadId,
+                          }).pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ProviderRuntimeBindingError({
+                                  driver: captured.binding.driver,
+                                  detail: "The retired runtime's manager cleanup did not complete.",
+                                  cause,
+                                }),
+                            ),
+                          );
+                          yield* physicalEvidence.invalidate(captured.binding);
+                          return receipt;
+                        }),
+                      ),
+                    ),
+                  },
+                }),
           };
         },
         (effect, threadId) =>
@@ -3355,12 +3448,17 @@ export const layerWithOptions = (
             cleaned = true;
           }).pipe(
             cleanupPermit.withPermits(1),
-            Effect.mapError((cause) => new ProviderRuntimeBindingError({
-              driver: entry.runtime.driver,
-              detail: "The captured writer retired, but its manager cleanup is incomplete.", cause,
-            })),
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeBindingError({
+                  driver: entry.runtime.driver,
+                  detail: "The captured writer retired, but its manager cleanup is incomplete.",
+                  cause,
+                }),
+            ),
           );
-          for (const binding of record.bindings) recoveryRetirements.retain(binding, finishRetirement);
+          for (const binding of record.bindings)
+            recoveryRetirements.retain(binding, finishRetirement);
           yield* Effect.uninterruptible(
             Effect.gen(function* () {
               if (transferWorkers.has(record)) return;
@@ -3463,7 +3561,8 @@ export const layerWithOptions = (
           );
         }),
         reconcileThreadBindingPublication,
-        captureThreadRetirement: (binding) => Effect.sync(() => recoveryRetirements.capture(binding)),
+        captureThreadRetirement: (binding) =>
+          Effect.sync(() => recoveryRetirements.capture(binding)),
         captureCurrentThreadRuntimeStop,
         readCurrentThreadRuntimeAttachment,
         observeThreadActivity,

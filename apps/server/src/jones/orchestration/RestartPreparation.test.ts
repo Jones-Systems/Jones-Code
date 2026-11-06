@@ -560,76 +560,92 @@ it.effect("selects the committed successor root when the command records the old
 
 it.effect.each([false, true])(
   "a shared-producer detach timeout retains the original observer without a process Stop capture (wrong receipt=%s)",
-  (wrongReceipt) => Effect.gen(function* () {
-    const f = yield* fixture();
-    const entered = yield* Deferred.make<void>();
-    const acknowledged = yield* Deferred.make<void>();
-    const closed = yield* Deferred.make<RuntimeRetirementReceipt>();
-    const state = { detachStarted: false, captures: 0, detachCalls: 0, cleanupCalls: 0, missingRuntime: false, observations: 0 };
-    const retirement = {
-      binding: f.binding,
-      awaitRetired: Effect.gen(function* () {
-        state.observations++;
-        if (state.observations === 1)
-          return yield* new ProviderAdapterCloseSessionError({
-            driver: f.binding.driver,
-            providerSessionId: f.binding.providerSessionId,
-            cause: "synthetic_recoverable_observation_failure",
-          });
-        const receipt = yield* Deferred.await(closed);
-        state.cleanupCalls++;
-        return receipt;
-      }),
-    };
-    const worker = yield* f.preparation.run({
-      effect: f.effect,
-      interrupt: f.completeOld,
-      detach: Effect.gen(function* () {
-        state.detachStarted = true;
-        state.detachCalls++;
-        yield* Deferred.succeed(entered, undefined);
-        yield* Deferred.await(acknowledged);
-        return yield* Effect.never;
-      }).pipe(Effect.timeoutOrElse({
-        duration: "3 seconds",
-        orElse: () => Effect.fail(new RestartPreparation.RestartPreparationError({
-          threadId: f.target.threadId,
-          stage: "detach",
-          cause: "synthetic_detach_deadline",
-        })),
-      })),
-      captureRetirement: () => Effect.sync(() => {
-        state.captures++;
-        return state.detachStarted && !state.missingRuntime ? retirement : null;
-      }),
-      start: Effect.die("the failed successor must not start"),
-    }).pipe(Effect.result, Effect.forkScoped);
-    yield* Deferred.await(entered);
-    yield* Deferred.succeed(acknowledged, undefined);
-    yield* TestClock.adjust("3 seconds");
-    assert.equal((yield* Fiber.join(worker))._tag, "Failure");
-    assert.equal(state.captures, 2);
-    assert.equal(yield* f.preparation.captureHeldRuntimeStop(f.target.threadId), null);
-    state.missingRuntime = true;
-    const held = yield* f.preparation.assertThreadOpen(f.target.threadId).pipe(Effect.exit);
-    assert.isTrue(Exit.isFailure(held));
-    if (Exit.isFailure(held)) {
-      const failure = RestartPreparation.findRestartPreparationFailure(held.cause);
-      assert.equal(failure?._tag, "RestartThreadHeld");
-      if (failure?._tag === "RestartThreadHeld") assert.equal(failure.stage, "detach");
-    }
-    assert.equal(state.cleanupCalls, 0);
-    const receipt: RuntimeRetirementReceipt = {
-      binding: wrongReceipt ? { ...f.binding, runtimeGeneration: "successor" } : f.binding,
-      evidence: "thread_closed",
-    };
-    yield* Deferred.succeed(closed, receipt);
-    yield* TestClock.adjust("1 second");
-    assert.equal(state.observations, 2);
-    assert.equal(state.cleanupCalls, 1);
-    assert.equal(state.detachCalls, 1);
-    assert.equal(state.captures, 2);
-    const open = yield* f.preparation.assertThreadOpen(f.target.threadId).pipe(Effect.result);
-    assert.equal(open._tag, wrongReceipt ? "Failure" : "Success");
-  }).pipe(Effect.provide(testLayer)),
+  (wrongReceipt) =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const entered = yield* Deferred.make<void>();
+      const acknowledged = yield* Deferred.make<void>();
+      const closed = yield* Deferred.make<RuntimeRetirementReceipt>();
+      const state = {
+        detachStarted: false,
+        captures: 0,
+        detachCalls: 0,
+        cleanupCalls: 0,
+        missingRuntime: false,
+        observations: 0,
+      };
+      const retirement = {
+        binding: f.binding,
+        awaitRetired: Effect.gen(function* () {
+          state.observations++;
+          if (state.observations === 1)
+            return yield* new ProviderAdapterCloseSessionError({
+              driver: f.binding.driver,
+              providerSessionId: f.binding.providerSessionId,
+              cause: "synthetic_recoverable_observation_failure",
+            });
+          const receipt = yield* Deferred.await(closed);
+          state.cleanupCalls++;
+          return receipt;
+        }),
+      };
+      const worker = yield* f.preparation
+        .run({
+          effect: f.effect,
+          interrupt: f.completeOld,
+          detach: Effect.gen(function* () {
+            state.detachStarted = true;
+            state.detachCalls++;
+            yield* Deferred.succeed(entered, undefined);
+            yield* Deferred.await(acknowledged);
+            return yield* Effect.never;
+          }).pipe(
+            Effect.timeoutOrElse({
+              duration: "3 seconds",
+              orElse: () =>
+                Effect.fail(
+                  new RestartPreparation.RestartPreparationError({
+                    threadId: f.target.threadId,
+                    stage: "detach",
+                    cause: "synthetic_detach_deadline",
+                  }),
+                ),
+            }),
+          ),
+          captureRetirement: () =>
+            Effect.sync(() => {
+              state.captures++;
+              return state.detachStarted && !state.missingRuntime ? retirement : null;
+            }),
+          start: Effect.die("the failed successor must not start"),
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Deferred.await(entered);
+      yield* Deferred.succeed(acknowledged, undefined);
+      yield* TestClock.adjust("3 seconds");
+      assert.equal((yield* Fiber.join(worker))._tag, "Failure");
+      assert.equal(state.captures, 2);
+      assert.equal(yield* f.preparation.captureHeldRuntimeStop(f.target.threadId), null);
+      state.missingRuntime = true;
+      const held = yield* f.preparation.assertThreadOpen(f.target.threadId).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(held));
+      if (Exit.isFailure(held)) {
+        const failure = RestartPreparation.findRestartPreparationFailure(held.cause);
+        assert.equal(failure?._tag, "RestartThreadHeld");
+        if (failure?._tag === "RestartThreadHeld") assert.equal(failure.stage, "detach");
+      }
+      assert.equal(state.cleanupCalls, 0);
+      const receipt: RuntimeRetirementReceipt = {
+        binding: wrongReceipt ? { ...f.binding, runtimeGeneration: "successor" } : f.binding,
+        evidence: "thread_closed",
+      };
+      yield* Deferred.succeed(closed, receipt);
+      yield* TestClock.adjust("1 second");
+      assert.equal(state.observations, 2);
+      assert.equal(state.cleanupCalls, 1);
+      assert.equal(state.detachCalls, 1);
+      assert.equal(state.captures, 2);
+      const open = yield* f.preparation.assertThreadOpen(f.target.threadId).pipe(Effect.result);
+      assert.equal(open._tag, wrongReceipt ? "Failure" : "Success");
+    }).pipe(Effect.provide(testLayer)),
 );

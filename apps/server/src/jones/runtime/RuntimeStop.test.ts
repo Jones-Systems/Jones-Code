@@ -62,7 +62,11 @@ const fixture = Effect.fnUntraced(function* (retained = false) {
     providerInstanceId: binding.providerInstanceId,
     driver: binding.driver,
     ownerNodeId: null,
-    nativeThreadRef: { driver: binding.driver, nativeId: binding.nativeThreadId, strength: "strong" },
+    nativeThreadRef: {
+      driver: binding.driver,
+      nativeId: binding.nativeThreadId,
+      strength: "strong",
+    },
     nativeConversationHeadRef: null,
     status: "not_loaded",
     firstRunOrdinal: null,
@@ -311,7 +315,8 @@ const recordStoppedFixture = Effect.fnUntraced(function* (input: {
   yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error) VALUES (${input.commandId},'thread',${input.binding.threadId},'provider-session.detach','2026-10-07T12:00:00Z',1,'accepted',NULL)`;
   yield* sql`INSERT INTO jones_runtime_stop_intents VALUES (${input.commandId},${input.binding.threadId},${identityJson})`;
   const methods = StopStore.makeRuntimeStopMethods(sql);
-  if (input.result !== "accepted") yield* methods.start(input.commandId, request.target, Effect.void);
+  if (input.result !== "accepted")
+    yield* methods.start(input.commandId, request.target, Effect.void);
   if (input.result === "unknown" || input.result === "stopped")
     yield* methods.complete(input.commandId, input.result);
 });
@@ -686,138 +691,179 @@ it.effect.each([false, true])(
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
-it.effect("a slow retained Stop outlives its deadline, joins duplicates and completes after exact cleanup", () =>
-  Effect.gen(function* () {
-    const f = yield* fixture(true);
-    f.state.wait = true;
-    yield* Effect.gen(function* () {
-      const owner = yield* RuntimeStop.CurrentRuntimeStop;
-      yield* owner.stop(f.input).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
-      const first = yield* owner.execute(f.input.commandId).pipe(Effect.result, Effect.forkChild);
-      yield* Deferred.await(f.started);
-      yield* TestClock.adjust(RuntimeStop.RUNTIME_STOP_WAIT_TIMEOUT_MS);
-      assert.equal((yield* Fiber.join(first))._tag, "Failure");
-      const sql = yield* SqlClient.SqlClient;
-      assert.deepEqual(yield* sql`SELECT phase,result FROM jones_runtime_stop_observations`, [
-        { phase: "started", result: "unknown" },
-      ]);
-      f.state.current = false;
-      f.state.available = false;
-      const duplicate = yield* owner.execute(f.input.commandId).pipe(Effect.forkChild);
-      const observation = yield* owner.observe(f.input).pipe(
-        Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal),
-        Effect.forkChild,
-      );
-      yield* Fiber.interrupt(duplicate);
-      assert.equal(f.state.invocations, 1);
-      assert.deepEqual(f.state.reconciled, []);
-      yield* Deferred.succeed(f.completion, undefined);
-      assert.equal((yield* Fiber.join(observation))?.status, "stopped");
-      yield* owner.execute(f.input.commandId);
-      assert.equal(f.state.invocations, 1);
-      assert.equal(f.state.cleanupCalls, 1);
-      assert.deepEqual(f.state.reconciled, [f.input.target.binding]);
-      assert.isTrue(yield* StopStore.makeRuntimeStopMethods(sql).hasStoppedRuntime(f.input.target.binding));
-    }).pipe(Effect.provide(f.service));
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+it.effect(
+  "a slow retained Stop outlives its deadline, joins duplicates and completes after exact cleanup",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      f.state.wait = true;
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const first = yield* owner.execute(f.input.commandId).pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(f.started);
+        yield* TestClock.adjust(RuntimeStop.RUNTIME_STOP_WAIT_TIMEOUT_MS);
+        assert.equal((yield* Fiber.join(first))._tag, "Failure");
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(yield* sql`SELECT phase,result FROM jones_runtime_stop_observations`, [
+          { phase: "started", result: "unknown" },
+        ]);
+        f.state.current = false;
+        f.state.available = false;
+        const duplicate = yield* owner.execute(f.input.commandId).pipe(Effect.forkChild);
+        const observation = yield* owner
+          .observe(f.input)
+          .pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal),
+            Effect.forkChild,
+          );
+        yield* Fiber.interrupt(duplicate);
+        assert.equal(f.state.invocations, 1);
+        assert.deepEqual(f.state.reconciled, []);
+        yield* Deferred.succeed(f.completion, undefined);
+        assert.equal((yield* Fiber.join(observation))?.status, "stopped");
+        yield* owner.execute(f.input.commandId);
+        assert.equal(f.state.invocations, 1);
+        assert.equal(f.state.cleanupCalls, 1);
+        assert.deepEqual(f.state.reconciled, [f.input.target.binding]);
+        assert.isTrue(
+          yield* StopStore.makeRuntimeStopMethods(sql).hasStoppedRuntime(f.input.target.binding),
+        );
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
-it.effect.each(["failure", "interruption"] as const)("canceling a Stop waiter and an observation %s never stop the successor", (observation) =>
-  Effect.gen(function* () {
-    const f = yield* fixture(true);
-    f.state.observationFailures = observation === "failure" ? 1 : 0;
-    f.state.interruptObservation = observation === "interruption";
-    yield* Effect.gen(function* () {
-      const owner = yield* RuntimeStop.CurrentRuntimeStop;
-      yield* owner.stop(f.input).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
-      const waiter = yield* owner.execute(f.input.commandId).pipe(Effect.forkChild);
-      yield* Deferred.await(f.started);
-      yield* Fiber.interrupt(waiter);
-      f.state.current = false;
-      assert.equal((yield* f.sink.readRuntimeStop!(f.input.commandId))?.status, "unknown");
-      const sql = yield* SqlClient.SqlClient;
-      assert.deepEqual(yield* sql`SELECT phase FROM jones_runtime_stop_observations WHERE phase='completed'`, []);
-      yield* Deferred.succeed(f.completion, undefined);
-      yield* TestClock.adjust("1 second");
-      yield* owner.execute(f.input.commandId);
-      assert.equal(f.state.invocations, 1);
-      assert.equal(f.state.observations, 2);
-      assert.equal(f.state.cleanupCalls, 1);
-      assert.equal((yield* f.sink.readRuntimeStop!(f.input.commandId))?.status, "stopped");
-    }).pipe(Effect.provide(f.service));
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+it.effect.each(["failure", "interruption"] as const)(
+  "canceling a Stop waiter and an observation %s never stop the successor",
+  (observation) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      f.state.observationFailures = observation === "failure" ? 1 : 0;
+      f.state.interruptObservation = observation === "interruption";
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const waiter = yield* owner.execute(f.input.commandId).pipe(Effect.forkChild);
+        yield* Deferred.await(f.started);
+        yield* Fiber.interrupt(waiter);
+        f.state.current = false;
+        assert.equal((yield* f.sink.readRuntimeStop!(f.input.commandId))?.status, "unknown");
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(
+          yield* sql`SELECT phase FROM jones_runtime_stop_observations WHERE phase='completed'`,
+          [],
+        );
+        yield* Deferred.succeed(f.completion, undefined);
+        yield* TestClock.adjust("1 second");
+        yield* owner.execute(f.input.commandId);
+        assert.equal(f.state.invocations, 1);
+        assert.equal(f.state.observations, 2);
+        assert.equal(f.state.cleanupCalls, 1);
+        assert.equal((yield* f.sink.readRuntimeStop!(f.input.commandId))?.status, "stopped");
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
 it.effect.each(["runtimeGeneration", "providerSessionId", "nativeThreadId"] as const)(
   "a retained retirement receipt for the wrong %s cannot complete or release a hold",
-  (key) => Effect.gen(function* () {
-    const f = yield* fixture(true);
-    f.state.retirementBinding = { ...f.input.target.binding, [key]: "replacement" } as ProviderRuntimeBinding;
-    yield* Effect.gen(function* () {
-      const owner = yield* RuntimeStop.CurrentRuntimeStop;
-      yield* owner.stop(f.input).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
-      const waiter = yield* owner.execute(f.input.commandId).pipe(Effect.result, Effect.forkChild);
-      yield* Deferred.await(f.started);
-      f.state.current = false;
-      yield* Deferred.succeed(f.completion, undefined);
-      assert.equal((yield* Fiber.join(waiter))._tag, "Failure");
-      assert.equal((yield* owner.execute(f.input.commandId).pipe(Effect.result))._tag, "Failure");
-      assert.equal(f.state.invocations, 1);
-      assert.deepEqual(f.state.reconciled, []);
-      const sql = yield* SqlClient.SqlClient;
-      assert.deepEqual(yield* sql`SELECT phase,result FROM jones_runtime_stop_observations`, [
-        { phase: "started", result: "unknown" },
-      ]);
-    }).pipe(Effect.provide(f.service));
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  (key) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      f.state.retirementBinding = {
+        ...f.input.target.binding,
+        [key]: "replacement",
+      } as ProviderRuntimeBinding;
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const waiter = yield* owner
+          .execute(f.input.commandId)
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(f.started);
+        f.state.current = false;
+        yield* Deferred.succeed(f.completion, undefined);
+        assert.equal((yield* Fiber.join(waiter))._tag, "Failure");
+        assert.equal((yield* owner.execute(f.input.commandId).pipe(Effect.result))._tag, "Failure");
+        assert.equal(f.state.invocations, 1);
+        assert.deepEqual(f.state.reconciled, []);
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(yield* sql`SELECT phase,result FROM jones_runtime_stop_observations`, [
+          { phase: "started", result: "unknown" },
+        ]);
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
-it.effect.each([false, true])("a lost retained capture stays unknown without a second physical Stop (completed=%s)", (completed) =>
-  Effect.gen(function* () {
-    const f = yield* fixture(true);
-    yield* Effect.gen(function* () {
-      const owner = yield* RuntimeStop.CurrentRuntimeStop;
-      yield* owner.stop(f.input).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
-    }).pipe(Effect.provide(f.service));
-    const sql = yield* SqlClient.SqlClient;
-    const methods = StopStore.makeRuntimeStopMethods(sql);
-    yield* methods.start(f.input.commandId, f.input.target, Effect.void);
-    if (completed) yield* methods.complete(f.input.commandId, "unknown");
-    f.state.current = false;
-    yield* Effect.gen(function* () {
-      const owner = yield* RuntimeStop.CurrentRuntimeStop;
-      assert.equal((yield* owner.execute(f.input.commandId).pipe(Effect.result))._tag, "Failure");
-      assert.equal((yield* owner.observe(f.input).pipe(
-        Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal),
-      ))?.status, "unknown");
-      assert.equal(f.state.invocations, 0);
-    }).pipe(Effect.provide(f.service));
-    if (completed)
-      assert.equal((yield* methods.complete(f.input.commandId, "stopped").pipe(Effect.result))._tag, "Failure");
-    assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
-);
-
-it.effect("completed stopped readback requires every captured binding field and an affirmative terminal receipt", () =>
-  Effect.gen(function* () {
-    const f = yield* fixture();
-    yield* Effect.gen(function* () {
-      const owner = yield* RuntimeStop.CurrentRuntimeStop;
-      yield* owner.stop(f.input).pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+it.effect.each([false, true])(
+  "a lost retained capture stays unknown without a second physical Stop (completed=%s)",
+  (completed) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+      }).pipe(Effect.provide(f.service));
       const sql = yield* SqlClient.SqlClient;
       const methods = StopStore.makeRuntimeStopMethods(sql);
-      assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
       yield* methods.start(f.input.commandId, f.input.target, Effect.void);
+      if (completed) yield* methods.complete(f.input.commandId, "unknown");
+      f.state.current = false;
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        assert.equal((yield* owner.execute(f.input.commandId).pipe(Effect.result))._tag, "Failure");
+        assert.equal(
+          (yield* owner
+            .observe(f.input)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal)))?.status,
+          "unknown",
+        );
+        assert.equal(f.state.invocations, 0);
+      }).pipe(Effect.provide(f.service));
+      if (completed)
+        assert.equal(
+          (yield* methods.complete(f.input.commandId, "stopped").pipe(Effect.result))._tag,
+          "Failure",
+        );
       assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
-      yield* methods.complete(f.input.commandId, "stopped");
-      assert.isTrue(yield* methods.hasStoppedRuntime(f.input.target.binding));
-      for (const key of Object.keys(f.input.target.binding) as Array<keyof ProviderRuntimeBinding>)
-        assert.isFalse(yield* methods.hasStoppedRuntime({
-          ...f.input.target.binding,
-          [key]: `${f.input.target.binding[key]}:wrong`,
-        } as ProviderRuntimeBinding));
-    }).pipe(Effect.provide(f.service));
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect(
+  "completed stopped readback requires every captured binding field and an affirmative terminal receipt",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const sql = yield* SqlClient.SqlClient;
+        const methods = StopStore.makeRuntimeStopMethods(sql);
+        assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
+        yield* methods.start(f.input.commandId, f.input.target, Effect.void);
+        assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
+        yield* methods.complete(f.input.commandId, "stopped");
+        assert.isTrue(yield* methods.hasStoppedRuntime(f.input.target.binding));
+        for (const key of Object.keys(f.input.target.binding) as Array<
+          keyof ProviderRuntimeBinding
+        >)
+          assert.isFalse(
+            yield* methods.hasStoppedRuntime({
+              ...f.input.target.binding,
+              [key]: `${f.input.target.binding[key]}:wrong`,
+            } as ProviderRuntimeBinding),
+          );
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
 it.effect.each(["accepted", "started", "unknown", "stopped"] as const)(
@@ -833,72 +879,94 @@ it.effect.each(["accepted", "started", "unknown", "stopped"] as const)(
         result,
       });
       const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
-      assert.deepEqual(yield* methods.readStoppedRuntime(f.provider), result === "stopped" ? binding : null);
+      assert.deepEqual(
+        yield* methods.readStoppedRuntime(f.provider),
+        result === "stopped" ? binding : null,
+      );
       assert.equal(yield* methods.hasStoppedRuntime(binding), result === "stopped");
-      assert.equal(yield* methods.readStoppedRuntime({
-        ...f.provider,
-        runtimeIdentity: {
-          ...f.provider.runtimeIdentity!,
-          runtimeGeneration: "a-current-successor",
-        },
-      }), null);
+      assert.equal(
+        yield* methods.readStoppedRuntime({
+          ...f.provider,
+          runtimeIdentity: {
+            ...f.provider.runtimeIdentity!,
+            runtimeGeneration: "a-current-successor",
+          },
+        }),
+        null,
+      );
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );
 
-it.effect("generation-less readback compares every remaining identity field and rejects incomplete identity", () =>
-  Effect.gen(function* () {
-    const f = yield* fixture();
-    yield* recordStoppedFixture({
-      commandId: f.input.commandId,
-      binding: f.input.target.binding,
-      actor: f.principal,
-      result: "stopped",
-    });
-    const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
-    const otherDriver = ProviderDriverKind.make("synthetic-other");
-    const different: ReadonlyArray<OrchestrationV2ProviderThread> = [
-      { ...f.provider, appThreadId: ThreadId.make("thread:other") },
-      { ...f.provider, id: ProviderThreadId.make("provider-thread:other") },
-      { ...f.provider, providerSessionId: ProviderSessionId.make("session:other") },
-      { ...f.provider, providerInstanceId: ProviderInstanceId.make("instance-other") },
-      { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "native:other" } },
-      { ...f.provider, driver: otherDriver, nativeThreadRef: { ...f.provider.nativeThreadRef!, driver: otherDriver } },
-    ];
-    for (const provider of different) assert.equal(yield* methods.readStoppedRuntime(provider), null);
-    const incomplete: ReadonlyArray<OrchestrationV2ProviderThread> = [
-      { ...f.provider, appThreadId: null },
-      { ...f.provider, providerSessionId: null },
-      { ...f.provider, nativeThreadRef: null },
-      { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "" } },
-      { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, driver: otherDriver } },
-    ];
-    for (const provider of incomplete)
-      assert.equal((yield* methods.readStoppedRuntime(provider).pipe(Effect.result))._tag, "Failure");
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
-);
-
-it.effect("duplicate stopped commands count as one binding and two distinct generations are ambiguous", () =>
-  Effect.gen(function* () {
-    const f = yield* fixture();
-    const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
-    assert.equal(yield* methods.readStoppedRuntime(f.provider), null);
-    for (const suffix of ["original", "duplicate-a", "duplicate-b"]) {
+it.effect(
+  "generation-less readback compares every remaining identity field and rejects incomplete identity",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
       yield* recordStoppedFixture({
-        commandId: CommandId.make(`command:stopped:${suffix}`),
+        commandId: f.input.commandId,
         binding: f.input.target.binding,
         actor: f.principal,
         result: "stopped",
       });
-    }
-    assert.deepEqual(yield* methods.readStoppedRuntime(f.provider), f.input.target.binding);
-    yield* recordStoppedFixture({
-      commandId: CommandId.make("command:stopped:other-generation"),
-      binding: { ...f.input.target.binding, runtimeGeneration: "another-stopped-generation" },
-      actor: f.principal,
-      result: "stopped",
-    });
-    const ambiguous = yield* methods.readStoppedRuntime(f.provider).pipe(Effect.result);
-    assert.equal(ambiguous._tag, "Failure");
-    if (ambiguous._tag === "Failure") assert.equal(ambiguous.failure.reason, "runtime_stop_readback_ambiguous");
-  }).pipe(Effect.scoped, Effect.provide(testLayer)),
+      const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
+      const otherDriver = ProviderDriverKind.make("synthetic-other");
+      const different: ReadonlyArray<OrchestrationV2ProviderThread> = [
+        { ...f.provider, appThreadId: ThreadId.make("thread:other") },
+        { ...f.provider, id: ProviderThreadId.make("provider-thread:other") },
+        { ...f.provider, providerSessionId: ProviderSessionId.make("session:other") },
+        { ...f.provider, providerInstanceId: ProviderInstanceId.make("instance-other") },
+        {
+          ...f.provider,
+          nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "native:other" },
+        },
+        {
+          ...f.provider,
+          driver: otherDriver,
+          nativeThreadRef: { ...f.provider.nativeThreadRef!, driver: otherDriver },
+        },
+      ];
+      for (const provider of different)
+        assert.equal(yield* methods.readStoppedRuntime(provider), null);
+      const incomplete: ReadonlyArray<OrchestrationV2ProviderThread> = [
+        { ...f.provider, appThreadId: null },
+        { ...f.provider, providerSessionId: null },
+        { ...f.provider, nativeThreadRef: null },
+        { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "" } },
+        { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, driver: otherDriver } },
+      ];
+      for (const provider of incomplete)
+        assert.equal(
+          (yield* methods.readStoppedRuntime(provider).pipe(Effect.result))._tag,
+          "Failure",
+        );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect(
+  "duplicate stopped commands count as one binding and two distinct generations are ambiguous",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
+      assert.equal(yield* methods.readStoppedRuntime(f.provider), null);
+      for (const suffix of ["original", "duplicate-a", "duplicate-b"]) {
+        yield* recordStoppedFixture({
+          commandId: CommandId.make(`command:stopped:${suffix}`),
+          binding: f.input.target.binding,
+          actor: f.principal,
+          result: "stopped",
+        });
+      }
+      assert.deepEqual(yield* methods.readStoppedRuntime(f.provider), f.input.target.binding);
+      yield* recordStoppedFixture({
+        commandId: CommandId.make("command:stopped:other-generation"),
+        binding: { ...f.input.target.binding, runtimeGeneration: "another-stopped-generation" },
+        actor: f.principal,
+        result: "stopped",
+      });
+      const ambiguous = yield* methods.readStoppedRuntime(f.provider).pipe(Effect.result);
+      assert.equal(ambiguous._tag, "Failure");
+      if (ambiguous._tag === "Failure")
+        assert.equal(ambiguous.failure.reason, "runtime_stop_readback_ambiguous");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );

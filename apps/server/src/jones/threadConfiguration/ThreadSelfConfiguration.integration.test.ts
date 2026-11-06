@@ -1977,7 +1977,9 @@ it.live(
         const held = yield* orchestrator.getThreadProjection(threadId);
         assert.isTrue(
           held.turnItems.some(
-            (item) => item.type === "error" && item.title === "Provider restart is held" &&
+            (item) =>
+              item.type === "error" &&
+              item.title === "Provider restart is held" &&
               item.failure.message.includes("unresolved restart interrupt"),
           ),
         );
