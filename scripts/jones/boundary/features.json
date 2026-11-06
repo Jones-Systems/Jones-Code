@@ -221,7 +221,7 @@
         "apps/server/src/jones/runtime/RuntimeStop.test.ts",
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts"
       ],
-      "scope": "Exact committed restart history preserves the old captured terminal while fencing replacement state. Codex steering has a bounded acknowledgement wait with producer-owned late reconciliation and per-instance admission holds; worker integration releases shared capacity without replaying uncertain native actions. Server integration tests use synthetic state and native protocol fixtures. Current turn-start service fixtures prove dependency wiring; upstream explicitly removed the historical subprocess retention suite, and these checks do not claim equivalent garbage-collection evidence."
+      "scope": "Exact committed restart history preserves the old captured terminal while fencing replacement state. Codex steering has a bounded acknowledgement wait with producer-owned late reconciliation and conversation-scoped admission holds across accounts and generations. Unidentified creation also retains its original logical thread and producer. Independent conversations on the same producer remain eligible. Exact retained retirement observers reconcile restart and Stop holds without replaying control or inferring completion from missing runtime state. Server integration tests use synthetic state and native protocol fixtures. Current turn-start service fixtures prove dependency wiring; upstream explicitly removed the historical subprocess retention suite, and these checks do not claim equivalent garbage-collection evidence."
     },
     {
       "id": "workstreams-sidebar-assignment",
@@ -794,7 +794,7 @@
         "apps/web/src/hooks/useCurrentRuntimeStop.test.ts",
         "packages/client-runtime/src/jones/runtimeDetachCompatibility.test.ts"
       ],
-      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Unsupported captures remain unavailable; background coverage remains partial."
+      "scope": "Captured current-runtime stop identity, durable observation and queued-start fencing, adapter-bound stop execution, and saved client correlation. Optional immutable retirement observers retain one invocation across caller timeout, cancellation and inactive producers; exact exit and manager cleanup complete the original receipt. Completed stopped-binding proof selects a fresh logical session for a subsequent ordinary send. Existing completed-unknown receipts stay immutable, unsupported captures remain unavailable, and background coverage remains partial."
     },
     {
       "id": "deletion-worktree-removal",
@@ -2758,6 +2758,11 @@
     {
       "id": "provider-writer-retirement",
       "tests": [
+        "apps/server/src/jones/providerRetirement/providerRecoveryPublication.test.ts",
+        "apps/server/src/jones/providerRetirement/providerRecoveryRetirement.test.ts",
+        "apps/server/src/jones/orchestration/ControlAdmission.test.ts",
+        "apps/server/src/jones/orchestration/RestartPreparation.test.ts",
+        "apps/server/src/jones/runtime/RuntimeStop.test.ts",
         "apps/server/src/jones/threadConfiguration/SharedSessionWorkspace.test.ts",
         "apps/server/src/jones/providerRetirement/accountTransferRetirement.test.ts",
         "apps/server/src/jones/providerRetirement/AccountTransferRetirement.integration.test.ts",
@@ -2778,7 +2783,7 @@
         "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts"
       ],
-      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. Loaded account-transfer detaches are gated by their accepted command receipt in EffectWorker and guarded inside ProviderSessionManager before capture. They return after capture; in-memory conversation keys limit preparation and attach/open barriers to shared native history, while unknown destinations fail closed. Permanent runtime/thread markers force a fresh normal-start key after cancellation or completion. CommandReceiptStore is an explicit executor requirement, including runtime and replay composition; the replay executor observer exposes typed attempt receipts for the delayed-proof retry case. Jones account-transfer integration cases remain in the existing manager and executor harnesses to prove attachment-lock, revocation and executor wiring; the new subprocess integration stays Jones-owned. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes. Codex startup uses an injectable caller deadline while exact-producer response observers retain uncertain native outcomes. New admissions are fenced before permit release, existing bound sessions retain events and controls, and unknown load outcomes cannot retry or fall back to a fresh conversation. The sixty-second default is a conservative design assumption, with no added healthy-path RPC."
+      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. Loaded account-transfer detaches are gated by their accepted command receipt in EffectWorker and guarded inside ProviderSessionManager before capture. They return after capture; in-memory conversation keys limit preparation and attach/open barriers to shared native history, while unknown destinations fail closed. Permanent runtime/thread markers force a fresh normal-start key after cancellation or completion. CommandReceiptStore is an explicit executor requirement, including runtime and replay composition; the replay executor observer exposes typed attempt receipts for the delayed-proof retry case. Jones account-transfer integration cases remain in the existing manager and executor harnesses to prove attachment-lock, revocation and executor wiring; the subprocess integration stays Jones-owned. ProviderAdapter adds optional internal retained-publication and retirement contracts, and callers use small existing manager hooks. No wire or persisted-state changes. Codex startup distinguishes predispatch refusal, proved non-application, uncertain native outcomes and confirmed opens awaiting local publication. Conversation and logical-target holds preserve independent sibling work; retained local publication uses stable event identities and verifies observation, guard and physical bookkeeping without repeating a native resume or prompt. Exact retirement observers survive pending-ledger removal. The sixty-second caller budget remains a conservative design assumption, with no added healthy-path native RPC."
     },
     {
       "id": "packaged-recovery-harness",

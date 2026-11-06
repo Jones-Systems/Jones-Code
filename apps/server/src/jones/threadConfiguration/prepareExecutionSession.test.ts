@@ -1,5 +1,8 @@
 import { assert, it } from "@effect/vitest";
 import {
+  ProviderThreadId,
+  type OrchestrationV2ProviderThread,
+  type ProviderRuntimeBinding,
   ProviderInstanceId,
   ProviderSessionId,
   ProviderDriverKind,
@@ -75,7 +78,12 @@ function makeFixture(
   transition: "restart_and_resume" | "create_with_handoff" | "switch_model_in_session" | "reuse",
   fault?: "detach" | "persist" | "stale" | "selection",
   continuation = false,
-  retirement?: { readonly marked: boolean; readonly wait: Effect.Effect<void> },
+  retirement?: {
+    readonly marked: boolean; readonly wait: Effect.Effect<void>;
+    readonly stoppedBinding?: ProviderRuntimeBinding;
+    readonly stoppedProvider?: OrchestrationV2ProviderThread;
+    readonly stopped?: boolean;
+  },
 ) {
   const projection = {
     thread: { id: ThreadId.make("retirement-thread") },
@@ -89,7 +97,7 @@ function makeFixture(
         ...(continuation ? { restartContinuationOfRunId: RunId.make("crashed-source") } : {}),
       },
     ],
-    providerThreads: [{ providerSessionId: ProviderSessionId.make("target-session") }],
+    providerThreads: [retirement?.stoppedProvider ?? { providerSessionId: ProviderSessionId.make("target-session") }],
     providerSessions: [
       {
         id: ProviderSessionId.make("retired-session"),
@@ -150,6 +158,8 @@ function makeFixture(
           }),
         }),
         Layer.mock(Sink.EventSinkV2)({
+          readStoppedRuntime: () => Effect.succeed(retirement?.stoppedBinding ?? null),
+          hasStoppedRuntime: () => Effect.succeed(retirement?.stopped ?? false),
           writeIfRunCurrent: Effect.fn("PrepareExecutionSessionTest.writeIfRunCurrent")(
             function* (input) {
               order.push("persist");
@@ -244,5 +254,47 @@ it.effect("an unmarked reusable runtime keeps its logical session and writes no 
     assert.strictEqual(result, fixture.projection.providerThreads[0]);
     assert.deepEqual(fixture.writes, []);
     assert.deepEqual(fixture.order, ["open"]);
+  }),
+);
+
+
+it.effect.each(["exact", "wrong-session", "wrong-native", "unknown", "new-generation"] as const)(
+  "ordinary send after Stop requires exact completed proof: %s", (mode) =>
+  Effect.gen(function* () {
+    const binding: ProviderRuntimeBinding = {
+      threadId: ThreadId.make("retirement-thread"), providerThreadId: ProviderThreadId.make("stopped-provider"),
+      providerSessionId: ProviderSessionId.make("stopped-session"), providerInstanceId: ProviderInstanceId.make("target"),
+      driver: ProviderDriverKind.make("codex"), nativeThreadId: "stopped-native", runtimeGeneration: "stopped-generation",
+    };
+    const provider = {
+      id: binding.providerThreadId, appThreadId: binding.threadId,
+      providerSessionId: binding.providerSessionId, providerInstanceId: binding.providerInstanceId,
+      driver: binding.driver, nativeThreadRef: { driver: binding.driver, nativeId: binding.nativeThreadId, strength: "strong" },
+      ...(mode === "new-generation" ? { runtimeIdentity: { runtimeGeneration: "current-generation" } } : {}),
+    } as unknown as OrchestrationV2ProviderThread;
+    const fixture = makeFixture("reuse", undefined, false, {
+      marked: false, wait: Effect.void, stoppedProvider: provider, stopped: mode !== "unknown" && mode !== "new-generation",
+      stoppedBinding: {
+        ...binding,
+        ...(mode === "wrong-session" ? { providerSessionId: ProviderSessionId.make("foreign-session") } : {}),
+        ...(mode === "wrong-native" ? { nativeThreadId: "foreign-native" } : {}),
+      },
+    });
+    const result = yield* fixture.start;
+    if (mode === "exact") {
+      assert.equal(result.providerSessionId, "self-configure:retirement-run:retirement-attempt");
+      assert.deepEqual(result.nativeThreadRef, provider.nativeThreadRef);
+      assert.deepEqual(fixture.writes[0]!.runtimeIdentityBoundary, {
+        expectedGeneration: null, expectedActiveProviderThreadId: provider.id,
+        expectedProviderThreadIdentity: {
+          id: provider.id, appThreadId: provider.appThreadId, driver: provider.driver,
+          providerInstanceId: provider.providerInstanceId, providerSessionId: provider.providerSessionId,
+          nativeThreadRef: provider.nativeThreadRef,
+        },
+      });
+    } else {
+      assert.strictEqual(result, provider);
+      assert.deepEqual(fixture.writes, []);
+    }
   }),
 );

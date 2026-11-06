@@ -177,6 +177,29 @@ const layerBeforeUnchangedWriteEventSink = (before: Ref.Ref<Effect.Effect<void>>
     }),
   ).pipe(Layer.provide(layerTestEventSink));
 
+type PublicationFault = "before-boundary" | "after-boundary" | "during-observation" | "after-observation";
+const layerPublicationFaultSink = (fault: Ref.Ref<PublicationFault | undefined>) =>
+  Layer.effect(EventSink.EventSinkV2, Effect.gen(function* () {
+    const delegate = yield* EventSink.EventSinkV2;
+    return EventSink.EventSinkV2.of({
+      ...delegate,
+      write: (input) => Effect.gen(function* () {
+        const stage = yield* Ref.get(fault);
+        const boundary = input.runtimeIdentityBoundary !== undefined;
+        const observation = input.runtimeIdentityObservation !== undefined;
+        const matches = stage !== undefined &&
+          (stage.includes("boundary") ? boundary : observation);
+        if (!matches) return yield* delegate.write(input);
+        yield* Ref.set(fault, undefined);
+        if (stage === "after-boundary" || stage === "after-observation")
+          yield* delegate.write(input);
+        return yield* new EventSink.EventSinkWriteError({
+          eventCount: input.events.length, cause: `publication fault: ${stage}`,
+        });
+      }),
+    });
+  })).pipe(Layer.provide(layerTestEventSink));
+
 const CodexCapabilities: OrchestrationV2ProviderCapabilities = CodexProviderCapabilitiesV2;
 const ExclusiveCapabilities: OrchestrationV2ProviderCapabilities = {
   ...CodexCapabilities,
@@ -511,6 +534,7 @@ function layerTest(input: {
   readonly beforeOpen?: (
     input: ProviderAdapterV2OpenSessionInput,
   ) => Effect.Effect<void, never, Scope.Scope>;
+  readonly publicationFault?: Ref.Ref<PublicationFault | undefined>;
   readonly failReleaseEventWrites?: boolean;
   readonly flakyReleaseWrites?: FlakyReleaseWrites;
   readonly pauseAttachWrite?: Parameters<typeof layerPausingAttachEventSink>[0];
@@ -542,7 +566,9 @@ function layerTest(input: {
   >;
 }) {
   const layerConfiguredEventSink =
-    input.flakyReleaseWrites !== undefined
+    input.publicationFault !== undefined
+      ? layerPublicationFaultSink(input.publicationFault)
+      : input.flakyReleaseWrites !== undefined
       ? layerFlakyReleaseEventSink(input.flakyReleaseWrites)
       : input.pauseAttachWrite !== undefined
         ? layerPausingAttachEventSink(input.pauseAttachWrite)
@@ -6682,7 +6708,7 @@ it.effect(
     }),
 );
 
-it.effect("a shared transfer preserves its sibling and never grants producer retirement", () =>
+it.effect("a shared detach timeout retains exact proof without a process Stop capture and preserves its sibling", () =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
     const reached = yield* Deferred.make<void>();
@@ -6724,12 +6750,24 @@ it.effect("a shared transfer preserves its sibling and never grants producer ret
         })
         .pipe(Effect.forkChild);
       yield* Deferred.await(reached);
+      const binding = runtimeBinding(fixture.providerThread, fixture.providerThread.runtimeIdentity!.runtimeGeneration!)!;
+      assert.isUndefined(fixture.runtime.captureRuntimeStop);
+      const observer = yield* fixture.manager.captureThreadRetirement!(binding);
+      assert.isNotNull(observer);
+      if (observer === null) return yield* Effect.die("Missing captured retirement observer");
+      assert.isNull(yield* fixture.manager.captureThreadRetirement!({ ...binding, runtimeGeneration: "foreign" }));
+      const receipt = yield* observer.awaitRetired.pipe(Effect.forkChild);
+      yield* TestClock.adjust("11 seconds");
+      assert.isTrue(Exit.isFailure(yield* Fiber.await(detach)));
+      assert.isTrue(Option.isNone(yield* Fiber.poll(receipt)));
       const sameRuntime = yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
       assert.strictEqual(sameRuntime, fixture.runtime);
       assert.equal((yield* Ref.get(state)).closeCount, 0);
       assert.isTrue(Exit.isFailure(yield* Effect.exit(fixture.manager.open(fixture.input))));
       yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(detach);
+      const retired = yield* Fiber.join(receipt);
+      assert.deepEqual(retired, { binding, evidence: "thread_closed" });
+      assert.strictEqual(yield* fixture.manager.captureThreadRetirement!(binding), observer);
       yield* fixture.manager.open(fixture.input);
       assert.equal((yield* Ref.get(state)).openCount, 1);
     }).pipe(
@@ -7178,4 +7216,107 @@ it.effect(
         ),
       );
     }),
+);
+
+
+it.effect.each([
+  "before-boundary", "after-boundary", "during-observation", "after-observation",
+] as const)("retained publication recovers %s without another native request or duplicate boundary", (stage) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+    const fault = yield* Ref.make<PublicationFault | undefined>(undefined);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const events = yield* EventStore.EventStoreV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make(`publication-recovery:${stage}`);
+      const providerSessionId = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId, threadId,
+      });
+      yield* sink.write({ events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })] });
+      const runtime = yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      const lifecycle = (yield* Ref.get(controller))!;
+      const runtimeGeneration = yield* lifecycle.reserve(threadId);
+      const native = yield* runtime.resumeThread({
+        providerThread: makeProviderThread({ idAllocator: ids, threadId, providerSessionId, now }),
+        modelSelection, runtimePolicy,
+      });
+      const input = {
+        providerThread: native, runtimeGeneration,
+        requested: requestedRuntimeIdentity(modelSelection, CODEX_DRIVER),
+        observed: {
+          ...unobservedRuntimeIdentity(),
+          model: { status: "observed" as const, value: "native-model", sourceEvent: "thread/resume" },
+        },
+      };
+      const publication = yield* lifecycle.prepareBindingPublication!(input);
+      yield* Ref.set(fault, stage);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(publication.complete)));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(lifecycle.prepareBindingPublication!({
+        ...input, requested: { ...input.requested, model: "changed-request" },
+      }))));
+      assert.strictEqual(yield* lifecycle.prepareBindingPublication!(input), publication);
+      const bound = yield* publication.complete;
+      assert.equal(bound.runtimeIdentity?.runtimeGeneration, runtimeGeneration);
+      assert.deepEqual(bound.runtimeIdentity?.observed, input.observed);
+      yield* publication.complete;
+      const updates = (yield* events.read({ threadId, eventType: "provider-thread.updated" }).pipe(Stream.runCollect));
+      assert.lengthOf(updates, 2);
+      assert.equal(new Set(updates.map((row) => row.event.id)).size, 2);
+      for (const row of updates) {
+        const lookup = yield* events.read({
+          threadId, eventType: "provider-thread.updated", eventId: row.event.id, limit: 1,
+        }).pipe(Stream.runCollect);
+        assert.deepEqual(lookup, [row]);
+      }
+      assert.equal((yield* Ref.get(state)).resumeCount, 1);
+      yield* lifecycle.abandon(runtimeGeneration);
+      assert.isUndefined((yield* projections.getThreadProjection(threadId))
+        .providerThreads.find((thread) => thread.id === native.id)?.runtimeIdentity?.runtimeGeneration);
+    }).pipe(Effect.provide(layerTest({
+      state, idleTimeoutMs: 60_000, publicationFault: fault,
+      beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+    })));
+  }),
+);
+
+it.effect("a foreign committed generation refuses retained publication recovery", () =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+    const fault = yield* Ref.make<PublicationFault | undefined>(undefined);
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const events = yield* EventStore.EventStoreV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("publication-recovery:foreign");
+      const providerSessionId = yield* ids.allocate.providerSession({ providerInstanceId: modelSelection.instanceId, threadId });
+      yield* sink.write({ events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now })] });
+      yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+      const lifecycle = (yield* Ref.get(controller))!;
+      const generation = yield* lifecycle.reserve(threadId);
+      const thread = makeProviderThread({ idAllocator: ids, threadId, providerSessionId, now });
+      const requested = requestedRuntimeIdentity(modelSelection, CODEX_DRIVER);
+      const publication = yield* lifecycle.prepareBindingPublication!({
+        providerThread: thread, runtimeGeneration: generation, requested, observed: unobservedRuntimeIdentity(),
+      });
+      yield* Ref.set(fault, "after-boundary");
+      yield* publication.complete.pipe(Effect.flip);
+      yield* sink.write({
+        runtimeIdentityBoundary: { expectedGeneration: generation },
+        events: [{ id: EventId.make("foreign-publication-boundary"), type: "provider-thread.updated", threadId, occurredAt: now,
+          payload: { ...thread, runtimeIdentity: { runtimeGeneration: "foreign-generation", requested, observed: unobservedRuntimeIdentity() } } }],
+      });
+      const before = yield* events.read({ threadId }).pipe(Stream.runCollect);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(publication.complete)));
+      assert.deepEqual(yield* events.read({ threadId }).pipe(Stream.runCollect), before);
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, publicationFault: fault,
+      beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle) })));
+  }),
 );

@@ -69,7 +69,7 @@ export const make = Effect.gen(function* () {
     binding: ProviderRuntimeBinding,
   ) {
     const entry = leases.get(binding.providerThreadId);
-    if (!entry || entry.binding.runtimeGeneration !== binding.runtimeGeneration) return;
+    if (!entry || !equivalentBinding(entry.binding, binding)) return;
     leases.delete(binding.providerThreadId);
     yield* persist(binding, unknown(binding.runtimeGeneration, "retired"));
   });
@@ -82,7 +82,7 @@ export const make = Effect.gen(function* () {
       if (
         previous &&
         previous.lease === lease &&
-        previous.binding.runtimeGeneration === binding.runtimeGeneration
+        equivalentBinding(previous.binding, binding)
       )
         return;
       leases.delete(binding.providerThreadId);

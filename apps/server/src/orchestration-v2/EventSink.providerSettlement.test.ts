@@ -7,6 +7,10 @@ import {
   MessageId,
   NodeId,
   ProjectId,
+  ProviderDriverKind,
+  ProviderSessionId,
+  type OrchestrationV2ProviderThread,
+  type OrchestrationV2Run,
   ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
@@ -16,6 +20,7 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2RunAttempt,
 } from "@t3tools/contracts";
+import { unobservedRuntimeIdentity } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -261,4 +266,80 @@ it.effect(
       );
       assert.equal(yield* sink.latestSequence(), after);
     }).pipe(Effect.provide(testLayer)),
+);
+
+
+it.effect.each(["exact", "changed-session", "changed-native", "installed-generation"] as const)(
+  "stopped-runtime replacement atomically revalidates the old identity: %s", (mode) =>
+  Effect.gen(function* () {
+    const sink = yield* EventSink.EventSinkV2;
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make(`stop-identity:${mode}`);
+    const providerThreadId = ProviderThreadId.make(`stop-provider:${mode}`);
+    const instanceId = ProviderInstanceId.make("codex");
+    const driver = ProviderDriverKind.make("codex");
+    const runId = RunId.make(`stop-run:${mode}`);
+    const attemptId = RunAttemptId.make(`stop-attempt:${mode}`);
+    const provider: OrchestrationV2ProviderThread = {
+      id: providerThreadId, appThreadId: threadId, driver, providerInstanceId: instanceId,
+      providerSessionId: ProviderSessionId.make("stopped-session"), ownerNodeId: null,
+      nativeThreadRef: { driver, nativeId: "native-original", strength: "strong" },
+      nativeConversationHeadRef: null, status: "idle", firstRunOrdinal: null, lastRunOrdinal: null,
+      handoffIds: [], forkedFrom: null, createdAt: now, updatedAt: now,
+    };
+    const run: OrchestrationV2Run = {
+      id: runId, threadId, ordinal: 1, providerInstanceId: instanceId,
+      modelSelection: { instanceId, model: "synthetic" }, providerThreadId,
+      userMessageId: MessageId.make("stop-message"), rootNodeId: NodeId.make("stop-node"),
+      activeAttemptId: attemptId, status: "starting", requestedAt: now, startedAt: null,
+      completedAt: null, checkpointId: null, contextHandoffId: null,
+    };
+    yield* sink.write({ events: [
+      { id: EventId.make(`${mode}:birth`), type: "thread.created", threadId, occurredAt: now,
+        payload: {
+          id: threadId, projectId: ProjectId.make("stop-project"), title: "Stopped replacement",
+          providerInstanceId: instanceId, modelSelection: run.modelSelection,
+          runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null,
+          activeProviderThreadId: providerThreadId,
+          lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+          forkedFrom: null, createdAt: now, updatedAt: now, archivedAt: null, settledOverride: null,
+          settledAt: null, lastVisitedAt: null, deletedAt: null,
+        } },
+      { id: EventId.make(`${mode}:provider`), type: "provider-thread.updated", threadId, occurredAt: now, payload: provider },
+      { id: EventId.make(`${mode}:run`), type: "run.updated", threadId, runId, occurredAt: now, payload: run },
+    ] });
+    const changed = {
+      ...provider,
+      ...(mode === "changed-session" ? { providerSessionId: ProviderSessionId.make("foreign-session") } : {}),
+      ...(mode === "changed-native" ? { nativeThreadRef: { ...provider.nativeThreadRef!, nativeId: "foreign-native" } } : {}),
+      ...(mode === "installed-generation" ? { runtimeIdentity: {
+        runtimeGeneration: "newly-installed", requested: { providerInstanceId: instanceId, providerDriver: driver, model: "synthetic", serviceTier: null },
+        observed: unobservedRuntimeIdentity(),
+      } } : {}),
+    };
+    yield* sink.write({ events: [{ id: EventId.make(`${mode}:concurrent`), type: "provider-thread.updated", threadId, occurredAt: now, payload: changed }] });
+    const before = yield* sink.latestSequence({ threadId });
+    const result = yield* sink.writeIfRunCurrent({
+      threadId, runId, activeAttemptId: attemptId, expectedStatus: "starting",
+      runtimeIdentityBoundary: {
+        expectedGeneration: null, expectedActiveProviderThreadId: providerThreadId,
+        expectedProviderThreadIdentity: {
+          id: provider.id, appThreadId: provider.appThreadId, driver: provider.driver,
+          providerInstanceId: provider.providerInstanceId, providerSessionId: provider.providerSessionId,
+          nativeThreadRef: provider.nativeThreadRef,
+        },
+      },
+      events: [
+        { id: EventId.make(`${mode}:replacement`), type: "provider-thread.updated", threadId, occurredAt: now,
+          payload: { ...provider, providerSessionId: ProviderSessionId.make("fresh-session") } },
+        { id: EventId.make(`${mode}:running`), type: "run.updated", threadId, runId, occurredAt: now, payload: { ...run, status: "running", startedAt: now } },
+      ],
+    });
+    assert.equal(result.committed, mode === "exact");
+    if (mode !== "exact") {
+      assert.equal(yield* sink.latestSequence({ threadId }), before);
+      assert.equal((yield* projections.getThreadRecords(threadId, ["runs"])).runs[0]!.status, "starting");
+    }
+  }).pipe(Effect.provide(testLayer)),
 );

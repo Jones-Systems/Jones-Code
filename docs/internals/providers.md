@@ -82,6 +82,23 @@ cancellation, so returning to that account requires a fresh logical session behi
 proof barrier. Sources already idle-unloaded keep the existing ordinary rejoin behavior; this
 mechanism neither identifies nor clears a foreign writer.
 
+Codex control and startup uncertainty belongs to the affected conversation.
+Known native conversations remain fenced across account and runtime changes;
+unidentified creation also retains the original app thread and issuing process.
+Independent conversations can continue on the same account and process. A
+confirmed native open whose local binding failed retains its original result
+for local publication recovery; recovery does not repeat the native resume or
+the failed prompt. A refusal before dispatch or a proved non-applying protocol
+rejection does not create an unknown native effect.
+
+Captured runtime Stop and writer retirement retain their original completion
+observers after the caller stops waiting. They never retarget a replacement or
+send the same stop again. Exact retirement and manager cleanup complete the
+receipt; an ordinary subsequent send selects a fresh logical session while
+preserving its saved native conversation. An unavailable observer or an old
+completed-unknown receipt remains unknown. Shared-process thread retirement
+uses its own exact closure proof without stopping healthy sibling conversations.
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.

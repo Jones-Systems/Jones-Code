@@ -138,4 +138,24 @@ describe("physical evidence sidecar", () => {
       expect(rows.every((row) => !row.observation_json.includes("private-value"))).toBe(true);
     }).pipe(Effect.provide(memory)),
   );
+  it.effect("registration is idempotent only for the full binding and original lease", () =>
+    Effect.gen(function* () {
+      const sql = yield* setup;
+      const owner = yield* PhysicalRuntimeEvidence.make;
+      const originalLease = lease();
+      yield* owner.bind(binding(), originalLease);
+      const before = (yield* sql`SELECT * FROM jones_physical_process_evidence`).length;
+      yield* owner.bind({ ...binding() }, originalLease);
+      expect((yield* sql`SELECT * FROM jones_physical_process_evidence`).length).toBe(before);
+      const foreign = { ...binding(), providerSessionId: ProviderSessionId.make("foreign-session") };
+      yield* owner.invalidate(foreign);
+      expect(yield* owner.read(binding())).toMatchObject({ status: "observed" });
+      yield* owner.bind(foreign, originalLease);
+      expect(yield* owner.read(binding())).toMatchObject({ reason: "not_captured" });
+      expect(yield* owner.read(foreign)).toMatchObject({ status: "observed" });
+      yield* owner.bind(foreign, undefined);
+      expect(yield* owner.read(foreign)).toMatchObject({ reason: "not_captured" });
+    }).pipe(Effect.provide(memory)),
+  );
+
 });

@@ -588,22 +588,33 @@ export const layer: Layer.Layer<
       const admission = yield* Effect.result(
         restartPreparation
           .assertThreadOpen(input.threadId)
-          .pipe(Effect.andThen(controlAdmission.assertOpen(run.providerInstanceId))),
+          .pipe(Effect.andThen(controlAdmission.assertOpen({
+            instanceId: run.providerInstanceId,
+            threadId: input.threadId,
+            nativeThreadId: providerThread.nativeThreadRef?.nativeId ?? null,
+            producer: providerThread.providerSessionId === null ||
+              providerThread.runtimeIdentity?.runtimeGeneration === undefined ? null : {
+                instanceId: providerThread.providerInstanceId,
+                providerSessionId: providerThread.providerSessionId,
+                runtimeGeneration: providerThread.runtimeIdentity.runtimeGeneration,
+              },
+          }))),
       );
       if (admission._tag === "Failure") {
+        const restart = admission.failure._tag === "RestartThreadHeld" ? admission.failure : undefined;
         yield* settleRunBeforeStart({
-          signal: "provider-control-held",
+          signal: restart === undefined ? "provider-control-held" : `provider-restart-${restart.stage}-held`,
           status: "failed",
           now: yield* DateTime.now,
           providerInstanceId: run.providerInstanceId,
           itemProviderThreadId: providerThread.id,
           item: {
             type: "error",
-            title: "Provider work is held",
+            title: restart === undefined ? "Provider work is held" : "Provider restart is held",
             failure: {
               class: "provider_error",
-              message:
-                "Earlier provider control has an unresolved outcome. This turn was not started. Stop the exact runtime or wait for its control result before trying again.",
+              message: restart?.message ??
+                "Earlier provider control has an unresolved outcome for this conversation. This turn was not started. Stop the exact runtime or wait for its control result before trying again.",
               code: null,
               retryable: false,
             },

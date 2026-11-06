@@ -62,6 +62,7 @@ export class OrchestrationEventStore extends Context.Service<
 
     /** Unknown event types fail unless skipUnknownEventTypes logs and drops them; only client replay may opt in. */
     readonly readAgentEvents: (input?: {
+      readonly eventId?: EventId;
       readonly afterSequence?: number;
       readonly throughSequence?: number;
       readonly threadId?: ThreadId;
@@ -395,6 +396,7 @@ const makeEventStore = Effect.gen(function* () {
     );
 
   const readApplicationRows = (input: {
+    readonly eventId?: EventId;
     readonly afterSequence: number;
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
@@ -421,7 +423,9 @@ const makeEventStore = Effect.gen(function* () {
       FROM orchestration_events
       ${
         // Otherwise the sequence index wins and command lookups scan every V2 event.
-        input.commandId !== undefined
+        input.eventId !== undefined
+          ? sql``
+          : input.commandId !== undefined
           ? sql`INDEXED BY idx_orch_events_command_id`
           : input.onlyAgentEvents === true
             ? sql``
@@ -439,6 +443,7 @@ const makeEventStore = Effect.gen(function* () {
         )
         AND ${input.onlyAgentEvents === true && input.publicOnly !== true ? sql`1 = 1` : sql`event_type NOT IN ('legacy-bootstrap.preflight-intent', 'legacy-bootstrap.preflight-outcome')`}
         AND ${sql.and([
+          ...(input.eventId === undefined ? [] : [sql`event_id = ${input.eventId}`]),
           ...(input.threadId === undefined ? [] : [sql`stream_id = ${input.threadId}`]),
           ...(input.commandId === undefined ? [] : [sql`command_id = ${input.commandId}`]),
           ...(input.eventType === undefined ? [] : [sql`event_type = ${input.eventType}`]),
@@ -559,6 +564,7 @@ const makeEventStore = Effect.gen(function* () {
       ({ cursor, remaining }) => {
         const pageLimit = Math.min(remaining, READ_PAGE_SIZE);
         return readApplicationRows({
+          ...(input?.eventId === undefined ? {} : { eventId: input.eventId }),
           afterSequence: cursor,
           ...(input?.publicOnly === undefined ? {} : { publicOnly: input.publicOnly }),
           ...(input?.throughSequence === undefined
