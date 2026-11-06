@@ -5349,7 +5349,7 @@ it.effect.each(["failure", "stalled", "diagnostic-failure"] as const)(
         const input = launchInput({
           command: `command:optional-fallback:${sink}`,
           thread: `thread:optional-fallback:${sink}`,
-          workspace: { type: "auto" },
+          workspace: { type: "auto", baseRef: "main" },
           message: "Continue in the eager checkout.",
         });
         const result = yield* service.launch(input);
@@ -5414,7 +5414,7 @@ it.effect("optional fallback recording never masks an eager checkout failure", (
         launchInput({
           command: "command:optional-fallback:native-failure",
           thread: "thread:optional-fallback:native-failure",
-          workspace: { type: "auto" },
+          workspace: { type: "auto", baseRef: "main" },
           message: "Expose the native checkout refusal.",
         }),
       );
