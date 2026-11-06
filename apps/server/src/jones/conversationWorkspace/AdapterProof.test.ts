@@ -121,7 +121,9 @@ it.effect.each([
                 assert.equal(input.projectCwd, repo);
                 assert.lengthOf(
                   yield* sql`SELECT claim_id FROM jones_workspace_duty_claims
-                    WHERE worktree=${checkout} AND kind='handoff' AND owner=${threadId} AND released_at IS NULL`.pipe(Effect.orDie),
+                    WHERE worktree=${checkout} AND kind='handoff' AND owner=${threadId} AND released_at IS NULL`.pipe(
+                    Effect.orDie,
+                  ),
                   1,
                 );
                 setupCount++;
