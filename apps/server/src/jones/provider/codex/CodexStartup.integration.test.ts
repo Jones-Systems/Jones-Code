@@ -937,8 +937,29 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
         yield* send("new-owner", newPrompt);
         yield* worker.drain();
         const recovered = yield* orchestrator.getThreadProjection(threadId);
+        const replayState = yield* Ref.get(replay.state);
+        const recoveryDiagnostic = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.Unknown),
+        )({
+          run: recovered.runs[1],
+          errors: recovered.turnItems.flatMap((item) =>
+            item.runId === recovered.runs[1]?.id && item.type === "error"
+              ? [{ title: item.title, failure: item.failure }]
+              : [],
+          ),
+          requests,
+          replay: {
+            ...replayState,
+            failureMessage: replayState.failure?.message ?? null,
+            entries: replay.transcript.entries.length,
+          },
+        });
         assert.equal(recovered.runs[0]?.status, "failed");
-        assert.equal(recovered.runs[1]?.status, mode === "unknown-steer" ? "failed" : "completed");
+        assert.equal(
+          recovered.runs[1]?.status,
+          mode === "unknown-steer" ? "failed" : "completed",
+          recoveryDiagnostic,
+        );
         assert.notEqual(recovered.runs[1]?.id, recovered.runs[0]?.id);
         assert.equal(
           recovered.providerThreads.find(
@@ -962,7 +983,6 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
             ),
           );
         }
-        const replayState = yield* Ref.get(replay.state);
         assert.isNull(replayState.failure);
         assert.equal(replayState.cursor, replay.transcript.entries.length);
       }).pipe(
