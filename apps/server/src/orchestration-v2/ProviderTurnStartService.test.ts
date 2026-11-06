@@ -2162,7 +2162,7 @@ effectIt.effect("terminalizes an unresolved writer retirement before opening its
   }),
 );
 
-it("recreation captures the newly created workspace before provider execution", async () => {
+it("recreation proceeds without starting unbounded optional provenance", async () => {
   const captures: Array<{ reason: string; runId: string | undefined }> = [];
   const harness = startWithMissingWorktree(
     `${managedWorktreesDir}/project/provenance`,
@@ -2183,7 +2183,7 @@ it("recreation captures the newly created workspace before provider execution", 
     }),
   );
   await harness.start;
-  expect(captures).toEqual([
-    { reason: "recreate", runId: "run_provider_turn_start_projection_failure" },
-  ]);
+  expect(captures).toEqual([]);
+  expect(harness.createWorktree).toHaveBeenCalledTimes(1);
+  expect(harness.startRootRun).toHaveBeenCalled();
 });

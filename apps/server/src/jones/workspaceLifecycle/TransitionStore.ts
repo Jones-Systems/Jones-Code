@@ -197,22 +197,34 @@ const makeProvenanceStore = Effect.gen(function* () {
   }) {
     if (input.path === undefined && input.threadId === undefined)
       return yield* new LifecycleError({ reason: "identity" });
-    const rows = yield* sql<{ provenance_json: string }>`SELECT DISTINCT p.provenance_json
+    const rows = yield* sql<{ provenance_json: string }>`SELECT DISTINCT CASE WHEN length(CAST(p.provenance_json AS BLOB)) <= 65536
+      THEN p.provenance_json ELSE '' END AS provenance_json
       FROM jones_workspace_provenance p
       LEFT JOIN jones_workspace_provenance_threads t ON t.incarnation_id=p.incarnation_id
       WHERE (${input.path ?? null} IS NULL OR p.worktree=${input.path ?? null})
       AND (${input.threadId ?? null} IS NULL OR t.thread_id=${input.threadId ?? null})
-      ORDER BY p.rowid`;
+      ORDER BY p.rowid LIMIT 17`;
+    if (rows.length > 16) return yield* new LifecycleError({ reason: "unavailable" });
+    let remainingBytes = 65536;
     return yield* Effect.forEach(rows, (row) =>
       Effect.gen(function* () {
+        remainingBytes -= new TextEncoder().encode(row.provenance_json).byteLength;
+        if (remainingBytes < 0) return yield* new LifecycleError({ reason: "unavailable" });
         const provenance = yield* decode(row.provenance_json);
         const relations = yield* sql<{
           thread_id: string;
           task_id: string;
-        }>`SELECT thread_id,task_id FROM jones_workspace_provenance_threads WHERE incarnation_id=${provenance.incarnation_id} ORDER BY thread_id,task_id`;
+        }>`SELECT substr(thread_id,1,65537) AS thread_id,substr(task_id,1,65537) AS task_id FROM jones_workspace_provenance_threads WHERE incarnation_id=${provenance.incarnation_id} ORDER BY thread_id,task_id LIMIT 65`;
         const facts = yield* sql<{
           fact_json: string;
-        }>`SELECT fact_json FROM jones_workspace_provenance_facts WHERE incarnation_id=${provenance.incarnation_id} ORDER BY event_id`;
+        }>`SELECT CASE WHEN length(CAST(fact_json AS BLOB)) <= 65536 THEN fact_json ELSE '' END AS fact_json FROM jones_workspace_provenance_facts WHERE incarnation_id=${provenance.incarnation_id} ORDER BY event_id LIMIT 65`;
+        if (relations.length > 64 || facts.length > 64)
+          return yield* new LifecycleError({ reason: "unavailable" });
+        for (const relation of relations)
+          remainingBytes -= new TextEncoder().encode(relation.thread_id + relation.task_id).byteLength;
+        for (const fact of facts)
+          remainingBytes -= new TextEncoder().encode(fact.fact_json).byteLength;
+        if (remainingBytes < 0) return yield* new LifecycleError({ reason: "unavailable" });
         return yield* Schema.decodeEffect(ProvenanceEntry)({
           provenance,
           threads: [...new Set(relations.map((r) => r.thread_id))],

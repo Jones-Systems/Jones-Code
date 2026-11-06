@@ -143,6 +143,14 @@
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Provenance.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
     }
   ]
 }
