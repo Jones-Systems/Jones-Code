@@ -1,3 +1,5 @@
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
+import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import { describe, expect, it, vi } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
@@ -689,4 +691,21 @@ describe("t3_worktree_status", () => {
       });
     });
   });
+});
+
+it.effect("native status survives optional provenance storage failure", () => {
+  const harness = makeHarness({ thread: { worktreePath: "/worktrees/existing", branch: "work" } });
+  return Effect.gen(function* () {
+    const result = yield* runStatus(harness);
+    expect(result.attached).toBe(true);
+    expect(result.worktreePath).toBe("/worktrees/existing");
+    expect(result.branch).toBe("work");
+    expect(result.provenance).toBeUndefined();
+  }).pipe(
+    Effect.provideService(WorkspaceProvenance.Provenance, {
+      capture: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+      lookup: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+      record: () => Effect.void,
+    }),
+  );
 });
