@@ -2011,6 +2011,8 @@
     "scripts/jones/boundary/fragments/bounded-history-paging-efficiency.json": "jones-owned",
     "apps/server/src/jones/orchestration/historyPaging.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/shell-materialization-efficiency.json": "jones-owned",
+    "apps/server/src/jones/orchestration/shellDelivery.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/shellDelivery.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/shellMaterialization.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/shellMaterialization.snapshot.test.ts": "jones-owned",
     "apps/server/src/jones/orchestration/shellMaterialization.ts": "jones-owned",

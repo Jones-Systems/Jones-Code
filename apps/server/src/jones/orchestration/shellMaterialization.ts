@@ -40,6 +40,16 @@ export class ShellMaterialization extends Context.Service<
   ShellMaterialization,
   {
     readonly forSubscription: Effect.Effect<{
+      readonly getVersioned: (
+        threadId: ThreadId,
+        sequence: number,
+      ) => Effect.Effect<
+        {
+          readonly shell: OrchestrationV2ThreadShell | null;
+          readonly version: number | undefined;
+        },
+        ReadError
+      >;
       readonly get: (
         threadId: ThreadId,
         sequence: number,
@@ -201,7 +211,7 @@ const make = Effect.gen(function* () {
   const forSubscription = Effect.sync(() => {
     const floors = new Map<ThreadId, number>();
     const unversioned = new Set<ThreadId>();
-    const get = Effect.fnUntraced(function* (threadId: ThreadId, sequence: number) {
+    const getVersioned = Effect.fnUntraced(function* (threadId: ThreadId, sequence: number) {
       const minimum = Math.max(sequence, floors.get(threadId) ?? 0);
       const result = yield* read(threadId, minimum, unversioned.has(threadId));
       if (result === undefined) {
@@ -211,13 +221,15 @@ const make = Effect.gen(function* () {
           .getThreadShell(threadId)
           .pipe(NodeSqliteClient.readOnly, Effect.forkIn(scope), Effect.flatMap(Fiber.join));
         unversioned.add(threadId);
-        return shell;
+        return { shell, version: undefined };
       }
       floors.set(threadId, Math.max(floors.get(threadId) ?? 0, result.version));
       unversioned.delete(threadId);
-      return result.shell;
+      return { shell: result.shell, version: result.version };
     });
-    return { get };
+    const get = (threadId: ThreadId, sequence: number) =>
+      getVersioned(threadId, sequence).pipe(Effect.map((result) => result.shell));
+    return { get, getVersioned };
   });
 
   return ShellMaterialization.of({ forSubscription });
