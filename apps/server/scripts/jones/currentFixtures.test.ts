@@ -196,6 +196,7 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 135, name: "IdleWorktreeAdmission" },
           { id: 136, name: "WorkspaceProvenance" },
           { id: 137, name: "NativeCreationLeaseRenewal" },
+          { id: 139, name: "ConversationWorkspace" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

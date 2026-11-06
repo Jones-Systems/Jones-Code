@@ -10,7 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../../config.ts";
-import Migration from "../persistence/Migrations/138_JonesConversationWorkspace.ts";
+import Migration from "../persistence/Migrations/139_JonesConversationWorkspace.ts";
 import * as Policy from "./ConversationPolicy.ts";
 
 const git = (cwd: string, ...args: string[]) => NodeChildProcess.execFileSync("git", ["-c", "init.defaultBranch=main", "-c", "user.name=C9 Fixture", "-c", "user.email=c9@example.invalid", ...args], { cwd, encoding: "utf8", timeout: 3000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();

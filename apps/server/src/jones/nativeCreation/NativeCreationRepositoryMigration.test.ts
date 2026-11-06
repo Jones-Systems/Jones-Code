@@ -80,6 +80,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 135, name: "IdleWorktreeAdmission" },
         { migration_id: 136, name: "WorkspaceProvenance" },
         { migration_id: 137, name: "NativeCreationLeaseRenewal" },
+        { migration_id: 139, name: "ConversationWorkspace" },
       ],
     );
     assert.deepEqual(
@@ -302,7 +303,7 @@ it.effect(
       );
       assert.isTrue(Exit.isFailure(failed));
       assert.deepStrictEqual(yield* f.readLeases, before);
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)), [
         [137, "NativeCreationLeaseRenewal"],
       ]);
       assert.deepStrictEqual(yield* f.readLeases, before);
@@ -367,7 +368,7 @@ it.effect(
         ),
       );
       assert.deepStrictEqual(yield* f.readLeases, settled);
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)), []);
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(upgradeRepository)))),
 );
 
