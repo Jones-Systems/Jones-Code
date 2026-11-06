@@ -10057,45 +10057,91 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
               if (hasUnknownNativeStart() || capacityScopeClosed)
                 return yield* toProtocolError("Cannot fork an unconfirmed Codex runtime.");
-              const issuer = currentProducer;
-              yield* assertControlAdmission(providerThreadTarget(threadInput.sourceProviderThread));
+              const issuer = (yield* CodexProducerContext) ?? currentProducer;
+              const source = threadInput.sourceProviderThread;
+              const sourceBinding = issuer.bindings.get(threadId);
+              const selection = threadInput.modelSelection ?? input.modelSelection;
+              if (
+                source.driver !== CODEX_PROVIDER ||
+                source.providerInstanceId !== adapterOptions.instanceId ||
+                source.nativeThreadRef?.driver !== CODEX_PROVIDER ||
+                source.nativeThreadRef.strength !== "strong" ||
+                threadId.trim().length === 0 ||
+                threadInput.targetThreadId.trim().length === 0 ||
+                threadInput.targetThreadId === source.appThreadId ||
+                selection.instanceId !== adapterOptions.instanceId ||
+                (sourceBinding !== undefined && sourceBinding.id !== source.id)
+              )
+                return yield* toProtocolError("Codex fork source, target or selection changed.");
+              yield* assertControlAdmission(providerThreadTarget(source));
               yield* assertControlAdmission(
                 admissionTarget(threadInput.targetThreadId, null, issuer),
               );
               const boundary = yield* resolveCodexForkBoundary(threadInput);
               yield* admitThread(issuer, threadInput.targetThreadId);
-              const response = yield* ensureInitialized.pipe(
-                Effect.andThen(
-                  client.request("thread/fork", {
-                    threadId,
-                    ...(boundary.lastTurnId === undefined
+              yield* ensureInitialized;
+              const mcpSession = yield* mcpSessions.read(threadInput.targetThreadId);
+              yield* requestAdmission("thread/fork", { threadId }, issuer);
+              yield* assertControlAdmission(
+                admissionTarget(threadInput.targetThreadId, null, issuer),
+              );
+              if (
+                issuer !== currentProducer ||
+                !issuer.active ||
+                (sourceBinding !== undefined && issuer.bindings.get(threadId) !== sourceBinding)
+              )
+                return yield* toProtocolError("Codex fork issuer changed before dispatch.");
+              const response = yield* startup.observe(
+                issuer,
+                issuer.client.request("thread/fork", {
+                  threadId,
+                  ...(boundary.lastTurnId === undefined ? {} : { lastTurnId: boundary.lastTurnId }),
+                  ...codexThreadRuntimeParams({
+                    mcpSession,
+                    ...(threadInput.modelSelection === undefined
                       ? {}
-                      : { lastTurnId: boundary.lastTurnId }),
-                    ...codexThreadRuntimeParams({
-                      mcpSession: yield* mcpSessions.read(threadInput.targetThreadId),
-                      ...(threadInput.modelSelection === undefined
-                        ? {}
-                        : { modelSelection: threadInput.modelSelection }),
-                      ...(threadInput.runtimePolicy === undefined
-                        ? {}
-                        : { runtimePolicy: threadInput.runtimePolicy }),
-                    }),
+                      : { modelSelection: threadInput.modelSelection }),
+                    ...(threadInput.runtimePolicy === undefined
+                      ? {}
+                      : { runtimePolicy: threadInput.runtimePolicy }),
                   }),
-                ),
-                Effect.mapError(
-                  (cause) =>
-                    new ProviderAdapter.ProviderAdapterForkThreadError({
-                      driver: CODEX_PROVIDER,
-                      providerThreadId: threadInput.sourceProviderThread.id,
-                      cause: normalizeCodexCause(cause),
-                    }),
-                ),
+                }),
+                "binding",
+                "thread/fork",
               );
               nativeStartUnknown = true;
+              if (
+                response.thread.id.trim().length === 0 ||
+                response.thread.id === threadId ||
+                issuer.bindings.has(response.thread.id) ||
+                pendingForkBindings.has(response.thread.id) ||
+                (response.thread.forkedFromId != null && response.thread.forkedFromId !== threadId)
+              )
+                return yield* toProtocolError("Codex fork returned an unconfirmed target.");
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {
-                const { historyMode } = yield* ensureInitialized.pipe(
-                  Effect.andThen(readCodexThreadHistoryMetadata(client.raw, response.thread.id)),
+                // Only raw requests outlive this caller, on the captured issuer.
+                // Their replies cannot finish the fork's pending-binding handoff.
+                const forkClient: Pick<CodexRuntimeProducer["client"], "request" | "raw"> = {
+                  request: (method, params) =>
+                    requestAdmission(method, params).pipe(
+                      Effect.andThen(
+                        startup.retainRequest(issuer, issuer.client.request(method, params)),
+                      ),
+                    ),
+                  raw: {
+                    ...issuer.client.raw,
+                    request: (method, params) =>
+                      requestAdmission(method, params).pipe(
+                        Effect.andThen(
+                          startup.retainRequest(issuer, issuer.client.raw.request(method, params)),
+                        ),
+                      ),
+                  },
+                };
+                const { historyMode } = yield* readCodexThreadHistoryMetadata(
+                  forkClient.raw,
+                  response.thread.id,
                 );
                 if (historyMode !== "paginated") {
                   return yield* new ProviderAdapter.ProviderAdapterForkThreadError({
@@ -10104,18 +10150,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     cause: `Cannot fork Codex thread ${threadId} at provider turn ${threadInput.providerTurnId}: the source turn has no native Codex turn reference, and the forked thread uses legacy history which Codex 0.156 cannot revert.`,
                   });
                 }
-                forkedThread = (yield* ensureInitialized.pipe(
-                  Effect.andThen(
-                    revertCodexThread(client, response.thread.id, boundary.rollbackTurnCount),
-                  ),
-                  Effect.mapError(
-                    (cause) =>
-                      new ProviderAdapter.ProviderAdapterForkThreadError({
-                        driver: CODEX_PROVIDER,
-                        providerThreadId: threadInput.sourceProviderThread.id,
-                        cause: normalizeCodexCause(cause),
-                      }),
-                  ),
+                forkedThread = (yield* revertCodexThread(
+                  forkClient,
+                  response.thread.id,
+                  boundary.rollbackTurnCount,
                 )).thread;
               }
               const currentRuntime =
@@ -10128,23 +10166,21 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               if (
                 issuer !== currentProducer ||
                 !issuer.active ||
+                (sourceBinding !== undefined && issuer.bindings.get(threadId) !== sourceBinding) ||
                 currentRuntime?.revision !== issuer.resolvedRuntime?.revision ||
                 forkedThread.id.trim().length === 0 ||
-                forkedThread.id === threadId
+                forkedThread.id === threadId ||
+                forkedThread.id !== response.thread.id ||
+                issuer.bindings.has(forkedThread.id) ||
+                pendingForkBindings.has(forkedThread.id) ||
+                (response.thread.forkedFromId != null && response.thread.forkedFromId !== threadId)
               ) {
                 nativeStartUnknown = true;
                 return yield* toProtocolError(
                   "Codex fork has an unconfirmed issuer or native ID; the fork effect must not be replayed.",
                 );
               }
-              pendingForkBindings.set(forkedThread.id, {
-                producer: issuer,
-                targetThreadId: threadInput.targetThreadId,
-                selection: threadInput.modelSelection ?? input.modelSelection,
-                observed: codexObservedRuntimeIdentity(response),
-              });
-              nativeStartUnknown = false;
-              return providerThreadFromCodexThread({
+              const forked = providerThreadFromCodexThread({
                 appThreadId: threadInput.targetThreadId,
                 idAllocator,
                 ownerNodeId: threadInput.ownerNodeId ?? null,
@@ -10157,6 +10193,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                     ? {}
                     : { providerTurnId: threadInput.providerTurnId }),
                 },
+              });
+              return yield* startup.completeWith(() => {
+                pendingForkBindings.set(forkedThread.id, {
+                  producer: issuer,
+                  targetThreadId: threadInput.targetThreadId,
+                  selection,
+                  observed: codexObservedRuntimeIdentity(response),
+                });
+                nativeStartUnknown = false;
+                return forked;
               });
             },
             (effect, threadInput) =>
@@ -10183,9 +10229,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           yield* recoverPublication(turnInput.threadId, nativeId);
           const pending = pendingForkBindings.get(nativeId);
           if (pending !== undefined) {
-            if (pending.targetThreadId !== turnInput.threadId)
+            if (
+              pending.targetThreadId !== turnInput.threadId ||
+              pending.targetThreadId !== turnInput.providerThread.appThreadId ||
+              turnInput.providerThread.driver !== CODEX_PROVIDER ||
+              turnInput.providerThread.nativeThreadRef?.driver !== CODEX_PROVIDER ||
+              turnInput.providerThread.providerInstanceId !== adapterOptions.instanceId ||
+              turnInput.providerThread.providerSessionId !== input.providerSessionId
+            )
               return yield* toProtocolError(
                 "This native fork belongs to another application thread.",
+              );
+            if (!modelSelectionsEqual(pending.selection, turnInput.modelSelection))
+              return yield* toProtocolError(
+                "The native fork's selection changed before its first turn.",
               );
             if (pending.producer !== currentProducer || !pending.producer.active) {
               pendingForkBindings.delete(nativeId);
@@ -10399,7 +10456,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             lifecyclePermit.withPermits(1)(withControlAdmission(target, effect)),
           );
         const withStartupPermit = <A, E, R>(
-          operation: "ensure" | "resume" | "start",
+          operation: "ensure" | "resume" | "start" | "fork",
           target: ControlAdmission.ControlAdmissionTarget,
           effect: Effect.Effect<A, E, R>,
         ) =>
@@ -10721,22 +10778,20 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               }),
             ),
           forkThread: (value) =>
-            withMutationPermit(
-              providerThreadTarget(value.sourceProviderThread),
-              Effect.suspend(() =>
-                hasUnknownNativeStart()
-                  ? toProtocolError(
-                      "Codex has an unconfirmed native effect; reforking is not safe.",
-                    )
-                  : assertThreadNotRetiring(value.sourceProviderThread).pipe(
-                      Effect.andThen(withProducer(runtime.forkThread(value))),
-                      Effect.onInterrupt(() =>
-                        Effect.sync(() => {
-                          nativeStartUnknown = true;
-                        }),
-                      ),
-                    ),
-              ),
+            withStartupPermit(
+              "fork",
+              admissionTarget(value.targetThreadId, null),
+              Effect.gen(function* () {
+                yield* assertControlAdmission(providerThreadTarget(value.sourceProviderThread));
+                yield* assertControlAdmission(admissionTarget(value.targetThreadId, null));
+                if (hasUnknownNativeStart())
+                  return yield* new ProviderRuntimeBindingError({
+                    driver: CODEX_PROVIDER,
+                    detail: "Codex has an unconfirmed native effect; reforking is not safe.",
+                  });
+                yield* assertThreadNotRetiring(value.sourceProviderThread);
+                return yield* withProducer(runtime.forkThread(value));
+              }),
             ),
           startTurn: (value) =>
             Effect.suspend(() =>

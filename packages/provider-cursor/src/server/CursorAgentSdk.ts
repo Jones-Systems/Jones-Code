@@ -80,6 +80,7 @@ export interface CursorAgentSdkRun {
   readonly runId: string;
   readonly agentId: string;
   readonly wait: Effect.Effect<RunResult, CursorAgentSdkRunnerError>;
+  readonly nativeWait: Effect.Effect<RunResult, CursorAgentSdkRunnerError>;
   readonly cancel: Effect.Effect<void, CursorAgentSdkRunnerError>;
 }
 
@@ -473,21 +474,32 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
                   if (activeRun === undefined) {
                     return yield* error;
                   }
-                  yield* log({
-                    direction: "outgoing",
-                    stage: "decoded",
-                    payload: { type: "run.cancel", runId: activeRun.id },
-                  });
                   yield* Effect.tryPromise({
                     try: () => Agent.cancelRun(activeRun.id, runOptions),
                     catch: (cause) => runnerError(cause, "agent.cancelRun"),
-                  });
+                  }).pipe(
+                    Effect.onExit(() =>
+                      log({
+                        direction: "outgoing",
+                        stage: "decoded",
+                        payload: { type: "run.cancel", runId: activeRun.id },
+                      }),
+                    ),
+                  );
                   return yield* startRun();
                 }),
             ),
           );
           abandonedRunRecoveryAvailable = false;
           runId = run.id;
+          // Preserve the native observer before any diagnostic/callback drain can block it.
+          const nativeWait = yield* Effect.cached(
+            Effect.tryPromise({
+              try: () => run.wait(),
+              catch: (cause) => runnerError(cause, "run.wait"),
+            }),
+          );
+          yield* nativeWait.pipe(Effect.exit, Effect.forkDetach({ startImmediately: true }));
           yield* log({
             direction: "incoming",
             stage: "decoded",
@@ -508,17 +520,17 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           return {
             runId: run.id,
             agentId: run.agentId,
-            wait: Effect.tryPromise({
-              try: async () => {
-                const result = await run.wait();
-                await callbackChain;
-                if (callbackFailure !== undefined) {
-                  throw callbackFailure.cause;
-                }
-                return result;
-              },
-              catch: (cause) => runnerError(cause, "run.wait"),
-            }).pipe(
+            nativeWait,
+            wait: nativeWait.pipe(
+              Effect.tap(() =>
+                Effect.tryPromise({
+                  try: async () => {
+                    await callbackChain;
+                    if (callbackFailure !== undefined) throw callbackFailure.cause;
+                  },
+                  catch: (cause) => runnerError(cause, "run.wait"),
+                }),
+              ),
               Effect.tap((result) =>
                 log({
                   direction: "incoming",
@@ -530,26 +542,21 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
                 }),
               ),
             ),
-            cancel: log({
-              direction: "outgoing",
-              stage: "decoded",
-              payload: {
-                type: "run.cancel",
-                runId: run.id,
+            cancel: Effect.tryPromise({
+              try: async () => {
+                try {
+                  await run.cancel();
+                } catch (cause) {
+                  if (!isCursorCancellationError(cause)) throw cause;
+                }
               },
+              catch: (cause) => runnerError(cause, "run.cancel"),
             }).pipe(
-              Effect.andThen(
-                Effect.tryPromise({
-                  try: async () => {
-                    try {
-                      await run.cancel();
-                    } catch (cause) {
-                      if (!isCursorCancellationError(cause)) {
-                        throw cause;
-                      }
-                    }
-                  },
-                  catch: (cause) => runnerError(cause, "run.cancel"),
+              Effect.onExit(() =>
+                log({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: { type: "run.cancel", runId: run.id },
                 }),
               ),
             ),
@@ -585,18 +592,15 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
             }),
           ),
         ),
-        close: log({
-          direction: "outgoing",
-          stage: "decoded",
-          payload: {
-            type: "agent.close",
-            agentId: agent.agentId,
-          },
+        close: Effect.try({
+          try: () => agent.close(),
+          catch: (cause) => runnerError(cause, "agent.close"),
         }).pipe(
-          Effect.andThen(
-            Effect.try({
-              try: () => agent.close(),
-              catch: (cause) => runnerError(cause, "agent.close"),
+          Effect.onExit(() =>
+            log({
+              direction: "outgoing",
+              stage: "decoded",
+              payload: { type: "agent.close", agentId: agent.agentId },
             }),
           ),
         ),

@@ -11,6 +11,12 @@ import { requirementFor, loadedSessionMatches } from "../jones/taskContinuation/
 import { RequiredNativeSession } from "../jones/taskContinuation/requiredNativeSession.ts";
 import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
 import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
+import {
+  type EffectClaimLost,
+  findEffectClaimLost,
+  guardClaim,
+} from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
+import { findProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
 import {
@@ -124,16 +130,28 @@ const refusedBeforePrompt = (error: unknown): boolean =>
   PROMPT_REFUSAL_TAGS.some((tag) => Predicate.isTagged(error, tag)) ||
   (Predicate.hasProperty(error, "cause") && refusedBeforePrompt(error.cause));
 
+const terminalStartFailure = (error: unknown): boolean =>
+  findEffectClaimLost(error) !== undefined ||
+  findProviderControlOutcomeUnknown(error) !== undefined;
+
 export interface ProviderTurnStartServiceV2Shape {
+  /** Capture the prepared attempt before native authority validation or issue can await. */
+  readonly captureStartFailure?: (input: {
+    readonly threadId: ThreadId;
+    readonly runId: RunId;
+  }) => Effect.Effect<
+    (cause: unknown) => Effect.Effect<void, ProviderTurnStartError>,
+    ProviderTurnStartError
+  >;
   readonly startNative?: (input: {
     readonly threadId: ThreadId;
     readonly runId: RunId;
     readonly guard: NativeProvider.NativeProviderExecutionGuard;
   }) => Effect.Effect<NativeCreationWholeOperationEvidence, ProviderTurnStartError>;
   /**
-   * Starts the run's provider turn. When `willRetry` is true, a session open
-   * failure is returned so the caller can retry. Otherwise the run is settled
-   * as failed.
+   * Starts the run's provider turn. Retryable session-open failures return to
+   * the caller while `willRetry` is true. Custody loss and uncertain native
+   * retirement settle the captured run as failed without retry.
    */
   readonly start: (input: {
     readonly threadId: ThreadId;
@@ -311,6 +329,141 @@ export const layer: Layer.Layer<
       };
     };
 
+    const makeBeforeStartSettlement = (captured: {
+      readonly run: OrchestrationV2Run;
+      readonly attempt: OrchestrationV2RunAttempt;
+      readonly rootNode: OrchestrationV2ExecutionNode;
+      readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+    }) =>
+      Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(function* (input: {
+        readonly signal: string;
+        readonly status: "completed" | "failed";
+        readonly now: DateTime.Utc;
+        readonly startedAt?: DateTime.Utc;
+        readonly providerInstanceId: OrchestrationV2Run["providerInstanceId"];
+        readonly itemProviderThreadId: OrchestrationV2ProviderThread["id"];
+        readonly item:
+          | Pick<Extract<OrchestrationV2TurnItem, { type: "error" }>, "type" | "title" | "failure">
+          | Pick<
+              Extract<OrchestrationV2TurnItem, { type: "command_execution" }>,
+              "type" | "title" | "input" | "output" | "exitCode"
+            >;
+        readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
+      }) {
+        const { run, attempt, rootNode, turnItems } = captured;
+        const { now, status } = input;
+        const started = input.startedAt === undefined ? {} : { startedAt: input.startedAt };
+        const item: OrchestrationV2TurnItem = {
+          id: idAllocator.derive.runSignalTurnItem({ runId: run.id, signal: input.signal }),
+          threadId: run.threadId,
+          runId: run.id,
+          nodeId: rootNode.id,
+          providerThreadId: input.itemProviderThreadId,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal:
+            Math.max(
+              0,
+              ...turnItems.filter((item) => item.runId === run.id).map((item) => item.ordinal),
+            ) + 1,
+          status,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          ...input.item,
+        };
+        const eventPayloads = [
+          { type: "turn-item.updated", payload: item },
+          { type: "run.updated", payload: { ...run, status, ...started, completedAt: now } },
+          {
+            type: "run-attempt.updated",
+            payload: { ...attempt, status, ...started, completedAt: now },
+          },
+          { type: "node.updated", payload: { ...rootNode, status, ...started, completedAt: now } },
+          ...(input.providerThreadUpdate === undefined
+            ? []
+            : [{ type: "provider-thread.updated" as const, payload: input.providerThreadUpdate }]),
+        ] as const;
+        const events = yield* Effect.forEach(eventPayloads, (event) =>
+          Effect.gen(function* () {
+            return {
+              ...event,
+              id: yield* idAllocator.allocate.event({ threadId: run.threadId }),
+              threadId: run.threadId,
+              runId: run.id,
+              nodeId: rootNode.id,
+              providerInstanceId: input.providerInstanceId,
+              occurredAt: now,
+            } satisfies OrchestrationV2DomainEvent;
+          }),
+        );
+        yield* eventSink.writeIfRunCurrent({
+          threadId: run.threadId,
+          runId: run.id,
+          activeAttemptId: attempt.id,
+          expectedStatus: "starting",
+          events,
+        });
+      });
+    const captureStartFailure = Effect.fn("ProviderTurnStartService.captureStartFailure")(
+      function* (input: { readonly threadId: ThreadId; readonly runId: RunId }) {
+        const projection = yield* projectionStore.getTurnStartContext(input.threadId, input.runId);
+        const run = projection.runs.find((candidate) => candidate.id === input.runId);
+        if (run !== undefined && run.status !== "starting") return () => Effect.void;
+        const attempt = projection.attempts.find(
+          (candidate) => candidate.id === run?.activeAttemptId,
+        );
+        const rootNode = projection.nodes.find((candidate) => candidate.id === run?.rootNodeId);
+        if (
+          run === undefined ||
+          attempt === undefined ||
+          rootNode === undefined ||
+          run.providerThreadId === null
+        )
+          return yield* new ProviderTurnStartError({
+            runId: input.runId,
+            cause: "Prepared run failure ownership is unavailable.",
+          });
+        const providerThreadId = run.providerThreadId;
+        const settle = makeBeforeStartSettlement({
+          run,
+          attempt,
+          rootNode,
+          turnItems: projection.turnItems,
+        });
+        return (cause: unknown) =>
+          Effect.gen(function* () {
+            yield* settle({
+              signal: "provider-start-execution-failure",
+              status: "failed",
+              now: yield* DateTime.now,
+              providerInstanceId: run.providerInstanceId,
+              itemProviderThreadId: providerThreadId,
+              item: {
+                type: "error",
+                title: "Provider turn failed to start",
+                failure: makeProviderFailure({
+                  cause,
+                  class: "provider_error",
+                  message: "Provider start could not retain its original execution authority.",
+                }),
+              },
+            });
+          }).pipe(
+            Effect.mapError((cause) => new ProviderTurnStartError({ runId: input.runId, cause })),
+          );
+      },
+      (effect, input) =>
+        effect.pipe(
+          Effect.mapError((cause) =>
+            isProviderTurnStartError(cause)
+              ? cause
+              : new ProviderTurnStartError({ runId: input.runId, cause }),
+          ),
+        ),
+    );
+
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
@@ -360,9 +513,12 @@ export const layer: Layer.Layer<
         restartAdmission._tag === "Success" &&
         providerSessions.reconcileThreadBindingPublication !== undefined
       ) {
-        const recovered = yield* providerSessions
-          .reconcileThreadBindingPublication({ run: capturedRun, providerThread: capturedProvider })
-          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+        const recovered = yield* guardClaim(
+          providerSessions.reconcileThreadBindingPublication({
+            run: capturedRun,
+            providerThread: capturedProvider,
+          }),
+        ).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
         if (recovered !== null) {
           projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
           const currentRun = projection.runs.find((candidate) => candidate.id === runId);
@@ -485,91 +641,12 @@ export const layer: Layer.Layer<
       // Settles a run that never reached the provider: one signal turn item plus
       // terminal run, attempt and root node, written only while the run is still
       // the current starting attempt.
-      const settleRunBeforeStart = Effect.fn("orchestrationV2.providerTurnStart.settleBeforeStart")(
-        function* (input: {
-          readonly signal: string;
-          readonly status: "completed" | "failed";
-          readonly now: DateTime.Utc;
-          readonly startedAt?: DateTime.Utc;
-          readonly providerInstanceId: OrchestrationV2Run["providerInstanceId"];
-          readonly itemProviderThreadId: OrchestrationV2ProviderThread["id"];
-          readonly item:
-            | Pick<
-                Extract<OrchestrationV2TurnItem, { type: "error" }>,
-                "type" | "title" | "failure"
-              >
-            | Pick<
-                Extract<OrchestrationV2TurnItem, { type: "command_execution" }>,
-                "type" | "title" | "input" | "output" | "exitCode"
-              >;
-          readonly providerThreadUpdate?: OrchestrationV2ProviderThread;
-        }) {
-          const { now, status } = input;
-          const started = input.startedAt === undefined ? {} : { startedAt: input.startedAt };
-          const item: OrchestrationV2TurnItem = {
-            id: idAllocator.derive.runSignalTurnItem({ runId, signal: input.signal }),
-            threadId: projection.thread.id,
-            runId,
-            nodeId: rootNode.id,
-            providerThreadId: input.itemProviderThreadId,
-            providerTurnId: null,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal:
-              Math.max(
-                0,
-                ...projection.turnItems
-                  .filter((item) => item.runId === runId)
-                  .map((item) => item.ordinal),
-              ) + 1,
-            status,
-            startedAt: now,
-            completedAt: now,
-            updatedAt: now,
-            ...input.item,
-          };
-          const eventPayloads = [
-            { type: "turn-item.updated", payload: item },
-            { type: "run.updated", payload: { ...run, status, ...started, completedAt: now } },
-            {
-              type: "run-attempt.updated",
-              payload: { ...attempt, status, ...started, completedAt: now },
-            },
-            {
-              type: "node.updated",
-              payload: { ...rootNode, status, ...started, completedAt: now },
-            },
-            ...(input.providerThreadUpdate === undefined
-              ? []
-              : [
-                  {
-                    type: "provider-thread.updated" as const,
-                    payload: input.providerThreadUpdate,
-                  },
-                ]),
-          ] as const;
-          const events = yield* Effect.forEach(eventPayloads, (event) =>
-            Effect.gen(function* () {
-              return {
-                ...event,
-                id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-                threadId: projection.thread.id,
-                runId,
-                nodeId: rootNode.id,
-                providerInstanceId: input.providerInstanceId,
-                occurredAt: now,
-              } satisfies OrchestrationV2DomainEvent;
-            }),
-          );
-          yield* eventSink.writeIfRunCurrent({
-            threadId: projection.thread.id,
-            runId,
-            activeAttemptId: attempt.id,
-            expectedStatus: "starting",
-            events,
-          });
-        },
-      );
+      const settleRunBeforeStart = makeBeforeStartSettlement({
+        run,
+        attempt,
+        rootNode,
+        turnItems: projection.turnItems,
+      });
       if (restartAdmission._tag === "Failure") {
         const held =
           restartAdmission.failure._tag === "RestartThreadHeld"
@@ -912,6 +989,7 @@ export const layer: Layer.Layer<
               }),
             },
           });
+          if (terminalStartFailure(failed.error)) return yield* Effect.fail(failed.error);
         },
       );
       const revalidateReplacement = Effect.gen(function* () {
@@ -936,11 +1014,13 @@ export const layer: Layer.Layer<
             ProviderSwitchService.ProviderSwitchServiceV2,
             selectionTransitions,
           ),
+          guardClaim,
           Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })),
         ),
       );
       if (preparation._tag === "Failure") {
-        if (input.willRetry === true) return yield* preparation.failure;
+        if (input.willRetry === true && !terminalStartFailure(preparation.failure))
+          return yield* preparation.failure;
         yield* settleStartFailure({
           signal: "provider-writer-retirement-failure",
           title: "Previous provider writer could not retire",
@@ -996,15 +1076,18 @@ export const layer: Layer.Layer<
           // Older versions could fail the run without stopping its provider.
           // Recover that exact turn before reusing its native conversation.
           const recovered = yield* Effect.result(
-            liveSession.value.interruptTurn({
-              providerThread,
-              providerTurnId: abandonedTurn.id,
-              requestRuntimeRestart: true,
-              preserveGoal: true,
-            }),
+            liveSession.value
+              .interruptTurn({
+                providerThread,
+                providerTurnId: abandonedTurn.id,
+                requestRuntimeRestart: true,
+                preserveGoal: true,
+              })
+              .pipe(guardClaim),
           );
           if (recovered._tag === "Failure") {
-            if (input.willRetry === true) return yield* recovered.failure;
+            if (input.willRetry === true && !terminalStartFailure(recovered.failure))
+              return yield* recovered.failure;
             yield* settleStartFailure({
               signal: "provider-turn-recovery-failure",
               title: "Provider turn recovery failed",
@@ -1043,9 +1126,10 @@ export const layer: Layer.Layer<
         (yield* plannedContinuity.value
           .allowWorkStart(projection.thread.id, message.id)
           .pipe(Effect.orElseSucceed(() => false)));
-      const replacementCurrent = yield* Effect.result(revalidateReplacement);
+      const replacementCurrent = yield* Effect.result(guardClaim(revalidateReplacement));
       if (replacementCurrent._tag === "Failure") {
-        if (input.willRetry === true) return yield* replacementCurrent.failure;
+        if (input.willRetry === true && !terminalStartFailure(replacementCurrent.failure))
+          return yield* replacementCurrent.failure;
         yield* settleStartFailure({
           signal: "provider-selection-changed-before-open",
           title: "Provider selection changed before opening",
@@ -1054,44 +1138,50 @@ export const layer: Layer.Layer<
         return;
       }
       const sessionResult = yield* Effect.result(
-        keepWarm && !plannedWorkResume
-          ? providerSessions.get(providerSessionId).pipe(
-              Effect.flatMap((live) =>
-                Option.isSome(live) && providerThread.nativeThreadRef !== null
-                  ? Effect.succeed(live.value)
-                  : Effect.fail(
-                      new ProviderSessionManager.ProviderSessionOpenError({
-                        instanceId: run.providerInstanceId,
-                        providerSessionId,
-                        cause: "Keep-warm requires the existing live provider conversation.",
-                      }),
-                    ),
-              ),
-            )
-          : providerSessions.open({
-              ...(input.nativeCreationGuard === undefined
-                ? {}
-                : { nativeCreationGuard: input.nativeCreationGuard }),
-              threadId: projection.thread.id,
-              providerSessionId,
-              modelSelection: run.modelSelection,
-              runtimePolicy: resolvedRuntimePolicy,
-              ...(existingSessionProjection === undefined
-                ? {}
-                : { resumeFromSession: existingSessionProjection }),
-              ...(providerThread.nativeThreadRef?.nativeId == null
-                ? {}
-                : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
-              ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
-                ? {}
-                : {
-                    initialProviderItemIdentityVersion:
-                      providerThread.nativeMetadata.itemIdentityVersion,
-                  }),
-            }),
+        guardClaim(
+          keepWarm && !plannedWorkResume
+            ? providerSessions.get(providerSessionId).pipe(
+                Effect.flatMap((live) =>
+                  Option.isSome(live) && providerThread.nativeThreadRef !== null
+                    ? Effect.succeed(live.value)
+                    : Effect.fail(
+                        new ProviderSessionManager.ProviderSessionOpenError({
+                          instanceId: run.providerInstanceId,
+                          providerSessionId,
+                          cause: "Keep-warm requires the existing live provider conversation.",
+                        }),
+                      ),
+                ),
+              )
+            : providerSessions.open({
+                ...(input.nativeCreationGuard === undefined
+                  ? {}
+                  : { nativeCreationGuard: input.nativeCreationGuard }),
+                threadId: projection.thread.id,
+                providerSessionId,
+                modelSelection: run.modelSelection,
+                runtimePolicy: resolvedRuntimePolicy,
+                ...(existingSessionProjection === undefined
+                  ? {}
+                  : { resumeFromSession: existingSessionProjection }),
+                ...(providerThread.nativeThreadRef?.nativeId == null
+                  ? {}
+                  : { initialNativeThreadId: providerThread.nativeThreadRef.nativeId }),
+                ...(providerThread.nativeMetadata?.itemIdentityVersion === undefined
+                  ? {}
+                  : {
+                      initialProviderItemIdentityVersion:
+                        providerThread.nativeMetadata.itemIdentityVersion,
+                    }),
+              }),
+        ),
       );
       if (sessionResult._tag === "Failure") {
-        if (input.willRetry === true && findSteerFailure(sessionResult.failure) === undefined)
+        if (
+          input.willRetry === true &&
+          findSteerFailure(sessionResult.failure) === undefined &&
+          !terminalStartFailure(sessionResult.failure)
+        )
           return yield* sessionResult.failure;
         yield* settleStartFailure({
           signal: "provider-session-open-failure",
@@ -1106,12 +1196,17 @@ export const layer: Layer.Layer<
         nativeForkTransfer === undefined &&
         nativeConversationMustBePreserved(providerThread, message);
       const loadFromProvider = Effect.fn("ProviderTurnStartService.loadFromProvider")(function* (
-        load: Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapter.ProviderAdapterV2Error>,
+        load: Effect.Effect<
+          OrchestrationV2ProviderThread,
+          ProviderAdapter.ProviderAdapterV2Error | EffectClaimLost
+        >,
       ) {
-        const loaded = yield* Effect.result(load);
+        const loaded = yield* Effect.result(guardClaim(load));
         if (loaded._tag === "Success") return loaded.success;
         if (
           input.willRetry === true &&
+          nativeForkTransfer === undefined &&
+          !terminalStartFailure(loaded.failure) &&
           findSteerFailure(loaded.failure) === undefined &&
           !hasUnknownRuntimeBinding(loaded.failure)
         )
@@ -1207,22 +1302,24 @@ export const layer: Layer.Layer<
             handoff.delivery?.status === "pending",
         );
         const resumed = yield* Effect.result(
-          uncertainDelivery
-            ? Effect.fail(
-                new ProviderAdapter.ProviderAdapterTurnStartError({
-                  driver: session.driver,
+          guardClaim(
+            uncertainDelivery
+              ? Effect.fail(
+                  new ProviderAdapter.ProviderAdapterTurnStartError({
+                    driver: session.driver,
+                    threadId: projection.thread.id,
+                    providerThreadId: providerThread.id,
+                    runId,
+                    cause: "Uncertain native history injection",
+                  }),
+                )
+              : session.resumeThread({
+                  providerThread,
                   threadId: projection.thread.id,
-                  providerThreadId: providerThread.id,
-                  runId,
-                  cause: "Uncertain native history injection",
+                  modelSelection: run.modelSelection,
+                  runtimePolicy: resolvedRuntimePolicy,
                 }),
-              )
-            : session.resumeThread({
-                providerThread,
-                threadId: projection.thread.id,
-                modelSelection: run.modelSelection,
-                runtimePolicy: resolvedRuntimePolicy,
-              }),
+          ),
         );
         if (resumed._tag === "Success") {
           return resumed.success;
@@ -1233,6 +1330,7 @@ export const layer: Layer.Layer<
           preserveNativeConversation ||
           guarded ||
           continuityRequired ||
+          terminalStartFailure(resumed.failure) ||
           findSteerFailure(resumed.failure) !== undefined ||
           hasUnknownRuntimeBinding(resumed.failure)
         ) {
@@ -2154,6 +2252,7 @@ export const layer: Layer.Layer<
     });
 
     return ProviderTurnStartServiceV2.of({
+      captureStartFailure,
       startNative: Effect.fn("ProviderTurnStartService.startNative")(
         function* (input) {
           yield* NativeProvider.assertNativeProviderStartOperation(

@@ -16,12 +16,13 @@ import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
 // This is a caller budget, not a measured Codex latency or a process-exit deadline.
 export const CODEX_STARTUP_BUDGET_MS = 60_000;
 
-type StartupOperation = "ensure" | "resume" | "start";
+type StartupOperation = "ensure" | "resume" | "start" | "fork";
 interface StartupProducer {
   readonly generation: string;
   readonly scope: Scope.Closeable;
 }
 interface StartupAttempt {
+  readonly operation: StartupOperation;
   producer: StartupProducer | undefined;
   target: ControlAdmission.ControlAdmissionTarget | undefined;
   hold: ControlAdmission.StartupHold | undefined;
@@ -35,7 +36,7 @@ class StartupAttemptContext extends Context.Reference<StartupAttempt | undefined
 ) {}
 class CodexStartupNotDispatched extends Schema.TaggedError<CodexStartupNotDispatched>()(
   "CodexStartupNotDispatched",
-  { operation: Schema.Literals(["ensure", "resume", "start"]), budgetMs: Schema.Number },
+  { operation: Schema.Literals(["ensure", "resume", "start", "fork"]), budgetMs: Schema.Number },
 ) {
   override get message(): string {
     return "Codex startup exceeded its caller budget before an unconfirmed native request.";
@@ -104,6 +105,18 @@ export function makeCodexStartup(
         "Codex startup has an unconfirmed native effect for this conversation; another admission is not safe.",
       ...(cause === undefined ? {} : { cause }),
     });
+  const completeWith = Effect.fn("CodexStartup.completeWith")(function* <A>(handoff: () => A) {
+    const attempt = yield* StartupAttemptContext;
+    return yield* Effect.suspend(() => {
+      if (attempt?.abandoned) return Effect.fail(unknown());
+      const value = handoff();
+      if (attempt !== undefined) {
+        attempt.complete = true;
+        attempt.mayHaveIssued = false;
+      }
+      return Effect.succeed(value);
+    });
+  });
 
   return {
     isUncertain: (producer: StartupProducer) => (uncertain.get(producer)?.size ?? 0) > 0,
@@ -113,6 +126,7 @@ export function makeCodexStartup(
       target?: ControlAdmission.ControlAdmissionTarget,
     ) {
       const attempt: StartupAttempt = {
+        operation,
         producer: undefined,
         target,
         hold: undefined,
@@ -122,25 +136,43 @@ export function makeCodexStartup(
       };
       const deadline = Effect.sleep(budgetMs).pipe(
         Effect.andThen(
-          Effect.suspend(() =>
-            attempt.complete
-              ? Effect.never
-              : Effect.fail(
-                  attempt.mayHaveIssued
-                    ? unknown()
-                    : new ProviderAdapterProtocolError({
-                        driver: ProviderDriverKind.make("codex"),
-                        detail: "Codex startup exceeded its caller budget before native dispatch",
-                        cause: new CodexStartupNotDispatched({ operation, budgetMs }),
-                      }),
-                ),
-          ),
+          Effect.gen(function* () {
+            if (attempt.complete) return yield* Effect.never;
+            yield* abandon(attempt);
+            return yield* Effect.fail(
+              attempt.mayHaveIssued
+                ? unknown()
+                : new ProviderAdapterProtocolError({
+                    driver: ProviderDriverKind.make("codex"),
+                    detail: "Codex startup exceeded its caller budget before native dispatch",
+                    cause: new CodexStartupNotDispatched({ operation, budgetMs }),
+                  }),
+            );
+          }),
         ),
       );
       return yield* effect.pipe(
         Effect.provideService(StartupAttemptContext, attempt),
         Effect.raceFirst(deadline),
         Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon(attempt) : Effect.void)),
+      );
+    }),
+    completeWith,
+    // Fork follow-ups inherit the original issuance uncertainty. Keep their
+    // raw observers without adding a binding error to the native client port.
+    retainRequest: Effect.fn("CodexStartup.retainRequest")(function* <A, E, R>(
+      producer: StartupProducer,
+      request: Effect.Effect<A, E, R>,
+    ) {
+      const attempt = yield* StartupAttemptContext;
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if (attempt?.abandoned) return yield* Effect.interrupt;
+          const observation = yield* restore(request).pipe(
+            Effect.forkIn(producer.scope, { startImmediately: true }),
+          );
+          return yield* restore(Fiber.join(observation));
+        }),
       );
     }),
     // Install the hold before interruption releases the lifecycle permit.
@@ -182,7 +214,10 @@ export function makeCodexStartup(
       else if ((uncertain.get(producer)?.size ?? 0) > 0) return yield* unknown();
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
+          if (attempt.abandoned) return yield* unknown();
           attempt.producer = producer;
+          // A follow-up reply or rejection cannot settle an earlier fork before its handoff.
+          const previouslyIssued = attempt.mayHaveIssued;
           attempt.mayHaveIssued = true;
           // Only this native observer outlives the caller. Its late result cannot run publication or a prompt.
           const observation = yield* restore(request).pipe(
@@ -191,8 +226,8 @@ export function makeCodexStartup(
                 // Only an active caller may use a handshake or unarchive reply to release its fence.
                 if (confirmation === "reply") {
                   if (attempt.abandoned) return;
-                  attempt.mayHaveIssued = false;
-                  if (attempt.hold !== undefined && admission !== undefined) {
+                  attempt.mayHaveIssued = previouslyIssued;
+                  if (!previouslyIssued && attempt.hold !== undefined && admission !== undefined) {
                     yield* admission.resolveStartup(attempt.hold, { kind: "not_applied" });
                     clearAttempt(attempt);
                     attempt.hold = undefined;
@@ -227,7 +262,9 @@ export function makeCodexStartup(
             Effect.tapError((error) =>
               isNonApplyingStartupRejection(error, method) || isPreDispatchRefusal(error)
                 ? Effect.gen(function* () {
-                    attempt.mayHaveIssued = false;
+                    if (attempt.abandoned) return;
+                    attempt.mayHaveIssued = previouslyIssued;
+                    if (previouslyIssued) return;
                     if (attempt.hold !== undefined && admission !== undefined) {
                       yield* admission.resolveStartup(attempt.hold, { kind: "not_applied" });
                     }
@@ -281,13 +318,8 @@ export function makeCodexStartup(
         attempt.hold = undefined;
       }
     }),
-    // End the startup budget before turn/start enters its own lifecycle.
-    complete: Effect.gen(function* () {
-      const attempt = yield* StartupAttemptContext;
-      if (attempt !== undefined) {
-        attempt.complete = true;
-        attempt.mayHaveIssued = false;
-      }
-    }),
+    // A bound thread's turn/start has its own acknowledgement deadline.
+    // Finish the startup budget before entering that existing turn lifecycle.
+    complete: completeWith(() => undefined),
   };
 }

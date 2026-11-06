@@ -33,9 +33,10 @@ export function canSendAfterInitialMessageRejection(
     targetEntries.every((entry) => entry.delivery === "failed") &&
     targetEntries.some(
       (entry) =>
-        entry.deliveryEvidence?.kind === "launch" &&
-        entry.deliveryEvidence.creation.status === "accepted" &&
-        entry.deliveryEvidence.creation.threadId === threadId,
+        entry.creationAccepted === true ||
+        (entry.deliveryEvidence?.kind === "launch" &&
+          entry.deliveryEvidence.creation.status === "accepted" &&
+          entry.deliveryEvidence.creation.threadId === threadId),
     )
   );
 }

@@ -6,14 +6,18 @@ import {
   isGoalNotificationNotDelivered,
 } from "../jones/goals/GoalNotificationDelivery.ts";
 import * as RuntimeStopStore from "../jones/runtime/RuntimeStopSqlite.ts";
-import {
-  withOperation,
-  sameOperationRequest,
-} from "../jones/workspaceLifecycle/NativeOperation.ts";
+import { withOperation } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { withOriginalTransition } from "../jones/workspaceLifecycle/NativeBoundary.ts";
+import { LifecycleConfiguration } from "../jones/workspaceLifecycle/NativeSource.ts";
+import {
+  CurrentEffectClaim,
+  findEffectClaimLost,
+  withActiveEffectClaim,
+} from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
 import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
 import { executeNativeProviderEffect } from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
 import { CommandId } from "@t3tools/contracts";
+import { findProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -127,11 +131,46 @@ export const layerExecutor: Layer.Layer<
       yield* ThreadTitleRegenerationService.ThreadTitleRegenerationService;
     const threads = yield* ThreadManagementService.ThreadManagementService;
     const settings = yield* ServerSettings.ServerSettingsService;
+    const withStartFailure = Effect.fn("EffectWorker.withStartFailure")(function* <A, E, R>(
+      effect: EffectOutbox.OrchestrationEffectV2,
+      operation: Effect.Effect<A, E, R>,
+    ) {
+      const claim = yield* Effect.serviceOption(CurrentEffectClaim);
+      if (
+        effect.request.type !== "provider-turn.start" ||
+        (effect.nativeCreationExecutionReference === undefined &&
+          (Option.isNone(claim) || !claim.value.nativeCustody))
+      )
+        return yield* operation;
+      if (providerTurnStart.captureStartFailure === undefined)
+        return yield* new ProviderTurnStartService.ProviderTurnStartError({
+          runId: effect.request.runId,
+          cause: "Prepared run failure owner is unavailable.",
+        });
+      // Capture before native validation/issue; a later projection may belong to a successor.
+      const recordFailure = yield* providerTurnStart.captureStartFailure({
+        threadId: effect.threadId,
+        runId: effect.request.runId,
+      });
+      return yield* Effect.onExit(operation, (exit) => {
+        if (Exit.isSuccess(exit)) return Effect.void;
+        const cause = exit.cause;
+        return Effect.gen(function* () {
+          if (
+            effect.nativeCreationExecutionReference !== undefined ||
+            findEffectClaimLost(cause) !== undefined ||
+            findProviderControlOutcomeUnknown(cause) !== undefined ||
+            (Option.isSome(claim) && (yield* claim.value.hasLost))
+          )
+            yield* recordFailure(cause);
+        });
+      });
+    });
     return OrchestrationEffectExecutorV2.of({
       recordNonRetryableFailure: restartPreparation.recordSteerFailure,
       execute: (effect, options) => {
         if (effect.nativeCreationExecutionReference !== undefined) {
-          return executeNativeProviderEffect(effect).pipe(
+          return withStartFailure(effect, executeNativeProviderEffect(effect)).pipe(
             Effect.mapError(
               (cause) =>
                 new OrchestrationEffectExecutionError({
@@ -218,6 +257,7 @@ export const layerExecutor: Layer.Layer<
             return providerTurnStart
               .start({ threadId: effect.threadId, runId: effect.request.runId, willRetry })
               .pipe(
+                (operation) => withStartFailure(effect, operation),
                 Effect.mapError(
                   (cause) =>
                     new OrchestrationEffectExecutionError({
@@ -255,6 +295,7 @@ export const layerExecutor: Layer.Layer<
                 ),
                 Effect.catch((cause) =>
                   request.subagent === undefined &&
+                  findProviderControlOutcomeUnknown(cause) === undefined &&
                   isNonRetryableProviderTurnControlFailure(
                     request.type,
                     Cause.pretty(Cause.fail(cause)),
@@ -792,9 +833,20 @@ export const layerWithOptions = (
     Effect.gen(function* () {
       const outbox = yield* EffectOutbox.EffectOutboxV2;
       const executor = yield* OrchestrationEffectExecutorV2;
+      const managedClaims = Option.isSome(yield* Effect.serviceOption(LifecycleConfiguration));
       const workerId = options.workerId ?? `orchestration-v2:${process.pid}`;
       const leaseDurationMs = Math.max(1, options.leaseDurationMs ?? 30_000);
       const maxAttempts = Math.max(1, options.maxAttempts ?? 5);
+      const settleClaim = Effect.fn("EffectWorker.settleClaim")(function* <A, E, R>(
+        captured: EffectOutbox.OrchestrationEffectV2,
+        update: (claim: EffectOutbox.OrchestrationEffectV2) => Effect.Effect<A, E, R>,
+        allowLost = false,
+      ) {
+        const current = yield* Effect.serviceOption(CurrentEffectClaim);
+        return yield* Option.isNone(current)
+          ? update(captured)
+          : current.value.settle(update, allowLost);
+      });
       const wasCancelled = (effectId: string) =>
         outbox.get(effectId).pipe(
           Effect.map(
@@ -810,70 +862,72 @@ export const layerWithOptions = (
       ) =>
         Cause.hasInterruptsOnly(cause)
           ? Effect.void
-          : outbox
-              .retry({
+          : settleClaim(effect, (claim) =>
+              outbox.retry({
                 effectId: effect.id,
                 workerId,
+                claim,
                 error: `Worker failed before settling the claimed effect: ${Cause.pretty(cause)}`,
                 delayMs: 0,
-              })
-              .pipe(
-                Effect.flatMap((requeued) =>
-                  requeued
-                    ? Effect.logWarning("Requeued effect after unexpected worker failure", {
-                        effectId: effect.id,
-                        effectType: effect.request.type,
-                      })
-                    : Effect.logWarning("Could not requeue effect after worker lost its lease", {
-                        effectId: effect.id,
-                        effectType: effect.request.type,
-                      }),
-                ),
-                Effect.catchCause((requeueCause) =>
-                  Effect.logError("Failed to requeue effect after unexpected worker failure", {
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                    error: Cause.pretty(requeueCause),
-                  }),
-                ),
-              );
+              }),
+            ).pipe(
+              Effect.flatMap((requeued) =>
+                requeued
+                  ? Effect.logWarning("Requeued effect after unexpected worker failure", {
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                    })
+                  : Effect.logWarning("Could not requeue effect after worker lost its lease", {
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                    }),
+              ),
+              Effect.catchCause((requeueCause) =>
+                Effect.logError("Failed to requeue effect after unexpected worker failure", {
+                  effectId: effect.id,
+                  effectType: effect.request.type,
+                  error: Cause.pretty(requeueCause),
+                }),
+              ),
+            );
       const terminalizeClaim = (
         effect: EffectOutbox.OrchestrationEffectV2,
         cause: Cause.Cause<unknown>,
       ) => {
         if (Cause.hasInterruptsOnly(cause)) return Effect.void;
-        return outbox
-          .fail({
-            effectId: effect.id,
-            workerId,
-            error: `Worker failed to settle a process-bound effect after execution started: ${Cause.pretty(cause)}`,
-          })
-          .pipe(
-            Effect.flatMap((failed) =>
-              failed
-                ? Effect.logError("Terminalized process-bound effect after settlement failure", {
-                    effectId: effect.id,
-                    effectType: effect.request.type,
-                  })
-                : Effect.logWarning(
-                    "Could not terminalize process-bound effect after worker lost its lease",
-                    {
-                      effectId: effect.id,
-                      effectType: effect.request.type,
-                    },
-                  ),
-            ),
-            Effect.catchCause((failCause) =>
-              Effect.logError(
-                "Failed to terminalize process-bound effect after settlement failure",
-                {
+        return settleClaim(
+          effect,
+          (claim) =>
+            outbox.fail({
+              effectId: effect.id,
+              workerId,
+              claim,
+              error: `Worker failed to settle a process-bound effect after execution started: ${Cause.pretty(cause)}`,
+            }),
+          true,
+        ).pipe(
+          Effect.flatMap((failed) =>
+            failed
+              ? Effect.logError("Terminalized process-bound effect after settlement failure", {
                   effectId: effect.id,
                   effectType: effect.request.type,
-                  error: Cause.pretty(failCause),
-                },
-              ),
-            ),
-          );
+                })
+              : Effect.logWarning(
+                  "Could not terminalize process-bound effect after worker lost its lease",
+                  {
+                    effectId: effect.id,
+                    effectType: effect.request.type,
+                  },
+                ),
+          ),
+          Effect.catchCause((failCause) =>
+            Effect.logError("Failed to terminalize process-bound effect after settlement failure", {
+              effectId: effect.id,
+              effectType: effect.request.type,
+              error: Cause.pretty(failCause),
+            }),
+          ),
+        );
       };
       const recoverPostSuccessSettlement = (
         effect: EffectOutbox.OrchestrationEffectV2,
@@ -914,159 +968,186 @@ export const layerWithOptions = (
             return false;
           }
           const effect = claimed.value;
-          const claimedAt = DateTime.toEpochMillis(yield* DateTime.now);
-          const availableAt = DateTime.toEpochMillis(DateTime.makeUnsafe(effect.availableAt));
-          // Arm the process-local cancellation signal before re-reading durable
-          // state. A cancellation that commits after the row read has begun can
-          // then still win the execution race instead of falling into the gap
-          // between the read and signal registration.
-          const cancellation = outbox
-            .awaitCancellation(effect.id)
-            .pipe(Effect.as("cancelled" as const));
-          const cancelledBeforeExecution = yield* Effect.gen(function* () {
-            const eligibleAt = Math.max(
-              DateTime.toEpochMillis(DateTime.makeUnsafe(effect.createdAt)),
-              availableAt,
-            );
-            yield* Metric.update(
-              Metric.withAttributes(
-                orchestrationEffectQueueWait,
-                metricAttributes({ effect_type: effect.request.type }),
-              ),
-              Duration.millis(Math.max(0, claimedAt - eligibleAt)),
-            );
-            // Recheck durable cancellation after registering the Deferred; cancellation may have committed after claim.
-            if (yield* wasCancelled(effect.id)) {
-              yield* outbox.clearCancellation(effect.id);
-              return true;
-            }
-            return false;
-          }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
-          if (cancelledBeforeExecution) return true;
+          const renewClaim =
+            effect.nativeCreationExecutionReference !== undefined ||
+            (managedClaims &&
+              (effect.request.type === "provider-turn.start" ||
+                effect.request.type === "provider-turn.restart" ||
+                effect.request.type === "provider-runtime.continue"));
+          return yield* withActiveEffectClaim(
+            outbox,
+            effect,
+            leaseDurationMs,
+            renewClaim,
+            (claim) =>
+              Effect.gen(function* () {
+                const claimedAt = DateTime.toEpochMillis(yield* DateTime.now);
+                const availableAt = DateTime.toEpochMillis(DateTime.makeUnsafe(effect.availableAt));
+                // Arm the process-local cancellation signal before re-reading durable
+                // state. A cancellation that commits after the row read has begun can
+                // then still win the execution race instead of falling into the gap
+                // between the read and signal registration.
+                const cancellation = outbox.awaitCancellation(effect.id).pipe(
+                  Effect.tap(() => claim.invalidate()),
+                  Effect.as("cancelled" as const),
+                );
+                const cancelledBeforeExecution = yield* Effect.gen(function* () {
+                  const eligibleAt = Math.max(
+                    DateTime.toEpochMillis(DateTime.makeUnsafe(effect.createdAt)),
+                    availableAt,
+                  );
+                  yield* Metric.update(
+                    Metric.withAttributes(
+                      orchestrationEffectQueueWait,
+                      metricAttributes({ effect_type: effect.request.type }),
+                    ),
+                    Duration.millis(Math.max(0, claimedAt - eligibleAt)),
+                  );
+                  // Recheck durable cancellation after registering the Deferred; cancellation may have committed after claim.
+                  if (yield* wasCancelled(effect.id)) {
+                    yield* outbox.clearCancellation(effect.id);
+                    return true;
+                  }
+                  return false;
+                }).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+                if (cancelledBeforeExecution) return true;
 
-          const execution = executor
-            .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
-            .pipe(
-              (execution) =>
-                withOriginalTransition(
-                  `effect:${effect.id}`,
-                  {
-                    commandId: effect.commandId,
-                    threadId: effect.threadId,
-                    request: effect.request,
-                  },
-                  execution,
-                ),
-              (execution) =>
-                withOperation(
-                  {
-                    id: `effect:${effect.id}`,
-                    kind: "effect",
-                    threadId: effect.threadId,
-                    boundaries: ["start", "resume", "recreate"],
-                    sqlOnly: true,
-                    check: Effect.gen(function* () {
-                      const current = yield* outbox.get(effect.id);
-                      if (
-                        Option.isNone(current) ||
-                        current.value.status !== "running" ||
-                        current.value.leaseOwner !== workerId ||
-                        current.value.attemptCount !== effect.attemptCount ||
-                        current.value.commandId !== effect.commandId ||
-                        !sameOperationRequest(current.value.request, effect.request) ||
-                        current.value.leaseExpiresAt === null ||
-                        DateTime.toEpochMillis(DateTime.makeUnsafe(current.value.leaseExpiresAt)) <=
-                          DateTime.toEpochMillis(yield* DateTime.now)
-                      )
-                        return yield* new OrchestrationEffectWorkerError({
-                          operation: "workspace-custody",
-                          effectId: effect.id,
-                        });
+                const execution = executor
+                  .execute(effect, { willRetry: effect.attemptCount < maxAttempts })
+                  .pipe(
+                    (execution) =>
+                      withOriginalTransition(
+                        `effect:${effect.id}`,
+                        {
+                          commandId: effect.commandId,
+                          threadId: effect.threadId,
+                          request: effect.request,
+                        },
+                        execution,
+                      ),
+                    (execution) =>
+                      withOperation(
+                        {
+                          id: `effect:${effect.id}`,
+                          kind: "effect",
+                          threadId: effect.threadId,
+                          boundaries: ["start", "resume", "recreate"],
+                          sqlOnly: true,
+                          check: claim.check.pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new OrchestrationEffectWorkerError({
+                                  operation: "workspace-custody",
+                                  effectId: effect.id,
+                                  cause,
+                                }),
+                            ),
+                          ),
+                        },
+                        execution,
+                      ),
+                    Effect.annotateSpans({
+                      "orchestration.effect.claimed_at_ms": claimedAt,
+                      "orchestration.effect.available_at_ms": availableAt,
+                      "orchestration.effect.queue_wait_ms": Math.max(0, claimedAt - availableAt),
                     }),
-                  },
-                  execution,
-                ),
-              Effect.annotateSpans({
-                "orchestration.effect.claimed_at_ms": claimedAt,
-                "orchestration.effect.available_at_ms": availableAt,
-                "orchestration.effect.queue_wait_ms": Math.max(0, claimedAt - availableAt),
-              }),
-              Effect.as("executed" as const),
-            );
-          const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation)).pipe(
-            Effect.ensuring(outbox.clearCancellation(effect.id)),
-          );
-          if (Exit.isSuccess(exit) && exit.value === "cancelled") {
-            return true;
-          }
-          if (Exit.isSuccess(exit)) {
-            return yield* Effect.gen(function* () {
-              const completed = yield* outbox.succeed({ effectId: effect.id, workerId });
-              if (!completed) {
-                if (yield* wasCancelled(effect.id)) return true;
-                return yield* new OrchestrationEffectWorkerError({
-                  operation: "complete",
-                  effectId: effect.id,
-                  cause: "The worker no longer owns the effect lease.",
-                });
-              }
-              return true;
-            }).pipe(Effect.onError((cause) => recoverPostSuccessSettlement(effect, cause)));
-          }
+                    Effect.as("executed" as const),
+                  );
+                const exit = yield* Effect.exit(Effect.raceFirst(execution, cancellation));
+                if (Exit.isSuccess(exit) && exit.value === "cancelled") {
+                  return true;
+                }
+                if (Exit.isSuccess(exit)) {
+                  return yield* Effect.gen(function* () {
+                    const completed = yield* settleClaim(effect, (current) =>
+                      outbox.succeed({ effectId: effect.id, workerId, claim: current }),
+                    );
+                    if (!completed) {
+                      if (yield* wasCancelled(effect.id)) return true;
+                      return yield* new OrchestrationEffectWorkerError({
+                        operation: "complete",
+                        effectId: effect.id,
+                        cause: "The worker no longer owns the effect lease.",
+                      });
+                    }
+                    return true;
+                  }).pipe(Effect.onError((cause) => recoverPostSuccessSettlement(effect, cause)));
+                }
 
-          const error = Cause.pretty(exit.cause);
-          const terminalFailure =
-            findSteerFailure(exit.cause) !== undefined ||
-            RestartPreparation.findRestartPreparationFailure(exit.cause) !== undefined;
-          const nonRetryable = isNonRetryableProviderTurnControlFailure(effect.request.type, error);
-          yield* Effect.logWarning("Orchestration effect execution failed", {
-            effectId: effect.id,
-            effectType: effect.request.type,
-            attemptCount: effect.attemptCount,
-            nonRetryable,
-            error,
-          });
-          // A failed response after a notification send does not prove non-delivery.
-          // Keep the durable message and failed outbox row for reconciliation, without replay.
-          const executionFailure = Cause.findErrorOption(exit.cause);
-          const notificationDeliveryUnknown =
-            Option.isSome(executionFailure) &&
-            isGoalNotificationDeliveryUnknown(executionFailure.value);
-          const updated = nonRetryable
-            ? yield* outbox
-                .succeed({ effectId: effect.id, workerId })
-                .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-            : notificationDeliveryUnknown || terminalFailure || effect.attemptCount >= maxAttempts
-              ? yield* outbox
-                  .fail({ effectId: effect.id, workerId, error })
-                  .pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
-              : yield* outbox
-                  .retry({
-                    effectId: effect.id,
-                    workerId,
-                    error,
-                    delayMs: Math.min(30_000, 100 * 2 ** Math.max(0, effect.attemptCount - 1)),
-                  })
-                  .pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
-          if (!updated) {
-            if (yield* wasCancelled(effect.id)) return true;
-            return yield* new OrchestrationEffectWorkerError({
-              operation: "reschedule",
-              effectId: effect.id,
-              cause: "The worker no longer owns the effect lease.",
-            });
-          }
-          if (terminalFailure && executor.recordNonRetryableFailure !== undefined) {
-            yield* executor.recordNonRetryableFailure(effect, exit.cause).pipe(
-              Effect.catchCause((cause) =>
-                Effect.logError("Failed to record provider control explanation", {
+                const error = Cause.pretty(exit.cause);
+                const custodyLost =
+                  (yield* claim.hasLost) || findEffectClaimLost(exit.cause) !== undefined;
+                const controlOutcomeUnknown =
+                  findProviderControlOutcomeUnknown(exit.cause) !== undefined;
+                const terminalFailure =
+                  custodyLost ||
+                  controlOutcomeUnknown ||
+                  effect.nativeCreationExecutionReference !== undefined ||
+                  findSteerFailure(exit.cause) !== undefined ||
+                  RestartPreparation.findRestartPreparationFailure(exit.cause) !== undefined;
+                const nonRetryable =
+                  !custodyLost &&
+                  !controlOutcomeUnknown &&
+                  isNonRetryableProviderTurnControlFailure(effect.request.type, error);
+                yield* Effect.logWarning("Orchestration effect execution failed", {
                   effectId: effect.id,
-                  cause,
-                }),
-              ),
-            );
-          }
-          return true;
+                  effectType: effect.request.type,
+                  attemptCount: effect.attemptCount,
+                  nonRetryable,
+                  error,
+                });
+                // A failed response after a notification send does not prove non-delivery.
+                // Keep the durable message and failed outbox row for reconciliation, without replay.
+                const executionFailure = Cause.findErrorOption(exit.cause);
+                const notificationDeliveryUnknown =
+                  Option.isSome(executionFailure) &&
+                  isGoalNotificationDeliveryUnknown(executionFailure.value);
+                const updated = nonRetryable
+                  ? yield* settleClaim(effect, (current) =>
+                      outbox.succeed({ effectId: effect.id, workerId, claim: current }),
+                    ).pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
+                  : notificationDeliveryUnknown ||
+                      terminalFailure ||
+                      effect.attemptCount >= maxAttempts
+                    ? yield* settleClaim(
+                        effect,
+                        (current) =>
+                          outbox.fail({ effectId: effect.id, workerId, error, claim: current }),
+                        true,
+                      ).pipe(Effect.onError((cause) => terminalizeClaim(effect, cause)))
+                    : yield* settleClaim(effect, (current) =>
+                        outbox.retry({
+                          effectId: effect.id,
+                          workerId,
+                          claim: current,
+                          error,
+                          delayMs: Math.min(
+                            30_000,
+                            100 * 2 ** Math.max(0, effect.attemptCount - 1),
+                          ),
+                        }),
+                      ).pipe(Effect.onError((cause) => requeueClaim(effect, cause)));
+                if (!updated) {
+                  if (yield* wasCancelled(effect.id)) return true;
+                  return yield* new OrchestrationEffectWorkerError({
+                    operation: "reschedule",
+                    effectId: effect.id,
+                    cause: "The worker no longer owns the effect lease.",
+                  });
+                }
+                if (terminalFailure && executor.recordNonRetryableFailure !== undefined) {
+                  yield* executor.recordNonRetryableFailure(effect, exit.cause).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logError("Failed to record provider control explanation", {
+                        effectId: effect.id,
+                        cause,
+                      }),
+                    ),
+                  );
+                }
+                return true;
+              }),
+          ).pipe(Effect.ensuring(outbox.clearCancellation(effect.id)));
         },
         (
           effect,
