@@ -23,6 +23,7 @@ import {
   AuthSessionId,
   ThreadId,
   ProviderInstanceId,
+  RunId,
   EnvironmentAuthenticatedPrincipal,
   EnvironmentAuthenticatedAuth,
   EnvironmentHttpApi,
@@ -132,6 +133,14 @@ import * as ProviderTest from "../../nativeProvider/testFixtures.ts";
 import { makeWorkstreamsNativeProvider, sha256Bytes } from "../../nativeProvider/service.ts";
 import { NativeProviderEnrollmentError } from "../../nativeProvider/enrollment.ts";
 import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
+import * as Credentials from "../../../../mcp/McpSessionRegistry.ts";
+import * as ProviderSessions from "../../../../orchestration-v2/ProviderSessionManager.ts";
+import type {
+  ProjectionRecords,
+  ProjectionRecordField,
+} from "../../../../orchestration-v2/ProjectionStore.ts";
+import * as HttpServer from "effect/http/HttpServer";
+import * as NetAddress from "effect/net/NetAddress";
 import * as Access from "../../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../../orchestration-v2/ThreadManagementService.ts";
 import { liveThreadShell } from "../../../../mcp/McpToolAccess.testkit.ts";
@@ -197,6 +206,9 @@ const decodeExportArgs = Schema.decodeUnknownEffect(WorkstreamsHomeReadExportReq
 const decodeReadArgs = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResultRequest);
 const decodePublicReadResult = Schema.decodeUnknownEffect(ReadWire.WorkstreamsHomeReadResult);
 const isPublicOperation = Schema.is(OperationWire.WorkstreamOperationResult);
+const decodePublicOperation = Schema.decodeUnknownEffect(OperationWire.WorkstreamOperationResult);
+const isForwardRequest = Schema.is(ForwardWire.WorkstreamsForwardRequest);
+const isForwardReadbackRequest = Schema.is(ForwardWire.WorkstreamsForwardReadbackRequest);
 const decodeAccessArgs = Schema.decodeUnknownEffect(AccessWire.WorkstreamsHomeAccessRequest);
 const decodeRegistrationArgs = Schema.decodeUnknownEffect(
   RegistrationWire.WorkstreamsHomeRegistrationRequest,
@@ -1349,9 +1361,55 @@ it.effect(
             store_generation: bind.source.authority.store_generation,
           },
         }).pipe(Effect.provide(f.M.all));
+        const linkedAgentThread = ThreadId.make("thread:linked-local-agent");
+        const linkedAgentRun = RunId.make("run:linked-agent-original");
+        const linkedAgentReplacement = RunId.make("run:linked-agent-replacement");
+        const agentCredentials = yield* Credentials.__testing.make().pipe(
+          Effect.provide(
+            Layer.mock(HttpServer.HttpServer)({
+              address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
+            }),
+          ),
+          Effect.provideService(Environment.ServerEnvironment, {
+            getEnvironmentId: Effect.succeed(EnvironmentId.make(f.M.env)),
+            getDescriptor: Effect.die("Unused synthetic agent endpoint descriptor"),
+          }),
+          Effect.provide(f.M.all),
+        );
+        const agentIssued = yield* agentCredentials.issue({
+          threadId: linkedAgentThread,
+          providerInstanceId: ProviderInstanceId.make("codex"),
+        });
+        const memberLink = PinRecords.decodeSetupRequest(
+          (yield* f.request).request.intent.member_setup_request_body,
+        ).pin.session;
+        const originalAgentShell = {
+          ...liveThreadShell(linkedAgentThread, {
+            runtimeMode: "approval-required",
+            activeRunId: linkedAgentRun,
+          }),
+          linkOrigin: {
+            sessionId: AuthSessionId.make(memberLink.session_id),
+            label: "fixture-bound-home",
+            access: memberLink.ceiling.access,
+          },
+        };
+        const agentState = { attached: true, nativeSession: "fixture-native:linked-agent" };
         const sourceBase = Layer.mergeAll(
           Layer.succeedContext(f.M.all),
           Layer.succeed(Authority.NativeStoreAuthority, f.M.live),
+          Layer.succeed(Credentials.McpSessionRegistry, agentCredentials),
+          // Provider attachment and projection are disclosed external ports; credential issuance/resolution is real.
+          Layer.mock(ProviderSessions.ProviderSessionManagerV2)({
+            isMcpCallerAttached: (input) =>
+              Effect.succeed(
+                agentState.attached &&
+                  input.threadId === linkedAgentThread &&
+                  input.providerInstanceId === "codex" &&
+                  input.providerSessionId === "fixture-native:linked-agent" &&
+                  input.mcpCredentialId === agentIssued.config.providerSessionId,
+              ),
+          }),
           // Explicit external projection fixture; caller/session/enrollment/owner services stay genuine.
           Layer.mock(ThreadManagementService)({
             getThreadShell: (id) =>
@@ -1361,6 +1419,20 @@ it.effect(
                     ? liveThreadShell(id, { runtimeMode: "approval-required" })
                     : null),
               ),
+            getThreadRecords: <K extends ProjectionRecordField>() =>
+              Effect.succeed({
+                runs: [linkedAgentRun, linkedAgentReplacement].map((id) => ({
+                  id,
+                  providerInstanceId: "codex",
+                  providerThreadId: "provider-thread:linked-agent",
+                })),
+                providerThreads: [
+                  {
+                    id: "provider-thread:linked-agent",
+                    providerSessionId: agentState.nativeSession,
+                  },
+                ],
+              } as unknown as ProjectionRecords<K>),
           }),
         );
         const resources = yield* Layer.build(
@@ -3313,6 +3385,169 @@ it.effect(
         expect(f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
           sentBeforeLinkedRecovery,
         );
+        // A member agent inherits the bound link but retains its OWN genuine credential and run.
+        f.state.projection.set(linkedAgentThread, originalAgentShell);
+        const resolveOriginalAgent = agentCredentials.resolve(
+          agentIssued.config.authorizationHeader.slice("Bearer ".length),
+        );
+        const callAgent = (request: OperationWire.WorkstreamSetPrimaryRequest) =>
+          Effect.gen(function* () {
+            const scope = yield* resolveOriginalAgent;
+            if (!scope) return yield* new NativeSession.RegistryError({ code: "not_granted" });
+            const replies = yield* publicBox
+              .handle("t3_thread_workstream_set", { request, wait_ms: 0 })
+              .pipe(
+                Stream.unwrap,
+                Stream.runCollect,
+                Effect.provideService(Mcp.McpInvocationContext, scope),
+                Effect.provideService(
+                  ThreadManagementService,
+                  Context.get(resources, ThreadManagementService),
+                ),
+              );
+            const reply = replies.at(-1);
+            if (!reply || reply.isFailure)
+              return yield* new NativeSession.RegistryError({ code: "not_granted" });
+            return yield* decodePublicOperation(reply.result).pipe(
+              Effect.mapError(() => new NativeSession.RegistryError({ code: "invalid_response" })),
+            );
+          });
+        const agentRequest: OperationWire.WorkstreamSetPrimaryRequest = {
+          ...linkedRequest,
+          operation_id: "operation:linked-agent-original",
+          thread: { environment_id: f.M.env, thread_id: linkedAgentThread },
+        };
+        const agentResult = yield* callAgent(agentRequest);
+        expect(agentResult).toMatchObject({
+          state: "committed",
+          operation_id: agentRequest.operation_id,
+        });
+        expect(yield* callAgent(agentRequest)).toEqual(agentResult);
+        const stores = Context.get(resources, OperationStore.OperationStore);
+        const savedAgent = yield* stores.readMemberForward(agentRequest.operation_id);
+        expect(savedAgent?.member_forward.recorded_caller.local.auth).toMatchObject({
+          kind: "agent",
+          calling_thread_id: linkedAgentThread,
+          mcp_credential_id: agentIssued.config.providerSessionId,
+          run_id: linkedAgentRun,
+          provider_session_id: "fixture-native:linked-agent",
+        });
+        expect(savedAgent?.member_forward.recorded_caller.local.session).toBeNull();
+        const writesBeforeAgentRefusal = f.calls.filter(
+          (call) => call.tool === HomePort.HOME_FORWARD_TOOL,
+        ).length;
+        for (const change of [
+          "new-run",
+          "detached",
+          "provider-session",
+          "plan",
+          "read-only-link",
+          "foreign-thread",
+        ] as const) {
+          f.state.projection.set(linkedAgentThread, {
+            ...originalAgentShell,
+            ...(change === "new-run" ? { activeRunId: linkedAgentReplacement } : {}),
+            ...(change === "plan" ? { interactionMode: "plan" as const } : {}),
+            ...(change === "read-only-link"
+              ? { linkOrigin: { ...originalAgentShell.linkOrigin, access: "read-only" as const } }
+              : {}),
+          });
+          agentState.attached = change !== "detached";
+          agentState.nativeSession =
+            change === "provider-session"
+              ? "fixture-native:replacement"
+              : "fixture-native:linked-agent";
+          const refusedAgentRequest =
+            change === "new-run"
+              ? agentRequest
+              : {
+                  ...agentRequest,
+                  operation_id: "operation:linked-agent-refused-" + change,
+                  ...(change === "foreign-thread" ? { thread: linkedRequest.thread } : {}),
+                };
+          expect((yield* callAgent(refusedAgentRequest).pipe(Effect.result))._tag).toBe("Failure");
+          if (change !== "new-run")
+            expect(
+              yield* msql`SELECT operation_id FROM jones_workstreams_operations WHERE operation_id=${refusedAgentRequest.operation_id}`,
+            ).toEqual([]);
+        }
+        f.state.projection.set(linkedAgentThread, originalAgentShell);
+        agentState.attached = true;
+        agentState.nativeSession = "fixture-native:linked-agent";
+        expect(f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
+          writesBeforeAgentRefusal,
+        );
+        const resolvedAgent = yield* resolveOriginalAgent;
+        if (!resolvedAgent) return yield* Effect.die("Missing original issued agent credential");
+        expect(
+          (yield* operations
+            .submit({
+              request: {
+                ...request,
+                operation_id: "operation:linked-agent-metadata-refused",
+                origin: { kind: "agent" },
+              },
+              wait_ms: 0,
+            })
+            .pipe(Effect.provideService(Mcp.McpInvocationContext, resolvedAgent), Effect.result))
+            ._tag,
+        ).toBe("Failure");
+        expect(
+          yield* msql`SELECT operation_id FROM jones_workstreams_operations WHERE operation_id='operation:linked-agent-metadata-refused'`,
+        ).toEqual([]);
+        const lostAgent = {
+          ...agentRequest,
+          operation_id: "operation:linked-agent-lost-reply",
+          target: lostLinkedRequest.target,
+        };
+        f.state.loseForwardReply = true;
+        expect((yield* callAgent(lostAgent)).state).toBe("reconciling");
+        f.state.loseForwardReply = false;
+        const agentWrites = f.calls.filter(
+          (call) => call.tool === HomePort.HOME_FORWARD_TOOL,
+        ).length;
+        const agentLookups = () =>
+          f.calls.filter((call) => {
+            const request = call.args;
+            return (
+              (isForwardRequest(request) || isForwardReadbackRequest(request)) &&
+              request.identity.source_operation_id === lostAgent.operation_id
+            );
+          }).length;
+        const beforeRunReplacement = agentLookups();
+        f.state.projection.set(linkedAgentThread, {
+          ...originalAgentShell,
+          activeRunId: linkedAgentReplacement,
+        });
+        yield* TestClock.adjust(30_000);
+        yield* recovery.sweep();
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${lostAgent.operation_id}`,
+        ).toEqual([{ state: "reconciling" }]);
+        expect(agentLookups()).toBe(beforeRunReplacement);
+        f.state.projection.set(linkedAgentThread, originalAgentShell);
+        yield* recovery.sweep();
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${lostAgent.operation_id}`,
+        ).toEqual([{ state: "committed" }]);
+        expect(f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
+          agentWrites,
+        );
+        const revokedAgent = {
+          ...agentRequest,
+          operation_id: "operation:linked-agent-revoked-credential",
+        };
+        f.state.loseForwardReply = true;
+        expect((yield* callAgent(revokedAgent)).state).toBe("reconciling");
+        f.state.loseForwardReply = false;
+        const agentCallsBeforeRevocation = f.calls.length;
+        yield* agentCredentials.revokeProviderSession(agentIssued.config.providerSessionId);
+        yield* TestClock.adjust(30_000);
+        yield* recovery.sweep();
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${revokedAgent.operation_id}`,
+        ).toEqual([{ state: "reconciling" }]);
+        expect(f.calls).toHaveLength(agentCallsBeforeRevocation);
         const revokedLinkedRequest = {
           ...linkedRequest,
           operation_id: "operation:linked-revoked-recovery-01",

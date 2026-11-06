@@ -449,55 +449,89 @@ it.effect(
       }).pipe(Effect.provide(Local.layer), Effect.provideService(Mcp.McpInvocationContext, client));
     }).pipe(Effect.provide(persistence)),
 );
-it.effect("linked own-thread write stays fenced until an exact home transaction proof exists", () =>
-  Effect.gen(function* () {
-    const f = yield* agent,
-      sessions = yield* Sessions.AuthSessionRepository;
-    const linkId = AuthSessionId.make("write-link");
-    yield* sessions.create({
-      sessionId: linkId,
-      subject: "mcp-client",
-      method: "bearer-access-token",
-      scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
-      issuedAt: DateTime.makeUnsafe(0),
-      expiresAt: DateTime.makeUnsafe(100000),
-      client: {
-        label: null,
-        ipAddress: null,
-        userAgent: null,
-        deviceType: "bot",
-        os: null,
-        browser: null,
-      },
-    });
-    f.state.shell = {
-      ...f.state.shell,
-      linkOrigin: { sessionId: linkId, label: "source", access: "full-access" },
-    };
-    yield* Effect.gen(function* () {
-      const callers = yield* Local.MemberLocalCallers;
-      for (const target of [
-        { kind: "metadata" as const },
-        { kind: "thread" as const, environment_id: environmentId, thread_id: f.state.shell.id },
-        { kind: "thread" as const, environment_id: environmentId, thread_id: "other-thread" },
-      ])
+it.effect(
+  "linked own-thread write retains original agent identity and refuses metadata or other threads",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* agent,
+        sessions = yield* Sessions.AuthSessionRepository;
+      const linkId = AuthSessionId.make("write-link");
+      yield* sessions.create({
+        sessionId: linkId,
+        subject: "mcp-client",
+        method: "bearer-access-token",
+        scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+        issuedAt: DateTime.makeUnsafe(0),
+        expiresAt: DateTime.makeUnsafe(100000),
+        client: {
+          label: null,
+          ipAddress: null,
+          userAgent: null,
+          deviceType: "bot",
+          os: null,
+          browser: null,
+        },
+      });
+      f.state.shell = {
+        ...f.state.shell,
+        linkOrigin: { sessionId: linkId, label: "source", access: "full-access" },
+      };
+      yield* Effect.gen(function* () {
+        const callers = yield* Local.MemberLocalCallers;
+        for (const target of [
+          { kind: "metadata" as const },
+          { kind: "thread" as const, environment_id: environmentId, thread_id: "other-thread" },
+        ])
+          expect(
+            yield* callers.captureWrite(environmentId, target).pipe(Effect.result),
+          ).toMatchObject({ _tag: "Failure" });
+        const target = {
+          kind: "thread" as const,
+          environment_id: environmentId,
+          thread_id: f.state.shell.id,
+        };
+        const originalShell = f.state.shell;
+        const record = yield* callers.captureWrite(environmentId, target);
+        expect(record.auth).toEqual({
+          kind: "agent",
+          calling_thread_id: originalShell.id,
+          provider_instance_id: "codex",
+          mcp_credential_id: f.scope.thread.providerSessionId,
+          run_id: "run:mcp-test",
+          provider_thread_id: "provider-thread",
+          provider_session_id: "original-native-session",
+        });
+        expect(record.session).toBeNull();
+        expect(record.link_session).toEqual({ issued_at: 0, expires_at: 100000 });
+        const admitted = yield* callers.readmitWrite(record);
+        yield* admitted.checkTarget();
         expect(
-          yield* callers.captureWrite(environmentId, target).pipe(Effect.result),
+          yield* callers
+            .readmitWrite({ ...record, target: { ...target, thread_id: "other-thread" } })
+            .pipe(Effect.result),
         ).toMatchObject({ _tag: "Failure" });
-    }).pipe(
-      Effect.provide(
-        Layer.mergeAll(
-          Local.layer,
-          f.threads,
-          Layer.mock(Providers.ProviderSessionManagerV2)({
-            isMcpCallerAttached: () => Effect.succeed(true),
-          }),
+        f.state.shell = { ...originalShell, activeRunId: RunId.make("run:new") };
+        for (const readmit of [callers.readmitWrite, callers.readmitWriteRetained])
+          expect(yield* readmit(record).pipe(Effect.result)).toMatchObject({ _tag: "Failure" });
+        f.state.shell = originalShell;
+        yield* sessions.revoke({ sessionId: linkId, revokedAt: DateTime.makeUnsafe(1000) });
+        expect(yield* admitted.checkTarget().pipe(Effect.result)).toMatchObject({
+          _tag: "Failure",
+        });
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            Local.layer,
+            f.threads,
+            Layer.mock(Providers.ProviderSessionManagerV2)({
+              isMcpCallerAttached: () => Effect.succeed(true),
+            }),
+          ),
         ),
-      ),
-      Effect.provideService(Credentials.McpSessionRegistry, f.registry),
-      Effect.provideService(Mcp.McpInvocationContext, f.scope),
-    );
-  }).pipe(Effect.provide(persistence)),
+        Effect.provideService(Credentials.McpSessionRegistry, f.registry),
+        Effect.provideService(Mcp.McpInvocationContext, f.scope),
+      );
+    }).pipe(Effect.provide(persistence)),
 );
 
 it.effect.each([

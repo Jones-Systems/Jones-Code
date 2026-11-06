@@ -98,17 +98,23 @@ const decodeLinkOrigin = Schema.decodeUnknownSync(
   Schema.fromJsonString(OrchestrationV2LinkOrigin),
   { onExcessProperty: "error" },
 );
-/** Retained link identity is evidence of this incoming MCP session, never a local agent credential. */
+/** Retained native link identity; agents keep their separate original run and credential. */
 export const memberWriteLink = (record: MemberLocalWriteCallerV2) => {
   if (
     record.link_origin === null ||
-    record.auth.kind !== "mcp_client" ||
+    record.link_session === null ||
     record.target.kind !== "thread"
   )
     return null;
   try {
     const link = decodeLinkOrigin(record.link_origin);
-    return link.sessionId === record.auth.session_id &&
+    if (link.access === undefined || link.access === "read-only") return null;
+    if (record.auth.kind === "agent")
+      return record.session === null && record.target.thread_id === record.auth.calling_thread_id
+        ? link
+        : null;
+    return record.auth.kind === "mcp_client" &&
+      link.sessionId === record.auth.session_id &&
       link.access === record.auth.approved_access &&
       canonicalJson(record.link_session) === canonicalJson(record.session)
       ? link
@@ -636,7 +642,7 @@ const make = Effect.gen(function* () {
       (target.kind === "thread" && target.environment_id !== record.environment_id)
     )
       return yield* fence();
-    // Local linked agents remain fenced; this exception preserves the actual incoming native client.
+    // A linked agent can qualify only its original calling thread; metadata stays outside this capability.
     const link = memberWriteLink(record);
     if (record.link_origin !== null && (link === null || target.kind !== "thread"))
       return yield* fence();
@@ -684,7 +690,11 @@ const make = Effect.gen(function* () {
         !current.limits
       )
         return yield* fence();
-      if (link && linkOriginIsFenced(link) && shell.linkOrigin?.sessionId !== link.sessionId)
+      if (
+        link &&
+        ((record.auth.kind === "agent" && canonicalJson(shell.linkOrigin) !== record.link_origin) ||
+          (linkOriginIsFenced(link) && shell.linkOrigin?.sessionId !== link.sessionId))
+      )
         return yield* fence();
       yield* assertTargetWithinLimits(effective, shell).pipe(Effect.mapError(fence));
     });

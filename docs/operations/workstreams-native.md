@@ -144,7 +144,10 @@ link session and the original narrowed limits, qualifies its own target thread,
 and attaches fresh source evidence. The home admits only that exact high-level
 placement through its private atomic-operation proof and current SQL grant.
 Lost replies recover by looking up the same accepted intent; they never authorize
-redispatch. Other linked sessions, linked local-agent writes, metadata, appearance
+redispatch. A local agent whose calling thread inherits that same bound-home
+session may place only that calling thread. Its original run, provider session
+and credential remain mandatory through replay and recovery; replacement runs
+cannot inherit an accepted intent. Other linked sessions, metadata, appearance
 and raw commands remain refused. The generic hop guard is unchanged.
 Scheduled provider runs use the same authenticated agent origin and caller limits;
 a tool body cannot select trusted queue origin.

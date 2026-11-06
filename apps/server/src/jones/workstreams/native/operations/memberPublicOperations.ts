@@ -115,7 +115,9 @@ const make = Effect.gen(function* () {
         if (
           request.kind === "set_primary" &&
           Option.isSome(invocation) &&
-          invocation.value.client?.linked
+          (invocation.value.client?.linked ||
+            (invocation.value.environmentId === request.thread.environment_id &&
+              invocation.value.thread?.threadId === request.thread.thread_id))
         )
           // Source admission and the exact receiving-home writer independently qualify this target.
           return yield* perform;

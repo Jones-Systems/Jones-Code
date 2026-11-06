@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Match the unchanged canonical public request digest.
 import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
 import * as Wire from "@t3tools/contracts/jones/workstreamOperations";
 import * as Access from "@t3tools/contracts/jones/workstreamsHomeAccess";
 import * as Effect from "effect/Effect";
@@ -367,9 +367,9 @@ it.effect(
 );
 
 // Synthetic application port proves only adapter selection; actual peer qualification lives in the combined harness.
-it.effect(
-  "linked placement uses the target-qualified application path without generic access bootstrap",
-  () => {
+it.effect.each(["native-client", "own-agent"] as const)(
+  "linked placement uses the target-qualified application path without generic access bootstrap: %s",
+  (callerKind) => {
     const f = fixture();
     const placement = Wire.parseWorkstreamOperationRequest({
       contract: Wire.WORKSTREAM_OPERATIONS_CONTRACT,
@@ -390,8 +390,18 @@ it.effect(
       requestNamespace: "link-original",
       issuedAt: 1,
       capabilities: new Set(["orchestration"]),
-      thread: undefined,
-      client: { sessionId: "link:home", label: "fixture", access: "full-access", linked: true },
+      thread:
+        callerKind === "own-agent"
+          ? {
+              threadId: ThreadId.make("thread:member"),
+              providerSessionId: "original-credential",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+            }
+          : undefined,
+      client:
+        callerKind === "native-client"
+          ? { sessionId: "link:home", label: "fixture", access: "full-access", linked: true }
+          : undefined,
     };
     return Effect.gen(function* () {
       const publicOperations = yield* Public.WorkstreamOperations;
