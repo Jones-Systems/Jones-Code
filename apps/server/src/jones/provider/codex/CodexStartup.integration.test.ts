@@ -986,8 +986,29 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
         const originalSessionId = failed.providerThreads[0]!.providerSessionId!;
         assert.isTrue(yield* sessions.isLive(originalSessionId));
         if (steer !== undefined) yield* admission!.markUnknown(steer);
+        const terminal =
+          mode === "local-recovery"
+            ? yield* orchestrator.streamStoredEvents.pipe(
+                Stream.filter(
+                  ({ event }) =>
+                    event.type === "run.updated" &&
+                    event.threadId === threadId &&
+                    event.payload.ordinal === 2 &&
+                    ["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(
+                      event.payload.status,
+                    ),
+                ),
+                Stream.take(1),
+                Stream.runDrain,
+                Effect.forkScoped({ startImmediately: true }),
+              )
+            : undefined;
         yield* send("new-owner", newPrompt);
         yield* worker.drain();
+        if (terminal !== undefined) {
+          yield* Fiber.join(terminal);
+          yield* worker.drain();
+        }
         const recovered = yield* orchestrator.getThreadProjection(threadId);
         const replayState = yield* Ref.get(replay.state);
         const recoveryDiagnostic = yield* Schema.encodeEffect(
