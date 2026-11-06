@@ -56,6 +56,54 @@ vi.mock("./connection/runtime", async () => {
 });
 
 const selectedEnvironment = EnvironmentId.make("remote-selected");
+
+it.each([
+  [
+    "stale",
+    "collector_disconnected",
+    "Host status collector is disconnected",
+    "Check the collector connection to the Netdata parent",
+  ],
+  [
+    "stale",
+    "sample_expired",
+    "Host status sample has expired",
+    "Wait for a recent collector sample",
+  ],
+  [
+    "upstream_unavailable",
+    "upstream_failure",
+    "Host status source unavailable",
+    "Check the host status source connection",
+  ],
+] as const)(
+  "explains %s / %s with a bounded recovery hint",
+  (reason, diagnostic, explanation, recovery) => {
+    const metrics = hostStatusMetrics({ id: "vps", status: "unavailable", reason, diagnostic });
+    expect(metrics.tooltipLines).toEqual([
+      explanation,
+      recovery,
+      "Retries every 10 seconds while visible",
+    ]);
+    expect(metrics.detail).toBe(metrics.tooltipLines.join(". "));
+    expect(metrics.cpu).toBe("—");
+  },
+);
+
+it("keeps legacy and mismatched diagnostics on the generic reason", () => {
+  expect(
+    hostStatusMetrics({ id: "vps", status: "unavailable", reason: "stale" }).tooltipLines,
+  ).toEqual(["Host status sample is stale"]);
+  expect(
+    hostStatusMetrics({
+      id: "vps",
+      status: "unavailable",
+      reason: "not_configured",
+      diagnostic: "collector_disconnected",
+    }).tooltipLines,
+  ).toEqual(["Not configured"]);
+});
+
 function prepare(base = "https://app.example", token: string | null = null) {
   harness.prepared.set(selectedEnvironment, {
     environmentId: selectedEnvironment,
@@ -122,7 +170,7 @@ describe("host status metrics", () => {
       health: "warning",
     });
     expect(metrics.detail).toContain("CPU 23% of total cores");
-    expect(metrics.detail).toContain("Available RAM 4 GiB");
+    expect(metrics.detail).toContain("RAM 4 GiB available of 16 GiB");
     expect(hostStatusMetrics({ ...available, logicalCpuCount: 128 }).cpu).toBe("23%");
   });
   it.each([
@@ -181,8 +229,8 @@ describe("host status metrics", () => {
         ramHealth: "healthy",
         health: "healthy",
       });
-      expect(hostStatusMetrics(mac).detail).toContain("Available RAM 0.0 GiB");
-      expect(hostStatusMetrics(mac).detail).toContain("10-second average");
+      expect(hostStatusMetrics(mac).tooltipLines).toContain("RAM 0 GiB available of 16 GiB");
+      expect(hostStatusMetrics(mac).tooltipLines).toContain("Swap I/O 0.0 MiB/s");
       expect(hostStatusMetrics({ ...mac, swapIoBytesPerSecond: 10 * 1024 ** 2 })).toMatchObject({
         ramHealth: "healthy",
       });
@@ -198,13 +246,66 @@ describe("host status metrics", () => {
       });
       const { swapIoBytesPerSecond: _swap, ...olderMac } = mac;
       expect(hostStatusMetrics(olderMac)).toMatchObject({
-        ram: "— mb/s",
+        ram: "—",
         ramHealth: "unavailable",
         health: "healthy",
       });
       expect(hostStatusMetrics(olderMac).detail).toContain("Swap I/O unavailable");
     },
   );
+  it.each(["vps", "test", "mini", "home"] as const)(
+    "provides one concise line per metric on %s, with swap only on Macs",
+    (id) => {
+      const metrics = hostStatusMetrics({
+        ...available,
+        id,
+        cpuUsagePercent: 18,
+        availableMemoryBytes: 46 * gib,
+        totalMemoryBytes: 64 * gib,
+        swapIoBytesPerSecond: 0.3 * 1024 ** 2,
+        availableStorageBytes: 220 * gib,
+        totalStorageBytes: 500 * gib,
+        storageMountPoint: "/",
+      });
+      expect(metrics.tooltipLines).toEqual([
+        "CPU 18% of total cores",
+        "RAM 46 GiB available of 64 GiB",
+        ...(id === "mini" || id === "home" ? ["Swap I/O 0.3 MiB/s"] : []),
+        "Storage 220 GiB free of 500 GiB",
+      ]);
+      expect(metrics.detail).toBe(metrics.tooltipLines.join(". "));
+    },
+  );
+  it("identifies a non-root filesystem and preserves zero and fractional capacities", () => {
+    expect(
+      hostStatusMetrics({
+        ...available,
+        availableStorageBytes: 0,
+        totalStorageBytes: 500.5 * gib,
+        storageMountPoint: "/srv/data",
+      }).tooltipLines,
+    ).toContain("Storage (/srv/data) 0 GiB free of 500.5 GiB");
+  });
+  it("keeps CPU available with missing optional readings from older servers", () => {
+    const { availableMemoryBytes: _memory, ...olderSample } = available;
+    expect(hostStatusMetrics(olderSample).tooltipLines).toEqual([
+      "CPU 23% of total cores",
+      "RAM unavailable",
+      "Storage unavailable",
+    ]);
+    expect(hostStatusMetrics({ ...olderSample, id: "home" }).tooltipLines).toEqual([
+      "CPU 23% of total cores",
+      "RAM unavailable",
+      "Swap I/O unavailable",
+      "Storage unavailable",
+    ]);
+    expect(hostStatusMetrics({ ...available, availableStorageBytes: 0 }).tooltipLines).toContain(
+      "Storage unavailable",
+    );
+    expect(
+      hostStatusMetrics({ ...available, totalStorageBytes: 500 * gib }).tooltipLines,
+    ).toContain("Storage unavailable");
+  });
   it("hides values at the thirty-second source freshness boundary", () => {
     vi.advanceTimersByTime(29_999);
     expect(hostStatusMetrics(available).cpu).toBe("23%");
@@ -214,10 +315,18 @@ describe("host status metrics", () => {
       ram: "—",
       health: "unavailable",
       detail: "Host status sample is stale",
+      tooltipLines: ["Host status sample is stale"],
     });
     expect(hostStatusMetrics({ id: "home", status: "unavailable", reason: "stale" }).health).toBe(
       "unavailable",
     );
+  });
+  it.each([
+    [5_000, "23%"],
+    [5_001, "—"],
+  ] as const)("applies the gateway clock-skew boundary at %s ms ahead", (offset, cpu) => {
+    const sampledAt = new Date(vi.getMockedSystemTime()!.getTime() + offset).toISOString();
+    expect(hostStatusMetrics({ ...available, sampledAt }).cpu).toBe(cpu);
   });
 });
 
@@ -268,20 +377,69 @@ describe("visible host-status polling", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(receive).not.toHaveBeenCalled();
   });
-  it("clears old healthy values when a request fails and recovers on the next poll", async () => {
-    vi.useFakeTimers();
+  it("retains all fresh hosts after refresh failures, expires them at source age, and recovers", async () => {
+    const hosts = (["vps", "test", "mini", "home"] as const).map((id) => ({ ...available, id }));
+    const fullSnapshot: HostStatusSnapshot = { hosts };
+    const cache: HostStatusCache = { snapshot: null, settledAt: -Infinity };
+    const receive = vi.fn();
+    let resolve!: (value: HostStatusSnapshot) => void;
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(fullSnapshot)
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockRejectedValueOnce(new Error("still offline"))
+      .mockImplementation(
+        () =>
+          new Promise<HostStatusSnapshot>((done) => {
+            resolve = done;
+          }),
+      );
+    const stop = observeHostStatus(new Visibility(), receive, request, cache);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(receive).toHaveBeenLastCalledWith(fullSnapshot);
+    expect(cache.snapshot).toEqual(fullSnapshot);
+    expect(request).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(receive).toHaveBeenLastCalledWith(fullSnapshot);
+    expect(request).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(receive).toHaveBeenLastCalledWith(fullSnapshot);
+    await vi.advanceTimersByTimeAsync(1);
+    const expired = {
+      hosts: hosts.map(({ id }) => ({ id, status: "unavailable", reason: "stale" })),
+    };
+    expect(receive).toHaveBeenLastCalledWith(expired);
+    expect(cache.snapshot).toEqual(expired);
+    expect(request).toHaveBeenCalledTimes(4);
+    const recovered = {
+      hosts: hosts.map((host) => ({
+        ...host,
+        sampledAt: new Date(vi.getMockedSystemTime()!.getTime()).toISOString(),
+      })),
+    };
+    resolve(recovered);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(receive).toHaveBeenLastCalledWith(recovered);
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+  it("replaces a fresh host with an explicit unavailable response while preserving other hosts", async () => {
+    const mini = { ...available, id: "mini" as const };
+    const unavailableSnapshot: HostStatusSnapshot = {
+      hosts: [{ id: "vps", status: "unavailable", reason: "upstream_unavailable" }, mini],
+    };
     const receive = vi.fn();
     const request = vi
       .fn()
-      .mockResolvedValueOnce(snapshot)
-      .mockRejectedValueOnce(new Error("offline"))
-      .mockResolvedValue(snapshot);
+      .mockResolvedValueOnce({ hosts: [available, mini] })
+      .mockResolvedValue(unavailableSnapshot);
     const stop = observeHostStatus(new Visibility(), receive, request);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(receive).toHaveBeenLastCalledWith({ hosts: [available, mini] });
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(receive).toHaveBeenLastCalledWith(null);
-    await vi.advanceTimersByTimeAsync(10_000);
-    expect(receive).toHaveBeenLastCalledWith(snapshot);
+    expect(receive).toHaveBeenLastCalledWith(unavailableSnapshot);
     stop();
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
@@ -448,7 +606,7 @@ describe("typed selected-environment gateway request", () => {
       { status, token: "synthetic-remote-token" },
     ]),
   )(
-    "treats HTTP $status with token $token as unavailable rather than retaining healthy data",
+    "rejects HTTP $status with token $token as a failed gateway request",
     async ({ status, token }) => {
       prepare("https://remote.example", token);
       vi.stubGlobal("window", {
@@ -533,8 +691,38 @@ describe("retained host-status cache", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it.each(["invalid", "2026-09-29T12:00:01.000Z", "2026-09-29T11:59:30.000Z"])(
-    "rejects a retained invalid, future, or expired source timestamp: %s",
+  it("accepts retained samples five seconds ahead and expires from their original timestamp", async () => {
+    const futureSnapshot: HostStatusSnapshot = {
+      hosts: [
+        {
+          ...available,
+          sampledAt: new Date(vi.getMockedSystemTime()!.getTime() + 5_000).toISOString(),
+        },
+      ],
+    };
+    const cache: HostStatusCache = {
+      snapshot: futureSnapshot,
+      settledAt: vi.getMockedSystemTime()!.getTime(),
+    };
+    const receive = vi.fn();
+    const request = vi.fn();
+    const visibility = new Visibility();
+    visibility.set("hidden");
+    const stop = observeHostStatus(visibility, receive, request, cache);
+    expect(receive).toHaveBeenLastCalledWith(futureSnapshot);
+    await vi.advanceTimersByTimeAsync(34_999);
+    expect(receive).toHaveBeenLastCalledWith(futureSnapshot);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(receive).toHaveBeenLastCalledWith({
+      hosts: [{ id: "vps", status: "unavailable", reason: "stale" }],
+    });
+    expect(request).not.toHaveBeenCalled();
+    stop();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["invalid", "2026-09-29T12:00:05.001Z", "2026-09-29T11:59:30.000Z"])(
+    "rejects a retained invalid, excessively future, or expired source timestamp: %s",
     (sampledAt) => {
       const cache: HostStatusCache = {
         snapshot: { hosts: [{ ...available, sampledAt }] },

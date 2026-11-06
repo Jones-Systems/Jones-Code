@@ -22,7 +22,7 @@ const reference = {
 };
 it.effect("retains ordinary payload compatibility and native authority lineage", () =>
   Effect.gen(function* () {
-    const request = yield* Schema.decodeUnknownEffect(OrchestrationEffectRequestV2)({
+    const request = yield* Schema.decodeEffect(OrchestrationEffectRequestV2)({
       type: "provider-turn.start",
       runId: "synthetic-run",
     });
@@ -86,8 +86,8 @@ it.effect("an unbound whole-operation executor cannot invoke ordinary provider s
     const decodedReference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)(
       reference,
     );
-    const threadId = yield* Schema.decodeUnknownEffect(ThreadId)("synthetic-thread");
-    const runId = yield* Schema.decodeUnknownEffect(RunId)("synthetic-run");
+    const threadId = yield* Schema.decodeEffect(ThreadId)("synthetic-thread");
+    const runId = yield* Schema.decodeEffect(RunId)("synthetic-run");
     const rejection = yield* executeNativeProviderEffect({
       id: "synthetic-effect",
       commandId: decodedReference.stageCommandId,

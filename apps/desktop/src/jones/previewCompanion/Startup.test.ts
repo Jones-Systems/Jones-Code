@@ -29,7 +29,7 @@ import * as DesktopWslBackend from "../../wsl/DesktopWslBackend.ts";
 import { setLocalEnvironmentEnabled } from "../../ipc/methods/localEnvironment.ts";
 import * as CompanionConfig from "./CompanionConfig.ts";
 
-const config = Schema.decodeUnknownSync(DesktopCompanionConfig)({
+const config = Schema.decodeSync(DesktopCompanionConfig)({
   enabled: true,
   environmentId: "env",
   hostId: "mini",

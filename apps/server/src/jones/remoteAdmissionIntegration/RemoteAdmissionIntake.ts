@@ -23,6 +23,7 @@ import * as RemoteAdmission from "../remoteAdmission/RemoteAdmission.ts";
 import { isRemoteAdmissionOwner } from "./owner.ts";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
 import { resolveRemoteEvaluationModel } from "../../textGeneration/jones/remoteEvaluationModel.ts";
+import { readBoundLinkedRequestContext } from "../peerTransport/LinkedRequestContext.ts";
 
 export class RemoteAdmissionIntakeError extends Schema.TaggedError<RemoteAdmissionIntakeError>()(
   "RemoteAdmissionIntakeError",
@@ -108,6 +109,37 @@ const unpack = (record: RemoteAdmissionRecord) => {
     } satisfies Invocation,
   };
 };
+// Pin only display data. Every other invocation field belongs to this attempt
+// and must still participate in the generic admission's digest comparison.
+const pinOriginTitle = (invocation: Invocation, previous: RemoteAdmissionRecord): Invocation => {
+  const original = unpack(previous).invocation.client?.remoteOrigin;
+  const client = invocation.client;
+  const origin = client?.remoteOrigin;
+  if (
+    !client ||
+    !origin?.thread ||
+    !original?.thread ||
+    origin.schemaVersion !== original.schemaVersion ||
+    origin.environmentId !== original.environmentId ||
+    origin.linkSessionId !== original.linkSessionId ||
+    origin.thread.threadId !== original.thread.threadId
+  )
+    return invocation;
+  const { title: _title, ...thread } = origin.thread;
+  return {
+    ...invocation,
+    client: {
+      ...client,
+      remoteOrigin: {
+        ...origin,
+        thread: {
+          ...thread,
+          ...(Object.hasOwn(original.thread, "title") ? { title: original.thread.title } : {}),
+        },
+      },
+    },
+  };
+};
 const pending = (record: RemoteAdmissionRecord) =>
   new OrchestratorMcpFailure({
     code:
@@ -137,7 +169,7 @@ const make = Effect.gen(function* () {
       policy_json: string;
     }>`SELECT policy_json FROM jones_remote_admission_policy WHERE singleton = 1`;
     const saved = rows[0]
-      ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RemoteAdmissionReceiverPolicy))(
+      ? yield* Schema.decodeEffect(Schema.fromJsonString(RemoteAdmissionReceiverPolicy))(
           rows[0].policy_json,
         )
       : defaultPolicy;
@@ -173,17 +205,15 @@ const make = Effect.gen(function* () {
     const prior = yield* result(record.id);
     if (prior) return yield* deliver(prior);
     const handler = handlers.get(record.envelope.operation);
-    if (!handler) return yield* Effect.fail(pending(record));
+    if (!handler) return yield* pending(record);
     const { params, invocation } = unpack(record);
     yield* validateTarget(record);
     const active = yield* sessions.listSessions();
     if (!active.some((session) => session.sessionId === invocation.client?.sessionId)) {
-      return yield* Effect.fail(
-        new OrchestratorMcpFailure({
-          code: "capability_denied",
-          message: "The originating connection is no longer active.",
-        }),
-      );
+      return yield* new OrchestratorMcpFailure({
+        code: "capability_denied",
+        message: "The originating connection is no longer active.",
+      });
     }
     const commandId = `admission:${record.id}`;
     const claim = yield* admissions.claimDispatch({
@@ -192,7 +222,7 @@ const make = Effect.gen(function* () {
       commandId,
       currentPolicy: yield* policy(),
     });
-    if (!claim.claimed) return yield* Effect.fail(pending(claim.record));
+    if (!claim.claimed) return yield* pending(claim.record);
     // A claim is never blindly replayed after interruption. A recorded result is
     // reusable; an unknown handler effect remains visible for reconciliation.
     const outcome = yield* handler(params, invocation).pipe(
@@ -227,12 +257,10 @@ const make = Effect.gen(function* () {
       function* (operation, params, invocation) {
         const handler = handlers.get(operation);
         if (!handler)
-          return yield* Effect.fail(
-            new OrchestratorMcpFailure({
-              code: "orchestration_error",
-              message: "The receiving operation is unavailable.",
-            }),
-          );
+          return yield* new OrchestratorMcpFailure({
+            code: "orchestration_error",
+            message: "The receiving operation is unavailable.",
+          });
         const current = yield* policy();
         if (!invocation.client) return yield* handler(params, invocation);
         const keyed = typeof params.clientRequestId === "string";
@@ -241,50 +269,97 @@ const make = Effect.gen(function* () {
           operation,
           key: keyed ? params.clientRequestId : NodeCrypto.randomUUID(),
         });
-        const previousRows = keyed
-          ? yield* sql<{
-              id: string;
-            }>`SELECT id FROM jones_remote_admissions WHERE client_id = ${invocation.client.sessionId} AND idempotency_key = ${key}`
-          : [];
-        const previous = previousRows[0] ? yield* admissions.get(previousRows[0].id) : null;
+        const client = invocation.client;
+        const selectPrevious = Effect.fn("RemoteAdmissionIntake.selectPrevious")(function* () {
+          const rows = yield* sql<{
+            id: string;
+          }>`SELECT id FROM jones_remote_admissions WHERE client_id = ${client.sessionId} AND idempotency_key = ${key}`;
+          return rows[0] ? yield* admissions.get(rows[0].id) : null;
+        });
+        const previous = keyed ? yield* selectPrevious() : null;
         if (!current.enabled && previous === null) return yield* handler(params, invocation);
         const resolveTarget = targets.get(operation);
-        if (!resolveTarget) return yield* Effect.fail(intakeError("target_unavailable"));
+        if (!resolveTarget) return yield* intakeError("target_unavailable");
         // Stable receiver-owned scope is bound with the exact decoded request.
         // Arrival timestamps vary on retries and are not authorization identity.
         // Retry bytes use the reviewed snapshot; dispatch revalidates current state.
         const reviewedTarget = previous
           ? unpack(previous).target
           : yield* resolveTarget(params, invocation);
-        const payload = decodeJson(
-          stable({ params, invocation: storedScope(invocation), target: reviewedTarget }),
-        );
-        const record = yield* admissions.request({
-          idempotencyKey: key,
-          envelope: {
-            identity: {
-              clientId: invocation.client.sessionId,
-              linkId: invocation.client.linked ? invocation.client.sessionId : null,
+        const bound = yield* readBoundLinkedRequestContext(invocation);
+        const submit = Effect.fn("RemoteAdmissionIntake.submit")(function* (
+          prior: RemoteAdmissionRecord | null,
+        ) {
+          const oldPayload = prior?.envelope.payload as Record<string, unknown> | undefined;
+          const advisory = oldPayload
+            ? Object.hasOwn(oldPayload, "advisory")
+              ? { advisory: oldPayload.advisory }
+              : {}
+            : bound
+              ? {
+                  advisory: {
+                    schemaVersion: "t3.remote-admission-advisory/v1",
+                    requestContext: bound.context,
+                  },
+                }
+              : {};
+          const payload = decodeJson(
+            stable({
+              params,
+              invocation: storedScope(prior ? pinOriginTitle(invocation, prior) : invocation),
+              target: prior ? unpack(prior).target : reviewedTarget,
+              ...advisory,
+            }),
+          );
+          return yield* admissions.request({
+            idempotencyKey: key,
+            envelope: {
+              identity: {
+                clientId: client.sessionId,
+                linkId: client.linked ? client.sessionId : null,
+              },
+              operation,
+              payload,
+              target: {
+                projectId: typeof params.projectId === "string" ? params.projectId : null,
+                threadId: typeof params.threadId === "string" ? params.threadId : null,
+                runtimeMode:
+                  typeof params.runtimeMode === "string"
+                    ? params.runtimeMode
+                    : McpInvocationContext.clientModeCeiling(client).runtimeMode,
+                interactionMode:
+                  typeof params.interactionMode === "string" ? params.interactionMode : "default",
+              },
+              receiverPolicy: current,
             },
-            operation,
-            payload,
-            target: {
-              projectId: typeof params.projectId === "string" ? params.projectId : null,
-              threadId: typeof params.threadId === "string" ? params.threadId : null,
-              runtimeMode:
-                typeof params.runtimeMode === "string"
-                  ? params.runtimeMode
-                  : McpInvocationContext.clientModeCeiling(invocation.client).runtimeMode,
-              interactionMode:
-                typeof params.interactionMode === "string" ? params.interactionMode : "default",
-            },
-            receiverPolicy: current,
-          },
+          });
         });
+        const record = yield* submit(previous).pipe(
+          Effect.catchTags({
+            RemoteAdmissionKeyConflict: (error) =>
+              keyed && previous === null
+                ? selectPrevious().pipe(
+                    Effect.flatMap((winner) =>
+                      winner === null ? Effect.fail(error) : submit(winner),
+                    ),
+                  )
+                : Effect.fail(error),
+          }),
+        );
         if (["passed", "approved", "dispatching", "dispatched"].includes(record.status))
           return yield* dispatch(record);
-        return yield* Effect.fail(pending(record));
+        return yield* pending(record);
       },
+      Effect.catchTags({
+        RemoteAdmissionKeyConflict: () =>
+          Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "request_conflict",
+              message:
+                "The same request key was used with different content. The original request is unchanged; the changed request was not executed.",
+            }),
+          ),
+      }),
       Effect.catch((error) =>
         Effect.fail(
           Schema.is(OrchestratorMcpFailure)(error)
@@ -305,17 +380,32 @@ const make = Effect.gen(function* () {
         Effect.mapError(intakeError),
       ),
     withdraw: (input, clientId) =>
-      admissions
-        .withdraw({ ...input, clientId })
-        .pipe(Effect.map(publicRemoteAdmission), Effect.mapError(intakeError)),
+      admissions.withdraw({ ...input, clientId }).pipe(
+        Effect.catchTags({
+          RemoteAdmissionStateConflict: (error) =>
+            error.status === "dispatching" ||
+            error.status === "dispatched" ||
+            error.status === "denied"
+              ? admissions
+                  .get(input.id)
+                  .pipe(
+                    Effect.flatMap((record) =>
+                      record === null ? Effect.fail(error) : Effect.succeed(record),
+                    ),
+                  )
+              : Effect.fail(error),
+        }),
+        Effect.map(publicRemoteAdmission),
+        Effect.mapError(intakeError),
+      ),
     updatePolicy: Effect.fn("RemoteAdmissionIntake.updatePolicy")(function* (input) {
       yield* sql.withTransaction(
         Effect.gen(function* () {
           const current = yield* policy();
           if (input.expectedRevision !== current.revision)
-            return yield* Effect.fail(intakeError("policy_changed"));
+            return yield* intakeError("policy_changed");
           if (input.enabled && input.modelSelection === null)
-            return yield* Effect.fail(intakeError("model_required"));
+            return yield* intakeError("model_required");
           if (input.enabled && input.modelSelection !== null)
             yield* resolveRemoteEvaluationModel(input.modelSelection).pipe(
               Effect.provideService(ProviderInstanceRegistry.ProviderInstanceRegistry, providers),

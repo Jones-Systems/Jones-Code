@@ -59,6 +59,7 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
   const [observation, setObservation] = useState({ key: registryKey, snapshot: LOADING });
   const registry = observation.key === registryKey ? observation.snapshot : LOADING;
   const latest = useRef({ shells, primaryEnvironmentId, binding, startTurn, registryKey });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed design-request routing inputs to asynchronous gallery submissions.
   useLayoutEffect(() => {
     latest.current = { shells, primaryEnvironmentId, binding, startTurn, registryKey };
   });
@@ -66,6 +67,7 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
     loadDesignRequestRegistry(shells, signal, boundWorkstreamId),
   );
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load the current design registry and abort its response when its routing identity changes.
   useEffect(() => {
     const controller = new AbortController();
     loadRegistry(controller.signal).then(
@@ -87,6 +89,7 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
   }, [registryKey]);
 
   // Re-evaluate when the earliest placement expires so an expired primary is held, not shown.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the next placement-expiry timer so expired primary routes are withheld immediately.
   useEffect(() => {
     const expiries = (registry.placements?.items ?? [])
       .map((item) => Date.parse(item.expires_at))
@@ -110,6 +113,7 @@ export function useDesignRequestRouter(binding: DesignRequestBinding | null): De
   });
 
   const gatewayRef = useRef<DesignRequestGateway | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Create the mounted submission gateway once so effect replay retains in-flight submission identities.
   useLayoutEffect(() => {
     // Keep the in-flight submission map when React replays effect setup.
     if (gatewayRef.current !== null) return;

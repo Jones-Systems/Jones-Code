@@ -15,6 +15,7 @@ import * as NetAddress from "effect/net/NetAddress";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
 import * as ServerConfig from "./config.ts";
+import { resolveServerParallelismProfile } from "./jones/serverParallelism/config.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -106,6 +107,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           devAllowedOrigins: [],
           desktopBootstrapToken: undefined,
           logWebSocketEvents: false,
+          serverParallelism: resolveServerParallelismProfile(undefined),
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
           mode: "desktop",
@@ -135,6 +137,7 @@ it.effect("parks automatic pull until activation without delaying command readin
           reconcile: () => Effect.succeed(recovery),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          recoverCodexFailover: Effect.void,
           recoverDelegatedTasks: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),

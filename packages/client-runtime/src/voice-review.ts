@@ -22,8 +22,7 @@ export interface VoiceReviewClientOptions {
 }
 const isReviewError = Schema.is(VoiceReviewError);
 const isWrappedFetchError = Schema.is(
-  Schema.Struct({
-    _tag: Schema.Literal("RemoteEnvironmentAuthFetchError"),
+  Schema.TaggedStruct("RemoteEnvironmentAuthFetchError", {
     cause: Schema.Unknown,
   }),
 );
@@ -202,9 +201,7 @@ export const correctThreadRegistryAssociation = Effect.fn(
     readonly payload: typeof ThreadRegistryAssociationPayload.Type;
   },
 ) {
-  const payload = yield* Schema.decodeUnknownEffect(ThreadRegistryAssociationPayload)(
-    input.payload,
-  );
+  const payload = yield* Schema.decodeEffect(ThreadRegistryAssociationPayload)(input.payload);
   return yield* unwrapReviewError(
     executeAuthenticatedEnvironmentHttpRequest({
       ...input,

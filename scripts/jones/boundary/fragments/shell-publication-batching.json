@@ -1,0 +1,19 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "shell-publication-batching",
+  "jonesOwnedPaths": [
+    "packages/client-runtime/src/jones/shellPublication/batchedPublication.test.ts",
+    "packages/client-runtime/src/jones/shellPublication/batchedPublication.ts",
+    "packages/client-runtime/src/jones/shellPublication/shellPublication.diagnostic.test.ts",
+    "packages/client-runtime/src/jones/shellPublication/shellPublication.test.ts",
+    "packages/client-runtime/src/jones/shellPublication/shellPublicationHarness.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "packages/client-runtime/src/state/shell.ts",
+      "to": "packages/client-runtime/src/jones/shellPublication/batchedPublication.ts"
+    }
+  ]
+}

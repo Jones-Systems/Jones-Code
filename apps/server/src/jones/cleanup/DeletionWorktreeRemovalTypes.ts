@@ -1,7 +1,7 @@
 import { ProjectId } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-// Original #148 start identity. These values attest no admission without their durable owner.
+// Original start identity; these values attest no admission without their durable owner.
 export const DeletionWorktreeRemovalTargetV1 = Schema.Struct({
   projectId: ProjectId,
   projectRoot: Schema.NonEmptyString,

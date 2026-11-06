@@ -61,10 +61,10 @@ import {
 import * as ConnectionProfileStore from "./profileStore.ts";
 import * as EnvironmentRegistry from "./registry.ts";
 import {
-  GitHubRoutingPermissions,
-  type StoredGitHubRoutingPermission,
-  makeGitHubRoutingPermissions,
-} from "./githubRoutingPermissions.ts";
+  PullRequestRoutingPermissions,
+  type StoredPullRequestRoutingPermission,
+  makePullRequestRoutingPermissions,
+} from "./pullRequestRoutingPermissions.ts";
 import * as RpcSession from "../rpc/session.ts";
 import * as EnvironmentSupervisor from "./supervisor.ts";
 import * as ConnectionWakeups from "./wakeups.ts";
@@ -1902,7 +1902,8 @@ describe("EnvironmentRegistry", () => {
       const harness = yield* makeHarness([], [], [], {
         beforePrepareRoute: (target) =>
           target._tag !== "BearerConnectionTarget" || storedCredentials === undefined
-            ? Effect.succeed(undefined)
+            ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - Admission checks return an optional blocker, so absence must be undefined.
+              Effect.succeed(undefined)
             : Ref.get(storedCredentials).pipe(
                 Effect.map((current) =>
                   current.get(target.connectionId)?.token === "old-bearer"
@@ -1986,7 +1987,8 @@ describe("EnvironmentRegistry", () => {
       const harness = yield* makeHarness([], [], [], {
         beforePrepareRoute: (target) =>
           target._tag !== "BearerConnectionTarget"
-            ? Effect.succeed(undefined)
+            ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - Admission checks return an optional blocker, so absence must be undefined.
+              Effect.succeed(undefined)
             : Ref.updateAndGet(attempts, (count) => count + 1).pipe(
                 Effect.flatMap((count) =>
                   count === 1
@@ -1999,7 +2001,8 @@ describe("EnvironmentRegistry", () => {
                           }),
                         ),
                       )
-                    : Effect.succeed(undefined),
+                    : // @effect-diagnostics-next-line effectSucceedWithVoid:off - Admission checks return an optional blocker, so absence must be undefined.
+                      Effect.succeed(undefined),
                 ),
               ),
       });
@@ -2066,7 +2069,7 @@ describe("EnvironmentRegistry", () => {
         label: "Shadowed relay environment",
       });
       const harness = yield* makeHarness([shadowedTarget]);
-      const permissions = yield* makeGitHubRoutingPermissions({
+      const permissions = yield* makePullRequestRoutingPermissions({
         read: Effect.succeed([]),
         write: () => Effect.void,
       });
@@ -2091,7 +2094,7 @@ describe("EnvironmentRegistry", () => {
         expect(hasRoutes(yield* Ref.get(harness.storedTargets), TARGET.environmentId)).toBe(false);
       }).pipe(
         Effect.provide(harness.layer),
-        Effect.provideService(GitHubRoutingPermissions, permissions),
+        Effect.provideService(PullRequestRoutingPermissions, permissions),
         Effect.scoped,
       );
     }),
@@ -2278,7 +2281,7 @@ describe("EnvironmentRegistry", () => {
     Effect.gen(function* () {
       const harness = yield* makeHarness([]);
       let failWrites = false;
-      const permissions = yield* makeGitHubRoutingPermissions({
+      const permissions = yield* makePullRequestRoutingPermissions({
         read: Effect.succeed([]),
         write: () =>
           failWrites
@@ -2335,7 +2338,7 @@ describe("EnvironmentRegistry", () => {
         expect(yield* permissions.get(entry)).toBe("off");
       }).pipe(
         Effect.provide(harness.layer),
-        Effect.provideService(GitHubRoutingPermissions, permissions),
+        Effect.provideService(PullRequestRoutingPermissions, permissions),
         Effect.scoped,
       );
     }),
@@ -2534,33 +2537,38 @@ describe("EnvironmentRegistry routes", () => {
     }),
   );
 
-  it.effect("revokes GitHub routing trust when a route is added but keeps it on reorder", () =>
-    Effect.gen(function* () {
-      const harness = yield* makeHarness([RELAY_TARGET]);
-      let stored: ReadonlyArray<StoredGitHubRoutingPermission> = [];
-      const permissions = yield* makeGitHubRoutingPermissions({
-        read: Effect.sync(() => stored),
-        write: (next) => Effect.sync(() => void (stored = next)),
-      });
-      yield* Effect.gen(function* () {
-        const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
-        const current = () =>
-          SubscriptionRef.get(registry.entries).pipe(
-            Effect.map((entries) => entries.get(RELAY_TARGET.environmentId)!),
-          );
-        yield* permissions.set(yield* current(), "read");
-        yield* registry.register(lanRegistration());
-        expect(yield* permissions.get(yield* current())).toBe("off");
+  it.effect(
+    "revokes pull request routing trust when a route is added but keeps it on reorder",
+    () =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness([RELAY_TARGET]);
+        let stored: ReadonlyArray<StoredPullRequestRoutingPermission> = [];
+        const permissions = yield* makePullRequestRoutingPermissions({
+          read: Effect.sync(() => stored),
+          write: (next) => Effect.sync(() => void (stored = next)),
+        });
+        yield* Effect.gen(function* () {
+          const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
+          const current = () =>
+            SubscriptionRef.get(registry.entries).pipe(
+              Effect.map((entries) => entries.get(RELAY_TARGET.environmentId)!),
+            );
+          yield* permissions.set(yield* current(), "read");
+          yield* registry.register(lanRegistration());
+          expect(yield* permissions.get(yield* current())).toBe("off");
 
-        yield* permissions.set(yield* current(), "read");
-        yield* registry.reorderRoutes(LAN_TARGET.environmentId, ["relay", LAN_TARGET.connectionId]);
-        expect(yield* permissions.get(yield* current())).toBe("read");
-      }).pipe(
-        Effect.provide(harness.layer),
-        Effect.provideService(GitHubRoutingPermissions, permissions),
-        Effect.scoped,
-      );
-    }),
+          yield* permissions.set(yield* current(), "read");
+          yield* registry.reorderRoutes(LAN_TARGET.environmentId, [
+            "relay",
+            LAN_TARGET.connectionId,
+          ]);
+          expect(yield* permissions.get(yield* current())).toBe("read");
+        }).pipe(
+          Effect.provide(harness.layer),
+          Effect.provideService(PullRequestRoutingPermissions, permissions),
+          Effect.scoped,
+        );
+      }),
   );
 
   it.effect("loads saved routes grouped by environment, in saved order", () =>

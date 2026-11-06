@@ -4,6 +4,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Option from "effect/Option";
+import { projectScriptTerminalInput } from "@t3tools/shared/projectScripts";
 import * as Runner from "../../project/ProjectSetupScriptRunner.ts";
 import * as Terminal from "../../terminal/Manager.ts";
 import * as NativeSetup from "../../terminal/NativeSetupControl.ts";
@@ -54,6 +57,12 @@ const make = Effect.gen(function* () {
   const run = Effect.fn("NativeWorkspaceSetupExecutor.run")(
     function* (input: SetupInput) {
       yield* assertAvailable;
+      const lifetime = yield* Effect.serviceOption(Scope.Scope);
+      if (Option.isNone(lifetime))
+        return yield* rejected(
+          "unavailable",
+          "Native setup requires its whole preparation lifetime",
+        );
       const ownedStart = yield* SetupCustody.consume(input.custody, input.claim, input.basis);
       const effectId = digest(
         canonical({ claimId: input.claim.claimId, stage: "setup", basis: input.basis }),
@@ -70,15 +79,13 @@ const make = Effect.gen(function* () {
       const preparation = yield* validateNativeCreationPreparation(
         new TextEncoder().encode(input.claim.canonicalPreparation),
       );
-      const actorSessionId = yield* Schema.decodeUnknownEffect(AuthSessionId)(
-        input.claim.actorSessionId,
-      );
-      const guard = yield* Schema.decodeUnknownEffect(NativeCreationGuard)({
+      const actorSessionId = yield* Schema.decodeEffect(AuthSessionId)(input.claim.actorSessionId);
+      const guard = yield* Schema.decodeEffect(NativeCreationGuard)({
         schema: "t3.native-creation-guard/v1",
         grantId: input.claim.grantId,
         grantRevision: input.claim.grantRevision,
       });
-      const script = yield* Schema.decodeUnknownEffect(ProjectScript)(input.script);
+      const script = yield* Schema.decodeEffect(ProjectScript)(input.script);
       if (
         !input.claim.binding.runSetupScript ||
         canonical(script) !== input.basis.setupDefinition ||
@@ -179,6 +186,7 @@ const make = Effect.gen(function* () {
         },
         observeCompletion: {},
         nativePreparation: {
+          lifetime: lifetime.value,
           control,
           script,
           beforeSpawn: Effect.fn("NativeWorkspaceSetupExecutor.beforeSpawn")(function* (plan) {
@@ -220,7 +228,7 @@ const make = Effect.gen(function* () {
               captured === undefined ||
               spawned === undefined ||
               canonical(write.control) !== canonical(control) ||
-              write.data !== `${captured.commandLine}\r`
+              write.data !== projectScriptTerminalInput(captured.commandLine)
             )
               return yield* rejected(
                 "conflict",
@@ -258,7 +266,8 @@ const make = Effect.gen(function* () {
         );
       return {
         terminalId: result.terminalId,
-        completion: result.completion.pipe(
+        completion: result.writeCompletion.pipe(
+          Effect.andThen(result.completion),
           Effect.flatMap((completion) =>
             completion.exitCode === null
               ? Effect.fail(rejected("unknown", "Native setup completion is unknown"))

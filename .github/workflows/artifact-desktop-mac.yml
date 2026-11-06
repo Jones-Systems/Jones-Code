@@ -1,6 +1,9 @@
 name: Mac Desktop Artifact
 
 on:
+  # Retained pre-590 clients discover only genuine main-push artifacts.
+  push:
+    branches: [main]
   schedule:
     - cron: "45 4 * * *"
       timezone: "America/New_York"
@@ -34,7 +37,8 @@ permissions:
   actions: read
 
 concurrency:
-  group: artifact-desktop-mac-${{ github.event.pull_request.number || github.ref }}
+  # Scheduled/manual builds must not cancel the compatibility push stream.
+  group: artifact-desktop-mac-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -42,8 +46,9 @@ jobs:
     name: Unsigned Apple Silicon DMG
     if: >-
       github.repository == 'Jones-Systems/Jones-Code' &&
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
-       github.event.pull_request.head.repo.full_name == github.repository)
+      ((github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository))
     runs-on: macos-15
     timeout-minutes: 45
     env:
@@ -261,6 +266,7 @@ jobs:
             artifacts/desktop-mac/SOURCE_COMMIT
             artifacts/desktop-mac/ARTIFACT.json
           if-no-files-found: error
+          # Ongoing publication is required; each artifact still expires normally.
           retention-days: 7
           compression-level: 0
 

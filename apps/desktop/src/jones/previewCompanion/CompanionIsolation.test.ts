@@ -3,6 +3,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as NodeEvents from "node:events";
 import { vi } from "vite-plus/test";
 import * as DesktopBrowserHost from "../../preview/DesktopBrowserHost.ts";
@@ -22,10 +23,20 @@ const debuggee = () => {
     getUserAgent: () => "Electron",
   });
   const sendCommand = vi.fn(async (_method: string, _params?: object) => ({}));
-  const debuggerEvents = Object.assign(new NodeEvents.EventEmitter(), { sendCommand });
+  const focusEmulation = vi.fn();
+  const debuggerEvents = Object.assign(new NodeEvents.EventEmitter(), {
+    sendCommand: (method: string, params?: object) => {
+      if (method === "Emulation.setFocusEmulationEnabled") {
+        focusEmulation(params);
+        return Promise.resolve({});
+      }
+      return sendCommand(method, params);
+    },
+  });
   return {
     contents,
     sendCommand,
+    focusEmulation,
     tab: {
       webContents: contents as unknown as Electron.WebContents,
       debugger: debuggerEvents as unknown as Electron.Debugger,
@@ -40,6 +51,9 @@ const readEvents = (stream: Stream.Stream<Uint8Array>, count: number) =>
       lines.map((line) => JSON.parse(new TextDecoder().decode(line)) as Record<string, unknown>),
     ),
   );
+// oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- flushes focus-emulation promise continuations
+const settleCommands = Effect.promise(() => new Promise<void>((resolve) => setImmediate(resolve)));
+
 const line = (
   key: DesktopBrowserHost.DesktopBrowserTabKey,
   id: number,
@@ -52,6 +66,37 @@ const line = (
   });
 
 describe("companion isolation", () => {
+  it.effect("keeps turn focus independent for local and companion channels sharing a thread", () =>
+    Effect.gen(function* () {
+      const host = yield* DesktopBrowserHost.make;
+      const companion = debuggee();
+      const ordinary = debuggee();
+      const localTab = { threadId: remote.threadId, tabId: "local-tab" };
+      host.replaceCompanionAssignments([remote]);
+      host.attach(remote, companion.tab);
+      host.attach(localTab, ordinary.tab);
+      const localChannel = localBrowserChannel(host);
+      const source = {};
+      const turn = (active: boolean) =>
+        JSON.stringify({ type: "turn", threadId: remote.threadId, active });
+      yield* host.handleCommandLine(turn(true), host.isCompanionAssigned, source);
+      yield* localChannel.onDesktopBrowserCommand(turn(true));
+      yield* host.handleCommandLine(line(remote, 1), host.isCompanionAssigned, source);
+      yield* localChannel.onDesktopBrowserCommand(line(localTab, 2));
+      yield* settleCommands;
+      yield* TestClock.adjust("5 seconds");
+      expect(companion.focusEmulation).toHaveBeenLastCalledWith({ enabled: true });
+      expect(ordinary.focusEmulation).toHaveBeenLastCalledWith({ enabled: true });
+      yield* localChannel.onDesktopBrowserCommand(turn(false));
+      yield* TestClock.adjust("5 seconds");
+      expect(ordinary.focusEmulation).toHaveBeenLastCalledWith({ enabled: false });
+      expect(companion.focusEmulation).toHaveBeenLastCalledWith({ enabled: true });
+      yield* host.handleCommandLine(turn(false), host.isCompanionAssigned, source);
+      yield* TestClock.adjust("5 seconds");
+      expect(companion.focusEmulation).toHaveBeenLastCalledWith({ enabled: false });
+    }),
+  );
+
   it("distinguishes active assignment from lifetime ownership, with unambiguous keys", () => {
     const assignments = createCompanionAssignments();
     assignments.replace([remote, { threadId: "a\u0000b", tabId: "c" }]);
@@ -126,11 +171,13 @@ describe("companion isolation", () => {
       yield* localChannel.onDesktopBrowserCommand(JSON.stringify({ type: "release", ...remote }));
       // Starting the local FD sink must not reset an in-flight companion relay.
       yield* readEvents(localChannel.desktopBrowserStream, 1);
+      yield* settleCommands;
       finishCommand();
       const [, reply] = yield* Fiber.join(replies);
       expect(reply).toMatchObject({ type: "cdp", ...remote });
       expect(JSON.parse(reply!.message as string)).toMatchObject({ id: 3, result: {} });
       yield* localChannel.onDesktopBrowserCommand(line(local, 4));
+      yield* settleCommands;
       expect(ordinary.sendCommand).toHaveBeenCalledOnce();
     }).pipe(Effect.scoped),
   );
@@ -167,6 +214,7 @@ describe("companion isolation", () => {
         host.replaceCompanionAssignments([remote]);
         host.attach(remote, companion.tab);
         yield* host.handleCommandLine(line(remote, 2), host.isCompanionAssigned);
+        yield* settleCommands;
         expect(companion.sendCommand).toHaveBeenCalledOnce();
       }),
   );
@@ -205,6 +253,7 @@ describe("companion isolation", () => {
         }),
         host.isCompanionAssigned,
       );
+      yield* settleCommands;
       expect(companion.sendCommand).toHaveBeenCalledWith("Browser.setDownloadBehavior", {
         behavior: "deny",
       });

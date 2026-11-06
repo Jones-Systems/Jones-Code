@@ -221,6 +221,9 @@ describe("image zoom interactions", () => {
     await click(image());
     expect(Number.parseFloat(image().style.width)).toBeCloseTo(440);
     expect(region().scrollLeft).toBeCloseTo(10);
+    await act(() => resize([{ contentRect: { width: 400, height: 200 } }]));
+    expect(input().value).toBe("110");
+    expect(region().scrollLeft).toBeCloseTo(10);
     await dispatch(
       region(),
       new WheelEvent("wheel", {
@@ -239,6 +242,23 @@ describe("image zoom interactions", () => {
     expect(input().value).toBe("100");
     expect(image().style.width).toBe("200px");
     expect(image().style.height).toBe("100px");
+  });
+
+  it("fits actual size above eight times zoom and keeps imperative zoom and fit current", async () => {
+    await using _fixture = await setupTest();
+    await render("panel");
+    await act(() => resize([{ contentRect: { width: 40, height: 20 } }]));
+    await act(() => handle.current!.actualSize());
+    expect(input().value).toBe("2500");
+    expect(image().style.width).toBe("1000px");
+    expect(handle.current!.pan("ArrowRight")).toBe(true);
+    await act(() => handle.current!.zoomTo(1));
+    expect(input().value).toBe("100");
+    expect(handle.current!.pan("ArrowRight")).toBe(false);
+    await act(() => resize([{ contentRect: { width: 200, height: 100 } }]));
+    await act(() => handle.current!.actualSize());
+    expect(input().value).toBe("500");
+    expect(image().style.width).toBe("1000px");
   });
 
   it("leaves gallery arrows available without horizontal overflow and pans only while zoomed", async () => {

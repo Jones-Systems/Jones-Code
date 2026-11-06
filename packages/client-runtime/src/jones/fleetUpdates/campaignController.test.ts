@@ -85,17 +85,18 @@ function fixture(committed = false) {
             ? entry
             : {
                 ...entry,
-                members: entry.members.map((member) =>
-                  member !== old
-                    ? member
-                    : {
-                        ...member,
-                        phase: request.input.phase,
-                        ...(request.input.expectedInstalledSource === undefined
-                          ? {}
-                          : { expectedInstalledSource: request.input.expectedInstalledSource }),
-                      },
-                ),
+                members: entry.members.map((member) => {
+                  if (member !== old) return member;
+                  const { reason: _reason, ...previous } = member;
+                  return {
+                    ...previous,
+                    phase: request.input.phase,
+                    ...(request.input.reason === undefined ? {} : { reason: request.input.reason }),
+                    ...(request.input.expectedInstalledSource === undefined
+                      ? {}
+                      : { expectedInstalledSource: request.input.expectedInstalledSource }),
+                  };
+                }),
               },
         ),
       };
@@ -172,14 +173,66 @@ describe("fleet campaign driver", () => {
     expect(f.state().campaigns[0]?.members[0]?.phase).toBe("committed");
   });
 
-  it("stages the frozen SHA and never activates from a prepared campaign", async () => {
+  it("does not stage or activate before the laptop commit and generation are proved", async () => {
     const f = fixture();
     await advanceFleetCampaigns(f.driver);
-    expect(f.operation()?.input.targetSource).toBe(source);
-    expect(f.state().campaigns[0]?.members[0]?.phase).toBe("staged");
+    expect(f.operation()).toBeNull();
+    expect(f.state().campaigns[0]?.members[0]?.phase).toBe("waiting");
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
     expect(
       f.driver.host.mock.calls.filter(([, input]) => input.action === "activate"),
     ).toHaveLength(0);
+    expect(f.driver.host.mock.calls.filter(([, input]) => input.action === "stage")).toHaveLength(
+      0,
+    );
+    const state = f.state();
+    f.setState({
+      ...state,
+      campaigns: state.campaigns.map((c) => ({ ...c, committedGeneration: "native-generation" })),
+    });
+    await advanceFleetCampaigns(f.driver);
+    expect(f.operation()).toBeNull();
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
+    f.setState({
+      ...state,
+      campaigns: state.campaigns.map((c) => {
+        const { committedGeneration: _generation, ...unproved } = c;
+        return { ...unproved, phase: "committed" };
+      }),
+    });
+    await advanceFleetCampaigns(f.driver);
+    expect(f.operation()).toBeNull();
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBe(
+      "Waits for the laptop update to commit.",
+    );
+    expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual([
+      "status",
+      "status",
+      "status",
+    ]);
+    f.setState({
+      ...f.state(),
+      campaigns: f.state().campaigns.map((c) => ({
+        ...c,
+        phase: "committed",
+        committedGeneration: "native-generation",
+      })),
+    });
+    await advanceFleetCampaigns(f.driver);
+    expect(f.operation()?.input.targetSource).toBe(source);
+    expect(f.driver.host.mock.calls.map(([, input]) => input.action)).toEqual([
+      "status",
+      "status",
+      "status",
+      "status",
+      "stage",
+      "activate",
+    ]);
+    expect(f.state().campaigns[0]?.members[0]?.reason).toBeUndefined();
   });
 
   it("reconciles a lost acceptance without duplicating native activation", async () => {
@@ -282,6 +335,8 @@ it("retires an occupied old stage before driving a newer campaign, including aft
         ...old,
         campaignId: "66666666-6666-4666-8666-666666666666",
         targetSource: "c".repeat(40),
+        phase: "committed",
+        committedGeneration: "new-native-generation",
         members: [{ ...old.members[0]!, operationId: nextId, phase: "waiting" }],
       },
     ],
@@ -318,7 +373,7 @@ it("retires an occupied old stage before driving a newer campaign, including aft
       : result;
   });
   await advanceFleetCampaigns(f.driver);
-  expect(f.state().campaigns[1]?.members[0]?.phase).toBe("staged");
+  expect(f.state().campaigns[1]?.members[0]?.phase).toBe("pending");
   expect(f.operation()?.input.targetSource).toBe("c".repeat(40));
 });
 

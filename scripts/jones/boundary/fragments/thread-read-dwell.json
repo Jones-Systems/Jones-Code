@@ -8,7 +8,9 @@
     "apps/web/src/jones/threadReadDwell/ThreadVisitWatermark.tsx",
     "packages/client-runtime/src/jones/threadReadDwell.ts",
     "packages/client-runtime/src/jones/threadReadDwell.test.ts",
-    "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx"
+    "apps/web/src/jones/threadStatusFilter/useThreadStatusFilter.browser.test.tsx",
+    "apps/mobile/src/jones/threadVisits/tracker.ts",
+    "apps/mobile/src/jones/threadVisits/tracker.test.ts"
   ],
   "hookPaths": [
     "apps/web/src/hooks/useThreadActions.ts",
@@ -27,6 +29,10 @@
     {
       "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
       "to": "packages/client-runtime/src/jones/threadReadDwell.ts"
+    },
+    {
+      "from": "apps/mobile/src/features/threads/ThreadDetailScreen.tsx",
+      "to": "apps/mobile/src/jones/threadVisits/tracker.ts"
     }
   ]
 }

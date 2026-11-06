@@ -485,7 +485,7 @@ export const makeVoiceReviewBridge = (
         memberships.clear();
         unavailable.add("native_memberships");
       }
-      return Schema.decodeUnknownSync(ThreadRegistryComposedSnapshot)({
+      return Schema.decodeSync(ThreadRegistryComposedSnapshot)({
         ...result,
         partial: result.partial || unavailable.size > result.unavailable.length,
         unavailable: Array.from(unavailable),
@@ -521,7 +521,7 @@ export const makeVoiceReviewBridge = (
       metadataMutation(
         principal,
         "/v1/registry/associations",
-        Schema.decodeUnknownSync(ThreadRegistryAssociationPayload)(payload),
+        Schema.decodeSync(ThreadRegistryAssociationPayload)(payload),
       ),
     correctLabel: async (
       principal: EnvironmentSessionPrincipalShape,
@@ -530,7 +530,7 @@ export const makeVoiceReviewBridge = (
       metadataMutation(
         principal,
         "/v1/registry/labels",
-        Schema.decodeUnknownSync(ThreadRegistryLabelPayload)(payload),
+        Schema.decodeSync(ThreadRegistryLabelPayload)(payload),
       ),
     diagnostics: async (principal: EnvironmentSessionPrincipalShape, id: string) => {
       const trusted = authorize(principal, false);

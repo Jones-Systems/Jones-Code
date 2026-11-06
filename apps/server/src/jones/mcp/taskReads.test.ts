@@ -37,6 +37,7 @@ import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService
 import * as SecretRequests from "../../secrets/SecretRequests.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as GitVcsDriver from "../../vcs/GitVcsDriver.ts";
+import { fixture as continuationFixture } from "../taskContinuation/testkit.ts";
 
 const parentId = ThreadId.make("thread:task-reads-parent");
 const taskId = NodeId.make("opaque-selected-task");
@@ -98,7 +99,7 @@ const serviceLayer = (
       Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          readRemoteTaskObservation: () => Effect.succeed(undefined),
+          readRemoteTaskObservation: () => Effect.sync(() => undefined),
           ...management,
         }),
         Layer.mock(ThreadLaunchService.ThreadLaunchService)({}),
@@ -137,6 +138,36 @@ const serviceLayer = (
 const parent = idleThreadProjection(liveThreadShell(parentId));
 
 describe("MCP task read selection", () => {
+  it.effect("exposes a completed Claude task's captured native ID without manual notes", () =>
+    Effect.gen(function* () {
+      const f = continuationFixture();
+      const reads: Array<ReadonlyArray<string>> = [];
+      const task = {
+        ...f.task,
+        completionDelivery: { state: "acknowledged" as const, observedByRunId: null },
+      };
+      const layer = serviceLayer({
+        getThreadRecords: (threadId, fields) =>
+          Effect.sync(() => {
+            if (threadId === f.parent.thread.id) return { ...f.parent, subagents: [task] };
+            assert.equal(threadId, f.child.thread.id);
+            reads.push(fields);
+            return f.child;
+          }),
+      });
+      const result = yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.taskStatus(f.scope, f.task.id);
+      }).pipe(Effect.provide(layer));
+      assert.deepEqual(result.nativeSession, {
+        nativeSessionId: "original-native",
+        sourceRunId: f.run.id,
+        sourceAttemptId: f.attempt.id,
+        evidence: "attempt",
+      });
+      assert.deepEqual(reads.at(-1), ["attempts", "providerTurns"]);
+    }),
+  );
   it.effect.each(["siblings", "completion", "question", "undecodable"] as const)(
     "filters parent wake events: %s",
     (scenario) =>

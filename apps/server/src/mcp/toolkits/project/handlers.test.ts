@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as ThreadLaunch from "../../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as ServerConfig from "../../../config.ts";
@@ -80,7 +81,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId, modelSelection },
+              thread: { id: input.threadId, title: input.title, projectId, modelSelection },
               runs: [],
             },
             resumed: false,
@@ -92,6 +93,7 @@ it.effect("attributes a launched thread's first message to the calling thread", 
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       NodeServices.layer,
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-source-link-" }).pipe(
         Layer.provide(NodeServices.layer),
       ),
@@ -156,7 +158,12 @@ it.effect("launches a scratch thread into the Scratch project", () =>
           return Effect.succeed({
             threadId: input.threadId,
             projection: {
-              thread: { id: input.threadId, projectId: input.projectId, modelSelection },
+              thread: {
+                id: input.threadId,
+                title: input.title,
+                projectId: input.projectId,
+                modelSelection,
+              },
               runs: [],
             },
             resumed: false,
@@ -171,6 +178,7 @@ it.effect("launches a scratch thread into the Scratch project", () =>
       }),
       Layer.mock(GitVcsDriver.GitVcsDriver)({}),
       NodeServices.layer,
+      DocumentText.layer.pipe(Layer.provide(NodeServices.layer)),
       ServerConfig.layerTest(process.cwd(), { prefix: "t3-scratch-launch-" }).pipe(
         Layer.provide(NodeServices.layer),
       ),
@@ -376,6 +384,7 @@ const clientLaunchHarness = (input: {
             thread: {
               id: launch.threadId,
               projectId: launch.projectId,
+              title: launch.title,
               modelSelection: launch.modelSelection,
             },
             runs: [],
@@ -398,7 +407,7 @@ const clientLaunchHarness = (input: {
     }),
     Layer.mock(PeerForwarding.PeerForwarding)({}),
     Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
-    NodeServices.layer,
+    DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
   ).pipe(
     Layer.provideMerge(GitVcsDriver.layer),
     Layer.provideMerge(VcsProcess.layer),
@@ -455,6 +464,7 @@ it.effect(
       expect(belowCeiling.result).toMatchObject({
         projectId: belowCeiling.projectId,
         modelSelection: belowCeiling.modelSelection,
+        link: `[Fix](t3-thread://v1/${belowCeiling.launched[0]?.threadId})`,
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
@@ -553,6 +563,80 @@ it.effect(
         expect(input.runtimeMode).toBe("approval-required");
         expect(input.interactionMode).toBe("plan");
       }
+    }),
+);
+
+it.effect("a delegated linked launch preserves inherited modes over project defaults", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "full-access",
+      defaultRuntimeMode: "approval-required",
+      linked: true,
+      narrowedTo: { runtimeMode: "auto", interactionMode: "default" },
+      launched,
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    yield* toolkit
+      .handle("t3_thread_launch", {
+        title: "Inherited delegated task",
+        projectId,
+        delegatedFrom: {
+          environmentId: EnvironmentId.make("source-environment"),
+          threadId: ThreadId.make("source-parent"),
+          title: "Parent task",
+        },
+      })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(launched).toHaveLength(1);
+    expect(launched[0]?.runtimeMode).toBe("auto");
+    expect(launched[0]?.interactionMode).toBe("default");
+    expect(launched[0]?.linkOrigin?.access).toBe("full-access");
+  }),
+);
+
+it.effect.each(["without delegation", "without source modes"] as const)(
+  "a linked launch %s keeps its project mode default",
+  (scenario) =>
+    Effect.gen(function* () {
+      const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+      const { projectId, dependencies } = clientLaunchHarness({
+        runtimeModeCeiling: "full-access",
+        defaultRuntimeMode: "approval-required",
+        linked: true,
+        ...(scenario === "without delegation"
+          ? { narrowedTo: { runtimeMode: "auto" as const, interactionMode: "default" as const } }
+          : {}),
+        launched,
+      });
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Ordinary linked launch",
+          projectId,
+          ...(scenario === "without source modes"
+            ? {
+                delegatedFrom: {
+                  environmentId: EnvironmentId.make("source-environment"),
+                  threadId: ThreadId.make("source-parent"),
+                  title: "Parent task",
+                },
+              }
+            : {}),
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(launched).toHaveLength(1);
+      expect(launched[0]?.runtimeMode).toBe("approval-required");
     }),
 );
 

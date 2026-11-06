@@ -23,6 +23,39 @@ export function toolValue(result) {
   }
 }
 
+// Failure diagnostics must never retain a pairing URL, dialog value, page text or pixels.
+export function sanitizeFailurePageState(value) {
+  const raw = value !== null && typeof value === "object" ? value : {};
+  const count = (field) =>
+    Number.isSafeInteger(raw[field]) && raw[field] >= 0 && raw[field] <= 10_000_000
+      ? raw[field]
+      : null;
+  return {
+    readyState: ["loading", "interactive", "complete"].includes(raw.readyState)
+      ? raw.readyState
+      : "unknown",
+    rootChildren: count("rootChildren"),
+    rootHtmlLength: count("rootHtmlLength"),
+    bodyTextLength: count("bodyTextLength"),
+    dialogs: count("dialogs"),
+    onConnectionsRoute: raw.onConnectionsRoute === true,
+    ui: Object.fromEntries(
+      [
+        "sourceMatches",
+        "remoteListed",
+        "addFailed",
+        "rootError",
+        "reloadApp",
+        "tryAgain",
+        "loading",
+        "maximumDepth",
+        "invalidHook",
+        "atomNotFunction",
+      ].map((key) => [key, raw.ui?.[key] === true]),
+    ),
+  };
+}
+
 export async function assertVisible(call, tabId, { contains = [], excludes = [] }) {
   const assertions = [
     ...contains.map((text) => ({ text, present: true })),
@@ -165,9 +198,9 @@ export async function createMilestoneChannel({ runId, caseId, files, signal }) {
     NodeAssert.ok(!receipts.has(name), "Duplicate milestone");
     const receipt = { schema: milestoneSchema, runId, caseId, name, sha256 };
     receipts.set(name, receipt);
-    for (const waiter of [...waiters])
+    for (const waiter of Array.from(waiters))
       if (waiter.names.includes(name)) waiter.finish(undefined, receipt);
-    if (name === "release") for (const response of [...held]) reply(response, 200, receipt);
+    if (name === "release") for (const response of Array.from(held)) reply(response, 200, receipt);
     return receipt;
   };
   const server = NodeHttp.createServer(async (request, response) => {
@@ -216,8 +249,9 @@ export async function createMilestoneChannel({ runId, caseId, files, signal }) {
     if (closing) return closing;
     closed = true;
     signal?.removeEventListener("abort", cancel);
-    for (const waiter of [...waiters]) waiter.finish(new Error("Milestone channel closed"));
-    for (const response of [...held]) reply(response, 503, { error: "fixture_channel_closed" });
+    for (const waiter of Array.from(waiters)) waiter.finish(new Error("Milestone channel closed"));
+    for (const response of Array.from(held))
+      reply(response, 503, { error: "fixture_channel_closed" });
     held.clear();
     markReleaseWaiting(false);
     server.closeAllConnections();
@@ -428,6 +462,32 @@ export async function runScenario(client, scenario, report) {
   } catch (error) {
     scenarioError = error;
     report.failedAction = report.currentAction ?? { action: "initial-navigation" };
+    try {
+      const page = await call("preview_evaluate", {
+        tabId,
+        expression: `(() => {
+          const root = document.getElementById('root');
+          const text = document.body?.innerText ?? '';
+          return {
+            readyState: document.readyState,
+            rootChildren: root?.childElementCount ?? 0,
+            rootHtmlLength: root?.innerHTML.length ?? 0,
+            bodyTextLength: text.length,
+            dialogs: document.querySelectorAll('[role="dialog"]').length,
+            onConnectionsRoute: window.location.pathname === '/settings/connections',
+            ui: Object.fromEntries(Object.entries({
+              sourceMatches: 'Source matches this app.', remoteListed: 'Synthetic incompatible Jones host',
+              addFailed: 'Could not add backend', rootError: 'Something went wrong.',
+              reloadApp: 'Reload app', tryAgain: 'Try again', loading: 'Loading',
+              maximumDepth: 'Maximum update depth', invalidHook: 'Invalid hook call', atomNotFunction: 'atom is not a function',
+            }).map(([key, phrase]) => [key, text.includes(phrase)])),
+          };
+        })()`,
+      });
+      report.failurePageState = sanitizeFailurePageState(page.value);
+    } catch {
+      report.failurePageState = { unavailable: true };
+    }
     try {
       // A failed pairing dialog can still display a plain-text code. Never persist its pixels or text.
       const snapshot = await call("preview_snapshot", { tabId, save: false, includeImage: false });

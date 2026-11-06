@@ -67,40 +67,6 @@ these tests so regressions fail locally. The transfer budget integration test
 of the compact bounded snapshot that web and mobile load, and of one older page, for a 900-row
 agent turn.
 
-## Foreground reads and the SQLite writer
-
-The SQLite writer runs synchronously on the server event loop. Its transactions,
-including read transactions, use `BEGIN IMMEDIATE`; an unnecessary read can wait
-behind message ingestion and then hold up other frames while it executes. Route
-pure foreground reads through `NodeSqliteClient.readOnly`: thread snapshots,
-history pages, live shell rows, and the legacy-transcript existence check. Scope
-it to the read itself. Pending transcript hydration can write and must retain the
-writer lock and recheck. Inside an existing write transaction, `readOnly` stays on
-the writer. The regression tests in
-[`foregroundReads.test.ts`](../../apps/server/src/jones/requestEconomy/foregroundReads.test.ts)
-hold the writer busy to prove that native-thread reads can still finish.
-
-Branch rename discovery and startup telemetry use thread metadata queries instead
-of materializing shells. Only standalone rename discovery and telemetry counts
-choose the reader; bootstrap selection and project deletion retain writer
-routing, including read-your-writes inside an enclosing transaction. Metadata
-selection excludes deleted rows and preserves active-before-archived order.
-It still reads thread metadata; it does not establish constant-cost SQL or a
-measured latency improvement. JSON/schema decoding remains on the serving loop.
-
-Keep metadata rows and their watermark in one transaction, and decode after
-leaving that transaction. File-backed WAL coverage in
-[`threadMetadataReads.test.ts`](../../apps/server/src/jones/orchestration/threadMetadataReads.test.ts)
-holds the writer, compares an unmarked control, and commits between row and
-watermark statements to check routing and snapshot coherence.
-
-Keep snapshot rows and their sequence in one read transaction. The live tail
-subscribes before replaying from that sequence, so changing the connection does
-not leave a gap between the snapshot and subsequent events. The single reader
-also serves search, PR sweeps and cleanup; check its `db.lock_wait_ms` before
-adding another reader lane. More transports or a timeout fallback still reach
-these same server resources.
-
 ## Event store and startup
 
 Sequence cursors must seek an index rather than scan retained history. The application sequence

@@ -18,7 +18,9 @@ import {
 } from "../../../../packages/client-runtime/src/state/orchestrationV2TestFixtures";
 import type { DraftComposerImageAttachment } from "../lib/composerImages";
 import type { PendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
+import { sendApprovalFeedback } from "@t3tools/client-runtime/state/thread-requests";
 import { AsyncResult, type Atom } from "effect/reactivity";
+import * as Cause from "effect/Cause";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const state = vi.hoisted(() => ({
@@ -147,6 +149,7 @@ vi.mock("./use-composer-drafts", async () => {
     getComposerDraftSnapshot: () => state.draft,
     clearComposerDraftContent: state.clearDraft,
     clearComposerDraft: state.clearDraft,
+    consumeSubmittedComposerModelPick: vi.fn(),
     setComposerDraftText: (_key: string, text: string) => {
       state.draft.text = text;
     },
@@ -208,6 +211,42 @@ beforeEach(() => {
 });
 
 describe("mobile task permissions", () => {
+  it("consumes an approval reply without queueing a parent message", async () => {
+    state.grantedEnvironments.add("secondary");
+    const composer = useThreadComposerState();
+    const requests = useSelectedThreadRequests();
+    const approval = { ...state.pendingRequests.approvals[0]!, supportsFeedback: true };
+    const messageId = await composer.onSendMessage(undefined, async (text) =>
+      (await sendApprovalFeedback(approval, text, requests.onRespondToApproval))
+        ? "responded"
+        : false,
+    );
+    expect(messageId).toBeNull();
+    expect(state.approve).toHaveBeenCalledWith({
+      environmentId: "secondary",
+      input: {
+        threadId: "thread",
+        requestId: "approval",
+        decision: "decline",
+        feedback: "Keep my draft",
+      },
+    });
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a draft changed during an approval reply and never sends it to the parent", async () => {
+    state.grantedEnvironments.add("secondary");
+    const composer = useThreadComposerState();
+    const beforeDispatch = async () => {
+      state.draft = { ...state.draft, text: "New feedback" };
+      return "responded" as const;
+    };
+    expect(await composer.onSendMessage(undefined, beforeDispatch)).toBeNull();
+    expect(state.enqueue).not.toHaveBeenCalled();
+    expect(state.clearDraft).not.toHaveBeenCalled();
+    expect(state.draft.text).toBe("New feedback");
+  });
   it.each([false, true])(
     "rechecks permission after the approval wait before sending (imported=%s)",
     async (imported) => {
@@ -319,6 +358,111 @@ describe("mobile task permissions", () => {
       environmentId: "secondary",
       input: { threadId: "thread", requestId: "input", answers: { language: "TypeScript" } },
     });
+  });
+
+  it("submits the clicked option immediately with notes and retries without clearing it", async () => {
+    state.pendingRequests = {
+      approvals: [],
+      userInputs: [
+        {
+          requestId: RuntimeRequestId.make("quick-action"),
+          createdAt: "2026-10-29T00:00:00.000Z",
+          responseCapability: "message",
+          dismissible: true,
+          questions: [state.question],
+        },
+      ],
+    };
+    state.grantedEnvironments.add("secondary");
+    const requestId = RuntimeRequestId.make("quick-action");
+    useSelectedThreadRequests().onChangeUserInputCustomAnswer(
+      requestId,
+      "language",
+      "Keep the current setup",
+    );
+    let finish!: (value: unknown) => void;
+    state.answer.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const requests = useSelectedThreadRequests();
+    requests.onSelectUserInputOption(requestId, state.question, "TypeScript");
+    requests.onSelectUserInputOption(requestId, state.question, "TypeScript");
+    expect(state.answer).toHaveBeenCalledTimes(1);
+    expect(state.answer).toHaveBeenCalledWith({
+      environmentId: "secondary",
+      input: {
+        threadId: "thread",
+        requestId,
+        answers: { language: "TypeScript\nNote: Keep the current setup" },
+      },
+    });
+    finish(AsyncResult.failure(Cause.fail(new Error("Synthetic failure"))));
+    await Promise.resolve();
+    requests.onSelectUserInputOption(requestId, state.question, "TypeScript");
+    expect(state.answer).toHaveBeenCalledTimes(2);
+    expect(useSelectedThreadRequests().activePendingUserInputAnswers).toEqual({
+      language: "TypeScript\nNote: Keep the current setup",
+    });
+    finish(AsyncResult.success(undefined));
+    await Promise.resolve();
+  });
+
+  it("advances unanswered questions and submits a complete batch, leaving multi-select explicit", async () => {
+    const requestId = RuntimeRequestId.make("quick-batch");
+    const second = { ...state.question, id: "second" };
+    state.pendingRequests = {
+      approvals: [],
+      userInputs: [
+        {
+          requestId,
+          createdAt: "2026-10-29T00:00:00.000Z",
+          responseCapability: "message",
+          dismissible: true,
+          questions: [state.question, second],
+        },
+      ],
+    };
+    state.grantedEnvironments.add("secondary");
+    expect(
+      useSelectedThreadRequests().onSelectUserInputOption(requestId, second, "TypeScript"),
+    ).toBe(0);
+    expect(state.answer).not.toHaveBeenCalled();
+    useSelectedThreadRequests().onSelectUserInputOption(requestId, state.question, "TypeScript");
+    expect(state.answer).toHaveBeenCalledWith({
+      environmentId: "secondary",
+      input: {
+        threadId: "thread",
+        requestId,
+        answers: { language: "TypeScript", second: "TypeScript" },
+      },
+    });
+    const multi = { ...state.question, multiSelect: true };
+    state.pendingRequests = {
+      ...state.pendingRequests,
+      userInputs: [
+        {
+          ...state.pendingRequests.userInputs[0]!,
+          requestId: RuntimeRequestId.make("quick-multi"),
+          questions: [multi],
+        },
+      ],
+    };
+    state.answer.mockClear();
+    useSelectedThreadRequests().onSelectUserInputOption(
+      RuntimeRequestId.make("quick-multi"),
+      multi,
+      "TypeScript",
+    );
+    expect(state.answer).not.toHaveBeenCalled();
+    await useSelectedThreadRequests().onSubmitUserInput();
+    expect(state.answer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        input: expect.objectContaining({ answers: { language: ["TypeScript"] } }),
+      }),
+    );
   });
 });
 

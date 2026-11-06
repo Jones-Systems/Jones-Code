@@ -18,7 +18,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -113,6 +113,8 @@ export const fixture = Effect.gen(function* () {
     beforeRegistryRead: Effect.void as Effect.Effect<void>,
     afterResume: Effect.void as Effect.Effect<void>,
     beforeProviderUse: Effect.void as Effect.Effect<void>,
+    beforeProviderEnsure: Effect.void as Effect.Effect<void>,
+    beforeBaseline: Effect.void as Effect.Effect<void>,
     loseResponse: false,
     resumes: 0,
     view: () => view,
@@ -234,6 +236,7 @@ export const fixture = Effect.gen(function* () {
           events: Stream.never,
           ensureThread: (request) =>
             Effect.gen(function* () {
+              yield* state.beforeProviderEnsure;
               if (input.runtimeLifecycle && generation)
                 yield* input.runtimeLifecycle.admit({
                   runtimeGeneration: generation,
@@ -347,6 +350,17 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(configured),
     Layer.provide(platform),
   );
+  const checkpoints = Layer.effect(
+    CheckpointStore.CheckpointStore,
+    Effect.gen(function* () {
+      const store = yield* CheckpointStore.CheckpointStore;
+      return CheckpointStore.CheckpointStore.of({
+        ...store,
+        captureCheckpoint: (input) =>
+          state.beforeBaseline.pipe(Effect.andThen(store.captureCheckpoint(input))),
+      });
+    }),
+  ).pipe(Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcs))));
   const runtime = Layer.mergeAll(
     Runtime.layer,
     Runtime.layerEventSink,
@@ -359,7 +373,7 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(McpProviderSessions.layer),
     Layer.provideMerge(LifecycleRuntime.layer),
     Layer.provideMerge(database),
-    Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcs))),
+    Layer.provide(checkpoints),
     Layer.provide(configured),
     Layer.provide(Settings.layerTest()),
     Layer.provide(
@@ -371,6 +385,7 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(Layer.succeed(Git.GitVcsDriver, git)),
     Layer.provide(
       Layer.succeed(Registry.ProviderInstanceRegistry, {
+        getCatalogSource: (id) => (id === selection.instanceId ? instance : undefined),
         getInstance: (id) => Effect.succeed(id === selection.instanceId ? instance : undefined),
         listInstances: Effect.succeed([instance]),
         listUnavailable: Effect.succeed([]),
@@ -396,7 +411,7 @@ export const fixture = Effect.gen(function* () {
     ),
     Layer.provide(
       Layer.mock(ProjectService.ProjectService)({
-        getById: () => Effect.succeed(Option.some({ id: projectId, workspaceRoot: repo } as never)),
+        getById: () => Effect.succeedSome({ id: projectId, workspaceRoot: repo } as never),
       }),
     ),
     Layer.provide(platform),

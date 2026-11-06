@@ -20,7 +20,6 @@ import {
 } from "@t3tools/contracts/jones/linkedThreads";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { McpSchema, McpServer, Toolkit } from "effect/ai";
@@ -53,6 +52,7 @@ import * as Links from "./LinkedThreads.ts";
 import * as Launch from "./launchTransport.ts";
 import * as Handoff from "./handoff.ts";
 import migration from "../persistence/Migrations/122_JonesThreadLinks.ts";
+import { RecordedAppThreadJson } from "../../orchestration-v2/RecordedTypes.ts";
 import {
   encodeLinkedMessageOrigin,
   withLinkedMessageOrigin,
@@ -125,7 +125,7 @@ function fixture(
       getThreadShell: (id) =>
         Effect.succeed(liveThreadShell(id, { runtimeMode: options.runtimeMode ?? "full-access" })),
     }),
-    Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
+    Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
     Layer.mock(Forwarding.PeerForwarding)(
       options.forwarding === undefined ? {} : { call: options.forwarding },
     ),
@@ -213,8 +213,16 @@ it.effect(
               Effect.gen(function* () {
                 yield* migration;
                 const sql = yield* SqlClient.SqlClient;
-                yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT)`;
-                yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${origin}, NULL), (${target}, NULL)`;
+                yield* sql`CREATE TABLE orchestration_v2_projection_threads (thread_id TEXT PRIMARY KEY, deleted_at TEXT, payload_json TEXT NOT NULL)`;
+                const encodeThread = Schema.encodeEffect(
+                  Schema.fromJsonString(RecordedAppThreadJson),
+                );
+                for (const id of [origin, target]) {
+                  const payload = yield* encodeThread(
+                    idleThreadProjection(liveThreadShell(id)).thread,
+                  );
+                  yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES (${id}, NULL, ${payload})`;
+                }
               }),
             ).pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" }))),
           ),
@@ -288,7 +296,10 @@ it.effect(
               Layer.mergeAll(
                 NodeServices.layer,
                 threads,
-                Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
+                Layer.mock(Projects.ProjectService)({
+                  getById: () => Effect.succeedNone,
+                }),
+                Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
                 Layer.mock(Peers.PeerMcpClient)({
                   call: (request) => {
                     payloads.push(request.arguments);
@@ -474,7 +485,8 @@ it.effect("preserves production blocked-send refusal locally and through forward
             Layer.mergeAll(
               NodeServices.layer,
               threads,
-              Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
+              Layer.mock(Projects.ProjectService)({ getById: () => Effect.succeedNone }),
+              Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
               Layer.mock(Peers.PeerMcpClient)({
                 call: (request) =>
                   request.tool === "t3_thread_read"
@@ -586,9 +598,9 @@ it.effect.each([
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
     const response = yield* server.callTool({ name: "t3_thread_handoff", arguments: input });
-    const result = yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(ThreadHandoffToolResult),
-    )(response.content.map((part) => (part.type === "text" ? part.text : "")).join(""));
+    const result = yield* Schema.decodeEffect(Schema.fromJsonString(ThreadHandoffToolResult))(
+      response.content.map((part) => (part.type === "text" ? part.text : "")).join(""),
+    );
     expect(observedLimit).toMatchObject({
       runtimeMode: "approval-required",
       interactionMode: "default",

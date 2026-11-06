@@ -120,7 +120,7 @@ export const makePhysicalProcessLease = (input: {
     Effect.flatMap((value) =>
       decodeDiagnostics(value).pipe(
         Effect.map((decoded) => ({ status: "supported" as const, pid: decoded.process.id })),
-        Effect.catch(() => Effect.succeed(unknown("malformed"))),
+        Effect.orElseSucceed(() => unknown("malformed")),
       ),
     ),
     Effect.catch((error) => {

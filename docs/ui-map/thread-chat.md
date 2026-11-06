@@ -63,6 +63,39 @@ Known shared consumers:
   this map's journeys. Shared workspace header consumers are listed in
   [Settings](settings.md#shared-layout-and-consumers).
 
+### Header telemetry and quick effort selection
+
+The header's fixed panel controls expose their actual element to ChatHeader.
+The Jones host-status clearance hook measures overlap and reserves an 8px gap,
+including when the monitor/maximize controls appear or the chat column resizes.
+Host pills keep their existing progressive compression. Quick M/H/E controls
+use a 15% black selection overlay, increasing to 20% on hover.
+
+The focused browser regression checks growing controls, narrowing the header,
+moving controls outside its column, and restoring the original layout. Local
+verification used an isolated component harness with reused dependencies;
+full app navigation and packaged native clients remain unverified. No sidebar
+behavior, telemetry collection, or provider configuration changed.
+
+### Expected thread responses
+
+An explicit expected-result request keeps its sender **Waiting** after the
+foreground turn ends. The pending-work banner identifies the expected response.
+An ordinary message or navigation link alone does not establish a wait. A
+correlated answer or explicit release clears that dependency; unrelated replies
+and the recipient finishing a turn do not. Multiple requests clear independently.
+Active foreground work, owner input and approval controls retain their existing
+status precedence.
+
+For isolated verification, send an expected-result request between two synthetic
+threads, finish the sender's turn, and check its sidebar status and chat banner.
+Reconnect without a new conversation event and verify that Waiting persists.
+Deliver an unrelated reply, then the correlated result, and check that only the
+result clears the wait and wakes the sender. Repeat with two requests, a release,
+and an ordinary no-response message. Inspect the existing mobile thread list and
+pending-work sheet as well as the shared desktop renderer. These journeys require
+feature-revision evidence before being reported as verified.
+
 ### Sidebar build label
 
 The environment-filter footer in current and legacy sidebars, and the Settings
@@ -100,7 +133,10 @@ relationships shown as secondary labels.
 
 [useLinkedThreads](../../apps/web/src/jones/linkedThreads/useLinkedThreads.ts)
 combines navigation links from connected capable environments with existing
-lineage. Remote rows retain environment identity and destination-aware
+lineage. Task and continuation rows omit “on …” for the desktop client’s
+primary and desktop-managed local backends; other destinations retain their
+machine label even when the subject thread is on that same remote server.
+Browser clients retain explicit locations. Rows retain destination-aware
 navigation; offline destinations are disabled and incomplete coverage remains
 visible. Old servers retain the lineage view. Links grant no task control or
 connection access. The section menu offers Link thread and Copy handoff text;
@@ -161,10 +197,34 @@ starts a new terminal without attaching or changing the old association. Native 
 The chip uses the clicking client's exact-ID connection catalog. Its label is
 authoritative; an unknown or mismatched agent label is shown as a claim and cannot
 select a computer. The toolbar retains its existing insets and actions. Status
-and long labels wrap within the block; the inline terminal has a 256px viewport
+and long labels wrap within the block; the inline terminal has a 256px frame
 and a wrapping header with destination, destination cwd, status, Close and Run
 again. Check narrow widths, keyboard focus and enlarged text alongside an ordinary
 shell block and Mermaid block, which share the toolbar/frame.
+The inline terminal's bottom-right **Copy terminal contents** button uses the
+message-copy confirmation. Run a synthetic command, click Copy, then paste into
+an isolated text field: expect the current plain text including retained
+scrollback, with soft-wrapped lines rejoined and the selection unchanged. Append
+more output and copy again to check freshness. The ordinary drawer does not
+enable this footer. The Jones terminal-contents unit and browser fixtures cover
+formatting and the real surface/button interaction; they do not qualify a live
+remote connection or the native desktop shell.
+Command terminals close on the owning server after thirty minutes of observed idle
+shell time, confirmed by prompt/preexec hooks in Bash 4.4+ or Zsh. Shell
+builtins running without children remain protected. Unsupported shells, old
+sessions without hooks, or startup configuration overriding the hooks stay open.
+Input, output and detected commands reset the interval. Running
+subprocesses, shell helpers, a replaced root command or uncertain inspection keep
+the terminal open; disconnecting the client does not disable cleanup. Expiry
+retains history on the server but removes the live session. The inline card then
+shows unavailable; explicit Run again allocates a fresh terminal. Revisiting a
+source drawer command attaches without launch fields and cannot recreate its
+expired shell. Ordinary manually opened terminals retain their existing lifetime.
+New sessions on updated servers recognize the reserved remote IDs; existing
+shell processes without the new prompt hooks remain open. The fresh source-drawer
+identity requires an updated web/desktop client. Source delivery does not update
+installed clients or servers.
+
 The composer [code-block node](../../apps/web/src/components/chat/ComposerCodeBlockNodeView.tsx)
 also uses the frame. [File previews](../../apps/web/src/components/files/FileMarkdownPreview.tsx),
 [pull-request Markdown](../../apps/web/src/components/pullRequest/PullRequestMarkdown.tsx),
@@ -341,3 +401,39 @@ This verifies avatar rendering and pointer pass-through, not live child-thread
 navigation, provider execution, native mobile, or packaged desktop behavior.
 PR attachments retain the reviewed before/after evidence. The temporary browser
 fixture was removed after capture; no live application state was used.
+
+## Structured owner questions
+
+`t3_request_user_response` accepts a brief Markdown instruction or 1–5 structured
+questions, with optional impact descriptions on choices. Involved context belongs
+in the preceding chat message. Web and desktop share the question card; mobile
+uses the same sequential answer semantics. Existing routed Markdown keeps PR and
+thread links actionable.
+
+Start with nothing selected. Clicking a single-choice option or its digit shortcut
+commits that answer, advances to an unanswered question, and sends when every
+question has an answer. Multi-select choices remain editable until **Continue**
+or **Send**; custom text uses those explicit controls. The progress buttons beside
+`i/N` jump to any question and expand a collapsed card, including its current
+question. **Back**, jumps and collapse preserve drafts. On the final question,
+**Send** remains blocked until every question has an answer, with a reason naming
+the first missing answer. Native permission prompts remain separate.
+
+For message-mode owner requests, text supplements a selected choice as a note;
+**Sends:** previews the reply. **Clear choice** keeps the text as the whole answer.
+Enter keeps its existing response-field behavior. Enter notes before clicking a
+choice to include them in the immediate reply; custom-text replies still use
+**Continue** or **Send**. Replies
+have no length cap; the field scrolls after ten lines on web and within a bounded
+height on mobile. Live provider questions keep their existing replacement and
+field-key semantics, with single-choice submission on selection.
+Action handoffs can request `defaultDone: true` to supply a normal **Done** option
+when no explicit choices are provided. Specific completion and known-blocker
+choices use the same rows and always retain free text. Legacy requests that omit
+this opt-in retain their original normalized payload and retry identity.
+
+Evidence: focused automated contracts, server delivery, helper and headless-browser
+checks cover these behaviors. Integrated renderer journeys and native mobile
+checks are **pending root verification** on the candidate revision; the earlier
+Needs-input-count fixture without a visible card proves no answering journey.
+Packaged desktop is **unverified**. Gallery publication is out of scope.

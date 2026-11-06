@@ -177,6 +177,7 @@ export function ConversationLibraryPage() {
     setRemoveOpen(false);
     setSmallScreenDetailRequested(false);
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Bind conversation reader and importer to the committed environment and reset their handshake ownership.
   useLayoutEffect(() => {
     reader.bind(binding);
     importer.bind(binding, false);
@@ -184,6 +185,7 @@ export function ConversationLibraryPage() {
     preferredAccountId.current = null;
   }, [binding, importer, reader]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish import write authority only when the reader and current environment bindings agree.
   useLayoutEffect(() => {
     if (readerBindingKey === currentBindingKey) importer.bind(state.binding, state.canWrite);
   }, [currentBindingKey, importer, readerBindingKey, state.binding, state.canWrite]);
@@ -307,6 +309,7 @@ export function ConversationLibraryPage() {
     }
   };
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Run the conversation reader handshake once per connected binding after its owner commits.
   useEffect(() => {
     if (!connected) {
       helloStartedFor.current = null;
@@ -319,6 +322,7 @@ export function ConversationLibraryPage() {
     if (ticket) void executeReaderTicket(ticket);
   }, [connected, currentBindingKey, executeReaderTicket, reader, readerBindingKey]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the debounced conversation-list request and cancel it when its committed filters change.
   useEffect(() => {
     if (
       !connected ||
@@ -354,6 +358,7 @@ export function ConversationLibraryPage() {
     state.filter.view,
   ]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Acknowledge and mark a conversation read only after its detail panel is visibly painted.
   useEffect(() => {
     const detail = state.detail.value;
     if (state.detail.status !== "ready" || detail === null || state.displayed) return;

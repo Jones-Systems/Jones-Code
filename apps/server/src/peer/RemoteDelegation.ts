@@ -45,6 +45,7 @@ import * as RemoteLifecycle from "../jones/remoteDelegation/Lifecycle.ts";
 import * as PeerMonitor from "../jones/remoteDelegation/PeerMonitor.ts";
 import * as FinalText from "../jones/remoteDelegation/FinalText.ts";
 import * as ObservationSupport from "../jones/remoteDelegation/ObservationSupport.ts";
+import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
 
 /** How long one follow of a remote task waits on its thread there before checking again. */
 const FOLLOW_WAIT_MS = 50_000;
@@ -251,6 +252,7 @@ const make = Effect.gen(function* () {
           message: "Delegated tasks require an active run owned by this MCP provider session.",
         });
       }
+      yield* refuseUnsolicitedSupervision(parent.thread, input);
       const parentNodeId = parentRun.rootNodeId;
       const { target } = input;
       if (input.isolation !== undefined && input.workspaceStrategy !== undefined)
@@ -355,11 +357,9 @@ const make = Effect.gen(function* () {
   );
 
   /**
-   * Completes `task` here with its thread there's final state. Each attempt
-   * is its own command, so one that failed never blocks the next. A report
-   * refused because the task already has its result (from a cancel, a Stop
-   * or an earlier report) is done. `stoppedThere` records that nothing is
-   * left to stop there, also on a task that already has its result.
+   * Each completion attempt uses its own command so one failed attempt cannot block its successor.
+   * A refusal because cancel, Stop or an earlier report already supplied the result is terminal.
+   * stoppedThere discharges remote stop debt even for a task whose result already exists.
    */
   const complete = Effect.fn("RemoteDelegation.complete")(function* (
     parentThreadId: ThreadId,
@@ -418,11 +418,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Stops the task's thread there as its Stop button does: its running turn,
-   * its queued messages, its pull request watches and the tasks it delegated.
-   * The thread there is the task's own, so whatever runs on it is stopped.
-   * `key` names the stop: the follower sends one, each cancel its own, and
-   * each is recorded there once however often it is sent.
+   * Stop all current work on the owned remote child thread: run, queued messages, PR watches and descendants.
+   * key identifies the stop; the follower sends one, each cancel its own, and remote recording deduplicates retries.
    */
   const stopThere = (
     scope: ThreadScope,
@@ -476,11 +473,9 @@ const make = Effect.gen(function* () {
   const noReply = "(The thread in the linked environment ended without a reply.)";
 
   /**
-   * Waits on the task's thread there until its run ends, then completes the
-   * task here, and stops it there if it ended here first. A revoked, expired
-   * or forgotten link, or a thread or run gone there, fails the local task.
-   * Only a missing thread proves nothing remains to stop; lost access keeps
-   * that debt through bounded retries and restart.
+   * Follow remote completion and complete locally, or stop remotely if the local task ended first.
+   * Revoked/expired/missing links or missing thread/run fail the task. Only a missing thread proves
+   * no remaining stop debt; lost access retains that debt across bounded retries and restart.
    */
   const follow = (parentThreadId: ThreadId, taskId: NodeId): Effect.Effect<void> =>
     followOnce(parentThreadId, taskId).pipe(
@@ -611,6 +606,12 @@ const make = Effect.gen(function* () {
     ).pipe(Effect.raceFirst(endedHere));
     // The next look reads the result and stops it there.
     if ("endedHere" in waited) return false;
+    if (waited.threadId !== remote.threadId)
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message:
+          "The remote wait returned a mismatched task thread; reconciliation remains pending.",
+      });
     if (
       waited.remoteObservation === undefined &&
       (waited.timedOut ||
@@ -647,6 +648,12 @@ const make = Effect.gen(function* () {
         message: "The remote task's run could not be attributed; reconciliation remains pending.",
       });
     if (!isTerminal(waited.status)) return false;
+    if (waited.resultRun !== undefined && !isTerminal(waited.resultRun.status))
+      return yield* new OrchestratorMcpFailure({
+        code: "orchestration_error",
+        message:
+          "The remote wait selected an unfinished result run; reconciliation remains pending.",
+      });
     const resultRun = waited.resultRun ?? {
       runId: remote.runId ?? waited.runId,
       status: waited.status,

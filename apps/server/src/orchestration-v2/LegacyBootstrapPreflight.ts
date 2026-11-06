@@ -93,7 +93,7 @@ export const makeLegacyPreflight = Effect.gen(function* () {
           "Accepted preflight intent has no durable outcome; fetch may already have executed.",
       } satisfies LegacyPreflightOutcome;
 
-    const payload = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(QueueDispatchCommand))(
+    const payload = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
       binding.canonicalPayload,
     );
     const work = Effect.gen(function* () {

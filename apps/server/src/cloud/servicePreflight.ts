@@ -12,6 +12,7 @@ export type ServicePreflightResult =
       readonly version: string;
       readonly launcherProtocol: typeof SERVICE_LAUNCHER_PROTOCOL;
       readonly startupGateProtocol?: 1;
+      readonly qualifiedRecoveryProtocol?: 1;
       readonly migrationPlan?: MigrationPlan;
     }
   | {
@@ -25,6 +26,7 @@ export function runServicePreflight(input: {
   readonly launcherProtocol: number;
   readonly version?: string;
   readonly startupGateProtocol?: 1;
+  readonly qualifiedRecoveryProtocol?: 1;
   readonly migrationPlanResult?: MigrationPlanResult;
 }): ServicePreflightResult {
   const version = input.version ?? packageJson.version;
@@ -32,8 +34,14 @@ export function runServicePreflight(input: {
     return {
       status: "blocked",
       version,
-      reason:
-        "This release requires a newer T3 Code service launcher. Update it on the server machine.",
+      // A stale `t3` earlier on PATH (an old npm/nvm global) makes `t3 service install`
+      // reinstall itself and report success, so name the exact install and the path check.
+      reason: [
+        `The installed service launcher speaks protocol ${input.launcherProtocol}, but t3@${version} requires protocol ${SERVICE_LAUNCHER_PROTOCOL}.`,
+        `On the server machine, install this exact CLI: \`curl -fsSL https://t3.codes/install.sh | T3CODE_VERSION=${version} sh\`.`,
+        `Check that \`t3 --version\` prints ${version} and that \`which -a t3\` lists no older t3 (such as an npm or nvm install) first, then run \`~/.local/bin/t3 service install\` (the installer's default path).`,
+        "Updating the desktop app does not update this CLI, and `t3 service update` only repairs the service with whichever CLI runs it.",
+      ].join(" "),
     };
   }
 
@@ -44,6 +52,9 @@ export function runServicePreflight(input: {
     status: "ready",
     version,
     launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
+    ...(input.qualifiedRecoveryProtocol === undefined
+      ? {}
+      : { qualifiedRecoveryProtocol: input.qualifiedRecoveryProtocol }),
     ...(input.migrationPlanResult?.status === "ready"
       ? { migrationPlan: input.migrationPlanResult.migrationPlan }
       : {}),
@@ -62,6 +73,8 @@ export function decodeServicePreflightResult(value: unknown): ServicePreflightRe
     "migrationPlan" in record ? decodeMigrationPlan(record.migrationPlan) : undefined;
   if ("migrationPlan" in record && migrationPlan === undefined) return undefined;
   if ("startupGateProtocol" in record && record.startupGateProtocol !== 1) return undefined;
+  if ("qualifiedRecoveryProtocol" in record && record.qualifiedRecoveryProtocol !== 1)
+    return undefined;
   if (
     record.status === "ready" &&
     record.launcherProtocol === SERVICE_LAUNCHER_PROTOCOL &&
@@ -73,6 +86,9 @@ export function decodeServicePreflightResult(value: unknown): ServicePreflightRe
       launcherProtocol: SERVICE_LAUNCHER_PROTOCOL,
       ...(migrationPlan === undefined ? {} : { migrationPlan }),
       ...(record.startupGateProtocol === undefined ? {} : { startupGateProtocol: 1 as const }),
+      ...(record.qualifiedRecoveryProtocol === undefined
+        ? {}
+        : { qualifiedRecoveryProtocol: 1 as const }),
     };
   }
   if (
@@ -89,6 +105,7 @@ export function qualifiedServicePreflightFailure(input: {
   readonly code: number | null;
   readonly stdout: string;
   readonly version: string;
+  readonly requiredQualifiedRecoveryProtocol?: 1;
 }): string | undefined {
   let result: ServicePreflightResult | undefined;
   try {
@@ -101,5 +118,10 @@ export function qualifiedServicePreflightFailure(input: {
     return "startup-gate-unavailable: The candidate did not pass its bound service preflight.";
   if (result.startupGateProtocol !== 1)
     return "startup-gate-unavailable: The candidate does not affirm the symmetric qualified startup gate.";
+  if (
+    input.requiredQualifiedRecoveryProtocol !== undefined &&
+    result.qualifiedRecoveryProtocol !== input.requiredQualifiedRecoveryProtocol
+  )
+    return "qualified-recovery-unsupported: The candidate cannot read historical enrollment receipts.";
   return undefined;
 }

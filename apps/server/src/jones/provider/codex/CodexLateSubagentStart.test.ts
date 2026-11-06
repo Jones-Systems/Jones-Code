@@ -145,6 +145,7 @@ const transcript = Schema.decodeUnknownSync(CodexReplay.CodexAppServerReplayTran
           input: [{ type: "text", text: "Work" }],
           cwd: "/workspace",
           model: modelSelection.model,
+          collaborationMode: { mode: "default", settings: { model: modelSelection.model } },
           approvalPolicy: "never",
           approvalsReviewer: "user",
           sandboxPolicy: { type: "dangerFullAccess" },

@@ -32,7 +32,6 @@ import {
   type MergedUsage,
 } from "@t3tools/shared/usageMerge";
 
-import { isElectron } from "../../env";
 import { cn } from "../../lib/utils";
 import { usePrimarySettings } from "../../hooks/useSettings";
 import { resolveHour12 } from "../../timestampFormat";
@@ -68,7 +67,7 @@ import {
 } from "../ui/menu";
 import { ScrollArea } from "../ui/scroll-area";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
-import { SidebarInset } from "../ui/sidebar";
+import { AppRouteModal, AppRouteModalClose } from "../AppRouteModal";
 import { Skeleton } from "../ui/skeleton";
 import { Toggle, ToggleGroup } from "../ui/toggle-group";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -80,7 +79,6 @@ import {
   WorkspaceBreadcrumbText,
 } from "../WorkspaceBreadcrumb";
 import { WorkspacePageContainer } from "../WorkspacePageContainer";
-import { WorkspacePageHeader } from "../WorkspacePageHeader";
 import { UsageLimitsSection } from "./UsageLimits";
 import { UsagePriceOverrides } from "./UsagePriceOverrides";
 import { UsageProviderChart } from "./UsageProviderChart";
@@ -98,7 +96,6 @@ import {
   resolveUsageShortcut,
   type UsageMetric,
 } from "./usageShortcuts";
-import { useEscapeToGoBack } from "../../hooks/useNavigateBack";
 import { PROVIDER_ORDER, PROVIDER_PRESENTATION, providersWithUsage } from "./usageProviders";
 import { SavedTokenAccounting } from "../../jones/usage/SavedTokenAccounting";
 import { UsageRangePicker } from "../../jones/usage/UsageRangePicker";
@@ -133,10 +130,7 @@ function usageLoading(
   };
 }
 
-/**
- * The model whose detail dialog is open. It lives outside UsagePage so opening
- * or closing the dialog renders only its host, not the whole usage page.
- */
+/** Keep dialog selection outside UsagePage so opening/closing rerenders only its host. */
 const selectedUsageModelKeyAtom = Atom.make<string | null>(null).pipe(
   Atom.keepAlive,
   Atom.withLabel("usage:selected-model-key"),
@@ -194,7 +188,6 @@ export function UsagePage() {
     selectMetric: selectWindowMetric,
     refreshUsageWindow,
   } = useUsageWindow();
-  useEscapeToGoBack();
   const keybindings = useAtomValue(primaryServerKeybindingsAtom);
   const hour12 = usePrimarySettings((settings) => resolveHour12(settings.timestampFormat));
   const shortcutTitle = (
@@ -366,7 +359,7 @@ export function UsagePage() {
     onClear: clearCustomWindow,
   };
   const topbarContent = (
-    <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 xl:flex">
+    <div className="grid w-full min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 py-2 @4xl/usage-header:flex">
       <WorkspaceBreadcrumb ariaLabel="Usage breadcrumb" className="min-w-0">
         <WorkspaceBreadcrumbItem>
           <h1>Usage</h1>
@@ -399,7 +392,7 @@ export function UsagePage() {
           {desktopWindowLabel}
         </span>
       ) : null}
-      <div className="ms-auto hidden min-w-0 items-center justify-end gap-2 xl:flex">
+      <div className="ms-auto hidden shrink-0 items-center justify-end gap-2 @4xl/usage-header:flex">
         <ToggleGroup
           aria-label="Usage metric"
           variant="segmented"
@@ -443,7 +436,7 @@ export function UsagePage() {
           <RefreshIcon size="sm" refreshing={isRefreshing} />
         </Button>
       </div>
-      <div className="ms-auto flex min-w-0 items-center justify-end gap-1 xl:hidden">
+      <div className="ms-auto flex shrink-0 items-center justify-end gap-1 @4xl/usage-header:hidden">
         <Select
           value={metric}
           onValueChange={(value) => {
@@ -515,9 +508,12 @@ export function UsagePage() {
   );
 
   return (
-    <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none isolate">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
-        <WorkspacePageHeader electron={isElectron}>{topbarContent}</WorkspacePageHeader>
+    <AppRouteModal label="Usage">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="@container/usage-header flex min-h-12 shrink-0 items-center gap-1 border-b ps-5 pe-2">
+          {topbarContent}
+          <AppRouteModalClose />
+        </header>
 
         <ScrollArea className="min-h-0 flex-1">
           <WorkspacePageContainer width="wide">
@@ -619,7 +615,7 @@ export function UsagePage() {
           }}
         />
       ) : null}
-    </SidebarInset>
+    </AppRouteModal>
   );
 }
 
@@ -660,8 +656,8 @@ function UsageOverview({
   const providerTriggers = useRef(new Map<UsageProviderKind, HTMLButtonElement>());
   const shownHourly = shownWindow.resolution === "hour";
   const loading = usageLoading(showingKept, selectedEnvironments, refreshingUsage, hiddenProviders);
-  // A primitive copy: reading `loading.partial` in the JSX would keep `loading` alive
-  // across every derivation below and fold them into one cache scope.
+  // Copy the primitive; JSX reads of loading.partial would merge all derivations into one compiler cache
+  // scope.
   const loadingPartial = loading.partial === true;
   const {
     detailBreakdown,
@@ -674,9 +670,8 @@ function UsageOverview({
     PROVIDER_ORDER.filter((provider) => loading.everyProvider || loading.providers.has(provider)),
   );
   const providersWithData = new Set(providersWithUsage(merged.providers));
-  // `everyProvider` marks shown providers as loading; only `loading.providers`, which excludes
-  // hidden ones, may add a provider that has no data yet.
-  // Filtering a fresh copy, not the shared module array, lets the compiler cache this on its own.
+  // Only loading.providers excludes hidden providers without data. Filter a fresh array so the compiler can
+  // cache independently.
   const activeProviders = [...PROVIDER_ORDER].filter(
     (provider) => providersWithData.has(provider) || loading.providers.has(provider),
   );
@@ -840,7 +835,7 @@ function UsageOverview({
                     )}
                   >
                     {awaitingData
-                      ? "—"
+                      ? "-"
                       : metric === "cost"
                         ? formatUsd(totals?.costUsd ?? 0)
                         : formatTokens(totals?.totalTokens ?? 0)}

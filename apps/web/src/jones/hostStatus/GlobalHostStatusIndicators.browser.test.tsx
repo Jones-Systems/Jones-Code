@@ -87,7 +87,7 @@ async function setupTest(): Promise<AsyncDisposable> {
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
       this: HTMLElement,
     ) {
-      return new DOMRect(0, 0, this.getAttribute("aria-label") === "Host status" ? 1000 : 100, 32);
+      return new DOMRect(0, 0, this.getAttribute("aria-label") === "Host status" ? 10000 : 100, 32);
     });
     connections.environmentIds = [];
     connections.connectedEnvironmentIds = [];
@@ -196,13 +196,18 @@ it.each(["upstream_unavailable", "invalid_response", "stale"] as const)(
   },
 );
 
-it("retains a disconnected source on failure and recovers its values without probing other gateways", async () => {
+it("retains fresh values through disconnect, expires them, and recovers without probing other gateways", async () => {
   await using _fixture = await setupTest();
   await render();
   connections.connectedEnvironmentIds = [local];
   fetchStatus.mockRejectedValue(new Error("disconnected"));
   await render();
   await advance(10_000);
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  expect(requests(local)).toHaveLength(1);
+  await advance(19_999);
+  expect(vps()?.textContent).toBe("VPS · 23% · 4");
+  await advance(1);
   expect(vps()?.textContent).toBe("VPS · — · —");
   expect(requests(local)).toHaveLength(1);
   fetchStatus.mockResolvedValue(available(41));

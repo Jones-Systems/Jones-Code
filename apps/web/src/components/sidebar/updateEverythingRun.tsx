@@ -172,6 +172,9 @@ const SavedResult = Schema.Struct({
   updatedServers: Schema.Number,
   updatedProviders: Schema.Number,
   failures: Schema.Array(Schema.String),
+  jones: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ label: Schema.String, message: Schema.String })),
+  ),
   handedOff: Schema.optional(Schema.Array(HandedOffServer)),
 });
 const decodeSavedResult = Schema.decodeUnknownOption(Schema.fromJsonString(SavedResult));
@@ -181,8 +184,7 @@ export function saveUpdateEverythingResult(result: UpdateEverythingResult): void
   const handedOff = (run?.machines ?? []).flatMap((machine): HandedOffServer[] => {
     if (machine.result !== null) return [];
     const state = appAtomRegistry.get(serverEnvironment.updateStateAtom(machine.environmentId));
-    // A desktop-managed server installs its own feed's version, which only its
-    // update state knows.
+    // Only the desktop-managed server's update state knows its own feed version.
     const targetVersion =
       machine.handedOffVersion ??
       (state.status === "running" ? state.targetVersion : machine.server?.targetVersion);
@@ -205,6 +207,7 @@ export function saveUpdateEverythingResult(result: UpdateEverythingResult): void
         updatedServers: result.updatedServers,
         updatedProviders: result.updatedProviders,
         failures: result.failures,
+        ...(result.jones === undefined ? {} : { jones: result.jones }),
         handedOff,
       } satisfies typeof SavedResult.Type),
     );

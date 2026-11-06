@@ -31,6 +31,7 @@ export function SidebarEnvironmentFilters() {
     fontSize: undefined as number | undefined,
   });
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Measure filter label DOM and subscribe to available-width changes for readable sizing.
   useLayoutEffect(() => {
     const slot = slotRef.current;
     const measure = measureRef.current;

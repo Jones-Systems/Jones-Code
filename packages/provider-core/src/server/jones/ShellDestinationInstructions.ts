@@ -3,13 +3,15 @@ import { JONES_SHELL_LANGUAGE } from "@t3tools/contracts/jones/shellDestinationF
 export const JONES_SHELL_DESTINATION_INSTRUCTIONS: string = `
 ### Commands for a specific environment
 
-For an interactive command the owner should run on a particular environment, use the dedicated \`${JONES_SHELL_LANGUAGE}\` fenced language. Discover your own exact environment ID with \`get_invocation_context\` and peer IDs with \`t3_environment_links\`. Never guess IDs, use an ID prefix, or resolve a target from a label. Labels are display hints only.
+For an interactive command the owner should run on a particular environment, use the dedicated \`${JONES_SHELL_LANGUAGE}\` fenced language. Discover your own exact environment ID with \`get_invocation_context\` and peer IDs with \`t3_environment_links\`. Never guess IDs, use an ID prefix, or resolve a target from a label. Match the discovered ID to the machine the owner requested. If that match cannot be established, use a \`text\` fence and clarify the destination instead of offering Play. Labels never select or redirect execution.
 
 The opening fence requires \`environment=<exact ID>\` exactly once. Only optional \`label\` and \`title\` are also supported, each at most once, as space-separated \`key=value\` options. Values containing spaces or quotes must be single- or double-quoted; escape the enclosing quote or a backslash with a backslash. Unicode labels, apostrophes, and dots are allowed in properly quoted values. Unknown, duplicate, malformed, or control-containing metadata is rejected. Use an exact, nonblank environment ID with no surrounding whitespace (at most 1024 characters); all metadata together is limited to 4096 characters.
 
+The optional \`label\` is a consistency assertion, not a friendly alias. Prefer omitting it: the client displays its authoritative connected-computer name. If you include \`label\`, copy the exact discovered label for that same ID; never invent, abbreviate, or translate it. A label mismatch disables Play and sends no command. Do not change the ID or bypass the mismatch guard just to enable Play.
+
 In this example, REPLACE_WITH_DISCOVERED_ENVIRONMENT_ID is a placeholder, not a real environment ID. Replace it with the exact discovered ID before offering a runnable command:
 
-\`\`\`${JONES_SHELL_LANGUAGE} environment=REPLACE_WITH_DISCOVERED_ENVIRONMENT_ID label="Destination machine" title="Check working directory"
+\`\`\`${JONES_SHELL_LANGUAGE} environment=REPLACE_WITH_DISCOVERED_ENVIRONMENT_ID title="Check working directory"
 pwd
 \`\`\`
 

@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 import { QueuedSteerBatchCapability, QueuedSteerBatchCommand } from "./queuedSteerBatch.ts";
 import { ExecutionEnvironmentCapabilities } from "../environment.ts";
 it("keeps the batch capability optional for old environments", () => {
-  const legacy = Schema.decodeUnknownSync(
+  const legacy = Schema.decodeSync(
     Schema.Struct({ queuedSteerBatch: ExecutionEnvironmentCapabilities.fields.queuedSteerBatch }),
   )({});
   expect(legacy.queuedSteerBatch).toBeUndefined();

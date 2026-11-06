@@ -1,4 +1,7 @@
-import { executionProjection } from "../jones/threadConfiguration/executionSelection.ts";
+import {
+  executionProjection,
+  executionWorkspace,
+} from "../jones/threadConfiguration/executionSelection.ts";
 import {
   ModelSelection,
   OrchestrationV2ThreadProjection,
@@ -17,6 +20,7 @@ import * as Schema from "effect/Schema";
 
 import {
   interruptedPendingProviderThread,
+  preparingPendingProviderThread,
   type ProviderSwitchBeforeStartEvidence,
 } from "../jones/providerSwitchBeforeStart/providerSwitchBeforeStart.ts";
 
@@ -53,6 +57,7 @@ export interface ProviderSwitchServiceV2Shape {
       Partial<Pick<OrchestrationV2ThreadProjection, "runs">>;
     readonly targetModelSelection: ModelSelection;
     readonly beforeStartEvidence?: ProviderSwitchBeforeStartEvidence;
+    readonly rebindPreparing?: true;
   }) => Effect.Effect<ProviderSwitchPlanV2, ProviderSwitchPlanError>;
 }
 
@@ -75,7 +80,7 @@ export const layer: Layer.Layer<
     const adapters = yield* ProviderAdapterRegistry.ProviderAdapterRegistryV2;
     return ProviderSwitchServiceV2.of({
       plan: Effect.fn("ProviderSwitchService.plan")(
-        function* ({ projection, targetModelSelection, beforeStartEvidence }) {
+        function* ({ projection, targetModelSelection, beforeStartEvidence, rebindPreparing }) {
           projection = executionProjection(projection);
           const current = projection.thread.modelSelection;
           const instanceChanged = current.instanceId !== targetModelSelection.instanceId;
@@ -135,11 +140,16 @@ export const layer: Layer.Layer<
           const rebindPendingProviderThread =
             instanceChanged &&
             Option.isSome(currentInstance) &&
-            currentInstance.value.driver === "codex" &&
             Option.isSome(targetInstance) &&
-            targetInstance.value.driver === "codex" &&
+            currentInstance.value.driver === targetInstance.value.driver &&
             targetInstance.value.enabled
-              ? interruptedPendingProviderThread(projection, beforeStartEvidence)
+              ? ((currentInstance.value.driver === "codex"
+                  ? interruptedPendingProviderThread(projection, beforeStartEvidence)
+                  : undefined) ??
+                (rebindPreparing === true &&
+                beforeStartEvidence?.providerThreads[0]?.driver === targetInstance.value.driver
+                  ? preparingPendingProviderThread(projection, beforeStartEvidence)
+                  : undefined))
               : undefined;
           const hasCurrentHistory =
             currentSessions.length > 0 ||
@@ -221,10 +231,10 @@ export const layer: Layer.Layer<
                           modelSelection: current,
                           runtimeMode: projection.thread.runtimeMode,
                           interactionMode: projection.thread.interactionMode,
-                          workspace:
-                            currentSession?.cwd ??
-                            projection.thread.worktreePath ??
-                            "<unresolved-workspace>",
+                          workspace: executionWorkspace(
+                            projection.thread.worktreePath,
+                            currentSession,
+                          ),
                           capabilities:
                             negotiatedCapabilities ?? currentInstance.value.capabilities,
                         },
@@ -268,8 +278,7 @@ export const layer: Layer.Layer<
             .filter((session) => {
               if (!isLiveProviderSession(session)) return false;
               if (transition.type === "restart_and_resume") {
-                // Other live records may serve pooled or delegated bindings;
-                // only the session being replaced is released.
+                // Release only the replaced session; peers can serve pooled or delegated bindings.
                 return session.id === currentSession?.id;
               }
               if (transition.type === "create_with_handoff") {

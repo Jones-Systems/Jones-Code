@@ -28,7 +28,7 @@ const upstreamOnly = Outbox.layer.pipe(
 );
 
 const reference = (effectId: string) =>
-  Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+  Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
     version: 2,
     claimId: "claim:completion",
     stageCommandId: commandId,

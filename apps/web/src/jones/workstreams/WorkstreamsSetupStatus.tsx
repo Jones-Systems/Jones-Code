@@ -25,6 +25,7 @@ function SetupStatusRequest({
 }) {
   const [status, setStatus] = useState<WorkstreamSetupStatus | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Read setup capability for the selected environment and abort when its identity changes.
   useEffect(() => {
     if (!environmentId) return;
     const abort = new AbortController();

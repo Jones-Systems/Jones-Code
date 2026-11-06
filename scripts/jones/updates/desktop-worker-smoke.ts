@@ -19,7 +19,7 @@ import {
 const REPOSITORY = "Jones-Systems/Jones-Code";
 const WORKER_ENTRY = "apps/desktop/dist-electron/jones/updates/jonesStagingWorker.cjs";
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
-// Exercise protocol v1 as an external caller, without loading the unpackaged desktop runtime.
+// Exercise protocol v2 as an external caller, without loading the unpackaged desktop runtime.
 type JonesStagingJob =
   | { kind: "reclaim"; updatesRoot: string; handle: string }
   | { kind: "validate-artifact"; directory: string }
@@ -30,9 +30,10 @@ type JonesStagingJob =
       platform: "darwin";
     };
 type JonesStagingWorkerMessage =
-  | { type: "phase"; phase: "verifying" }
-  | { type: "result"; value: unknown }
-  | { type: "error"; error: { name: string; reason?: string } };
+  | { type: "admit-request"; jobId: string }
+  | { type: "phase"; jobId: string; phase: "verifying" }
+  | { type: "result"; jobId: string; value: unknown }
+  | { type: "error"; jobId: string; error: { name: string; reason?: string } };
 type JonesPreparedStage = {
   artifact: JonesStagedArtifact;
   app: { sourceSha: string; sourceTree: string; version: string; appPath: string };
@@ -42,6 +43,7 @@ type Observation = { status: Status; detail: string };
 type Exit = { code: number | null; signal: string | null };
 type JobEvidence = {
   kind: JonesStagingJob["kind"];
+  jobId?: string;
   pid?: number;
   priority?: number;
   phases: string[];
@@ -240,15 +242,17 @@ async function waitUntil(check: () => boolean, milliseconds: number): Promise<bo
   return check();
 }
 
-async function runJob(
+export async function runJob(
   runtime: { executable: string; entry: string; env: NodeJS.ProcessEnv },
   job: JonesStagingJob,
   jobs: JobEvidence[],
   signal: AbortSignal,
 ): Promise<JonesStagingWorkerMessage> {
   signal.throwIfAborted();
+  const jobId = NodeCrypto.randomUUID();
   const evidence: JobEvidence = {
     kind: job.kind,
+    jobId,
     phases: [],
     timedOut: false,
     forcedCleanup: false,
@@ -266,6 +270,7 @@ async function runJob(
   let failure: Error | undefined;
   let reply: JonesStagingWorkerMessage | undefined;
   let terminalReplies = 0;
+  let admissions = 0;
   child.on("error", () => {
     failure = new Error("Packaged worker spawn or IPC failed.");
   });
@@ -275,7 +280,21 @@ async function runJob(
   child.on("message", (raw) => {
     try {
       const message = raw as JonesStagingWorkerMessage;
-      if (message.type === "phase" && message.phase === "verifying" && evidence.phases.length < 4)
+      requireProof(message.jobId === jobId, "Packaged worker reply belongs to another job.");
+      if (message.type === "admit-request") {
+        requireProof(
+          job.kind === "prepare" && ++admissions === 1 && terminalReplies === 0,
+          "Unexpected packaged worker copy admission.",
+        );
+        evidence.phases.push("verifying");
+        child.send({ type: "admit", jobId, decision: "continue" }, (error) => {
+          if (error) failure = new Error("Packaged worker admission delivery failed.");
+        });
+      } else if (
+        message.type === "phase" &&
+        message.phase === "verifying" &&
+        evidence.phases.length < 4
+      )
         evidence.phases.push(message.phase);
       else if (message.type === "result" || message.type === "error") {
         terminalReplies++;
@@ -309,7 +328,7 @@ async function runJob(
         evidence.priority <= 20,
       "Packaged worker low priority was not observed before dispatch.",
     );
-    child.send({ protocol: 1, job }, (error) => {
+    child.send({ protocol: 2, job: { ...job, token: jobId } }, (error) => {
       if (error) failure = new Error("Packaged worker request delivery failed.");
     });
     const completed = await waitUntil(

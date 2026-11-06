@@ -16,6 +16,15 @@ export const Configuration = Schema.Struct({
       (projects) => new Set(projects.map((p) => p.projectId)).size === projects.length,
     ),
   ),
+  retirementConsumerEvidence: Schema.optionalKey(Binding.fields.worktree),
+  outputs: Schema.optionalKey(
+    Schema.Struct({
+      executable: Binding.fields.worktree,
+      arguments: Schema.Array(Schema.String),
+      database: Binding.fields.worktree,
+      cwd: Binding.fields.worktree,
+    }),
+  ),
   registry: Schema.Struct({
     executable: Binding.fields.worktree,
     arguments: Schema.Array(

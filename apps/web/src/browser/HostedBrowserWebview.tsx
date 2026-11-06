@@ -58,10 +58,7 @@ export function HostedBrowserWebview(props: {
   readonly initialUrl: string | null;
   readonly viewport: PreviewViewportSetting;
   readonly pictureInPicture: boolean;
-  /**
-   * Fixed for the tab's lifetime: Electron only honours `partition` before the
-   * guest attaches, so a live change here would not move the tab anyway.
-   */
+  /** Fixed for the tab lifetime; Electron reads partition before guest attachment. */
   readonly profileId: string | undefined;
   readonly zoomFactor: number;
   readonly serverDriven?: boolean;
@@ -215,9 +212,7 @@ export function HostedBrowserWebview(props: {
         if (!disposed) remountCrashedWebview();
       }, recovery.delayMs);
     };
-    // A click inside the guest only reaches this document as a webview focus
-    // event, so open menus and popovers never see the outside press that
-    // would dismiss them. Replay it as a pointerdown on the webview itself.
+    // Guest clicks only emit focus here; replay pointerdown to dismiss host popups.
     const dismissHostPopups = () => {
       webview.dispatchEvent(
         new PointerEvent("pointerdown", { bubbles: true, pointerType: "mouse" }),
@@ -270,8 +265,7 @@ export function HostedBrowserWebview(props: {
       : content
         ? content.height / content.scale
         : (lastRect?.height ?? 800);
-  // Built from primitives on each side of the resize hook, so neither object is
-  // shared across it and both stay cached; the hook's layout keys the sync effect.
+  // Build from primitives on each side of the resize hook to keep both objects cached.
   const containerSize =
     active && lastRect ? lastRect : { width: hiddenWidth, height: hiddenHeight };
   const deviceToolbarVisible = active && viewport._tag !== "fill" && !presentation.fitSourceContent;
@@ -318,6 +312,7 @@ export function HostedBrowserWebview(props: {
     return () => window.cancelAnimationFrame(frameId);
   }, [syncContentPresentation]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reset the browser canvas scroll origin when the selected tab or viewport geometry changes.
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
@@ -366,11 +361,7 @@ export function HostedBrowserWebview(props: {
         <webview
           key={webviewGeneration}
           ref={setWebviewRef}
-          // Must be an attribute on the element itself: Electron reads it when the
-          // guest attaches, so setting it from the ref callback lands too late and
-          // the guest attaches with popups disabled. React types `allowpopups` as a
-          // boolean, but react-dom drops boolean values for unrecognized attributes,
-          // so the literal string has to be spread past the type.
+          // Electron needs allowpopups at attachment. React drops boolean values for unknown attributes.
           {...({ allowpopups: "true" } as unknown as { readonly allowpopups?: boolean })}
           src={webviewGeneration === 0 ? initialSrc : recoverySrc}
           partition={config.partition}

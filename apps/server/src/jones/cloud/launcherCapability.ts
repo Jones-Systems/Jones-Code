@@ -6,6 +6,12 @@ import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import {
+  decodeLauncherHandoffReceipt,
+  isLauncherPointerVersion,
+  type LauncherHandoffReceipt,
+  type LauncherPointer,
+} from "./launcherPointer.ts";
 
 export interface LauncherCapabilityReceipt {
   readonly schema: 1;
@@ -16,6 +22,12 @@ export interface LauncherCapabilityReceipt {
   readonly qualifiedUpdatesProtocol: 1;
   readonly startupGateProtocol: 1;
   readonly updateSettlementProtocol?: 1;
+  readonly launcherHandoffProtocol?: 1;
+  readonly launcherPointer?: Pick<
+    LauncherPointer,
+    "currentVersion" | "pendingVersion" | "attempts"
+  >;
+  readonly lastHandoff?: LauncherHandoffReceipt;
   readonly childPid: number;
   readonly childVersion: string;
 }
@@ -38,6 +50,7 @@ function decode(value: unknown): LauncherCapabilityReceipt {
     throw new Error("Launcher capability receipt is malformed.");
   const receipt = value as Record<string, unknown>;
   if (
+    ("launcherHandoffProtocol" in receipt && receipt.launcherHandoffProtocol !== 1) ||
     receipt.schema !== 1 ||
     receipt.launcherProtocol !== 4 ||
     receipt.qualifiedUpdatesProtocol !== 1 ||
@@ -56,6 +69,29 @@ function decode(value: unknown): LauncherCapabilityReceipt {
     receipt.childPid === receipt.launcherPid
   )
     throw new Error("Launcher capability receipt is malformed.");
+  if (receipt.launcherPointer !== undefined) {
+    const pointer = receipt.launcherPointer;
+    if (
+      receipt.launcherHandoffProtocol !== 1 ||
+      typeof pointer !== "object" ||
+      pointer === null ||
+      Array.isArray(pointer) ||
+      !("currentVersion" in pointer) ||
+      !isLauncherPointerVersion(pointer.currentVersion) ||
+      ("pendingVersion" in pointer && !isLauncherPointerVersion(pointer.pendingVersion)) ||
+      !("attempts" in pointer) ||
+      !Number.isSafeInteger(pointer.attempts) ||
+      (pointer.attempts as number) < 0 ||
+      (pointer.attempts as number) > 3
+    )
+      throw new Error("Launcher capability pointer is malformed.");
+  }
+  if (
+    receipt.lastHandoff !== undefined &&
+    (receipt.launcherPointer === undefined ||
+      decodeLauncherHandoffReceipt(receipt.lastHandoff) === undefined)
+  )
+    throw new Error("Launcher capability handoff is malformed.");
   return receipt as unknown as LauncherCapabilityReceipt;
 }
 

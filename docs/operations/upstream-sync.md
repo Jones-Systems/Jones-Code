@@ -108,10 +108,10 @@ does not perform repository deletion or authorize runtime changes.
 
 The Jones-Code workflow allowlist is `ci.yml`, `artifact-cli-linux.yml`,
 `artifact-cli-mac.yml`, `artifact-desktop-mac.yml`,
-`jones-update-qualification.yml`, `native-enrollment-candidate.yml`,
-`jones-native-workflows.yml`, and `jones-ios-native.yml`, using GitHub-hosted
-Ubuntu and macOS runners. CI runs on pull requests, main pushes and manual
-dispatch. `Check` is the required aggregate; selected Linux jobs may skip only
+`jones-update-qualification.yml`, `native-enrollment-candidate.yml`, and
+`jones-native-workflows.yml`, using GitHub-hosted Ubuntu and macOS runners. CI runs
+on pull requests, main pushes and manual dispatch. `Check` is the required
+aggregate; selected Linux jobs may skip only
 on explicit successful classification, with full main, unknown-change and
 complete-stack backstops. The macOS enrollment and mobile-source gates remain
 independent. The enrollment candidate workflow remains path-filtered/manual,
@@ -121,17 +121,24 @@ Linux CLI artifacts run on main pushes, packaging-filtered pull requests and
 manual dispatch. Mac desktop artifacts run nightly, on desktop/packaging-filtered
 pull requests and by manual dispatch; PR bases remain `main` and
 `work/jones-rebuild/staging`. The separate Mac CLI workflow remains manual only.
-Desktop update discovery accepts authenticated nightly artifacts; exact-source
-CI qualification remains a successful canonical main push. These trial artifacts
-do not publish a Release or install an application.
+Desktop update discovery accepts authenticated nightly and manually dispatched
+Mac artifacts from canonical `main`; production artifacts retain signing and
+notarization qualification. Exact-source CI qualification remains a successful
+canonical main push. These trial artifacts do not publish a Release or install
+an application.
 
 Jones update qualification keeps unique native startup, macOS lifecycle and
 Preview evidence behind their path gates; the duplicate Linux Vitest batch and
 second strict boundary check are absent. Native Electron E2E runs nightly or
-by manual dispatch/`native-e2e` label. Native iOS E2E runs only by manual dispatch
-or that label while simulator startup and cleanup remain unqualified. Both
-native E2E workflows and all artifact workflows are advisory. The macOS
-enrollment and install-lifecycle path gates from #562 and #581 remain.
+by manual dispatch/`native-e2e` label. The native Electron workflow and all
+artifact workflows are advisory. The macOS enrollment and install-lifecycle
+path gates from #562 and #581 remain.
+
+The iOS XCUITest workflow and harness are retired. Cheaper mobile and server
+tests retain pin/unpin coverage; React Native long-press and relaunch on a device
+remain an accepted gap. Re-entry requires a device-level regression that cheaper
+checks miss or a qualified macOS route with no custody hold, starting by reverting
+the retirement. Existing native startup and cleanup holds remain unresolved.
 
 There are no tag, release, privileged PR, workflow-completion or
 repository-dispatch triggers. Additional Jones-Code-owned workflows require
@@ -191,6 +198,31 @@ normal branches/PRs at file or hunk granularity. Do not force-push, reset or del
 the reference candidate as part of this separation.
 
 Sync regularly during active development and before a large feature branch diverges far from upstream. A monthly check is a reasonable idle cadence; a security or compatibility fix may justify an earlier sync. A sync is a source integration, not a deployment or an update of any running laptop or VPS installation.
+
+### Owner choices for conflicting UI changes
+
+When an upstream UI change conflicts with UI M Jones explicitly requested,
+first check the recorded direction and established patterns. Continue without
+an extra decision when those settle how to integrate it. When they do not,
+present the affected UI before choosing a resolution that drops or materially
+changes either approach. This applies to interaction as well as appearance,
+and to semantic conflicts even when Git merges the files cleanly.
+
+Show the upstream UI and current Jones UI with their exact source revisions,
+then only the applicable alternatives: adopt upstream, retain Jones, or a
+recommended blend when it has a clear purpose. Use the same meaningful data,
+viewport and state, including the opened control or menu when affected. Label
+actual captures and proposed prototypes distinctly. Explain what each option
+keeps, changes or loses, recommend a direction with its reason, and request
+M Jones's choice. Do not add variants merely to fill a quota.
+
+Record the conflict, source evidence, alternatives and owner decision in the
+sync's PR or task-owned repair ledger. Keep that UI decision unresolved until
+M Jones answers; continue independent integration and verification. Green
+checks do not select a UI direction. A change introduced after the previous
+sync's pinned upstream commit is new work, not evidence that it was omitted.
+This decision step does not apply to routine compatible UI updates or impose
+owner review on ordinary backend conflict resolution.
 
 ## Fork-only migrations
 

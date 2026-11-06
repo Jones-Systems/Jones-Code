@@ -1,8 +1,11 @@
 import { URGENT_ACTION_EFFECT_TYPES } from "../jones/orchestration/actionWorkerAdmission.ts";
 import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
+import * as NativeCreationRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import { sameOperationRequest } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
@@ -63,12 +66,7 @@ export const OrchestrationEffectStatusV2 = Schema.Literals([
 ]);
 export type OrchestrationEffectStatusV2 = typeof OrchestrationEffectStatusV2.Type;
 
-/**
- * Command retries are deduplicated by their receipts first, and a run's effects
- * are re-enqueued only around one server restart, so a week is far longer than
- * either and leaves recent history for debugging. Failed rows are kept: storage
- * cleanup keeps a deleted thread's worktree while any of its effects failed.
- */
+/** Receipts deduplicate retries, and restart re-enqueues need far less than a week. Retain failed rows to keep deleted-thread worktrees. */
 export const SETTLED_EFFECT_RETENTION = Duration.days(7);
 const PRUNE_BATCH_SIZE = 500;
 
@@ -87,9 +85,16 @@ export interface OrchestrationEffectV2 {
   readonly updatedAt: string;
   readonly completedAt: string | null;
   readonly lastError: string | null;
+  /** Exact stored bytes captured by the outbox owner, never a re-encoded request. */
+  readonly payloadIdentity?: string;
 }
 
 const isEffectOutboxError = Schema.is(EffectOutboxError);
+
+export class EffectClaimRenewalRefused extends Schema.TaggedError<EffectClaimRenewalRefused>()(
+  "EffectClaimRenewalRefused",
+  { effectId: Schema.String },
+) {}
 
 export interface EffectOutboxV2Shape {
   readonly awaitAvailable: Effect.Effect<void>;
@@ -135,20 +140,27 @@ export interface EffectOutboxV2Shape {
     readonly excludeTitleGeneration?: boolean;
     readonly urgentOnly?: boolean;
   }) => Effect.Effect<Option.Option<DateTime.Utc>, EffectOutboxError>;
+  readonly renew: (input: {
+    readonly claim: OrchestrationEffectV2;
+    readonly leaseDurationMs: number;
+  }) => Effect.Effect<string, EffectOutboxError | EffectClaimRenewalRefused>;
   readonly succeed: (input: {
     readonly effectId: string;
     readonly workerId: string;
+    readonly claim?: OrchestrationEffectV2;
   }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly retry: (input: {
     readonly effectId: string;
     readonly workerId: string;
     readonly error: string;
     readonly delayMs: number;
+    readonly claim?: OrchestrationEffectV2;
   }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly fail: (input: {
     readonly effectId: string;
     readonly workerId: string;
     readonly error: string;
+    readonly claim?: OrchestrationEffectV2;
   }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly pruneSettled: Effect.Effect<number, EffectOutboxError>;
 }
@@ -185,7 +197,7 @@ const decodeNativePayload = Schema.decodeUnknownEffect(NativeOrchestrationEffect
 export const decodeOrchestrationEffectPayloadV2 = Effect.fn(
   "EffectOutbox.decodeOrchestrationEffectPayloadV2",
 )(function* (payload: string) {
-  const raw = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(payload);
+  const raw = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(payload);
   if (
     typeof raw === "object" &&
     raw !== null &&
@@ -211,6 +223,7 @@ const rowToEffect = (row: EffectRow) =>
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
       lastError: row.last_error,
+      payloadIdentity: row.payload_json,
     })),
   );
 
@@ -238,13 +251,21 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // This predicate reads no Jones table, so it works on upstream-only schema.
     const ordinaryPayload = sql`json_type(payload_json, '$.request') IS NULL
       AND json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL`;
+    const capturedClaim = (claim?: OrchestrationEffectV2) =>
+      claim === undefined
+        ? sql`1 = 1`
+        : claim.payloadIdentity === undefined || claim.leaseExpiresAt === null
+          ? sql`0 = 1`
+          : sql`thread_id = ${claim.threadId} AND command_id = ${claim.commandId}
+              AND effect_type = ${claim.request.type} AND attempt_count = ${claim.attemptCount}
+              AND lease_owner = ${claim.leaseOwner} AND lease_expires_at = ${claim.leaseExpiresAt}
+              AND payload_json = ${claim.payloadIdentity}`;
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
         Array.from({ length: Math.min(64, Math.max(0, Math.floor(count))) }, () => undefined),
       ).pipe(Effect.asVoid);
-    // An earlier effect waiting out a retry backoff still blocks later ones, so
-    // a turn cannot start while a failed rollback is about to restore files.
+    // Retry backoff must block later effects so turns cannot race a pending rollback.
     const claimableCandidatePredicate = (
       availableBefore?: string,
       excludeRestartContinuations = false,
@@ -363,11 +384,10 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           WHERE effect_id = ${effectId}
           LIMIT 1
         `.pipe(
+          NodeSqliteClient.readOnly,
           Effect.flatMap((rows) => {
             const row = rows[0];
-            return row === undefined
-              ? Effect.succeed(Option.none())
-              : rowToEffect(row).pipe(Effect.map(Option.some));
+            return row === undefined ? Effect.succeedNone : rowToEffect(row).pipe(Effect.asSome);
           }),
           Effect.mapError((cause) => new EffectOutboxError({ operation: "get", effectId, cause })),
         ),
@@ -415,6 +435,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           WHERE command_id = ${commandId}
           ORDER BY created_at ASC, effect_id ASC
         `.pipe(
+          NodeSqliteClient.readOnly,
           Effect.flatMap((rows) => decodeRows("list", rows)),
           Effect.mapError((cause) =>
             isEffectOutboxError(cause)
@@ -542,9 +563,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           const leaseExpiresAt = DateTime.formatIso(
             DateTime.add(now, { milliseconds: Math.max(1, leaseDurationMs) }),
           );
-          // Empty safety claims are expected while the daemon is idle. Tracing
-          // this query records the full SQL text on every poll and can dominate
-          // the local trace without adding actionable information.
+          // Idle claims return empty; tracing their full SQL on every poll overwhelms useful traces.
           const claimStatement = sql<EffectRow>`
             UPDATE orchestration_v2_effect_outbox
             SET
@@ -581,7 +600,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             SELECT MIN(candidate.available_at) AS available_at
             FROM orchestration_v2_effect_outbox AS candidate
             WHERE ${claimableCandidatePredicate(undefined, false, input?.excludeTitleGeneration, input?.urgentOnly)}
-          `.pipe(Effect.withTracerEnabled(false));
+          `.pipe(NodeSqliteClient.readOnly, Effect.withTracerEnabled(false));
           const availableAt = rows[0]?.available_at;
           if (availableAt === undefined || availableAt === null) return Option.none();
           const parsed = DateTime.make(availableAt);
@@ -599,8 +618,68 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             : new EffectOutboxError({ operation: "next-claimable", cause }),
         ),
       ),
+      renew: Effect.fn("EffectOutbox.renew")(
+        function* ({ claim, leaseDurationMs }) {
+          if (claim.payloadIdentity === undefined)
+            return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
+          const payload = yield* decodeOrchestrationEffectPayloadV2(claim.payloadIdentity);
+          const reference =
+            "nativeCreationExecutionReference" in payload
+              ? payload.nativeCreationExecutionReference
+              : undefined;
+          if (
+            !sameOperationRequest(payload.request, claim.request) ||
+            !sameOperationRequest(reference, claim.nativeCreationExecutionReference)
+          )
+            return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
+          return yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const now = yield* DateTime.now;
+              const nowIso = DateTime.formatIso(now);
+              const next = DateTime.formatIso(
+                DateTime.add(now, {
+                  milliseconds: Math.max(1, leaseDurationMs),
+                }),
+              );
+              const rows = yield* sql<{ readonly lease_expires_at: string }>`
+              UPDATE orchestration_v2_effect_outbox
+              SET lease_expires_at = ${next}, updated_at = ${nowIso}
+              WHERE effect_id = ${claim.id} AND status = 'running'
+                AND ${capturedClaim(claim)} AND lease_expires_at > ${nowIso}
+                AND lease_expires_at < ${next}
+              RETURNING lease_expires_at
+            `;
+              if (rows.length !== 1)
+                return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
+              if (claim.nativeCreationExecutionReference !== undefined) {
+                const repository = yield* Effect.serviceOption(
+                  NativeCreationRepository.NativeCreationRepository,
+                );
+                if (Option.isNone(repository) || repository.value.renewExecutionClaim === undefined)
+                  return yield* new EffectClaimRenewalRefused({ effectId: claim.id });
+                yield* repository.value.renewExecutionClaim({
+                  reference: claim.nativeCreationExecutionReference,
+                  workerId: claim.leaseOwner!,
+                  expectedAttempt: claim.attemptCount,
+                  oldExpiry: claim.leaseExpiresAt!,
+                  newExpiry: rows[0]!.lease_expires_at,
+                });
+              }
+              return rows[0]!.lease_expires_at;
+            }),
+          );
+        },
+        (effect, { claim }) =>
+          effect.pipe(
+            Effect.mapError((cause) =>
+              Schema.is(EffectClaimRenewalRefused)(cause) || isEffectOutboxError(cause)
+                ? cause
+                : new EffectOutboxError({ operation: "renew", effectId: claim.id, cause }),
+            ),
+          ),
+      ),
       succeed: Effect.fn("EffectOutbox.succeed")(
-        function* ({ effectId, workerId }) {
+        function* ({ effectId, workerId, claim }) {
           const now = DateTime.formatIso(yield* DateTime.now);
           const settle = (guard: typeof ordinaryPayload) => sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
@@ -614,6 +693,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${capturedClaim(claim)}
               AND ${guard}
             RETURNING effect_id
           `;
@@ -650,7 +730,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           ),
       ),
       retry: Effect.fn("EffectOutbox.retry")(
-        function* ({ effectId, workerId, error, delayMs }) {
+        function* ({ effectId, workerId, error, delayMs, claim }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           const availableAt = DateTime.formatIso(
@@ -668,6 +748,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${capturedClaim(claim)}
             RETURNING effect_id
           `;
           if (rows.length === 1) {
@@ -685,7 +766,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           ),
       ),
       fail: Effect.fn("EffectOutbox.fail")(
-        function* ({ effectId, workerId, error }) {
+        function* ({ effectId, workerId, error, claim }) {
           const now = DateTime.formatIso(yield* DateTime.now);
           const rows = yield* sql<{ readonly effect_id: string }>`
             UPDATE orchestration_v2_effect_outbox
@@ -699,6 +780,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${capturedClaim(claim)}
             RETURNING effect_id
           `;
           if (rows.length === 1) {
@@ -720,8 +802,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         const cutoff = DateTime.formatIso(
           DateTime.subtractDuration(yield* DateTime.now, SETTLED_EFFECT_RETENTION),
         );
-        // Each batch is its own statement, so a large backlog never holds the
-        // write lock for long and writers can commit between batches.
+        // Separate batch statements release the write lock between batches.
         const deleteBatch = sql<{ readonly effect_id: string }>`
           DELETE FROM orchestration_v2_effect_outbox
           WHERE rowid IN (

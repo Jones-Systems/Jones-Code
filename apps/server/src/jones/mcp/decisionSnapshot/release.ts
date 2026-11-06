@@ -146,7 +146,7 @@ export async function verifyRelease(binding: CollectorBinding): Promise<Verified
   const bytes = await readBounded(manifestPath, 262_144);
   if (NodeCrypto.createHash("sha256").update(bytes).digest("hex") !== binding.manifestSha256)
     throw new ReleaseMismatch();
-  const manifest = Schema.decodeUnknownSync(Schema.fromJsonString(ReleaseManifest))(
+  const manifest = Schema.decodeSync(Schema.fromJsonString(ReleaseManifest))(
     bytes.toString("utf8"),
     { onExcessProperty: "error" },
   );

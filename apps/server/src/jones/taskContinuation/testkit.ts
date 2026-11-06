@@ -1,5 +1,6 @@
 import {
   CommandId,
+  ContextTransferId,
   EnvironmentId,
   EventId,
   MessageId,
@@ -11,6 +12,7 @@ import {
   RunAttemptId,
   RunId,
   ThreadId,
+  type OrchestrationV2ContextTransfer,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
@@ -52,7 +54,6 @@ export function fixture() {
     completedAt: now,
     checkpointId: null,
     contextHandoffId: null,
-    delegatedTaskId: taskId,
   };
   const attempt: OrchestrationV2RunAttempt = {
     id: RunAttemptId.make("source-attempt"),
@@ -158,6 +159,26 @@ export function fixture() {
         startedAt: now,
         completedAt: now,
       },
+    ],
+    contextTransfers: [
+      {
+        id: ContextTransferId.make("source-spawn"),
+        type: "subagent_spawn" as const,
+        sourceThreadId: parentId,
+        targetThreadId: childId,
+        sourcePoint: { threadId: parentId, runId: RunId.make("parent-run") },
+        basePoint: null,
+        sourceProviderInstanceId: parent.thread.providerInstanceId,
+        targetProviderInstanceId: instanceId,
+        targetRunId: run.id,
+        status: "consumed" as const,
+        resolution: null,
+        createdBy: "agent" as const,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+        consumedAt: now,
+      } satisfies OrchestrationV2ContextTransfer,
     ],
   };
   const owner = { ...parent, runs: [parentRun], subagents: [task] };

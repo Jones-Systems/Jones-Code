@@ -1,3 +1,4 @@
+import { routeLaptopDownload, routeLaptopInstall } from "../installStatus/entrypoints";
 import { jonesBuildLabel, jonesBuildLabels } from "./buildVersion";
 import { outcomeBuildRefs } from "./buildPairs";
 import * as Crypto from "effect/Crypto";
@@ -80,12 +81,13 @@ export function getJonesDesktopUpdateOutcomeMessage(state: DesktopUpdateState): 
 }
 
 export async function installLocalDesktopUpdate(
-  bridge: Pick<DesktopBridge, "installUpdate" | "fleetUpdates">,
+  bridge: Pick<DesktopBridge, "installUpdate" | "fleetUpdates" | "installPlan">,
   state: DesktopUpdateState | null,
 ): Promise<DesktopUpdateActionResult> {
   const blocked = getJonesDesktopUpdateBlockedMessage(state, "install");
   if (blocked) return Promise.reject(new Error(blocked));
   if (!state?.jones) return bridge.installUpdate();
+  if (bridge.installPlan) return routeLaptopInstall(bridge, state);
   const campaignId = await prepareOptionalLocalFleetCampaign(bridge, state);
   return campaignId === undefined
     ? bridge.installUpdate(state.jones.stagedHandle)
@@ -98,10 +100,11 @@ export function getJonesDesktopUpdateRefusal(result: DesktopUpdateActionResult):
 }
 
 export async function downloadLocalDesktopUpdate(
-  bridge: Pick<DesktopBridge, "downloadUpdate" | "fleetUpdates">,
+  bridge: Pick<DesktopBridge, "downloadUpdate" | "fleetUpdates" | "installPlan">,
   state: DesktopUpdateState | null,
 ): Promise<DesktopUpdateActionResult> {
   if (!state?.jones) return bridge.downloadUpdate();
+  if (bridge.installPlan) return routeLaptopDownload(bridge, state);
   const blocked = getJonesDesktopUpdateBlockedMessage(state, "download");
   if (blocked) return Promise.reject(new Error(blocked));
   const provenance = state.jones.provenance;

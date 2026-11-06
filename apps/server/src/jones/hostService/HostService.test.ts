@@ -7,7 +7,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
@@ -140,7 +140,7 @@ function fixture(
   const configLayer = Layer.succeed(
     HostServiceConfig.HostServiceConfig,
     HostServiceConfig.HostServiceConfig.of({
-      read: () => Effect.succeed(Option.some(persisted)),
+      read: () => Effect.succeedSome(persisted),
       write: (_base, data) =>
         Effect.sync(() => {
           writes.push("host-service.json");

@@ -67,7 +67,7 @@ export const deliverWithHandoffRecovery = <
               handoff.delivery.status === "pending",
           )
         )
-          return yield* Effect.fail(error);
+          return yield* error;
         // A pure preview proves that the intact request plus reserves can fit
         // after reclaiming history. Zero occupancy is a capacity bound, not telemetry.
         yield* deliverContextHandoffs({

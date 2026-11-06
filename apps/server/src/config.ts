@@ -9,12 +9,30 @@ import * as Path from "effect/Path";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
+import type { OtlpEndpointSource } from "@t3tools/contracts";
 import { sweepStalePendingAttachments } from "./attachmentStore.ts";
-import { DEFAULT_SIGNAL_EXPORT, type SignalExport } from "@t3tools/shared/observability";
+import {
+  DEFAULT_SIGNAL_EXPORT,
+  nodeProcessRuntimeAttributes,
+  processServiceInstanceId,
+  type SignalExport,
+} from "@t3tools/shared/observability";
 import * as OtelEnvironment from "@t3tools/shared/otelEnvironment";
+import { type ReleaseChannel, releaseResourceAttributes } from "@t3tools/shared/releaseResource";
 import packageJson from "../package.json" with { type: "json" };
 import { holdJonesServerNativeWriterFence } from "./jones/updates/nativeWriterStartup.ts";
+import type { Configuration as FleetCheckpointConfiguration } from "./jones/fleetCheckpoint/Configuration.ts";
 import type { Configuration as WorkspaceLifecycleConfiguration } from "./jones/workspaceLifecycle/Configuration.ts";
+import {
+  resolveServerParallelismProfile,
+  type ServerParallelismConfig,
+} from "./jones/serverParallelism/config.ts";
+
+// Official release workflows set this telemetry channel; other builds report dev.
+// Unlike __T3CODE_BUILD_CHANNEL__, this is not the sign-in page's latest/nightly channel.
+declare const __T3CODE_TELEMETRY_CHANNEL__: ReleaseChannel | undefined;
+export const telemetryChannel: ReleaseChannel =
+  typeof __T3CODE_TELEMETRY_CHANNEL__ === "undefined" ? "dev" : __T3CODE_TELEMETRY_CHANNEL__;
 
 export const DEFAULT_PORT = 3773;
 
@@ -67,10 +85,18 @@ export class ServerConfig extends Context.Service<
     readonly otlpTracesExport: SignalExport;
     readonly otlpMetricsExport: SignalExport;
     readonly otlpLogsExport: SignalExport;
+    readonly otlpTracesSource?: OtlpEndpointSource;
+    readonly otlpTracesVariable?: string;
+    readonly otlpMetricsSource?: OtlpEndpointSource;
+    readonly otlpMetricsVariable?: string;
+    readonly otlpLogsSource?: OtlpEndpointSource;
+    readonly otlpLogsVariable?: string;
     readonly otelEnvironment: OtelEnvironment.OtelEnvironment;
     readonly mode: RuntimeMode;
     readonly port: number;
     readonly host: string | undefined;
+    /** Set when the host was defaulted to a private-network listener for the service. */
+    readonly privateNetworkOnly?: boolean | undefined;
     readonly cwd: string;
     readonly baseDir: string;
     readonly staticDir: string | undefined;
@@ -89,7 +115,9 @@ export class ServerConfig extends Context.Service<
     readonly desktopNativeOwnerInputFd?: number | undefined;
     readonly desktopNativeOwnerOutputFd?: number | undefined;
     readonly resourceMonitorPath?: string | undefined;
+    readonly fleetCheckpoint?: FleetCheckpointConfiguration | undefined;
     readonly workspaceLifecycle?: WorkspaceLifecycleConfiguration | undefined;
+    readonly serverParallelism: ServerParallelismConfig;
     readonly autoBootstrapProjectFromCwd: boolean;
     readonly logWebSocketEvents: boolean;
     readonly tailscaleServeEnabled: boolean;
@@ -102,7 +130,15 @@ export class ServerConfig extends Context.Service<
   ) => layerTest(cwd, baseDirOrPrefix);
 }
 
-export const make = (config: ServerConfig["Service"]) => ServerConfig.of(config);
+// Standalone CLI clients construct configuration without starting server pools.
+export const make = (
+  config: Omit<ServerConfig["Service"], "serverParallelism"> &
+    Partial<Pick<ServerConfig["Service"], "serverParallelism">>,
+) =>
+  ServerConfig.of({
+    ...config,
+    serverParallelism: config.serverParallelism ?? resolveServerParallelismProfile(undefined),
+  });
 
 export const otlpResource = (
   config: Pick<ServerConfig["Service"], "mode" | "otelEnvironment">,
@@ -113,8 +149,11 @@ export const otlpResource = (
   attributes: {
     "service.namespace": "t3code",
     "service.runtime": "t3-server",
-    "service.mode": config.mode,
+    "t3code.server.managed_by": config.mode === "desktop" ? "desktop" : "standalone",
+    "service.instance.id": processServiceInstanceId(config.otelEnvironment.resourceAttributes),
+    ...releaseResourceAttributes(telemetryChannel, config.otelEnvironment.resourceAttributes),
     "host.name": config.otelEnvironment.resourceAttributes["host.name"] || hostName,
+    ...nodeProcessRuntimeAttributes(),
   },
 });
 
@@ -168,7 +207,7 @@ const canonicalizePath = Effect.fn("ServerConfig.canonicalizePath")(function* (i
   // their existing ancestor so a symlink cannot hide an overlapping target.
   while (true) {
     const canonical = yield* fileSystem.realPath(candidate).pipe(
-      Effect.map(Option.some),
+      Effect.asSome,
       Effect.catch((error) =>
         error.reason._tag === "NotFound"
           ? Effect.succeed(Option.none<string>())
@@ -285,6 +324,7 @@ const makeTest = Effect.fn("ServerConfig.makeTest")(function* (
   yield* ensureServerDirectories(derivedPaths).pipe(Effect.orDie);
 
   return ServerConfig.of({
+    serverParallelism: resolveServerParallelismProfile(undefined),
     logLevel: "Error",
     traceMinLevel: "Info",
     traceTimingEnabled: true,

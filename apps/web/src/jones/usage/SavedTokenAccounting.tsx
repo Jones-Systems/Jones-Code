@@ -575,9 +575,9 @@ function Allocation({
                       ? "Measured component"
                       : "Estimated · calibrated"}
                   </td>
-                  {[group.central, group.low, group.high].map((value, index) => (
-                    <td key={index} className="px-2 py-2 text-right tabular-nums">
-                      {formatAccountingCount(value)}
+                  {(["central", "low", "high"] as const).map((metric) => (
+                    <td key={metric} className="px-2 py-2 text-right tabular-nums">
+                      {formatAccountingCount(group[metric])}
                     </td>
                   ))}
                 </tr>
@@ -632,15 +632,13 @@ function Partitions<Key extends string>({
                 <td className="px-2 py-2 text-right tabular-nums">
                   {formatAccountingCount(partitions[key].requests)}
                 </td>
-                {[
-                  partitions[key].metrics.input_tokens,
-                  partitions[key].metrics.output_tokens,
-                  partitions[key].metrics.reasoning_output_tokens,
-                ].map((metric, index) => (
-                  <td key={index} className="min-w-28 px-2 py-2 text-right">
-                    <MetricValue metric={metric} />
-                  </td>
-                ))}
+                {(["input_tokens", "output_tokens", "reasoning_output_tokens"] as const).map(
+                  (metric) => (
+                    <td key={metric} className="min-w-28 px-2 py-2 text-right">
+                      <MetricValue metric={partitions[key].metrics[metric]} />
+                    </td>
+                  ),
+                )}
               </tr>
             ))}
           </tbody>

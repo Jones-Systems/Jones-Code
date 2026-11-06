@@ -144,7 +144,7 @@ const getDirect = async (f: ReturnType<typeof fixture>, extra = "") => {
   expect(response.status).toBe(200);
   const text = await response.text();
   expect(text).not.toContain("private-vps-token");
-  return Schema.decodeUnknownSync(Schema.fromJsonString(accessSchema))(text);
+  return Schema.decodeSync(Schema.fromJsonString(accessSchema))(text);
 };
 
 describe("device hub proxy", () => {

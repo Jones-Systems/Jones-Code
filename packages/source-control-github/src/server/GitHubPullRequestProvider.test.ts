@@ -2,14 +2,33 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
+import * as TestClock from "effect/testing/TestClock";
 import type { PullRequestReaction } from "@t3tools/contracts";
 
 import * as GitHubRequestPolicy from "./GitHubRequestPolicy.ts";
 import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as GitHubPullRequestApi from "./GitHubPullRequestApi.ts";
-import type { GitHubPullRequestCore } from "./gitHubPullRequestJson.ts";
+import type {
+  GitHubPullRequestCore,
+  GitHubPullRequestSearchItem,
+} from "./gitHubPullRequestJson.ts";
 import { gitHubViewerPermissions, loginAvatarUrl, make } from "./GitHubPullRequestProvider.ts";
 import type { GitHubReviewThreadComments } from "./gitHubPullRequestJson.ts";
+
+const observeChecks: GitHubPullRequestApi.GitHubPullRequestApi["Service"]["getPullRequestCheckObservation"] =
+  (input) =>
+    Effect.succeed({
+      headSha: input.headSha ?? "abc123",
+      checks: input.checks,
+      jonesCheckObservation: {
+        headSha: input.headSha ?? "abc123",
+        enumerationComplete: true,
+        workflowState: "complete",
+        requiredSetKnown: false,
+        requiredState: "unknown",
+        requiredChecks: [],
+      },
+    });
 
 const coreFields = {
   reviewRequestTeams: [],
@@ -33,6 +52,7 @@ it.effect("maps credential verification failures without relabeling operation fa
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           withVerifiedCredential: (_input, use) =>
             verificationFails
               ? Effect.fail(
@@ -236,6 +256,7 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -304,7 +325,11 @@ describe("gitHubViewerPermissions", () => {
       if (readChecks === undefined) return yield* Effect.die("checks read missing");
       expect(
         yield* readChecks({ cwd: "/w", repository: "acme/web", host: "github.com", number: 7 }),
-      ).toEqual({ state: detail.state, checks: detail.checks });
+      ).toEqual({
+        state: detail.state,
+        checks: detail.checks,
+        jonesCheckObservation: detail.jonesCheckObservation,
+      });
       expect(detail.workflowApprovalsRequired).toBe(1);
       expect(detail.checks).toEqual([
         {
@@ -330,6 +355,7 @@ describe("gitHubViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           getPullRequestDetail: () =>
             Effect.succeed({
               ...coreFields,
@@ -443,6 +469,7 @@ it.effect("does not classify same-repository gates as fork workflow approvals", 
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
+        getPullRequestCheckObservation: observeChecks,
         getPullRequestDetail: () => Effect.succeed({ ...openDetail, isCrossRepository: false }),
         listWorkflowRunsRequiringApproval: () =>
           Effect.die("same-repository pull requests must not probe fork workflow approvals"),
@@ -483,6 +510,7 @@ it.effect("keeps an unsafe workflow approval scope visible as unknown", () =>
     Effect.provide(
       Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
         revalidateChecks: (_input, read) => read,
+        getPullRequestCheckObservation: observeChecks,
         getPullRequestDetail: () => Effect.succeed(openDetail),
         listWorkflowRunsRequiringApproval: () =>
           Effect.fail(
@@ -524,6 +552,7 @@ describe("getViewerPermissions", () => {
   ) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
+      getPullRequestCheckObservation: observeChecks,
       getPullRequestDetail: () =>
         SourceControlRateLimit.Interactive.pipe(
           Effect.tap((allowReserve) => Effect.sync(() => onDetail(allowReserve))),
@@ -569,6 +598,7 @@ describe("getViewerPermissions", () => {
       Effect.provide(
         Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
           revalidateChecks: (_input, read) => read,
+          getPullRequestCheckObservation: observeChecks,
           getPullRequestDetail: () =>
             Effect.fail(
               new GitHubPullRequestApi.GitHubPullRequestReadError({
@@ -641,18 +671,26 @@ describe("getChangeRequest commits", () => {
     reviewers: [],
     avatarsByLogin: new Map<string, string>(),
     botLogins: new Set<string>(),
-    commitStats: new Map<string, { readonly additions: number; readonly deletions: number }>(),
     viewer: { canUpdate: true, didAuthor: false },
   };
 
   const layerWith = (commits: GitHubReviewThreadComments["commits"]) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
+      getPullRequestCheckObservation: observeChecks,
       getPullRequestActivity: () =>
         Effect.succeed({
           author: baseDetail.author,
           comments: baseDetail.comments,
           commits: [
+            {
+              oid: "graphql-newest",
+              messageHeadline: "Activity metadata",
+              committedDate: "2026-07-06T00:00:00Z",
+              additions: 18,
+              deletions: 7,
+              authors: [],
+            },
             {
               oid: "view-oldest",
               messageHeadline: "gh pr view's oldest commit",
@@ -675,6 +713,11 @@ describe("getChangeRequest commits", () => {
       });
 
       expect(detail.commits.map((commit) => commit.oid)).toEqual(["graphql-newest"]);
+      expect(detail.commits[0]).toMatchObject({
+        messageHeadline: "the newest commit gh pr view drops",
+        additions: 18,
+        deletions: 7,
+      });
     }).pipe(
       Effect.provide(
         layerWith([
@@ -699,7 +742,7 @@ describe("getChangeRequest commits", () => {
         number: 7,
       });
 
-      expect(detail.commits.map((commit) => commit.oid)).toEqual(["view-oldest"]);
+      expect(detail.commits.map((commit) => commit.oid)).toEqual(["graphql-newest", "view-oldest"]);
     }).pipe(Effect.provide(layerWith([]))),
   );
 });
@@ -728,13 +771,13 @@ describe("getChangeRequestActivity dismissed reviews", () => {
     reviewers: [],
     avatarsByLogin: new Map(),
     botLogins: new Set(["macroscopeapp"]),
-    commitStats: new Map(),
     commits: [],
     viewer: { canUpdate: true, didAuthor: false },
   };
   const layerFor = (body: string) =>
     Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
       revalidateChecks: (_input, read) => read,
+      getPullRequestCheckObservation: observeChecks,
       getPullRequestActivity: () =>
         Effect.succeed({ author: null, comments: [dismissedReview(body)], commits: [] }),
       listReviewThreadComments: () => Effect.succeed(threadComments),
@@ -750,8 +793,6 @@ describe("getChangeRequestActivity dismissed reviews", () => {
   });
 
   it.effect("fills a marker-only dismissed review with the timeline's reason", () =>
-    // Macroscope's approvals carry only an HTML comment, which markdown renders as nothing —
-    // an empty-string check misses them and the card opens onto nothing.
     readActivity.pipe(
       Effect.map((activity) => {
         expect(activity.comments[0]?.body).toBe("Dismissing prior approval to re-evaluate 9b66581");
@@ -769,4 +810,168 @@ describe("loginAvatarUrl", () => {
       expect(loginAvatarUrl(login, "github.com")).toBeNull();
     }
   });
+});
+
+describe("listChangeRequestsAcross", () => {
+  const searched = (repository: string): GitHubPullRequestSearchItem => ({
+    repository,
+    number: 1,
+    title: "Change",
+    url: `https://github.com/${repository}/pull/1`,
+    author: null,
+    authorId: null,
+    headBranch: "feature",
+    baseBranch: "main",
+    state: "open" as const,
+    isDraft: false,
+    mergeability: "mergeable" as const,
+    additions: 0,
+    deletions: 0,
+    createdAt: "2026-07-01T00:00:00Z",
+    updatedAt: "2026-07-02T00:00:00Z",
+    reviewRequestLogins: [],
+    hasTeamReviewRequest: false,
+    labels: [],
+    reviewDecision: null,
+    checksState: null,
+  });
+  const across = {
+    cwd: "/w",
+    host: "github.com",
+    repositories: ["acme/web", "acme/docs"],
+    state: "open" as const,
+    involvement: "all" as const,
+    viewer: "viewer",
+    limit: 50,
+  };
+  type Search = Parameters<
+    GitHubPullRequestApi.GitHubPullRequestApi["Service"]["searchPullRequests"]
+  >[0];
+  // Pages answer in turn; a one-repository check for any pull request answers from `covered`.
+  const providerAnswering = (input: {
+    readonly pages: Array<GitHubPullRequestApi.GitHubPullRequestSearchBatch>;
+    readonly covered?: (repository: string) => boolean;
+    readonly checks?: Array<string>;
+  }) =>
+    make.pipe(
+      Effect.provide(
+        Layer.mock(GitHubPullRequestApi.GitHubPullRequestApi)({
+          searchPullRequests: (search: Search) => {
+            if (search.state !== "all") return Effect.succeed(input.pages.shift()!);
+            const repository = search.repositories[0]!;
+            input.checks?.push(repository);
+            return input.covered === undefined
+              ? Effect.fail(
+                  new GitHubPullRequestApi.GitHubViewerLoginUnavailableError({ cwd: search.cwd }),
+                )
+              : Effect.succeed({
+                  items: input.covered(repository) ? [searched(repository)] : [],
+                  truncated: false,
+                });
+          },
+        }),
+      ),
+      Effect.map((provider) => provider.listChangeRequestsAcross!),
+    );
+
+  it.effect("believes silence about a repository search covers, and checks it once", () =>
+    Effect.gen(function* () {
+      const checks: Array<string> = [];
+      const read = yield* providerAnswering({
+        pages: [
+          { items: [searched("acme/web")], truncated: false },
+          { items: [searched("acme/web")], truncated: false },
+        ],
+        covered: () => true,
+        checks,
+      });
+      expect((yield* read(across)).unresolved).toEqual([]);
+      expect((yield* read(across)).unresolved).toEqual([]);
+      expect(checks).toEqual(["acme/docs"]);
+    }),
+  );
+
+  it.effect("leaves a repository search does not cover to be read on its own", () =>
+    Effect.gen(function* () {
+      const read = yield* providerAnswering({
+        pages: [{ items: [searched("acme/web")], truncated: false }],
+        covered: (repository) => repository !== "acme/docs",
+      });
+      expect((yield* read(across)).unresolved).toEqual(["acme/docs"]);
+    }),
+  );
+
+  it.effect("does not check a repository a page had rows for", () =>
+    Effect.gen(function* () {
+      const checks: Array<string> = [];
+      const read = yield* providerAnswering({
+        pages: [
+          { items: [searched("acme/web"), searched("acme/docs")], truncated: false },
+          { items: [searched("acme/web")], truncated: false },
+        ],
+        covered: () => true,
+        checks,
+      });
+      yield* read(across);
+      expect((yield* read(across)).unresolved).toEqual([]);
+      expect(checks).toEqual([]);
+    }),
+  );
+
+  it.effect("vouches for no silent repository in a truncated first slice", () =>
+    Effect.gen(function* () {
+      const read = yield* providerAnswering({
+        pages: [{ items: [searched("acme/web")], truncated: true }],
+        covered: () => true,
+      });
+      expect((yield* read(across)).unresolved).toEqual(["acme/docs"]);
+    }),
+  );
+
+  it.effect("past the first slice, believes a covered repository and not an uncovered one", () =>
+    Effect.gen(function* () {
+      const read = yield* providerAnswering({
+        pages: [
+          { items: [searched("acme/web")], truncated: true },
+          { items: [searched("acme/web")], truncated: true },
+        ],
+        covered: (repository) => repository !== "acme/renamed",
+      });
+      const later = { ...across, cursor: { updatedBefore: "2026-07-02T00:00:00Z", delivered: 1 } };
+      expect((yield* read(later)).unresolved).toEqual([]);
+      expect(
+        (yield* read({ ...later, repositories: ["acme/web", "acme/renamed"] })).unresolved,
+      ).toEqual(["acme/renamed"]);
+    }),
+  );
+
+  it.effect("asks again after a failed check, and after coverage has had time to change", () =>
+    Effect.gen(function* () {
+      const checks: Array<string> = [];
+      const failing = yield* providerAnswering({
+        pages: [
+          { items: [searched("acme/web")], truncated: false },
+          { items: [searched("acme/web")], truncated: false },
+        ],
+        checks,
+      });
+      expect((yield* failing(across)).unresolved).toEqual(["acme/docs"]);
+      expect((yield* failing(across)).unresolved).toEqual(["acme/docs"]);
+      expect(checks).toEqual(["acme/docs", "acme/docs"]);
+
+      checks.length = 0;
+      const read = yield* providerAnswering({
+        pages: [
+          { items: [searched("acme/web")], truncated: false },
+          { items: [searched("acme/web")], truncated: false },
+        ],
+        covered: () => true,
+        checks,
+      });
+      yield* read(across);
+      yield* TestClock.adjust("61 minutes");
+      yield* read(across);
+      expect(checks).toEqual(["acme/docs", "acme/docs"]);
+    }),
+  );
 });

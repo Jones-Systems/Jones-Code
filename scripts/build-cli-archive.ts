@@ -24,8 +24,14 @@ import rootPackageJson from "../package.json" with { type: "json" };
 import serverPackageJson from "../apps/server/package.json" with { type: "json" };
 
 import { requireJonesBuildTarget } from "./jones/platforms/supportedTargets.ts";
+import { planCliArchiveDependencies } from "./jones/packaging/cliArchiveDependencies.ts";
 import {
-  createStagePatchedDependencies,
+  assertCliPayloadUnchanged,
+  requireProductionCliBuild,
+  signProductionCli,
+  type CliPayloadSeal,
+} from "./jones/signing/cli.ts";
+import {
   createStageWorkspaceConfig,
   resolveFffNativeDependencies,
   STAGE_INSTALL_ARGS,
@@ -154,14 +160,14 @@ const stageRuntimeExternals = Effect.fn("stageRuntimeExternals")(function* (inpu
       hint: "The archive stages fff's platform binary from this version.",
     });
   }
-  const dependencies = {
-    ...selectCliRuntimeExternalDependencies(serverDependencies),
-    ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
-  };
-  const patchedDependencies = createStagePatchedDependencies(
-    workspace.patchedDependencies ?? {},
-    dependencies,
-  );
+  const { dependencies, patchedDependencies } = planCliArchiveDependencies({
+    dependencies: {
+      ...selectCliRuntimeExternalDependencies(serverDependencies),
+      ...resolveFffNativeDependencies(input.platform, input.arch, fffNodeVersion),
+    },
+    patchedDependencies: workspace.patchedDependencies ?? {},
+    lockfile: yield* fs.readFileString(path.join(input.repoRoot, "pnpm-lock.yaml")),
+  });
 
   yield* fs.writeFileString(
     path.join(input.stageDir, "package.json"),
@@ -269,11 +275,9 @@ const MacSigningConfig = Config.all({
 });
 
 /**
- * Apple Silicon refuses to run unsigned Mach-O binaries at all, so the
- * executable is always signed: ad hoc when no identity is configured, or with
- * the Developer ID plus notarization when it is. The hardened runtime that
- * notarization requires only loads signed libraries, so every native addon in
- * the archive is signed with the same identity.
+ * Apple Silicon needs signed Mach-O files; development builds use ad hoc signing.
+ * Developer ID notarization requires native addons to share that identity.
+ * Explicit Jones production builds sign and notarize the complete distribution.
  */
 const signMacArchiveContents = Effect.fn("signMacArchiveContents")(function* (input: {
   readonly repoRoot: string;
@@ -357,11 +361,9 @@ const WindowsSigningConfig = Config.all({
 });
 
 /**
- * Node's --build-sea injects the blob into a copy of node.exe by rebuilding its
- * resource section but, unlike its Mach-O path, leaves node's original
- * Authenticode data-directory entry in the PE header. The file grows, so the
- * entry now points into the middle of the new section at bytes that are not a
- * certificate table.
+ * Node --build-sea rebuilds node.exe's PE resource section but retains its original
+ * Authenticode data-directory entry, unlike Mach-O injection. Growth makes that entry
+ * point inside the new section rather than at a certificate table.
  */
 const stripStaleAuthenticodeEntry = Effect.fn("stripStaleAuthenticodeEntry")(function* (
   executablePath: string,
@@ -443,6 +445,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const repoRoot = yield* RepoRoot;
+  const production = requireProductionCliBuild(process.env, input);
   const serverDir = path.join(repoRoot, "apps/server");
   const executableName = input.platform === "win" ? "t3.exe" : "t3";
   // tsdown suffixes cross-built executables with their target (t3-darwin-x64);
@@ -495,13 +498,24 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
   });
 
   const executablePath = path.join(contentDir, executableName);
-  if (input.platform === "mac") {
+  if (input.platform !== "win") {
+    yield* fs.chmod(executablePath, 0o755);
+  }
+  let productionSeal: CliPayloadSeal | undefined;
+  if (production) {
+    productionSeal = yield* Effect.try(() =>
+      signProductionCli(
+        {
+          contentDir,
+          entitlements: path.join(repoRoot, "apps/server/resources/cli-entitlements.plist"),
+        },
+        process.env,
+      ),
+    );
+  } else if (input.platform === "mac") {
     yield* signMacArchiveContents({ repoRoot, contentDir, executablePath });
   } else if (input.platform === "win") {
     yield* signWindowsExecutable(executablePath);
-  }
-  if (input.platform !== "win") {
-    yield* fs.chmod(executablePath, 0o755);
   }
 
   yield* fs.makeDirectory(input.outputDir, { recursive: true });
@@ -526,11 +540,9 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       "tar (zip)",
     );
   } else {
-    // On Linux, pnpm hard-links identical files out of its store and node-gyp
-    // hard-links build outputs, and GNU tar records those as link entries.
-    // The npm registry rejects a tarball containing any, and the npm platform
-    // packages are re-packed from this archive's contents, so store every
-    // file as a file. macOS's bsdtar has no such flag; pnpm clones there.
+    // GNU tar records pnpm store and node-gyp hard links as link entries, which npm rejects.
+    // Store every Linux archive entry as a file because npm platform packages reuse this archive.
+    // macOS bsdtar lacks this flag; pnpm clones there.
     yield* runCommand(
       ChildProcess.make("tar", [
         ...(input.platform === "linux" ? ["--hard-dereference"] : []),
@@ -543,6 +555,7 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
       "tar (gzip)",
     );
   }
+  if (productionSeal) assertCliPayloadUnchanged(contentDir, productionSeal);
   const stat = yield* fs.stat(archivePath);
   yield* Effect.log(`[cli-archive] Wrote ${archivePath} (${String(stat.size)} bytes).`);
   return archivePath;

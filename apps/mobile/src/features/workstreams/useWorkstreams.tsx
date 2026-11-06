@@ -218,6 +218,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     [loaded, connections, retained, liveEnvironments],
   );
   const snapshotsRef = useRef(snapshots);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed connection and snapshot identities to pending mobile workstream callbacks.
   useLayoutEffect(() => {
     retainedRef.current = retained;
     loadedRef.current = loaded;
@@ -465,18 +466,21 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
     },
     [request],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile asynchronously retained workstream snapshots when their source connections change.
   useEffect(() => {
     setLoaded((previous) => {
       const next = settleMobileWorkstreamSnapshots(previous, new Map(), retained);
       return next.size === previous.size ? previous : next;
     });
   }, [retained]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Register the mounted workstream refresh subscriber and remove it on unmount.
   useEffect(() => {
     refreshSubscribers.add(refresh);
     return () => {
       refreshSubscribers.delete(refresh);
     };
   }, [refresh]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Restore workstream collapse preferences from secure storage without updating an unmounted screen.
   useEffect(() => {
     let active = true;
     void runtime
@@ -533,6 +537,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       }),
     [],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load registry snapshots for the current connections and abort requests when their owner retires.
   useEffect(() => {
     const controller = new AbortController();
     const ownedReaders = new Map<EnvironmentId, EnvironmentNativeWorkstreamsLifetime>();
@@ -811,6 +816,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ]),
     )
     .join("|");
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own appearance refresh subscriptions and abort their reads when the mounted snapshot set changes.
   useEffect(() => {
     const abort = new AbortController();
     let loading = false;
@@ -929,6 +935,7 @@ export function useMobileWorkstreams(threads: readonly WorkstreamThreadLike[]) {
       ]),
     )
     .join("|");
+  // oxlint-disable-next-line t3code/react-effect-budget -- Watch retained operation results and release their subscriptions and abort signal on unmount.
   useEffect(() => {
     const abort = new AbortController();
     setOperationStatus(null);

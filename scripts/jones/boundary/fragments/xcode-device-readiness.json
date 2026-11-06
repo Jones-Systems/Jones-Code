@@ -1,0 +1,29 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "xcode-device-readiness",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/device/xcodeReadiness.ts",
+    "apps/server/src/jones/device/xcodeReadiness.test.ts",
+    "apps/server/src/jones/device/sshXcodeReadiness.test.ts"
+  ],
+  "hookPaths": [
+    "apps/server/src/device/LocalDeviceHost.ts",
+    "apps/server/src/device/LocalDeviceHost.test.ts",
+    "apps/server/src/device/DeviceService.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/device/LocalDeviceHost.ts",
+      "to": "apps/server/src/jones/device/xcodeReadiness.ts"
+    },
+    {
+      "from": "apps/server/src/device/DeviceService.ts",
+      "to": "apps/server/src/jones/device/xcodeReadiness.ts"
+    },
+    {
+      "from": "apps/server/src/device/sshDeviceScript.ts",
+      "to": "apps/server/src/jones/device/xcodeReadiness.ts"
+    }
+  ]
+}

@@ -1,10 +1,17 @@
-import { cloneElement, type ReactElement, type ReactNode } from "react";
+import { cloneElement, type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { act, render as renderTest, type Screen } from "../../../test/render";
 import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { expect, it, vi } from "vite-plus/test";
 
 import "~/index.css";
+
+function expectCollapsedGroup(id: string, label: string, count: number) {
+  const toggle = container.querySelector(`[data-linked-group="${id}"] button`);
+  expect(toggle?.textContent).toContain(label);
+  expect(toggle?.getAttribute("aria-expanded")).toBe("false");
+  expect(toggle?.querySelector(".tabular-nums")?.textContent?.trim()).toBe(String(count));
+}
 
 const state = vi.hoisted(() => ({
   stopWorkflowLabel: "environment-data:orchestration:stop-workflow",
@@ -20,6 +27,8 @@ const state = vi.hoisted(() => ({
   workflowCommand: vi.fn().mockResolvedValue({ _tag: "Success" }),
   toast: vi.fn(),
 }));
+
+vi.mock(import("../../env"), () => ({ isElectron: true }));
 
 vi.mock(import("../linkedThreads/useLinkedThreads"), () => ({
   useLinkedThreads: () => ({
@@ -111,6 +120,7 @@ vi.mock(import("../../components/ui/tooltip"), async () => {
 });
 
 import { ThreadRelationshipsPanel } from "../../components/chat/ThreadRelationshipsControl";
+import { RemoteSubagentRow } from "./RemoteRows";
 
 let root: Screen;
 let container: HTMLDivElement;
@@ -224,6 +234,22 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(allByLabel("Stop subagent Checker")).toHaveLength(0);
   await click(linkedToggle());
   expect(text()).toContain("Checker");
+  state.environments.set("test", {
+    label: "Laptop",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "PrimaryConnectionTarget" } },
+  });
+  await update();
+  const checkerRow = () => buttons().find((button) => button.textContent?.includes("Checker"))!;
+  expect(checkerRow().textContent).toContain("Running");
+  expect(checkerRow().textContent).not.toContain("on LAP");
+  state.environments.set("test", {
+    label: "VPS",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "RelayConnectionTarget" } },
+  });
+  await update();
+  expect(checkerRow().textContent).toContain("on VPS");
   expect(text()).toContain("Linked · 3 running");
   expect(text()).toContain("running");
   expect(text()).not.toContain("gpt-5.4");
@@ -257,7 +283,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   };
   await update();
   expect(heading()).toBe("Linked (1)");
-  expect(text()).toContain("Previous agents (1)");
+  expectCollapsedGroup("previous", "Previous agents", 1);
   expect(text()).not.toContain("Checker");
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
@@ -275,7 +301,7 @@ it("shows the matching child agent details and refreshes them when the agent set
   expect(text()).not.toContain("Worker");
   await click(sectionToggle(true));
   expect(text()).not.toContain("Checker");
-  expect(text()).toContain("Previous agents (1)");
+  expectCollapsedGroup("previous", "Previous agents", 1);
   await click(sectionToggle(false));
   expect(text()).toContain("Checker");
 
@@ -359,12 +385,7 @@ it("keeps fork ancestry navigable inside Linked and closes Linked when the selec
   expect(container.querySelectorAll("li")).toHaveLength(0);
   await click(linkedToggle());
   expect(textNodes(" ")).toContain("Forked from");
-  expect(
-    container
-      .querySelector('[data-linked-group="children"] button')
-      ?.textContent?.replace(/\s+/g, " ")
-      .trim(),
-  ).toBe("Children (1)");
+  expectCollapsedGroup("children", "Children", 1);
   await click(buttons().find((button) => button.textContent?.includes("Children"))!);
   expect(textNodes(" ")).not.toContain("Delegated tasks");
   const sourceButton = buttons().find((button) =>
@@ -440,7 +461,7 @@ it("combines remote and local history before collapse and pagination, then resto
     />,
   );
   await click(linkedToggle());
-  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (7)");
+  expectCollapsedGroup("previous", "Previous agents", 7);
   expect(textNodes(" ").replace(/\s+/g, " ")).not.toContain("Remote task");
   await click(sectionToggle(false));
   expect(container.querySelectorAll("li")).toHaveLength(6);
@@ -467,7 +488,7 @@ it("combines remote and local history before collapse and pagination, then resto
   await update();
   expect(heading()).toBe("Linked · 1 running (7)");
   await click(sectionToggle(true));
-  expect(textNodes(" ").replace(/\s+/g, " ")).toContain("Previous agents (6)");
+  expectCollapsedGroup("previous", "Previous agents", 6);
   expect(container.querySelectorAll("li")).toHaveLength(1);
   const resumed = buttons().find((button) => button.textContent?.includes("Remote task 0"))!;
   await click(resumed);
@@ -584,4 +605,36 @@ it("keeps a long remote title ellipsized and full on hover beside unknown enviro
   expect(buttons().find((button) => button.textContent?.includes("Other host"))?.disabled).toBe(
     true,
   );
+});
+
+it("hides the client-local location for tasks delegated back from another server", async () => {
+  await using _screen = await setup();
+  state.environments.set("laptop", {
+    label: "Laptop",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "PrimaryConnectionTarget" } },
+  });
+  const agent = {
+    id: "back-to-laptop",
+    title: "Local destination",
+    status: "running",
+    driver: "codex",
+    providerInstanceId: "codex",
+    remoteChild: { environmentId: "laptop", threadId: "child", label: "Laptop" },
+  } as ComponentProps<typeof RemoteSubagentRow>["agent"];
+  await render(<RemoteSubagentRow agent={agent} provider={undefined} />);
+  expect(byLabel("Local destination").textContent).toContain("Running");
+  expect(container.textContent).not.toContain("on LAP");
+  await click(byLabel("Local destination"));
+  expect(state.navigate).toHaveBeenLastCalledWith({
+    to: "/$environmentId/$threadId",
+    params: { environmentId: "laptop", threadId: "child" },
+  });
+  state.environments.set("laptop", {
+    label: "VPS",
+    connection: { phase: "connected" },
+    entry: { target: { _tag: "RelayConnectionTarget" } },
+  });
+  await update();
+  expect(byLabel("Local destination on VPS").textContent).toContain("on VPS");
 });

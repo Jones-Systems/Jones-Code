@@ -1,8 +1,9 @@
-import { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import { EnvironmentId, ThreadId, type LinkedRequestContext } from "@t3tools/contracts";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+
 import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
@@ -12,6 +13,13 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../../peer/PeerMcpClient.ts";
 import { LINKED_MESSAGE_ORIGIN_HEADER, type LinkedMessageOrigin } from "./LinkedMessageOrigin.ts";
+import {
+  LINKED_REQUEST_CONTEXT_HEADER,
+  PEER_REQUEST_HEADER_BUDGET,
+  REQUEST_CONTEXT_MAX_SENT_CHARS,
+  UNCONTROLLED_HEADER_ALLOWANCE,
+  requestHeaderBytes,
+} from "./LinkedRequestContext.ts";
 
 const input = {
   environmentId: EnvironmentId.make("peer-test"),
@@ -44,25 +52,31 @@ const links = Layer.mock(PeerLinks.PeerLinks)({
       link: {},
     } as PeerLinks.ResolvedPeerLink),
   recordOutcome: () => Effect.void,
-  currentGeneration: () => Effect.succeed(Option.some("generation-1")),
+  currentGeneration: () => Effect.succeedSome("generation-1"),
 });
 const fixture = (
   respond: (
     body: { id: unknown; method: string },
     request: HttpClientRequest.HttpClientRequest,
   ) => Response,
-  linkLayer = links,
-  onRequest?: (method: string) => void,
+  options: {
+    readonly token?: string;
+    readonly sessionId?: string;
+    readonly linkLayer?: typeof links;
+    readonly onRequest?: (method: string) => void;
+    readonly inspect?: (method: string, request: HttpClientRequest.HttpClientRequest) => void;
+  } = {},
 ) => {
   let opens = 0;
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
       if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON request");
       const body = JSON.parse(new TextDecoder().decode(request.body.body));
-      onRequest?.(body.method);
+      options.onRequest?.(body.method);
+      options.inspect?.(body.method, request);
       const response =
         body.method === "initialize"
-          ? initialized(body.id, `session-${++opens}`)
+          ? initialized(body.id, options.sessionId ?? `session-${++opens}`)
           : body.method === "notifications/initialized"
             ? new Response(null, { status: 202 })
             : respond(body, request);
@@ -70,10 +84,193 @@ const fixture = (
     }),
   );
   return PeerMcpClient.layer.pipe(
-    Layer.provide(linkLayer),
+    Layer.provide(
+      options.linkLayer ??
+        (options.token === undefined
+          ? links
+          : Layer.mock(PeerLinks.PeerLinks)({
+              resolve: () =>
+                Effect.succeed({
+                  url: "https://peer.invalid",
+                  token: options.token!,
+                  generation: "generation-1",
+                  link: {},
+                } as PeerLinks.ResolvedPeerLink),
+              recordOutcome: () => Effect.void,
+              currentGeneration: () => Effect.succeedSome("generation-1"),
+            })),
+    ),
     Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
   );
 };
+
+const requestContext: LinkedRequestContext = {
+  schemaVersion: "t3.linked-request-context/v1",
+  sentAt: "2026-10-26T12:34:56.789Z",
+  thread: { threadId: "t".repeat(256), title: "界".repeat(120) },
+  parent: { threadId: "親".repeat(256), title: "界".repeat(120), environmentId: "e".repeat(256) },
+  project: {
+    projectId: "項".repeat(256),
+    title: "界".repeat(120),
+    icon: { kind: "emoji", emoji: "🚀".repeat(16) },
+  },
+};
+
+it.effect(
+  "fits non-ASCII context within the whole header budget and preserves every existing header",
+  () => {
+    const calls: Array<Readonly<Record<string, string>>> = [];
+    const origin: LinkedMessageOrigin = {
+      schemaVersion: "t3.linked-message-origin/v1",
+      environmentId: "e".repeat(256),
+      thread: { threadId: "t".repeat(256), title: "界".repeat(512) },
+    };
+    const setupHeaders: Array<string | undefined> = [];
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      yield* client.call({ ...input, origin });
+      yield* client.call({ ...input, origin, context: requestContext });
+      yield* client.call({ ...input, origin });
+      const header = calls[1]![LINKED_REQUEST_CONTEXT_HEADER]!;
+      expect(header).toBeDefined();
+      expect(header.length).toBeLessThanOrEqual(REQUEST_CONTEXT_MAX_SENT_CHARS);
+      const generatedNames = new Set(["content-type", "content-length", "b3", "traceparent"]);
+      const controlled = Object.fromEntries(
+        Object.entries(calls[1]!).filter(([name]) => !generatedNames.has(name)),
+      );
+      const generated = Object.fromEntries(
+        Object.entries(calls[1]!).filter(([name]) => generatedNames.has(name)),
+      );
+      expect(requestHeaderBytes(controlled) + UNCONTROLLED_HEADER_ALLOWANCE).toBeLessThanOrEqual(
+        PEER_REQUEST_HEADER_BUDGET,
+      );
+      expect(Object.keys(generated).sort()).toEqual([...generatedNames].sort());
+      expect(requestHeaderBytes(generated)).toBeLessThan(UNCONTROLLED_HEADER_ALLOWANCE);
+      expect(requestHeaderBytes(calls[1]!)).toBeLessThanOrEqual(PEER_REQUEST_HEADER_BUDGET);
+      const decoded = JSON.parse(Buffer.from(header, "base64url").toString("utf8"));
+      expect(decoded.schemaVersion).toBe(requestContext.schemaVersion);
+      expect(decoded.sentAt).toBe(requestContext.sentAt);
+      expect(decoded.project).toBeUndefined();
+      expect(decoded.parent).toBeUndefined();
+      const { [LINKED_REQUEST_CONTEXT_HEADER]: _context, ...existing } = calls[1]!;
+      const withoutTrace = (headers: Readonly<Record<string, string>>) =>
+        Object.fromEntries(
+          Object.entries(headers).filter(([name]) => name !== "b3" && name !== "traceparent"),
+        );
+      expect(withoutTrace(existing)).toEqual(withoutTrace(calls[0]!));
+      expect(withoutTrace(calls[2]!)).toEqual(withoutTrace(calls[0]!));
+      for (const headers of calls) {
+        expect(headers.b3).toMatch(/^[0-9a-f]{32}-[0-9a-f]{16}-[01](?:-[0-9a-f]{16})?$/i);
+        expect(headers.traceparent).toMatch(/^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/i);
+      }
+      expect(setupHeaders).toEqual([undefined, undefined]);
+    }).pipe(
+      Effect.provide(
+        fixture(
+          (body, request) => {
+            calls.push(request.headers);
+            return answer(body.id, { content: content({ count: 1 }) });
+          },
+          {
+            token: "x".repeat(3500),
+            inspect: (method, request) => {
+              if (method !== "tools/call") {
+                setupHeaders.push(request.headers[LINKED_REQUEST_CONTEXT_HEADER]);
+              }
+            },
+          },
+        ),
+      ),
+    );
+  },
+);
+
+it.effect.each([6400, 6500, 9000])(
+  "omits context when existing headers leave no usable room (token %s)",
+  (tokenLength) => {
+    let headers: Readonly<Record<string, string>> = {};
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      yield* client.call({ ...input, context: requestContext });
+      expect(headers[LINKED_REQUEST_CONTEXT_HEADER]).toBeUndefined();
+      expect(headers.authorization).toBe(`Bearer ${"x".repeat(tokenLength)}`);
+      expect(headers["mcp-session-id"]).toBe("s".repeat(500));
+    }).pipe(
+      Effect.provide(
+        fixture(
+          (body, request) => {
+            headers = request.headers;
+            return answer(body.id, { content: content({ count: 1 }) });
+          },
+          { token: "x".repeat(tokenLength), sessionId: "s".repeat(500) },
+        ),
+      ),
+    );
+  },
+);
+
+it.effect.each([404, 431, 500])("never replays without context after HTTP %s", (status) => {
+  const calls: Array<string | undefined> = [];
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const result = yield* client.call({ ...input, context: requestContext }).pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBeDefined();
+  }).pipe(
+    Effect.provide(
+      fixture((_body, request) => {
+        calls.push(request.headers[LINKED_REQUEST_CONTEXT_HEADER]);
+        return new Response(null, { status });
+      }),
+    ),
+  );
+});
+
+it.effect("adds context only to tools/call and never replays after a fetch failure", () => {
+  const seen: Array<{ readonly method: string; readonly context: string | null }> = [];
+  const fetch: typeof globalThis.fetch = async (_url, options) => {
+    const payload = options?.body;
+    if (typeof payload !== "string" && !(payload instanceof Uint8Array)) {
+      throw new Error("Expected a synthetic JSON request body");
+    }
+    const body = JSON.parse(
+      typeof payload === "string" ? payload : new TextDecoder().decode(payload),
+    );
+    seen.push({
+      method: body.method,
+      context: new Headers(options?.headers).get(LINKED_REQUEST_CONTEXT_HEADER),
+    });
+    if (body.method === "initialize") return initialized(body.id, "fetch-session");
+    if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+    throw new Error("Synthetic connection loss after dispatch");
+  };
+  return Effect.gen(function* () {
+    const client = yield* PeerMcpClient.PeerMcpClient;
+    const result = yield* client.call({ ...input, context: requestContext }).pipe(Effect.result);
+    expect(result._tag).toBe("Failure");
+    expect(seen.map((entry) => entry.method)).toEqual([
+      "initialize",
+      "notifications/initialized",
+      "tools/call",
+    ]);
+    expect(seen[0]?.context).toBeNull();
+    expect(seen[1]?.context).toBeNull();
+    expect(seen[2]?.context).toBeTruthy();
+    expect(seen[2]!.context!.length).toBeLessThanOrEqual(REQUEST_CONTEXT_MAX_SENT_CHARS);
+  }).pipe(
+    Effect.provide(
+      PeerMcpClient.layer.pipe(Layer.provide(links), Layer.provide(FetchHttpClient.layer)),
+    ),
+    Effect.provideService(FetchHttpClient.Fetch, fetch),
+  );
+});
+
+const receiptFixture = (
+  respond: Parameters<typeof fixture>[0],
+  linkLayer = links,
+  onRequest?: (method: string) => void,
+) => fixture(respond, { linkLayer, ...(onRequest === undefined ? {} : { onRequest }) });
 
 const receiptInput = {
   environmentId: input.environmentId,
@@ -118,7 +315,7 @@ it.effect("receipt lookup forwards only the exact captured identity without SEND
     expect(limits).toEqual(["auto/default"]);
   }).pipe(
     Effect.provide(
-      fixture(
+      receiptFixture(
         (body, request) => {
           if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON request");
           const sent = JSON.parse(new TextDecoder().decode(request.body.body));
@@ -190,7 +387,7 @@ it.effect.each(["during-resolution", "before-dispatch"] as const)(
       );
     }).pipe(
       Effect.provide(
-        fixture(
+        receiptFixture(
           (body) => answer(body.id, { content: [], structuredContent: { count: 1 } }),
           relinkingLinks,
           (method) => methods.push(method),
@@ -220,7 +417,7 @@ it.effect.each([
     expect(tools).toEqual(["t3_thread_send_receipt_lookup"]);
   }).pipe(
     Effect.provide(
-      fixture((body, request) => {
+      receiptFixture((body, request) => {
         if (request.body._tag !== "Uint8Array") throw new Error("Expected JSON request");
         const sent = JSON.parse(new TextDecoder().decode(request.body.body));
         tools.push(sent.params.name);
@@ -279,7 +476,7 @@ it.effect.each([
     }
   }).pipe(
     Effect.provide(
-      fixture(
+      receiptFixture(
         (body) => answer(body.id, { content: content({ count: 1 }) }),
         links,
         (method) => methods.push(method),
@@ -320,7 +517,7 @@ it.effect(
       expect(methods).toEqual([]);
     }).pipe(
       Effect.provide(
-        fixture(
+        receiptFixture(
           (body) => answer(body.id, { content: content({ count: 1 }) }),
           replacingLinks,
           (method) => methods.push(method),
@@ -356,7 +553,7 @@ it.effect("a matching capture still refuses relinking immediately before tool di
     expect(methods).toEqual(["initialize", "notifications/initialized"]);
   }).pipe(
     Effect.provide(
-      fixture(
+      receiptFixture(
         (body) => answer(body.id, { content: content({ count: 1 }) }),
         relinkingLinks,
         (method) => methods.push(method),
@@ -495,6 +692,73 @@ it.effect("preserves the peer's typed failure from structuredContent", () =>
       ),
     ),
   ),
+);
+
+it.effect.each(["JSON-RPC", "structuredContent", "text"] as const)(
+  "preserves request_conflict from %s without replaying the mutation",
+  (encoding) => {
+    const refusal = {
+      code: "request_conflict",
+      message: "The request key is already bound to different content.",
+    };
+    let calls = 0;
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const failure = yield* client.call(input).pipe(Effect.flip);
+      expect(failure.code).toBe(refusal.code);
+      expect(failure.message).toBe(refusal.message);
+      expect(calls).toBe(1);
+    }).pipe(
+      Effect.provide(
+        fixture((body) => {
+          calls++;
+          return encoding === "JSON-RPC"
+            ? Response.json({
+                jsonrpc: "2.0",
+                id: body.id,
+                error: { code: -32000, message: "RPC wrapper", data: refusal },
+              })
+            : answer(
+                body.id,
+                encoding === "structuredContent"
+                  ? {
+                      content: [{ type: "text", text: "fallback" }],
+                      structuredContent: refusal,
+                      isError: true,
+                    }
+                  : { content: content(refusal), isError: true },
+              );
+        }),
+      ),
+    );
+  },
+);
+
+it.effect.each([undefined, { code: "unrecognized_failure", message: "private detail" }])(
+  "keeps an untyped RPC internal error uncertain without replay (data: %s)",
+  (data) => {
+    let calls = 0;
+    return Effect.gen(function* () {
+      const client = yield* PeerMcpClient.PeerMcpClient;
+      const failure = yield* client.call(input).pipe(Effect.flip);
+      expect(failure.code).toBe("orchestration_error");
+      expect(failure.message).toBe(
+        "The linked environment reported an unrecognized RPC error. The call was not replayed; its outcome remains uncertain.",
+      );
+      expect(calls).toBe(1);
+    }).pipe(
+      Effect.provide(
+        fixture((body) => {
+          calls++;
+          return Response.json({
+            jsonrpc: "2.0",
+            id: body.id,
+            error: { code: -32603, message: "private internal diagnostic".repeat(100), data },
+          });
+        }),
+      ),
+    );
+  },
 );
 
 it.effect("disables fetch redirects before sending the bearer", () => {

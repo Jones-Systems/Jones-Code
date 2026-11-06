@@ -1,0 +1,10 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "project-favicon-search-demand",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/settings/ProjectSettingsPanel.faviconSearch.browser.test.tsx"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": []
+}

@@ -11,6 +11,7 @@ import {
   qualificationCancellation,
   verifyPackagedIdentity,
   withSmokeScratch,
+  runJob,
 } from "./desktop-worker-smoke.ts";
 
 const fixtures = new Set<string>();
@@ -32,6 +33,95 @@ async function fixture() {
 }
 
 describe("desktop packaged-worker qualification harness", () => {
+  it("binds external protocol-v2 requests and joins copy admission before accepting a result", async () => {
+    const root = await fixture();
+    const entry = NodePath.join(root, "protocol-worker.cjs");
+    await NodeFSP.writeFile(
+      entry,
+      `
+      const os = require('node:os');
+      os.setPriority(os.constants.priority.PRIORITY_LOW);
+      process.once('message', request => {
+        const jobId = request.job?.token;
+        if (request.protocol !== 2 || !/^[a-f0-9-]{36}$/.test(jobId ?? '')) {
+          process.send({ type: 'error', jobId: jobId ?? '', error: { name: 'BadRequest' } }, () => process.disconnect());
+          return;
+        }
+        if (request.job.kind !== 'prepare') {
+          process.send({ type: 'result', jobId: process.env.SYNTHETIC_REPLY_JOB ?? jobId, value: { status: 'absent' } }, () => process.disconnect());
+          return;
+        }
+        process.once('message', admission => {
+          const matched = admission.type === 'admit' && admission.jobId === jobId && admission.decision === 'continue';
+          process.send({ type: 'result', jobId, value: { admitted: matched } }, () => process.disconnect());
+        });
+        process.send({ type: 'admit-request', jobId });
+      });
+    `,
+    );
+    const jobs: Parameters<typeof runJob>[2] = [];
+    const runtime = { executable: process.execPath, entry, env: { PATH: process.env.PATH } };
+    const reply = await runJob(
+      runtime,
+      {
+        kind: "prepare",
+        candidate: {
+          schema: 1,
+          repository: "Jones-Systems/Jones-Code",
+          source: "a".repeat(40),
+          tree: "b".repeat(40),
+          installedSource: "c".repeat(40),
+          workflow: "synthetic",
+          workflowId: 1,
+          runId: 1,
+          runAttempt: 1,
+          ciRunId: 1,
+          artifactId: 1,
+          artifactName: "synthetic",
+          artifactDigest: "d".repeat(64),
+          artifactBytes: 1,
+          expiresAt: "2099-01-01T00:00:00Z",
+          version: "1.2.3",
+          platform: "darwin",
+          architecture: "arm64",
+        },
+        roots: { artifacts: root, apps: root },
+        platform: "darwin",
+      },
+      jobs,
+      new AbortController().signal,
+    );
+    expect(reply).toMatchObject({ type: "result", value: { admitted: true } });
+    expect(jobs[0]).toMatchObject({
+      phases: ["verifying"],
+      childAbsence: "pass",
+      groupAbsence: "pass",
+      forcedCleanup: false,
+    });
+    const absent = await runJob(
+      runtime,
+      { kind: "reclaim", updatesRoot: root, handle: "a".repeat(64) },
+      jobs,
+      new AbortController().signal,
+    );
+    expect(absent).toMatchObject({ type: "result", value: { status: "absent" } });
+    expect(jobs[0]!.jobId).not.toBe(jobs[1]!.jobId);
+    expect(jobs[1]).toMatchObject({
+      phases: [],
+      childAbsence: "pass",
+      groupAbsence: "pass",
+      forcedCleanup: false,
+    });
+    await expect(
+      runJob(
+        { ...runtime, env: { ...runtime.env, SYNTHETIC_REPLY_JOB: "other-job" } },
+        { kind: "reclaim", updatesRoot: root, handle: "a".repeat(64) },
+        jobs,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow("Unknown packaged worker IPC message");
+    expect(jobs[2]?.reply).toBeUndefined();
+  });
   const expected = {
     source: "a".repeat(40),
     tree: "b".repeat(40),

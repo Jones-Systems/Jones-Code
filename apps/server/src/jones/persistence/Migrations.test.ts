@@ -50,7 +50,11 @@ const readLedger = Effect.gen(function* () {
 });
 const readSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`;
+  return yield* sql<{
+    readonly type: string;
+    readonly name: string;
+    readonly sql: string | null;
+  }>`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`;
 });
 
 const seedLegacy = (prefix = 6) =>
@@ -327,6 +331,165 @@ it.effect.each([
   }).pipe(Effect.provide(memory)),
 );
 
+// Released ff200fca manifest: later production additions must not move this fixture.
+const released130Identities = [
+  [1, "WorktreeOwnershipLeases"],
+  [2, "ProjectionThreadRuntimeIdentity"],
+  [3, "NativeCreationIntents"],
+  [4, "NativeCreationCommandIdentities"],
+  [5, "WorkstreamsNativeAttempts"],
+  [6, "WorkstreamsProviderEnrollments"],
+  [100, "NativeCreationExecution"],
+  [101, "NativeWorkspacePreparation"],
+  [102, "ImportedHistoryChoices"],
+  [103, "RuntimeStop"],
+  [104, "DeletionAdmission"],
+  [105, "UpstreamReferenceIsolation"],
+  [106, "PlannedUpdateContinuity"],
+  [107, "WorkstreamsSettlementProofs"],
+  [108, "PhysicalProcessEvidence"],
+  [109, "OrdinaryCheckoutLifecycle"],
+  [110, "ThreadLookupIndexes"],
+  [111, "ClientSettlementCommands"],
+  [112, "ClientLaunchRequests"],
+  [114, "SelfSettlementProjectItems"],
+  [115, "ScheduledWebhookPendingRuns"],
+  [116, "RemoteAdmission"],
+  [117, "RemoteDelegationIntents"],
+  [118, "RemoteAdmissionIntegration"],
+  [119, "PeerEnvironmentLinks"],
+  [120, "SettlementRestores"],
+  [121, "RemoteTaskObservations"],
+  [122, "ThreadLinks"],
+  [123, "WorkspaceLifecycle"],
+  [124, "TaskContinuations"],
+  [129, "CodexFailover"],
+  [130, "ThreadTitleRefinement"],
+] as const;
+
+it.effect("a released 130 database refuses late 125 and applies appended 131 exactly once", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const released130Entries = released130Identities.map(([id, name]) => {
+      const entry = jonesMigrationEntries.find(
+        ([currentId, currentName]) => currentId === id && currentName === name,
+      );
+      assert.isDefined(entry, `Released identity ${id}_${name} must remain registered`);
+      return entry!;
+    });
+    yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
+    assert.deepStrictEqual(yield* runJonesMigrations(released130Entries), released130Identities);
+    const retainedAt = "2026-09-01T00:00:00.000Z";
+    yield* sql`INSERT INTO orchestration_v2_projection_threads (
+      thread_id, project_id, title, default_provider, runtime_mode, interaction_mode,
+      created_at, updated_at, payload_json
+    ) VALUES ('retained-title', 'synthetic-project', 'Retained title', 'codex', 'full-access',
+      'default', ${retainedAt}, ${retainedAt}, '{}')`;
+    yield* sql`INSERT INTO jones_thread_title_refinement VALUES ('retained-title', '{"status":"sufficient","title":"Retained title"}')`;
+    const ledger = yield* readLedger;
+    const schema = yield* readSchema;
+    const title = yield* sql`SELECT * FROM orchestration_v2_projection_threads`;
+    const refinement = yield* sql`SELECT * FROM jones_thread_title_refinement`;
+    const late = yield* Effect.exit(
+      runJonesMigrations([...released130Entries, [125, "SyntheticLateAddition", futureMigration]]),
+    );
+    assert.isTrue(Exit.isFailure(late));
+    if (Exit.isFailure(late))
+      assert.include(Cause.pretty(late.cause), "missing rebuild migration 125 before 129");
+    assert.deepStrictEqual(yield* readLedger, ledger);
+    assert.deepStrictEqual(yield* readSchema, schema);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_threads`, title);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_thread_title_refinement`, refinement);
+    const appended = [...released130Entries, [131, "SyntheticAppend", futureMigration] as const];
+    assert.deepStrictEqual(yield* runJonesMigrations(appended), [[131, "SyntheticAppend"]]);
+    const after = yield* readLedger;
+    assert.deepStrictEqual(after.slice(0, ledger.length), ledger);
+    assert.strictEqual(after.length, ledger.length + 1);
+    assert.deepStrictEqual(yield* runJonesMigrations(appended), []);
+    assert.deepStrictEqual(yield* readLedger, after);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_future_probe`, [{ value: "applied" }]);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_projection_threads`, title);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM jones_thread_title_refinement`, refinement);
+  }).pipe(Effect.provide(memory)),
+);
+
+const released135Identities = [
+  ...released130Identities,
+  [132, "OwnerSelections"],
+  [133, "ThreadResultDependencies"],
+  [134, "GoalContinuity"],
+  [135, "IdleWorktreeAdmission"],
+] as const;
+
+it.effect(
+  "the fixed released 135 runner upgrades retained native facts once without changing upstream",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const released = released135Identities.map(([id, name]) => {
+        const entry = jonesMigrationEntries.find(
+          ([currentId, currentName]) => currentId === id && currentName === name,
+        );
+        assert.isDefined(entry, `Released identity ${id}_${name} must remain registered`);
+        return entry!;
+      });
+      yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
+      assert.deepStrictEqual(yield* runJonesMigrations(released), released135Identities);
+      yield* sql`INSERT INTO native_creation_intents VALUES (
+      'claim', 'operation', 'preparation', 'command', 'thread', 'message',
+      '/synthetic/project', 'branch', '/synthetic/worktree', '{}', '{}'
+    )`;
+      yield* sql`INSERT INTO jones_native_creation_execution_acceptances VALUES (
+      'command', 'claim', 'thread', ${"a".repeat(64)}, ${"b".repeat(64)}, 'event', 1
+    )`;
+      yield* sql`INSERT INTO jones_native_creation_execution_starts
+      (rowid, effect_id, claim_id, command_id, worker_id, expected_attempt, lease_expires_at, reference_json, fact_json)
+      VALUES (401, 'effect', 'claim', 'command', 'worker', 1, '2026-11-05T12:00:30.000Z', '{}', '{}')`;
+      const before = yield* readLedger;
+      const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      const facts =
+        yield* sql`SELECT rowid AS retained_rowid, * FROM jones_native_creation_execution_starts`;
+      const trigger = yield* sql`SELECT sql FROM sqlite_master
+      WHERE name = 'jones_native_creation_execution_starts_no_update'`;
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
+      SET lease_expires_at = '2026-11-05T12:00:40.000Z'`),
+        ),
+      );
+      // No upstream migration is pending; full startup still applies the Jones tail.
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
+      assert.deepStrictEqual(
+        (yield* readLedger).map(({ migration_id, name }) => [migration_id, name]),
+        [
+          ...released135Identities.map(([id, name]) => [id, name]),
+          [136, "WorkspaceProvenance"],
+          [137, "NativeCreationLeaseRenewal"],
+          [138, "WorkspaceRetirement"],
+          [139, "ConversationWorkspace"],
+        ],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        upstream,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT rowid AS retained_rowid, * FROM jones_native_creation_execution_starts`,
+        facts,
+      );
+      assert.notDeepEqual(
+        yield* sql`SELECT sql FROM sqlite_master
+      WHERE name = 'jones_native_creation_execution_starts_no_update'`,
+        trigger,
+      );
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      const after = yield* readLedger;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* readLedger, after);
+    }).pipe(Effect.provide(memory)),
+);
+
 it.effect("rejects a future ledger gap instead of skipping a pending lower registered ID", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -512,12 +675,22 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [122, "ThreadLinks"],
       [123, "WorkspaceLifecycle"],
       [124, "TaskContinuations"],
-      [125, "WorkstreamsNative"],
-      [126, "WorkstreamsSourceEnrollments"],
-      [127, "WorkstreamsRollupAttempts"],
-      [128, "WorkstreamsPeerSessionPins"],
-      [129, "WorkstreamsMemberBindings"],
-      [130, "WorkstreamsForwardReceipts"],
+      [129, "CodexFailover"],
+      [130, "ThreadTitleRefinement"],
+      [132, "OwnerSelections"],
+      [133, "ThreadResultDependencies"],
+      [134, "GoalContinuity"],
+      [135, "IdleWorktreeAdmission"],
+      [136, "WorkspaceProvenance"],
+      [137, "NativeCreationLeaseRenewal"],
+      [138, "WorkspaceRetirement"],
+      [139, "ConversationWorkspace"],
+      [140, "WorkstreamsNative"],
+      [141, "WorkstreamsSourceEnrollments"],
+      [142, "WorkstreamsRollupAttempts"],
+      [143, "WorkstreamsPeerSessionPins"],
+      [144, "WorkstreamsMemberBindings"],
+      [145, "WorkstreamsForwardReceipts"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
@@ -557,4 +730,112 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       assert.isTrue(Exit.isFailure(yield* Effect.exit(statement)));
     assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "upgrades an actual138 database to139 atomically, preserving retirement facts and repeating unchanged",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
+      yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 138));
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
+        [{ migration_id: 138, name: "WorkspaceRetirement" }],
+      );
+      yield* sql`INSERT INTO jones_workspace_retirement_intents
+        (event_id,thread_id,worktree,settled_at) VALUES ('event','thread','/checkout','settled')`;
+      yield* sql`INSERT INTO jones_workspace_retirement_receipts VALUES
+        ('receipt','incarnation','/checkout','intent','{}')`;
+      yield* sql`INSERT INTO jones_workspace_retirement_state VALUES
+        ('/checkout','incarnation','retiring','receipt')`;
+      yield* sql`INSERT INTO jones_workspace_duty_claims VALUES
+        ('claim','/checkout','incarnation','terminal','thread','{}','acquired',NULL)`;
+      yield* sql`INSERT INTO jones_workspace_disposal_journal VALUES
+        ('receipt',0,'/checkout/cache','ignored','{}','planned')`;
+      yield* sql`INSERT INTO jones_workspace_duty_identity VALUES ('claim','{}','{}')`;
+      const readState = Effect.gen(function* () {
+        const schema = yield* readSchema;
+        const tables = yield* sql<{ readonly name: string }>`SELECT name FROM sqlite_master
+          WHERE type='table' ORDER BY name`;
+        const rows = yield* Effect.forEach(tables, ({ name }) =>
+          sql.unsafe(`SELECT * FROM "${name.replaceAll('"', '""')}"`),
+        );
+        return { schema, rows };
+      });
+      const before = yield* readState;
+      const failed = yield* runJonesMigrations(
+        jonesMigrationEntries.map(
+          ([id, name, migration]) =>
+            [
+              id,
+              name,
+              id === 139
+                ? migration.pipe(
+                    Effect.andThen(sql`SELECT * FROM controlled_missing_after139_ddl`),
+                    Effect.asVoid,
+                  )
+                : migration,
+            ] as const,
+        ),
+      ).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(failed));
+      assert.deepStrictEqual(yield* readState, before);
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+        [139, "ConversationWorkspace"],
+      ]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type='table'
+          AND name LIKE 'jones_conversation_%' ORDER BY name`,
+        [
+          { name: "jones_conversation_bindings" },
+          { name: "jones_conversation_fallbacks" },
+          { name: "jones_conversation_handoffs" },
+          { name: "jones_conversation_obligations" },
+          { name: "jones_conversation_turns" },
+        ],
+      );
+      yield* sql`INSERT INTO jones_conversation_bindings VALUES ('thread','{}','run')`;
+      yield* sql`INSERT INTO jones_conversation_turns VALUES ('run','thread','{}')`;
+      yield* sql`INSERT INTO jones_conversation_fallbacks VALUES ('thread','claude','unavailable')`;
+      yield* sql`INSERT INTO jones_conversation_handoffs VALUES ('thread','{}')`;
+      yield* sql`INSERT INTO jones_conversation_obligations VALUES ('/conversation','thread','nonempty')`;
+      assert.deepStrictEqual(
+        yield* sql`SELECT thread_id,binding,active_run_id FROM jones_conversation_bindings`,
+        [{ thread_id: "thread", binding: "{}", active_run_id: "run" }],
+      );
+      const after = yield* readState;
+      assert.deepStrictEqual(
+        after.schema.filter(
+          ({ name }) =>
+            !name.startsWith("jones_conversation_") &&
+            !name.startsWith("sqlite_autoindex_jones_conversation_"),
+        ),
+        before.schema,
+      );
+      // Compare every pre-existing table, including both migration ledgers and
+      // all six populated retirement/duty tables, using its original identity.
+      const originalTables = yield* sql<{ readonly name: string }>`SELECT name FROM sqlite_master
+        WHERE type='table' AND name NOT LIKE 'jones_conversation_%' ORDER BY name`;
+      assert.deepStrictEqual(
+        yield* Effect.forEach(originalTables, ({ name }) =>
+          sql.unsafe(
+            name === "jones_sql_migrations"
+              ? "SELECT * FROM jones_sql_migrations WHERE migration_id<=138"
+              : `SELECT * FROM "${name.replaceAll('"', '""')}"`,
+          ),
+        ),
+        before.rows,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
+        [
+          { migration_id: 138, name: "WorkspaceRetirement" },
+          { migration_id: 139, name: "ConversationWorkspace" },
+        ],
+      );
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* readState, after);
+      assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+    }).pipe(Effect.provide(memory)),
 );

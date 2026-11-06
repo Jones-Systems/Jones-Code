@@ -1,12 +1,20 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Runs the pinned Electron executable as Node with fixture-only SQLite state.
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { expect, it } from "vite-plus/test";
 import desktopPackage from "../../../package.json" with { type: "json" };
-import { holdJonesDesktopNativeWriterFence } from "./jonesNativeStartup.ts";
+import {
+  holdJonesDesktopNativeWriterFence,
+  recoverJonesNativeStartup,
+  settleInterruptedJonesActivation,
+  reportJonesNativeStartupRefusal,
+} from "./jonesNativeStartup.ts";
+import { JonesNativeStartupRefusal } from "@t3tools/shared/jones/nativeWriterFence";
+import { jonesNativeHelperSource } from "./jonesNativeHelperSource.ts";
 import { resolveJonesColdBackendPermit } from "./jonesColdBackendCustody.ts";
 
 it("keeps warm startup unchanged and refuses cold startup before profile access", () => {
@@ -146,3 +154,225 @@ it("admits secondary forwarding before claiming the established primary owner", 
     await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
   }
 });
+
+it("rechecks exactly once after settlement and never repeats another refusal", () => {
+  const transactionId = "c".repeat(64);
+  let admissions = 0;
+  const settled: string[] = [];
+  const admit = () => {
+    admissions++;
+    if (admissions === 1)
+      throw new JonesNativeStartupRefusal("transaction-settleable", "interrupted", transactionId);
+    return undefined;
+  };
+  expect(recoverJonesNativeStartup(admit, (id) => settled.push(id))).toBeUndefined();
+  expect(admissions).toBe(2);
+  expect(settled).toEqual([transactionId]);
+  admissions = 0;
+  expect(() =>
+    recoverJonesNativeStartup(
+      () => {
+        admissions++;
+        throw new JonesNativeStartupRefusal(
+          "transaction-settleable",
+          "still interrupted",
+          transactionId,
+        );
+      },
+      (id) => settled.push(id),
+    ),
+  ).toThrow("still interrupted");
+  expect(admissions).toBe(2);
+  expect(settled).toEqual([transactionId, transactionId]);
+});
+
+const refusalCodes = [
+  "transaction-unsettled",
+  "transaction-settleable",
+  "unstarted-activation",
+  "trial-permit-mismatch",
+  "generation-changed",
+  "ownership-unknown",
+  "paths-differ",
+  "lease-lost",
+  "writer-mismatch",
+  "foreign-state",
+] as const;
+
+it.each(refusalCodes)("reports %s before stderr and exit without opening state", (code) => {
+  const transactionId = "c".repeat(64);
+  const calls: string[] = [];
+  const failure = new JonesNativeStartupRefusal(
+    code,
+    "native failure\n" + "x".repeat(2000),
+    transactionId,
+  );
+  reportJonesNativeStartupRefusal(failure, {
+    showErrorBox: (title, content) => {
+      expect(title).not.toBe("");
+      expect(content).toContain(code);
+      expect(content).toContain(transactionId);
+      expect(content).toContain("docs/user/updating.md#if-an-update-fails");
+      calls.push("dialog");
+    },
+    writeStderr: (line) => {
+      expect(line).toMatch(/^Jones Code refused native startup: /);
+      expect(line.length).toBeLessThan(600);
+      expect(line.split("\n")).toHaveLength(2);
+      calls.push("stderr");
+    },
+    exit: (status) => {
+      expect(status).toBe(1);
+      calls.push("exit");
+    },
+  });
+  expect(calls).toEqual(["dialog", "stderr", "exit"]);
+  if (code !== "transaction-settleable") {
+    let attempts = 0;
+    expect(() =>
+      recoverJonesNativeStartup(
+        () => {
+          throw failure;
+        },
+        () => {
+          attempts++;
+        },
+      ),
+    ).toThrow(failure);
+    expect(attempts).toBe(0);
+  }
+});
+
+it("exits even if both refusal output channels fail", () => {
+  const calls: string[] = [];
+  reportJonesNativeStartupRefusal(new Error("unknown"), {
+    showErrorBox: () => {
+      calls.push("dialog");
+      throw new Error("unavailable dialog");
+    },
+    writeStderr: () => {
+      calls.push("stderr");
+      throw new Error("closed stderr");
+    },
+    exit: (code) => {
+      expect(code).toBe(1);
+      calls.push("exit");
+    },
+  });
+  expect(calls).toEqual(["dialog", "stderr", "exit"]);
+});
+
+async function settlementFixture(body: (home: string) => Promise<void>) {
+  const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-startup-settle-"));
+  try {
+    const home = await NodeFSP.realpath(root);
+    await NodeFSP.mkdir(NodePath.join(home, "runtime", "jones-updates"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    await body(home);
+  } finally {
+    await NodeFSP.rm(root, { recursive: true, force: true });
+    await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
+  }
+}
+
+it("materializes the current embedded helper exclusively and bounds its exact invocation", async () =>
+  settlementFixture(async (home) => {
+    const transactionId = "c".repeat(64);
+    const env = { FIXTURE: "yes" };
+    const hash = NodeCrypto.createHash("sha256").update(jonesNativeHelperSource).digest("hex");
+    const helper = NodePath.join(home, "runtime", "jones-updates", "activate-v1-" + hash + ".py");
+    let attempts = 0;
+    const run = (
+      command: string,
+      args: readonly string[],
+      options: NodeChildProcess.SpawnSyncOptionsWithStringEncoding,
+    ) => {
+      attempts++;
+      expect(command).toBe("/usr/bin/python3");
+      expect(args).toEqual([
+        helper,
+        "--manifest",
+        NodePath.join(home, "runtime", "jones-active-install.json"),
+        "--settle-interrupted-activation",
+        transactionId,
+      ]);
+      expect(options).toMatchObject({ env, encoding: "utf8", timeout: 10000, maxBuffer: 65536 });
+      return { status: 0, signal: null, stdout: '{"protocol":1,"status":"settled"}' };
+    };
+    settleInterruptedJonesActivation({ home, transactionId, env }, run);
+    expect(await NodeFSP.readFile(helper, "utf8")).toBe(jonesNativeHelperSource);
+    const inode = (await NodeFSP.lstat(helper)).ino;
+    expect((await NodeFSP.lstat(helper)).mode & 0o777).toBe(0o700);
+    settleInterruptedJonesActivation({ home, transactionId, env }, run);
+    expect((await NodeFSP.lstat(helper)).ino).toBe(inode);
+    expect(attempts).toBe(2);
+    await NodeFSP.writeFile(helper, "foreign helper");
+    expect(() => settleInterruptedJonesActivation({ home, transactionId, env }, run)).toThrow(
+      "differs",
+    );
+    expect(await NodeFSP.readFile(helper, "utf8")).toBe("foreign helper");
+    expect(attempts).toBe(2);
+    await NodeFSP.unlink(helper);
+    await NodeFSP.symlink(NodePath.join(home, "absent"), helper);
+    expect(() => settleInterruptedJonesActivation({ home, transactionId, env }, run)).toThrow();
+    expect((await NodeFSP.lstat(helper)).isSymbolicLink()).toBe(true);
+    expect(attempts).toBe(2);
+  }));
+
+it("refuses busy, uncertain, malformed and unsuccessful helper evidence without another fence check", async () =>
+  settlementFixture(async (home) => {
+    const transactionId = "c".repeat(64);
+    const results = [
+      {
+        status: 0,
+        signal: null,
+        stdout: '{"protocol":1,"status":"refused","reason":"activation-running"}',
+      },
+      { status: 0, signal: null, stdout: '{"protocol":1,"status":"uncertain"}' },
+      { status: 0, signal: null, stdout: '{"protocol":2,"status":"settled"}' },
+      { status: 0, signal: null, stdout: '{"protocol":1,"status":"settled","extra":true}' },
+      { status: 0, signal: null, stdout: '{"protocol":1,"status":"settled","reason":3}' },
+      { status: 0, signal: null, stdout: "not JSON" },
+      { status: 1, signal: null, stdout: '{"protocol":1,"status":"settled"}' },
+      { status: null, signal: "SIGTERM" as const, stdout: "", error: new Error("timeout") },
+      { status: null, signal: null, stdout: "", error: new Error("spawn failed") },
+    ];
+    for (const result of results) {
+      let admissions = 0,
+        attempts = 0;
+      expect(() =>
+        recoverJonesNativeStartup(
+          () => {
+            admissions++;
+            throw new JonesNativeStartupRefusal(
+              "transaction-settleable",
+              "interrupted",
+              transactionId,
+            );
+          },
+          (id) =>
+            settleInterruptedJonesActivation({ home, transactionId: id, env: {} }, () => {
+              attempts++;
+              return result;
+            }),
+        ),
+      ).toThrow();
+      expect(admissions).toBe(1);
+      expect(attempts).toBe(1);
+    }
+    for (const env of [
+      { T3CODE_JONES_TRIAL_DESCRIPTOR: "trial" },
+      { T3CODE_JONES_COLD_CHANNEL_FD: "8" },
+    ]) {
+      let attempts = 0;
+      expect(() =>
+        settleInterruptedJonesActivation({ home, transactionId, env }, () => {
+          attempts++;
+          return results[0]!;
+        }),
+      ).toThrow("ownership");
+      expect(attempts).toBe(0);
+    }
+  }));

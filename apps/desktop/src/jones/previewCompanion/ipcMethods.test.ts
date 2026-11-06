@@ -12,7 +12,7 @@ import * as Ipc from "./ipcMethods.ts";
 
 function fixture(available = true, destroyed = false) {
   const calls: string[] = [];
-  const state = Schema.decodeUnknownSync(DesktopCompanionState)({
+  const state = Schema.decodeSync(DesktopCompanionState)({
     config: {
       enabled: true,
       environmentId: "env",

@@ -1,8 +1,4 @@
-import {
-  ProviderRequestKind,
-  type OrchestrationV2ThreadShell,
-  type ProviderRuntimeBinding,
-} from "@t3tools/contracts";
+import { ProviderRequestKind, type OrchestrationV2ThreadShell } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import type { ProviderRuntimeObservation } from "@t3tools/provider-core/server/jones/runtimeTypes";

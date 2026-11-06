@@ -1,5 +1,5 @@
 import { PullRequestOperationError } from "@t3tools/contracts";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../../../index.css";
 import { Button } from "../../../components/ui/button";
@@ -24,7 +24,12 @@ function Fixture() {
   const [observedAt, setObservedAt] = useState<number | undefined>(originalObservation);
   const [title, setTitle] = useState("Keep pull request details readable during a pause");
   const [editing, setEditing] = useState(false);
-  const [events, setEvents] = useState<string[]>([]);
+  const [events, setEvents] = useState<{ id: number; text: string }[]>([]);
+  const nextEventId = useRef(0);
+  const recordEvents = (...texts: string[]) => {
+    const added = texts.map((text) => ({ id: nextEventId.current++, text }));
+    setEvents((previous) => [...previous, ...added]);
+  };
 
   function arrive(seconds: number) {
     const next = seconds * 1_000;
@@ -39,7 +44,7 @@ function Fixture() {
       setLastRead(next);
       setReads((count) => count + 1);
     }
-    setEvents((previous) => [...previous, `${seconds}s arrival: ${allowed ? "read" : "held"}`]);
+    recordEvents(`${seconds}s arrival: ${allowed ? "read" : "held"}`);
   }
 
   return (
@@ -115,7 +120,7 @@ function Fixture() {
             </Button>
             <Button
               onClick={() => {
-                setEvents((previous) => [...previous, "manual invalidate", "manual refresh"]);
+                recordEvents("manual invalidate", "manual refresh");
                 setReads((count) => count + 1);
               }}
             >
@@ -127,8 +132,8 @@ function Fixture() {
       <section className="space-y-2">
         <h2 className="font-semibold">Simulated request log</h2>
         <ol>
-          {events.map((event, index) => (
-            <li key={index}>{event}</li>
+          {events.map((event) => (
+            <li key={event.id}>{event.text}</li>
           ))}
         </ol>
       </section>

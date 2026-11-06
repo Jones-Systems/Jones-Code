@@ -100,7 +100,7 @@ const ports = (input: {
     isLive: () => Effect.die("A census must use captured runtime attachment evidence"),
     shutdown: Effect.void,
     open: () => Effect.die("A census must never open a provider"),
-    get: () => Effect.succeed(Option.none()),
+    get: () => Effect.succeedNone,
     close: () => Effect.die("A census must never close a provider"),
     closeInstance: () => Effect.die("A census must never close a provider instance"),
     release: () => Effect.die("A census must never release a provider"),

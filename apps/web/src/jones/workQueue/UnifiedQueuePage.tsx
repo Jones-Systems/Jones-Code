@@ -334,6 +334,7 @@ function EnvironmentPrompts({
   const [recent, setRecent] = useState<VoiceReviewRecentList | null>(null);
   const [now, setNow] = useState(Date.now);
   const snapshot = metadata && "snapshot" in metadata ? metadata.snapshot : null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own metadata expiry timing so cached queue evidence stops being presented as current.
   useEffect(() => {
     if (!metadata || !("snapshot" in metadata) || metadata.expires_at_ms <= now) return;
     const timer = window.setTimeout(
@@ -346,6 +347,7 @@ function EnvironmentPrompts({
     environment.serverConfig?.environment.environmentId === environmentId ? environmentId : null;
   const classified = classifySentPrompts(snapshot, recent?.entries ?? [], nativeEnvironmentId);
   const reportDirty = (dirty: boolean) => onDirtyChange(environmentId, dirty);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Release the parent page dirty guard when this environment section unmounts.
   useEffect(() => () => onDirtyChange(environmentId, false), [environmentId, onDirtyChange]);
   const unavailable = !environment.entry.enabled || environment.connection.phase !== "connected";
   return (
@@ -507,6 +509,7 @@ function PromptSourceDiscovery({
     queueObservedFor: null,
   });
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed source capability and checking state to the containing unified queue.
   useEffect(
     () =>
       onChange(environmentId, {
@@ -520,6 +523,7 @@ function PromptSourceDiscovery({
       }),
     [connected, environmentId, onChange, requestKey, sources],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Probe voice and queue sources for the connected request identity and abort superseded reads.
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();

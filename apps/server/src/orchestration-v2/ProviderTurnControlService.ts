@@ -23,6 +23,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import { ProviderControlDeadline } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as EventSink from "./EventSink.ts";
 import { awaitRestartTerminal } from "../jones/orchestration/RestartPreparation.ts";
@@ -197,6 +198,7 @@ export const layer: Layer.Layer<
     return ProviderTurnControlServiceV2.of({
       interrupt: Effect.fn("ProviderTurnControlService.interrupt")(
         function* (input) {
+          const interruptDeadline = (yield* Clock.currentTimeMillis) + 10_000;
           const loaded = yield* load({ ...input, operation: "interrupt" });
           const session = Option.isSome(loaded.session)
             ? loaded.session
@@ -229,18 +231,18 @@ export const layer: Layer.Layer<
                 : { requestedAt: input.subagent.requestedAt }),
             });
           }
-          // A settled turn reaches its adapter too: only the adapter knows
-          // whether it still runs work for the thread, and each one either
-          // stops it or reports there is nothing left to stop.
-          yield* session.value.interruptTurn({
-            providerThread: loaded.providerThread,
-            providerTurnId: loaded.providerTurn.id,
-            requestRuntimeRestart: true,
-          });
-          // The wait is real time: ingestion runs on other fibers and never
-          // advances a test clock, so a test clock would hold Stop forever.
+          // Settled turns still reach adapters, which alone know whether background work remains.
+          yield* session.value
+            .interruptTurn({
+              providerThread: loaded.providerThread,
+              providerTurnId: loaded.providerTurn.id,
+              requestRuntimeRestart: true,
+            })
+            .pipe(Effect.provideService(ProviderControlDeadline, interruptDeadline));
+          const remaining = Math.max(0, interruptDeadline - (yield* Clock.currentTimeMillis));
+          // Use real time; ingestion fibers do not advance TestClock and would leave Stop blocked.
           yield* Effect.gen(function* () {
-            const deadline = (yield* Clock.currentTimeMillis) + 2_000;
+            const deadline = (yield* Clock.currentTimeMillis) + Math.min(remaining, 2_000);
             while (
               loaded.providerTurn.status === "running" &&
               (yield* Clock.currentTimeMillis) < deadline
@@ -274,9 +276,7 @@ export const layer: Layer.Layer<
         function* (input) {
           const loaded = yield* load({ ...input, operation: "restart" });
           if (Option.isNone(loaded.session)) {
-            // No live adapter: nothing can emit a terminal provider-turn update
-            // from interrupt. Do not poll for projection terminalization or the
-            // restart effect stalls; let detach/start proceed.
+            // Without a live adapter, no terminal event can arrive; proceed to detach/start without polling.
             if (loaded.providerTurn.status === "running") {
               yield* Effect.logWarning(
                 "Provider restart interrupt skipped; no live session for a still-projected running turn",

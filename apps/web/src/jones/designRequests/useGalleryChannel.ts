@@ -67,6 +67,7 @@ export function useGalleryChannel(
   const state = useRef<(DesignRequestChannelState & { opener: OpenerWindow }) | null>(null);
   const handleMessage = useEffectEvent(onMessage);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the authenticated opener-message channel and revoke its nonce and listener when the gallery connection retires.
   useEffect(() => {
     if (env.opener === null || galleryOrigin === null) return;
     const origin = galleryOrigin;

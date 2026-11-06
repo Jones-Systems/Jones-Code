@@ -495,29 +495,31 @@ it.effect(
     }).pipe(Effect.provide(memory)),
 );
 
-it.effect("the real Jones loader applies 125 without changing upstream schema or its ledger", () =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
-    const before = yield* sql<{
-      type: string;
-      name: string;
-      tbl_name: string;
-      sql: string | null;
-    }>`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`;
-    const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-    yield* runJonesMigrations(jonesMigrationEntries);
-    for (const object of before)
+it.effect(
+  "the real Jones loader applies native effects at 140 without changing upstream schema or its ledger",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
+      const before = yield* sql<{
+        type: string;
+        name: string;
+        tbl_name: string;
+        sql: string | null;
+      }>`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name`;
+      const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      yield* runJonesMigrations(jonesMigrationEntries);
+      for (const object of before)
+        expect(
+          yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type = ${object.type} AND name = ${object.name}`,
+        ).toEqual([object]);
+      expect(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`).toEqual(ledger);
       expect(
-        yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE type = ${object.type} AND name = ${object.name}`,
-      ).toEqual([object]);
-    expect(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`).toEqual(ledger);
-    expect(
-      yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id = 125`,
-    ).toEqual([{ migration_id: 125, name: "WorkstreamsNative" }]);
-    for (const table of nativeTableNames)
-      expect(yield* sql.unsafe(`PRAGMA foreign_key_list(${table})`)).toEqual([]);
-  }).pipe(Effect.provide(memory)),
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id = 140`,
+      ).toEqual([{ migration_id: 140, name: "WorkstreamsNative" }]);
+      for (const table of nativeTableNames)
+        expect(yield* sql.unsafe(`PRAGMA foreign_key_list(${table})`)).toEqual([]);
+    }).pipe(Effect.provide(memory)),
 );
 
 it.effect("registry lifecycle transitions preserve generation, CAS and home identity", () =>

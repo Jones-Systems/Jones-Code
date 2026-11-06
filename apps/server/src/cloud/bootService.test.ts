@@ -1,5 +1,8 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off - Synchronous fixture provenance hashes must match the staged executable bytes.
 import * as NodeCrypto from "node:crypto";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Native pointer bootstrap shares this test's scoped filesystem fixture.
+import * as NodeFSP from "node:fs/promises";
+import { bootstrapLauncherPointer } from "../jones/cloud/launcherPointer.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -184,7 +187,7 @@ const makeHarness = Effect.fn("test.make_boot_service_harness")(function* (
         control.linger = "yes";
       if (!failed && command === "systemctl --user enable t3code.service") control.enabled = true;
       if (!failed && command === "systemctl --user restart t3code.service") control.active = true;
-      // A stop that fails (a timeout, say) has still stopped the service.
+      // A timed-out stop may still stop the service.
       if (command === "systemctl --user stop t3code.service") control.active = false;
       if (
         control.stateAfterStop !== undefined &&
@@ -494,8 +497,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect((yield* service.status).current).toBe(false);
       expect(yield* service.uninstall).toBe(true);
       expect((yield* service.status).installed).toBe(false);
-      // The stop can block up to systemd's 90s TimeoutStopSec; the runner's
-      // 60s default would cancel it mid-shutdown.
+      // systemd can take 90s to stop, exceeding the runner's 60s default.
       expect(timeouts.get("systemctl --user disable --now t3code.service")).toEqual(
         Duration.seconds(120),
       );
@@ -708,7 +710,6 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect(failure).toBe("repair failed");
       expect(control.active).toBe(true);
 
-      // A failed stop skips the operation but still starts the service again.
       control.failCommand = "systemctl --user stop t3code.service";
       let ran = false;
       const stopFailure = yield* service
@@ -726,8 +727,6 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect(control.active).toBe(true);
       control.failCommand = undefined;
 
-      // An enabled unit that is not active (crash-looping in auto-restart, say)
-      // is still stopped for the repair and started again afterwards.
       control.active = false;
       commands.length = 0;
       yield* service.withStopped(Effect.sync(() => commands.push("repair")));
@@ -739,11 +738,9 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
         "systemctl --user restart t3code.service",
       ]);
       expect(control.active).toBe(true);
-      // A running unit the user disabled is started again but stays disabled.
       control.enabled = false;
       yield* service.withStopped(Effect.void);
       expect(control).toMatchObject({ active: true, enabled: false });
-      // A unit that was neither enabled nor active stays stopped.
       control.active = false;
       control.enabled = false;
       commands.length = 0;
@@ -941,8 +938,7 @@ it.layer(NodeServices.layer)("boot service install", (it) => {
       expect(yield* service.uninstall).toBe(true);
       expect((yield* service.status).installed).toBe(false);
       expect(commands.some((command) => command.startsWith("systemctl "))).toBe(false);
-      // A bootout can block up to the plist's 90s ExitTimeOut; the runner's
-      // 60s default would cancel it and let bootstrap race a loaded job.
+      // launchd can take 90s to bootout; the runner's 60s default could let bootstrap race it.
       expect(timeouts.get("launchctl bootout --wait gui/501/com.t3tools.t3code.service")).toEqual(
         Duration.seconds(120),
       );
@@ -1225,9 +1221,7 @@ it.layer(NodeServices.layer)("qualified boot service setup boundary", (it) => {
         const { makeService, fs, statePath, commands } = yield* makeHarness(
           "linux",
           macInstallerPath,
-          {
-            ...(runtimeMode === undefined ? {} : { runtimeMode }),
-          },
+          runtimeMode === undefined ? {} : { runtimeMode },
         );
         const path = yield* Path.Path;
         const arch = "x64";
@@ -1388,7 +1382,7 @@ it.layer(NodeServices.layer)("verified private artifact boot service", (it) => {
       } else if (failure === "wrong-marker") {
         yield* fs.writeFileString(paths.sentinelPath, "0.0.44");
       } else if (failure === "wrong-platform") {
-        const provenance = yield* Schema.decodeUnknownEffect(
+        const provenance = yield* Schema.decodeEffect(
           Schema.fromJsonString(JonesRuntimeProvenance),
         )(yield* fs.readFileString(path.join(paths.versionDir, JONES_RUNTIME_PROVENANCE_FILE)));
         yield* fs.writeFileString(
@@ -1438,6 +1432,60 @@ it.layer(NodeServices.layer)("verified private artifact boot service", (it) => {
           `${plan.program[0]} --version`,
         ]);
         expect(parseServiceState(yield* fs.readFileString(statePath))?.activeVersion).toBe(version);
+      }),
+  );
+});
+
+it.layer(NodeServices.layer)("stable launcher pointer boot service", (it) => {
+  it.effect(
+    "preserves an enrolled stable launcher pointer when rendering an existing private service",
+    () =>
+      Effect.gen(function* () {
+        const f = yield* makeHarness("linux", macInstallerPath, {
+          runtimeMode: "verified-private-artifact",
+        });
+        const base = yield* Effect.promise(() => NodeFSP.realpath(f.baseDir));
+        const version = "0.1.2-preview.20261026.100";
+        const directory = `${base}/runtime/versions/${version}`;
+        yield* f.fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+        yield* f.fs.writeFileString(`${directory}/t3`, "#!/bin/sh\n", { mode: 0o700 });
+        yield* f.fs.writeFileString(
+          `${directory}/${QUALIFIED_RUNTIME_RECEIPT}`,
+          encodeNativeFixtureJson({
+            protocol: 1,
+            repository: "Jones-Systems/Jones-Code",
+            channel: "jones-main",
+            version,
+            sourceSha: "a".repeat(40),
+            sourceTree: "b".repeat(40),
+            installedSourceSha: "c".repeat(40),
+            runId: 100,
+            runAttempt: 1,
+            artifactId: 101,
+            workflow: ".github/workflows/artifact-cli-linux.yml",
+            artifactDigest: `sha256:${"d".repeat(64)}`,
+            archiveSha256: "e".repeat(64),
+            platform: "linux",
+            architecture: "x64",
+            payloadSha256: yield* Effect.promise(() => qualifiedPayloadDigest(directory)),
+          }),
+          { mode: 0o600 },
+        );
+        const pointer = yield* Effect.promise(() =>
+          bootstrapLauncherPointer(base, version, "retained service definition"),
+        );
+        const service = yield* f.makeService(macInstallerPath, "1.2.3", base);
+        const installed = yield* service.install();
+        expect(installed.program).toEqual([pointer.program, "__service-launcher"]);
+        expect(yield* f.fs.readFileString(installed.unitPath)).toContain(pointer.program);
+        expect(
+          yield* Effect.promise(() => NodeFSP.readlink(`${base}/runtime/launcher/current`)),
+        ).toBe(`../versions/${version}`);
+        f.commands.length = 0;
+        yield* f.fs.writeFileString(`${directory}/t3`, "tampered launcher");
+        const refused = yield* f.makeService(macInstallerPath, "1.2.3", base).pipe(Effect.flip);
+        expect(refused._tag).toBe("BootServiceInstallError");
+        expect(f.commands).toEqual([]);
       }),
   );
 });

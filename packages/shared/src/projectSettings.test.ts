@@ -221,6 +221,34 @@ describe("resolveNewThreadEnvMode", () => {
     projectHasThreads: false,
   };
 
+  it("defaults capable interactive launches to on-write while preserving named-project and eager defaults", () => {
+    expect(DEFAULT_SERVER_SETTINGS.worktreeAllocation).toBe("on-write");
+    expect(resolveNewThreadEnvMode({ ...newProject, preferConversation: true })).toBe("local");
+    expect(
+      resolveNewThreadEnvMode({ ...newProject, projectHasThreads: true, preferConversation: true }),
+    ).toBe("auto");
+    const eager = resolveProjectSettings(
+      {
+        ...DEFAULT_SERVER_SETTINGS,
+        defaultThreadEnvMode: "worktree",
+        projectSettingsOverrides: { [projectId]: { worktreeAllocation: "eager" } },
+      },
+      projectId,
+      null,
+      null,
+    );
+    expect(eager.sources.worktreeAllocation).toBe("project");
+    expect(
+      resolveNewThreadEnvMode({
+        ...newProject,
+        projectSettings: eager,
+        projectHasThreads: true,
+        preferConversation: true,
+      }),
+    ).toBe("worktree");
+    expect(resolveSendEnvMode({ requestedEnvMode: "auto", isGitRepo: false })).toBe("local");
+  });
+
   it("starts a new project's first thread in its checkout", () => {
     expect(resolveNewThreadEnvMode(newProject)).toBe("local");
     expect(
@@ -352,6 +380,8 @@ describe("resolveWorktreeCleanup", () => {
     expect(inherited).toMatchObject({
       worktreeSettledAfterDays: 2,
       worktreeKeepWhen: "any-local-files",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
     });
     const off = applyServerSettingsPatch(machine, {
       projectSettingsOverrides: {
@@ -365,6 +395,8 @@ describe("resolveWorktreeCleanup", () => {
       worktreeOnMerge: false,
       worktreeUnchanged: false,
       worktreeKeepWhen: "any-local-files",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
     });
     expect(resolveWorktreeCleanup(off, otherProjectId)).toEqual(inherited);
     const custom = applyServerSettingsPatch(off, {
@@ -405,6 +437,8 @@ describe("resolveWorktreeCleanup", () => {
       worktreeOnMerge: true,
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
     });
     expect(
       resolveWorktreeCleanup(applyServerSettingsPatch(edited, { worktreeCleanup: null }), null)

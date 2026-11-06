@@ -11,7 +11,7 @@ import { ComposerPendingUserInputPanel } from "~/components/chat/ComposerPending
 
 const threadRef = { environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread") };
 
-it("cancels an answer's pending auto-submit on revocation and resumes after a new grant", async () => {
+it("blocks option selection on revocation and restores select-only behavior after a new grant", async () => {
   using _timers = fakeTimers();
   const onToggleOption = vi.fn();
   const onAdvance = vi.fn();
@@ -72,5 +72,53 @@ it("cancels an answer's pending auto-submit on revocation and resumes after a ne
     vi.runAllTimers();
   });
   expect(onToggleOption).toHaveBeenCalledTimes(2);
-  expect(onAdvance).toHaveBeenCalledTimes(1);
+  expect(onAdvance).not.toHaveBeenCalled();
+});
+
+it("allows a live question but fences option and submit actions for a non-resumable question", async () => {
+  const onToggleOption = vi.fn();
+  const onAdvance = vi.fn();
+  const panel = (responseCapability: "live" | "not_resumable") => (
+    <ComposerPendingUserInputPanel
+      pendingUserInputs={[
+        {
+          requestId: RuntimeRequestId.make("non-resumable"),
+          createdAt: "2026-10-26T00:00:00.000Z",
+          dismissible: false,
+          responseCapability,
+          questions: [
+            {
+              id: "choice",
+              header: "Choice",
+              question: "Choose?",
+              multiSelect: false,
+              options: [{ label: "Continue", description: "Continue execution" }],
+            },
+          ],
+        },
+      ]}
+      cwd="/repo"
+      threadRef={threadRef}
+      disabled={false}
+      respondingRequestIds={[]}
+      answers={{}}
+      questionIndex={0}
+      onToggleOption={onToggleOption}
+      onAdvance={onAdvance}
+      onChangeCustomAnswer={() => {}}
+      onPrevious={() => {}}
+      onDismiss={() => {}}
+    />
+  );
+  await using screen = await render(panel("live"));
+  const option = () =>
+    [...screen.container.querySelectorAll("button")].find((button) =>
+      button.textContent?.includes("Continue execution"),
+    )!;
+  expect(option().disabled).toBe(false);
+  await screen.rerender(panel("not_resumable"));
+  expect(option().disabled).toBe(true);
+  await act(() => option().click());
+  expect(onToggleOption).not.toHaveBeenCalled();
+  expect(onAdvance).not.toHaveBeenCalled();
 });

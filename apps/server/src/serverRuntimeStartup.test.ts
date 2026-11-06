@@ -30,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
 import * as ServerConfig from "./config.ts";
+import { resolveServerParallelismProfile } from "./jones/serverParallelism/config.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import * as ServiceLauncherClient from "./cloud/serviceLauncherClient.ts";
@@ -173,6 +174,7 @@ it.effect.each([
           devAllowedOrigins: [],
           desktopBootstrapToken: undefined,
           logWebSocketEvents: false,
+          serverParallelism: resolveServerParallelismProfile(undefined),
           tailscaleServeEnabled: false,
           tailscaleServePort: 443,
           mode: "web",
@@ -196,6 +198,7 @@ it.effect.each([
           reconcile: () => Effect.succeed(recovery),
         }),
         Layer.mock(Orchestrator.OrchestratorV2)({
+          recoverCodexFailover: Effect.void,
           recoverDelegatedTasks: Effect.void,
           recoverPlannedUpdateQueues: Effect.void,
         }),
@@ -272,6 +275,7 @@ it.effect.each([
           launch: (input) => {
             launchCalls++;
             assert.equal(input.modelSelection.instanceId, instanceId);
+            assert.equal(input.workspaceStrategy.type, "auto");
             return scenario === "launch-failure"
               ? Effect.fail(
                   new ThreadLaunch.ThreadLaunchError({
@@ -292,7 +296,7 @@ it.effect.each([
         Layer.mock(ServiceLauncherClient.ServiceLauncherClient)({
           managed: false,
           requiresQualifiedTrialGate: false,
-          prepareTrial: Effect.succeed(undefined),
+          prepareTrial: Effect.undefined,
         }),
         Layer.mock(GitVcsDriver.GitVcsDriver)({}),
         Layer.mock(AnalyticsService.AnalyticsService)({
@@ -494,6 +498,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         ),
         importLegacyShells: record("legacy"),
         recover: record("provider"),
+        recoverCodexFailover: record("codex-failover"),
         recoverDelegatedTasks: record("delegated"),
         startEffectWorker: record("worker"),
         autoBootstrap: record("bootstrap"),
@@ -511,6 +516,7 @@ it.effect("holds recovery, activation and queued commands before the trial grant
         "reservation",
         "legacy",
         "provider",
+        "codex-failover",
         "delegated",
         "worker",
         "bootstrap",

@@ -74,9 +74,11 @@ it.live(
           [secondEntries[0], selection.model],
         ]) {
           entry.frame.params.model = model;
+          entry.frame.params.collaborationMode = { mode: "default", settings: { model } };
           entry.frame.params.sandboxPolicy = { type: "dangerFullAccess" };
         }
         secondEntries[0].frame.params.effort = "medium";
+        secondEntries[0].frame.params.collaborationMode.settings.reasoning_effort = "medium";
         raw.entries = raw.entries.filter(
           (entry: { type: string }) => entry.type !== "runtime_exit",
         );

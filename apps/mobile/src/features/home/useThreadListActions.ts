@@ -1,3 +1,4 @@
+import { undoSettleThread } from "../../jones/settlementRestore/runtime";
 import type { ThreadMoveDestination } from "../threads/threadOrder";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import * as ThreadUndo from "@t3tools/client-runtime/state/thread-undo";
@@ -33,8 +34,7 @@ import { getThreadListV2OrderedSection } from "../threads/threadListV2";
 import { threadCanArchive } from "./threadArchive";
 import { resolveThreadTitleRename } from "../threads/thread-title-rename";
 
-/** Version skew: never send settle/unsettle to a server that predates them
-    (capability defaults false on decode for older servers). */
+/** Older servers default the settlement capability to false; never send them settle/unsettle. */
 function environmentSupportsSettlement(environmentId: EnvironmentThreadShell["environmentId"]) {
   return (
     appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
@@ -204,8 +204,7 @@ function useThreadActionExecutor(
   return executeAction;
 }
 
-// A plain function, not a hook: a `use*` function that calls no hooks is skipped by
-// the compiler, so the delete handler it returned was a new closure every render.
+// Hookless use* functions skip compilation, leaving their returned handlers unstable.
 function confirmThreadDeletion(
   executeAction: (action: ThreadListAction, thread: EnvironmentThreadShell) => Promise<boolean>,
   thread: EnvironmentThreadShell,
@@ -230,6 +229,7 @@ export function useThreadListActions(): {
   readonly settleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly snoozeThread: (thread: EnvironmentThreadShell, snoozedUntil: string) => Promise<boolean>;
   readonly unsnoozeThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
+  readonly undoSettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unsettleThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly pinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
   readonly unpinThread: (thread: EnvironmentThreadShell) => Promise<boolean>;
@@ -437,8 +437,6 @@ export function useThreadListActions(): {
       return false;
     }
     selectionHaptic();
-    // Same placement as web: a fresh pin takes the top of the arranged
-    // run. Servers that predate reordering get the bare pin (keyless).
     let orderKey: string | undefined;
     if (environmentSupportsPinReorder(thread.environmentId)) {
       const shells = appAtomRegistry.get(environmentThreadShells.threadShellsAtom);
@@ -778,6 +776,7 @@ export function useThreadListActions(): {
     snoozeThread,
     unsnoozeThread,
     unsettleThread,
+    undoSettleThread,
     pinThread,
     unpinThread,
     setThreadAutoSettle,

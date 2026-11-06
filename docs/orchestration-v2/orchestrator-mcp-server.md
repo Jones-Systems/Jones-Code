@@ -235,6 +235,7 @@ type DelegateTaskInput = {
   clientRequestId?: string;
   runtimeMode?: "inherit" | "approval-required" | "auto-accept-edits" | "full-access";
   interactionMode?: "inherit" | "plan" | "default";
+  supervisionRequestedByUser?: boolean;
 };
 ```
 
@@ -252,13 +253,14 @@ omits it for a provider that offers all of them. When the target lists
 `runtimeModes`, an explicit `runtimeMode` outside that list is refused, and an
 inherited mode steps down to the broadest mode the target offers.
 
-Each delegated review round uses a new `delegate_task` call with the original brief,
-prior findings, responses, and unresolved objections. Track each round by its own `taskId` and use
-a distinct `clientRequestId` per round, stable across retries of that round.
-`childThreadId` is backing storage, not a target for another review round through
-`t3_thread_send`. Ordinary thread messaging remains available for user-requested
-conversations; it does not reopen a completed task. There is no task-level follow-up
-API for preserving the same reviewer session.
+Each independent delegated review round uses a new `delegate_task` call with the
+original brief, prior findings, responses, and unresolved objections. Track each
+round by its own `taskId` and use a distinct `clientRequestId` per round, stable
+across retries of that round.
+A follow-up that needs the same child's conversation goes through `t3_thread_send`
+on its `childThreadId`. After the original task completes, that follow-up runs as a
+fresh task in the child thread; it does not reopen the completed task or change its
+published result.
 
 Delegation requires an active parent run owned by the MCP credential's
 provider session. The request becomes the V2 command
@@ -412,7 +414,8 @@ and `creationSource: "mcp"`; provider output uses `creationSource: "provider"`.
 Actor and ingress are separate so agent-authored user-role messages remain
 distinguishable from human-authored messages.
 
-Agents mention another thread as `[title](t3-thread://v1/<threadId>)`. The
+Agents mention another thread as `[title](t3-thread://v1/<threadId>)`. Thread
+results carry this ready-made as `link`, so agents never format the id. The
 link carries only the id. Clients first resolve it in the message's environment,
 then use a unique match in another enabled environment. Ambiguous matches stay
 unresolved. Web and desktop show the resolved thread’s current title. Mobile
@@ -516,10 +519,16 @@ results use the latest assistant content from the final work turn.
 
 ## Policy And Idempotency
 
-- A child runtime mode may stay equal to or become narrower than the parent
-  mode. It may not escalate privileges.
-- A child interaction mode may stay equal to or narrow from `default` to
-  `plan`. It may not escalate from `plan` to `default`.
+- Omit `runtimeMode` and `interactionMode` to inherit the parent's modes. An
+  explicit narrower runtime mode or `plan` from `default` requires
+  `supervisionRequestedByUser: true`, only when the user asked for a supervised
+  child. A role or read-only scope is not a reason. Do not add the flag
+  automatically after a refusal. The flag is a self-attested accident guard,
+  not authenticated proof of user intent. Broader modes remain rejected.
+- Authenticated linked delegation inherits the parent's modes within the link's
+  ceiling without applying destination project mode defaults. Ordinary
+  top-level launches keep those defaults. Older destinations may still narrow
+  delegated modes to their project defaults.
 - Thread tools take any thread in the environment as a target. For a thread
   caller, list and search cover one project: its own unless `projectId` is given.
 - A tool that changes another thread needs the calling thread's live run, and

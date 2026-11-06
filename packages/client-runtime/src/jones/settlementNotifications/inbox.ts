@@ -71,7 +71,11 @@ export function refreshThreads(
       return [];
     }
     const title = titles.get(entry.threadId) ?? entry.title;
-    const threadGone = gone.has(entry.threadId) || !titles.has(entry.threadId);
+    const threadGone = gone.has(entry.threadId)
+      ? true
+      : titles.has(entry.threadId)
+        ? false
+        : entry.threadGone;
     if (title === entry.title && threadGone === entry.threadGone) return [entry];
     changed = true;
     return [{ ...entry, title, threadGone }];

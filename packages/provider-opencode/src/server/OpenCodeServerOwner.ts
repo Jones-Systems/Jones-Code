@@ -211,7 +211,7 @@ export const make = Effect.fn("OpenCodeServerOwner.make")(function* (input: {
   });
 });
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const layer = (input: {
   readonly authority?: OpenCodeCreationPolicy.OpenCodeQualifiedAuthority;
   readonly binaryPath: string;

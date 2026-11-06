@@ -224,7 +224,7 @@ export function collectImportedApplicationAttachmentPathsV1(
       const decoded =
         carrier.attachmentsJson === null
           ? Option.some([])
-          : Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(ChatAttachment)))(
+          : Schema.decodeOption(Schema.fromJsonString(Schema.Array(ChatAttachment)))(
               carrier.attachmentsJson,
             );
       if (
@@ -237,9 +237,9 @@ export function collectImportedApplicationAttachmentPathsV1(
       attachments = carrier.attachments;
     } else {
       answerCarrierCount++;
-      const decoded = Schema.decodeUnknownOption(
-        Schema.fromJsonString(UserInputAttachmentAnswerPayload),
-      )(carrier.payloadJson);
+      const decoded = Schema.decodeOption(Schema.fromJsonString(UserInputAttachmentAnswerPayload))(
+        carrier.payloadJson,
+      );
       if (
         Option.isNone(decoded) ||
         nativeCreationCanonicalJson(decoded.value) !== nativeCreationCanonicalJson(carrier.answer)

@@ -1,8 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-/**
- * Native and canonical views share batching, rotation, and retention state so
- * they cannot race while appending to the same thread-scoped file.
- */
+/** Native and canonical views share write state to avoid races on the same thread file. */
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
@@ -10,18 +7,24 @@ import type { ThreadId } from "@t3tools/contracts";
 import type * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeAsyncRotatingFileSink } from "@t3tools/shared/logging";
 import { errorTag } from "@t3tools/shared/observability";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
-import * as Result from "effect/Result";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import { toSafeThreadAttachmentSegment } from "../attachmentStore.ts";
+import {
+  SegmentBuffer,
+  type LogBatch,
+  type LogSegment,
+  type PendingRecord,
+} from "../jones/provider/diagnosticLogging/SegmentBuffer.ts";
 import type * as ResourceAttribution from "../resourceTelemetry/ResourceAttribution.ts";
 
 const MEBIBYTE = 1024 * 1024;
@@ -63,7 +66,9 @@ const transientNativeMethods = new Set([
 ]);
 const transientAcpUpdates = new Set(["agent_message_chunk", "agent_thought_chunk"]);
 
-export type EventNdjsonStream = "native" | "canonical" | "orchestration";
+export type { PendingRecord } from "../jones/provider/diagnosticLogging/SegmentBuffer.ts";
+
+export type EventNdjsonStream = PendingRecord["stream"];
 
 export interface EventNdjsonLogStore {
   readonly filePath: string;
@@ -78,7 +83,9 @@ export interface EventNdjsonLogStoreOptions {
   readonly maxTotalBytes?: number;
   readonly maxAgeMs?: number;
   readonly retentionCheckIntervalMs?: number;
+  /** Includes detached writes; one payload-bounded record larger than this cap runs alone. */
   readonly maxBufferedBytes?: number;
+  /** Includes detached writes. Full capacity backpressures admission without dropping records. */
   readonly maxBufferedRecords?: number;
   readonly attribution?: ResourceAttribution.ResourceAttribution["Service"];
 }
@@ -129,23 +136,7 @@ interface ResolvedOptions {
   readonly attribution: ResourceAttribution.ResourceAttribution["Service"] | undefined;
 }
 
-export interface PendingRecord {
-  readonly stream: EventNdjsonStream;
-  readonly threadSegment: string;
-  readonly line: string;
-  readonly bytes: number;
-}
-
 type AsyncFileSink = Effect.Success<ReturnType<typeof makeAsyncRotatingFileSink>>;
-
-interface StoreState {
-  readonly pending: Array<PendingRecord>;
-  readonly pendingBytes: number;
-  readonly sinks: ReadonlyMap<string, AsyncFileSink>;
-  readonly flushScheduled: boolean;
-  readonly closed: boolean;
-  readonly lastRetentionAt: number;
-}
 
 interface AttributionSummary {
   readonly stream: EventNdjsonStream;
@@ -159,11 +150,6 @@ interface FileOperationFailure {
 }
 
 interface RetentionResult {
-  readonly failures: ReadonlyArray<FileOperationFailure>;
-}
-
-interface DrainResult {
-  readonly attributions: ReadonlyArray<AttributionSummary>;
   readonly failures: ReadonlyArray<FileOperationFailure>;
 }
 
@@ -203,8 +189,7 @@ export function shouldPersistProviderEvent(stream: EventNdjsonStream, event: unk
 
     const nested = Reflect.get(event, "event");
     const envelope = typeof nested === "object" && nested !== null ? nested : event;
-    // Decoded frames carry the same information as raw frames without another
-    // copy of every token delta.
+    // Decoded frames preserve raw-frame information without duplicating every token delta.
     if (Reflect.get(envelope, "stage") === "raw") return false;
     const decodedPayload = Reflect.get(envelope, "payload");
     const nativeEvent =
@@ -425,7 +410,7 @@ async function enforceRetention(input: {
   readonly directory: string;
   readonly maxTotalBytes: number;
   readonly maxAgeMs: number;
-  readonly activeFilePaths: ReadonlySet<string>;
+  readonly reserveRemoval: (filePath: string) => (() => void) | undefined;
   readonly filePrefix: string;
   readonly now: number;
 }): Promise<RetentionResult> {
@@ -453,7 +438,9 @@ async function enforceRetention(input: {
 
   let totalBytes = files.reduce((total, file) => total + file.size, 0);
   const remove = async (file: (typeof files)[number]) => {
-    if (input.activeFilePaths.has(file.filePath)) return false;
+    // Reserve the whole rotating family against both current and newly admitted writers.
+    const release = input.reserveRemoval(file.filePath);
+    if (!release) return false;
     try {
       await NodeFS.promises.rm(file.filePath, { force: true });
       totalBytes -= file.size;
@@ -461,6 +448,8 @@ async function enforceRetention(input: {
     } catch (cause) {
       failures.push({ filePath: file.filePath, cause });
       return false;
+    } finally {
+      release();
     }
   };
 
@@ -524,110 +513,6 @@ function resolveOptions(
   return Effect.succeed(resolved);
 }
 
-const drainPending = Effect.fnUntraced(function* (input: {
-  readonly directory: string;
-  readonly options: ResolvedOptions;
-  readonly state: StoreState;
-  readonly filePrefix: string;
-  readonly now: number;
-  readonly timerFired: boolean;
-  readonly close: boolean;
-  readonly makeSink: (
-    filePath: string,
-  ) => Effect.Effect<AsyncFileSink, Effect.Error<ReturnType<typeof makeAsyncRotatingFileSink>>>;
-}): Effect.fn.Return<readonly [DrainResult, StoreState]> {
-  if (input.state.closed) {
-    return [{ attributions: [], failures: [] }, input.state];
-  }
-
-  const sinks = new Map(input.state.sinks);
-  const failures: Array<FileOperationFailure> = [];
-  const attributionByStream = new Map<
-    EventNdjsonStream,
-    { count: number; logicalWriteBytes: number }
-  >();
-  const recordsBySegment = new Map<string, Array<PendingRecord>>();
-
-  for (const record of input.state.pending) {
-    const records = recordsBySegment.get(record.threadSegment) ?? [];
-    records.push(record);
-    recordsBySegment.set(record.threadSegment, records);
-  }
-
-  for (const [threadSegment, records] of recordsBySegment) {
-    const filePath = providerLogPath(input.directory, input.filePrefix, threadSegment);
-    let sink = sinks.get(threadSegment);
-    if (!sink) {
-      const created = yield* input.makeSink(filePath).pipe(Effect.result);
-      if (Result.isFailure(created)) {
-        failures.push({ filePath, cause: created.failure });
-        continue;
-      }
-      sink = created.success;
-      sinks.set(threadSegment, sink);
-    }
-
-    const written = yield* writeBatchedMessages(
-      sink,
-      records,
-      input.options.maxBytes,
-      (writtenRecords) => {
-        for (const record of writtenRecords) {
-          const current = attributionByStream.get(record.stream) ?? {
-            count: 0,
-            logicalWriteBytes: 0,
-          };
-          attributionByStream.set(record.stream, {
-            count: current.count + 1,
-            logicalWriteBytes: current.logicalWriteBytes + record.bytes,
-          });
-        }
-      },
-    ).pipe(Effect.result);
-    if (Result.isFailure(written)) {
-      sinks.delete(threadSegment);
-      failures.push({ filePath, cause: written.failure });
-    }
-  }
-
-  const retentionDue =
-    input.now - input.state.lastRetentionAt >= input.options.retentionCheckIntervalMs;
-  const retention = retentionDue
-    ? yield* Effect.promise(() =>
-        enforceRetention({
-          directory: input.directory,
-          maxTotalBytes: input.options.maxTotalBytes,
-          maxAgeMs: input.options.maxAgeMs,
-          activeFilePaths: new Set(
-            Array.from(sinks.keys(), (threadSegment) =>
-              providerLogPath(input.directory, input.filePrefix, threadSegment),
-            ),
-          ),
-          filePrefix: input.filePrefix,
-          now: input.now,
-        }),
-      )
-    : { failures: [] };
-
-  return [
-    {
-      attributions: Array.from(attributionByStream, ([stream, value]) => ({
-        stream,
-        ...value,
-      })),
-      failures: [...failures, ...retention.failures],
-    },
-    {
-      pending: [],
-      pendingBytes: 0,
-      sinks,
-      flushScheduled: input.timerFired ? false : input.state.flushScheduled,
-      closed: input.close,
-      lastRetentionAt: retentionDue ? input.now : input.state.lastRetentionAt,
-    },
-  ];
-});
-
 const serializeEvent = Effect.fnUntraced(function* (event: unknown) {
   return yield* encodeUnknownJsonString(event).pipe(
     Effect.catch((error) =>
@@ -665,93 +550,200 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
       Effect.provideService(Path.Path, path),
     );
 
-  const initializedAt = yield* Clock.currentTimeMillis;
-  const initialRetention = yield* Effect.promise(() =>
-    enforceRetention({
-      directory,
-      maxTotalBytes: resolved.maxTotalBytes,
-      maxAgeMs: resolved.maxAgeMs,
-      activeFilePaths: new Set(),
-      filePrefix,
-      now: initializedAt,
-    }),
-  );
-  for (const failure of initialRetention.failures) {
-    yield* logWarning("provider event log retention failed", {
-      filePath: failure.filePath,
-      errorTag: errorTag(failure.cause),
-    });
-  }
-
-  const stateRef = yield* SynchronizedRef.make<StoreState>({
-    pending: [],
-    pendingBytes: 0,
-    sinks: new Map(),
-    flushScheduled: false,
-    closed: false,
-    lastRetentionAt: initializedAt,
-  });
+  const buffer = new SegmentBuffer(resolved);
+  const sinks = new Map<LogSegment, AsyncFileSink>();
   const timerScope = yield* Scope.make();
+  const workerScope = yield* Scope.make();
+  const retentionScope = yield* Scope.make();
+  let lastRetentionAt = yield* Clock.currentTimeMillis;
+  let retentionRunning = false;
 
-  const flush = Effect.fnUntraced(function* (timerFired: boolean, close: boolean) {
-    const startedAt = yield* Clock.currentTimeMillis;
-    const result = yield* SynchronizedRef.modifyEffect(stateRef, (state) =>
-      drainPending({
+  // Retention has one I/O owner, separate from all segment workers and admissions.
+  const retain = Effect.fnUntraced(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    yield* Effect.sync(() => {
+      for (const segment of buffer.retireIdle()) sinks.delete(segment);
+    });
+    const result = yield* Effect.promise(() =>
+      enforceRetention({
         directory,
-        options: resolved,
-        state,
+        maxTotalBytes: resolved.maxTotalBytes,
+        maxAgeMs: resolved.maxAgeMs,
+        reserveRemoval: (candidate) => buffer.reserveRemoval(candidate),
         filePrefix,
-        now: startedAt,
-        timerFired,
-        close,
-        makeSink,
+        now,
       }),
     );
-
     for (const failure of result.failures) {
-      yield* logWarning("provider event log write or retention failed", {
+      yield* logWarning("provider event log retention failed", {
         filePath: failure.filePath,
         errorTag: errorTag(failure.cause),
       });
     }
-
-    if (resolved.attribution && result.attributions.length > 0) {
-      const completedAt = yield* Clock.currentTimeMillis;
-      const durationMs = Math.max(0, completedAt - startedAt);
-      const totalBytes = result.attributions.reduce(
-        (total, entry) => total + entry.logicalWriteBytes,
-        0,
-      );
-      yield* Effect.forEach(
-        result.attributions,
-        (entry) =>
-          resolved.attribution?.record({
-            component: "provider-event-log",
-            operation: `${entry.stream}.append`,
-            logicalWriteBytes: entry.logicalWriteBytes,
-            count: entry.count,
-            durationMs:
-              totalBytes === 0
-                ? 0
-                : Math.round(durationMs * (entry.logicalWriteBytes / totalBytes)),
-          }) ?? Effect.void,
-        { discard: true },
-      );
-    }
+    lastRetentionAt = now;
   }, Effect.uninterruptible);
+  yield* retain();
+
+  const requestRetention = Effect.fnUntraced(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (
+      buffer.isClosed ||
+      retentionRunning ||
+      now - lastRetentionAt < resolved.retentionCheckIntervalMs
+    )
+      return;
+    retentionRunning = true;
+    yield* retain().pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          retentionRunning = false;
+        }),
+      ),
+      Effect.forkIn(retentionScope, { startImmediately: true }),
+    );
+  }, Effect.uninterruptible);
+
+  // These per-batch/per-record paths share the caller's provider span.
+  const writeBatch = Effect.fnUntraced(
+    function* (batch: LogBatch) {
+      const startedAt = yield* Clock.currentTimeMillis;
+      const attributionByStream = new Map<EventNdjsonStream, AttributionSummary>();
+      const written = yield* Effect.gen(function* () {
+        let sink = sinks.get(batch.segment);
+        if (!sink) {
+          sink = yield* makeSink(batch.segment.filePath);
+          sinks.set(batch.segment, sink);
+        }
+        yield* writeBatchedMessages(sink, batch.records, resolved.maxBytes, (records) => {
+          for (const record of records) {
+            const previous = attributionByStream.get(record.stream);
+            attributionByStream.set(record.stream, {
+              stream: record.stream,
+              count: (previous?.count ?? 0) + 1,
+              logicalWriteBytes: (previous?.logicalWriteBytes ?? 0) + record.bytes,
+            });
+          }
+        });
+      }).pipe(Effect.exit);
+      if (Exit.isFailure(written)) {
+        sinks.delete(batch.segment);
+        yield* logWarning("provider event log write or retention failed", {
+          filePath: batch.segment.filePath,
+          errorTag: errorTag(Cause.squash(written.cause)),
+        });
+      }
+
+      if (resolved.attribution && attributionByStream.size > 0) {
+        const completedAt = yield* Clock.currentTimeMillis;
+        const durationMs = Math.max(0, completedAt - startedAt);
+        const attributions = Array.from(attributionByStream.values());
+        const totalBytes = attributions.reduce(
+          (total, entry) => total + entry.logicalWriteBytes,
+          0,
+        );
+        yield* Effect.forEach(
+          attributions,
+          (entry) =>
+            resolved.attribution?.record({
+              component: "provider-event-log",
+              operation: `${entry.stream}.append`,
+              logicalWriteBytes: entry.logicalWriteBytes,
+              count: entry.count,
+              durationMs:
+                totalBytes === 0
+                  ? 0
+                  : Math.round(durationMs * (entry.logicalWriteBytes / totalBytes)),
+            }) ?? Effect.void,
+          { discard: true },
+        );
+      }
+    },
+    (effect, batch) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.sync(() => sinks.delete(batch.segment)).pipe(
+            Effect.andThen(
+              logWarning("provider event log batch failed", {
+                filePath: batch.segment.filePath,
+                errorTag: errorTag(Cause.squash(cause)),
+              }),
+            ),
+          ),
+        ),
+        Effect.ensuring(Effect.sync(() => buffer.complete(batch))),
+        Effect.uninterruptible,
+      ),
+  );
+
+  const drainSegment = Effect.fnUntraced(function* (segment: LogSegment) {
+    while (true) {
+      const action = yield* Effect.sync(() => buffer.next(segment));
+      if (action.kind === "done") return;
+      if (action.kind === "wait") {
+        yield* Deferred.await(action.changed);
+      } else {
+        yield* writeBatch(action.batch);
+        yield* requestRetention();
+      }
+    }
+  });
+
+  const startWorkers = (segments: ReadonlyArray<LogSegment>) =>
+    Effect.forEach(
+      segments,
+      (segment) =>
+        Effect.forkIn(drainSegment(segment), workerScope, {
+          startImmediately: true,
+          uninterruptible: false,
+        }),
+      { discard: true },
+    );
+
+  const awaitWatermark = Effect.fnUntraced(function* (segment: LogSegment, watermark: number) {
+    while (true) {
+      const changed = yield* Effect.sync(() => buffer.awaitWatermark(segment, watermark));
+      if (!changed) return;
+      yield* Deferred.await(changed);
+    }
+  });
 
   const scheduleFlush = Effect.fnUntraced(function* () {
     yield* Effect.forkIn(
-      Effect.sleep(resolved.batchWindowMs).pipe(Effect.andThen(flush(true, false))),
+      Effect.sleep(resolved.batchWindowMs).pipe(
+        Effect.andThen(
+          Effect.sync(() => buffer.timerFired()).pipe(
+            Effect.flatMap(startWorkers),
+            Effect.uninterruptible,
+          ),
+        ),
+      ),
       timerScope,
-      { startImmediately: true },
+      { startImmediately: true, uninterruptible: false },
     );
   });
 
+  const closeComplete = yield* Deferred.make<void>();
+  let closeStarted = false;
   const close = Effect.fnUntraced(function* () {
-    yield* flush(false, true);
-    yield* Scope.close(timerScope, Exit.void);
-  });
+    const closing = yield* Effect.sync(() => {
+      if (closeStarted) return undefined;
+      closeStarted = true;
+      return buffer.closeAdmission();
+    });
+    if (!closing) return yield* Deferred.await(closeComplete);
+    yield* Effect.gen(function* () {
+      yield* Scope.close(timerScope, Exit.void);
+      yield* startWorkers(closing.workers);
+      yield* Effect.forEach(
+        closing.watermarks,
+        ({ segment, watermark }) => awaitWatermark(segment, watermark),
+        { concurrency: "unbounded", discard: true },
+      );
+      yield* Scope.close(workerScope, Exit.void);
+      yield* Scope.close(retentionScope, Exit.void);
+      yield* retain();
+    }).pipe(Effect.onExit((exit) => Deferred.done(closeComplete, exit)));
+  }, Effect.uninterruptible);
 
   const loggerViews = new Map<EventNdjsonStream, ProviderEventLoggers.EventNdjsonLogger>();
   const logger = (stream: EventNdjsonStream): ProviderEventLoggers.EventNdjsonLogger => {
@@ -771,32 +763,25 @@ export const makeEventNdjsonLogStore = Effect.fnUntraced(function* (
       const observedAt = yield* DateTime.now.pipe(Effect.map(DateTime.formatIso));
       const line = `[${observedAt}] ${resolveStreamLabel(stream)}: ${payload}\n`;
       const bytes = Buffer.byteLength(line);
-      const action = yield* SynchronizedRef.modifyEffect(stateRef, (state) => {
-        if (state.closed) {
-          return Effect.succeed([{ flush: false }, state] as const);
-        }
-        const pending = state.pending;
-        pending.push({ stream, threadSegment: resolveThreadSegment(threadId), line, bytes });
-        const pendingBytes = state.pendingBytes + bytes;
-        const flush =
-          resolved.batchWindowMs === 0 ||
-          pending.length >= resolved.maxBufferedRecords ||
-          pendingBytes >= resolved.maxBufferedBytes;
-        const schedule = !flush && !state.flushScheduled;
-        const nextState = {
-          ...state,
-          pending,
-          pendingBytes,
-          flushScheduled: state.flushScheduled || schedule,
-        };
-        return (schedule ? scheduleFlush() : Effect.void).pipe(
-          Effect.as([{ flush }, nextState] as const),
-        );
-      }).pipe(Effect.uninterruptible);
-
-      if (action.flush) {
-        yield* flush(false, false);
-      }
+      const threadSegment = resolveThreadSegment(threadId);
+      const record = { stream, threadSegment, line, bytes } satisfies PendingRecord;
+      const segmentPath = providerLogPath(directory, filePrefix, threadSegment);
+      yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          while (true) {
+            const action = yield* Effect.sync(() => buffer.admit(record, segmentPath));
+            if (action.kind === "closed") return;
+            yield* startWorkers(action.workers);
+            if (action.kind === "wait") {
+              yield* restore(Deferred.await(action.changed));
+              continue;
+            }
+            if (action.schedule) yield* scheduleFlush();
+            if (action.flush) yield* restore(awaitWatermark(action.segment, action.watermark));
+            return;
+          }
+        }),
+      );
     });
 
     const view = {

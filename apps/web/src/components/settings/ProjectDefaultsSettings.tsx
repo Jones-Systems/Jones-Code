@@ -88,6 +88,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedPermissions = useScopedSettingsMixed(["defaultRuntimeMode"]);
   const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
+  const mixedAllocation = useScopedSettingsMixed(["worktreeAllocation"]);
   const mixedSubmodules = useScopedSettingsMixed(["worktreeSubmodules"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedAgentCredits = useScopedSettingsMixed(["removeAgentCreditsOnMerge"]);
@@ -122,14 +123,12 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       description={
         isProjectScope
           ? "Model for new threads in this project."
-          : "Default model for new threads. Projects can override it."
-      }
-      status={
-        unavailable || mixedModel || modelSource === "project"
-          ? undefined
-          : settings.defaultModelSelection === null
-            ? "Automatic"
-            : undefined
+          : !unavailable &&
+              !mixedModel &&
+              modelSource !== "project" &&
+              settings.defaultModelSelection === null
+            ? "Default model for new threads, selected automatically. Projects can override it."
+            : "Default model for new threads. Projects can override it."
       }
       resetAction={
         settings.defaultModelSelection !== null ? (
@@ -229,6 +228,34 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
     />
   );
 
+  const allocationRow =
+    representative?.serverConfig?.environment.capabilities.conversationWorkspace === true ? (
+      <SettingsRow
+        serverScoped
+        settingKeys={["worktreeAllocation"]}
+        mixed={mixedAllocation}
+        title="Worktree allocation"
+        description="On write starts with source tools. Attach a worktree for source changes or terminals. Explicit workspace choices still apply."
+        control={
+          <Select
+            value={mixedAllocation ? null : settings.worktreeAllocation}
+            onValueChange={(value) => {
+              if (value === "on-write" || value === "eager")
+                updateSettings({ worktreeAllocation: value });
+            }}
+          >
+            <SelectTrigger size="sm" aria-label="Worktree allocation">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              <SelectItem value="on-write">On write</SelectItem>
+              <SelectItem value="eager">At launch</SelectItem>
+            </SelectPopup>
+          </Select>
+        }
+      />
+    ) : null;
+
   return (
     <SettingsSection
       id={category === "source-control" ? "source-control-defaults" : "project-defaults"}
@@ -238,6 +265,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
         <>
           {modelRow}
           {workspaceRow}
+          {allocationRow}
         </>
       ) : category === "general" ? (
         <>
@@ -304,6 +332,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             }
           />
           {workspaceRow}
+          {allocationRow}
           <SettingsRow
             serverScoped
             settingKeys={["worktreeSubmodules"]}
@@ -387,7 +416,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             settingKeys={["removeAgentCreditsOnMerge"]}
             mixed={mixedAgentCredits}
             {...searchableSetting("remove-agent-credits-on-merge")}
-            description="Remove recognized agent credit lines from GitHub merge and squash messages, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits."
+            description="Remove recognized agent credit lines from merge and squash messages on hosts that support it, keeping human co-authors. Includes auto-merge. Excludes merge queues, stack merges, and existing commits."
             resetAction={
               settings.removeAgentCreditsOnMerge ? (
                 <SettingResetButton

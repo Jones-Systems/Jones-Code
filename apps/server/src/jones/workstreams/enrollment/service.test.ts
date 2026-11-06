@@ -26,7 +26,7 @@ const ports: NativeEnrollmentPorts = {
       storeGeneration: request.context.store_generation,
     }),
   },
-  build: Effect.succeed(Option.some(request.context.build)),
+  build: Effect.succeedSome(request.context.build),
 };
 const fixture = Effect.gen(function* () {
   yield* TestClock.setTime(Date.parse(request.session.issued_at));
@@ -144,7 +144,7 @@ it.effect("authority absence and wrong source, generation or build fail before r
     assert.notStrictEqual(wrongSha, request.context.build.sha);
     const wrongBuild = yield* f.make({
       ...ports,
-      build: Effect.succeed(Option.some({ ...request.context.build, sha: wrongSha })),
+      build: Effect.succeedSome({ ...request.context.build, sha: wrongSha }),
     });
     assert.strictEqual((yield* Effect.flip(wrongBuild.reserve(request))).code, "build_mismatch");
     for (const context of [
@@ -223,9 +223,11 @@ it.effect(
       yield* f.enrollments.reserve(request);
       const upgraded = yield* f.make({
         ...ports,
-        build: Effect.succeed(
-          Option.some({ ...request.context.build, sha: "b".repeat(40), tree: "c".repeat(40) }),
-        ),
+        build: Effect.succeedSome({
+          ...request.context.build,
+          sha: "b".repeat(40),
+          tree: "c".repeat(40),
+        }),
       });
       const operations = makeNativeEnrollmentOperations({
         enrollments: upgraded,
@@ -287,7 +289,7 @@ it.effect(
         (yield* operations(changed).readback(request, "a".repeat(64))).reason,
         "qualification_failed",
       );
-      const missingBuild = yield* f.make({ ...ports, build: Effect.succeed(Option.none()) });
+      const missingBuild = yield* f.make({ ...ports, build: Effect.succeedNone });
       assert.strictEqual(
         (yield* operations(missingBuild).readback(request, "a".repeat(64))).reason,
         "qualification_failed",

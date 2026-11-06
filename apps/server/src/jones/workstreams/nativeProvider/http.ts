@@ -85,7 +85,7 @@ const decodeBody = Effect.fn("NativeProviderHttp.decodeBody")(function* <E>(
     try: () => new TextDecoder("utf-8", { fatal: true }).decode(bytes),
     catch: () => new NativeProviderBodyError(),
   });
-  const value = yield* Schema.decodeUnknownEffect(jsonCodec)(text).pipe(
+  const value = yield* Schema.decodeEffect(jsonCodec)(text).pipe(
     Effect.mapError(() => new NativeProviderBodyError()),
   );
   if (!withinDepth(value)) return yield* new NativeProviderBodyError();
@@ -180,7 +180,7 @@ export const createNativeProviderHandlers = (
         state: "rejected",
         reason: "forbidden",
       });
-    const binding = yield* Schema.decodeUnknownEffect(NativeProviderEnrollmentBinding)(
+    const binding = yield* Schema.decodeEffect(NativeProviderEnrollmentBinding)(
       enrolled.value.value.value,
     ).pipe(Effect.option);
     if (Option.isNone(binding) || binding.value.session_id !== authenticatedSessionId)

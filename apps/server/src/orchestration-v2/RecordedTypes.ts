@@ -19,7 +19,7 @@ import {
   OrchestrationV2ThreadProjection,
   OrchestrationV2ThreadProjectionJson,
   OrchestrationV2ThreadDetailSnapshot,
-  OrchestrationV2ThreadBoundedSnapshot,
+  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import * as SchemaParser from "effect/SchemaParser";
@@ -629,8 +629,13 @@ export const RecordedThreadDetailSnapshot = Schema.Struct({
 });
 export type RecordedThreadDetailSnapshot = typeof RecordedThreadDetailSnapshot.Type;
 export const RecordedThreadBoundedSnapshot = Schema.Struct({
-  ...OrchestrationV2ThreadBoundedSnapshot.fields,
+  snapshotSequence: NonNegativeInt,
   projection: RecordedThreadProjection,
+  historyCursor: Schema.NullOr(TrimmedNonEmptyString),
+  hasMoreHistory: Schema.Boolean,
+  latestLocalTurnOrdinal: Schema.NullOr(NonNegativeInt),
+  turnItemsOmitLocalVisible: Schema.optionalKey(Schema.Literal(true)),
+  idTable: Schema.optionalKey(Schema.Literal(true)),
 });
 export type RecordedThreadBoundedSnapshot = typeof RecordedThreadBoundedSnapshot.Type;
 export type ApplicationRecordedEvent = ApplicationProjectEvent | RecordedStoredEvent;

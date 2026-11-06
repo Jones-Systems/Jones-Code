@@ -41,7 +41,7 @@ it.effect(
       const { fixture, http } = handlers();
       const context = yield* http.handle("context", binding.session_id, Stream.empty);
       assert.strictEqual(context.status, 200);
-      const parsedContext = yield* Schema.decodeUnknownEffect(
+      const parsedContext = yield* Schema.decodeEffect(
         Schema.fromJsonString(WorkstreamsNativeContextResponse),
       )(responseText(context));
       assert.strictEqual(parsedContext.state, "ready");
@@ -53,12 +53,12 @@ it.effect(
         binding.session_id,
         body(attestationText),
       );
-      const attestation = yield* Schema.decodeUnknownEffect(
+      const attestation = yield* Schema.decodeEffect(
         Schema.fromJsonString(WorkstreamsNativeAttestationResponse),
       )(responseText(attested));
       assert.strictEqual(attestation.state, "attested");
       const settled = yield* http.handle("settlements", binding.session_id, body(requestText));
-      const result = yield* Schema.decodeUnknownEffect(
+      const result = yield* Schema.decodeEffect(
         Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
       )(responseText(settled));
       assert.strictEqual(result.state, "terminal");
@@ -92,7 +92,7 @@ it.effect("settlement timeout retains dispatch-start and lookup never resubmits"
       },
     });
     const http = createNativeProviderHandlers(provider, {
-      getBySessionId: () => Effect.succeed(Option.some(binding)),
+      getBySessionId: () => Effect.succeedSome(binding),
     });
     const pending = yield* Effect.forkChild(
       http.handle("settlements", binding.session_id, body(requestText)),
@@ -100,7 +100,7 @@ it.effect("settlement timeout retains dispatch-start and lookup never resubmits"
     yield* Deferred.await(started);
     yield* TestClock.adjust("15 seconds");
     const response = yield* Fiber.join(pending);
-    const result = yield* Schema.decodeUnknownEffect(
+    const result = yield* Schema.decodeEffect(
       Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
     )(responseText(response));
     assert.strictEqual(result.state, "unknown");
@@ -110,7 +110,7 @@ it.effect("settlement timeout retains dispatch-start and lookup never resubmits"
       binding.session_id,
       body(requestText),
     );
-    const observation = yield* Schema.decodeUnknownEffect(
+    const observation = yield* Schema.decodeEffect(
       Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
     )(responseText(lookedUp));
     assert.strictEqual(observation.state, "unknown");
@@ -129,7 +129,7 @@ it.effect("ordinary or unauthenticated browser credentials do not become provide
       403,
     );
     const wrongSession = createNativeProviderHandlers(fixture.provider(), {
-      getBySessionId: () => Effect.succeed(Option.some(binding)),
+      getBySessionId: () => Effect.succeedSome(binding),
     });
     assert.strictEqual(
       (yield* wrongSession.handle("settlements", "other-session", body(requestText))).status,
@@ -202,9 +202,7 @@ it.effect(
         const response = yield* http.handle(operation, binding.session_id, body(requestText));
         assert.strictEqual(response.status, 500);
         assert.deepEqual(
-          yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
-            responseText(response),
-          ),
+          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(responseText(response)),
           {
             protocol: binding.protocol,
             state: "rejected",
@@ -233,7 +231,7 @@ it.effect(
       const provider = makeWorkstreamsNativeProvider(
         {
           ...fixture.ports,
-          build: Effect.succeed(Option.some({ ...binding.build, sha: "c".repeat(40) })),
+          build: Effect.succeedSome({ ...binding.build, sha: "c".repeat(40) }),
         },
         "v2",
       );

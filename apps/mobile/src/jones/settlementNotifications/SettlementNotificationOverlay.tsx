@@ -1,4 +1,6 @@
+import { settlementRemainingRows } from "@t3tools/client-runtime/jones/settlement-notifications";
 import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useLinkTo } from "@react-navigation/native";
 import type {
   SettlementEntry,
@@ -18,19 +20,42 @@ import { environmentCatalog } from "../../connection/catalog";
 import { MOBILE_SHAPE } from "../../lib/designTokens";
 import { APP_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { environmentShell } from "../../state/shell";
+import { threadFamilies } from "../../state/threads";
 import { settlementNotificationController as controller } from "./controller";
 import { resolveSettlementOrigins } from "./resolveOrigins";
 import { encodeThreadDeepLink } from "./navigation";
 
-function EnvironmentObserver(props: { readonly environmentId: EnvironmentId }) {
+function EnvironmentObserver(props: {
+  readonly environmentId: EnvironmentId;
+  readonly entries: readonly SettlementEntry[];
+}) {
   const state = useAtomValue(environmentShell.stateValueAtom(props.environmentId));
+  const familyEvidenceAtom = useMemo(
+    () =>
+      Atom.make((get) => {
+        const shell = get(environmentShell.stateValueAtom(props.environmentId));
+        if (shell.status !== "live") return [];
+        return props.entries
+          .filter((entry) => entry.environmentId === props.environmentId)
+          .flatMap((entry) => {
+            const result = get(threadFamilies.familyAtom(props.environmentId, entry.threadId));
+            return AsyncResult.isSuccess(result) && !result.waiting
+              ? [{ threadId: entry.threadId, generation: shell.generation, family: result.value }]
+              : [];
+          });
+      }),
+    [props.environmentId, props.entries],
+  );
+  const families = useAtomValue(familyEvidenceAtom);
   const resolveOrigins = useMemo<SettlementOriginResolver>(
     () => (arrivals) => resolveSettlementOrigins(props.environmentId, arrivals),
     [props.environmentId],
   );
+  // oxlint-disable-next-line t3code/react-effect-budget -- Feed committed live thread observations and origin evidence to the settlement notification controller.
   useEffect(() => {
-    if (state.status === "live") controller.observe(props.environmentId, state, { resolveOrigins });
-  }, [props.environmentId, state, resolveOrigins]);
+    if (state.status === "live")
+      controller.observe(props.environmentId, state, { resolveOrigins, families });
+  }, [props.environmentId, state, resolveOrigins, families]);
   return null;
 }
 
@@ -53,9 +78,9 @@ function SettlementTitle(props: { readonly entry: SettlementEntry }) {
           </AppText>
         ) : null}
       </Pressable>
-      {props.entry.projectRemaining?.map((item, index) => (
-        <AppText key={`${index}:${item}`} textRole="footnote" className="pl-2 pb-1">
-          • {item}
+      {settlementRemainingRows(props.entry.projectRemaining).map((item) => (
+        <AppText key={item.key} textRole="footnote" className="pl-2 pb-1">
+          • {item.label}
         </AppText>
       ))}
     </View>
@@ -126,6 +151,7 @@ function SettlementBanner(props: { readonly entries: readonly SettlementEntry[] 
 export function SettlementNotificationOverlay() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const snapshot = useSyncExternalStore(controller.subscribe, controller.getSnapshot);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile the persisted notification catalog only after both catalog and persistence are ready.
   useEffect(() => {
     if (catalog.isReady && snapshot.persistence !== "loading") {
       controller.noteCatalog([...catalog.entries.keys()]);
@@ -137,7 +163,11 @@ export function SettlementNotificationOverlay() {
   return (
     <>
       {[...enabledEnvironmentIds(catalog)].map((environmentId) => (
-        <EnvironmentObserver key={environmentId} environmentId={environmentId} />
+        <EnvironmentObserver
+          key={environmentId}
+          environmentId={environmentId}
+          entries={snapshot.visible}
+        />
       ))}
       {snapshot.visible.length > 0 ? <SettlementBanner entries={snapshot.visible} /> : null}
     </>

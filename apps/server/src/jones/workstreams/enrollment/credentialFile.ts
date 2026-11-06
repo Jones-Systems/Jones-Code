@@ -94,7 +94,7 @@ const readCredential = async (location: CredentialLocation): Promise<CredentialF
       return fail("unsafe_credential");
     const bytes = await handle.readFile();
     if (bytes.byteLength > 4096) return fail("unsafe_credential");
-    const parsed = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Unknown))(
+    const parsed = Schema.decodeSync(Schema.fromJsonString(Schema.Unknown))(
       new TextDecoder("utf-8", { fatal: true }).decode(bytes),
     );
     if (

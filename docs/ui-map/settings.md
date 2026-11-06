@@ -248,8 +248,11 @@ and a transient connection error. Owner-only and unsupported sections stop
 automatic polling and explain the receiving environment's required action;
 Refresh explicitly rechecks access. Transient failures back off and remain
 retryable. No provider-absence claim or disabled-policy claim is valid while
-the corresponding data is unknown. Verify the explanation for excluded
-CLI-backed Codex accounts without substituting another saved account.
+the corresponding data is unknown. Configured instances that cannot be selected
+are listed with the first applicable snapshot-supported reason: missing support,
+unavailable, disabled, signed out, not ready, or no available models. Verify that
+usable instances are omitted and the list stays hidden while provider data is
+unknown, without substituting another saved account.
 
 Exercise loading, save-in-progress, inaccessible/non-owner session, missing
 capability, unavailable saved account/model and unsupported options separately.

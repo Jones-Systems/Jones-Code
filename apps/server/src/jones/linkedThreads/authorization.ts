@@ -6,6 +6,7 @@ import { assertSameLink } from "../../mcp/linkOrigin.ts";
 import { assertTargetWithinLimits } from "../../mcp/threadAccess.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
+import * as ProjectionStore from "../../orchestration-v2/ProjectionStore.ts";
 import { sameEndpoint } from "./identity.ts";
 
 export type LinkActor =
@@ -80,7 +81,11 @@ export const authorize = Effect.fn("LinkedThreads.authorize")(function* (
   here: EnvironmentId,
   endpoints: readonly ThreadEndpointRef[],
   options: { readonly claimTo?: ThreadId; readonly read?: boolean } = {},
-): Effect.fn.Return<void, LinkedThreadsError, Threads.ThreadManagementService> {
+): Effect.fn.Return<
+  void,
+  LinkedThreadsError,
+  Threads.ThreadManagementService | ProjectionStore.ProjectionStoreV2
+> {
   const local = endpoints.filter((endpoint) => endpoint.environmentId === here);
   if (local.length === 0)
     return yield* new LinkedThreadsError({
@@ -99,6 +104,29 @@ export const authorize = Effect.fn("LinkedThreads.authorize")(function* (
       )
     )
       return yield* forbidden();
+  }
+  if (options.read) {
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    for (const endpoint of local) {
+      const thread = yield* projections
+        .getThread(endpoint.threadId)
+        .pipe(
+          Effect.catchTags({ ProjectionStoreThreadNotFoundError: () => Effect.succeed(null) }),
+          Effect.mapError(forbidden),
+        );
+      if (thread === null || thread.deletedAt !== null)
+        return yield* new LinkedThreadsError({
+          reason: "endpoint_not_found",
+          message: "A local thread endpoint was not found.",
+        });
+      if (
+        actor.type === "linked" &&
+        actor.fenced &&
+        thread.linkOrigin?.sessionId !== actor.sessionId
+      )
+        return yield* forbidden();
+    }
+    return;
   }
   const threads = yield* Threads.ThreadManagementService;
   const isEndpoint =

@@ -208,6 +208,10 @@ async function advanceMember(
         );
         return;
       }
+      if (campaign.phase !== "committed" || campaign.committedGeneration === undefined) {
+        await set("waiting", "Waits for the laptop update to commit.");
+        return;
+      }
       if (!(await set("staging", undefined, source))) return;
       status = await driver.host(member.enrollment.environmentId, {
         action: "stage",

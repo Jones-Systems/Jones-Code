@@ -13,6 +13,7 @@ const sourceTexts = () =>
   Promise.all([
     NodeFSP.readFile(new URL("./jonesNativeHelperSource.ts", import.meta.url), "utf8"),
     NodeFSP.readFile(new URL("./jonesPairedStateSource.ts", import.meta.url), "utf8"),
+    NodeFSP.readFile(new URL("./jonesSigningSource.ts", import.meta.url), "utf8"),
   ]);
 
 const identityScenario = String.raw`
@@ -159,14 +160,11 @@ describe("shared paired-state Python source", () => {
     "clones the complete pair with real APFS isolation and restores it by rename",
     () => {
       const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-I", "-c", definitions + "\n" + appleCloneScenario],
-        {
-          encoding: "utf8",
-          timeout: 10_000,
-        },
-      );
+      NodeChildProcess.execFileSync("python3", ["-I", "-"], {
+        input: definitions + "\n" + appleCloneScenario,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
     },
   );
 
@@ -174,14 +172,11 @@ describe("shared paired-state Python source", () => {
     "preserves environment identity and authority boundaries: %s",
     (fault) => {
       const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
-      NodeChildProcess.execFileSync(
-        "python3",
-        ["-c", definitions + "\n" + identityScenario, fault],
-        {
-          encoding: "utf8",
-          timeout: 10_000,
-        },
-      );
+      NodeChildProcess.execFileSync("python3", ["-", fault], {
+        input: definitions + "\n" + identityScenario,
+        encoding: "utf8",
+        timeout: 10_000,
+      });
     },
   );
 
@@ -192,15 +187,31 @@ describe("shared paired-state Python source", () => {
   });
 
   it("materializes the same executor for native qualification and TypeScript packaging", async () => {
-    const [executorText, pairedText] = await sourceTexts();
-    expect(PairedExecutorFixture.materializePairedExecutor(executorText, pairedText)).toBe(
-      jonesNativeHelperSource,
-    );
+    const [executorText, pairedText, signingText] = await sourceTexts();
+    expect(
+      PairedExecutorFixture.materializePairedExecutor(executorText, pairedText, signingText),
+    ).toBe(jonesNativeHelperSource);
     expect(await PairedExecutorFixture.readPairedExecutorSource()).toBe(jonesNativeHelperSource);
   });
 
   it("refuses missing, duplicate, unknown, and nonliteral substitutions", async () => {
-    const [executorText, pairedText] = await sourceTexts();
+    const [executorText, pairedText, signingText] = await sourceTexts();
+    for (const changed of [
+      signingText.replace("String.raw`", "String.raw`${unbound}"),
+      signingText + "unbound();",
+    ]) {
+      expect(() =>
+        PairedExecutorFixture.materializePairedExecutor(executorText, pairedText, changed),
+      ).toThrow();
+    }
+    for (const changed of [
+      executorText.replace("${jonesSigningSource}", ""),
+      executorText.replace("${jonesSigningSource}", "${jonesSigningSource}${jonesSigningSource}"),
+    ]) {
+      expect(() =>
+        PairedExecutorFixture.materializePairedExecutor(changed, pairedText, signingText),
+      ).toThrow();
+    }
     const reference = "${jonesPairedStateSource.syncTree}";
     for (const changed of [
       executorText.replace(reference, ""),
@@ -208,7 +219,9 @@ describe("shared paired-state Python source", () => {
       executorText.replace(reference, "${jonesPairedStateSource.unknown}"),
       executorText.replace(reference, () => reference + "${unbound}"),
     ])
-      expect(() => PairedExecutorFixture.materializePairedExecutor(changed, pairedText)).toThrow();
+      expect(() =>
+        PairedExecutorFixture.materializePairedExecutor(changed, pairedText, signingText),
+      ).toThrow();
     for (const changed of [
       pairedText.replace("syncTree: String.raw`", "syncTree: String.raw`${unbound}"),
       pairedText.replace("copyAndTopology: String.raw`", "unknown: String.raw`"),
@@ -216,7 +229,7 @@ describe("shared paired-state Python source", () => {
       pairedText.replace("} as const);", "} as const);\nunbound();"),
     ])
       expect(() =>
-        PairedExecutorFixture.materializePairedExecutor(executorText, changed),
+        PairedExecutorFixture.materializePairedExecutor(executorText, changed, signingText),
       ).toThrow();
   });
 });

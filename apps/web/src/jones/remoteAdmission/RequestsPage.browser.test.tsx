@@ -3,12 +3,17 @@ import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import { EnvironmentRequests, RequestsPage } from "./RequestsPage";
-import { admissionFixture, admissionSnapshot } from "./testFixtures";
+import { admissionFixture, admissionSnapshot, contextAdmissionFixture } from "./testFixtures";
 import { RemoteAdmissionCount } from "./RemoteAdmissionAttention";
 
 const request = vi.hoisted(() => vi.fn());
 let overviewIds: EnvironmentId[] = [];
 vi.mock("./runtime", () => ({ remoteAdmissionRequest: request }));
+vi.mock("../../state/entities", () => ({ useProject: () => null, useThreadShell: () => null }));
+vi.mock("../../hooks/useSettings", () => ({
+  useClientSettings: (select: (settings: { timestampFormat: string }) => unknown) =>
+    select({ timestampFormat: "12-hour" }),
+}));
 vi.mock("../../state/environments", () => ({
   useEnvironmentIds: () => overviewIds,
   useEnvironments: () => ({
@@ -56,6 +61,29 @@ it("reviews exact bound requests inline and never restores approval after a fail
       (button) => button.textContent === "Approve",
     ),
   ).toBe(false);
+});
+
+it("renders sender context through the real inbox caller and leaves receiver paths expanded only", async () => {
+  request.mockReset().mockResolvedValue(admissionSnapshot([contextAdmissionFixture()]));
+  await using screen = await render(
+    <TooltipProvider>
+      <EnvironmentRequests
+        environmentId={EnvironmentId.make("requests-context")}
+        label="Context receiver"
+      />
+    </TooltipProvider>,
+  );
+  const summary = screen.container.querySelector("summary")!;
+  expect(summary.textContent).toContain("From Authenticated laptop");
+  expect(summary.textContent).toContain("Sender project");
+  expect(summary.textContent).toContain("Sender parent");
+  expect(summary.textContent).toContain("Sender thread");
+  expect(summary.textContent).toContain("To synthetic-project / receiver-thread");
+  expect(summary.querySelector("time")?.dateTime).toBe("2026-10-24T11:59:00Z");
+  expect(summary.textContent).not.toContain("/synthetic/worktree");
+  await act(() => summary.click());
+  expect(screen.container.querySelector("strong")?.textContent).toBe("synthetic workspace");
+  expect(screen.container.textContent).toContain("/synthetic/worktree");
 });
 
 it("includes authorized linked receivers and shows inaccessible ones without asserting no requests", async () => {

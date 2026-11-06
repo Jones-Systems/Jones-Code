@@ -146,7 +146,7 @@ export const makeProviderFixture = () => {
           };
         }),
     },
-    build: Effect.succeed(Option.some(binding.build)),
+    build: Effect.succeedSome(binding.build),
     engine: {
       dispatch: (command) =>
         Effect.sync(() => {

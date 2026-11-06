@@ -27,7 +27,7 @@ export const validateVoiceReviewNativePlacementResult = (
   input: typeof T3PlacementResult.Type,
   now: number,
 ): typeof T3PlacementResult.Type => {
-  const result = Schema.decodeUnknownSync(T3PlacementResult)(input);
+  const result = Schema.decodeSync(T3PlacementResult)(input);
   const environments = new Map(
     result.trustedEnvironments.map(
       (environment) => [environment.environmentId, environment] as const,

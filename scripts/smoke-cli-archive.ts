@@ -41,14 +41,14 @@ const runExecutable = Effect.fn("runExecutable")(function* (
   executable: string,
   args: ReadonlyArray<string>,
   cwd: string,
+  environment: Readonly<Record<string, string>> = {},
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(
     ChildProcess.make(executable, args, {
       cwd,
-      // Empty PATH: the archive must not reach a system node, and the
-      // launcher context must not leak in from a developer shell.
-      env: { PATH: "", HOME: cwd, USERPROFILE: cwd, TMPDIR: cwd, TEMP: cwd },
+      // Isolate system Node and inherited launcher context from the archive smoke check.
+      env: { PATH: "", HOME: cwd, USERPROFILE: cwd, TMPDIR: cwd, TEMP: cwd, ...environment },
       extendEnv: false,
     }),
   );
@@ -67,21 +67,19 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const scratch = yield* fs.makeTempDirectory({ prefix: "t3-cli-smoke-" });
-  // Windows can keep t3.exe locked (EBUSY) for a moment after the server
-  // exits. A leftover scratch directory on a CI runner is harmless, so
-  // cleanup retries briefly and never fails a smoke test that passed.
+  const createdScratch = yield* fs.makeTempDirectory({ prefix: "t3-cli-smoke-" });
+  // Windows can briefly retain executable locks; cleanup retries but must not fail a successful smoke check.
   yield* Effect.addFinalizer(() =>
-    fs.remove(scratch, { recursive: true }).pipe(
+    fs.remove(createdScratch, { recursive: true }).pipe(
       Effect.retry({ times: 10, schedule: Schedule.spaced("500 millis") }),
       Effect.catch((error) =>
-        Effect.logWarning(`[cli-smoke] could not remove ${scratch}: ${error.message}`),
+        Effect.logWarning(`[cli-smoke] could not remove ${createdScratch}: ${error.message}`),
       ),
     ),
   );
+  const scratch = yield* fs.realPath(createdScratch);
 
-  // On Windows the archive is a zip and the Git Bash `tar` on PATH is GNU
-  // tar; use the bsdtar Windows ships, which reads both formats.
+  // Windows bsdtar reads zip; Git Bash's GNU tar does not.
   const tar = platform === "win32" ? windowsSystemTar() : "tar";
   const extract = yield* spawner
     .spawn(ChildProcess.make(tar, ["-xf", input.archive, "-C", scratch]))
@@ -118,6 +116,26 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     });
   }
 
+  const maintenanceHome = path.join(scratch, "maintenance-home");
+  const maintenance = yield* runExecutable(
+    executable,
+    ["__jones-reconcile-preparation", "--probe"],
+    contentDir,
+    { T3CODE_HOME: maintenanceHome },
+  ).pipe(Effect.timeout(Duration.seconds(5)));
+  if (
+    maintenance.exitCode !== 0 ||
+    maintenance.stderr !== "" ||
+    maintenance.stdout.trim() !==
+      '{"schema":1,"command":"__jones-reconcile-preparation","maintenanceOnly":true}' ||
+    (yield* fs.exists(maintenanceHome))
+  ) {
+    return yield* new CliArchiveSmokeError({
+      step: "probing standalone preparation maintenance",
+      detail: "the private command did not exit cleanly without server initialization",
+    });
+  }
+
   const net = yield* NetService.NetService;
   const port = yield* net.findAvailablePort(47700);
   const home = path.join(scratch, "home");
@@ -134,6 +152,9 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
           TMPDIR: scratch,
           TEMP: scratch,
           T3CODE_HOME: home,
+          // The archive has a release channel built in, so its events would
+          // look like a real new install.
+          T3CODE_TELEMETRY_ENABLED: "false",
         },
         extendEnv: false,
       },
@@ -143,8 +164,7 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     Effect.all([collect(server.stdout), collect(server.stderr)]),
   );
   const httpClient = yield* HttpClient.HttpClient;
-  // A request that connects while the server is still initializing can hang,
-  // so each probe gets its own deadline, like the SSH readiness probe.
+  // Probes can hang during server initialization; bound each request as SSH readiness does.
   const probe = httpClient.execute(HttpClientRequest.get(`http://127.0.0.1:${String(port)}/`)).pipe(
     Effect.map((response) => response.status === 200),
     Effect.timeout(Duration.seconds(2)),

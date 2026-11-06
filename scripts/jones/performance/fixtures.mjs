@@ -351,6 +351,11 @@ export function fixtureCustodyReceipt(receipt) {
   if (receipt?.schema === "jones-performance-fixture/v1") return receipt;
   if (receipt?.schema !== "jones-performance-fixture/v2" || receipt.producer !== "current-v2")
     fail("invalid_receipt", "unsupported fixture producer receipt");
-  const { producer, databaseSource, runtime, ...custody } = receipt;
+  const {
+    producer: _producer,
+    databaseSource: _databaseSource,
+    runtime: _runtime,
+    ...custody
+  } = receipt;
   return { ...custody, schema: "jones-performance-fixture/v1" };
 }

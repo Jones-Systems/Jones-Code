@@ -1,3 +1,4 @@
+import { userEvent } from "vite-plus/test/browser";
 import { act, render as renderTest, type Screen, fakeTimers } from "../../../test/render";
 import { readPreparedConnection } from "../../state/session";
 import { readThreadShell } from "../../state/entities";
@@ -141,6 +142,7 @@ function Harness({
           existing[id],
           value,
           questions.find((q) => q.id === id),
+          { notes: capability === "message" },
         ),
       })),
     onPrevious: () => setIndex((i) => Math.max(0, i - 1)),
@@ -171,6 +173,7 @@ function Harness({
           attachmentCapabilities={capabilities}
           answers={resolvedDrafts}
           questionIndex={index}
+          onSelectQuestion={setIndex}
           {...cardCallbacks}
           onToggleOption={(id, value) =>
             setAnswers((existing) => ({
@@ -179,13 +182,16 @@ function Harness({
                 questions.find((q) => q.id === id)!,
                 existing[id],
                 value,
+                { notes: capability === "message" },
               ),
             }))
           }
           onAdvance={() => {
             if (index < questions.length - 1) setIndex(index + 1);
             else {
-              const result = buildPendingUserInputAnswers(questions, resolvedDrafts);
+              const result = buildPendingUserInputAnswers(questions, resolvedDrafts, {
+                notes: capability === "message",
+              });
               if (!result) return;
               setResult(
                 Object.fromEntries(
@@ -337,7 +343,7 @@ it("ignores digits, Shift+Enter and IME while typing, then submits once with Ent
   expect(output("messages")).toBe("[]");
 });
 
-it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter", async (value) => {
+it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Enter", async (value) => {
   await using _fixture = await setupTest();
   await act(
     async () =>
@@ -347,14 +353,44 @@ it.each(["  literal\n  ", ""])("sends literal answer %j exactly with Mod+Enter",
   );
   expect(answerField().value).toBe("  original\n  ");
   await typeAnswer(value);
-  expect((await key({})).defaultPrevented).toBe(false);
-  expect(output("answer")).toBe("null");
-  await key({ ctrlKey: true });
+  expect((await key({})).defaultPrevented).toBe(true);
   expect(output("answer")).toBe(JSON.stringify({ approach: value }));
   expect(output("messages")).toBe("[]");
 });
 
-it("keeps each answer across Next, Back, minimize and restore", async () => {
+it.each(["live", "message"] as const)(
+  "saves each %s free-form answer with Enter, advances one question, and sends on the last",
+  async (capability) => {
+    await using _fixture = await setupTest();
+    const questions = [0, 1, 2].map((index) => ({
+      ...question,
+      id: `question-${index}`,
+      header: `Question ${index + 1}`,
+      options: [],
+      initialAnswer: "",
+    }));
+    await act(async () => root.rerender(<Harness questions={questions} capability={capability} />));
+    for (const [index, answer] of ["First answer", "Second answer", "Third answer"].entries()) {
+      expect(container.textContent).toContain(`${index + 1}/3`);
+      await typeAnswer(answer);
+      expect((await key({})).defaultPrevented).toBe(true);
+      if (index < 2) {
+        expect(output("answer")).toBe("null");
+        expect(answerField().value).toBe("");
+      }
+    }
+    expect(output("answer")).toBe(
+      JSON.stringify({
+        "question-0": "First answer",
+        "question-1": "Second answer",
+        "question-2": "Third answer",
+      }),
+    );
+    expect(output("messages")).toBe("[]");
+  },
+);
+
+it("keeps each answer across Continue, Back, minimize and restore", async () => {
   await using _fixture = await setupTest();
   await act(
     async () =>
@@ -363,7 +399,7 @@ it("keeps each answer across Next, Back, minimize and restore", async () => {
       ),
   );
   await typeAnswer("First answer");
-  await act(async () => button("Next").click());
+  await act(async () => button("Continue").click());
   await typeAnswer("Second answer");
   await act(async () => button("Back").click());
   expect(answerField().value).toBe("First answer");
@@ -378,24 +414,28 @@ it("keeps each answer across Next, Back, minimize and restore", async () => {
       .click(),
   );
   expect(answerField().value).toBe("First answer");
-  await act(async () => button("Next").click());
+  await act(async () => button("Continue").click());
   expect(answerField().value).toBe("Second answer");
   await act(async () => button("Send").click());
   expect(output("answer")).toBe('{"approach":"First answer","second":"Second answer"}');
   expect(output("messages")).toBe("[]");
 });
 
-it("choosing an option replaces the custom answer and auto-submits without sending a message", async () => {
+it("choosing a live option replaces custom text but waits for explicit Send", async () => {
   await using _fixture = await setupTest();
   using _timers = fakeTimers();
   await act(async () => await root.rerender(<Harness />));
   await typeAnswer("Discard this answer");
+  expect(container.textContent).not.toContain("Your answer");
+  expect(container.textContent).toContain("Typing replaces your choice");
   const option = [...container.querySelectorAll("button")].find((b) =>
     b.textContent?.includes("Incremental"),
   )!;
   await act(async () => option.click());
   expect(answerField().value).toBe("");
   await act(async () => vi.advanceTimersByTime(200));
+  expect(output("answer")).toBe("null");
+  await act(async () => button("Send").click());
   expect(output("answer")).toBe('{"approach":"Incremental"}');
   expect(output("messages")).toBe("[]");
   expect(container.querySelector<HTMLTextAreaElement>('[aria-label="Thread message"]')!.value).toBe(
@@ -403,7 +443,7 @@ it("choosing an option replaces the custom answer and auto-submits without sendi
   );
 });
 
-it("typing cancels a pending option auto-advance", async () => {
+it("typing replaces a live choice without advancing or sending", async () => {
   await using _fixture = await setupTest();
   using _timers = fakeTimers();
   await act(async () => await root.rerender(<Harness />));
@@ -437,10 +477,8 @@ it.each([false, true])(
         .click(),
     );
     await act(async () => vi.advanceTimersByTime(200));
-    if (multiSelect) {
-      expect(output("answer")).toBe("null");
-      await act(async () => button("Send").click());
-    }
+    expect(output("answer")).toBe("null");
+    await act(async () => button("Send").click());
     expect(output("answer")).toBe(
       JSON.stringify({ approach: multiSelect ? ["Incremental"] : "Incremental" }),
     );
@@ -1019,4 +1057,101 @@ it("does not apply a capture after its question component unmounts", async () =>
     threadContextRecord(ref, "Late thread"),
   ]);
   expect(useQuestionAttachmentPreparation.getState().counts[target]).toBe(0);
+});
+
+it("jumps freely with native sibling buttons, expands the current collapsed question and preserves drafts", async () => {
+  await using _fixture = await setupTest();
+  await act(async () =>
+    root.rerender(
+      <Harness
+        capability="message"
+        dismissible
+        questions={[question, { ...question, id: "second" }, { ...question, id: "last" }]}
+      />,
+    ),
+  );
+  await typeAnswer("First draft");
+  const dot = (i: number) =>
+    container.querySelector<HTMLButtonElement>(`button[aria-label^="Question ${i} of 3,"]`)!;
+  expect(
+    container.querySelector("button button, button textarea, button a, button [role=button]"),
+  ).toBeNull();
+  const collapse = () =>
+    container.querySelector<HTMLButtonElement>("[data-pending-user-input-toggle]")!;
+  await act(() => collapse().click());
+  expect(collapse().getAttribute("data-pending-user-input-toggle")).toBe("collapsed");
+  await act(() => dot(1).focus());
+  await userEvent.keyboard("{Enter}");
+  expect(collapse().getAttribute("data-pending-user-input-toggle")).toBe("expanded");
+  expect(document.activeElement).toBe(dot(1));
+  await userEvent.keyboard("{Tab}");
+  expect(document.activeElement).toBe(dot(2));
+  await userEvent.keyboard(" ");
+  expect(document.activeElement).toBe(dot(2));
+  expect(dot(2).getAttribute("aria-current")).toBe("step");
+  expect(answerField().value).toBe("");
+  await act(() => dot(3).click());
+  expect(button("Send").getAttribute("aria-disabled")).toBe("true");
+  const reason = container.querySelector(
+    `#${CSS.escape(button("Send").getAttribute("aria-describedby")!)}`,
+  );
+  expect(reason?.textContent).toBe("Answer question 2 to send · 1 of 3 answered");
+  await act(() => button("Send").click());
+  await act(() => button("Send").focus());
+  await userEvent.keyboard("{Enter} ");
+  expect(output("answer")).toBe("null");
+  await act(() => dot(1).click());
+  expect(answerField().value).toBe("First draft");
+  await act(() => button("Continue").click());
+  await typeAnswer("Second draft");
+  await act(() => dot(3).click());
+  await typeAnswer("Last draft");
+  await act(() => button("Send").click());
+  expect(output("answer")).toBe(
+    JSON.stringify({ approach: "First draft", second: "Second draft", last: "Last draft" }),
+  );
+});
+
+it("clears the selected choice by clicking it again and preserves multiline text", async () => {
+  await using _fixture = await setupTest();
+  using _timers = fakeTimers();
+  await act(async () => root.rerender(<Harness capability="message" />));
+  await act(() =>
+    container.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!.click(),
+  );
+  await act(() => vi.advanceTimersByTime(500));
+  expect(output("answer")).toBe("null");
+  await typeAnswer("First line\nSecond line");
+  expect(container.textContent).not.toContain("Note (optional): sent with your choice");
+  expect(container.textContent).not.toContain("Clear choice");
+  expect(answerField().value).toBe("First line\nSecond line");
+  expect(container.textContent).not.toContain("Sends:");
+  expect(container.querySelector('[role="status"]')).toBeNull();
+  expect((await key({ shiftKey: true })).defaultPrevented).toBe(false);
+  expect(output("answer")).toBe("null");
+  await act(() =>
+    container.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')!.click(),
+  );
+  expect(answerField().value).toBe("First line\nSecond line");
+  expect(container.querySelector('button[aria-pressed="true"]')).toBeNull();
+  expect((await key({})).defaultPrevented).toBe(true);
+  expect(output("answer")).toBe(JSON.stringify({ approach: "First line\nSecond line" }));
+});
+
+it("inserts a newline with Shift+Enter and sends its choice and note with Enter", async () => {
+  await using _fixture = await setupTest();
+  await act(async () => root.rerender(<Harness capability="message" />));
+  await act(() =>
+    container.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!.click(),
+  );
+  await typeAnswer("First paragraph");
+  await act(() => answerField().focus());
+  answerField().setSelectionRange(answerField().value.length, answerField().value.length);
+  await userEvent.keyboard("{Shift>}{Enter}{/Shift}Second paragraph");
+  expect(answerField().value).toBe("First paragraph\nSecond paragraph");
+  expect(output("answer")).toBe("null");
+  await userEvent.keyboard("{Enter}");
+  expect(output("answer")).toBe(
+    JSON.stringify({ approach: "Incremental\nNote: First paragraph\nSecond paragraph" }),
+  );
 });

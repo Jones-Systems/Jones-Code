@@ -3,12 +3,9 @@ import * as Schema from "effect/Schema";
 import { ProjectId, TrimmedNonEmptyString } from "../baseSchemas.ts";
 
 /**
- * Checkout a delegated child is bound to before it starts. The child remains an
- * app-owned subagent of the caller (its own provider session, recorded in the
- * caller's lineage); this only selects where it runs. These are the
- * `t3_thread_launch` worktree members. `root` is omitted because a delegated
- * child without a strategy shares the caller's checkout, and the project's main
- * checkout is already one of the project's git worktrees.
+ * Bind the child checkout before launch without changing its app-owned subagent session or lineage.
+ * These are t3_thread_launch worktree strategies without root: omitting a strategy shares
+ * the caller's checkout, and the project's main checkout is already a Git worktree.
  */
 export const DelegatedTaskWorkspaceStrategy = Schema.Union([
   Schema.Struct({

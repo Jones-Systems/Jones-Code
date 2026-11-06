@@ -1,8 +1,5 @@
 import { buildAppIdentityInstructions } from "@t3tools/provider-core/server/jones/AppIdentity";
-/**
- * Do not import t3code modules from the string body. The Pi process resolves
- * `@earendil-works/pi-coding-agent` and `typebox` from the user's pi install.
- */
+// No T3 imports inside the string; resolve Pi and typebox from the user's Pi install.
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 
 export const PI_T3_MCP_EXTENSION_FILENAME = "pi-t3-mcp-extension.ts";
@@ -12,10 +9,7 @@ export const T3_MCP_BEARER_ENV = "T3_MCP_BEARER_TOKEN";
 export const T3_PI_RUNTIME_MODE_ENV = "T3_PI_RUNTIME_MODE";
 export const T3_PI_MCP_EXTENSION_PATH_ENV = "T3_PI_MCP_EXTENSION_PATH";
 
-/**
- * Pi tools whose confirmations the bridge raises as file-change approvals.
- * Auto-accept edits skips them; the adapter keys the approval kind off them.
- */
+// These tools trigger file-change approvals, bypassed by Auto-accept edits.
 export const PI_FILE_CHANGE_TOOLS = ["edit", "write"] as const;
 
 export const PI_T3_MCP_EXTENSION_SOURCE = `\
@@ -341,16 +335,17 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     }
   });
 
-  // Use Pi's system-prompt channel: wrapping the user message breaks slash commands.
-  // Identity is always present; MCP guidance is conditional on the attached bridge.
-  pi.on("before_agent_start", (event) => ({
-    systemPrompt: event.systemPrompt + "\\n\\n" + APP_IDENTITY_INSTRUCTIONS +
-      (env(URL_ENV) && env(TOKEN_ENV) ? "\\n\\n" + ORCHESTRATION_INSTRUCTIONS : ""),
-  }));
-
   const endpoint = env(URL_ENV);
   const token = env(TOKEN_ENV);
   if (endpoint === undefined || token === undefined) {
+    pi.on("before_agent_start", (event) => {
+      const sections = event.systemPromptOptions?.sections;
+      if (sections && typeof sections === "object" && event.systemPromptOptions?.forceSystemPrompt === undefined) {
+        sections.t3_code_app_identity = APP_IDENTITY_INSTRUCTIONS;
+        return undefined;
+      }
+      return { systemPrompt: event.systemPrompt + "\\n\\n" + APP_IDENTITY_INSTRUCTIONS };
+    });
     pi.on("session_start", async (_event, ctx) => {
       ctx.ui.notify(
         "t3-code MCP unavailable: T3_MCP_URL or T3_MCP_BEARER_TOKEN is missing.",
@@ -469,10 +464,11 @@ export default async function t3McpExtension(pi: ExtensionAPI) {
     const sections = event.systemPromptOptions?.sections;
     if (sections && typeof sections === "object" && event.systemPromptOptions?.forceSystemPrompt === undefined) {
       // A full prompt override bypasses Pi's later section rendering.
+      sections.t3_code_app_identity = APP_IDENTITY_INSTRUCTIONS;
       sections.t3_code_orchestration = ORCHESTRATION_INSTRUCTIONS;
       return undefined;
     }
-    return { systemPrompt: event.systemPrompt + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS };
+    return { systemPrompt: event.systemPrompt + "\\n\\n" + APP_IDENTITY_INSTRUCTIONS + "\\n\\n" + ORCHESTRATION_INSTRUCTIONS };
   });
 }
 `;

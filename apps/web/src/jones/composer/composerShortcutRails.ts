@@ -108,6 +108,7 @@ export function useComposerShortcutRails(input: {
   };
 
   const measuredContent = useRef(contentKey);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Remeasure composer rails after committed content changes alter their geometry.
   useLayoutEffect(() => {
     if (measuredContent.current !== contentKey) {
       measuredContent.current = contentKey;
@@ -115,6 +116,7 @@ export function useComposerShortcutRails(input: {
     }
   }, [contentKey, measure]);
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own resize and font-loading subscriptions for composer rail geometry and release them on unmount.
   useLayoutEffect(() => {
     measure();
     if (typeof ResizeObserver === "undefined") return;

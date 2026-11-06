@@ -8,12 +8,15 @@ import {
   ClientSettingsPatch,
   ClaudeSettings,
   DEFAULT_SERVER_SETTINGS,
+  globalIdleCompaction,
+  idleCompactionPatch,
   requiredScopesForProjectMutation,
   resolveIdleCompaction,
   resolveProjectProviderInstanceEnabled,
   resolveProviderInstanceEnabled,
   ServerSettings,
   ServerSettingsPatch,
+  withIdleCompaction,
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
@@ -25,9 +28,37 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 describe("storage cleanup settings", () => {
+  it("decodes older settings without enabling retirement and accepts additive covered classes", () => {
+    const legacy = decodeServerSettings({ storageCleanup: { worktreeSettledAfterDays: null } });
+    expect(legacy.storageCleanup.worktreeSettledScope).toBe("branch-retained");
+    expect(legacy.storageCleanup.worktreeCoveredDiscard).toEqual([]);
+    expect(legacy.storageCleanup.worktreeSettledAfterDays).toBeNull();
+    expect(
+      decodeServerSettingsPatch({ storageCleanup: { worktreeCoveredDiscard: ["declared_cache"] } })
+        .storageCleanup?.worktreeCoveredDiscard,
+    ).toEqual(["declared_cache"]);
+  });
+
+  it("decodes explicit install retention modes and rejects unknown modes", () => {
+    for (const installRetention of ["propose", "retire"] as const) {
+      expect(
+        decodeServerSettings({ storageCleanup: { installRetention } }).storageCleanup
+          .installRetention,
+      ).toBe(installRetention);
+      expect(decodeServerSettingsPatch({ storageCleanup: { installRetention } })).toEqual({
+        storageCleanup: { installRetention },
+      });
+    }
+    expect(() =>
+      decodeServerSettingsPatch({ storageCleanup: { installRetention: "age-only" } }),
+    ).toThrow();
+  });
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
     expect(decodeServerSettings({}).storageCleanup).toEqual({
+      installRetention: "propose",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
       worktreeOnMerge: false,
@@ -138,7 +169,7 @@ describe("custom model settings", () => {
 describe("resolveIdleCompaction", () => {
   it("lets a Claude instance override the global default", () => {
     const settings = decodeServerSettings({
-      compactIdleThreads: "off",
+      idleCompaction: "off",
       providerInstances: {
         claude_work: { driver: "claudeAgent", config: { idleCompaction: "onReturn" } },
         claude_personal: { driver: "claudeAgent" },
@@ -151,11 +182,38 @@ describe("resolveIdleCompaction", () => {
     expect(resolveIdleCompaction(settings, ProviderInstanceId.make("claudeAgent"))).toBe("off");
   });
 
-  it("keeps the legacy beta switch's behavior", () => {
-    expect(decodeServerSettings({ compactIdleThreads: true }).compactIdleThreads).toBe(
+  it("reads the mode from the legacy switch, in either form servers saved it", () => {
+    expect(globalIdleCompaction(decodeServerSettings({ compactIdleThreads: true }))).toBe(
       "beforeCacheExpires",
     );
-    expect(decodeServerSettings({}).compactIdleThreads).toBe("onReturn");
+    expect(globalIdleCompaction(decodeServerSettings({ compactIdleThreads: "off" }))).toBe("off");
+    expect(globalIdleCompaction(decodeServerSettings({}))).toBe("onReturn");
+  });
+
+  it("keeps the legacy switch a boolean, as shipped clients decode it", () => {
+    const encode = Schema.encodeSync(Schema.toCodecJson(ServerSettings));
+    for (const mode of ["onReturn", "beforeCacheExpires", "off"] as const) {
+      const encoded = encode(withIdleCompaction(DEFAULT_SERVER_SETTINGS, mode)) as {
+        readonly compactIdleThreads: unknown;
+        readonly idleCompaction: unknown;
+      };
+      expect(encoded.compactIdleThreads).toBe(mode === "beforeCacheExpires");
+      expect(encoded.idleCompaction).toBe(mode);
+    }
+  });
+
+  it("patches the field the server reads", () => {
+    expect(
+      idleCompactionPatch({ compactIdleThreads: false, idleCompaction: "onReturn" }, "off"),
+    ).toEqual({
+      idleCompaction: "off",
+    });
+    expect(idleCompactionPatch({ compactIdleThreads: "onReturn" }, "off")).toEqual({
+      compactIdleThreads: "off",
+    });
+    expect(idleCompactionPatch({ compactIdleThreads: false }, "beforeCacheExpires")).toEqual({
+      compactIdleThreads: true,
+    });
   });
 });
 

@@ -22,6 +22,7 @@ export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
   const [revision, setRevision] = useState(0);
   const current = useRef({ key, revision });
   const latest = useRef(data);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed appearance authority and registry data before pending reads can accept results.
   useLayoutEffect(() => {
     current.current = { key, revision };
     latest.current = data;
@@ -31,6 +32,7 @@ export function useWorkstreamAppearance(data: T3WorkstreamListResult | null) {
     writable: boolean;
     colors: ReadonlyMap<string, WorkstreamAppearance>;
   }>({ key: null, writable: false, colors: new Map() });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own appearance reads and refresh listeners, aborting them when their registry owner retires.
   useEffect(() => {
     const data = latest.current;
     if (!data || !key) return;

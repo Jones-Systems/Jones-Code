@@ -5,6 +5,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EnvironmentId,
+  PREVIEW_AUTOMATION_SERVER_OPERATIONS,
   PreviewAutomationClientDisconnectedError,
   PreviewAutomationMalformedResponseError,
   PreviewAutomationNoAvailableHostError,
@@ -12,7 +13,9 @@ import {
   ProviderInstanceId,
   ThreadId,
   type PreviewAutomationHost,
+  type PreviewAutomationRecordingStatus,
   type PreviewAutomationRequest,
+  type PreviewAutomationSnapshot,
   type PreviewAutomationStreamEvent,
   SERVER_BROWSER_AUTOMATION_CLIENT_ID,
 } from "@t3tools/contracts";
@@ -20,6 +23,8 @@ import * as Effect from "effect/Effect";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
+import * as Queue from "effect/Queue";
+import * as Scheduler from "effect/Scheduler";
 import * as Stream from "effect/Stream";
 
 import * as PreviewAutomationBroker from "./PreviewAutomationBroker.ts";
@@ -131,7 +136,7 @@ it.effect("targets multiple tabs explicitly while retaining a default tab", () =
 
       expect(routedRequests).toHaveLength(5);
       expect(routedRequests[0]?.tabId).toBeUndefined();
-      expect(routedRequests[1]?.tabId).toBe(appTabId);
+      expect(routedRequests[1]?.tabId).toBeUndefined();
       expect(routedRequests[2]?.tabId).toBe(simulatorTabId);
       expect(routedRequests[2]?.tabIdExplicit).toBe(false);
       expect(routedRequests[3]?.tabId).toBe(appTabId);
@@ -1048,7 +1053,6 @@ it.effect("keeps each thread's current tab when threads share a provider session
         ["thread-1", "tab-thread-1"],
         ["thread-2", "tab-thread-2"],
       ]);
-      // Each thread's agent owns its own tabs and tab budget.
       expect(routed[0]!.agentSessionId).not.toBe(routed[1]!.agentSessionId);
     }),
   ),
@@ -1621,6 +1625,311 @@ it.effect("an exact late unknown reply retains quarantine until a settled reply 
   ),
 );
 
+it.effect.each(["expiry", "cap eviction"] as const)(
+  "reconciles recording quarantine from the original settled reply after tombstone %s",
+  (retentionLoss) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const received = yield* Deferred.make<RoutedRequest>();
+        const overflowReceived = yield* Deferred.make<void>();
+        const tabId = PreviewTabId.make("recording-tab");
+        const routed: RoutedRequest[] = [];
+        let overflowRequests = 0;
+        const recording: PreviewAutomationRecordingStatus = {
+          tabId,
+          recording: true,
+          startedAt: "2026-10-26T00:00:00.000Z",
+        };
+        const snapshot: PreviewAutomationSnapshot = {
+          url: "http://localhost:3200",
+          title: "Recording tab",
+          loading: false,
+          visibleText: "Recording tab",
+          interactiveElements: [],
+          accessibilityTree: null,
+          consoleEntries: [],
+          networkEntries: [],
+          actionTimeline: [],
+          screenshot: {
+            mimeType: "image/png",
+            data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=",
+            width: 1,
+            height: 1,
+          },
+        };
+        yield* Stream.runForEach(
+          requestsFrom(yield* broker.connect(makeHost({ supportsSnapshotBarrier: true }))),
+          (request) => {
+            routed.push(request);
+            if (request.operation === "recordingStart") return Deferred.succeed(received, request);
+            if (request.operation === "waitFor") {
+              overflowRequests++;
+              return overflowRequests === 256
+                ? Deferred.succeed(overflowReceived, undefined)
+                : Effect.void;
+            }
+            return broker.respond({
+              clientId: "client-1",
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result:
+                request.operation === "snapshot"
+                  ? snapshot
+                  : request.operation === "click"
+                    ? "dispatched"
+                    : { available: true, tabId },
+            });
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        const expired = yield* broker
+          .invoke({
+            scope,
+            operation: "recordingStart",
+            tabId,
+            input: {},
+            timeoutMs: 100,
+            failurePolicy: "request_only",
+          })
+          .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+        const original = yield* Deferred.await(received);
+        yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
+        yield* TestClock.adjust(1100);
+        expect(yield* Fiber.join(expired)).toMatchObject({
+          _tag: "PreviewAutomationTimeoutError",
+          operation: "recordingStart",
+          requestId: original.requestId,
+          connectionId: original.connectionId,
+          tabId,
+          outcome: "unknown",
+        });
+
+        const expectFenced = Effect.gen(function* () {
+          const dispatched = routed.length;
+          expect(
+            yield* broker
+              .invoke({ scope, operation: "click", tabId, input: {} })
+              .pipe(Effect.flip, Effect.orDie),
+          ).toMatchObject({
+            _tag: "PreviewAutomationTimeoutError",
+            outcome: "not_started",
+            unreconciled: true,
+            tabId,
+          });
+          expect(routed).toHaveLength(dispatched);
+        });
+        yield* expectFenced;
+
+        if (retentionLoss === "expiry") {
+          yield* TestClock.adjust(60_001);
+        } else {
+          const overflow = yield* Effect.forEach(
+            Array.from({ length: 256 }),
+            () =>
+              broker
+                .invoke({
+                  scope,
+                  operation: "waitFor",
+                  tabId,
+                  input: {},
+                  timeoutMs: 100,
+                  failurePolicy: "request_only",
+                })
+                .pipe(Effect.flip, Effect.orDie),
+            { concurrency: "unbounded" },
+          ).pipe(Effect.forkScoped);
+          yield* Deferred.await(overflowReceived);
+          yield* TestClock.adjust(1100);
+          for (const error of yield* Fiber.join(overflow)) {
+            expect(error).toMatchObject({
+              _tag: "PreviewAutomationTimeoutError",
+              operation: "waitFor",
+              outcome: "unknown",
+            });
+          }
+        }
+        yield* expectFenced;
+
+        const settled = {
+          clientId: "client-1",
+          connectionId: original.connectionId,
+          requestId: original.requestId,
+          ok: true,
+          result: recording,
+        };
+        for (const mismatch of [
+          { clientId: "client-foreign" },
+          { connectionId: "connection-stale" },
+          { requestId: "request-never-dispatched" },
+        ]) {
+          yield* broker.respond({ ...settled, ...mismatch });
+          yield* expectFenced;
+        }
+        yield* broker.respond({
+          clientId: settled.clientId,
+          connectionId: settled.connectionId,
+          requestId: settled.requestId,
+          ok: false,
+          error: {
+            _tag: "PreviewAutomationTimeoutError",
+            message: "Recording start outcome remains unknown",
+            outcome: "unknown",
+          },
+        });
+        yield* expectFenced;
+        yield* broker.respond({
+          clientId: settled.clientId,
+          connectionId: settled.connectionId,
+          requestId: settled.requestId,
+          ok: false,
+        });
+        yield* expectFenced;
+        expect(yield* broker.invoke({ scope, operation: "snapshot", tabId, input: {} })).toEqual(
+          snapshot,
+        );
+        yield* expectFenced;
+
+        yield* broker.respond(settled);
+        expect(yield* broker.invoke<string>({ scope, operation: "click", tabId, input: {} })).toBe(
+          "dispatched",
+        );
+        expect(routed.filter((request) => request.operation === "click")).toHaveLength(1);
+        expect(routed.at(-1)).toMatchObject({
+          operation: "click",
+          tabId,
+          connectionId: original.connectionId,
+        });
+      }),
+    ),
+);
+
+it.effect(
+  "reconciles an expired recording only from its original connection after replacement",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const broker = yield* makeBroker;
+        const received = yield* Deferred.make<RoutedRequest>();
+        const tabId = PreviewTabId.make("replaced-recording-tab");
+        const originalRequests: RoutedRequest[] = [];
+        const replacementRequests: RoutedRequest[] = [];
+        const recording: PreviewAutomationRecordingStatus = {
+          tabId,
+          recording: true,
+          startedAt: "2026-10-26T00:00:00.000Z",
+        };
+        yield* Stream.runForEach(
+          requestsFrom(yield* broker.connect(makeHost({ runtimeIdentity: testRuntimeIdentity }))),
+          (request) => {
+            originalRequests.push(request);
+            if (request.operation === "recordingStart") return Deferred.succeed(received, request);
+            return broker.respond({
+              clientId: "client-1",
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result: { available: true, tabId },
+            });
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+
+        const expired = yield* broker
+          .invoke({
+            scope,
+            operation: "recordingStart",
+            tabId,
+            input: {},
+            timeoutMs: 100,
+            failurePolicy: "request_only",
+          })
+          .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+        const original = yield* Deferred.await(received);
+        yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
+        yield* TestClock.adjust(1100);
+        expect(yield* Fiber.join(expired)).toMatchObject({
+          _tag: "PreviewAutomationTimeoutError",
+          operation: "recordingStart",
+          requestId: original.requestId,
+          connectionId: original.connectionId,
+          tabId,
+          outcome: "unknown",
+        });
+
+        let replacementConnectionId = "";
+        yield* Stream.runForEach(
+          requestsFrom(
+            yield* broker.connect(makeHost({ runtimeIdentity: testRuntimeIdentity })),
+            (id) => {
+              replacementConnectionId = id;
+            },
+          ),
+          (request) => {
+            replacementRequests.push(request);
+            return broker.respond({
+              clientId: "client-1",
+              connectionId: request.connectionId,
+              requestId: request.requestId,
+              ok: true,
+              result: "dispatched",
+            });
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        expect(replacementConnectionId).not.toBe("");
+        expect(replacementConnectionId).not.toBe(original.connectionId);
+        yield* TestClock.adjust(60_001);
+
+        const expectFenced = Effect.gen(function* () {
+          expect(
+            yield* broker
+              .invoke({ scope, operation: "click", tabId, input: {} })
+              .pipe(Effect.flip, Effect.orDie),
+          ).toMatchObject({
+            _tag: "PreviewAutomationTimeoutError",
+            outcome: "not_started",
+            unreconciled: true,
+            tabId,
+          });
+          expect(replacementRequests).toHaveLength(0);
+          expect(originalRequests.filter((request) => request.operation === "click")).toHaveLength(
+            0,
+          );
+        });
+        yield* expectFenced;
+        yield* broker.respond({
+          clientId: "client-1",
+          connectionId: replacementConnectionId,
+          requestId: original.requestId,
+          ok: true,
+          result: recording,
+        });
+        yield* expectFenced;
+
+        yield* broker.respond({
+          clientId: "client-1",
+          connectionId: original.connectionId,
+          requestId: original.requestId,
+          ok: true,
+          result: recording,
+        });
+        expect(yield* broker.invoke<string>({ scope, operation: "click", tabId, input: {} })).toBe(
+          "dispatched",
+        );
+        expect(replacementRequests).toHaveLength(1);
+        expect(replacementRequests[0]).toMatchObject({
+          operation: "click",
+          tabId,
+          connectionId: replacementConnectionId,
+        });
+        expect(originalRequests.filter((request) => request.operation === "click")).toHaveLength(0);
+      }),
+    ),
+);
+
 it.effect.each(["stable", "reattached", "detached", "headless"] as const)(
   "captures request-target runtime evidence and invalidates a %s attachment",
   (mode) =>
@@ -1715,8 +2024,12 @@ it.effect(
           .invoke({ scope, operation: "evaluate", input: {} })
           .pipe(Effect.flip, Effect.orDie);
         expect(detached).toMatchObject({
-          _tag: "PreviewAutomationRequestQueueClosedError",
-          outcome: "not_started",
+          _tag: "PreviewAutomationNoAvailableHostError",
+          operation: "evaluate",
+          reconnecting: true,
+          clientId: "client-1",
+          tabId,
+          timeoutMs: 15_000,
         });
         expect(dispatched).toBe(1);
         evidence = {
@@ -1726,7 +2039,11 @@ it.effect(
         const replaced = yield* broker
           .invoke({ scope, operation: "evaluate", input: {} })
           .pipe(Effect.flip, Effect.orDie);
-        expect(replaced).toMatchObject({ outcome: "not_started" });
+        expect(replaced).toMatchObject({
+          _tag: "PreviewAutomationNoAvailableHostError",
+          reconnecting: true,
+          tabId,
+        });
         expect(dispatched).toBe(1);
         evidence = { runtimeIdentity: identity, attachmentGeneration: 3 };
         yield* broker.invoke({ scope, operation: "status", tabId, input: {} });
@@ -1743,6 +2060,66 @@ it.effect(
         expect(dispatched).toBe(3);
       }),
     ),
+);
+
+it.effect("reports a spent pre-dispatch budget without delivery or quarantine", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const broker = yield* makeBroker;
+      const resolving = yield* Deferred.make<void>();
+      const tabId = PreviewTabId.make("pre-dispatch-budget-tab");
+      const routed: RoutedRequest[] = [];
+      let slow = true;
+      yield* Stream.runForEach(
+        requestsFrom(
+          yield* broker.connect(makeHost(), {
+            resolveRuntimeEvidence: () =>
+              Effect.gen(function* () {
+                if (slow) {
+                  yield* Deferred.succeed(resolving, undefined);
+                  yield* Effect.sleep(200);
+                }
+                return { runtimeIdentity: testRuntimeIdentity, attachmentGeneration: 1 };
+              }),
+          }),
+        ),
+        (request) => {
+          routed.push(request);
+          return broker.respond({
+            clientId: "client-1",
+            connectionId: request.connectionId,
+            requestId: request.requestId,
+            ok: true,
+            result: "dispatched",
+          });
+        },
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+
+      const expired = yield* broker
+        .invoke({ scope, operation: "click", tabId, input: {}, timeoutMs: 100 })
+        .pipe(Effect.flip, Effect.orDie, Effect.forkScoped);
+      yield* Deferred.await(resolving);
+      yield* TestClock.adjust(200);
+      const error = yield* Fiber.join(expired);
+      expect(error).toMatchObject({
+        _tag: "PreviewAutomationTimeoutError",
+        operation: "click",
+        tabId,
+        timeoutMs: 100,
+        outcome: "not_started",
+      });
+      expect(error).not.toHaveProperty("unreconciled", true);
+      expect(routed).toHaveLength(0);
+
+      slow = false;
+      expect(yield* broker.invoke<string>({ scope, operation: "click", tabId, input: {} })).toBe(
+        "dispatched",
+      );
+      expect(routed).toHaveLength(1);
+      expect(routed[0]).toMatchObject({ operation: "click", tabId });
+    }),
+  ),
 );
 
 it.effect("evicts an unanswered host and lets later calls use a healthy runtime", () =>
@@ -1928,6 +2305,699 @@ it.effect("discards buffered actions before completing an evicted host stream", 
       yield* Deferred.succeed(releaseConsumer, undefined);
       expect(Exit.isSuccess(yield* Fiber.await(consumer))).toBe(true);
       expect(operations).toEqual(["snapshot"]);
+    }),
+  ),
+);
+
+// Requests are captured at the host boundary; held replies expose ordering without wall-clock sleeps.
+const affinityHarness = (
+  options: PreviewAutomationBroker.PreviewAutomationConnectOptions = {},
+  hold: (request: RoutedRequest) => boolean = () => false,
+  host: PreviewAutomationHost = makeHost(),
+) =>
+  Effect.gen(function* () {
+    const broker = yield* makeBroker;
+    host = { ...host, supportedOperations: [...PREVIEW_AUTOMATION_SERVER_OPERATIONS] };
+    const held = yield* Queue.unbounded<RoutedRequest>();
+    const routed: RoutedRequest[] = [];
+    const reply = (request: RoutedRequest, result: unknown = { tabId: request.tabId }) =>
+      broker.respond({
+        clientId: host.clientId,
+        connectionId: request.connectionId,
+        requestId: request.requestId,
+        ok: true,
+        result,
+      });
+    yield* Stream.runForEach(requestsFrom(yield* broker.connect(host, options)), (request) => {
+      routed.push(request);
+      return hold(request) ? Queue.offer(held, request).pipe(Effect.asVoid) : reply(request);
+    }).pipe(Effect.forkScoped);
+    yield* Effect.yieldNow;
+    const invoke = (tabId?: PreviewTabId) =>
+      broker.invoke({
+        scope,
+        operation: "status",
+        input: {},
+        ...(tabId === undefined ? {} : { tabId }),
+      });
+    return { broker, held, routed, reply, invoke };
+  });
+const affinityTabs = ["affinity-A", "affinity-B", "affinity-H"].map((id) => PreviewTabId.make(id));
+const [affinityA, affinityB, affinityH] = affinityTabs as [
+  PreviewTabId,
+  PreviewTabId,
+  PreviewTabId,
+];
+const affinityEvidence = (
+  runtimeInstanceId: string,
+  attachmentGeneration = 1,
+): PreviewAutomationBroker.PreviewAutomationRuntimeEvidence => ({
+  runtimeIdentity: { ...testRuntimeIdentity, runtimeInstanceId },
+  attachmentGeneration,
+});
+
+it.effect("REC-R isolates local, companion and headless pins and their independent holds", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const evidence = new Map<
+        PreviewTabId,
+        PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null
+      >([
+        [affinityA, affinityEvidence("local")],
+        [affinityB, affinityEvidence("companion")],
+        [affinityH, null],
+      ]);
+      const { invoke, routed } = yield* affinityHarness({
+        resolveRuntimeEvidence: ({ tabId }) => Effect.sync(() => evidence.get(tabId!) ?? null),
+      });
+      for (const tab of [affinityA, affinityB, affinityH, affinityA, affinityB]) yield* invoke(tab);
+      expect(routed.map((r) => r.tabId)).toEqual([
+        affinityA,
+        affinityB,
+        affinityH,
+        affinityA,
+        affinityB,
+      ]);
+      evidence.set(affinityA, null);
+      expect(yield* invoke(affinityA).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+        _tag: "PreviewAutomationNoAvailableHostError",
+        reconnecting: true,
+        tabId: affinityA,
+      });
+      yield* TestClock.adjust(10_000);
+      yield* invoke(affinityB);
+      yield* invoke(affinityH);
+      evidence.set(affinityB, affinityEvidence("companion-replaced"));
+      yield* invoke(affinityB).pipe(Effect.flip, Effect.orDie);
+      yield* TestClock.adjust(20_000);
+      evidence.set(affinityA, affinityEvidence("local-replaced"));
+      yield* invoke(affinityA);
+      expect(yield* invoke(affinityB).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+        reconnecting: true,
+        tabId: affinityB,
+      });
+      // Same runtime may reattach; only B's hold is cleared.
+      evidence.set(affinityB, affinityEvidence("companion", 2));
+      yield* invoke(affinityB);
+      expect(routed.map((r) => r.tabId).slice(-2)).toEqual([affinityA, affinityB]);
+    }),
+  ),
+);
+
+it.effect.each([true, false])(
+  "REC-R refuses a 33rd live pin without capacity eviction (retirement resolver %s)",
+  (retirementResolver) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const retired = new Set<PreviewTabId>();
+        const evidence = new Map<
+          PreviewTabId,
+          PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null
+        >();
+        const tabs = Array.from({ length: 33 }, (_, i) => PreviewTabId.make(`capacity-${i}`));
+        for (const tab of tabs) evidence.set(tab, affinityEvidence("same-runtime"));
+        const { invoke, routed, broker } = yield* affinityHarness({
+          resolveRuntimeEvidence: ({ tabId }) => Effect.sync(() => evidence.get(tabId!) ?? null),
+          ...(retirementResolver
+            ? {
+                resolveTabRetired: ({ tabId }: { tabId: PreviewTabId }) =>
+                  Effect.sync(() => retired.has(tabId)),
+              }
+            : {}),
+        });
+        for (const tab of tabs.slice(0, 32)) yield* invoke(tab);
+        // liveTabs is empty. Neither its omissions nor null evidence retires a pin.
+        evidence.set(tabs[0]!, null);
+        expect(yield* invoke(tabs[0]!).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+          reconnecting: true,
+        });
+        const refused = yield* invoke(tabs[32]!).pipe(Effect.flip, Effect.orDie);
+        expect(refused).toMatchObject({
+          _tag: "PreviewAutomationNoAvailableHostError",
+          tabId: tabs[32],
+          operation: "status",
+          clientId: "client-1",
+        });
+        expect(refused).not.toHaveProperty("reconnecting");
+        expect(routed).toHaveLength(32);
+        for (const tab of tabs.slice(1, 4)) retired.add(tab);
+        if (retirementResolver) {
+          yield* invoke(tabs[32]!);
+          expect(routed).toHaveLength(33);
+        } else {
+          yield* invoke(tabs[32]!).pipe(Effect.flip, Effect.orDie);
+          expect(routed).toHaveLength(32);
+        }
+        // Capacity refusal never loses the original default or switches host.
+        yield* broker.invoke({ scope, operation: "snapshot", input: {}, tabId: tabs[31]! });
+        expect(routed.at(-1)?.tabId).toBe(tabs[31]);
+      }),
+    ),
+);
+
+it.effect("REC-R null runtime identities and untargeted replies never create pins", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let evidence: PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null = {
+        runtimeIdentity: null,
+        attachmentGeneration: 1,
+      };
+      const { invoke, routed } = yield* affinityHarness({
+        resolveRuntimeEvidence: () => Effect.sync(() => evidence),
+      });
+      for (let i = 0; i < 40; i++) yield* invoke(PreviewTabId.make(`null-${i}`));
+      evidence = null;
+      yield* invoke(PreviewTabId.make("null-0"));
+      expect(routed).toHaveLength(41);
+    }),
+  ),
+);
+
+it.effect("REC-R dispatches a confirmed retired target immediately instead of holding", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let retired = false;
+      let evidence: PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null =
+        affinityEvidence("local");
+      const { broker, invoke, routed, held } = yield* affinityHarness(
+        {
+          resolveRuntimeEvidence: () => Effect.sync(() => evidence),
+          resolveTabRetired: () => Effect.sync(() => retired),
+        },
+        (request) => retired && request.tabId === affinityA,
+      );
+      yield* invoke(affinityA);
+      evidence = null;
+      retired = true;
+      const pending = yield* invoke(affinityA).pipe(Effect.forkScoped);
+      const request = yield* Queue.take(held);
+      expect(routed).toHaveLength(2);
+      yield* broker.respond({
+        clientId: "client-1",
+        connectionId: request.connectionId,
+        requestId: request.requestId,
+        ok: false,
+        error: {
+          _tag: "PreviewAutomationTabNotFoundError",
+          message: "gone",
+          outcome: "not_started",
+        },
+      });
+      expect(yield* Fiber.join(pending).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+        _tag: "PreviewAutomationTabNotFoundError",
+        tabId: affinityA,
+      });
+    }),
+  ),
+);
+
+it.effect(
+  "REC-R close supersedes forty earlier closes and every already routed legacy status",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, invoke, held, reply, routed } = yield* affinityHarness(
+          {},
+          (r) => r.operation === "close" || (r.operation === "status" && r.input === "held"),
+        );
+        yield* invoke(affinityA);
+        const closes: RoutedRequest[] = [];
+        const fibers = [];
+        for (let i = 0; i < 40; i++) {
+          fibers.push(
+            yield* broker
+              .invoke({
+                scope,
+                operation: "close",
+                tabId: i === 0 ? affinityA : PreviewTabId.make(`closed-${i}`),
+                input: {},
+              })
+              .pipe(Effect.forkScoped),
+          );
+          closes.push(yield* Queue.take(held));
+        }
+        const status = yield* broker
+          .invoke({ scope, operation: "status", tabId: affinityA, input: "held" })
+          .pipe(Effect.forkScoped);
+        const old = yield* Queue.take(held);
+        for (const close of closes) yield* reply(close, {});
+        yield* reply(old);
+        yield* Fiber.join(status);
+        for (const fiber of fibers) yield* Fiber.join(fiber);
+        yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+        expect(routed.at(-1)?.tabId).toBeUndefined();
+      }),
+    ),
+);
+
+it.effect.each(["status-close", "close-status", "status-joined-close"] as const)(
+  "REC-R closes the response/bookkeeping gap on legacy hosts (%s)",
+  (order) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, invoke, held, reply, routed } = yield* affinityHarness(
+          {},
+          (r) => r.input === "held" || r.operation === "close",
+        );
+        yield* invoke(affinityA);
+        const parentScheduler = yield* Scheduler.Scheduler;
+        let paused = false;
+        const tasks: Array<() => void> = [];
+        const scheduler: Scheduler.Scheduler = {
+          executionMode: "async",
+          shouldYield: () => paused,
+          makeDispatcher: () => {
+            const dispatcher = parentScheduler.makeDispatcher();
+            return {
+              scheduleTask: (task, priority) =>
+                paused
+                  ? tasks.push(() => dispatcher.scheduleTask(task, priority))
+                  : dispatcher.scheduleTask(task, priority),
+              flush: () => dispatcher.flush(),
+            };
+          },
+        };
+        const status = yield* broker
+          .invoke({ scope, operation: "status", tabId: affinityA, input: "held" })
+          .pipe(Effect.provideService(Scheduler.Scheduler, scheduler), Effect.forkScoped);
+        const statusRequest = yield* Queue.take(held);
+        const close = yield* broker
+          .invoke({ scope, operation: "close", tabId: affinityA, input: {} })
+          .pipe(Effect.forkScoped);
+        const closeRequest = yield* Queue.take(held);
+        if (order === "close-status") {
+          yield* reply(closeRequest, {});
+          yield* reply(statusRequest);
+        } else {
+          paused = order === "status-close";
+          yield* reply(statusRequest);
+          // A duplicate cannot replace the accepted result: respond has removed pending already.
+          yield* reply(statusRequest, { tabId: affinityB });
+          if (order === "status-joined-close") yield* Fiber.join(status);
+          else {
+            expect(status.pollUnsafe()).toBeUndefined();
+            expect(tasks.length).toBeGreaterThan(0);
+          }
+          yield* reply(closeRequest, {});
+          paused = false;
+          for (const resume of tasks.splice(0)) resume();
+        }
+        expect(yield* Fiber.join(status)).toMatchObject({ tabId: affinityA });
+        yield* Fiber.join(close);
+        yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+        expect(routed.at(-1)?.tabId).toBeUndefined();
+      }),
+    ),
+);
+
+it.effect.each(["before", "after", "inflight"] as const)(
+  "REC-R preserves the accepted close/open trade-off (%s)",
+  (order) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, invoke, held, reply, routed } = yield* affinityHarness(
+          {},
+          (r) => r.operation === "close" || r.operation === "open",
+        );
+        yield* invoke(affinityA);
+        const close = yield* broker
+          .invoke({ scope, operation: "close", tabId: affinityA, input: {} })
+          .pipe(Effect.forkScoped);
+        const closeRequest = yield* Queue.take(held);
+        if (order === "after") {
+          yield* reply(closeRequest, {});
+          yield* Fiber.join(close);
+        }
+        const open = yield* broker
+          .invoke({ scope, operation: "open", input: { reuseExistingTab: false } })
+          .pipe(Effect.forkScoped);
+        const openRequest = yield* Queue.take(held);
+        if (order === "inflight") {
+          yield* reply(closeRequest, {});
+          yield* Fiber.join(close);
+        }
+        yield* reply(openRequest, { tabId: affinityB });
+        expect(yield* Fiber.join(open)).toEqual({ tabId: affinityB });
+        if (order === "before") {
+          yield* reply(closeRequest, {});
+          yield* Fiber.join(close);
+        }
+        yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+        expect(routed.at(-1)?.tabId).toBe(order === "inflight" ? undefined : affinityB);
+      }),
+    ),
+);
+
+it.effect.each(["failed", "unknown"] as const)(
+  "REC-R %s close preserves target and pin",
+  (outcome) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let evidence: PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null =
+          affinityEvidence("local");
+        const { broker, invoke, held, routed } = yield* affinityHarness(
+          { resolveRuntimeEvidence: () => Effect.sync(() => evidence) },
+          (r) => r.operation === "close",
+        );
+        yield* invoke(affinityA);
+        const close = yield* broker
+          .invoke({ scope, operation: "close", tabId: affinityA, input: {} })
+          .pipe(Effect.result, Effect.forkScoped);
+        const request = yield* Queue.take(held);
+        yield* broker.respond({
+          clientId: "client-1",
+          connectionId: request.connectionId,
+          requestId: request.requestId,
+          ok: false,
+          error: {
+            _tag: "PreviewAutomationExecutionError",
+            message: "failed",
+            outcome: outcome === "unknown" ? "unknown" : "not_started",
+          },
+        });
+        yield* Fiber.join(close);
+        yield* invoke();
+        expect(routed.at(-1)?.tabId).toBe(affinityA);
+        evidence = null;
+        expect(yield* invoke(affinityA).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+          reconnecting: true,
+          tabId: affinityA,
+        });
+      }),
+    ),
+);
+
+it.effect("REC-R timely and late closes delete the pin and clear only their own default", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let evidence: PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null =
+        affinityEvidence("local");
+      const { broker, invoke, held, reply, routed } = yield* affinityHarness(
+        { resolveRuntimeEvidence: () => Effect.sync(() => evidence) },
+        (r) => r.operation === "close",
+      );
+      yield* invoke(affinityA);
+      const close = yield* broker
+        .invoke({
+          scope,
+          operation: "close",
+          tabId: affinityA,
+          input: {},
+          timeoutMs: 100,
+          failurePolicy: "request_only",
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      const request = yield* Queue.take(held);
+      yield* TestClock.adjust(1100);
+      expect(yield* Fiber.join(close)).toMatchObject({ _tag: "Failure" });
+      yield* invoke(affinityB);
+      yield* reply(request, {});
+      evidence = null;
+      // A has no pin now, while B's unrelated pin remains protected.
+      yield* invoke(affinityA).pipe(Effect.asVoid);
+      expect(yield* invoke(affinityB).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+        reconnecting: true,
+        tabId: affinityB,
+      });
+      // Fresh successful close also clears A, including its {} reply fallback.
+      const timely = yield* broker
+        .invoke({ scope, operation: "close", tabId: affinityA, input: {} })
+        .pipe(Effect.forkScoped);
+      yield* reply(yield* Queue.take(held), {});
+      yield* Fiber.join(timely);
+      yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+      expect(routed.at(-1)?.tabId).toBeUndefined();
+    }),
+  ),
+);
+
+it.effect.each([true, false])(
+  "REC-R explicit new open respects unknown-effect scope (targeted %s)",
+  (targeted) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, invoke, held, routed } = yield* affinityHarness(
+          {},
+          (r) => r.operation === "evaluate",
+        );
+        if (targeted) yield* invoke(affinityA);
+        const unknown = yield* broker
+          .invoke({
+            scope,
+            operation: "evaluate",
+            input: {},
+            ...(targeted ? { tabId: affinityA } : {}),
+            timeoutMs: 100,
+            failurePolicy: "request_only",
+          })
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Queue.take(held);
+        yield* TestClock.adjust(1100);
+        yield* Fiber.join(unknown);
+        const before = routed.length;
+        const opened = yield* broker
+          .invoke({ scope, operation: "open", input: { reuseExistingTab: false } })
+          .pipe(Effect.result);
+        if (targeted) {
+          expect(opened._tag).toBe("Success");
+          expect(routed.at(-1)?.tabId).toBeUndefined();
+          expect(
+            yield* broker
+              .invoke({ scope, operation: "click", tabId: affinityA, input: {} })
+              .pipe(Effect.flip, Effect.orDie),
+          ).toMatchObject({ unreconciled: true, outcome: "not_started" });
+          expect(routed).toHaveLength(before + 1);
+        } else {
+          expect(opened).toMatchObject({ _tag: "Failure", failure: { unreconciled: true } });
+          expect(routed).toHaveLength(before);
+        }
+      }),
+    ),
+);
+
+it.effect("REC-R a mismatched tab cannot change connection affinity or select another host", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let evidence = affinityEvidence("local");
+      const { broker, invoke, routed } = yield* affinityHarness({
+        resolveRuntimeEvidence: () => Effect.sync(() => evidence),
+      });
+      yield* invoke(affinityA);
+      evidence = affinityEvidence("replacement");
+      yield* invoke(affinityA).pipe(Effect.flip, Effect.orDie);
+      const other: RoutedRequest[] = [];
+      yield* Stream.runForEach(
+        requestsFrom(yield* broker.connect(makeHost({ clientId: "other" }))),
+        (request) =>
+          Effect.sync(() => {
+            other.push(request);
+          }),
+      ).pipe(Effect.forkScoped);
+      yield* Effect.yieldNow;
+      yield* TestClock.adjust(30_000);
+      yield* invoke(affinityA);
+      expect(routed.at(-1)?.connectionId).toBe(routed[0]?.connectionId);
+      expect(other).toEqual([]);
+    }),
+  ),
+);
+
+it.effect(
+  "REC-R old-connection late close cannot mutate replacement pins, default or watermark",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, invoke, held, reply } = yield* affinityHarness(
+          {},
+          (r) => r.operation === "close",
+        );
+        yield* invoke(affinityA);
+        const oldClose = yield* broker
+          .invoke({ scope, operation: "close", tabId: affinityA, input: {} })
+          .pipe(Effect.result, Effect.forkScoped);
+        const oldRequest = yield* Queue.take(held);
+        let evidence: PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null =
+          affinityEvidence("replacement");
+        const routed: RoutedRequest[] = [];
+        const replacementHeld = yield* Queue.unbounded<RoutedRequest>();
+        yield* Stream.runForEach(
+          requestsFrom(
+            yield* broker.connect(makeHost(), {
+              resolveRuntimeEvidence: () => Effect.sync(() => evidence),
+            }),
+          ),
+          (request) => {
+            routed.push(request);
+            return request.input === "held"
+              ? Queue.offer(replacementHeld, request).pipe(Effect.asVoid)
+              : reply(request);
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        yield* Fiber.join(oldClose);
+        yield* TestClock.adjust(30_000);
+        yield* invoke(affinityA);
+        const status = yield* broker
+          .invoke({ scope, operation: "status", tabId: affinityB, input: "held" })
+          .pipe(Effect.forkScoped);
+        const statusRequest = yield* Queue.take(replacementHeld);
+        yield* reply(oldRequest, {});
+        // If the old close raised the new watermark, this in-flight B could no longer set default.
+        yield* reply(statusRequest);
+        yield* Fiber.join(status);
+        yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+        expect(routed.at(-1)?.tabId).toBe(affinityB);
+        evidence = null;
+        expect(yield* invoke(affinityA).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+          reconnecting: true,
+        });
+      }),
+    ),
+);
+
+it.effect(
+  "REC-R rebuilding an assignment on the same connection preserves the retirement watermark",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { broker, invoke, reply } = yield* affinityHarness(
+          {},
+          () => false,
+          makeHost({ runtimeIdentity: testRuntimeIdentity }),
+        );
+        yield* invoke(affinityA);
+        const held = yield* Queue.unbounded<RoutedRequest>();
+        const routed: RoutedRequest[] = [];
+        let connectionId = "";
+        yield* Stream.runForEach(
+          requestsFrom(
+            yield* broker.connect(
+              makeHost({
+                runtimeIdentity: testRuntimeIdentity,
+                supportedOperations: [...PREVIEW_AUTOMATION_SERVER_OPERATIONS],
+              }),
+            ),
+            (id) => {
+              connectionId = id;
+            },
+          ),
+          (request) => {
+            routed.push(request);
+            return request.input === "held" || request.operation === "close"
+              ? Queue.offer(held, request).pipe(Effect.asVoid)
+              : reply(request);
+          },
+        ).pipe(Effect.forkScoped);
+        yield* Effect.yieldNow;
+        yield* broker.focusHost({
+          clientId: "client-1",
+          environmentId: scope.environmentId,
+          connectionId,
+          focused: true,
+          liveTabs: [{ threadId: scope.thread.threadId, tabId: affinityA, visible: true }],
+        });
+        const status = yield* broker
+          .invoke({
+            scope,
+            operation: "status",
+            tabId: affinityA,
+            input: "held",
+            timeoutMs: 90_000,
+            failurePolicy: "request_only",
+          })
+          .pipe(Effect.forkScoped);
+        const oldStatus = yield* Queue.take(held);
+        const close = yield* broker
+          .invoke({ scope, operation: "close", tabId: affinityA, input: {} })
+          .pipe(Effect.forkScoped);
+        yield* reply(yield* Queue.take(held), {});
+        yield* Fiber.join(close);
+        yield* TestClock.adjust(30_000);
+        yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+        expect(routed.at(-1)?.connectionId).toBe(oldStatus.connectionId);
+        expect(routed.at(-1)?.tabId).toBeUndefined();
+        yield* reply(oldStatus);
+        yield* Fiber.join(status);
+        yield* broker.invoke({ scope, operation: "snapshot", input: {} });
+        expect(routed.at(-1)?.tabId).toBeUndefined();
+      }),
+    ),
+);
+
+it.effect("REC-R an untargeted open reply cannot create an identity pin", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let evidence: PreviewAutomationBroker.PreviewAutomationRuntimeEvidence | null =
+        affinityEvidence("local");
+      const { broker, invoke, held, reply, routed } = yield* affinityHarness(
+        { resolveRuntimeEvidence: () => Effect.sync(() => evidence) },
+        (r) => r.operation === "open",
+      );
+      const open = yield* broker
+        .invoke({ scope, operation: "open", input: { reuseExistingTab: false } })
+        .pipe(Effect.forkScoped);
+      const request = yield* Queue.take(held);
+      expect(request.tabId).toBeUndefined();
+      yield* reply(request, { tabId: affinityA });
+      yield* Fiber.join(open);
+      evidence = null;
+      yield* invoke(affinityA);
+      expect(routed.at(-1)?.tabId).toBe(affinityA);
+    }),
+  ),
+);
+
+it.effect(
+  "REC-R hosts without evidence resolution retain connection identity behavior beyond 32 tabs",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { invoke, routed } = yield* affinityHarness(
+          {},
+          () => false,
+          makeHost({ runtimeIdentity: testRuntimeIdentity }),
+        );
+        for (let i = 0; i < 40; i++) yield* invoke(PreviewTabId.make(`legacy-${i}`));
+        expect(routed).toHaveLength(40);
+      }),
+    ),
+);
+
+it.effect("REC-R targeted expiry never resolves an unknown mutation", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      let evidence = affinityEvidence("local");
+      const { broker, invoke, held, routed } = yield* affinityHarness(
+        { resolveRuntimeEvidence: () => Effect.sync(() => evidence) },
+        (r) => r.operation === "evaluate",
+      );
+      yield* invoke(affinityA);
+      const unknown = yield* broker
+        .invoke({
+          scope,
+          operation: "evaluate",
+          tabId: affinityA,
+          input: {},
+          timeoutMs: 100,
+          failurePolicy: "request_only",
+        })
+        .pipe(Effect.result, Effect.forkScoped);
+      yield* Queue.take(held);
+      yield* TestClock.adjust(1100);
+      yield* Fiber.join(unknown);
+      evidence = affinityEvidence("replacement");
+      expect(yield* invoke(affinityA).pipe(Effect.flip, Effect.orDie)).toMatchObject({
+        reconnecting: true,
+      });
+      yield* TestClock.adjust(30_000);
+      yield* invoke(affinityA);
+      const before = routed.length;
+      expect(
+        yield* broker
+          .invoke({ scope, operation: "click", tabId: affinityA, input: {} })
+          .pipe(Effect.flip, Effect.orDie),
+      ).toMatchObject({ unreconciled: true, outcome: "not_started" });
+      expect(routed).toHaveLength(before);
     }),
   ),
 );

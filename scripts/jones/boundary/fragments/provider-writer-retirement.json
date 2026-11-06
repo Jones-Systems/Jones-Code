@@ -1,0 +1,121 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "provider-writer-retirement",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.ts",
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.test.ts",
+    "apps/server/src/jones/providerRetirement/AccountTransferRetirement.integration.test.ts",
+    "apps/server/src/jones/provider/codex/CodexStartup.ts",
+    "apps/server/src/jones/provider/codex/CodexStartup.test.ts",
+    "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts",
+    "apps/server/src/jones/providerRetirement/RetirementLedger.ts",
+    "apps/server/src/jones/providerRetirement/RetirementLedger.test.ts",
+    "apps/server/src/jones/providerRetirement/providerRecoveryPublication.ts",
+    "apps/server/src/jones/providerRetirement/providerRecoveryPublication.test.ts",
+    "apps/server/src/jones/providerRetirement/providerRecoveryRetirement.ts",
+    "apps/server/src/jones/providerRetirement/providerRecoveryRetirement.test.ts",
+    "apps/server/src/jones/provider/codex/CodexRetirement.ts",
+    "apps/server/src/jones/provider/codex/CodexRetirement.test.ts",
+    "packages/provider-core/src/server/jones/providerControlOutcome.ts",
+    "packages/provider-core/src/server/jones/providerControlOutcome.test.ts",
+    "apps/server/src/jones/provider/claudeRetirement/retirement.ts",
+    "apps/server/src/jones/provider/claudeRetirement/retirement.test.ts",
+    "apps/server/src/jones/provider/claudeRetirement/controlOutcome.integration.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/accountTransferRetirement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "apps/server/src/jones/providerRetirement/accountTransferRetirement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.test.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexStartup.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexStartup.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/RetirementLedger.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/providerRecoveryPublication.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/providerRetirement/providerRecoveryRetirement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexRetirement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "packages/shared/src/jones/shutdownBudget.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnControlService.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "packages/provider-cursor/src/server/adapter.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "packages/provider-cursor/src/server/adapter.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/claudeRetirement/retirement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EffectWorker.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "packages/provider-core/src/server/jones/providerControlOutcome.ts"
+    }
+  ]
+}

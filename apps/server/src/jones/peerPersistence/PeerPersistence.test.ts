@@ -66,7 +66,7 @@ it.effect("fresh startup keeps experimental peer links entirely in the Jones led
       upstream.map(({ migration_id, name }) => [migration_id, name] as const),
       migrationManifest,
     );
-    assert.strictEqual(upstream.at(-1)?.migration_id, 67);
+    assert.strictEqual(upstream.at(-1)?.migration_id, 69);
     yield* assertJonesPeerSchema;
     assert.deepStrictEqual(yield* sql`SELECT * FROM ${sql(peerEnvironmentLinksTable)}`, []);
     assert.deepStrictEqual(yield* runMigrations(), []);
@@ -119,9 +119,9 @@ it.effect(
       ]);
       yield* assertJonesPeerSchema;
 
-      // Real upstream migrations own 64–67; synthetic later migrations prove
+      // Real upstream migrations own 64–69; synthetic later migrations prove
       // Jones still leaves future upstream IDs available without predicting their contents.
-      const future = [68, 69, 70, 71].map((id) => [id, `SyntheticFuture${id}`] as const);
+      const future = [70, 71].map((id) => [id, `SyntheticFuture${id}`] as const);
       const executed = yield* Migrator.make({})({
         loader: Migrator.fromRecord(
           Object.fromEntries(

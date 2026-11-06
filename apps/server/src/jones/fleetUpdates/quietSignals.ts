@@ -70,7 +70,7 @@ export const makeFleetQuietSignals = Effect.gen(function* () {
     runningTerminals: Effect.sync(() => [...running.values()].filter(Boolean).length),
     work: readHostWork.pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
-      Effect.catch(() => Effect.succeed("unavailable" as const)),
+      Effect.orElseSucceed(() => "unavailable" as const),
     ),
   } satisfies FleetQuietSignals;
 });

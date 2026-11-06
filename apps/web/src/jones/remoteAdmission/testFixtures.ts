@@ -46,3 +46,62 @@ export function admissionSnapshot(pending = [admissionFixture()]): RemoteAdmissi
     pending,
   };
 }
+
+/** Context-rich synthetic row; the original fixture remains unchanged for Settings. */
+export function contextAdmissionFixture(): RemoteAdmissionRecord {
+  const record = admissionFixture();
+  return {
+    ...record,
+    envelope: {
+      ...record.envelope,
+      target: { ...record.envelope.target, threadId: "receiver-thread" },
+      payload: {
+        params: {
+          title: "Inspect synthetic project",
+          message: "Read the **synthetic workspace** and explain the change.",
+        },
+        invocation: {
+          client: {
+            label: "Authenticated laptop",
+            sessionId: "bound-session",
+            remoteOrigin: {
+              schemaVersion: "t3.linked-message-origin/v1",
+              environmentId: "sender-environment",
+              linkSessionId: "bound-session",
+              thread: { threadId: "sender-thread", title: "Legacy sender thread" },
+            },
+          },
+        },
+        advisory: {
+          schemaVersion: "t3.remote-admission-advisory/v1",
+          requestContext: {
+            schemaVersion: "t3.linked-request-context/v1",
+            sentAt: "2026-10-24T11:59:00Z",
+            project: {
+              projectId: "sender-project",
+              title: "Sender project",
+              icon: { kind: "emoji", emoji: "🏡" },
+            },
+            parent: {
+              threadId: "sender-parent",
+              title: "Sender parent",
+              environmentId: "parent-environment",
+            },
+            thread: { threadId: "sender-thread", title: "Sender thread" },
+          },
+        },
+        target: {
+          projects: [{ id: "synthetic-project", workspaceRoot: "/synthetic/project" }],
+          threads: [
+            {
+              id: "receiver-thread",
+              projectId: "synthetic-project",
+              worktreePath: "/synthetic/worktree",
+              deleted: false,
+            },
+          ],
+        },
+      },
+    },
+  };
+}

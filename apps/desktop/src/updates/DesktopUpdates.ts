@@ -1,3 +1,11 @@
+// @effect-diagnostics nodeBuiltinImport:off globalDate:off - Native plan adapter supplies UUIDs and its scheduling clock.
+import type {
+  JonesInstallPlanRequest,
+  JonesInstallPlanResult,
+} from "@t3tools/contracts/jones/installPlan";
+import { createInstallPlanStore } from "../jones/installPlan/store.ts";
+import { createInstallPlanCoordinator } from "../jones/installPlan/coordinator.ts";
+import * as NodeCrypto from "node:crypto";
 import type {
   FleetDesktopRequest,
   FleetDesktopState,
@@ -15,6 +23,7 @@ import {
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import {
   JonesDesktopUpdateController,
+  jonesNativeProcessRoles,
   type JonesDesktopDownloadSelection,
   type JonesDesktopDownloadResult,
 } from "../jones/updates/JonesDesktopUpdates.ts";
@@ -23,7 +32,7 @@ import {
   prepareJonesNativeInstall,
 } from "../jones/updates/jonesNativePreparation.ts";
 import { createJonesDesktopPreparation } from "../jones/updates/desktopPreparationRuntime.ts";
-import { runNativeCommand } from "../jones/updates/jonesMacStaging.ts";
+import { currentJonesDesktopOwner } from "../jones/updates/jonesNativeStartup.ts";
 import { errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -83,9 +92,7 @@ type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
-  // Left unvalidated on purpose: a malformed release-notes payload must never
-  // fail the decode and block the update state transition. The shape is
-  // validated defensively in normalizeDesktopUpdateReleaseNotes.
+  // Malformed notes must not block update-state decoding; normalizeDesktopUpdateReleaseNotes validates separately.
   releaseNotes: Schema.optional(Schema.Unknown),
 });
 
@@ -217,6 +224,9 @@ export class DesktopUpdates extends Context.Service<
       handle: string,
       campaignId?: string,
     ) => Effect.Effect<DesktopUpdateActionResult>;
+    readonly installPlan?: (
+      request: JonesInstallPlanRequest,
+    ) => Effect.Effect<JonesInstallPlanResult>;
     readonly fleetUpdates?: (request: FleetDesktopRequest) => Effect.Effect<FleetDesktopState>;
     readonly installPrepared: (
       expectedVersion: string,
@@ -365,7 +375,7 @@ function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean 
   return runtimeInfo.hostArch === "arm64" && runtimeInfo.appArch === "x64";
 }
 
-/** @public Service construction is part of the canonical Effect module API. */
+/** @public */
 export const make = Effect.gen(function* () {
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
@@ -402,8 +412,7 @@ export const make = Effect.gen(function* () {
   );
 
   const stateChanges = yield* PubSub.sliding<DesktopUpdateState>(16);
-  // Makes ref writes + publishes atomic against subscribe, so a snapshot
-  // never overlaps with the first change a subscriber receives.
+  // Serialize writes and publishes against subscription so snapshots cannot overlap the first change.
   const stateMutex = yield* Semaphore.make(1);
 
   const emitState = Ref.get(updateStateRef).pipe(
@@ -440,7 +449,19 @@ export const make = Effect.gen(function* () {
     const processEnv = yield* HostProcess.Environment;
     const executablePath = yield* HostProcess.ExecutablePath;
     const profile = yield* DesktopUserData.resolveUserDataPath(environment);
-    const fleet = createDesktopFleetStore({ home: environment.baseDir, profile });
+    let coordinator: ReturnType<typeof createInstallPlanCoordinator> | undefined;
+    const planStore = createInstallPlanStore({ home: environment.baseDir, profile });
+    const fleet = createDesktopFleetStore({
+      home: environment.baseDir,
+      profile,
+      isPlanManaged: (source) =>
+        coordinator === undefined ? Promise.resolve(true) : coordinator.isPlanManaged(source),
+      withUnmanagedTarget: (source, work) => {
+        if (coordinator === undefined)
+          return Promise.reject(new Error("Native plan persistence is unavailable."));
+        return coordinator.withUnmanagedTarget(source, work);
+      },
+    });
     const preparation = createJonesDesktopPreparation({
       bundleDirectory: environment.dirname,
       stateDirectory: environment.stateDir,
@@ -454,13 +475,66 @@ export const make = Effect.gen(function* () {
       executablePath,
       profile,
       fleet,
+      plan: {
+        bindLaptopInstall: (binding) => {
+          if (coordinator === undefined)
+            return Promise.reject(new Error("Native plan persistence is unavailable."));
+          return coordinator.bindLaptopInstall(binding);
+        },
+        recordLaptopOutcome: (outcome) =>
+          coordinator?.recordLaptopOutcome(outcome) ?? Promise.resolve(),
+        preparationHeld: () =>
+          coordinator === undefined ? Promise.resolve(true) : coordinator.preparationHeld(),
+        recordLaptopAdmission: (operationId) => {
+          if (coordinator === undefined)
+            return Promise.reject(new Error("Native plan persistence is unavailable."));
+          return coordinator.recordLaptopAdmission(operationId);
+        },
+        recordLaptopWorker: (input) => {
+          if (coordinator === undefined)
+            return Promise.reject(new Error("Native plan persistence is unavailable."));
+          return coordinator.recordLaptopWorker(input);
+        },
+      },
       activeGeneration: processEnv.T3CODE_JONES_ACTIVE_GENERATION,
       architecture: environment.runtimeInfo.hostArch === "arm64" ? "arm64" : "x64",
       platform: environment.platform,
       initialState: yield* Ref.get(updateStateRef),
       disabledByEnv: config.disableAutoUpdate,
-      onState: (state) => Effect.runPromiseWith(context)(setState(state)),
+      onState: async (state) => {
+        await Effect.runPromiseWith(context)(setState(state));
+        // Native state changes wake all windows; no renderer observation is accepted as Laptop proof.
+        void coordinator?.request({ type: "read" });
+      },
       timestamp: () => Effect.runPromiseWith(context)(currentIsoTimestamp),
+      ordinaryRecoveryReadiness: async () => {
+        const primary = await Effect.runPromiseWith(context)(pool.primary);
+        const before = await Effect.runPromiseWith(context)(primary.snapshot);
+        const config = await Effect.runPromiseWith(context)(primary.currentConfig);
+        if (
+          !before.ready ||
+          Option.isNone(before.activePid) ||
+          Option.isNone(config) ||
+          config.value.jonesColdBackendPermit !== undefined ||
+          config.value.bootstrapDelivery !== "fd3"
+        )
+          return undefined;
+        const owner = config.value.jonesDesktopOwner?.();
+        if (owner === undefined || currentJonesDesktopOwner()?.() !== owner) return undefined;
+        owner.assertCurrent();
+        const after = await Effect.runPromiseWith(context)(primary.snapshot);
+        const current = await Effect.runPromiseWith(context)(primary.currentConfig);
+        if (
+          !after.ready ||
+          Option.isNone(after.activePid) ||
+          after.activePid.value !== before.activePid.value ||
+          Option.isNone(current) ||
+          current.value !== config.value
+        )
+          return undefined;
+        owner.assertCurrent();
+        return { owner, backendPid: after.activePid.value, run: config.value };
+      },
       prepareNative: async (handle, transactionId, active) => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
         const backend = await Effect.runPromiseWith(context)(primary.currentConfig);
@@ -480,26 +554,12 @@ export const make = Effect.gen(function* () {
       },
       processProofs: async () => {
         const instances = await Effect.runPromiseWith(context)(pool.list);
-        const pids = [process.pid];
+        const pids: number[] = [];
         for (const instance of instances) {
           const snapshot = await Effect.runPromiseWith(context)(instance.snapshot);
           if (Option.isSome(snapshot.activePid)) pids.push(snapshot.activePid.value);
         }
-        return Promise.all(
-          pids.map(async (pid) => ({
-            pid,
-            identity: (
-              await runNativeCommand("/bin/ps", [
-                "-p",
-                String(pid),
-                "-o",
-                "lstart=",
-                "-o",
-                "command=",
-              ])
-            ).trim(),
-          })),
-        );
+        return jonesNativeProcessRoles(process.pid, pids);
       },
       listener: async () => {
         const primary = await Effect.runPromiseWith(context)(pool.primary);
@@ -508,7 +568,22 @@ export const make = Effect.gen(function* () {
         return backend.value.httpBaseUrl.origin;
       },
     });
-    const background = preparation.attach(controller);
+    const background = preparation.attach(controller, (source) =>
+      coordinator === undefined ? Promise.resolve(true) : coordinator.backgroundSuppressed(source),
+    );
+    coordinator = createInstallPlanCoordinator({
+      store: planStore,
+      controller,
+      localEnvironmentId: () => controller.state.jones?.environmentId,
+      track: (work) => background.track(work),
+      now: Date.now,
+      uuid: NodeCrypto.randomUUID,
+      broadcast: (state) => {
+        void Effect.runPromiseWith(context)(
+          electronWindow.sendAll("desktop:jones-install-plan-state", state),
+        );
+      },
+    });
     const check = Effect.promise(() => background.check());
     const install = (handle?: string, campaignId?: string) =>
       Effect.promise(() => background.track(() => controller.install(handle, campaignId))).pipe(
@@ -538,6 +613,7 @@ export const make = Effect.gen(function* () {
       configure: Effect.gen(function* () {
         yield* Effect.addFinalizer(() => Effect.promise(() => preparation.close()));
         yield* Effect.promise(() => controller.configure());
+        yield* Effect.promise(() => coordinator!.request({ type: "read" }));
         yield* Effect.promise(() => background.start());
         yield* Effect.sleep(AUTO_UPDATE_STARTUP_DELAY).pipe(
           Effect.andThen(check),
@@ -571,6 +647,7 @@ export const make = Effect.gen(function* () {
         Effect.promise(() => background.setEnabled(enabled)).pipe(
           Effect.map(() => controller.state),
         ),
+      installPlan: (request) => Effect.promise(() => coordinator!.request(request)),
       fleetUpdates: (request) => Effect.promise(() => fleet.request(request)),
       installStaged: (handle, campaignId) =>
         install(handle, campaignId).pipe(
@@ -598,8 +675,7 @@ export const make = Effect.gen(function* () {
     ),
   );
 
-  // The .deb carries electron-builder's resources/package-type marker.
-  // electron-updater reads the same file and installs updates with dpkg.
+  // electron-updater uses this marker to install .deb updates with dpkg.
   const isDebPackage =
     environment.platform === "linux" && environment.isPackaged
       ? yield* fileSystem
@@ -796,8 +872,7 @@ export const make = Effect.gen(function* () {
       ),
     );
 
-  // A failed or interrupted install brings no updated backend, so a later
-  // quit must release the tunnel.
+  // Failed or interrupted installs leave no replacement backend; later quits must release the tunnel.
   const removeUpdateRestartMarker = fileSystem
     .remove(updateRestartMarkerPath, { force: true })
     .pipe(Effect.ignore);
@@ -941,11 +1016,7 @@ export const make = Effect.gen(function* () {
           yield* writeUpdateRestartMarker;
           const { downloadedVersion } = yield* Ref.get(updateStateRef);
           if (downloadedVersion !== null) yield* writeInstallRecord(downloadedVersion);
-          // Stop every backend in the pool, not just the primary. With parallel
-          // WSL + Windows backends, leaving the WSL instance up means
-          // quitAndInstall's app.quit() exits before the pool's scope cascade
-          // has a chance to run its stop finalizer, so the WSL child gets
-          // hard-killed by the OS instead of receiving SIGTERM + grace.
+          // Stop pooled backends before quitAndInstall can outrun their scope finalizers.
           const instances = yield* pool.list;
           // stop clears desiredRunning, so retain the recovery set beforehand.
           const runningInstances = yield* Effect.filter(instances, (instance) =>

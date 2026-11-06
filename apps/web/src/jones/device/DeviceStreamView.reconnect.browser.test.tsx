@@ -1,3 +1,5 @@
+import { RegistryContext } from "@effect/atom-react";
+import { AtomRegistry } from "effect/reactivity";
 import { useSyncExternalStore } from "react";
 import { act, render, fakeTimers, stubGlobal } from "../../../test/render";
 import { EnvironmentId } from "@t3tools/contracts";
@@ -6,8 +8,12 @@ import { expect, it, vi } from "vite-plus/test";
 const accessStore = {
   value: { httpBase: "http://test", wsBase: "ws://test", query: {}, credentials: true },
   listeners: new Set<() => void>(),
+  retire: new Set<() => void>(),
+  lifecycle: routeLifecycle(),
   refresh() {
+    for (const retire of accessStore.retire) retire();
     accessStore.value = { ...accessStore.value };
+    accessStore.lifecycle = routeLifecycle();
     for (const listener of accessStore.listeners) listener();
   },
   subscribe(listener: () => void) {
@@ -17,21 +23,34 @@ const accessStore = {
 };
 vi.mock(import("~/jones/device/useDeviceStreamRoute"), async (original) => ({
   ...(await original()),
-  useDeviceStreamRoute: (() => ({
-    route: {
-      access: useSyncExternalStore(accessStore.subscribe, () => accessStore.value),
-      kind: "proxy",
-      phase: "connected",
-      generation: "test",
+  useDeviceStreamRoute: (() => {
+    const access = useSyncExternalStore(accessStore.subscribe, () => accessStore.value);
+    return {
+      route: { access, kind: "proxy", phase: "connected", generation: "test" },
+      proxy: access,
+      report: reportRoute,
+      unauthorized: refreshRoute,
+      retryAccess: refreshRoute,
+      lifecycle: accessStore.lifecycle,
+    };
+  }) as never,
+}));
+function reportRoute() {}
+function refreshRoute() {
+  accessStore.refresh();
+}
+function routeLifecycle() {
+  return {
+    bind(retire: () => void) {
+      accessStore.retire.add(retire);
+      return () => {
+        accessStore.retire.delete(retire);
+      };
     },
-    proxy: accessStore.value,
     report: reportRoute,
     unauthorized: refreshRoute,
-    retryAccess: refreshRoute,
-  })) as never,
-}));
-const reportRoute = () => {};
-const refreshRoute = () => accessStore.refresh();
+  };
+}
 import { DeviceStreamView } from "~/components/device/DeviceStreamView";
 
 // MJPEG frames come from the device hub, so images keep their src without loading it and a
@@ -112,18 +131,22 @@ async function setup() {
         },
       ),
     );
+    const registry = AtomRegistry.make();
+    resources.defer(() => registry.dispose());
     container = document.createElement("div");
     container.style.cssText = "width: 400px; height: 800px; display: flex";
     resources.use(
       await render(
-        <DeviceStreamView
-          hostId="local"
-          environmentId={EnvironmentId.make("test")}
-          deviceId="test"
-          platform="ios"
-          visible={true}
-          allowPhoneView={false}
-        />,
+        <RegistryContext.Provider value={registry}>
+          <DeviceStreamView
+            hostId="local"
+            environmentId={EnvironmentId.make("test")}
+            deviceId="test"
+            platform="ios"
+            visible={true}
+            allowPhoneView={false}
+          />
+        </RegistryContext.Provider>,
         { container },
       ),
     );
@@ -152,9 +175,12 @@ it("offers Reconnect after the shared timeout and receives a frame after refresh
   expect(images[0]!.src).toBe("");
   await reconnect();
   expect(alert()).toBeNull();
-  expect(images[1]!.src).toContain("stream.mjpeg");
-  await publishFrame(images[1]!);
+  const currentImage = container.querySelector("img")!;
+  expect(currentImage.src).toContain("stream.mjpeg");
+  await publishFrame(currentImage);
   expect(container.querySelector('[role="status"]')?.textContent).toContain("Server connection");
   expect(container.querySelectorAll("button")).toHaveLength(0);
+  // Flush the atom registry's deferred removal of the retired session.
+  await act(() => vi.advanceTimersByTimeAsync(0));
   expect(vi.getTimerCount()).toBe(0);
 });

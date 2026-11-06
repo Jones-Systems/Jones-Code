@@ -1,3 +1,4 @@
+import { MonitorToggle } from "../jones/threadMonitor/MonitorToggle";
 import type { ComponentPropsWithoutRef } from "react";
 
 import { cn } from "../lib/utils";
@@ -7,6 +8,7 @@ export function WorkspacePageHeader({
   electron = false,
   reserveNativeControls = electron,
   className,
+  children,
   ...props
 }: ComponentPropsWithoutRef<"header"> & {
   readonly electron?: boolean;
@@ -22,6 +24,14 @@ export function WorkspacePageHeader({
         className,
       )}
       {...props}
-    />
+    >
+      {children}
+      <div
+        className="ml-auto flex h-full shrink-0 items-center [-webkit-app-region:no-drag]"
+        data-generic-monitor-control
+      >
+        <MonitorToggle priority={10} />
+      </div>
+    </header>
   );
 }

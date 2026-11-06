@@ -922,6 +922,14 @@ describe("orchestrator MCP toolkit", () => {
           expect(finalProjection.runs.find((run) => run.id === queuedFollowup.runId)?.status).toBe(
             "completed",
           );
+          expect(
+            finalProjection.turnItems.find(
+              (item) =>
+                item.runId === runningFollowup.runId && item.type === "run_interrupt_result",
+            ),
+          ).toMatchObject({
+            message: "Stopped by an agent: Allow the queued replay follow-up to run.",
+          });
           yield* orchestrator
             .streamStoredEventsFrom({
               threadId: parentThreadId,
@@ -1118,11 +1126,10 @@ describe("orchestrator MCP toolkit", () => {
           );
           const waitForContinuationOffers = (count: number) =>
             Effect.gen(function* () {
-              if ((yield* Ref.get(continuationOffers)).length < count) {
-                yield* Stream.fromQueue(continuationOfferCounts).pipe(
-                  Stream.filter((observed) => observed >= count),
-                  Stream.runHead,
-                );
+              // Counts queued before a scenario resets the offers are only wakeups.
+              // Recheck current state so an old count cannot satisfy this scenario's barrier.
+              while ((yield* Ref.get(continuationOffers)).length < count) {
+                yield* Queue.take(continuationOfferCounts);
               }
               return yield* Ref.get(continuationOffers);
             });

@@ -108,5 +108,5 @@ export const readInstalledSourceAncestry = Effect.fn("readInstalledSourceAncestr
     });
     return installedSourceAncestry(pair, report);
   },
-  (effect) => effect.pipe(Effect.catch(() => Effect.succeed(undefined))),
+  (effect) => effect.pipe(Effect.orElseSucceed(() => undefined)),
 );

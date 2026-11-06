@@ -1,6 +1,6 @@
 {
   "name": "@t3tools/contracts",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "files": [
     "dist"
@@ -22,6 +22,10 @@
     "./jones/workstreamsHttp": {
       "types": "./src/jones/workstreamsHttp.ts",
       "import": "./src/jones/workstreamsHttp.ts"
+    },
+    "./jones/deliveryEvidence": {
+      "types": "./src/jones/deliveryEvidence.ts",
+      "import": "./src/jones/deliveryEvidence.ts"
     },
     "./jones/workstreamOperations": {
       "types": "./src/jones/workstreamOperations.ts",
@@ -66,6 +70,14 @@
     "./jones/jonesUpdates": {
       "types": "./src/jones/jonesUpdates.ts",
       "import": "./src/jones/jonesUpdates.ts"
+    },
+    "./jones/jonesOperations": {
+      "types": "./src/jones/jonesOperations.ts",
+      "import": "./src/jones/jonesOperations.ts"
+    },
+    "./jones/installPlan": {
+      "types": "./src/jones/installPlan.ts",
+      "import": "./src/jones/installPlan.ts"
     },
     "./jones/designRequests": {
       "types": "./src/jones/designRequests.ts",
@@ -158,10 +170,23 @@
     "./jones/workstreamsNativeExport": {
       "types": "./src/jones/workstreamsNativeExport.ts",
       "import": "./src/jones/workstreamsNativeExport.ts"
+    },
+    "./jones/desktopThreadMonitor": {
+      "types": "./src/jones/desktopThreadMonitor.ts",
+      "import": "./src/jones/desktopThreadMonitor.ts"
+    },
+    "./jones/guardedThreadSettlement": {
+      "types": "./src/jones/guardedThreadSettlement.ts",
+      "import": "./src/jones/guardedThreadSettlement.ts"
+    },
+    "./jones/fleetCheckpoint": {
+      "types": "./src/jones/fleetCheckpoint.ts",
+      "import": "./src/jones/fleetCheckpoint.ts"
     }
   },
   "scripts": {
-    "typecheck": "tsc-rs --noEmit",
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit",
     "test": "vp test run --config ../../vite.config.ts --dir ."
   },
   "dependencies": {

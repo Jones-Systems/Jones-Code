@@ -328,12 +328,22 @@ it.effect(
         [122, "ThreadLinks"],
         [123, "WorkspaceLifecycle"],
         [124, "TaskContinuations"],
-        [125, "WorkstreamsNative"],
-        [126, "WorkstreamsSourceEnrollments"],
-        [127, "WorkstreamsRollupAttempts"],
-        [128, "WorkstreamsPeerSessionPins"],
-        [129, "WorkstreamsMemberBindings"],
-        [130, "WorkstreamsForwardReceipts"],
+        [129, "CodexFailover"],
+        [130, "ThreadTitleRefinement"],
+        [132, "OwnerSelections"],
+        [133, "ThreadResultDependencies"],
+        [134, "GoalContinuity"],
+        [135, "IdleWorktreeAdmission"],
+        [136, "WorkspaceProvenance"],
+        [137, "NativeCreationLeaseRenewal"],
+        [138, "WorkspaceRetirement"],
+        [139, "ConversationWorkspace"],
+        [140, "WorkstreamsNative"],
+        [141, "WorkstreamsSourceEnrollments"],
+        [142, "WorkstreamsRollupAttempts"],
+        [143, "WorkstreamsPeerSessionPins"],
+        [144, "WorkstreamsMemberBindings"],
+        [145, "WorkstreamsForwardReceipts"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
@@ -352,11 +362,83 @@ it.effect(
     }).pipe(Effect.provide(memory)),
 );
 
+it.effect("137 preserves canonical and historical starts with upstream isolation intact", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations({ toMigrationInclusive: upstreamThrough });
+    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 136));
+    yield* seedReferencedRows;
+    const expiry = "2026-11-05T12:00:30.000Z";
+    yield* sql`INSERT INTO jones_native_creation_execution_starts
+      (rowid, effect_id, claim_id, command_id, worker_id, expected_attempt, lease_expires_at, reference_json, fact_json)
+      VALUES (401, 'canonical-effect', 'claim', 'command', 'worker', 1, ${expiry}, '{}', '{}')`;
+    const trigger = "jones_native_creation_execution_starts_no_update";
+    const before = yield* readObjects;
+    const tables = [...rebuiltTables, ...rebuiltChildren];
+    const rows = yield* Effect.forEach(tables, (table) =>
+      readTable(table).pipe(
+        Effect.map(({ triggers, ...data }) => ({
+          ...data,
+          triggers: triggers.filter((row) => row.name !== trigger),
+        })),
+      ),
+    );
+    const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+    assert.deepStrictEqual(
+      yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)),
+      [[137, "NativeCreationLeaseRenewal"]],
+    );
+    assert.deepStrictEqual(
+      (yield* readObjects).filter(({ name }) => name !== trigger),
+      before.filter(({ name }) => name !== trigger),
+    );
+    assert.deepStrictEqual(
+      yield* Effect.forEach(tables, (table) =>
+        readTable(table).pipe(
+          Effect.map(({ triggers, ...data }) => ({
+            ...data,
+            triggers: triggers.filter((row) => row.name !== trigger),
+          })),
+        ),
+      ),
+      rows,
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+      upstream,
+    );
+    assert.deepStrictEqual(
+      yield* sql`UPDATE jones_native_creation_execution_starts
+      SET lease_expires_at = '2026-11-05T12:00:30.001Z' WHERE effect_id = 'canonical-effect'
+      RETURNING rowid AS retained_rowid`,
+      [{ retained_rowid: 401 }],
+    );
+    assert.isTrue(
+      Exit.isFailure(
+        yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
+      SET lease_expires_at = '2026-11-05T12:00:30.001Z' WHERE effect_id = 'effect'`),
+      ),
+    );
+    assert.strictEqual(yield* pruneSettled, 1);
+    yield* sql`DELETE FROM orchestration_events WHERE event_id = 'event'`;
+    yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id = 'command'`;
+    yield* sql`DROP TABLE orchestration_command_receipts`;
+    assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+    assert.deepStrictEqual(
+      yield* sql`SELECT lease_expires_at FROM jones_native_creation_execution_starts
+      WHERE effect_id = 'effect'`,
+      [{ lease_expires_at: "lease" }],
+    );
+  }).pipe(Effect.provide(memory)),
+);
+
 it.effect("upstream migration 63 preserves Jones rows and durable settlement proofs", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA foreign_keys = ON`;
     yield* runMigrations({ toMigrationInclusive: 62 });
+    // This exercises current-service upstream isolation: install the complete
+    // Jones manifest before snapshotting its schema, rows and settlement ledger.
     yield* runJonesMigrations(jonesMigrationEntries);
     yield* seedReferencedRows;
     const proof = JSON.stringify({

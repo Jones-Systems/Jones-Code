@@ -169,6 +169,21 @@ describe("native bundle integrity filesystem", () => {
         await expect(hashMacApp(app)).rejects.toThrow("App symlink escapes the staged app.");
       }),
   );
+
+  it.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+    "uses the canonical app root and still refuses dangling internal links",
+    () =>
+      withBundle(async (root) => {
+        const app = NodePath.join(root, "Candidate.app");
+        const alias = NodePath.join(root, "Alias.app");
+        await NodeFSP.mkdir(app);
+        await NodeFSP.writeFile(NodePath.join(app, "payload"), "synthetic");
+        await NodeFSP.symlink(app, alias);
+        expect(await hashMacApp(alias)).toBe(await hashMacApp(app));
+        await NodeFSP.symlink("missing", NodePath.join(app, "dangling"));
+        await expect(hashMacApp(alias)).rejects.toMatchObject({ code: "ENOENT" });
+      }),
+  );
 });
 
 describe("stable native update paths", () => {

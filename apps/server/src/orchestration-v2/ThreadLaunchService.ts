@@ -1,4 +1,18 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
+import {
+  launchDeliveryEvidence,
+  recordedLaunchClaim,
+  recordedLaunchMessage,
+  type LaunchDeliveryRequest,
+} from "../jones/orchestration/deliveryEvidence.ts";
+import {
+  initialMessageCommandId,
+  type LaunchDeliveryEvidence,
+} from "@t3tools/contracts/jones/deliveryEvidence";
+import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Path from "effect/Path";
 import * as NativeBootstrap from "../jones/nativeCreation/NativeBootstrapDispatch.ts";
@@ -90,13 +104,18 @@ import * as ServerSettings from "../serverSettings.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
 import * as CommandReceiptStore from "./CommandReceiptStore.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import type * as Orchestrator from "./Orchestrator.ts";
+import * as Orchestrator from "./Orchestrator.ts";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
+  | {
+      readonly type: "auto";
+      readonly branch?: string | undefined;
+      readonly baseRef?: string | undefined;
+    }
   | { readonly type: "root"; readonly branch?: string | undefined }
   | {
       readonly type: "existing_worktree";
@@ -174,6 +193,7 @@ type PreparationInput = Pick<
    * records the workspace, and a branch rename may still be running.
    */
   readonly reusedWorktree?: { readonly baseRef: string | undefined };
+  readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Identity;
 };
 
 export interface ThreadLaunchPreparationInput {
@@ -185,6 +205,7 @@ export interface ThreadLaunchPreparationInput {
 export interface ThreadLaunchResult {
   readonly threadId: ThreadId;
   readonly projection: OrchestrationV2ThreadProjection;
+  /** The launch's last write (the initial message, else the thread claim) was accepted before this call. */
   readonly resumed: boolean;
   readonly legacyReleaseSequence?: number;
 }
@@ -255,10 +276,10 @@ export class ThreadLaunchService extends Context.Service<
       ThreadLaunchResult,
       ThreadLaunchError | ThreadManagement.ThreadManagementProviderInstanceDisabledError
     >;
-    /**
-     * `launch` accepts such a launch and reports the failure inside the
-     * thread; a caller that needs it before a thread exists checks first.
-     */
+    readonly getDeliveryEvidence: (
+      input: LaunchDeliveryRequest,
+    ) => Effect.Effect<LaunchDeliveryEvidence>;
+    /** Check before creation for early errors; launch otherwise accepts and reports base failures inside the thread. */
     readonly checkWorktreeBase: (
       input: Pick<ThreadLaunchInput, "projectId" | "workspaceStrategy">,
     ) => Effect.Effect<void, ThreadLaunchBaseRefError>;
@@ -292,6 +313,11 @@ function failureDetail(error: unknown): string {
 }
 
 const make = Effect.gen(function* () {
+  const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
+  const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+  const conversationProviders = yield* Effect.serviceOption(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+  );
   const nativeBootstrapContext = yield* Effect.context<never>();
   const nativeBootstrapConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const nativeBootstrapPath = yield* Effect.serviceOption(Path.Path);
@@ -310,6 +336,7 @@ const make = Effect.gen(function* () {
   const textGeneration = yield* TextGeneration.TextGeneration;
   const receipts = yield* CommandReceiptStore.CommandReceiptStoreV2;
   const eventSink = yield* EventSink.EventSinkV2;
+  const idleWorktrees = eventSink.idleWorktreeAdmission;
   const ids = yield* IdAllocator.IdAllocatorV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const metadata = yield* ThreadMetadataReads.ThreadMetadataReads;
@@ -573,7 +600,7 @@ const make = Effect.gen(function* () {
         "fail-run",
         threadId,
       )("Workspace-failure policy changed; retain the shell.");
-    const control = yield* Schema.decodeUnknownEffect(LegacyNoTerminalControl)({
+    const control = yield* Schema.decodeEffect(LegacyNoTerminalControl)({
       version: 1,
       type: "no_control",
       policy: receivingPolicy,
@@ -619,7 +646,7 @@ const make = Effect.gen(function* () {
     const validated =
       deletion === undefined
         ? undefined
-        : yield* Schema.decodeUnknownEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
+        : yield* Schema.decodeEffect(LegacyFailureDeletionProvenance)(deletion).pipe(
             Effect.mapError(mapError(input, "fail-run", threadId)),
           );
     const { deletion: _oldDeletion, ...original } = decision;
@@ -926,6 +953,7 @@ const make = Effect.gen(function* () {
     input: PreparationInput,
     threadId: ThreadId,
     runId: RunId,
+    lifetime: Scope.Scope,
   ) {
     const journal = yield* legacyPreparationJournal(input, threadId, runId);
     const { bound, persist, intent, outcome } = journal;
@@ -950,6 +978,7 @@ const make = Effect.gen(function* () {
     };
     const captured = bound.setup.status === "resolved" ? bound.setup.definition : undefined;
     const hooks: ProjectSetupScriptRunner.LegacySetupPreparationHooks = {
+      lifetime,
       binding,
       ...(captured === undefined ? {} : { capturedDefinition: captured }),
       noScript: () =>
@@ -1146,8 +1175,7 @@ const make = Effect.gen(function* () {
         (yield* git.resolveWorktreeBaseRemote({ cwd, refName: baseRef })) !== null
       )
         return undefined;
-      // `git worktree add` also starts from a remote-tracking branch of that
-      // name; any ref carrying it is reason enough to let Git decide.
+      // git worktree add accepts remote-tracking branches; let Git decide when any matching ref exists.
       if (yield* git.hasRefNamed({ cwd, refName: baseRef })) return undefined;
       return (yield* git.hasCommit({ cwd, refName: "HEAD" })) ? project : undefined;
     }).pipe(Effect.orElseSucceed(() => undefined));
@@ -1166,6 +1194,7 @@ const make = Effect.gen(function* () {
     runId: RunId | null,
     observeExistingSetup = false,
   ) {
+    const lifetime = yield* Effect.scope;
     const project = yield* projects.getById(input.projectId).pipe(
       Effect.mapError(mapError(input, "resolve-project", threadId)),
       Effect.flatMap(
@@ -1288,8 +1317,8 @@ const make = Effect.gen(function* () {
     let setupTerminalId: string | null = null;
     let workspaceRecorded = false;
     let runReleased = false;
-    // The background branch rename records the worktree again when it lands,
-    // so cleanup stops it before forgetting a removed worktree.
+    let idleCleanupOwned = true;
+    // Stop background renames before forgetting worktrees; completed renames record them again.
     let branchRename: Fiber.Fiber<unknown> | null = null;
     if (input.workspaceStrategy.type === "worktree") {
       yield* setupTracker.begin({
@@ -1354,11 +1383,16 @@ const make = Effect.gen(function* () {
       } else {
         branch = requestedBranch ?? null;
       }
+      let provenanceBaseRef: string | null = null;
       let worktreePath =
         input.workspaceStrategy.type === "existing_worktree"
           ? input.workspaceStrategy.worktreePath
           : null;
       if (input.workspaceStrategy.type === "worktree") {
+        if (input.idleWorktreeAdmission !== undefined)
+          yield* idleWorktrees!
+            .issueWorktree(input.idleWorktreeAdmission)
+            .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
         if (runId !== null) {
           yield* threads
             .dispatch({
@@ -1456,6 +1490,7 @@ const make = Effect.gen(function* () {
             },
           )
           .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+        provenanceBaseRef = baseRefName;
         worktreePath = worktree.worktree.path;
         branch = worktree.worktree.refName;
         createdWorktreePath = worktreePath;
@@ -1463,8 +1498,7 @@ const make = Effect.gen(function* () {
         yield* setupTracker.stageStatus(threadId, "checkout", "done");
       }
 
-      // A reused worktree is already recorded, and rewriting it could undo
-      // the first attempt's branch rename.
+      // Do not rewrite reused worktrees; that could undo the original branch rename.
       if (reused === undefined) {
         yield* threads
           .dispatch({
@@ -1477,6 +1511,26 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       workspaceRecorded = true;
+      if (input.workspaceStrategy.type !== "auto")
+        yield* captureProvenance({
+          threadId,
+          reason: input.workspaceStrategy.type === "worktree" ? "launch" : "reference",
+          createdBy: "system",
+          baseRef: provenanceBaseRef,
+          baseIsCurrentHead: provenanceBaseRef !== null && reused === undefined,
+          ...(runId === null ? {} : { runId }),
+        });
+      if (input.idleWorktreeAdmission !== undefined) {
+        if (worktreePath === null)
+          return yield* mapError(
+            input,
+            "provision-worktree",
+            threadId,
+          )("Idle worktree path is unavailable.");
+        yield* idleWorktrees!
+          .recordWorkspace(input.idleWorktreeAdmission, worktreePath)
+          .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
+      }
 
       if (
         reused === undefined &&
@@ -1523,8 +1577,7 @@ const make = Effect.gen(function* () {
                     }),
                   ),
                 );
-              // Updating the parent first makes later subagents inherit the new name.
-              // Re-read after each pass for children of subagents updated in that pass.
+              // Update parents first so children inherit names; reread each pass for newly updated descendants.
               const visited = new Set([threadId]);
               while (true) {
                 const matchingIds = yield* metadata
@@ -1581,11 +1634,15 @@ const make = Effect.gen(function* () {
       yield* setupTracker.stageStatus(threadId, "setup-script", "running");
       const legacyPreparation =
         input.legacyBootstrap !== undefined && runId !== null
-          ? yield* legacySetupHooks(input, threadId, runId)
+          ? yield* legacySetupHooks(input, threadId, runId, lifetime)
           : undefined;
       const cwd = worktreePath ?? project.workspaceRoot;
+      if (input.idleWorktreeAdmission !== undefined && input.runSetupScript !== false)
+        yield* idleWorktrees!
+          .issueSetup(input.idleWorktreeAdmission)
+          .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
       const setup = yield* (
-        input.runSetupScript === false
+        input.runSetupScript === false || input.workspaceStrategy.type === "auto"
           ? Effect.succeed({ status: "no-script" as const })
           : setupScripts.runForThread({
               threadId,
@@ -1622,7 +1679,7 @@ const make = Effect.gen(function* () {
               cause.operation !== "openTerminal" ||
               !isTerminalInputValidationError(cause.cause)
             )
-              return yield* Effect.fail(mapError(input, "run-setup-script", threadId)(cause));
+              return yield* mapError(input, "run-setup-script", threadId)(cause);
             const proof = cause.cause;
             const current = yield* threads
               .getThreadRecords(threadId, ["runs"], { runIds: [runId] })
@@ -1725,6 +1782,9 @@ const make = Effect.gen(function* () {
       let awaitAsyncSetup = Effect.void;
       if (setup.status === "started") {
         setupTerminalId = setup.terminalId;
+        yield* setup.writeCompletion.pipe(
+          Effect.mapError(mapError(input, "run-setup-script", threadId)),
+        );
         yield* setupTracker.update(threadId, (snapshot) => ({
           ...snapshot,
           setupScript: {
@@ -1774,6 +1834,16 @@ const make = Effect.gen(function* () {
       }
       yield* setupTracker.markUncancellable(threadId);
       yield* setupTracker.stageStatus(threadId, "agent", "running");
+      if (input.idleWorktreeAdmission !== undefined) {
+        const identity = input.idleWorktreeAdmission;
+        // Withdraw cleanup before either durable release write. A lost reply can already expose the checkout.
+        // This generation never regains cleanup ownership, including on interruption or failed readback.
+        yield* Effect.gen(function* () {
+          idleCleanupOwned = false;
+          yield* idleWorktrees!.prepareRelease(identity, worktreePath!);
+          yield* idleWorktrees!.release(identity);
+        }).pipe(Effect.mapError(mapError(input, "release-run", threadId)), Effect.uninterruptible);
+      }
       if (runId !== null) {
         if (input.legacyBootstrap !== undefined) {
           const current = yield* threads
@@ -1899,6 +1969,8 @@ const make = Effect.gen(function* () {
       Effect.onError((cause) =>
         Effect.gen(function* () {
           const cancelled = Cause.hasInterruptsOnly(cause);
+          if (input.idleWorktreeAdmission !== undefined)
+            yield* idleWorktrees!.markUnresolved(input.idleWorktreeAdmission).pipe(Effect.ignore);
           yield* setupTracker.finish(
             threadId,
             cancelled ? "cancelled" : "failed",
@@ -1912,13 +1984,16 @@ const make = Effect.gen(function* () {
             input.legacyBootstrap === undefined &&
             tracked &&
             createdWorktreePath &&
+            idleCleanupOwned &&
+            (input.idleWorktreeAdmission === undefined ||
+              (yield* idleWorktrees!
+                .cleanupAllowed(input.idleWorktreeAdmission)
+                .pipe(Effect.catchCause(() => Effect.succeed(false))))) &&
             ((cancelled && !runReleased) || !workspaceRecorded)
           ) {
             if (branchRename !== null) yield* Fiber.interrupt(branchRename);
             const removedPath = createdWorktreePath;
-            // The thread forgets the worktree only once it is gone; a failed
-            // removal leaves the directory for the user to clean up rather than
-            // reusing a checkout that may be half written.
+            // Forget worktrees only after removal succeeds; failed removals must not reuse partially written checkouts.
             yield* git
               .removeWorktree({ cwd: project.workspaceRoot, path: removedPath, force: true })
               .pipe(
@@ -1946,7 +2021,7 @@ const make = Effect.gen(function* () {
         }),
       ),
     );
-  });
+  }, Effect.scoped);
 
   const failPreparedRun = (
     input: Pick<PreparationInput, "commandId">,
@@ -2278,15 +2353,173 @@ const make = Effect.gen(function* () {
     yield* preparation.pipe(Effect.forkIn(preparationScope));
   });
 
+  const resumeIdlePreparation = Effect.fn("ThreadLaunchService.resumeIdlePreparation")(function* (
+    input: PreparationInput,
+    identity: IdleWorktreeAdmission.Identity,
+  ) {
+    const threadId = identity.threadId;
+    const readCurrent = idleWorktrees!.read(threadId).pipe(
+      Effect.mapError(mapError(input, "read-receipt", threadId)),
+      Effect.flatMap((current) =>
+        current !== null && IdleWorktreeAdmission.sameIdentity(current, identity)
+          ? Effect.succeed(current)
+          : Effect.fail(
+              mapError(input, "read-receipt", threadId)("Idle preparation identity changed."),
+            ),
+      ),
+    );
+    const recorded = yield* readCurrent;
+    if (recorded.phase === "ready") return;
+    if (recorded.phase === "prepared")
+      return yield* idleWorktrees!
+        .release(identity)
+        .pipe(Effect.mapError(mapError(input, "release-run", threadId)), Effect.uninterruptible);
+    if (!(yield* reservePreparation(input.commandId))) return;
+    yield* Effect.gen(function* () {
+      const current = yield* readCurrent;
+      if (current.phase === "pending") {
+        // A creation retry may now carry a message. Its original idle producer still has no run or message.
+        yield* schedulePreparation(
+          {
+            commandId: input.commandId,
+            projectId: input.projectId,
+            workspaceStrategy: input.workspaceStrategy,
+            ...(input.runSetupScript === undefined ? {} : { runSetupScript: input.runSetupScript }),
+            idleWorktreeAdmission: identity,
+          },
+          threadId,
+          null,
+        );
+        return;
+      }
+      yield* releasePreparation(input.commandId);
+      if (current.phase === "ready") return;
+      if (current.phase === "prepared")
+        return yield* idleWorktrees!
+          .release(identity)
+          .pipe(Effect.mapError(mapError(input, "release-run", threadId)), Effect.uninterruptible);
+      return yield* mapError(
+        input,
+        "provision-worktree",
+        threadId,
+      )(new IdleWorktreeAdmission.IdleWorktreeAdmissionError({ threadId, reason: "unresolved" }));
+    }).pipe(Effect.onError(() => releasePreparation(input.commandId)));
+  });
+
   const launch: ThreadLaunchService["Service"]["launch"] = Effect.fn("ThreadLaunchService.launch")(
     function* (request) {
+      // Resolve the durable claim before mutable project, folder, or provider admission.
+      const priorLaunchReceipt =
+        request.legacyBootstrap === undefined
+          ? yield* readReceipt(request, request.commandId)
+          : undefined;
+      const launchEvents =
+        priorLaunchReceipt !== undefined &&
+        Option.isSome(priorLaunchReceipt) &&
+        priorLaunchReceipt.value.status === "accepted"
+          ? yield* eventSink
+              .readByCommandId({ commandId: request.commandId })
+              .pipe(
+                Stream.runCollect,
+                Effect.mapError(mapError(request, "read-receipt", request.threadId)),
+              )
+          : [];
+      const recordedClaim =
+        priorLaunchReceipt !== undefined && Option.isSome(priorLaunchReceipt)
+          ? recordedLaunchClaim(request, priorLaunchReceipt.value, launchEvents)
+          : undefined;
+      if (
+        priorLaunchReceipt !== undefined &&
+        Option.isSome(priorLaunchReceipt) &&
+        recordedClaim === undefined
+      )
+        return yield* mapError(
+          request,
+          request.reuseExistingThread === true ? "update-thread" : "create-thread",
+          request.threadId,
+        )(
+          "The launch command cannot be replayed without its matching accepted immutable claim; preserve its original identity.",
+        );
+      const replayMessageReceipt =
+        recordedClaim !== undefined && request.initialMessage !== undefined
+          ? yield* readReceipt(request, initialMessageCommandId(request.commandId))
+          : undefined;
+      const replayMessageEvents =
+        replayMessageReceipt !== undefined &&
+        Option.isSome(replayMessageReceipt) &&
+        replayMessageReceipt.value.status === "accepted"
+          ? yield* eventSink
+              .readByCommandId({ commandId: initialMessageCommandId(request.commandId) })
+              .pipe(
+                Stream.runCollect,
+                Effect.mapError(mapError(request, "read-receipt", recordedClaim?.id)),
+              )
+          : undefined;
+      const recordedInitialMessage =
+        recordedClaim !== undefined &&
+        replayMessageReceipt !== undefined &&
+        Option.isSome(replayMessageReceipt)
+          ? recordedLaunchMessage(
+              request,
+              replayMessageReceipt.value,
+              replayMessageEvents ?? [],
+              recordedClaim.id,
+            )
+          : undefined;
+      if (
+        replayMessageReceipt !== undefined &&
+        Option.isSome(replayMessageReceipt) &&
+        recordedInitialMessage === undefined
+      ) {
+        const receipt = replayMessageReceipt.value;
+        return yield* mapError(
+          request,
+          "dispatch-message",
+          recordedClaim?.id,
+        )(
+          receipt.status === "rejected" &&
+            receipt.commandId === initialMessageCommandId(request.commandId) &&
+            receipt.commandType === "message.dispatch" &&
+            receipt.threadId === recordedClaim?.id
+            ? new Orchestrator.OrchestratorCommandPreviouslyRejectedError({
+                commandId: receipt.commandId,
+                commandType: receipt.commandType,
+                detail: receipt.error ?? "Previously rejected.",
+              })
+            : "The initial message has no matching accepted immutable receipt; preserve its original identity.",
+        );
+      }
+      const needsFreshAdmission =
+        recordedClaim === undefined ||
+        (request.initialMessage !== undefined && recordedInitialMessage === undefined);
       // Scratch has no Git repository. Normalize before folder allocation so
       // durable preparation and retries use the thread's own Scratch folder.
       const input: ThreadLaunchInput =
-        request.workspaceStrategy.type === "worktree" &&
-        (yield* managedFolders.isScratchProject(request.projectId))
-          ? { ...request, workspaceStrategy: { type: "root" } }
-          : request;
+        recordedClaim !== undefined
+          ? {
+              ...request,
+              modelSelection: recordedClaim.modelSelection,
+              runtimeMode: recordedClaim.runtimeMode,
+              interactionMode: recordedClaim.interactionMode,
+              workspaceStrategy:
+                recordedInitialMessage?.run.workspacePreparation ??
+                (recordedClaim.worktreePath === null
+                  ? request.workspaceStrategy
+                  : {
+                      type: "existing_worktree",
+                      worktreePath: recordedClaim.worktreePath,
+                      ...(recordedClaim.branch === null ? {} : { branch: recordedClaim.branch }),
+                    }),
+              ...(recordedInitialMessage?.run.workspaceRunSetupScript === undefined
+                ? {}
+                : {
+                    runSetupScript: recordedInitialMessage.run.workspaceRunSetupScript,
+                  }),
+            }
+          : request.workspaceStrategy.type === "worktree" &&
+              (yield* managedFolders.isScratchProject(request.projectId))
+            ? { ...request, workspaceStrategy: { type: "root" } }
+            : request;
       if (input.preparationReleaseCommandId !== undefined || input.legacyBootstrap !== undefined) {
         const policy = input.legacyBootstrap;
         if (
@@ -2304,19 +2537,22 @@ const make = Effect.gen(function* () {
             input.threadId,
           )("Legacy launch does not match its immutable preparation policy.");
       }
-      yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
-        type: "thread.create",
-        projectId: input.projectId,
-      }).pipe(Effect.mapError(mapError(input, "resolve-project")));
-      const project = yield* projects.getById(input.projectId).pipe(
-        Effect.mapError(mapError(input, "resolve-project")),
-        Effect.flatMap(
-          Option.match({
-            onNone: () => Effect.fail(mapError(input, "resolve-project")("Project not found.")),
-            onSome: Effect.succeed,
-          }),
-        ),
-      );
+      if (needsFreshAdmission)
+        yield* ProjectCloneTracker.rejectCommandsDuringClone(cloneTracker, {
+          type: "thread.create",
+          projectId: input.projectId,
+        }).pipe(Effect.mapError(mapError(input, "resolve-project")));
+      const project = !needsFreshAdmission
+        ? { id: input.projectId }
+        : yield* projects.getById(input.projectId).pipe(
+            Effect.mapError(mapError(input, "resolve-project")),
+            Effect.flatMap(
+              Option.match({
+                onNone: () => Effect.fail(mapError(input, "resolve-project")("Project not found.")),
+                onSome: Effect.succeed,
+              }),
+            ),
+          );
       if (input.reuseExistingThread === true && input.threadId === undefined) {
         return yield* mapError(
           input,
@@ -2328,17 +2564,18 @@ const make = Effect.gen(function* () {
         yield* awaitThreadCreationCleanup(outbox, input.legacyBootstrap.threadId).pipe(
           Effect.mapError(mapError(input, "create-thread", input.threadId)),
         );
-      const launchReceipt = yield* readReceipt(input, input.commandId);
-      yield* threads.assertProviderInstanceEnabled({
-        projectId: input.projectId,
-        commandId: input.commandId,
-        instanceId: input.modelSelection.instanceId,
-      });
+      const launchReceipt = priorLaunchReceipt ?? (yield* readReceipt(input, input.commandId));
+      if (needsFreshAdmission)
+        yield* threads.assertProviderInstanceEnabled({
+          projectId: input.projectId,
+          commandId:
+            recordedClaim !== undefined && input.initialMessage !== undefined
+              ? initialMessageCommandId(input.commandId)
+              : input.commandId,
+          instanceId: input.modelSelection.instanceId,
+        });
       return yield* Effect.gen(function* () {
-        // A retried launch has no client-supplied id to replay against, so
-        // recover the thread id its accepted create was recorded under before
-        // allocating another one; a fresh id would only collide with the
-        // recorded receipt.
+        // Recover ids from accepted launch receipts before allocating; retries have no client id and new ids collide with receipts.
         const reusableLaunchReceipt =
           input.threadId === undefined &&
           Option.isSome(launchReceipt) &&
@@ -2353,11 +2590,11 @@ const make = Effect.gen(function* () {
             .thread({ projectId: input.projectId })
             .pipe(Effect.mapError(mapError(input, "create-thread"))));
 
-        if (reusableLaunchReceipt !== undefined) {
+        if (recordedClaim !== undefined) {
           const shell = yield* threads
             .getThreadShell(candidateThreadId)
             .pipe(Effect.mapError(mapError(input, "create-thread", candidateThreadId)));
-          if (shell === null) {
+          if (shell === null || shell.deletedAt !== null) {
             return yield* mapError(input, "create-thread", candidateThreadId)("Thread not found.");
           }
           if (shell.projectId !== input.projectId) {
@@ -2373,9 +2610,33 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
+        let selectedStrategy = input.workspaceStrategy;
+        let conversationLaunch = false;
+        let fallbackDriver: string | undefined;
+        if (selectedStrategy.type === "auto" && "workspaceRoot" in project) {
+          const allocationSettings = resolveProjectSettings(
+            yield* serverSettings.getSettings.pipe(
+              Effect.mapError(mapError(input, "resolve-project", candidateThreadId)),
+            ),
+            input.projectId,
+            project,
+          ).settings;
+          const instance = Option.isSome(conversationProviders)
+            ? yield* conversationProviders.value.getInstance(input.modelSelection.instanceId)
+            : undefined;
+          const driver = instance?.driverKind ?? "unavailable";
+          conversationLaunch =
+            allocationSettings.worktreeAllocation !== "eager" &&
+            Option.isSome(conversations) &&
+            (driver === "codex" || driver === "claudeAgent");
+          if (!conversationLaunch) fallbackDriver = driver;
+          selectedStrategy = conversationLaunch
+            ? selectedStrategy
+            : { ...selectedStrategy, type: "worktree" };
+        }
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.legacyBootstrap === undefined &&
-          input.workspaceStrategy.type === "root" &&
+          selectedStrategy.type === "root" &&
           Option.isNone(launchReceipt)
             ? Option.match(
                 yield* managedFolders
@@ -2386,14 +2647,34 @@ const make = Effect.gen(function* () {
                   })
                   .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),
                 {
-                  onNone: () => input.workspaceStrategy,
+                  onNone: () => selectedStrategy,
                   onSome: (worktreePath) => ({ type: "existing_worktree", worktreePath }),
                 },
               )
-            : input.workspaceStrategy;
+            : selectedStrategy;
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
+        const holdsIdleWorktree =
+          workspaceStrategy.type === "worktree" && input.initialMessage === undefined;
+        const idleRequestKey = legacyPayloadHash(
+          canonicalLegacyPayload({
+            projectId: input.projectId,
+            workspaceStrategy,
+            runSetupScript: input.runSetupScript !== false,
+            reuseExistingThread: input.reuseExistingThread === true,
+          }),
+        );
+        const idleIntent: IdleWorktreeAdmission.Intent | undefined = holdsIdleWorktree
+          ? {
+              threadId: candidateThreadId,
+              commandId: input.commandId,
+              requestKey: idleRequestKey,
+              generation: yield* randomUuidV4,
+              claimType:
+                input.reuseExistingThread === true ? "thread.metadata.update" : "thread.create",
+            }
+          : undefined;
         const claimDispatch =
           input.reuseExistingThread === true
             ? threads.dispatch({
@@ -2429,98 +2710,191 @@ const make = Effect.gen(function* () {
                   ? {}
                   : { legacyBootstrap: input.legacyBootstrap }),
               });
-        const claimed = yield* claimDispatch.pipe(
-          Effect.mapError(
-            mapError(
-              input,
-              input.reuseExistingThread === true ? "update-thread" : "create-thread",
-              candidateThreadId,
-            ),
-          ),
-        );
+        const claimed =
+          Option.isSome(launchReceipt) && recordedClaim !== undefined
+            ? {
+                sequence: launchReceipt.value.resultSequence,
+                storedEvents: launchEvents,
+                replayed: true,
+              }
+            : yield* claimDispatch.pipe(
+                Effect.provideService(IdleWorktreeAdmission.LaunchIntent, idleIntent),
+                Effect.mapError(
+                  mapError(
+                    input,
+                    input.reuseExistingThread === true ? "update-thread" : "create-thread",
+                    candidateThreadId,
+                  ),
+                ),
+              );
         const threadId =
           claimed.storedEvents.find((stored) => stored.event.type.startsWith("thread."))?.event
             .threadId ?? candidateThreadId;
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
+        if (Option.isSome(conversations)) {
+          if (conversationLaunch && "workspaceRoot" in project) {
+            yield* conversations.value
+              .allocate({
+                threadId,
+                projectId: input.projectId,
+                projectRoot: project.workspaceRoot,
+                ...(workspaceStrategy.type === "auto" && workspaceStrategy.baseRef !== undefined
+                  ? { baseRef: workspaceStrategy.baseRef }
+                  : {}),
+              })
+              .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          } else if (fallbackDriver !== undefined) {
+            yield* ConversationPolicy.observeEagerFallback({
+              threadId,
+              driver: fallbackDriver,
+              reason: "eager: setting or adapter proof unavailable",
+            });
+          }
+        }
+        const idleRecord =
+          idleWorktrees === undefined
+            ? null
+            : yield* idleWorktrees
+                .read(threadId)
+                .pipe(Effect.mapError(mapError(input, "read-receipt", threadId)));
+        if (
+          (holdsIdleWorktree && idleRecord === null) ||
+          (idleRecord !== null &&
+            (idleRecord.commandId !== input.commandId || idleRecord.requestKey !== idleRequestKey))
+        )
+          return yield* mapError(
+            input,
+            "read-receipt",
+            threadId,
+          )("Idle worktree launch has no matching durable preparation identity.");
+        if (idleRecord !== null)
+          yield* resumeIdlePreparation({ ...input, workspaceStrategy }, idleRecord);
         let runId: RunId | null = null;
         let messageWasAlreadyAccepted = false;
         if (input.initialMessage !== undefined) {
-          const messageCommandId = CommandId.make(`${input.commandId}:initial-message`);
-          const messageReceipt = yield* readReceipt(input, messageCommandId);
-          messageWasAlreadyAccepted = Option.isSome(messageReceipt);
+          const messageCommandId = initialMessageCommandId(input.commandId);
+          const messageReceipt =
+            replayMessageReceipt ?? (yield* readReceipt(input, messageCommandId));
+          const messageEvents =
+            replayMessageEvents ??
+            (Option.isSome(messageReceipt) && messageReceipt.value.status === "accepted"
+              ? yield* eventSink
+                  .readByCommandId({ commandId: messageCommandId })
+                  .pipe(
+                    Stream.runCollect,
+                    Effect.mapError(mapError(input, "read-receipt", threadId)),
+                  )
+              : []);
+          const recordedMessage =
+            recordedInitialMessage ??
+            (Option.isSome(messageReceipt)
+              ? recordedLaunchMessage(input, messageReceipt.value, messageEvents, threadId)
+              : undefined);
+          if (Option.isSome(messageReceipt) && recordedMessage === undefined) {
+            const receipt = messageReceipt.value;
+            return yield* mapError(
+              input,
+              "dispatch-message",
+              threadId,
+            )(
+              receipt.status === "rejected" &&
+                receipt.commandId === messageCommandId &&
+                receipt.commandType === "message.dispatch" &&
+                receipt.threadId === threadId
+                ? new Orchestrator.OrchestratorCommandPreviouslyRejectedError({
+                    commandId: receipt.commandId,
+                    commandType: receipt.commandType,
+                    detail: receipt.error ?? "Previously rejected.",
+                  })
+                : "The initial message has no matching accepted immutable receipt; preserve its original identity.",
+            );
+          }
+          messageWasAlreadyAccepted = recordedMessage !== undefined;
           const messageId =
+            recordedMessage?.message.id ??
             input.initialMessage.messageId ??
             (yield* ids.allocate
               .message({ threadId, ordinal: 1 })
               .pipe(Effect.mapError(mapError(input, "dispatch-message", threadId))));
           const inheritedDispatchLimit = yield* DispatchModeLimit;
-          const dispatched = yield* threads
-            .dispatch({
-              type: "message.dispatch",
-              commandId: messageCommandId,
-              threadId,
-              messageId,
-              text: input.initialMessage.text,
-              ...(input.initialMessage.scheduledTaskId === undefined
-                ? {}
-                : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
-              ...(input.initialMessage.senderThreadId === undefined
-                ? {}
-                : { senderThreadId: input.initialMessage.senderThreadId }),
-              attachments: input.initialMessage.attachments,
-              ...(input.initialMessage.context ? { context: input.initialMessage.context } : {}),
-              ...(input.initialMessage.titleSeed === undefined
-                ? input.generateTitle === true
-                  ? { titleSeed: input.title }
-                  : {}
-                : { titleSeed: input.initialMessage.titleSeed }),
-              ...(input.initialMessage.sourcePlanRef === undefined
-                ? {}
-                : { sourcePlanRef: input.initialMessage.sourcePlanRef }),
-              modelSelection: input.modelSelection,
-              dispatchMode: {
-                type: "defer_start",
-                workspaceStrategy,
-                ...(input.runSetupScript === undefined
-                  ? {}
-                  : { runSetupScript: input.runSetupScript }),
-              },
-              createdBy: input.createdBy,
-              creationSource: input.creationSource,
-              ...(input.legacyBootstrap === undefined
-                ? {}
-                : { legacyBootstrap: input.legacyBootstrap }),
-            })
-            .pipe(
-              // An agent's launch may land on a thread a replay, or a
-              // concurrent launch with the same key, created with broader modes
-              // than it asks for. The orchestrator refuses the message under
-              // the thread's lock. Preserve a stricter caller limit and its
-              // refusal signal. The user's own clients launch into their
-              // own drafts, whatever modes those hold.
-              input.createdBy === "agent"
-                ? Effect.provideService(DispatchModeLimit, {
-                    runtimeMode:
-                      inheritedDispatchLimit !== undefined &&
-                      exceededDispatchModeLimit(inheritedDispatchLimit, {
-                        runtimeMode: input.runtimeMode,
-                        interactionMode: inheritedDispatchLimit.interactionMode,
-                      }) === "runtime"
-                        ? inheritedDispatchLimit.runtimeMode
-                        : input.runtimeMode,
-                    interactionMode:
-                      inheritedDispatchLimit?.interactionMode === "plan"
-                        ? "plan"
-                        : input.interactionMode,
-                    ...(inheritedDispatchLimit?.refused === undefined
+          const dispatched =
+            Option.isSome(messageReceipt) && recordedMessage !== undefined
+              ? {
+                  sequence: messageReceipt.value.resultSequence,
+                  storedEvents: messageEvents,
+                  replayed: true,
+                }
+              : yield* threads
+                  .dispatch({
+                    type: "message.dispatch",
+                    commandId: messageCommandId,
+                    threadId,
+                    messageId,
+                    text: input.initialMessage.text,
+                    ...(input.initialMessage.scheduledTaskId === undefined
                       ? {}
-                      : { refused: inheritedDispatchLimit.refused }),
+                      : { scheduledTaskId: input.initialMessage.scheduledTaskId }),
+                    ...(input.initialMessage.senderThreadId === undefined
+                      ? {}
+                      : { senderThreadId: input.initialMessage.senderThreadId }),
+                    attachments: input.initialMessage.attachments,
+                    ...(input.initialMessage.context
+                      ? { context: input.initialMessage.context }
+                      : {}),
+                    ...(input.initialMessage.titleSeed === undefined
+                      ? input.generateTitle === true
+                        ? { titleSeed: input.title }
+                        : {}
+                      : { titleSeed: input.initialMessage.titleSeed }),
+                    ...(input.initialMessage.sourcePlanRef === undefined
+                      ? {}
+                      : { sourcePlanRef: input.initialMessage.sourcePlanRef }),
+                    modelSelection: input.modelSelection,
+                    dispatchMode:
+                      idleRecord !== null
+                        ? { type: "start_immediately" }
+                        : {
+                            type: "defer_start",
+                            workspaceStrategy,
+                            ...(input.runSetupScript === undefined
+                              ? {}
+                              : { runSetupScript: input.runSetupScript }),
+                          },
+                    createdBy: input.createdBy,
+                    creationSource: input.creationSource,
+                    ...(input.legacyBootstrap === undefined
+                      ? {}
+                      : { legacyBootstrap: input.legacyBootstrap }),
                   })
-                : (effect) => effect,
-              Effect.mapError(mapError(input, "dispatch-message", threadId)),
-            );
+                  .pipe(
+                    // The accepted creation's modes do not widen a fresh message's requested ceiling.
+                    // The orchestrator refuses under the thread lock; preserve the stricter caller limit and refusal signal.
+                    // The user's own clients launch into their own drafts using those drafts' modes.
+                    input.createdBy === "agent"
+                      ? Effect.provideService(DispatchModeLimit, {
+                          runtimeMode:
+                            inheritedDispatchLimit !== undefined &&
+                            exceededDispatchModeLimit(inheritedDispatchLimit, {
+                              runtimeMode: request.runtimeMode,
+                              interactionMode: inheritedDispatchLimit.interactionMode,
+                            }) === "runtime"
+                              ? inheritedDispatchLimit.runtimeMode
+                              : request.runtimeMode,
+                          interactionMode:
+                            inheritedDispatchLimit?.interactionMode === "plan"
+                              ? "plan"
+                              : request.interactionMode,
+                          ...(inheritedDispatchLimit?.refused === undefined
+                            ? {}
+                            : { refused: inheritedDispatchLimit.refused }),
+                        })
+                      : (effect) => effect,
+                    Effect.mapError(mapError(input, "dispatch-message", threadId)),
+                  );
+          // A concurrent retry can read no receipt and still replay the dispatch.
+          messageWasAlreadyAccepted ||= dispatched.replayed === true;
           const runCreated = dispatched.storedEvents.find(
             (stored) => stored.event.type === "run.created",
           );
@@ -2614,7 +2988,8 @@ const make = Effect.gen(function* () {
             }
           }
         }
-        const shouldSchedule = runId === null ? Option.isNone(launchReceipt) : runIsPreparing;
+        const shouldSchedule =
+          idleRecord === null && (runId === null ? Option.isNone(launchReceipt) : runIsPreparing);
         const boundWorktreePath = projection.thread.worktreePath;
         const preparationStrategy: ThreadLaunchWorkspaceStrategy =
           Option.isSome(launchReceipt) &&
@@ -2712,7 +3087,11 @@ const make = Effect.gen(function* () {
         return {
           threadId,
           projection,
-          resumed: Option.isSome(launchReceipt) || messageWasAlreadyAccepted,
+          // A message launch resumes only its accepted message; an idle launch resumes its claim.
+          resumed:
+            input.initialMessage === undefined
+              ? Option.isSome(launchReceipt) || claimed.replayed === true
+              : messageWasAlreadyAccepted,
         };
       });
     },
@@ -2843,6 +3222,7 @@ const make = Effect.gen(function* () {
     checkWorktreeBase,
     prepareRun,
     launch,
+    getDeliveryEvidence: (input) => launchDeliveryEvidence(receipts, eventSink, input),
     retryPreparation,
   });
 });

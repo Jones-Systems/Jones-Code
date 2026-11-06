@@ -14,7 +14,7 @@ vi.mock("./ProductionExactSourceUpdateAction", () => ({
   ProductionExactSourceUpdateAction: () => null,
 }));
 
-const environment = (id: string, sha = "b".repeat(40), version = branding.APP_VERSION) => ({
+const environment = (id: string, sha = "b".repeat(40), version = "0.0.45-preview.20261009.1") => ({
   environmentId: EnvironmentId.make(id),
   label: id,
   serverConfig: {
@@ -24,7 +24,12 @@ const environment = (id: string, sha = "b".repeat(40), version = branding.APP_VE
       platform: { os: "linux", arch: "x64" } as const,
       capabilities: { repositoryIdentity: true },
       serverVersion: version,
-      jonesBuildStartedAt: "2026-10-20T21:13:47Z",
+      jonesBuildStartedAt:
+        version === branding.APP_VERSION
+          ? branding.APP_BUILD_STARTED_AT
+          : version === "0.0.45-preview.20261009.1"
+            ? "2026-10-20T21:13:40Z"
+            : "2026-10-21T21:13:47Z",
       jonesSource: { repository: "Jones-Systems/Jones-Code" as const, sha, tree: sha },
     },
   },
@@ -59,6 +64,29 @@ function cleanDismissals(): Disposable {
 }
 
 describe("client notice environment lifecycle", () => {
+  it("acknowledges a build pair across mounted conversations and shows changed builds again", async () => {
+    using _dismissals = cleanDismissals();
+    const props = (version = "0.0.45-preview.20261009.1") => ({
+      activeEnvironment: environment("Shared VPS", "b".repeat(40), version),
+      automaticEnvironment: false,
+      eligibleEnvironments: [],
+    });
+    await using first = await render(bannerUi(props()));
+    await using second = await render(bannerUi(props()));
+    expect(first.container.querySelectorAll("section")).toHaveLength(1);
+    expect(second.container.querySelectorAll("section")).toHaveLength(1);
+    await act(() => first.container.querySelector("button")!.click());
+    expect(first.container.firstChild).toBeNull();
+    expect(second.container.firstChild).toBeNull();
+    await using openedLater = await render(bannerUi(props()));
+    expect(openedLater.container.firstChild).toBeNull();
+    await second.rerender(bannerUi(props("0.0.45-preview.20261011.1")));
+    expect(second.container.textContent).toContain("Shared VPS: Client update available");
+    expect(first.container.firstChild).toBeNull();
+    await second.rerender(bannerUi(props()));
+    expect(second.container.firstChild).toBeNull();
+  });
+
   it("selects active or every eligible automatic environment", async () => {
     using _dismissals = cleanDismissals();
     const active = environment("Active");
@@ -70,13 +98,15 @@ describe("client notice environment lifecycle", () => {
         eligibleEnvironments: eligible,
       }),
     );
-    expect(screen.container.innerHTML).toContain("Active");
+    expect(screen.container.textContent).toContain("Active: Server update available");
     expect(screen.container.innerHTML).not.toContain("Eligible");
     expect(screen.container.innerHTML).toContain("Client");
     expect(screen.container.innerHTML).toContain("Server");
     expect(screen.container.innerHTML).toContain("aaaaaaaaaaaa");
     expect(screen.container.innerHTML).toContain("1020·1713:43");
-    expect(screen.container.innerHTML).toContain("1020·1713:47");
+    expect(screen.container.innerHTML).toContain("1020·1713:40");
+    expect(screen.container.textContent).not.toContain(branding.APP_VERSION);
+    expect(screen.container.textContent).not.toContain("0.0.45-preview.20261009.1");
     expect(
       [...screen.container.querySelectorAll("button")].map((button) => button.textContent),
     ).toEqual(["Dismiss client version notice"]);
@@ -100,7 +130,7 @@ describe("client notice environment lifecycle", () => {
     expect(screen.container.firstChild).toBeNull();
   });
 
-  it("targets this app's own full source, and only for a preview source difference", async () => {
+  it("targets this app's own full source, and only for an older preview server", async () => {
     using _dismissals = cleanDismissals();
     const targets: unknown[] = [];
     const props = (active: ReturnType<typeof environment>): ClientUpdateBannerInput => ({
@@ -122,15 +152,18 @@ describe("client notice environment lifecycle", () => {
     expect(
       [...screen.container.querySelectorAll("button")].map((button) => button.textContent),
     ).toEqual(["Download aaaaaaa", "Dismiss client version notice"]);
-    // A newer stable server and equal sources never offer a download.
+    // Newer servers, equal sources and conflicting identities never offer a download.
     targets.length = 0;
     for (const quiet of [
       environment("Stable", "c".repeat(40), "0.0.46"),
       environment("Equal", branding.APP_SOURCE_SHA),
+      environment("Newer preview", "c".repeat(40), "0.0.45-preview.20261011.1"),
+      environment("Identity conflict", "c".repeat(40), branding.APP_VERSION),
     ])
       await screen.rerender(bannerUi(props(quiet)));
     expect(targets).toEqual([]);
     expect(screen.container.innerHTML).not.toContain("Download");
+    expect(screen.container.innerHTML).toContain("Preview build identity mismatch");
   });
 
   it("dismisses a notice together with its action and leaves other notices' actions", async () => {

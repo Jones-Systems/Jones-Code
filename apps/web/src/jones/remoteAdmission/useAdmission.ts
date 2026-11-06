@@ -48,6 +48,7 @@ function watch(store: ReturnType<typeof createAdmissionStore>) {
 export function useAdmission(environmentId: EnvironmentId) {
   const store = storeFor(environmentId);
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the selected environment admission watcher for the mounted consumer.
   useEffect(() => watch(store), [store]);
   return { ...state, store };
 }
@@ -82,6 +83,7 @@ export function useAdmissionOverview() {
     },
   };
   const value = useSyncExternalStore(overview.subscribe, overview.getSnapshot);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own admission watchers for the current environment overview and release them when the catalog changes.
   useEffect(() => overview.watch(), [overview]);
   const [held, unknown, capped] = value.split(":").map(Number);
   return { held: held ?? 0, unknown: unknown ?? 0, capped: capped === 1 };

@@ -67,12 +67,12 @@ describe("legacy queue compatibility on the existing dispatch RPC", () => {
     },
   };
   it("preserves the complete closed legacy command and final guard without changing method identity", () => {
-    expect(Schema.decodeUnknownSync(rpc.payloadSchema)(payload)).toEqual(payload);
+    expect(Schema.decodeSync(rpc.payloadSchema)(payload)).toEqual(payload);
   });
   it("rejects undeclared bootstrap fields while preserving native V2 excess-field behavior", () => {
     expect(
       Exit.isFailure(
-        Schema.decodeUnknownExit(rpc.payloadSchema)({
+        Schema.decodeExit(rpc.payloadSchema)({
           ...payload,
           bootstrap: { ...payload.bootstrap, transport: "legacy_websocket" },
         }),
@@ -80,7 +80,7 @@ describe("legacy queue compatibility on the existing dispatch RPC", () => {
     ).toBe(true);
     expect(
       Exit.isSuccess(
-        Schema.decodeUnknownExit(rpc.payloadSchema)({
+        Schema.decodeExit(rpc.payloadSchema)({
           type: "checkpoint.rollback",
           commandId: "native:rollback",
           threadId: "native:T",
@@ -95,9 +95,7 @@ describe("legacy queue compatibility on the existing dispatch RPC", () => {
     "rejects a caller-controlled %s field instead of discarding it",
     (key) => {
       expect(
-        Exit.isFailure(
-          Schema.decodeUnknownExit(rpc.payloadSchema)({ ...payload, [key]: "forged" }),
-        ),
+        Exit.isFailure(Schema.decodeExit(rpc.payloadSchema)({ ...payload, [key]: "forged" })),
       ).toBe(true);
     },
   );

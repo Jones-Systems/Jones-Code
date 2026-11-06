@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import { act, render } from "../../../test/render";
 import { page, userEvent } from "vite-plus/test/browser";
 import Sidebar from "../../components/Sidebar";
+import type { SidebarRouteReveal } from "../../components/sidebar/routeReveal";
 import { Sidebar as SidebarFrame, SidebarProvider } from "../../components/ui/sidebar";
 import { TooltipProvider } from "../../components/ui/tooltip";
 import {
@@ -234,13 +235,14 @@ async function setupFixture() {
 }
 
 async function renderSidebar() {
+  const routeReveal: SidebarRouteReveal = { observedKey: null, pendingKey: null };
   const route = createRootRoute({
     component: () => (
       <RegistryProvider>
         <TooltipProvider>
           <SidebarProvider>
             <SidebarFrame>
-              <Sidebar />
+              <Sidebar routeReveal={routeReveal} />
             </SidebarFrame>
           </SidebarProvider>
         </TooltipProvider>

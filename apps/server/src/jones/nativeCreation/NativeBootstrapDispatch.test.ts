@@ -46,7 +46,7 @@ const principal = {
   scopes: new Set(["orchestration:operate" as const]),
 };
 const fixture = Effect.gen(function* () {
-  const binding = yield* Schema.decodeUnknownEffect(NativePreparationBinding)({
+  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
     backend_instance: "synthetic-backend",
     environment_id: "synthetic-environment",
     project_id: "synthetic-project",
@@ -77,7 +77,7 @@ const fixture = Effect.gen(function* () {
     command_digest: nativeCreationSha256(nativeCreationCanonicalJson(command)),
   });
   const preparation = yield* validateNativeCreationPreparation(new TextEncoder().encode(canonical));
-  const historical = yield* Schema.decodeUnknownEffect(NativeCreationHistoricalBinding)({
+  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -285,9 +285,9 @@ it.effect(
       assert.isTrue(Option.isSome(reservation));
       if (Option.isNone(reservation))
         return yield* Effect.die("Expected accepted create reservation");
-      const create = yield* Schema.decodeUnknownEffect(
-        Schema.fromJsonString(OrchestrationV2Command),
-      )(reservation.value.canonicalCommand);
+      const create = yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2Command))(
+        reservation.value.canonicalCommand,
+      );
       assert.strictEqual(create.type, "thread.create");
       if (create.type !== "thread.create") return yield* Effect.die("Expected thread creation");
       const token = yield* Stage.issueNativeCreationStage(reservation.value.claimId, create).pipe(
@@ -357,7 +357,7 @@ it.effect("public dispatch refuses permanent native IDs before bodies are reserv
         yield* configured.repository.getReservedCommand(value.preparation.command.commandId),
       ),
     );
-    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+    const command = yield* Schema.decodeEffect(OrchestrationV2Command)({
       type: "thread.create",
       commandId: value.preparation.command.commandId,
       threadId: value.preparation.command.threadId,

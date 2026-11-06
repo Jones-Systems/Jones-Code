@@ -341,7 +341,7 @@ function resolveImport(
   const assetSpecifier = specifier.replace(/\?(?:url|raw|inline)(?:&no-inline)?$/, "");
   if (specifier.startsWith("."))
     candidate = NodePath.posix.join(NodePath.posix.dirname(from), assetSpecifier);
-  else if (specifier.startsWith("~/") && /^apps\/[^/]+\/src\//.test(from))
+  else if (specifier.startsWith("~/") && /^apps\/[^/]+\//.test(from))
     candidate = `${from.split("/").slice(0, 2).join("/")}/src/${specifier.slice(2)}`;
   else candidate = aliases.get(specifier);
   const internal =

@@ -111,7 +111,8 @@ machine's current LAN and Tailscale addresses and adds them as routes, so
 pairing once through T3 Connect is enough to use the LAN at home. When the
 machine's LAN address changes, for example after it joins another Wi-Fi network,
 the learned route follows it. The machine must allow network access for its LAN
-address to be learned. You can reorder a learned route, but not remove it; it
+address to be learned. The [background service](./background-service.md#local-network-access)
+allows it on private networks by default. You can reorder a learned route, but not remove it; it
 goes away with the route it was learned through, or when the machine stops
 reporting that address.
 
@@ -331,6 +332,7 @@ The evaluator runs without task tools. Qualified Claude instances and managed
 Codex instances with ChatGPT authorization support evaluation. CLI-backed Codex
 instances are excluded because their public integration cannot disable all task
 tools. An existing CLI login does not automatically authorize managed Codex.
+Settings lists configured instances that cannot be selected, with the reason each one reports.
 
 If evaluation fails or is interrupted, the request remains held as an evaluator
 service failure. New failures include a reason such as a timeout, account-access

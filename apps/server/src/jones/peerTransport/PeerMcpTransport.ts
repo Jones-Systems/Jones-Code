@@ -23,6 +23,14 @@ import {
   type LinkedMessageOrigin,
 } from "./LinkedMessageOrigin.ts";
 import * as InFlight from "./InFlight.ts";
+import {
+  fitLinkedRequestContext,
+  LINKED_REQUEST_CONTEXT_HEADER,
+  PEER_REQUEST_HEADER_BUDGET,
+  REQUEST_CONTEXT_MAX_SENT_CHARS,
+  requestHeaderBytes,
+  UNCONTROLLED_HEADER_ALLOWANCE,
+} from "./LinkedRequestContext.ts";
 
 export interface SendReceiptLookupInput<S extends Schema.Decoder<unknown>> {
   readonly environmentId: EnvironmentId;
@@ -181,7 +189,11 @@ const readEnvelope = Effect.fn("PeerMcpTransport.readEnvelope")(function* (
     const refused = decodeFailure(envelope.error.data);
     return yield* refused._tag === "Some"
       ? new OrchestratorMcpFailure(refused.value)
-      : new OrchestratorMcpFailure({ code: "invalid_request", message: envelope.error.message });
+      : new OrchestratorMcpFailure({
+          code: "orchestration_error",
+          message:
+            "The linked environment reported an unrecognized RPC error. The call was not replayed; its outcome remains uncertain.",
+        });
   }
   return envelope;
 });
@@ -416,6 +428,33 @@ export const make = Effect.gen(function* () {
         } = yield* sessionFor(input.environmentId, resolved, limitHeader);
         const id = yield* nextId;
         yield* requireCurrent(input.environmentId, resolved.generation);
+        const headers: Record<string, string> = {
+          ...limitHeader,
+          ...(input.origin === undefined
+            ? {}
+            : { [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin) }),
+          "mcp-session-id": session.id,
+          "mcp-protocol-version": PROTOCOL_VERSION,
+        };
+        if (input.context !== undefined) {
+          const room =
+            PEER_REQUEST_HEADER_BUDGET -
+            UNCONTROLLED_HEADER_ALLOWANCE -
+            requestHeaderBytes({
+              accept: "application/json, text/event-stream",
+              authorization: `Bearer ${resolved.token}`,
+              ...headers,
+            }) -
+            (Buffer.byteLength(LINKED_REQUEST_CONTEXT_HEADER, "utf8") + 4);
+          const fitted =
+            room > 0
+              ? fitLinkedRequestContext(
+                  input.context,
+                  Math.min(REQUEST_CONTEXT_MAX_SENT_CHARS, room),
+                )
+              : undefined;
+          if (fitted !== undefined) headers[LINKED_REQUEST_CONTEXT_HEADER] = fitted;
+        }
         const response = yield* post(
           resolved.url,
           resolved.token,
@@ -425,16 +464,7 @@ export const make = Effect.gen(function* () {
             method: "tools/call",
             params: { name: input.tool, arguments: input.arguments },
           },
-          {
-            ...limitHeader,
-            ...(input.origin === undefined
-              ? {}
-              : {
-                  [LINKED_MESSAGE_ORIGIN_HEADER]: encodeLinkedMessageOrigin(input.origin),
-                }),
-            "mcp-session-id": session.id,
-            "mcp-protocol-version": PROTOCOL_VERSION,
-          },
+          headers,
         );
         if (response.status === 404) {
           yield* Effect.sync(() => {
@@ -478,7 +508,7 @@ export const make = Effect.gen(function* () {
             ? // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
               Schema.decodeUnknownEffect(input.success)(result.structuredContent)
             : // oxlint-disable-next-line t3code/no-inline-schema-compile -- The caller supplies its result schema per invocation.
-              Schema.decodeUnknownEffect(Schema.fromJsonString(input.success))(text)
+              Schema.decodeEffect(Schema.fromJsonString(input.success))(text)
         ).pipe(
           Effect.mapError(
             () =>

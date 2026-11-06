@@ -4,20 +4,41 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   PreviewAutomationRuntimeIdentity,
   PreviewAutomationHost,
-  PreviewAutomationOpenInput,
   PreviewAutomationStatus,
 } from "./previewAutomation.ts";
+import { PreviewSessionSnapshot, PreviewEvent } from "./preview.ts";
+const decodeSessionSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
+const decodePreviewEvent = Schema.decodeUnknownSync(PreviewEvent);
 
-const decodeOpenInput = Schema.decodeUnknownSync(PreviewAutomationOpenInput);
+describe("PreviewSessionSnapshot headless compatibility", () => {
+  const legacy = {
+    threadId: "thread",
+    tabId: "tab",
+    runtime: "server",
+    navStatus: { _tag: "Idle" },
+    canGoBack: false,
+    canGoForward: false,
+    updatedAt: "2026-11-03T00:00:00.000Z",
+  };
+  it.each([undefined, false, true])("decodes headless=%s in snapshots and events", (headless) => {
+    const snapshot = { ...legacy, ...(headless === undefined ? {} : { headless }) };
+    expect(decodeSessionSnapshot(snapshot)).toEqual(snapshot);
+    const event = {
+      type: "resized",
+      threadId: "thread",
+      tabId: "tab",
+      createdAt: legacy.updatedAt,
+      serverEpoch: "server-epoch",
+      revision: 1,
+      snapshot,
+    };
+    expect(decodePreviewEvent(event)).toEqual(event);
+  });
+});
+
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
 const decodeAutomationStatus = Schema.decodeUnknownSync(PreviewAutomationStatus);
 const decodeRuntimeIdentity = Schema.decodeUnknownSync(PreviewAutomationRuntimeIdentity);
-
-describe("PreviewAutomationOpenInput", () => {
-  it("retains the legacy show visibility alias", () => {
-    expect(decodeOpenInput({ show: false })).toEqual({ show: false });
-  });
-});
 
 describe("PreviewAutomationHost", () => {
   it("accepts legacy hosts and current operation advertisements", () => {

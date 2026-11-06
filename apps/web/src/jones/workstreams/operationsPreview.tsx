@@ -170,9 +170,11 @@ function Scenario() {
   const [reason, setReason] = useState<keyof typeof sourceReasonLabels | "ready">("ready");
   const [runtime] = useState(createScenarioRuntime);
   const client = runtime.operations;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed preview mode to the external synthetic operation runtime.
   useEffect(() => {
     runtime.setMode(mode);
   });
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the preview operation subscription and abort its watcher when the preview unmounts.
   useEffect(() => {
     const abort = new AbortController();
     const unsubscribe = client.subscribe(() => {

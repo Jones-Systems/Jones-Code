@@ -331,8 +331,7 @@ function isClaudeSdkReplayMessage(frame: unknown): frame is SDKMessage {
     type === "system" ||
     type === "stream_event" ||
     type === "rate_limit_event" ||
-    // Undeclared in the SDK types: queued/started/completed for each prompt
-    // that carries a uuid.
+    // The SDK types omit command_lifecycle for prompt uuids.
     type === "command_lifecycle"
   );
 }
@@ -486,7 +485,14 @@ function makeClaudeSessionForkFrame(
 
 function makeReplayQueryRunner(
   transcript: ClaudeAgentSdkReplayTranscript,
-  replayOptions: { readonly replayGate?: ProviderReplayGate } = {},
+  replayOptions: {
+    readonly replayGate?: ProviderReplayGate;
+    readonly retirementForQuery?: (input: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput) => {
+      readonly interrupt?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["interrupt"];
+      readonly close?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["close"];
+      readonly termination?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["termination"];
+    };
+  } = {},
 ): ClaudeQueryRunner {
   let cursor = 0;
   let failure: ClaudeAgentSdkReplayError | null = null;
@@ -513,16 +519,20 @@ function makeReplayQueryRunner(
     }
   };
 
-  const advance = () => {
-    cursor += 1;
+  const wakeCursorWaiters = () => {
     const signal = cursorAdvanced;
     cursorAdvanced = makeCursorSignal();
     signal.resolve();
+  };
+  const advance = () => {
+    cursor += 1;
+    wakeCursorWaiters();
   };
 
   async function* replayMessages(
     options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
     signal: AbortSignal,
+    isClosing: () => boolean,
   ): AsyncGenerator<SDKMessage, void> {
     while (true) {
       throwIfFailed();
@@ -611,6 +621,7 @@ function makeReplayQueryRunner(
       }
 
       if (entry.type === "expect_outbound") {
+        if (isClosing()) return;
         await waitForCursorAdvance(cursorAdvanced.promise, signal);
         throwIfFailed();
         if (signal.aborted) {
@@ -623,11 +634,12 @@ function makeReplayQueryRunner(
 
   const replayMessagesWithGateCleanup = (
     options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+    isClosing: () => boolean,
   ): AsyncIterable<SDKMessage> => ({
     [Symbol.asyncIterator]: () => {
       const abortController = new AbortController();
       iteratorAbortControllers.add(abortController);
-      const iterator = replayMessages(options, abortController.signal);
+      const iterator = replayMessages(options, abortController.signal, isClosing);
       return {
         next: async () => {
           try {
@@ -654,10 +666,7 @@ function makeReplayQueryRunner(
     },
   });
 
-  // Prompt uuids are derived from ids that differ between the recording and
-  // a replay run, so a matched prompt offer maps the recorded uuid to the
-  // replayed one, and inbound frames echoing or acknowledging it are
-  // rewritten to match.
+  // Prompt uuids differ on replay; rewrite inbound echoes and acknowledgements to match.
   const promptUuidReplacements = new Map<string, string>();
   const replayedPromptUuid = (value: string): string => promptUuidReplacements.get(value) ?? value;
   const withReplayedPromptUuids = (frame: unknown): unknown => {
@@ -808,9 +817,12 @@ function makeReplayQueryRunner(
   return {
     open: (input) => {
       assertNextOutboundFrame(makeClaudeQueryOpenFrame(input));
+      const retirement = replayOptions.retirementForQuery?.(input);
+      let closing = false;
       return {
-        messages: Stream.fromAsyncIterable(replayMessagesWithGateCleanup(input.options), (cause) =>
-          replayQueryRunnerError(transcript, cause),
+        messages: Stream.fromAsyncIterable(
+          replayMessagesWithGateCleanup(input.options, () => closing),
+          (cause) => replayQueryRunnerError(transcript, cause),
         ),
         offer: (message) =>
           replayEffect(() => {
@@ -845,10 +857,20 @@ function makeReplayQueryRunner(
           replayEffect(() => {
             assertNextOutboundFrame({ type: "query.background_tasks", toolUseId });
           }).pipe(Effect.as(true)),
+        termination: retirement?.termination ?? Effect.void,
         interrupt: replayEffect(() => {
           assertNextOutboundFrame({ type: "query.interrupt" });
-        }),
-        close: Effect.void,
+        }).pipe(Effect.andThen(retirement?.interrupt ?? Effect.void)),
+        close: (retirement?.close ?? Effect.void).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              // Drain queued inbound evidence, then end only this query at its next
+              // protocol boundary. A failed close retains its original raw reader.
+              closing = true;
+              wakeCursorWaiters();
+            }),
+          ),
+        ),
       };
     },
     forkSession: (input) => {
@@ -923,22 +945,6 @@ function replayQueryRunnerError(
   });
 }
 
-const makeClaudeAgentSdkReplayQueryRunner = Effect.fn("ClaudeAgentSdkReplayQueryRunner.layer")(
-  function* (
-    transcript: ClaudeAgentSdkReplayTranscript,
-    options: { readonly replayGate?: ProviderReplayGate } = {},
-  ) {
-    const queryRunner = makeReplayQueryRunner(transcript, options);
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        queryRunner.assertComplete();
-      }),
-    );
-
-    return replayQueryRunnerService(transcript, queryRunner);
-  },
-);
-
 function replayQueryRunnerService(
   transcript: ClaudeAgentSdkReplayTranscript,
   queryRunner: ClaudeQueryRunner,
@@ -955,16 +961,6 @@ function replayQueryRunnerService(
     subagentLaunchToolUseId: (input) => replay(() => queryRunner.subagentLaunchToolUseId(input)),
     assertComplete: replay(() => queryRunner.assertComplete()),
   });
-}
-
-function layerClaudeAgentSdkReplayQueryRunner(
-  transcript: ClaudeAgentSdkReplayTranscript,
-  options: { readonly replayGate?: ProviderReplayGate } = {},
-): Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunner> {
-  return Layer.effect(
-    ClaudeAdapterV2.ClaudeAgentSdkQueryRunner,
-    makeClaudeAgentSdkReplayQueryRunner(transcript, options),
-  );
 }
 
 function layerClaudeAgentSdkReplay(
@@ -994,12 +990,7 @@ function layerClaudeAgentSdkReplay(
   );
 }
 
-/**
- * While a foreground Bash call runs, Claude Code writes its output to a task
- * file the adapter tails. A replay has no Claude Code process, so it writes the
- * file each recorded `task_started` names, holding that call's recorded output,
- * under a scenario-owned `CLAUDE_CODE_TMPDIR`.
- */
+/** Replays write recorded Bash output to task_started files under a scenario-owned CLAUDE_CODE_TMPDIR. */
 const writeReplayTaskOutputFiles = Effect.fn("ClaudeReplay.writeTaskOutputFiles")(function* (
   transcript: ClaudeAgentSdkReplayTranscript,
 ) {
@@ -1204,8 +1195,7 @@ function sanitizeSdkMessageForReplay(input: {
       session_id: message.session_id,
     };
   }
-  // Like init's slash_commands, the recording account's commands and skills
-  // are local configuration, not protocol.
+  // Recorded commands and skills are account configuration.
   if (message.type === "system" && message.subtype === "commands_changed") {
     return { ...message, commands: [] };
   }
@@ -1499,12 +1489,8 @@ async function recordMessagesUntilToolUse(input: {
   }
 }
 
-// The SDK package may not ship a Claude Code executable for this platform, so
-// recordings prefer the installed `claude` binary when it resolves on PATH to
-// something the SDK can spawn directly, and otherwise leave the SDK's own
-// executable discovery in place. A Windows launcher shim (`claude.cmd` and
-// friends) is not directly spawnable, so it only counts when
-// resolveClaudeSdkExecutablePath can follow it to a real package entry.
+// The SDK may lack a platform executable. Prefer installed Claude only when directly spawnable,
+// including Windows shims resolved to package entries.
 const resolveClaudeRecordingExecutablePath = Effect.fn("resolveClaudeRecordingExecutablePath")(
   function* (environment: NodeJS.ProcessEnv) {
     const resolveExecutable = yield* SpawnExecutableResolution;
@@ -1653,9 +1639,7 @@ async function recordClaudeStreamingQuery(input: {
         frame: makeClaudePromptOfferFrame(message),
       });
       promptQueue.offer(message);
-      // A task notification that lands during a turn queues a wake turn the
-      // CLI can run before this prompt's turn, so results are told apart by
-      // origin rather than by arrival order.
+      // Wake turns can precede the prompt turn; identify results by origin.
       let promptSettled = false;
       let wakes = 0;
       const expectedWakes = input.backgroundWakeCounts?.[index] ?? 0;
@@ -1667,8 +1651,7 @@ async function recordClaudeStreamingQuery(input: {
         }
       }
       if (input.backgroundWakeCounts !== undefined && input.offerNextPromptImmediately !== true) {
-        // Every turn opens with system:init; frames from still-running
-        // subagents are left for the next prompt's recording.
+        // system:init opens each turn; leave ongoing subagent frames for the next recording.
         while (isSystemInitFrame(await iterator.peekWithin(CLAUDE_RECORDING_WAKE_QUIET_MS))) {
           await recordTurn(index + 1);
         }
@@ -2891,8 +2874,11 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
     layerClaudeProviderAdapterRegistryReplay(transcript, options),
 };
 
-export function makeClaudeRestartReplayHarness(transcript: ClaudeAgentSdkReplayTranscript) {
-  const queryRunner = makeReplayQueryRunner(transcript);
+export function makeClaudeRestartReplayHarness(
+  transcript: ClaudeAgentSdkReplayTranscript,
+  options: Parameters<typeof makeReplayQueryRunner>[1] = {},
+) {
+  const queryRunner = makeReplayQueryRunner(transcript, options);
   return {
     harness: {
       ...ClaudeOrchestratorReplayHarness,

@@ -56,6 +56,7 @@ export function WorkstreamAddPrDialog(props: {
     setError(null);
     setPending(null);
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Retire the previous dialog request and focus the new editor when its open-session identity commits.
   useEffect(() => {
     session.current += 1;
     request.current?.abort();

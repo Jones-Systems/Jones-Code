@@ -1,4 +1,5 @@
 import {
+  isDelegatedTaskShownUnderParent,
   pendingSubagentRequestsByThread,
   subagentRequest,
 } from "@t3tools/shared/jones/threadAttention";
@@ -36,10 +37,8 @@ const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<
 > = new Map();
 
 /**
- * Whether a thread shows under its parent rather than in thread lists: a
- * subagent, or a task a linked environment delegated here whose parent the
- * client lists (`delegatedUnderParent`, by thread key). A task whose parent
- * the client cannot list stays in the lists, so its work is never out of reach.
+ * Local subagents and linked tasks in `delegatedUnderParent` show under their parent.
+ * Missing parents and asking tasks without a reachable request badge stay listed.
  */
 export function isShownUnderParent(
   ref: ScopedThreadRef,
@@ -410,10 +409,15 @@ export function createEnvironmentThreadShellAtoms(input: {
     for (const environmentId of environmentIds) {
       for (const thread of get(environmentThreadsAtom(environmentId))) {
         const parent = thread.delegatedFrom;
+        if (parent === undefined) continue;
         if (
-          parent !== undefined &&
-          environmentIds.has(parent.environmentId) &&
-          get(environmentThreadIndexAtom(parent.environmentId)).has(parent.threadId)
+          isDelegatedTaskShownUnderParent(
+            thread,
+            environmentIds.has(parent.environmentId)
+              ? get(environmentThreadIndexAtom(parent.environmentId))
+              : null,
+            get(localSubagentRequestsAtom(environmentId)),
+          )
         ) {
           next.add(threadKey({ environmentId, threadId: thread.id }));
         }

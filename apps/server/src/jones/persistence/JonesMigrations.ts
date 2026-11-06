@@ -50,12 +50,28 @@ import JonesMigration0122 from "./Migrations/122_JonesThreadLinks.ts";
 
 import JonesMigration0123 from "./Migrations/123_JonesWorkspaceLifecycle.ts";
 import JonesMigration0124 from "./Migrations/124_JonesTaskContinuations.ts";
-import JonesMigration0125 from "./Migrations/125_JonesWorkstreamsNative.ts";
-import JonesMigration0126 from "./Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
-import JonesMigration0127 from "./Migrations/127_JonesWorkstreamsRollupAttempts.ts";
-import JonesMigration0128 from "./Migrations/128_JonesWorkstreamsPeerSessionPins.ts";
-import JonesMigration0129 from "./Migrations/129_JonesWorkstreamsMemberBindings.ts";
-import JonesMigration0130 from "./Migrations/130_JonesWorkstreamsForwardReceipts.ts";
+import JonesMigration0129 from "./Migrations/129_JonesCodexFailover.ts";
+
+import JonesMigration0130 from "./Migrations/130_JonesThreadTitleRefinement.ts";
+
+import JonesMigration0132 from "./Migrations/132_JonesOwnerSelections.ts";
+import JonesMigration0133 from "./Migrations/133_JonesThreadResultDependencies.ts";
+import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
+import JonesMigration0135 from "./Migrations/135_JonesIdleWorktreeAdmission.ts";
+import JonesMigration0136 from "./Migrations/136_JonesWorkspaceProvenance.ts";
+import JonesMigration0137 from "./Migrations/137_JonesNativeCreationLeaseRenewal.ts";
+
+import JonesMigration0138 from "./Migrations/138_JonesWorkspaceRetirement.ts";
+import JonesMigration0139 from "./Migrations/139_JonesConversationWorkspace.ts";
+
+// These unpublished allocations follow canonical main. Keep the original
+// effect-module paths and bytes so the native transition fixtures stay pinned.
+import JonesMigration0140 from "./Migrations/125_JonesWorkstreamsNative.ts";
+import JonesMigration0141 from "./Migrations/126_JonesWorkstreamsSourceEnrollments.ts";
+import JonesMigration0142 from "./Migrations/127_JonesWorkstreamsRollupAttempts.ts";
+import JonesMigration0143 from "./Migrations/128_JonesWorkstreamsPeerSessionPins.ts";
+import JonesMigration0144 from "./Migrations/129_JonesWorkstreamsMemberBindings.ts";
+import JonesMigration0145 from "./Migrations/130_JonesWorkstreamsForwardReceipts.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -88,12 +104,22 @@ export const jonesMigrationEntries = [
   [122, "ThreadLinks", JonesMigration0122],
   [123, "WorkspaceLifecycle", JonesMigration0123],
   [124, "TaskContinuations", JonesMigration0124],
-  [125, "WorkstreamsNative", JonesMigration0125],
-  [126, "WorkstreamsSourceEnrollments", JonesMigration0126],
-  [127, "WorkstreamsRollupAttempts", JonesMigration0127],
-  [128, "WorkstreamsPeerSessionPins", JonesMigration0128],
-  [129, "WorkstreamsMemberBindings", JonesMigration0129],
-  [130, "WorkstreamsForwardReceipts", JonesMigration0130],
+  [129, "CodexFailover", JonesMigration0129],
+  [130, "ThreadTitleRefinement", JonesMigration0130],
+  [132, "OwnerSelections", JonesMigration0132],
+  [133, "ThreadResultDependencies", JonesMigration0133],
+  [134, "GoalContinuity", JonesMigration0134],
+  [135, "IdleWorktreeAdmission", JonesMigration0135],
+  [136, "WorkspaceProvenance", JonesMigration0136],
+  [137, "NativeCreationLeaseRenewal", JonesMigration0137],
+  [138, "WorkspaceRetirement", JonesMigration0138],
+  [139, "ConversationWorkspace", JonesMigration0139],
+  [140, "WorkstreamsNative", JonesMigration0125],
+  [141, "WorkstreamsSourceEnrollments", JonesMigration0126],
+  [142, "WorkstreamsRollupAttempts", JonesMigration0127],
+  [143, "WorkstreamsPeerSessionPins", JonesMigration0128],
+  [144, "WorkstreamsMemberBindings", JonesMigration0129],
+  [145, "WorkstreamsForwardReceipts", JonesMigration0130],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {

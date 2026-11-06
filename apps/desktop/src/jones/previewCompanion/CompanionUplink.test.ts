@@ -16,7 +16,7 @@ import {
   type CompanionSocket,
 } from "./UplinkController.ts";
 
-const config = Schema.decodeUnknownSync(DesktopCompanionConfig)({
+const config = Schema.decodeSync(DesktopCompanionConfig)({
   enabled: true,
   environmentId: "env-1",
   hostId: "mini-1",
@@ -64,13 +64,13 @@ class FakeSocket implements CompanionSocket {
     return () => this.errors.delete(listener);
   }
   open() {
-    for (const listener of [...this.opens]) listener();
+    for (const listener of this.opens) listener();
   }
   receive(message: unknown) {
-    for (const listener of [...this.messages]) listener(JSON.stringify(message));
+    for (const listener of this.messages) listener(JSON.stringify(message));
   }
   disconnect(code = 1006) {
-    for (const listener of [...this.closes]) listener(code);
+    for (const listener of this.closes) listener(code);
   }
 }
 
@@ -186,6 +186,35 @@ it("preserves the fixed product role through transport changes and omits it for 
 });
 
 describe("outbound companion lifecycle", () => {
+  it("routes tabless turn activity only for assigned threads and fences stale generations", () => {
+    const f = fixture();
+    const socket = f.connect();
+    socket.receive({ type: "browser", command: { type: "turn", threadId: "other", active: true } });
+    expect(f.commands).toEqual([]);
+    socket.receive({
+      type: "browser",
+      command: { type: "turn", threadId: tab.threadId, active: true },
+    });
+    socket.receive({
+      type: "browser",
+      command: { type: "turn", threadId: tab.threadId, active: false },
+    });
+    expect(f.commands.map(({ command }) => command)).toEqual([
+      { type: "turn", threadId: tab.threadId, active: true },
+      { type: "turn", threadId: tab.threadId, active: false },
+    ]);
+    expect(f.commands.every(({ current }) => current())).toBe(true);
+    socket.receive({ type: "assignments", tabs: [] });
+    expect(f.commands.every(({ current }) => !current())).toBe(true);
+    socket.receive({
+      type: "browser",
+      command: { type: "turn", threadId: tab.threadId, active: true },
+    });
+    expect(f.commands).toHaveLength(2);
+    socket.disconnect();
+    f.controller.dispose();
+  });
+
   it("waits for renderer readiness, binds a fresh ticket, and sends its process identity", () => {
     const f = fixture();
     expect(f.requests).toHaveLength(0);
@@ -219,7 +248,7 @@ describe("outbound companion lifecycle", () => {
       environmentId:
         config.environmentId === null
           ? old.environmentId
-          : Schema.decodeUnknownSync(DesktopCompanionConfig)({ ...config, environmentId: "other" })
+          : Schema.decodeSync(DesktopCompanionConfig)({ ...config, environmentId: "other" })
               .environmentId!,
       result: { _tag: "ready", url },
     });

@@ -136,4 +136,14 @@ describe("Jones composer thread matching", () => {
       ]),
     ).toEqual(["exact", "partial-0", "partial-1", "partial-2", "partial-3"]);
   });
+
+  it("excludes only subagents while keeping forks and older shells without lineage", () => {
+    expect(
+      matches("model", [
+        shell("subagent", "Model review", { lineage: { relationshipToParent: "subagent" } }),
+        shell("fork", "Model review", { lineage: { relationshipToParent: "fork" } }),
+        shell("legacy", "Model review"),
+      ]),
+    ).toEqual(["fork", "legacy"]);
+  });
 });

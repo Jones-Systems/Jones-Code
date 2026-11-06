@@ -1,4 +1,5 @@
 import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -1303,3 +1304,147 @@ historicalTest(
     });
   },
 );
+
+for (const target of ["fixture", "migration"]) {
+  NodeTest.test(
+    `actual ${target} import loader drains rejected siblings and retains unfinished preflight custody`,
+    (t) => {
+      const base = NodeFS.mkdtempSync(
+        NodePath.join(process.env.TMPDIR ?? "/var/tmp", "import-barrier-"),
+      );
+      const identity = NodeFS.lstatSync(base);
+      let childClosed = false;
+      t.after(() => {
+        if (childClosed && !NodeFS.existsSync(NodePath.join(base, "retained.json"))) {
+          const current = NodeFS.lstatSync(base);
+          NodeAssert.equal(current.dev, identity.dev);
+          NodeAssert.equal(current.ino, identity.ino);
+          NodeAssert.equal(current.uid, identity.uid);
+          NodeFS.rmSync(base, { recursive: true });
+        } else t.diagnostic(`retained synthetic import evidence/root: ${base}`);
+      });
+      const driver = NodePath.join(base, "driver.mjs");
+      NodeFS.writeFileSync(
+        driver,
+        `
+import * as A from "node:assert/strict";
+import * as FS from "node:fs";
+import * as Path from "node:path";
+import * as URL from "node:url";
+import * as Crypto from "node:crypto";
+import { mock } from "node:test";
+const directory = ${JSON.stringify(directory)};
+const base = ${JSON.stringify(base)};
+const sourcesURL = URL.pathToFileURL(Path.join(directory, "sources.mjs")).href;
+const originals = await import(sourcesURL);
+mock.module(sourcesURL, { namedExports: { ...originals,
+  assertQualificationDatabaseSource: (source) => source,
+  assertCurrentDatabaseSource: (source) => source,
+} });
+const { probeHistoricalFixtureImports } = await import(URL.pathToFileURL(Path.join(directory, "fixtures-historical-worker.mjs")));
+const { probeMigrationRestoreImports } = await import(URL.pathToFileURL(Path.join(directory, "migration-restore-worker.mjs")));
+const { installHistoricalResolutionGuard } = await import(URL.pathToFileURL(Path.join(directory, "historical-resolution.mjs")));
+const { consumeHistoricalImportPreflight, finalizeHistoricalImportPreflight, historicalQualificationClosureKnown } = await import(URL.pathToFileURL(Path.join(directory, "qualify-historical.mjs")));
+const { createHistoricalPreparation, finishHistoricalPreparation, cleanupHistoricalPreparation } = await import(URL.pathToFileURL(Path.join(directory, "historical-preparation.mjs")));
+const modes = ["drain", "deadline"];
+const retained = [];
+for (const [worker, probe] of [["fixture", (source, options) => probeHistoricalFixtureImports(source, options)], ["migration", (source, options) => probeMigrationRestoreImports(source, false, options)]].filter(([worker]) => worker === ${JSON.stringify(target)})) {
+ for (const mode of modes) {
+  const home = Path.join(base, worker + "-" + mode);
+  FS.mkdirSync(home); FS.mkdirSync(Path.join(home, "runs")); FS.mkdirSync(Path.join(home, "evidence"));
+  const owner = createHistoricalPreparation({ parentPath: Path.join(home, "runs"), evidenceParent: Path.join(home, "evidence"), taskId: "synthetic-import-barrier", runId: "one", retention: "release-after-closed-evidence", bounds: { maxBytes: 1048576, maxEntries: 1000, maxFileBytes: 65536, maxCacheBytes: 65536, maxOutputBytes: 131072, deadlineMs: 4000, terminateGraceMs: 100, reapTimeoutMs: 1000, maxProcesses: 4, estimatedPeakBytes: 10 * 1024 ** 3 } });
+  const root = Path.join(owner.creation.root, "sources/history");
+  const write = (relative, text) => { const path = Path.join(root, relative); FS.mkdirSync(Path.dirname(path), { recursive: true }); FS.writeFileSync(path, text); };
+  write("package.json", '{"name":"synthetic-source","type":"module"}');
+  write("apps/server/package.json", '{"name":"synthetic-server","type":"module"}');
+  write("pnpm-lock.yaml", "packages:\\n  effect@1.0.0:\\n    resolution: {}\\n  '@effect/platform-node@1.0.0':\\n    resolution: {}\\nsnapshots: {}\\n");
+  write("node_modules/effect/package.json", '{"name":"effect","version":"1.0.0","type":"module","exports":{"./*":"./*.mjs"}}');
+  write("node_modules/@effect/platform-node/package.json", '{"name":"@effect/platform-node","version":"1.0.0","type":"module","exports":{"./NodeServices":"./NodeServices.mjs"}}');
+  write("node_modules/@effect/platform-node/NodeServices.mjs", 'export const fake = true;');
+  const primary = new Error("original synthetic import rejection");
+  let release, rejected, entered;
+  const rejectedPromise = new Promise((resolve) => { rejected = resolve; });
+  const enteredPromise = new Promise((resolve) => { entered = resolve; });
+  globalThis.a12Barrier = { primary, rejected, entered, promise: new Promise((resolve) => { release = resolve; }), finished: false };
+  for (const name of ["Effect", "Layer", "ManagedRuntime", "Schema", "Option", "Stream", "Logger", "unstable/sql/SqlClient"])
+    write("node_modules/effect/" + name + ".mjs", name === "Effect" ? 'globalThis.a12Barrier.rejected(); throw globalThis.a12Barrier.primary;' : name === "Layer" ? 'globalThis.a12Barrier.entered(); await globalThis.a12Barrier.promise; globalThis.a12Barrier.finished = true; export const fake = true;' : 'export const fake = true;');
+  for (const name of ["packages/contracts/src/index.ts", "apps/server/src/config.ts", "apps/server/src/persistence/Layers/Sqlite.ts", "apps/server/src/persistence/Migrations.ts", "packages/shared/src/nodeSqliteClient.ts", "apps/server/src/orchestration/Layers/OrchestrationEngine.ts", "apps/server/src/orchestration/Services/OrchestrationEngine.ts", "apps/server/src/orchestration/Layers/ProjectionSnapshotQuery.ts", "apps/server/src/orchestration/Services/ProjectionSnapshotQuery.ts", "apps/server/src/orchestration/Layers/ProjectionPipeline.ts", "apps/server/src/persistence/Layers/OrchestrationEventStore.ts", "apps/server/src/persistence/Layers/OrchestrationCommandReceipts.ts", "apps/server/src/orchestration/ThreadBackgroundLiveness.ts", "apps/server/src/orchestration/ThreadPlanProgress.ts", "apps/server/src/project/RepositoryIdentityResolver.ts", "apps/server/src/orchestration/WorktreeOwnershipLease.ts", "apps/server/src/persistence/ProviderSessionRuntime.ts", "apps/server/src/orchestration/projector.ts", "packages/contracts/src/settings.ts", "packages/contracts/src/keybindings.ts", "apps/server/src/attachmentStore.ts"])
+    write(name, 'export const fake = true;');
+  const source = { repository: "synthetic", sourceRevision: "414bb8da204c3275cd0b76b2ec4d74dfb09a97e4", worktreePath: root };
+  const receivingRoot = Path.resolve(directory, "../../..");
+  const hash = (path) => Crypto.createHash("sha256").update(FS.readFileSync(path)).digest("hex");
+  const guard = installHistoricalResolutionGuard({ receivingRoot, historicalRoots: [root], sourceInputs: [receivingRoot, root].map((root) => ({ root, lockSha256: hash(Path.join(root, "pnpm-lock.yaml")) })), maxRecords: 128, maxFileBytes: 1048576 });
+  // Bind ahead of launch to isolate draining from the separate bridge regression.
+  const importerURL = URL.pathToFileURL(Path.join(directory, worker === "fixture" ? "fixtures-historical-worker.mjs" : "migration-restore-worker.mjs")).href;
+  for (const specifier of ["effect/Effect", "effect/Layer", "effect/ManagedRuntime", "effect/Schema", "effect/Option", "effect/Stream", "effect/Logger", "effect/unstable/sql/SqlClient", "@effect/platform-node/NodeServices"])
+    guard.dependencyURL(root, specifier, importerURL);
+  const preflight = {};
+  const abort = new AbortController();
+  let returned = false, loaderReturned = false;
+  let loader;
+  const pending = consumeHistoricalImportPreflight([async (importState) => {
+    loader = probe(source, { resolutionGuard: guard, importState });
+    try { return await loader; } finally { loaderReturned = true; }
+  }], preflight, abort.signal).then(() => { returned = true; }, (error) => { returned = true; return error; });
+  await Promise.all([enteredPromise, rejectedPromise]);
+  // Explicit milestones, followed by an event-loop barrier, expose fail-fast Promise.all.
+  await new Promise(setImmediate);
+  A.equal(loaderReturned, false, "loader returned while its sibling was still evaluating");
+  A.equal(returned, false);
+  await A.rejects(import(URL.pathToFileURL(Path.join(base, "outside.mjs")).href), /outside all bound checkouts/);
+  if (mode === "deadline") {
+    abort.abort(new Error("synthetic bounded deadline"));
+    A.strictEqual(await pending, primary, "deadline replaced the already observed original failure");
+    finalizeHistoricalImportPreflight(preflight, guard);
+    A.equal(preflight.importsSettled, false);
+    A.equal(preflight.guardClosed, false);
+    // The real guard is still active: an unbound dependency URL remains refused.
+    await A.rejects(import(URL.pathToFileURL(Path.join(base, "outside.mjs")).href), /outside all bound checkouts/);
+    const closed = historicalQualificationClosureKnown([], undefined, undefined, preflight);
+    A.equal(closed, false);
+    const final = finishHistoricalPreparation(owner, { originalError: { message: primary.message }, consumerClosed: closed });
+    A.equal(final.cleanup.outcome, "retained"); A.equal(FS.existsSync(owner.creation.root), true);
+    A.equal(JSON.parse(FS.readFileSync(final.evidence.path)).originalError.message, primary.message);
+    retained.push({ root: owner.creation.root, identity: owner.creation.rootIdentity, reason: "synthetic unknown import closure retained", evidence: final.finalEvidence.path });
+  }
+  release();
+  await A.rejects(loader, (error) => error === primary);
+  A.strictEqual(await pending, primary);
+  A.equal(globalThis.a12Barrier.finished, true);
+  finalizeHistoricalImportPreflight(preflight, guard);
+  A.equal(preflight.importsSettled, true); A.equal(preflight.guardClosed, true);
+  A.equal((await import(URL.pathToFileURL(Path.join(base, "outside.mjs")).href)).outside, true);
+  A.equal(historicalQualificationClosureKnown([], undefined, undefined, preflight), false);
+  if (mode === "drain") {
+    const final = finishHistoricalPreparation(owner, { originalError: { message: primary.message }, consumerClosed: false });
+    A.equal(final.cleanup.outcome, "retained");
+    // This fake evaluation opened no resources; this enclosing original test owner
+    // has independent barrier/drain proof. Production import failure never supplies it.
+    A.equal(cleanupHistoricalPreparation(owner, { evidencePreserved: true, consumerClosed: true }).absent, true);
+  }
+ }
+}
+FS.writeFileSync(Path.join(base, "retained.json"), JSON.stringify(retained));
+console.log(JSON.stringify({ loaders: 1, barriers: 2, retained }));
+`,
+      );
+      NodeFS.writeFileSync(NodePath.join(base, "outside.mjs"), "export const outside = true;");
+      const child = NodeChildProcess.spawnSync(
+        process.execPath,
+        ["--experimental-test-module-mocks", driver],
+        {
+          encoding: "utf8",
+          timeout: 10000,
+          maxBuffer: 65536,
+          env: { PATH: process.env.PATH, TMPDIR: process.env.TMPDIR },
+        },
+      );
+      childClosed = !child.error && child.status !== null;
+      NodeAssert.equal(child.status, 0, child.stderr);
+      const report = JSON.parse(child.stdout);
+      NodeAssert.equal(report.barriers, 2);
+      NodeAssert.equal(report.retained.length, 1);
+      t.diagnostic(JSON.stringify(report));
+    },
+  );
+}

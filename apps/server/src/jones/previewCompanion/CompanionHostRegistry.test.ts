@@ -151,3 +151,52 @@ it.effect("detaches a superseded channel and gives the replacement fresh attachm
     expect(after!.attachmentGeneration).toBeGreaterThan(before!.attachmentGeneration);
   }).pipe(Effect.scoped, Effect.provide(dependencies)),
 );
+
+it.effect("keeps turn activity on the attached generation and deduplicates hosts", () =>
+  Effect.gen(function* () {
+    const registry = yield* Registry.CompanionHostRegistry;
+    const channel = yield* Channel.CompanionBrowserChannel;
+    const first = yield* client;
+    yield* channel.turn("thread", true);
+    for (const tabId of ["one", "two"]) {
+      const key = { threadId: "thread", tabId };
+      yield* registry.assign("mini", key);
+      expect((yield* Queue.take(first.output)).type).toBe("mount");
+      yield* first.send({
+        type: "browser",
+        event: { type: "attached", ...key, runtimeIdentity: identity },
+      });
+      expect(yield* channel.awaitAttached(key, "1 second")).toBe(true);
+      expect(yield* Queue.take(first.output)).toEqual({
+        type: "browser",
+        command: { type: "turn", threadId: "thread", active: true },
+      });
+    }
+    yield* channel.turn("other-thread", true);
+    expect(yield* Queue.size(first.output)).toBe(0);
+    yield* channel.turn("thread", false);
+    expect(yield* Queue.take(first.output)).toEqual({
+      type: "browser",
+      command: { type: "turn", threadId: "thread", active: false },
+    });
+    expect(yield* Queue.size(first.output)).toBe(0);
+    yield* channel.turn("thread", true);
+    yield* Queue.take(first.output);
+    const detached = yield* channel.detached.pipe(Stream.runHead, Effect.forkScoped);
+    yield* Effect.yieldNow;
+    const second = yield* client;
+    yield* Fiber.join(detached);
+    yield* second.send({
+      type: "browser",
+      event: { type: "attached", threadId: "thread", tabId: "one", runtimeIdentity: identity },
+    });
+    expect(yield* channel.awaitAttached({ threadId: "thread", tabId: "one" }, "1 second")).toBe(
+      true,
+    );
+    expect(yield* Queue.take(second.output)).toEqual({
+      type: "browser",
+      command: { type: "turn", threadId: "thread", active: true },
+    });
+    expect(yield* Queue.size(first.output)).toBe(0);
+  }).pipe(Effect.scoped, Effect.provide(dependencies)),
+);

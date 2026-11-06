@@ -92,6 +92,19 @@ function isCapacityError(error: {
   );
 }
 
+export function codexCapacityRetriesExhausted(state: CodexCapacityContinuationState): boolean {
+  return (
+    state.phase === "terminal" &&
+    state.nativeTurnId !== null &&
+    !state.retiredNativeTurnIds.includes(state.nativeTurnId) &&
+    state.nativeFacts.completion === "failed" &&
+    state.nativeFacts.error !== undefined &&
+    isCapacityError(state.nativeFacts.error) &&
+    state.nativeFacts.error.willRetry === false &&
+    state.retryOrdinal >= codexCapacityRetryPolicy.maxRetries
+  );
+}
+
 // The adapter retains the effective settings for this logical request; retries
 // only request another promptless send and never resolve settings themselves.
 export function makeCodexCapacityContinuation(

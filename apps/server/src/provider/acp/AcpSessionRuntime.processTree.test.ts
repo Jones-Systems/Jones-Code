@@ -155,9 +155,7 @@ describe("terminatePosixOwnedProcessTree", () => {
       const scratchRoot = NodePath.join(process.cwd(), "tmp");
       NodeFS.mkdirSync(scratchRoot, { recursive: true });
       const parent = NodeFS.mkdtempSync(NodePath.join(scratchRoot, "acp-cgroup-stale-siblings-"));
-      // Temp dirs are not cgroupfs: rmdir fails when control files exist, so the
-      // test injects populated/remove while still exercising the real selection
-      // and path-safety logic against a real parent directory tree.
+      // Unlike cgroupfs, temp directories cannot rmdir with control files; inject populated/remove.
       const populatedByPath = new Map<string, "0" | "1">();
       const writeSibling = (name: string, populated: "0" | "1" | null) => {
         const path = NodePath.join(parent, name);
@@ -233,8 +231,7 @@ describe("terminatePosixOwnedProcessTree", () => {
       expect(AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: "" })).toBe(
         bareGrok,
       );
-      // Undefined PATH uses Node's default search path (/usr/bin:/bin), not cwd alone
-      // (bareGrok lives only in cwd / PATH=scratch).
+      // Undefined PATH searches /usr/bin:/bin; the bareGrok fixture lives only in cwd.
       expect(
         AcpSessionRuntime.resolveLinuxCgroupTargetCommand("grok", scratch, { PATH: undefined }),
       ).toBeUndefined();
@@ -360,8 +357,7 @@ describe("terminatePosixOwnedProcessTree", () => {
         },
       );
       expect(missingTargetResult.status, missingTargetResult.stderr).toBe(125);
-      // CI's /bin/sh is dash, which runs the EXIT trap after a failed exec. Bash does not,
-      // so run the same wrapper under bash too.
+      // dash runs EXIT traps after failed exec; bash does not, so exercise both.
       const missingTargetBash = NodeChildProcess.spawnSync("bash", missingTarget.args, {
         encoding: "utf8",
       });
@@ -476,17 +472,19 @@ describe("terminatePosixOwnedProcessTree", () => {
         }
       } finally {
         yield* AcpSessionRuntime.terminateLinuxCgroupLease(lease).pipe(Effect.ignore);
-        try {
-          process.kill(-provider.pid!, "SIGKILL");
-        } catch {}
-        try {
-          process.kill(-sentinel.pid!, "SIGKILL");
-        } catch {}
-        if (detachedChildPid !== undefined && processExists(detachedChildPid)) {
+        yield* Effect.sync(() => {
           try {
-            process.kill(detachedChildPid, "SIGKILL");
+            process.kill(-provider.pid!, "SIGKILL");
           } catch {}
-        }
+          try {
+            process.kill(-sentinel.pid!, "SIGKILL");
+          } catch {}
+          if (detachedChildPid !== undefined && processExists(detachedChildPid)) {
+            try {
+              process.kill(detachedChildPid, "SIGKILL");
+            } catch {}
+          }
+        });
       }
     }).pipe(Effect.scoped),
   );
@@ -673,8 +671,7 @@ describe("terminatePosixOwnedProcessTree", () => {
 
   it.live("rotates more than 64 live parents without scanning retained tombstones", () =>
     Effect.gen(function* () {
-      // The server fixture's process group is the runner's real pid, so a synthetic
-      // parent sharing it would be skipped as the server's own group.
+      // Use a different synthetic parent group; the fixture shares the runner's real group, which cleanup skips.
       const rootPid = 100;
       const parentPidBase = process.pid < 500_000 ? 500_000 : 1_000;
       const parents = Array.from({ length: 130 }, (_, index) =>
@@ -905,7 +902,6 @@ describe("terminatePosixOwnedProcessTree", () => {
         grace: 0,
         rootPid: 100,
       });
-      // Zombies remain visible but must not fail residual teardown.
       expect(fixture.processes.get(100)?.state).toBe("Z");
       expect(fixture.processes.get(110)?.state).toBe("Z");
     }),

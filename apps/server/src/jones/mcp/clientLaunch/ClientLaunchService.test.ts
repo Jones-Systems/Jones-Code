@@ -25,6 +25,10 @@ import * as EventSink from "../../../orchestration-v2/EventSink.ts";
 import { type Caller } from "../../../mcp/threadAccess.ts";
 import type { ThreadStartGate } from "../../../mcp/McpToolAccess.ts";
 import * as ClientLaunch from "./ClientLaunchService.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as ServerConfig from "../../../config.ts";
+import * as McpInvocationContext from "../../../mcp/McpInvocationContext.ts";
+import { launchThread } from "../../../mcp/toolkits/project/handlers.ts";
 import { clientLaunchIds } from "./ClientLaunchIdentity.ts";
 import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
@@ -44,6 +48,7 @@ import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRu
 import * as ManagedProjectFolders from "../../../project/ManagedProjectFolders.ts";
 import * as ProviderRegistryMock from "../../../provider/testUtils/providerRegistryMock.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
+import * as DocumentText from "../../../provider/DocumentText.ts";
 import * as TextGeneration from "../../../textGeneration/TextGeneration.ts";
 import { CodexProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as CommandReceiptStore from "../../../orchestration-v2/CommandReceiptStore.ts";
@@ -92,6 +97,7 @@ const adapter = {
 } as ProviderAdapterV2Shape;
 
 interface HarnessOptions {
+  readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
   readonly afterCreate?: (threadId: ThreadId) => Effect.Effect<void>;
   readonly managedFolders?: Layer.Layer<ManagedProjectFolders.ManagedProjectFolders>;
   readonly createWorktree?: GitWorkflow.GitWorkflowService["Service"]["createWorktree"];
@@ -113,7 +119,13 @@ function makeHarness(options: HarnessOptions = {}) {
   const orchestrator = ProviderReplayHarness.layerWithRegistry(
     { name: "thread-launch" },
     registry,
-    { databaseLayer: database, runEffectWorker: false },
+    {
+      databaseLayer: database,
+      runEffectWorker: false,
+      ...(options.serverConfigLayer === undefined
+        ? {}
+        : { serverConfigLayer: options.serverConfigLayer }),
+    },
   );
   const receipts = CommandReceiptStore.layer.pipe(Layer.provide(database));
   const serverSettings = ServerSettings.layerTest(options.serverSettings);
@@ -184,7 +196,7 @@ function makeHarness(options: HarnessOptions = {}) {
               ? Option.some(otherProject)
               : Option.none(),
         ),
-      getByWorkspaceRoot: () => Effect.succeed(Option.some(project)),
+      getByWorkspaceRoot: () => Effect.succeedSome(project),
       snapshot: Effect.die("unused"),
       getShell: () => Effect.die("unused"),
       listShells: () => Effect.die("unused"),
@@ -229,7 +241,7 @@ function makeHarness(options: HarnessOptions = {}) {
       Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({
         namedProjectsRoot: "/projects",
         isScratchProject: () => Effect.succeed(false),
-        folderForThread: () => Effect.succeed(Option.none()),
+        folderForThread: () => Effect.succeedNone,
       }),
   );
   const launch = ThreadLaunch.layer.pipe(
@@ -943,4 +955,145 @@ it.effect(
         ),
       );
     }).pipe(Effect.provide(makeHarness().layer)),
+);
+
+it.effect.each([
+  { explicitModel: false, explicitRuntime: false },
+  { explicitModel: true, explicitRuntime: false },
+  { explicitModel: false, explicitRuntime: true },
+  { explicitModel: true, explicitRuntime: true },
+])(
+  "keyed and unkeyed external launches independently resolve omitted fields ($explicitModel/$explicitRuntime)",
+  ({ explicitModel, explicitRuntime }) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-client-launch-defaults-" });
+        const config = yield* ProviderReplayHarness.makeReplayServerConfig("launch-defaults").pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            makeTempDirectory: () => Effect.succeed(root),
+          }),
+        );
+        const effective = { ...modelSelection, model: "folded-default" };
+        const explicit = { ...modelSelection, model: "explicit-model" };
+        const h = makeHarness({
+          serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd: root }),
+          serverSettings: {
+            projectSettingsFolded: true,
+            defaultModelSelection: { ...modelSelection, model: "environment-default" },
+            defaultRuntimeMode: "full-access",
+            projectSettingsOverrides: {
+              [projectId]: {
+                defaultModelSelection: effective,
+                defaultRuntimeMode: "approval-required",
+              },
+            },
+          },
+        });
+        yield* Effect.gen(function* () {
+          const context = yield* caller;
+          const request = {
+            projectId,
+            title: "Defaults parity",
+            ...(explicitModel ? { modelSelection: explicit } : {}),
+            ...(explicitRuntime ? { runtimeMode: "auto" as const } : {}),
+          };
+          const started = {
+            ...modes,
+            runtimeMode: explicitRuntime ? ("auto" as const) : modes.runtimeMode,
+          };
+          const startGate: ThreadStartGate = {
+            start: Effect.succeed(started),
+            continueWithin: (_target, effect) => effect,
+          };
+          const keyed = yield* launchThread(
+            { ...request, clientRequestId: "defaults-parity" },
+            startGate,
+          ).pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, context.scope));
+          const unkeyed = yield* launchThread(request, startGate).pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, context.scope),
+          );
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const keyedThread = (yield* threads.getThreadProjection(keyed.threadId)).thread;
+          const unkeyedThread = (yield* threads.getThreadProjection(unkeyed.threadId)).thread;
+          assert.deepEqual(keyedThread.modelSelection, explicitModel ? explicit : effective);
+          assert.deepEqual(unkeyedThread.modelSelection, keyedThread.modelSelection);
+          assert.equal(keyedThread.runtimeMode, explicitRuntime ? "auto" : "approval-required");
+          assert.equal(unkeyedThread.runtimeMode, keyedThread.runtimeMode);
+          const settings = yield* ServerSettings.ServerSettingsService;
+          yield* settings.updateSettings({
+            projectSettingsOverrides: {
+              [projectId]: {
+                defaultModelSelection: { ...modelSelection, model: "later-default" },
+                defaultRuntimeMode: "full-access",
+              },
+            },
+          });
+          const replay = yield* launchThread(
+            { ...request, clientRequestId: "defaults-parity" },
+            startGate,
+          ).pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, context.scope));
+          assert.equal(replay.threadId, keyed.threadId);
+          assert.isTrue("replayed" in replay && replay.replayed);
+          assert.deepEqual(
+            (yield* threads.getThreadProjection(replay.threadId)).thread,
+            keyedThread,
+          );
+          assert.equal(context.scope.thread, undefined);
+        }).pipe(
+          Effect.provide(h.layer),
+          Effect.provideService(ServerConfig.ServerConfig, { ...config, cwd: root }),
+          Effect.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+        );
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect("keyed external launch clamps an omitted runtime default to the caller ceiling", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped({ prefix: "jones-client-launch-ceiling-" });
+      const config = yield* ProviderReplayHarness.makeReplayServerConfig("launch-ceiling").pipe(
+        Effect.provideService(FileSystem.FileSystem, {
+          ...fs,
+          makeTempDirectory: () => Effect.succeed(root),
+        }),
+      );
+      const h = makeHarness({
+        serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd: root }),
+        serverSettings: { defaultRuntimeMode: "full-access" },
+      });
+      yield* Effect.gen(function* () {
+        const context = yield* caller;
+        const limited = { ...modes, runtimeMode: "approval-required" as const };
+        const startGate: ThreadStartGate = {
+          start: Effect.succeed(limited),
+          continueWithin: (_target, effect) => effect,
+        };
+        const request = { projectId, title: "Ceiling", modelSelection };
+        const keyed = yield* launchThread(
+          { ...request, clientRequestId: "ceiling" },
+          startGate,
+        ).pipe(Effect.provideService(McpInvocationContext.McpInvocationContext, context.scope));
+        const unkeyed = yield* launchThread(request, startGate).pipe(
+          Effect.provideService(McpInvocationContext.McpInvocationContext, context.scope),
+        );
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        assert.equal(
+          (yield* threads.getThreadProjection(keyed.threadId)).thread.runtimeMode,
+          "approval-required",
+        );
+        assert.equal(
+          (yield* threads.getThreadProjection(unkeyed.threadId)).thread.runtimeMode,
+          "approval-required",
+        );
+      }).pipe(
+        Effect.provide(h.layer),
+        Effect.provideService(ServerConfig.ServerConfig, { ...config, cwd: root }),
+        Effect.provide(DocumentText.layer.pipe(Layer.provide(NodeServices.layer))),
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );

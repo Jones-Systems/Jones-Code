@@ -8,6 +8,7 @@ const state = vi.hoisted(() => ({
   settings: {} as typeof DEFAULT_SERVER_SETTINGS,
   run: vi.fn(),
   report: null as StorageCleanupReport | null,
+  installRetentionSupported: true,
 }));
 
 vi.mock(import("../../state/server"), async (original) => {
@@ -42,6 +43,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
         environment: {
           capabilities: {
             storageCleanup: true,
+            installRetention: state.installRetentionSupported,
             storageCleanupRun: true,
             settledWorktreeCleanup: true,
           },
@@ -64,8 +66,6 @@ vi.mock(import("./useScopedSettings"), async (original) => ({
   useUpdateScopedSettings: () => vi.fn(),
   useClearScopedSettings: () => vi.fn(),
 }));
-// The real page container needs a router and the real row reads write permission and
-// overrides from live environment state; this suite is about the cleanup panel.
 vi.mock(import("./settingsLayout"), async (original) => ({
   ...(await original()),
   SettingsPageContainer: (({ children }: { children: ReactNode }) => children) as never,
@@ -87,12 +87,16 @@ vi.mock(import("../ui/toast"), async (original) => {
 import { StorageSettingsPanel } from "./StorageSettings";
 
 function setup() {
+  state.installRetentionSupported = true;
   state.settings = {
     ...DEFAULT_SERVER_SETTINGS,
     storageCleanup: {
+      installRetention: "propose",
       worktreeKeepWhen: "uncommitted-changes",
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
       worktreeOnMerge: false,
       worktreeOnDelete: false,
       worktreeUnchanged: false,
@@ -123,4 +127,18 @@ it("keeps cleanup disabled when settled retention and all other rules are off", 
   expect(button.disabled).toBe(true);
   await act(async () => button.click());
   expect(state.run).not.toHaveBeenCalled();
+});
+
+it("shows propose by default when the selected server supports install retention", async () => {
+  setup();
+  await using screen = await render(panel());
+  const control = screen.container.querySelector('[aria-label="Install retention"]');
+  expect(control?.textContent).toContain("Propose");
+});
+
+it("hides install retention for a server without the additive capability", async () => {
+  setup();
+  state.installRetentionSupported = false;
+  await using screen = await render(panel());
+  expect(screen.container.querySelector('[aria-label="Install retention"]')).toBeNull();
 });

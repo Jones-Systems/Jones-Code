@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  codexCapacityRetriesExhausted,
+  codexCapacityRetryPolicy,
   makeCodexCapacityContinuation,
   reduceCodexCapacityContinuation,
   type CodexCapacityContinuationAction,
@@ -59,6 +61,27 @@ function complete(
 function waitingForRetry() {
   const started = acknowledge(makeCodexCapacityContinuation(binding), "turn-original");
   return complete(nativeError(started.state, "turn-original").state, "turn-original").state;
+}
+
+function awaitingFinalRetry(retries: number = codexCapacityRetryPolicy.maxRetries) {
+  let state = makeCodexCapacityContinuation(binding);
+  for (let ordinal = 0; ordinal < retries; ordinal++) {
+    const nativeTurnId = `turn-${ordinal}`;
+    state = acknowledge(state, nativeTurnId).state;
+    expect(codexCapacityRetriesExhausted(state)).toBe(false);
+    state = nativeError(state, nativeTurnId).state;
+    expect(codexCapacityRetriesExhausted(state)).toBe(false);
+    state = complete(state, nativeTurnId).state;
+    expect(state.phase).toBe("waiting_retry");
+    expect(codexCapacityRetriesExhausted(state)).toBe(false);
+    state = reduceCodexCapacityContinuation(state, {
+      type: "retryReady",
+      binding,
+      retryOrdinal: ordinal + 1,
+    }).state;
+    expect(codexCapacityRetriesExhausted(state)).toBe(false);
+  }
+  return state;
 }
 
 describe("Codex capacity continuation", () => {
@@ -185,6 +208,7 @@ describe("Codex capacity continuation", () => {
       { type: "terminal", status: "failed", nativeTurnId: "turn-12" },
     ]);
     expect(state.phase).toBe("terminal");
+    expect(codexCapacityRetriesExhausted(state)).toBe(true);
     expect(complete(state, "turn-12").actions).toEqual([]);
     expect(nativeError(state, "turn-12").actions).toEqual([]);
     expect(
@@ -548,5 +572,119 @@ describe("Codex capacity continuation", () => {
     expect(Object.isFrozen(completed.state)).toBe(true);
     expect(Object.isFrozen(completed.state.pendingNativeTurns)).toBe(true);
     expect(Object.isFrozen(completed.state.pendingNativeTurns["turn-early"])).toBe(true);
+  });
+});
+
+describe("codexCapacityRetriesExhausted", () => {
+  it.each(["serverOverloaded", "other", null, "internalServerError"])(
+    "recognizes capacity exhaustion at the final retry with code %s",
+    (code) => {
+      let state = acknowledge(awaitingFinalRetry(), "turn-final").state;
+      state = nativeError(
+        state,
+        "turn-final",
+        code,
+        false,
+        "Selected model is at capacity. Please try a different model.",
+      ).state;
+      expect(codexCapacityRetriesExhausted(state)).toBe(false);
+      state = complete(state, "turn-final").state;
+      expect(codexCapacityRetriesExhausted(state)).toBe(true);
+    },
+  );
+
+  it("recognizes final capacity evidence supplied only by native completion", () => {
+    const state = acknowledge(awaitingFinalRetry(), "turn-final").state;
+    const failed = reduceCodexCapacityContinuation(state, {
+      type: "nativeCompleted",
+      binding,
+      nativeTurnId: "turn-final",
+      status: "failed",
+      error: {
+        code: null,
+        message: "Selected model is at capacity. Please try a different model.",
+      },
+    });
+    expect(codexCapacityRetriesExhausted(failed.state)).toBe(true);
+  });
+
+  it.each([
+    { code: "serverOverloaded", willRetry: true },
+    { code: "usageLimitExceeded", willRetry: false },
+    { code: "other", willRetry: false },
+    { code: null, willRetry: false },
+  ])(
+    "rejects noncapacity or native-owned final failures: $code/$willRetry",
+    ({ code, willRetry }) => {
+      let state = acknowledge(awaitingFinalRetry(), "turn-final").state;
+      state = nativeError(state, "turn-final", code, willRetry).state;
+      expect(codexCapacityRetriesExhausted(complete(state, "turn-final").state)).toBe(false);
+    },
+  );
+
+  it.each(["completed", "interrupted"] as const)("rejects %s at the retry limit", (status) => {
+    const state = nativeError(
+      acknowledge(awaitingFinalRetry(), "turn-final").state,
+      "turn-final",
+    ).state;
+    expect(codexCapacityRetriesExhausted(complete(state, "turn-final", status).state)).toBe(false);
+  });
+
+  it("rejects missing, stale and early capacity evidence at the retry limit", () => {
+    const awaiting = awaitingFinalRetry();
+    const early = complete(nativeError(awaiting, "turn-final").state, "turn-final").state;
+    expect(codexCapacityRetriesExhausted(early)).toBe(false);
+    const running = acknowledge(awaiting, "turn-final").state;
+    const stale = nativeError(running, "turn-0").state;
+    expect(codexCapacityRetriesExhausted(complete(stale, "turn-final").state)).toBe(false);
+    const staleBinding = reduceCodexCapacityContinuation(running, {
+      type: "nativeError",
+      binding: { ...binding, runtimeGeneration: "obsolete" },
+      nativeTurnId: "turn-final",
+      code: "serverOverloaded",
+      willRetry: false,
+    }).state;
+    expect(codexCapacityRetriesExhausted(complete(staleBinding, "turn-final").state)).toBe(false);
+  });
+
+  it.each(["stop", "superseded", "closed", "runtime_changed"] as const)(
+    "rejects %s cancellation while waiting for the final retry or its completion",
+    (reason) => {
+      let waiting = acknowledge(awaitingFinalRetry(), "turn-final").state;
+      waiting = nativeError(waiting, "turn-final").state;
+      const previousWaiting = complete(
+        nativeError(
+          acknowledge(
+            awaitingFinalRetry(codexCapacityRetryPolicy.maxRetries - 1),
+            "turn-before-final",
+          ).state,
+          "turn-before-final",
+        ).state,
+        "turn-before-final",
+      ).state;
+      expect(previousWaiting.phase).toBe("waiting_retry");
+      for (const state of [previousWaiting, waiting]) {
+        const canceled = reduceCodexCapacityContinuation(state, {
+          type: "cancel",
+          binding,
+          reason,
+        });
+        expect(codexCapacityRetriesExhausted(canceled.state)).toBe(false);
+      }
+    },
+  );
+
+  it("rejects unknown starts even after early capacity completion at the retry limit", () => {
+    const early = complete(
+      nativeError(awaitingFinalRetry(), "turn-final").state,
+      "turn-final",
+    ).state;
+    const unknown = reduceCodexCapacityContinuation(early, {
+      type: "startUnknown",
+      binding,
+      retryOrdinal: codexCapacityRetryPolicy.maxRetries,
+    }).state;
+    expect(unknown.phase).toBe("terminal");
+    expect(codexCapacityRetriesExhausted(unknown)).toBe(false);
   });
 });

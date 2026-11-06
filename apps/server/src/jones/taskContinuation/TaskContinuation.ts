@@ -102,6 +102,7 @@ const make = Effect.gen(function* () {
         continuation: {
           sourceTaskId: row.sourceTaskId,
           sourceRunId: row.sourceRunId,
+          sourceAttemptId: row.sourceAttemptId,
           sourceEvidence: row.sourceEvidence,
           providerInstanceId: row.providerInstanceId,
           providerThreadId: row.providerThreadId,
@@ -178,6 +179,7 @@ const make = Effect.gen(function* () {
             "runs",
             "attempts",
             "providerTurns",
+            "contextTransfers",
             "providerThreads",
             "subagents",
             "runtimeRequests",

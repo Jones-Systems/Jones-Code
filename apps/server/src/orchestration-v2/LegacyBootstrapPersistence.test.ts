@@ -79,7 +79,7 @@ it("recorded event codecs preserve upstream pull request link payloads", () => {
   assert.deepStrictEqual(Schema.decodeSync(RecordedLifecycleEvent)(publicEvent), publicEvent);
   assert.deepStrictEqual(Schema.encodeSync(RecordedLifecycleEventJson)(recordedEvent), input);
   assert.throws(() =>
-    Schema.decodeUnknownSync(RecordedLifecycleEventJson)({
+    Schema.decodeSync(RecordedLifecycleEventJson)({
       ...input,
       payload: { ...input.payload, number: 0 },
     }),
@@ -515,9 +515,9 @@ it.effect(
           })).eventCount,
           1,
         );
-        const memory = yield* Effect.gen(function* () {
-          return yield* ProjectionStore.ProjectionStoreV2;
-        }).pipe(Effect.provide(Layer.fresh(ProjectionStore.layerMemory)));
+        const memory = yield* ProjectionStore.ProjectionStoreV2.pipe(
+          Effect.provide(Layer.fresh(ProjectionStore.layerMemory)),
+        );
         yield* memory.apply(created[0]!.event);
         yield* memory.apply(intent);
         yield* memory.apply(outcome);

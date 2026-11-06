@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it, vi } from "@effect/vitest";
-import * as BitbucketApi from "@t3tools/source-control-bitbucket/server/BitbucketApi";
+import * as BitbucketDriver from "@t3tools/source-control-bitbucket/server/driver";
+import * as SourceControlRateLimit from "@t3tools/source-control-core/server/SourceControlRateLimit";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -27,18 +28,17 @@ it.effect("asks Bitbucket for the account only once a credential is configured",
       ),
     ),
   );
-  const layer = BitbucketApi.layer.pipe(
-    Layer.provide(ServerSourceControlHost.layer),
+  const layer = Layer.mergeAll(ServerSourceControlHost.layer, SourceControlRateLimit.layer).pipe(
     Layer.provide(Layer.mock(VcsProcess.VcsProcess)({})),
     Layer.provide(Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({})),
     Layer.provide(Layer.mock(GitVcsDriver.GitVcsDriver)({})),
-    Layer.provide(
+    Layer.provideMerge(
       Layer.succeed(
         HttpClient.HttpClient,
         HttpClient.make((request) => execute(request)),
       ),
     ),
-    Layer.provide(
+    Layer.provideMerge(
       ConfigProvider.layer(
         ConfigProvider.fromEnv({
           env: { T3CODE_BITBUCKET_API_BASE_URL: "https://api.test.local/2.0" },
@@ -50,7 +50,8 @@ it.effect("asks Bitbucket for the account only once a credential is configured",
   );
 
   return Effect.gen(function* () {
-    const bitbucket = yield* BitbucketApi.BitbucketApi;
+    const { discovery: bitbucket } = yield* BitbucketDriver.driver.make;
+    if (bitbucket.type !== "api") return yield* Effect.die("Expected Bitbucket API discovery");
     const settings = yield* ServerSettings.ServerSettingsService;
 
     const unconfigured = yield* bitbucket.probeAuth;

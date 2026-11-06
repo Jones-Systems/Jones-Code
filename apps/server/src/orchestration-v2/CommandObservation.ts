@@ -106,14 +106,14 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
         let correlation: OrchestrationCommandObservation["correlation"] = "missing";
         let turn: OrchestrationCommandObservation["turn"] = null;
         let created = yield* Effect.forEach(births, (e) =>
-          Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2RunJson))(e.payload_json),
+          Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson))(e.payload_json),
         );
         let releaseBinding = false;
         if (receipt?.command_type === "prepared-run.release" && receipt.status === "accepted") {
           const releases = yield* Effect.forEach(
             events.filter((e) => e.event_type === "run.updated"),
             (e) =>
-              Schema.decodeUnknownEffect(Schema.fromJsonString(OrchestrationV2RunJson))(
+              Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson))(
                 e.payload_json,
               ).pipe(Effect.map((run) => ({ run, sequence: e.sequence }))),
           );
@@ -198,9 +198,9 @@ export const makeCommandObservationQuery = Effect.fn("makeCommandObservationQuer
           events.some((e) => e.sequence === receipt.result_sequence)
         ) {
           if (receipt.result_sequence <= snapshotSequence && runs[0] !== undefined) {
-            const run = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(OrchestrationV2RunJson),
-            )(runs[0].payload_json);
+            const run = yield* Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2RunJson))(
+              runs[0].payload_json,
+            );
             if (run.id !== created[0]!.id) correlation = "mismatched";
             else {
               const messages = yield* sql<{

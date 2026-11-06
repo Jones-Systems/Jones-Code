@@ -9,7 +9,8 @@
     "tunnels:census": "node scripts/tunnel-census.ts",
     "destroy": "alchemy destroy",
     "test": "vp test run --config ../../vite.config.ts --dir .",
-    "typecheck": "tsc-rs --noEmit"
+    "typecheck": "vp run tsrs:typecheck",
+    "typecheck:native": "node ../../scripts/jones/tsrs/typecheck.ts --noEmit"
   },
   "dependencies": {
     "@clerk/backend": "catalog:",

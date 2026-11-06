@@ -59,7 +59,7 @@ const make = Effect.gen(function* () {
           const row = proofRows[0];
           if (row === undefined || row.proof_json === null)
             return { receipt: Option.some(receipt), events: snapshot.events };
-          const proof = Schema.decodeUnknownOption(SettlementProofJson)(row.proof_json);
+          const proof = Schema.decodeOption(SettlementProofJson)(row.proof_json);
           if (
             Option.isNone(proof) ||
             !matchesSettlementProof(proof.value, commandId, row.thread_id, row.native_action) ||

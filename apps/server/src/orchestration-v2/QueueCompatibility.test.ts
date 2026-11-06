@@ -21,6 +21,7 @@ import * as Layer from "effect/Layer";
 import * as Config from "../config.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Clones from "../project/ProjectCloneTracker.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as Threads from "./ThreadManagementService.ts";
 import * as Launch from "./ThreadLaunchService.ts";
 import * as Sink from "./EventSink.ts";
@@ -50,6 +51,9 @@ const fixture = (
   Effect.gen(function* () {
     const received: OrchestrationV2ServerCommand[] = [];
     const services = Layer.mergeAll(
+      Layer.mock(DocumentText.DocumentText)({
+        ensure: (path) => Effect.succeed(new Map<string, string>().get(path)),
+      }),
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: () => Effect.succeed(null),
         dispatch: (input) => {
@@ -73,7 +77,7 @@ const fixture = (
           return Effect.succeed({ sequence: 42, storedEvents: [] });
         },
       }),
-      Layer.mock(Launch.ThreadLaunchService)({ ...(launch === undefined ? {} : { launch }) }),
+      Layer.mock(Launch.ThreadLaunchService)(launch === undefined ? {} : { launch }),
       Layer.mock(Projects.ProjectService)({}),
       Layer.mock(Clones.ProjectCloneTracker)({
         get: () => Effect.succeed(cloning ? ({ phase: "running" } as never) : null),

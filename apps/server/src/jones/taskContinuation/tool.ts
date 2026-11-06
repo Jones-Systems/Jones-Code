@@ -9,7 +9,7 @@ import * as Continuation from "./TaskContinuation.ts";
 
 export const TaskContinueTool = Tool.make("t3_task_continue", {
   description:
-    "Continue a completed local app-owned Claude task in its original native conversation, or refuse. The child must be idle. Returns a new taskId on the same child; the original published result stays unchanged. Required clientRequestId is stable across retries and parent MCP restarts: reuse it with the identical body to read current continuation evidence. nativeSessionId is expected until verification becomes verified after durable provider confirmation. Account identity is unavailable. This async operation never starts a fresh conversation. Independent review rounds still use delegate_task.",
+    "Continue a completed local app-owned Claude task in its original native conversation, or refuse. The child must be idle. Returns a new taskId on the same child; the original published result stays unchanged. Completed task_status/results expose nativeSession with the captured nativeSessionId and source run/attempt; pass that ID as expectedNativeSessionId for an explicit compare guard. Required clientRequestId is stable across retries and parent MCP restarts: reuse it with the identical body to read current continuation evidence. nativeSessionId is expected until verification becomes verified after durable provider confirmation. Account identity is unavailable. This async operation never starts a fresh conversation. Independent review rounds still use delegate_task.",
   parameters: TaskContinueInput,
   success: TaskContinueResult,
   failure: OrchestratorMcpFailure,

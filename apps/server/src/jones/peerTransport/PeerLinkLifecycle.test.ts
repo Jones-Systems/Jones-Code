@@ -25,7 +25,7 @@ const fixture = (http: HttpClient.HttpClient) =>
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provide(
       Layer.mock(ServerSecretStore.ServerSecretStore)({
-        get: () => Effect.succeed(Option.some(new TextEncoder().encode("synthetic-token"))),
+        get: () => Effect.succeedSome(new TextEncoder().encode("synthetic-token")),
       }),
     ),
     Layer.provide(

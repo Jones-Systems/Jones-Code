@@ -1,6 +1,23 @@
+import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration.ts";
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
+import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
+import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
+import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import { acceptEvents as acceptDependencyEvents } from "../jones/threadResultDependencies/TransactionHooks.ts";
+import type {
+  OpenRequest,
+  WakeCommit,
+} from "../jones/threadResultDependencies/DependencyCommit.ts";
+import { makeOwnerSelectionStore } from "../jones/threadConfiguration/ownerSelectionStore.ts";
+import type { ProviderRuntimeBinding, ModelSelection } from "@t3tools/contracts";
+import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
+import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
+import * as CodexFailoverStore from "../jones/codexFailover/CodexFailoverStore.ts";
 import type { ThreadSelfConfigurationCommitContext } from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import type { TaskContinuationCommitContext } from "../jones/taskContinuation/commitContext.ts";
 import * as HistoricalTerminalHistory from "../jones/orchestration/HistoricalTerminalHistory.ts";
+import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
 import type { ProviderConversationReselectionCommitContext } from "../jones/runtime/ProviderConversationReselection.ts";
 import * as CheckoutIntent from "../jones/ordinaryCheckout/CheckoutIntent.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/NativeBoundary.ts";
@@ -47,6 +64,7 @@ import {
   type OrchestrationV2StoredEvent as PublicStoredEvent,
   CommandId,
   type OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderRef,
   type ProviderRuntimeEvidenceCapture,
   type RequestedRuntimeIdentity,
   type OrchestrationV2PrivateEvent,
@@ -165,6 +183,7 @@ interface EventSinkStreamInput {
 }
 
 export interface EventSinkV2Shape {
+  readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Store;
   readonly writeHistoricalTerminal?: (
     input: HistoricalTerminalHistory.HistoricalTerminalInput,
   ) => Effect.Effect<
@@ -199,9 +218,21 @@ export interface EventSinkV2Shape {
     currentRules?: DeletionPolicyRead,
     currentLive?: DeletionLiveRead,
   ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly checkRetainedDeletionWorktreeRemovalStart?: (
+    start: DeletionWorktreeRemovalStartV1,
+    ordinal: number,
+    currentRules?: DeletionPolicyRead,
+    currentLive?: DeletionLiveRead,
+  ) => Effect.Effect<void, EventSinkV2Error>;
   readonly qualifyDeletionWorktreeRemovalObservation?: (
     observation: DeletionWorktreeRemovalObservationV1,
   ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly readStoppedRuntime?: (
+    provider: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<ProviderRuntimeBinding | null, EventSinkV2Error>;
+  readonly hasStoppedRuntime?: (
+    binding: ProviderRuntimeBinding,
+  ) => Effect.Effect<boolean, EventSinkV2Error>;
   readonly readRuntimeStop?: (commandId: CommandId) => Effect.Effect<
     {
       readonly identity: RuntimeStop.RuntimeStopIdentity;
@@ -255,6 +286,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     /** Return no events if another thread owns this native session at commit time. */
     readonly unlessNativeThreadOwned?: Pick<
@@ -273,6 +313,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     /**
      * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
@@ -297,6 +346,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
@@ -313,12 +371,7 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only when the provider thread is still owned by the
-   * expected run attempt and ordinal. Used for late post-terminal
-   * provider_thread updates so a completed or superseded attempt cannot clobber
-   * a newer attempt that already claimed the thread.
-   */
+  /** Commits only if the expected attempt and ordinal still own the provider thread, protecting newer attempts. */
   readonly writeIfProviderThreadOwner: (input: {
     readonly historicalTerminal?: HistoricalTerminalHistory.HistoricalTerminalInput;
     readonly runtimeIdentityRequest?: RequestedRuntimeIdentity;
@@ -328,6 +381,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
@@ -343,12 +405,7 @@ export interface EventSinkV2Shape {
     },
     EventSinkV2Error
   >;
-  /**
-   * Atomically commit only while the stored provider thread still equals
-   * `expected`, the row its writer read, so a read-modify-write of the row
-   * cannot overwrite an update published in between. The whole row is
-   * compared because not every writer moves `updatedAt`.
-   */
+  /** Commits only if the full provider row equals expected; some writers do not advance updatedAt. */
   readonly writeIfProviderThreadUnchanged: (input: {
     readonly expected: OrchestrationV2ProviderThread;
     readonly events: ReadonlyArray<OrchestrationV2DomainEvent>;
@@ -360,12 +417,18 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly commitCommand: (input: {
+    readonly idleWorktreeAdmission?: IdleWorktreeAdmission.Intent | undefined;
+    readonly codexFailover?: CodexFailoverCommitContext | undefined;
     readonly taskContinuation?: TaskContinuationCommitContext | undefined;
+    readonly resultRequest?: OpenRequest | undefined;
+    readonly dependencyWake?: WakeCommit | undefined;
+    readonly threadTitle?: ThreadTitleCommitContext | undefined;
     readonly selfSettlementProjectRemaining?: SelfSettlementProjectRemaining;
     readonly settlementRestore?: { readonly settleCommandId: CommandId };
     readonly ordinaryCheckoutCommand?: CheckoutIntent.IntentCommand;
     readonly runtimeStop?: RuntimeStop.RuntimeStopCommitContext;
     readonly threadSelfConfiguration?: ThreadSelfConfigurationCommitContext;
+    readonly ownerSelection?: ModelSelection | undefined;
     readonly providerConversationReselection?: ProviderConversationReselectionCommitContext;
     readonly importedHistory?: ImportedChoice.ImportedHistoryContext;
     readonly nativeCreation?: {
@@ -480,6 +543,9 @@ const layerBase: Layer.Layer<
   EventSinkV2,
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
+    const captureCommittedProvenance = yield* WorkspaceProvenance.optionalCommittedCapture;
+    const provenance = yield* Effect.serviceOption(WorkspaceProvenanceStore.ProvenanceStore);
+    const idleWorktreeAdmission = IdleWorktreeAdmission.makeIdleWorktreeAdmission(sql);
     const checkoutIntent = yield* Effect.serviceOption(CheckoutIntent.CheckoutIntent);
     // Jones: keeps new provider work out of a process that is handing off to an update.
     const admission = yield* Effect.serviceOption(UpdateAdmissionFence.UpdateAdmissionFence);
@@ -556,22 +622,24 @@ const layerBase: Layer.Layer<
           Effect.andThen(publishLiveEvents(events.filter(isPublicStoredOrchestrationEvent))),
         );
 
-    // Transactions commit one at a time, but each writer publishes after its
-    // commit. If a writer is descheduled in between, a later commit reaches
-    // subscribers first, and clients drop any event at or below the newest
-    // sequence they have applied. So a writer takes this lane as the last step
-    // of its transaction and holds it until it has published. Publishing never
-    // waits, so a writer that holds the transaction while it waits for the
-    // lane is not blocked for long.
+    // Commit order can differ from publication order if a writer is descheduled; clients discard older sequences.
+    // Take this lane last inside the transaction and hold it through publication to preserve that order.
+    // Publication never waits, so a transaction waiting for the lane blocks only briefly.
     const jonesTables = makeJonesTablePresence(sql);
+    const dependencies = makeDependencyStore(sql, jonesTables);
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
     const runtimeStops = RuntimeStop.makeRuntimeStopMethods(sql, jonesTables);
     const settlementRestores = makeSettlementRestoreStore(sql, jonesTables);
+    const ownerSelections = makeOwnerSelectionStore(sql, jonesTables);
+    const codexFailoverStore = yield* CodexFailoverStore.make;
     const publishLane = yield* Semaphore.make(1);
     const commitThenPublish = <A, E, R>(
       transaction: Effect.Effect<A, E, R>,
       publish: (committed: A) => Effect.Effect<void>,
     ) =>
-      Effect.suspend(() => {
+      Effect.uninterruptibleMask((restore) => {
+        const changedThreadIds = new Set<ThreadId>();
+        let dependencySequence = 0;
         let holdsLane = false;
         const takeLane = publishLane.take(1).pipe(
           Effect.andThen(
@@ -581,10 +649,37 @@ const layerBase: Layer.Layer<
           ),
           Effect.uninterruptible,
         );
+        // Cancellation may roll back the transaction's work. Once it commits,
+        // every subscriber must hear about it before this writer can exit.
+        // Otherwise a failed child run can leave its parent's task running.
         return sql
-          .withTransaction(Effect.tap(transaction, () => takeLane))
+          .withTransaction(
+            restore(transaction).pipe(
+              Effect.provideService(DependencyChangedThreads, changedThreadIds),
+              Effect.tap(() =>
+                changedThreadIds.size === 0
+                  ? Effect.void
+                  : dependencies.sequence.pipe(
+                      Effect.tap((sequence) =>
+                        Effect.sync(() => {
+                          dependencySequence = sequence;
+                        }),
+                      ),
+                    ),
+              ),
+              Effect.tap(() => takeLane),
+            ),
+          )
           .pipe(
             Effect.tap(publish),
+            Effect.tap(() =>
+              changedThreadIds.size > 0 && Option.isSome(dependencyChanges)
+                ? dependencyChanges.value.publish({
+                    threadIds: [...changedThreadIds],
+                    sequence: dependencySequence,
+                  })
+                : Effect.void,
+            ),
             Effect.ensuring(
               Effect.suspend(() => (holdsLane ? publishLane.release(1) : Effect.void)),
             ),
@@ -671,6 +766,25 @@ const layerBase: Layer.Layer<
         ]);
         const current =
           records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
+        const expectedIdentity = input.runtimeIdentityBoundary.expectedProviderThreadIdentity;
+        if (
+          expectedIdentity !== undefined &&
+          (expectedIdentity.id !== update.payload.id ||
+            expectedIdentity.appThreadId !== update.threadId ||
+            current === null ||
+            current.id !== expectedIdentity.id ||
+            current.appThreadId !== expectedIdentity.appThreadId ||
+            current.driver !== expectedIdentity.driver ||
+            current.providerInstanceId !== expectedIdentity.providerInstanceId ||
+            current.providerSessionId !== expectedIdentity.providerSessionId ||
+            (current.nativeThreadRef === null || expectedIdentity.nativeThreadRef === null
+              ? current.nativeThreadRef !== expectedIdentity.nativeThreadRef
+              : !Schema.toEquivalence(OrchestrationV2ProviderRef)(
+                  current.nativeThreadRef,
+                  expectedIdentity.nativeThreadRef,
+                )))
+        )
+          return null;
         if (
           (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
             (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
@@ -788,12 +902,24 @@ const layerBase: Layer.Layer<
       Effect.fnUntraced(function* (
         storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
       ) {
+        yield* RetirementEvents.events(
+          sql,
+          storedEvents.map((stored) => stored.event),
+        );
         // Jones: capture settlement before the projection replaces the prior state.
         if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
           yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
         yield* Effect.forEach(storedEvents, (stored) => projectionStore.apply(stored.event), {
           concurrency: 1,
         });
+        if (Option.isSome(provenance))
+          yield* provenance.value
+            .events(storedEvents.map((stored) => stored.event))
+            .pipe(
+              Effect.catch((cause) =>
+                Effect.logWarning("Workspace provenance facts held", { reason: cause.reason }),
+              ),
+            );
         const sequence = storedEvents.at(-1)?.sequence;
         if (sequence !== undefined) {
           const now = DateTime.formatIso(yield* DateTime.now);
@@ -817,6 +943,10 @@ const layerBase: Layer.Layer<
               updated_at = excluded.updated_at
           `;
         }
+        yield* acceptDependencyEvents(
+          dependencies,
+          storedEvents.filter(isPublicStoredOrchestrationEvent).map((stored) => stored.event),
+        );
         // Read lineage here, on the connection this transaction holds; see makeRunOutcomeRecorder.
         return yield* runOutcomes.prepare(storedEvents.filter(isPublicStoredOrchestrationEvent));
       });
@@ -1177,12 +1307,10 @@ const layerBase: Layer.Layer<
                   effect.nativeCreationExecutionReference.effectId !== effect.id),
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native queued effect differs from its acceptance binding",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native queued effect differs from its acceptance binding",
+            });
           }
           if (
             input.nativeCreation !== undefined &&
@@ -1192,12 +1320,10 @@ const layerBase: Layer.Layer<
                 effect.nativeCreationExecutionReference === undefined,
             )
           ) {
-            return yield* Effect.fail(
-              new NativeCreationRepository.NativeCreationRepositoryError({
-                code: "unresolved_claim",
-                message: "Native provider start is missing its execution envelope",
-              }),
-            );
+            return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+              code: "unresolved_claim",
+              message: "Native provider start is missing its execution envelope",
+            });
           }
           const reserved = yield* commandReceipts.insertIfAbsent({
             commandId: input.commandId,
@@ -1237,12 +1363,10 @@ const layerBase: Layer.Layer<
                 nativeCreation.value.recordExecutionAcceptance === undefined ||
                 boundary === undefined
               )
-                return yield* Effect.fail(
-                  new NativeCreationRepository.NativeCreationRepositoryError({
-                    code: "unresolved_claim",
-                    message: "Native receipt retry has no native acceptance owner",
-                  }),
-                );
+                return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                  code: "unresolved_claim",
+                  message: "Native receipt retry has no native acceptance owner",
+                });
               yield* nativeCreation.value.recordExecutionAcceptance({
                 ...input.nativeCreation,
                 eventId: boundary.event.id,
@@ -1254,9 +1378,12 @@ const layerBase: Layer.Layer<
 
           if (input.threadSelfConfiguration)
             input = { ...input, events: yield* input.threadSelfConfiguration.revalidate() };
+          if (input.codexFailover?.revalidate)
+            input = { ...input, events: yield* input.codexFailover.revalidate(input) };
           if (input.providerConversationReselection)
             yield* input.providerConversationReselection.revalidate(input);
           if (input.taskContinuation) yield* input.taskContinuation.accept(input);
+          if (input.threadTitle) yield* input.threadTitle.accept;
 
           if (imported !== undefined && choice !== undefined && choice.rejectionReason !== null) {
             const receipt: CommandReceiptStore.CommandReceiptV2 = {
@@ -1299,13 +1426,26 @@ const layerBase: Layer.Layer<
               events: normalized,
             })
             .pipe(Effect.map((stored) => stored.filter(isPublicStoredOrchestrationEvent)));
-          const sequence = storedEvents.at(-1)?.sequence;
+          const sequence =
+            storedEvents.at(-1)?.sequence ??
+            (input.effects.length === 0
+              ? undefined
+              : yield* eventStore.latestSequence({ threadId: input.threadId }));
           if (sequence === undefined) {
             return yield* Effect.die(
               new Error(`Command ${input.commandId} produced no orchestration events.`),
             );
           }
           const outcomes = yield* applyStoredEvents(storedEvents);
+          if (input.resultRequest) yield* dependencies.open(input.resultRequest);
+          if (input.dependencyWake) yield* dependencies.admitWake(input.dependencyWake);
+          yield* acceptDependencyEvents(
+            dependencies,
+            storedEvents.map((stored) => stored.event),
+            input,
+            false,
+          );
+          if (input.codexFailover?.accept) yield* input.codexFailover.accept(input);
           if (Option.isSome(admission)) yield* admission.value.admit(input.effects, input.events);
           yield* effectOutbox.enqueue(input.effects);
           const receipt: CommandReceiptStore.CommandReceiptV2 = {
@@ -1319,6 +1459,11 @@ const layerBase: Layer.Layer<
           };
           yield* commandReceipts.upsert(receipt);
           yield* captureSettlementProof(receipt, storedEvents);
+          if (input.idleWorktreeAdmission !== undefined)
+            yield* idleWorktreeAdmission.accept({
+              ...input,
+              intent: input.idleWorktreeAdmission,
+            });
           if (Option.isSome(checkoutIntent)) {
             if (ordinary !== undefined)
               yield* checkoutIntent.value.accept(ordinary, {
@@ -1330,6 +1475,19 @@ const layerBase: Layer.Layer<
               yield* checkoutIntent.value.linkEffects({ storedEvents, effects: input.effects });
           }
           if (input.runtimeStop) yield* runtimeStops.record(input.runtimeStop);
+          yield* ownerSelections.commit({
+            threadId: input.threadId,
+            commandId: input.commandId,
+            sequence: receipt.resultSequence,
+            events: input.events,
+            record: input.ownerSelection,
+            recordedAt: input.acceptedAt,
+          });
+          if (input.ownerSelection !== undefined)
+            yield* codexFailoverStore.clearQueuedOverrides(
+              input.threadId,
+              DateTime.formatIso(input.acceptedAt),
+            );
           const restored = input.settlementRestore
             ? storedEvents.find(
                 (stored) =>
@@ -1433,12 +1591,10 @@ const layerBase: Layer.Layer<
               input.nativeCreation.command.threadId !== input.threadId ||
               input.nativeCreation.command.type !== input.commandType
             ) {
-              return yield* Effect.fail(
-                new NativeCreationRepository.NativeCreationRepositoryError({
-                  code: "unresolved_claim",
-                  message: "Native acceptance owner is unavailable or differs from the receipt",
-                }),
-              );
+              return yield* new NativeCreationRepository.NativeCreationRepositoryError({
+                code: "unresolved_claim",
+                message: "Native acceptance owner is unavailable or differs from the receipt",
+              });
             }
             const event = storedEvents.at(-1)!;
             yield* nativeCreation.value.recordExecutionAcceptance({
@@ -1471,6 +1627,8 @@ const layerBase: Layer.Layer<
             if (result.committed) yield* publishStoredEvents(result.storedEvents, result.outcomes);
           }),
       );
+      if (result.committed)
+        yield* captureCommittedProvenance(result.storedEvents.map((stored) => stored.event));
       return {
         receipt: result.receipt,
         storedEvents: result.storedEvents,
@@ -1496,9 +1654,9 @@ const layerBase: Layer.Layer<
         const intentId = CommandId.make(`${policy.createCommandId}:preflight-intent`);
         const outcomeId = CommandId.make(`${policy.createCommandId}:preflight-outcome`);
         const reject = (detail: string) => new Error(detail);
-        const payload = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(QueueDispatchCommand),
-        )(binding.canonicalPayload);
+        const payload = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
+          binding.canonicalPayload,
+        );
         if (
           payload.type !== "thread.turn.start" ||
           payload.bootstrap === undefined ||
@@ -2054,6 +2212,7 @@ const layerBase: Layer.Layer<
 
     const stopError = (cause: unknown) => new EventSinkWriteError({ eventCount: 0, cause });
     return EventSinkV2.of({
+      idleWorktreeAdmission,
       writeHistoricalTerminal: (input) => {
         const attempt = commitThenPublish(
           Effect.gen(function* () {
@@ -2090,6 +2249,10 @@ const layerBase: Layer.Layer<
         deletionAdmission
           .start(input)
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      checkRetainedDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
+        deletionAdmission
+          .checkRetained(start, ordinal, rules, live)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readDeletionWorktreeRemovalStart: (effectId) =>
         deletionAdmission
           .read(effectId)
@@ -2102,6 +2265,10 @@ const layerBase: Layer.Layer<
         deletionAdmission
           .qualify(observation)
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      readStoppedRuntime: (provider) =>
+        runtimeStops.readStoppedRuntime(provider).pipe(Effect.mapError(stopError)),
+      hasStoppedRuntime: (binding) =>
+        runtimeStops.hasStoppedRuntime(binding).pipe(Effect.mapError(stopError)),
       readRuntimeStop: (commandId) =>
         runtimeStops.readState(commandId).pipe(Effect.mapError(stopError)),
       startRuntimeStop: (commandId, target, revalidate) =>
@@ -2326,10 +2493,7 @@ const layerBase: Layer.Layer<
   }),
 );
 
-/**
- * Keeping the outbox instance shared with the worker is important because enqueue notifications
- * are in-memory wakeups backed by the durable SQL queue.
- */
+/** Share the worker's outbox instance: enqueue wakeups are in-memory. */
 export const layerFromStores = layerBase;
 
 export const layer: Layer.Layer<

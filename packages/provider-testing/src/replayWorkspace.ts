@@ -53,7 +53,7 @@ function runGit(
               stderr = (stderr + chunk).slice(-8192);
             }),
           ),
-          Effect.catch(() => Effect.void),
+          Effect.ignore,
         ),
       ],
       { concurrency: "unbounded" },
@@ -76,9 +76,7 @@ const fixtureMetadata = (root: string) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const admin = path.join(root, ".fixture-primary", ".git", "worktrees");
-    const names = yield* fs
-      .readDirectory(admin)
-      .pipe(Effect.catch(() => Effect.succeed([] as string[])));
+    const names = yield* fs.readDirectory(admin).pipe(Effect.orElseSucceed(() => [] as string[]));
     const paths = [
       path.join(root, ".git"),
       path.join(root, ".fixture-worktree", ".git"),
@@ -99,12 +97,10 @@ const fixtureMetadata = (root: string) =>
         }
         const text = yield* fs.readFileString(canonical);
         return [path.relative(root, file), text.slice(0, 4096)] as const;
-      }).pipe(
-        Effect.catch(() => Effect.succeed([path.relative(root, file), "<unavailable>"] as const)),
-      ),
+      }).pipe(Effect.orElseSucceed(() => [path.relative(root, file), "<unavailable>"] as const)),
     );
     return Object.fromEntries(entries);
-  }).pipe(Effect.catch(() => Effect.succeed({} as Record<string, string>)));
+  });
 
 export type ReplayWorkspaceFiles = Readonly<Record<string, string>>;
 

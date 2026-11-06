@@ -1,4 +1,18 @@
 import {
+  type LocalProviderUpdateOutcome,
+  type LocalEnvironmentProvidersInput,
+  type LocalEnvironmentUpdateGroup,
+  type ProviderUpdateToastView,
+  type ProviderUpdateSidebarPillView,
+  firstRejectedProviderUpdateMessage,
+  collectUpdatedProviderSnapshots,
+  buildLocalEnvironmentUpdateGroups,
+  collectProviderUpdateOutcomeSnapshots,
+  getProviderUpdateProgressToastView,
+  resolveEnvironmentUpdateRowStatus,
+  providerUpdateNotificationKey,
+} from "./ProviderUpdateLaunchNotification.logic";
+import {
   collectProviderUpdateCandidates,
   deriveEnvironmentDisplayLabel,
   environmentGroupsWithUpdates,
@@ -16,25 +30,13 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 
 import {
-  buildLocalEnvironmentUpdateGroups,
   canOneClickUpdateProviderCandidate,
-  collectProviderUpdateOutcomeSnapshots,
-  collectUpdatedProviderSnapshots,
-  firstRejectedProviderUpdateMessage,
-  getProviderUpdateProgressToastView,
   getProviderUpdateRunToastView,
   getProviderUpdateSidebarPillView,
   hasOneClickUpdateProviderCandidate,
   isProviderUpdateCandidate,
   isProviderSettingsUpdateCandidate,
-  providerUpdateNotificationKey,
-  resolveEnvironmentUpdateRowStatus,
-  type LocalEnvironmentProvidersInput,
-  type LocalEnvironmentUpdateGroup,
-  type LocalProviderUpdateOutcome,
   type ProviderUpdateCandidate,
-  type ProviderUpdateSidebarPillView,
-  type ProviderUpdateToastView,
 } from "./ProviderUpdateLaunchNotification.logic";
 
 const checkedAt = "2026-04-23T10:00:00.000Z";

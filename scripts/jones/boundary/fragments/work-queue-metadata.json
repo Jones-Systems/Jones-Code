@@ -21,11 +21,11 @@
     "packages/client-runtime/src/jones/workQueueMetadata.test.ts",
     "packages/client-runtime/src/jones/workQueueMetadata.ts"
   ],
-  "hookPaths": ["apps/web/src/routes/settings.jones-code.tsx"],
+  "hookPaths": ["apps/web/src/routes/_chat.settings.jones-code.tsx"],
   "tombstones": [],
   "allowedImports": [
     {
-      "from": "apps/web/src/routes/settings.jones-code.tsx",
+      "from": "apps/web/src/routes/_chat.settings.jones-code.tsx",
       "to": "apps/web/src/jones/workQueue/PromptsSettings.tsx"
     },
     {

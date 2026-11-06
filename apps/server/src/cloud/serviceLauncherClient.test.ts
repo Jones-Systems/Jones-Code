@@ -378,6 +378,39 @@ it.effect(
     }),
 );
 
+it.effect("refuses an older launcher before sending historical-receipt admission", () =>
+  Effect.gen(function* () {
+    const context = {
+      protocol: SERVICE_LAUNCHER_PROTOCOL,
+      childVersion: "1.0.0",
+      qualifiedUpdatesProtocol: 1,
+      startupGateProtocol: 1,
+    };
+    const input = {
+      targetVersion: "1.1.0",
+      dbPath: "/synthetic/statev2.sqlite",
+      stagedHandle: "22345678-1234-4234-8234-123456789abc",
+      qualifiedRecoveryProtocol: 1 as const,
+    };
+    const oldHost = new FakeLauncherProcess(context);
+    const oldClient = yield* makeClient(oldHost, "1.0.0");
+    expect((yield* oldClient.requestUpdate(input).pipe(Effect.flip))._tag).toBe(
+      "ServiceLauncherRejectedError",
+    );
+    expect(oldHost.sent).toEqual([]);
+    const host = new FakeLauncherProcess({ ...context, qualifiedRecoveryProtocol: 1 });
+    const client = yield* makeClient(host, "1.0.0");
+    expect(client.qualifiedRecovery).toBe(true);
+    const request = yield* Effect.forkChild(client.requestUpdate(input), {
+      startImmediately: true,
+    });
+    yield* Effect.promise(() => host.sentSignal.promise);
+    host.emit({ type: "update-accepted", updateId: "accepted-recovery" });
+    expect(yield* Fiber.join(request)).toBe("accepted-recovery");
+    expect(host.sent).toEqual([{ type: "request-update", ...input }]);
+  }),
+);
+
 it.effect("waits for the launcher to durably commit the trial update ID", () =>
   Effect.gen(function* () {
     const pending = {
@@ -1044,3 +1077,229 @@ it.effect("reopens the same fence only after a definitive launcher rejection", (
     yield* Effect.scoped(fence.nativeUse);
   }),
 );
+
+it.effect(
+  "refuses strict state policy on old launchers before running install work, and scopes policy to the exact operation",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+        updateOperationsProtocol: 1,
+      };
+      const input = {
+        targetVersion: "1.1.0",
+        dbPath: "/synthetic/statev2.sqlite",
+        stagedHandle: "22345678-1234-4234-8234-123456789abc",
+        operationId: "12345678-1234-4234-8234-123456789abc",
+      };
+      const oldHost = new FakeLauncherProcess(context);
+      const old = yield* makeClient(oldHost, "1.0.0");
+      let entered = false;
+      yield* old.withStateRecoveryPolicy!(
+        input.operationId,
+        "clone-required",
+        Effect.sync(() => {
+          entered = true;
+        }),
+      ).pipe(Effect.flip);
+      yield* old.requestUpdate({ ...input, stateRecovery: "clone-required" }).pipe(Effect.flip);
+      expect(entered).toBe(false);
+      expect(oldHost.sent).toEqual([]);
+      const host = new FakeLauncherProcess({ ...context, stateRecoveryPolicyProtocol: 1 });
+      const client = yield* makeClient(host, "1.0.0");
+      expect(client.stateRecoveryPolicy).toBe(true);
+      const request = yield* Effect.forkChild(
+        client.withStateRecoveryPolicy!(
+          input.operationId,
+          "clone-required",
+          client.requestUpdate(input),
+        ),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => host.sentSignal.promise);
+      expect(host.sent).toEqual([
+        { type: "request-update", ...input, stateRecovery: "clone-required" },
+      ]);
+      host.emit({ type: "update-accepted", updateId: input.operationId });
+      expect(yield* Fiber.join(request)).toBe(input.operationId);
+      // Success releases the scope: an ordinary legacy request retains its wire shape.
+      const legacy = yield* Effect.forkChild(client.requestUpdate(input), {
+        startImmediately: true,
+      });
+      expect(host.sent.at(-1)).toEqual({ type: "request-update", ...input });
+      host.emit({ type: "update-accepted", updateId: input.operationId });
+      yield* Fiber.join(legacy);
+      yield* client.withStateRecoveryPolicy!(
+        input.operationId,
+        "clone-required",
+        Effect.fail("synthetic failure"),
+      ).pipe(Effect.flip);
+      // Failure releases the scope too, allowing a subsequent explicit policy.
+      yield* client.withStateRecoveryPolicy!(input.operationId, "clone-or-copy", Effect.void);
+    }),
+);
+
+it("decodes optional state policy capability and refuses malformed policy without weakening old requests", () => {
+  const context = { protocol: SERVICE_LAUNCHER_PROTOCOL, childVersion: "1.0.0" };
+  expect(decodeServiceLauncherContext(JSON.stringify(context))).toEqual(context);
+  expect(
+    decodeServiceLauncherContext(JSON.stringify({ ...context, stateRecoveryPolicyProtocol: 1 })),
+  ).toEqual({ ...context, stateRecoveryPolicyProtocol: 1 });
+  for (const flag of [0, 2, null, "1", true])
+    expect(
+      decodeServiceLauncherContext(
+        JSON.stringify({ ...context, stateRecoveryPolicyProtocol: flag }),
+      ),
+    ).toBeUndefined();
+  const request = {
+    type: "request-update",
+    targetVersion: "1.1.0",
+    dbPath: "/synthetic/state.sqlite",
+    stagedHandle: "stage",
+  };
+  expect(decodeServiceLauncherChildMessage(request)).toEqual(request);
+  for (const stateRecovery of ["clone-required", "clone-or-copy"])
+    expect(decodeServiceLauncherChildMessage({ ...request, stateRecovery })).toEqual({
+      ...request,
+      stateRecovery,
+    });
+  for (const stateRecovery of [null, "copy", "", 1, true])
+    expect(decodeServiceLauncherChildMessage({ ...request, stateRecovery })).toBeUndefined();
+  expect(
+    decodeServiceLauncherChildMessage({
+      ...request,
+      stagedHandle: undefined,
+      stateRecovery: "clone-required",
+    }),
+  ).toBeUndefined();
+});
+
+it.effect(
+  "preserves the legacy default wire request for clone-or-copy on a launcher without the policy flag",
+  () =>
+    Effect.gen(function* () {
+      const host = new FakeLauncherProcess({
+        protocol: SERVICE_LAUNCHER_PROTOCOL,
+        childVersion: "1.0.0",
+        qualifiedUpdatesProtocol: 1,
+        startupGateProtocol: 1,
+        updateOperationsProtocol: 1,
+      });
+      const client = yield* makeClient(host, "1.0.0");
+      const input = {
+        targetVersion: "1.1.0",
+        dbPath: "/synthetic/statev2.sqlite",
+        stagedHandle: "22345678-1234-4234-8234-123456789abc",
+        operationId: "12345678-1234-4234-8234-123456789abc",
+      };
+      const request = yield* Effect.forkChild(
+        client.requestUpdate({ ...input, stateRecovery: "clone-or-copy" }),
+        { startImmediately: true },
+      );
+      yield* Effect.promise(() => host.sentSignal.promise);
+      expect(host.sent).toEqual([{ type: "request-update", ...input }]);
+      host.emit({ type: "update-accepted", updateId: input.operationId });
+      expect(yield* Fiber.join(request)).toBe(input.operationId);
+    }),
+);
+
+it.effect(
+  "exposes handoff only with explicit launcher support and correlates actual-ready and handoff replies",
+  () =>
+    Effect.gen(function* () {
+      const context = {
+        protocol: 4,
+        childVersion: "1.0.0",
+        launcherVersion: "0.9.0",
+        startupGateProtocol: 1,
+        launcherHandoffProtocol: 1,
+      };
+      const older = yield* makeClient(
+        new FakeLauncherProcess({
+          protocol: 4,
+          childVersion: "1.0.0",
+          startupGateProtocol: 1,
+        }),
+        "1.0.0",
+      );
+      expect(older.markRuntimeReady).toBeUndefined();
+      expect(older.requestLauncherHandoff).toBeUndefined();
+      const host = new FakeLauncherProcess(context);
+      const client = yield* makeClient(host, "1.0.0");
+      const ready = yield* client.markRuntimeReady!.pipe(Effect.forkChild);
+      yield* Effect.promise(() => host.sentSignal.promise);
+      const sent = host.sent[0];
+      expect(sent?.type).toBe("runtime-ready");
+      if (sent?.type !== "runtime-ready") return yield* Effect.die("Missing ready message");
+      host.emit({ type: "runtime-ready-accepted", queryId: sent.queryId + 1 });
+      expect(ready.pollUnsafe()).toBeUndefined();
+      host.emit({ type: "runtime-ready-accepted", queryId: sent.queryId });
+      yield* Fiber.join(ready);
+      const sentHandoff = Promise.withResolvers<ServiceLauncherChildMessage>();
+      const send = host.send;
+      host.send = (message, callback) => {
+        const result = send(message, callback);
+        if (message.type === "request-launcher-handoff") sentHandoff.resolve(message);
+        return result;
+      };
+      const handoff = yield* client.requestLauncherHandoff!.pipe(Effect.forkChild);
+      const request = yield* Effect.promise(() => sentHandoff.promise);
+      expect(request?.type).toBe("request-launcher-handoff");
+      if (request?.type !== "request-launcher-handoff")
+        return yield* Effect.die("Missing handoff request");
+      host.emit({
+        type: "launcher-handoff-outcome",
+        queryId: request.queryId,
+        outcome: "deferred",
+      });
+      expect(yield* Fiber.join(handoff)).toBe("deferred");
+      expect(host.listenerCount()).toBe(0);
+    }),
+);
+
+it("strictly decodes additive handoff capabilities and bounded IPC while retaining protocol4", () => {
+  const context = {
+    protocol: 4,
+    childVersion: "1.0.0",
+    startupGateProtocol: 1,
+    launcherHandoffProtocol: 1,
+  };
+  expect(decodeServiceLauncherContext(JSON.stringify(context))?.launcherHandoffProtocol).toBe(1);
+  for (const change of [
+    { launcherHandoffProtocol: 2 },
+    { launcherHandoffProtocol: null },
+    { launcherHandoffProtocol: "1" },
+    { protocol: 3 },
+    { startupGateProtocol: undefined },
+  ])
+    expect(decodeServiceLauncherContext(JSON.stringify({ ...context, ...change }))).toBeUndefined();
+  for (const message of [
+    { type: "runtime-ready", childVersion: "1.0.0", queryId: 1 },
+    { type: "request-launcher-handoff", queryId: 2 },
+  ]) {
+    expect(decodeServiceLauncherChildMessage(message)).toEqual(message);
+    for (const queryId of [-1, 0, 1.5, null, "1"])
+      expect(decodeServiceLauncherChildMessage({ ...message, queryId })).toBeUndefined();
+  }
+  expect(
+    decodeServiceLauncherChildMessage({
+      type: "runtime-ready",
+      childVersion: "../outside",
+      queryId: 1,
+    }),
+  ).toBeUndefined();
+  for (const outcome of ["accepted", "deferred", "unavailable"]) {
+    const message = { type: "launcher-handoff-outcome", queryId: 1, outcome };
+    expect(decodeServiceLauncherParentMessage(message)).toEqual(message);
+  }
+  expect(
+    decodeServiceLauncherParentMessage({
+      type: "launcher-handoff-outcome",
+      queryId: 1,
+      outcome: "unknown",
+    }),
+  ).toBeUndefined();
+});

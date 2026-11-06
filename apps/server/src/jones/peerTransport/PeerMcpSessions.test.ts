@@ -33,7 +33,7 @@ const links = Layer.mock(PeerLinks.PeerLinks)({
       link: {},
     } as PeerLinks.ResolvedPeerLink),
   recordOutcome: () => Effect.void,
-  currentGeneration: () => Effect.succeed(Option.some("generation-1")),
+  currentGeneration: () => Effect.succeedSome("generation-1"),
 });
 const initialization = (id: unknown, session: string) =>
   Response.json(
@@ -79,7 +79,7 @@ it.effect("cold callers share one initialization while every call resolves its p
             link: {},
           } as PeerLinks.ResolvedPeerLink;
         }),
-      currentGeneration: () => Effect.succeed(Option.some("g1")),
+      currentGeneration: () => Effect.succeedSome("g1"),
       recordOutcome: () => Effect.void,
     });
     const http = HttpClient.make((request) =>
@@ -133,7 +133,7 @@ it.effect.each(["one", "all"] as const)(
               link: {},
             } as PeerLinks.ResolvedPeerLink;
           }),
-        currentGeneration: () => Effect.succeed(Option.some("g1")),
+        currentGeneration: () => Effect.succeedSome("g1"),
         recordOutcome: () => Effect.void,
       });
       const http = HttpClient.make((request) =>
@@ -384,7 +384,7 @@ it.effect("a resolution failure with no captured generation cannot write an outc
     const missingLinks = Layer.mock(PeerLinks.PeerLinks)({
       resolve: () =>
         Effect.fail(new PeerLinkError({ reason: "unknown_link", message: "Unlinked" })),
-      currentGeneration: () => Effect.succeed(Option.none()),
+      currentGeneration: () => Effect.succeedNone,
       recordOutcome: () =>
         Effect.sync(() => {
           outcomes++;

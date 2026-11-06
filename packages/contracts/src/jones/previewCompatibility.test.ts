@@ -2,14 +2,34 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vite-plus/test";
 import {
   PreviewAutomationHost,
+  PreviewAutomationStatus,
   PREVIEW_AUTOMATION_OPERATIONS,
   PreviewAutomationResponse,
   PreviewAutomationHostIdentity,
   PreviewAutomationRuntimeIdentity,
 } from "../previewAutomation.ts";
+import { PreviewSessionSnapshot } from "../preview.ts";
 const decodeAutomationHost = Schema.decodeUnknownSync(PreviewAutomationHost);
+const { headless: _headless, ...legacySnapshotFields } = PreviewSessionSnapshot.fields;
+const decodeLegacySnapshot = Schema.decodeUnknownSync(Schema.Struct(legacySnapshotFields));
+const decodeSnapshot = Schema.decodeUnknownSync(PreviewSessionSnapshot);
+const { recording: _recording, ...legacyStatusFields } = PreviewAutomationStatus.fields;
+const decodeLegacyStatus = Schema.decodeSync(Schema.Struct(legacyStatusFields));
 
 describe("preview resilience mixed-version wire compatibility", () => {
+  it("lets an old snapshot reader ignore the additive headless flag", () => {
+    const legacy = {
+      threadId: "thread",
+      tabId: "tab",
+      runtime: "server",
+      navStatus: { _tag: "Idle" },
+      canGoBack: false,
+      canGoForward: false,
+      updatedAt: "2026-11-03T00:00:00.000Z",
+    };
+    expect(decodeLegacySnapshot({ ...legacy, headless: true })).toEqual(legacy);
+    expect(decodeSnapshot(legacy)).toEqual(legacy);
+  });
   it("keeps ping outside the baseline operations array accepted by legacy servers", () => {
     const LegacyHost = Schema.Struct({
       ...PreviewAutomationHostIdentity.fields,
@@ -25,7 +45,7 @@ describe("preview resilience mixed-version wire compatibility", () => {
       supportsPing: true,
       supportsSnapshotBarrier: true,
     };
-    expect(Schema.decodeUnknownSync(LegacyHost)(host)).toEqual({
+    expect(Schema.decodeSync(LegacyHost)(host)).toEqual({
       clientId: host.clientId,
       environmentId: host.environmentId,
       supportedOperations: host.supportedOperations,
@@ -50,4 +70,20 @@ describe("preview resilience mixed-version wire compatibility", () => {
       decode({ ...response, error: { ...response.error, outcome: "not_started" } }).error?.outcome,
     ).toBe("not_started");
   });
+});
+
+it("preserves unreported recording state and lets old readers ignore the new field", () => {
+  const legacy = {
+    available: true,
+    visible: false,
+    tabId: "tab",
+    url: null,
+    title: null,
+    loading: false,
+  };
+  const decode = Schema.decodeUnknownSync(PreviewAutomationStatus);
+  expect(decode(legacy)).toEqual(legacy);
+  const status = { ...legacy, recording: { state: "unknown" } };
+  expect(decode(status)).toEqual(status);
+  expect(decodeLegacyStatus(status)).toEqual(legacy);
 });

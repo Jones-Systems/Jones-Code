@@ -622,25 +622,36 @@ it.each([
   { name: "two-core capacity hint", available: 2, busy: 0, idle: 100, expected: 2 },
   { name: "one-core capacity hint", available: 1, busy: 0, idle: 100, expected: 1 },
   { name: "one spare core", available: 4, busy: 75, idle: 25, expected: 2 },
+  {
+    name: "one spare core among ten CPUs",
+    available: 10,
+    busy: 900,
+    idle: 100,
+    count: 10,
+    expected: 2,
+  },
   { name: "less than one spare core", available: 4, busy: 90, idle: 10, expected: 1 },
   { name: "zero capacity hint", available: 0, busy: 0, idle: 100, expected: 4 },
   { name: "nonfinite capacity hint", available: NaN, busy: 0, idle: 100, expected: 4 },
   { name: "fractional capacity hint", available: 1.5, busy: 0, idle: 100, expected: 4 },
-])("selects Linux copy concurrency for $name", async ({ available, busy, idle, expected }) => {
-  let samples = 0;
-  await checkLinuxCopyConcurrency(
-    expected,
-    () => available,
-    () => {
-      if (available === 1) {
-        samples += 1;
-        throw new Error("one-core copies must not sample");
-      }
-      return samples++ === 0 ? cpuSnapshot(0, 0) : cpuSnapshot(busy, idle);
-    },
-  );
-  assert.equal(samples, available === 1 ? 0 : 2);
-});
+])(
+  "selects Linux copy concurrency for $name",
+  async ({ available, busy, idle, count = 4, expected }) => {
+    let samples = 0;
+    await checkLinuxCopyConcurrency(
+      expected,
+      () => available,
+      () => {
+        if (available === 1) {
+          samples += 1;
+          throw new Error("one-core copies must not sample");
+        }
+        return samples++ === 0 ? cpuSnapshot(0, 0, count) : cpuSnapshot(busy, idle, count);
+      },
+    );
+    assert.equal(samples, available === 1 ? 0 : 2);
+  },
+);
 
 it.each([
   { name: "empty", after: [] },
@@ -1310,5 +1321,73 @@ it("refuses unavailable pinned-directory access instead of treating it as a miss
     );
     await NodeAssert.rejects(remove(), /directory-access-unavailable/);
     assert.equal(await NodeFSP.readFile(NodePath.join(generation, "database"), "utf8"), "recovery");
+  });
+});
+
+it("strict recovery rejects unsupported and cross-volume clones without a copy fallback and cleans its probe", async () => {
+  await fixture(async (base, database) => {
+    for (const code of ["ENOTSUP", "EXDEV", "ENOSYS", "EIO"]) {
+      const flags: number[] = [];
+      const adapter: QualifiedBackupAdapter = {
+        availableBytes: async () => 1024 * 1024 * 1024,
+        copyFile: async (_source, _target, flag) => {
+          flags.push(flag);
+          throw Object.assign(new Error("synthetic strict failure"), { code });
+        },
+      };
+      await NodeAssert.rejects(
+        preflightQualifiedBackup(base, database, adapter, { cloneRequired: true }),
+        /recovery-clone-unavailable/,
+      );
+      await NodeAssert.rejects(
+        copyQualifiedBackupFile(database, NodePath.join(base, `strict-${code}`), adapter, {
+          cloneRequired: true,
+        }),
+        /recovery-clone-unavailable/,
+      );
+      assert.equal(flags.length, 2);
+      assert.isTrue(flags.every((flag) => !!(flag & NodeFS.constants.COPYFILE_FICLONE_FORCE)));
+      assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime", "db-backup")), []);
+      await NodeAssert.rejects(NodeFSP.access(NodePath.join(base, `strict-${code}`)));
+    }
+  });
+});
+
+it("recovery inspection counts only the database pair and required settings, without cloning the live files", async () => {
+  await fixture(async (base, database) => {
+    await NodeFSP.writeFile(`${database}-wal`, "wal");
+    await NodeFSP.writeFile(`${database}-shm`, "shm");
+    await NodeFSP.writeFile(NodePath.join(base, "userdata", "settings.json"), "{}");
+    await NodeFSP.writeFile(NodePath.join(base, "userdata", "browser-cache"), "excluded cache");
+    const { inspectQualifiedBackup } = await import("./qualifiedBackup.ts");
+    const m = await inspectQualifiedBackup(base, database, {
+      availableBytes: async () => 2 * 1024 * 1024,
+      copyFile: async (source, target, flags) => {
+        assert.equal(NodePath.basename(source), "source");
+        assert.isTrue(
+          NodePath.dirname(source).startsWith(NodePath.join(base, "runtime", ".clone-probe-")),
+        );
+        assert.isTrue(!!(flags & NodeFS.constants.COPYFILE_FICLONE_FORCE));
+        await NodeFSP.copyFile(source, target, NodeFS.constants.COPYFILE_EXCL);
+      },
+    });
+    assert.equal(m.bytes, 23);
+    assert.equal(m.clone.status, "proved");
+    assert.isTrue(m.cloneRequiredBytes < m.copyRequiredBytes);
+    assert.isFalse(m.firstInstall);
+    assert.deepEqual(await NodeFSP.readdir(NodePath.join(base, "runtime")), []);
+    await NodeFSP.rm(database);
+    await NodeFSP.rm(`${database}-wal`);
+    await NodeFSP.rm(`${database}-shm`);
+    await NodeFSP.rm(NodePath.join(base, "userdata", "settings.json"));
+    const first = await inspectQualifiedBackup(base, database, {
+      availableBytes: async () => 2 * 1024 * 1024,
+      copyFile: async () => {
+        throw new Error("No probe or backup for a first install.");
+      },
+    });
+    assert.isTrue(first.firstInstall);
+    assert.equal(first.bytes, 0);
+    assert.equal(first.clone.status, "unknown");
   });
 });

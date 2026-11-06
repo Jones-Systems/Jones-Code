@@ -129,12 +129,14 @@ export function WorkQueueMetadataPanel({
     setResult(null);
     return refresh();
   };
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load queue metadata for the mounted environment and abort the active read on unmount.
   useEffect(() => {
     void refresh();
     return () => {
       active.current?.abort();
     };
   }, [refresh]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own the metadata-expiry timer so a formerly current snapshot is marked stale at its deadline.
   useEffect(() => {
     if (!result || !("snapshot" in result) || result.expires_at_ms <= observedAt) return;
     const remaining = result.expires_at_ms - Date.now();
@@ -144,6 +146,7 @@ export function WorkQueueMetadataPanel({
     );
     return () => window.clearTimeout(timer);
   }, [result, observedAt]);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish committed asynchronous metadata results to the containing queue section.
   useEffect(() => {
     onResult?.(result);
   }, [result, onResult]);

@@ -113,7 +113,7 @@ export const make = Effect.fn("desktop.connectionCompatibilityHintStore.make")(f
       routeBinding: string,
       kind: StoredConnectionCompatibilityHint["kind"] | null,
     ) {
-      const hint = yield* Schema.decodeUnknownEffect(StoredConnectionCompatibilityHint)({
+      const hint = yield* Schema.decodeEffect(StoredConnectionCompatibilityHint)({
         environmentId,
         routeBinding,
         kind: kind ?? "outdated-update",

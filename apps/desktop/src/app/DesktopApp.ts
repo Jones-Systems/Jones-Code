@@ -245,11 +245,8 @@ export const bootstrapWithIpcRegistration = Effect.fn("desktop.bootstrap")(funct
   }
 
   if (!(yield* Ref.get(state.quitting))) {
-    // The main window waits for the primary backend. In wsl-only mode that is
-    // the WSL backend, which can be slow to cold-boot — show a "Connecting to
-    // WSL" splash immediately so the app feels responsive instead of presenting
-    // no window until WSL is ready. (Dual mode opens fast off the Windows
-    // primary, so no splash there.)
+    // The main window awaits its primary backend. Show a Connecting to WSL splash immediately
+    // in wsl-only mode because cold boot can be slow. Dual mode opens from the Windows primary without a splash.
     if (settings.wslOnly === true && settings.wslBackendEnabled === true) {
       yield* desktopWindow.showConnectingSplash;
     }
@@ -356,11 +353,8 @@ const scopedProgram = Effect.scoped(
     const rendererHistory = yield* DesktopRendererHistory.DesktopRendererHistory;
 
     yield* Effect.addFinalizer(() =>
-      // Stop every backend in the pool, not just the primary. The
-      // electronApp.quit() path can race ahead of the layer-scope
-      // cascade, so leaving the WSL instance for its parent scope
-      // finalizer means it gets hard-killed by the OS instead of
-      // receiving SIGTERM + grace.
+      // Stop every pooled backend before electronApp.quit can outrun layer-scope cleanup.
+      // Leaving WSL to its scope finalizer risks an OS hard kill instead of SIGTERM plus grace.
       prepareAndStopAllPoolInstances().pipe(
         Effect.ensuring(rendererHistory.shutdown),
         Effect.ensuring(shutdown.markComplete),

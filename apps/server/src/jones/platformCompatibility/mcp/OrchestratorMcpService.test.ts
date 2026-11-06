@@ -10,9 +10,15 @@ import {
   RunId,
   ThreadId,
   type OrchestrationV2ThreadProjection,
+  type OrchestrationV2ThreadShell,
+  type OrchestrationV2ServerCommand,
+  type OrchestratorMcpDelegateTaskInput,
+  type RuntimeMode,
   type ServerProvider,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -139,7 +145,7 @@ describe("Jones MCP provider compatibility", () => {
     }) as unknown as OrchestrationV2ThreadProjection;
 
   const childProjection = {
-    thread: { id: childThreadId },
+    thread: { id: childThreadId, title: "MCP child" },
     runs: [],
     contextTransfers: [],
     messages: [],
@@ -223,7 +229,7 @@ describe("Jones MCP provider compatibility", () => {
         const layerDependencies = Layer.mergeAll(
           NodeServices.layer,
           Layer.mock(ThreadManagementService.ThreadManagementService)({
-            hasReceipt: () => Effect.succeed(false),
+            getCommandReceipt: () => Effect.succeedNone,
             assertProviderInstanceEnabled: () => Effect.void,
             getThreadRecords: (threadId) =>
               Effect.succeed(
@@ -322,7 +328,7 @@ describe("Jones MCP provider compatibility", () => {
       const layerDependencies = Layer.mergeAll(
         NodeServices.layer,
         Layer.mock(ThreadManagementService.ThreadManagementService)({
-          hasReceipt: () => Effect.succeed(false),
+          getCommandReceipt: () => Effect.succeedNone,
           assertProviderInstanceEnabled: () => Effect.void,
           isProviderInstanceEnabledForProject: () => Effect.succeed(true),
           getThreadRecords: (threadId) =>
@@ -389,6 +395,181 @@ describe("Jones MCP provider compatibility", () => {
         assert.equal(request.modelSelection.instanceId, antigravityInstanceId);
         assert.equal(request.modelSelection.model, "ant-model");
       }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+    }),
+  );
+  it.effect.each([
+    "corrected opt-in",
+    "broader opt-in",
+    "provider step-down",
+    "accepted legacy retry",
+  ] as const)("delegated supervision: %s", (scenario) =>
+    Effect.gen(function* () {
+      const accepted = scenario === "accepted legacy retry";
+      const parentMode: RuntimeMode =
+        scenario === "broader opt-in" ? "approval-required" : "full-access";
+      let ready = scenario !== "corrected opt-in";
+      let refreshes = 0;
+      let delegated = accepted;
+      const commands: Array<OrchestrationV2ServerCommand> = [];
+      const task = {
+        id: taskId,
+        threadId: parentThreadId,
+        runId: parentRunId,
+        parentNodeId,
+        origin: "app_owned",
+        createdBy: "agent",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: codexInstanceId,
+        providerThreadId: null,
+        childThreadId,
+        nativeTaskRef: null,
+        prompt: "Inspect the diff.",
+        title: null,
+        model: "gpt-5.4",
+        status: "running",
+        result: null,
+        startedAt: null,
+        completedAt: null,
+      };
+      const parent = () => {
+        const projection = parentProjection(delegated ? [task] : []);
+        return { ...projection, thread: { ...projection.thread, runtimeMode: parentMode } };
+      };
+      const providers = () =>
+        ready
+          ? [
+              {
+                ...providerSnapshot({
+                  instanceId: codexInstanceId,
+                  driver: ProviderDriverKind.make("codex"),
+                  model: "gpt-5.4",
+                }),
+                ...(scenario === "provider step-down"
+                  ? { supportedRuntimeModes: ["approval-required" as const] }
+                  : {}),
+              },
+            ]
+          : [];
+      const dependencies = Layer.mergeAll(
+        NodeServices.layer,
+        ServerSettings.layerTest(),
+        Layer.mock(ThreadManagementService.ThreadManagementService)({
+          getCommandReceipt: (commandId) =>
+            accepted
+              ? Effect.map(DateTime.now, (acceptedAt) =>
+                  Option.some({
+                    commandId,
+                    threadId: parentThreadId,
+                    commandType: "delegated_task.request",
+                    acceptedAt,
+                    resultSequence: 1,
+                    status: "accepted" as const,
+                    error: null,
+                  }),
+                )
+              : Effect.succeedNone,
+          getThreadShell: () =>
+            Effect.succeed({
+              ...childProjection.thread,
+              projectId,
+              deletedAt: null,
+            } as OrchestrationV2ThreadShell),
+          getProjectThreadRecords: () => Effect.succeed(childProjection),
+          getThreadRecords: (threadId) =>
+            Effect.succeed(threadId === parentThreadId ? parent() : childProjection),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              commands.push(command);
+              delegated = true;
+              return {
+                sequence: 1,
+                storedEvents: [
+                  {
+                    sequence: 1,
+                    commandId: command.commandId,
+                    event: { type: "subagent.updated", threadId: parentThreadId, payload: task },
+                  },
+                  {
+                    sequence: 1,
+                    commandId: command.commandId,
+                    event: {
+                      type: "thread.created",
+                      threadId: childThreadId,
+                      payload: {
+                        ...childProjection.thread,
+                        projectId,
+                        modelSelection: { instanceId: task.providerInstanceId, model: task.model },
+                        lineage: { parentThreadId, relationshipToParent: "subagent" },
+                        forkedFrom: { type: "node", nodeId: task.id },
+                      },
+                    },
+                  },
+                ],
+              } as never;
+            }),
+        }),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.sync(providers),
+          refreshInstance: () =>
+            Effect.sync(() => {
+              refreshes++;
+              return providers();
+            }),
+        }),
+        adapterRegistryLayer([codexInstanceId]),
+        Layer.mock(ProjectService.ProjectService)({}),
+        Layer.mock(SecretRequests.SecretRequests)({}),
+        Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+        Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+      );
+      yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        const request: OrchestratorMcpDelegateTaskInput = {
+          task: "Inspect the diff.",
+          mode: "async",
+          clientRequestId: "supervision-retry-key",
+          ...(scenario === "provider step-down"
+            ? {}
+            : {
+                runtimeMode:
+                  scenario === "broader opt-in"
+                    ? ("full-access" as const)
+                    : ("approval-required" as const),
+              }),
+          ...(scenario === "broader opt-in" ? { supervisionRequestedByUser: true } : {}),
+        };
+        if (scenario === "corrected opt-in") {
+          const refused = yield* service.delegateTask(scope, request).pipe(Effect.result);
+          assert.equal(refused._tag, "Failure");
+          if (refused._tag === "Failure") assert.equal(refused.failure.code, "invalid_request");
+          assert.equal(commands.length, 0);
+          assert.equal(refreshes, 0);
+          ready = true;
+        }
+        const result = yield* service
+          .delegateTask(scope, {
+            ...request,
+            ...(scenario === "corrected opt-in" ? { supervisionRequestedByUser: true } : {}),
+          })
+          .pipe(Effect.result);
+        if (scenario === "broader opt-in") {
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure")
+            assert.equal(result.failure.code, "runtime_mode_escalation_denied");
+          assert.equal(commands.length, 0);
+        } else {
+          assert.equal(result._tag, "Success");
+          if (result._tag === "Success") assert.equal(result.success.taskId, taskId);
+          assert.equal(commands.length, 1);
+          const command = commands[0];
+          assert.equal(command?.type, "delegated_task.request");
+          if (command?.type === "delegated_task.request") {
+            assert.equal(command.runtimeMode, "approval-required");
+            assert.equal(command.interactionMode, "default");
+          }
+        }
+        assert.equal(refreshes, 0);
+      }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
     }),
   );
 });

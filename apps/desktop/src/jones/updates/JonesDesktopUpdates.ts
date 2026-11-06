@@ -1,8 +1,20 @@
 // @effect-diagnostics nodeBuiltinImport:off - Native updater uses ordinary-UID filesystem and process operations.
+import type { JonesRecoveryPreflightInput } from "@t3tools/contracts/jones/jonesOperations";
+import {
+  NativeRecoveryPreflights,
+  RecoveryPreflightRefused,
+  type RecoveryReview,
+} from "./recoveryPreflight.ts";
+import type { JonesInstallPlanLaptopEvidence } from "@t3tools/contracts/jones/installPlan";
+import type { JonesNativeWriterAdmission } from "@t3tools/shared/jones/nativeWriterFence";
+import type { LaptopInstallBinding, LaptopNativeOutcome } from "../installPlan/coordinator.ts";
+import { JonesStagingStopped, JonesStagingExitUnproved } from "./stagingWorkerProtocol.ts";
+import type { JonesPreparationCancel } from "./stagingWorkerClient.ts";
 import type { DesktopFleetStore } from "../fleetUpdates/store.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
 import {
@@ -62,12 +74,43 @@ const BuildMetadata = Schema.Struct({
   ),
 });
 const ActivationJournal = Schema.Struct({
-  intent: JonesInstallIntent,
+  preEffect: Schema.optionalKey(
+    Schema.Struct({
+      phase: Schema.Literals(["intent", "preparing", "quiescent"]),
+      step: Schema.Literals([
+        "storage",
+        "reserve",
+        "bundle",
+        "stop-processes",
+        "quiescence",
+        "pair",
+      ]),
+      reason: Schema.String,
+      diagnostics: Schema.optionalKey(
+        Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Number])),
+      ),
+      relaunch: Schema.Literals(["started", "skipped"]),
+    }),
+  ),
+  phaseBeforeBlock: Schema.optionalKey(Schema.String),
+  legacySettlement: Schema.optionalKey(
+    Schema.Struct({
+      basis: Schema.Literals(["interrupted-preparation", "unstarted-activation"]),
+      settledBy: Schema.Literal("startup"),
+      evidence: Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Boolean])),
+    }),
+  ),
+  intent: Schema.Struct({
+    ...JonesInstallIntent.fields,
+    stateRecovery: Schema.optionalKey(Schema.Literal("clone-required")),
+  }),
   phase: Schema.String,
   message: Schema.optionalKey(Schema.String),
   recovery: Schema.optionalKey(
     Schema.Struct({
       method: Schema.Literals(["clone", "copy", "sqlite-backup"]),
+      strictClone: Schema.optionalKey(Schema.Boolean),
+      copyFallback: Schema.optionalKey(Schema.Boolean),
       bytes: Schema.Number,
       startedAt: Schema.Number,
       completedAt: Schema.Number,
@@ -259,6 +302,121 @@ export interface JonesDesktopDownloadResult {
   readonly accepted: boolean;
   readonly completed: boolean;
   readonly refusal?: "selection-mismatch";
+  readonly stopped?: boolean;
+  readonly held?: { readonly pid: number; readonly processGroup: number };
+  readonly heldCode?: "copy-unconfirmed" | "exit-unproved";
+}
+
+export type JonesLegacyProcessProof = { readonly pid: number; readonly identity: string };
+export type JonesProcessRole = { readonly pid: number; readonly role: "main" | "backend" };
+export type JonesKernelProcessProof = {
+  readonly pid: number;
+  readonly startSec: number;
+  readonly startUsec: number;
+  readonly executable: string;
+};
+
+const validProcessPid = (pid: unknown): pid is number =>
+  typeof pid === "number" && Number.isInteger(pid) && pid > 0 && pid <= 2147483647;
+
+export function jonesNativeProcessRoles(
+  main: number,
+  backends: readonly number[],
+): JonesProcessRole[] {
+  if (!validProcessPid(main) || backends.some((pid) => !validProcessPid(pid)))
+    throw new Error("Invalid native writer PID.");
+  const pids = [...new Set(backends)].filter((pid) => pid !== main);
+  if (pids.length >= 256) throw new Error("Too many native writers.");
+  return [{ pid: main, role: "main" }, ...pids.map((pid) => ({ pid, role: "backend" as const }))];
+}
+
+export async function captureJonesNativeProcesses(
+  helper: string,
+  supplied: readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[],
+): Promise<{
+  processes: readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[];
+  proofs: readonly JonesLegacyProcessProof[] | readonly JonesKernelProcessProof[];
+}> {
+  const processes = supplied.map((proof) => ({ ...proof }));
+  const roles = processes.some((proof) => "role" in proof);
+  if (!roles) {
+    if (
+      processes.length > 256 ||
+      !processes.every(
+        (proof) =>
+          Object.keys(proof).length === 2 &&
+          Number.isInteger(proof.pid) &&
+          proof.pid > 0 &&
+          "identity" in proof &&
+          typeof proof.identity === "string" &&
+          proof.identity.trim(),
+      )
+    )
+      throw new Error("Invalid legacy native writer proofs.");
+    return {
+      processes: processes as JonesLegacyProcessProof[],
+      proofs: processes as JonesLegacyProcessProof[],
+    };
+  }
+  if (
+    !processes.length ||
+    processes.length > 256 ||
+    !processes.every(
+      (proof) =>
+        Object.keys(proof).length === 2 &&
+        validProcessPid(proof.pid) &&
+        "role" in proof &&
+        (proof.role === "main" || proof.role === "backend"),
+    ) ||
+    new Set(processes.map((proof) => proof.pid)).size !== processes.length ||
+    processes.filter((proof) => "role" in proof && proof.role === "main").length !== 1
+  )
+    throw new Error("Invalid native writer roles.");
+  const deadline = performance.now() + 30000;
+  const proofs: JonesKernelProcessProof[] = [];
+  for (const role of processes) {
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) throw new Error("Native writer capture deadline expired.");
+    const { stdout, stderr } = await new Promise<{ stdout: string; stderr: string }>(
+      (resolve, reject) => {
+        NodeChildProcess.execFile(
+          "/usr/bin/python3",
+          [helper, "--process-identity", String(role.pid)],
+          {
+            encoding: "utf8",
+            maxBuffer: 4096,
+            timeout: Math.max(1, Math.floor(Math.min(5000, remaining))),
+          },
+          (error, stdout, stderr) => (error ? reject(error) : resolve({ stdout, stderr })),
+        );
+      },
+    );
+    if (stderr.trim() || performance.now() > deadline)
+      throw new Error("Native writer inspection failed.");
+    const proof: unknown = JSON.parse(stdout);
+    if (proof === null || typeof proof !== "object" || Array.isArray(proof))
+      throw new Error("Invalid native writer identity.");
+    const value = proof as Record<string, unknown>;
+    if (
+      Object.keys(value).length !== 4 ||
+      !validProcessPid(value.pid) ||
+      value.pid !== role.pid ||
+      typeof value.startSec !== "number" ||
+      !Number.isSafeInteger(value.startSec) ||
+      value.startSec < 0 ||
+      typeof value.startUsec !== "number" ||
+      !Number.isInteger(value.startUsec) ||
+      value.startUsec < 0 ||
+      value.startUsec >= 1000000 ||
+      typeof value.executable !== "string" ||
+      !value.executable.startsWith("/") ||
+      value.executable.includes("\0") ||
+      Buffer.byteLength(value.executable, "utf8") >= 4096
+    )
+      throw new Error("Invalid native writer identity.");
+    proofs.push(value as JonesKernelProcessProof);
+  }
+  return { processes: processes as JonesProcessRole[], proofs };
 }
 
 export interface JonesDesktopUpdateOptions {
@@ -273,6 +431,22 @@ export interface JonesDesktopUpdateOptions {
   readonly initialState: DesktopUpdateState;
   readonly disabledByEnv: boolean;
   readonly fleet?: Pick<DesktopFleetStore, "bindInstall" | "recordOutcome">;
+  readonly plan?: {
+    readonly bindLaptopInstall: (binding: LaptopInstallBinding) => Promise<void>;
+    readonly recordLaptopOutcome: (outcome: LaptopNativeOutcome) => Promise<void>;
+    readonly preparationHeld?: () => Promise<boolean>;
+    readonly recordLaptopAdmission?: (operationId: string) => Promise<void>;
+    readonly recordLaptopWorker?: (input: {
+      readonly operationId: string;
+      readonly pid: number;
+      readonly processGroup: number;
+    }) => Promise<void>;
+  };
+  readonly cancelPreparation?: (token: string) => Promise<JonesPreparationCancel>;
+  readonly preparationExited?: (token: string) => boolean;
+  readonly preparationWorker?: () =>
+    | { readonly pid: number; readonly processGroup: number }
+    | undefined;
   readonly onState: (state: DesktopUpdateState) => Promise<void>;
   /** Resolves with the backend's state; its message explains a missing preparation receipt. */
   readonly prepareNative?: (
@@ -280,10 +454,22 @@ export interface JonesDesktopUpdateOptions {
     transactionId: string,
     active: ActiveInstall,
   ) => Promise<{ readonly phase?: string; readonly message?: string } | void>;
-  readonly processProofs: () => Promise<readonly { pid: number; identity: string }[]>;
+  readonly processProofs: () => Promise<
+    readonly JonesLegacyProcessProof[] | readonly JonesProcessRole[]
+  >;
   readonly listener: () => Promise<string>;
   readonly timestamp: () => Promise<string>;
+  readonly ordinaryRecoveryReadiness?: () => Promise<
+    | {
+        readonly owner: JonesNativeWriterAdmission;
+        readonly backendPid: number;
+        readonly run: object;
+      }
+    | undefined
+  >;
   readonly client?: Pick<JonesActionsClient, "check" | "stage">;
+  /** Test adapter; production reads the installed bundle through the native plist boundary. */
+  readonly readInstalledBundleIdentity?: typeof readMacBundleIdentity;
   readonly stageApp?: typeof stageJonesMacApp;
   readonly validateArtifact?: typeof validateJonesStagedArtifact;
   /**
@@ -294,13 +480,33 @@ export interface JonesDesktopUpdateOptions {
     candidate: JonesActionsCandidate,
     roots: JonesStagingRoots,
     onVerifying: () => Promise<void>,
+    options: {
+      readonly token: string;
+      readonly onStarted?: (worker: {
+        readonly pid: number;
+        readonly processGroup: number;
+      }) => Promise<void>;
+    },
   ) => Promise<JonesPreparedStage>;
 }
 
 export type JonesSupersedeResult = "replaced" | "refused" | "uncertain" | "download-failed";
 
+type DesktopDownloadWork = {
+  token: string;
+  operationId?: string;
+  source: string;
+  stopRequested: boolean;
+  admitted: boolean;
+  pending: Promise<JonesDesktopDownloadResult> | undefined;
+  binding: Promise<void>;
+  worker?: { readonly pid: number; readonly processGroup: number };
+};
+
 /** One host-owned checker. Downloads retain a fixed candidate; later checks cannot replace Install. */
 export class JonesDesktopUpdateController {
+  readonly #recoveryPreflights = new NativeRecoveryPreflights();
+  #recoveryInspectorReady = false;
   #state: DesktopUpdateState;
   #source: string | undefined;
   #installedSource: JonesUpdateState["installedSource"];
@@ -319,6 +525,11 @@ export class JonesDesktopUpdateController {
   #terminalPhase: "committed" | "rolled-back" | undefined;
   #activationMessage: string | undefined;
   #lastJournal: typeof ActivationJournal.Type | undefined;
+  #activeCommittedTransaction: string | undefined;
+  #checkClassification: JonesUpdateState["checkClassification"];
+  #download: DesktopDownloadWork | undefined;
+  #heldDownload: { readonly pid: number; readonly processGroup: number } | undefined;
+  #heldCopy = false;
   readonly #options: JonesDesktopUpdateOptions;
   readonly #client: Pick<JonesActionsClient, "check" | "stage">;
 
@@ -365,6 +576,519 @@ export class JonesDesktopUpdateController {
       };
     return undefined;
   }
+  isStaged(binding: {
+    targetSource: string;
+    targetTree: string;
+    stagedHandle?: string;
+    currentVersion?: string;
+    expectedInstalledSource?: string;
+  }): boolean {
+    return (
+      this.#staged !== undefined &&
+      this.#staged.sourceSha === binding.targetSource &&
+      this.#staged.sourceTree === binding.targetTree &&
+      (binding.stagedHandle === undefined || this.#staged.handle === binding.stagedHandle) &&
+      (binding.currentVersion === undefined ||
+        binding.currentVersion === this.#state.currentVersion) &&
+      (binding.expectedInstalledSource === undefined ||
+        binding.expectedInstalledSource === this.#source) &&
+      !this.#activationBlocked
+    );
+  }
+
+  async laptopEvidence(): Promise<JonesInstallPlanLaptopEvidence> {
+    if (
+      !this.#heldCopy &&
+      this.#heldDownload !== undefined &&
+      this.#download !== undefined &&
+      this.#options.preparationExited?.(this.#download.token) === true
+    ) {
+      this.#heldDownload = undefined;
+      this.#download = undefined;
+      if (this.#busy === "download") this.#busy = null;
+    }
+    const base: JonesInstallPlanLaptopEvidence = {
+      observedAt: await this.#options.timestamp(),
+      activationBlocked: this.#activationBlocked || this.#heldDownload !== undefined,
+      activeVersion: this.#state.currentVersion,
+      ...(this.#bootstrap === undefined
+        ? {}
+        : {
+            environmentId: decodeEnvironmentId(this.#bootstrap.environmentId),
+            activeGeneration: this.#bootstrap.generation,
+            activeSource: this.#bootstrap.sourceSha,
+            activeTree: this.#bootstrap.sourceTree,
+          }),
+    };
+    if (
+      this.#bootstrap !== undefined &&
+      this.#bootstrap.transactionId === `manual-${this.#bootstrap.generation}` &&
+      !base.activationBlocked &&
+      this.#busy === null
+    )
+      return this.#ordinaryRecoveryEvidence(base, this.#bootstrap);
+    if (
+      this.#bootstrap === undefined ||
+      this.#activeCommittedTransaction === undefined ||
+      base.activationBlocked
+    )
+      return base;
+    try {
+      const active = decodeActiveInstall(
+        JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
+      );
+      const journal = decodeActivationJournal(
+        JSON.parse(
+          await NodeFSP.readFile(
+            NodePath.join(
+              this.updaterRoot,
+              "transactions",
+              this.#activeCommittedTransaction,
+              "journal.json",
+            ),
+            "utf8",
+          ),
+        ),
+      );
+      if (
+        JSON.stringify(active) !== JSON.stringify(this.#bootstrap) ||
+        journal.phase !== "resumed" ||
+        active.generation !== journal.intent.transactionId ||
+        active.transactionId !== journal.intent.transactionId ||
+        journal.intent.staged.sourceSha !== active.sourceSha ||
+        journal.intent.staged.sourceTree !== active.sourceTree ||
+        journal.intent.staged.appDigest !== active.appDigest ||
+        journal.intent.expected.home !== active.home ||
+        journal.intent.expected.profile !== active.profile ||
+        journal.intent.expected.environmentId !== active.environmentId
+      )
+        return { ...base, activationBlocked: true };
+      return { ...base, committedTransactionId: journal.intent.transactionId };
+    } catch {
+      return { ...base, activationBlocked: true };
+    }
+  }
+
+  async #ordinaryRecoveryEvidence(
+    base: JonesInstallPlanLaptopEvidence,
+    bootstrap: ActiveInstall,
+  ): Promise<JonesInstallPlanLaptopEvidence> {
+    try {
+      if (!/^[a-f0-9]{64}$/.test(bootstrap.generation)) return base;
+      const before = await this.#options.ordinaryRecoveryReadiness?.();
+      if (
+        before === undefined ||
+        !Number.isSafeInteger(before.backendPid) ||
+        before.backendPid <= 1
+      )
+        return base;
+      before.owner.assertCurrent();
+      const path = NodePath.join(
+        this.#options.home,
+        "runtime",
+        "jones-manual-installs",
+        bootstrap.generation,
+        "receipt.json",
+      );
+      if ((await NodeFSP.realpath(path)) !== path) return base;
+      const read = async (file: string) => {
+        const input = await NodeFSP.open(
+          file,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
+        try {
+          const stat = await input.stat();
+          if (
+            !stat.isFile() ||
+            stat.nlink !== 1 ||
+            stat.size > 1024 * 1024 ||
+            stat.uid !== process.getuid?.() ||
+            (stat.mode & 0o077) !== 0
+          )
+            throw new Error("Ordinary recovery proof ownership or bounds changed.");
+          const bytes = Buffer.alloc(1024 * 1024 + 1);
+          const { bytesRead } = await input.read(bytes, 0, bytes.length, 0);
+          if (bytesRead > 1024 * 1024)
+            throw new Error("Ordinary recovery proof exceeds its bound.");
+          return bytes.subarray(0, bytesRead);
+        } finally {
+          await input.close();
+        }
+      };
+      const manifestRaw = await read(this.manifestPath);
+      const manifest = JSON.parse(manifestRaw.toString("utf8"));
+      const active = decodeActiveInstall(manifest);
+      const receiptRaw = await read(path);
+      const receipt = Schema.decodeUnknownSync(
+        Schema.Struct({
+          protocol: Schema.Literal(1),
+          operation: Schema.Literal("manual-install"),
+          phase: Schema.Literal("launched"),
+          automaticContinuationRequested: Schema.Literal(false),
+          transactionId: Schema.String,
+          nextActive: JonesActiveInstall,
+          candidate: Schema.Struct({
+            appPath: Schema.String,
+            executablePath: Schema.String,
+            sourceSha: Schema.String,
+            sourceTree: Schema.String,
+            version: Schema.String,
+            appDigest: Schema.String,
+            bundleIdentifier: Schema.optionalKey(Schema.String),
+          }),
+        }),
+      )(JSON.parse(receiptRaw.toString("utf8")));
+      const hash = (raw: NodeCrypto.BinaryLike) =>
+        NodeCrypto.createHash("sha256").update(raw).digest("hex");
+      const manifestSha256 = hash(JSON.stringify(manifest));
+      const owner = before.owner.binding;
+      const executable = NodePath.relative(
+        receipt.candidate.appPath,
+        receipt.candidate.executablePath,
+      );
+      // A launched receipt needs the present native owner and ready backend run.
+      if (
+        !NodeUtil.isDeepStrictEqual(active, bootstrap) ||
+        !NodeUtil.isDeepStrictEqual(receipt.nextActive, active) ||
+        receipt.transactionId !== active.generation ||
+        active.transactionId !== `manual-${active.generation}` ||
+        receipt.candidate.sourceSha !== active.sourceSha ||
+        receipt.candidate.sourceTree !== active.sourceTree ||
+        receipt.candidate.version !== active.version ||
+        receipt.candidate.appDigest !== active.appDigest ||
+        receipt.candidate.bundleIdentifier !== active.bundleIdentifier ||
+        !NodePath.isAbsolute(receipt.candidate.appPath) ||
+        !NodePath.isAbsolute(receipt.candidate.executablePath) ||
+        !executable ||
+        executable === ".." ||
+        executable.startsWith(`..${NodePath.sep}`) ||
+        NodePath.isAbsolute(executable) ||
+        NodePath.join(active.appPath, executable) !== active.executablePath ||
+        owner.manifestSha256 !== manifestSha256 ||
+        owner.home !== active.home ||
+        owner.databasePath !== active.databasePath ||
+        owner.profile !== active.profile ||
+        owner.environmentId !== active.environmentId ||
+        owner.sourceSha !== active.sourceSha ||
+        owner.sourceTree !== active.sourceTree ||
+        owner.version !== active.version
+      )
+        return base;
+      const after = await this.#options.ordinaryRecoveryReadiness?.();
+      if (
+        after === undefined ||
+        after.backendPid !== before.backendPid ||
+        after.run !== before.run ||
+        after.owner !== before.owner ||
+        !NodeUtil.isDeepStrictEqual(after.owner.binding, owner)
+      )
+        return base;
+      after.owner.assertCurrent();
+      if (
+        !(await read(this.manifestPath)).equals(manifestRaw) ||
+        !(await read(path)).equals(receiptRaw) ||
+        this.#bootstrap !== bootstrap ||
+        this.#busy !== null ||
+        this.#activationBlocked
+      )
+        return base;
+      after.owner.assertCurrent();
+      return {
+        ...base,
+        ordinaryRecovery: {
+          transactionId: active.transactionId,
+          activeGeneration: active.generation,
+          manifestSha256,
+          receiptSha256: hash(receiptRaw),
+        },
+      };
+    } catch {
+      return base;
+    }
+  }
+
+  async retiredLaptopInstall(binding: LaptopInstallBinding): Promise<boolean> {
+    if (
+      this.#busy !== null ||
+      this.#activationBlocked ||
+      this.#bootstrap === undefined ||
+      !/^[a-f0-9]{64}$/.test(binding.transactionId)
+    )
+      return false;
+    try {
+      const directory = NodePath.join(
+        this.updaterRoot,
+        "retired-preparations",
+        binding.transactionId,
+      );
+      if ((await NodeFSP.realpath(directory)) !== directory) return false;
+      const info = await NodeFSP.lstat(directory);
+      if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
+        return false;
+      const absent = async (path: string) => {
+        try {
+          await NodeFSP.lstat(path);
+          return false;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") return true;
+          throw cause;
+        }
+      };
+      if (!(await absent(NodePath.join(this.updaterRoot, "transactions", binding.transactionId))))
+        return false;
+      const read = async (path: string) => {
+        const input = await NodeFSP.open(
+          path,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
+        try {
+          const stat = await input.stat();
+          if (
+            !stat.isFile() ||
+            stat.nlink !== 1 ||
+            stat.size > 1024 * 1024 ||
+            stat.uid !== process.getuid?.() ||
+            (stat.mode & 0o077) !== 0
+          )
+            throw new Error("Retirement proof ownership or bounds changed.");
+          const bytes = Buffer.alloc(1024 * 1024 + 1);
+          const { bytesRead } = await input.read(bytes, 0, bytes.length, 0);
+          if (bytesRead > 1024 * 1024) throw new Error("Retirement proof exceeds its bound.");
+          const raw = bytes.subarray(0, bytesRead);
+          return { raw, value: JSON.parse(raw.toString("utf8")) as Record<string, unknown> };
+        } finally {
+          await input.close();
+        }
+      };
+      const hash = (raw: NodeCrypto.BinaryLike) =>
+        NodeCrypto.createHash("sha256").update(raw).digest("hex");
+      const canonical = (value: unknown): unknown =>
+        Array.isArray(value)
+          ? value.map(canonical)
+          : typeof value === "object" && value !== null
+            ? Object.fromEntries(
+                Object.keys(value)
+                  .sort()
+                  .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
+              )
+            : value;
+      const intent = await read(NodePath.join(directory, "preparation-retirement.json"));
+      const receipt = await read(NodePath.join(directory, "preparation-retirement-receipt.json"));
+      const plan = intent.value.plan as Record<string, unknown>;
+      const active = decodeActiveInstall(plan.activeBinding);
+      // The archive proves the old attempt ended; it says nothing about the running target.
+      if (
+        active.generation !== binding.fromGeneration ||
+        active.home !== this.#bootstrap.home ||
+        active.databasePath !== this.#bootstrap.databasePath ||
+        active.profile !== this.#bootstrap.profile ||
+        active.environmentId !== this.#bootstrap.environmentId ||
+        plan.protocol !== 1 ||
+        plan.transactionId !== binding.transactionId ||
+        plan.retiredPath !== directory ||
+        intent.value.protocol !== 1 ||
+        !["withdrawn", "backend-refused", "requester-exited", "writers-quiescent"].includes(
+          String(intent.value.evidence),
+        )
+      )
+        return false;
+      // Match the native helper's sorted, ASCII-escaped retirement digest.
+      const canonicalPlan = JSON.stringify(canonical(plan)).replace(
+        /[^\x00-\x7f]/g,
+        (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+      );
+      if (
+        intent.value.planSha256 !== hash(canonicalPlan) ||
+        !NodeUtil.isDeepStrictEqual(receipt.value, {
+          protocol: 1,
+          transactionId: binding.transactionId,
+          planSha256: intent.value.planSha256,
+          status: "retired",
+          evidence: intent.value.evidence,
+        })
+      )
+        return false;
+      const records = plan.records as Record<string, string>;
+      const allowed = new Set([
+        "prepare-intent.json",
+        "prepare-request.json",
+        "prepare-refused.json",
+        "prepare-failure.json",
+        "prepare-dispatched.json",
+        "continuation.json",
+        "activation-request.json",
+        "preparation-withdrawal.json",
+      ]);
+      if (
+        records === null ||
+        typeof records !== "object" ||
+        Object.keys(records).length > allowed.size
+      )
+        return false;
+      const expectedNames = new Set([
+        ...Object.keys(records),
+        "preparation-retirement.json",
+        "preparation-retirement-receipt.json",
+        "attempt-selection.json",
+      ]);
+      const names = await NodeFSP.readdir(directory);
+      if (names.length !== expectedNames.size || names.some((name) => !expectedNames.has(name)))
+        return false;
+      for (const [name, digest] of Object.entries(records)) {
+        if (!allowed.has(name) || hash((await read(NodePath.join(directory, name))).raw) !== digest)
+          return false;
+      }
+      const claim = await read(NodePath.join(directory, "prepare-intent.json"));
+      const attempt = await read(NodePath.join(directory, "attempt-selection.json"));
+      const value = claim.value;
+      if (
+        records["prepare-intent.json"] !== hash(claim.raw) ||
+        plan.attemptSha256 !== hash(attempt.raw) ||
+        value.protocol !== 1 ||
+        value.transactionId !== binding.transactionId ||
+        value.stagedHandle !== binding.stagedHandle ||
+        typeof value.selectionPath !== "string" ||
+        NodePath.dirname(value.selectionPath) !== NodePath.join(this.updaterRoot, "staging") ||
+        typeof value.selectionSha256 !== "string"
+      )
+        return false;
+      if (
+        ![2, 3].includes(value.preparationClaimProtocol as number) ||
+        !NodeUtil.isDeepStrictEqual(value, {
+          protocol: 1,
+          preparationClaimProtocol: value.preparationClaimProtocol,
+          stagedHandle: binding.stagedHandle,
+          transactionId: binding.transactionId,
+          selectionPath: value.selectionPath,
+          selectionSha256: value.selectionSha256,
+          home: active.home,
+          databasePath: active.databasePath,
+          profile: active.profile,
+          environmentId: active.environmentId,
+        })
+      )
+        return false;
+      if (
+        !NodeUtil.isDeepStrictEqual(attempt.value, {
+          protocol: 1,
+          transactionId: binding.transactionId,
+          stagedHandle: binding.stagedHandle,
+          selectionPath: value.selectionPath,
+          selectionSha256: value.selectionSha256,
+          expected: active,
+        })
+      )
+        return false;
+      const attemptPath = NodePath.join(
+        this.updaterRoot,
+        "attempt-selections",
+        `${hash(`${value.selectionPath}\n${value.selectionSha256}`)}.json`,
+      );
+      if (plan.attemptSelection !== attemptPath) return false;
+      if ((await NodeFSP.realpath(value.selectionPath)) !== value.selectionPath) return false;
+      const selection = await read(value.selectionPath);
+      const staged = decodeStageSelection(selection.value).app;
+      if (
+        hash(selection.raw) !== value.selectionSha256 ||
+        staged.handle !== binding.stagedHandle ||
+        staged.sourceSha !== binding.targetSource ||
+        staged.sourceTree !== binding.targetTree
+      )
+        return false;
+      if (intent.value.evidence === "withdrawn") {
+        if (
+          value.preparationClaimProtocol !== 3 ||
+          !NodeUtil.isDeepStrictEqual(
+            (await read(NodePath.join(directory, "preparation-withdrawal.json"))).value,
+            {
+              protocol: 1,
+              withdrawalProtocol: 1,
+              transactionId: binding.transactionId,
+              claimSha256: hash(claim.raw),
+              claim: value,
+              expected: active,
+              evidence: "withdrawal-protocol",
+            },
+          )
+        )
+          return false;
+      } else if (
+        ["prepare-dispatched.json", "continuation.json", "activation-request.json"].some(
+          (name) => name in records,
+        )
+      )
+        return false;
+      const helper = NodePath.join(
+        this.updaterRoot,
+        `activate-v1-${hash(jonesNativeHelperSource)}.py`,
+      );
+      const helperInfo = await NodeFSP.lstat(helper);
+      if (
+        !helperInfo.isFile() ||
+        helperInfo.isSymbolicLink() ||
+        helperInfo.nlink !== 1 ||
+        helperInfo.uid !== process.getuid?.() ||
+        (helperInfo.mode & 0o777) !== 0o700 ||
+        (await NodeFSP.readFile(helper, "utf8")) !== jonesNativeHelperSource
+      )
+        return false;
+      const inspection = decodeNativePreparationResult(
+        JSON.parse(
+          await runNativeCommand("/usr/bin/python3", [
+            helper,
+            "--manifest",
+            this.manifestPath,
+            "--inspect-preparation",
+            binding.transactionId,
+          ]),
+        ),
+      );
+      return (
+        inspection.operation === "inspect-preparation" &&
+        inspection.status === "retired" &&
+        inspection.transactionId === binding.transactionId &&
+        inspection.planSha256 === intent.value.planSha256 &&
+        this.#busy === null &&
+        !this.#activationBlocked &&
+        (await absent(NodePath.join(this.updaterRoot, "transactions", binding.transactionId))) &&
+        (await absent(NodePath.join(directory, "intent.json"))) &&
+        (await absent(NodePath.join(directory, "journal.json")))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  async stopDownload(input: {
+    readonly operationId?: string;
+    readonly sourceSha: string;
+  }): Promise<JonesPreparationCancel> {
+    const work = this.#download;
+    if (
+      work === undefined ||
+      work.source !== input.sourceSha ||
+      (input.operationId !== undefined && work.operationId !== input.operationId)
+    )
+      return this.#staged?.sourceSha === input.sourceSha ? "completed" : "not-running";
+    if (work.admitted) return "not-stoppable-phase";
+    work.stopRequested = true;
+    // A stop before prepareStage is called prevents spawn; the download checks this flag.
+    if (this.#busy !== "download") return "not-running";
+    const result = await this.#options.cancelPreparation?.(work.token);
+    if (result === "not-running") {
+      const finished = await work.pending;
+      return finished?.stopped
+        ? "stopped"
+        : finished?.completed
+          ? "completed"
+          : finished?.held
+            ? "exit-unproved"
+            : "not-running";
+    }
+    if (result === "exit-unproved") this.#heldDownload = this.#options.preparationWorker?.();
+    return result ?? "not-stoppable-phase";
+  }
+
   get manifestPath() {
     return NodePath.join(this.#options.home, "runtime", "jones-active-install.json");
   }
@@ -574,6 +1298,15 @@ export class JonesDesktopUpdateController {
               ? "source-unqualified"
               : undefined;
     const journal = this.#lastJournal;
+    const measuredRecovery = journal?.recovery;
+    // Older cp -c journals and new opportunistic copies cannot prove shared blocks.
+    const recovery =
+      measuredRecovery !== undefined &&
+      ((measuredRecovery.method === "clone" && measuredRecovery.strictClone === true) ||
+        measuredRecovery.method === "sqlite-backup" ||
+        (measuredRecovery.method === "copy" && measuredRecovery.copyFallback !== false))
+        ? measuredRecovery
+        : undefined;
     const currentAttempt =
       this.#selectedAttempt?.stagedHandle === this.#staged?.handle
         ? this.#selectedAttempt?.transactionId
@@ -595,6 +1328,9 @@ export class JonesDesktopUpdateController {
     const jones: JonesUpdateState = {
       source: "jones-actions",
       channel: "jones-main",
+      ...(this.#checkClassification === undefined
+        ? {}
+        : { checkClassification: this.#checkClassification }),
       phase,
       ...(this.#installedSource === undefined ? {} : { installedSource: this.#installedSource }),
       ...(updateId === undefined ? {} : { updateId }),
@@ -608,21 +1344,27 @@ export class JonesDesktopUpdateController {
               ...(journal.message === undefined ? {} : { reason: journal.message }),
             },
           }),
-      ...(journal?.recovery === undefined
+      ...(recovery === undefined
         ? {}
         : {
             recovery: {
-              method: journal.recovery.method === "clone" ? "clone" : "copy",
-              bytes: journal.recovery.bytes,
-              completedAt: DateTime.formatIso(
-                DateTime.fromEpochSeconds(journal.recovery.completedAt),
-              ),
-              durationMs: Math.round(
-                (journal.recovery.completedAt - journal.recovery.startedAt) * 1000,
-              ),
+              method:
+                recovery.strictClone === true && recovery.method === "clone" ? "clone" : "copy",
+              requested:
+                journal?.intent.stateRecovery === "clone-required"
+                  ? "clone-required"
+                  : "clone-or-copy",
+              bytes: recovery.bytes,
+              completedAt: DateTime.formatIso(DateTime.fromEpochSeconds(recovery.completedAt)),
+              durationMs: Math.round((recovery.completedAt - recovery.startedAt) * 1000),
             },
           }),
       capability: {
+        ...(this.#bootstrap === undefined ||
+        !this.#recoveryInspectorReady ||
+        this.#options.disabledByEnv
+          ? {}
+          : { recoveryPolicy: 1 as const }),
         check: this.#source !== undefined && !this.#options.disabledByEnv,
         download: this.#source !== undefined && !this.#options.disabledByEnv,
         install: reason === undefined && phase !== "installing",
@@ -777,6 +1519,7 @@ export class JonesDesktopUpdateController {
   }
 
   async configure(): Promise<void> {
+    this.#recoveryInspectorReady = false;
     this.#selectedAttempt = undefined;
     const metadata = decodeBuildMetadata(
       JSON.parse(
@@ -792,6 +1535,7 @@ export class JonesDesktopUpdateController {
     this.#terminalPhase = undefined;
     this.#activationMessage = undefined;
     this.#lastJournal = undefined;
+    this.#activeCommittedTransaction = undefined;
     let boundManifest = false;
     try {
       let active: ActiveInstall;
@@ -832,6 +1576,9 @@ export class JonesDesktopUpdateController {
       if (!matches) active = await this.#adopt(metadata, active);
       this.#bootstrap = active;
       this.#source = active.sourceSha;
+      await NodeFSP.mkdir(this.updaterRoot, { recursive: true, mode: 0o700 });
+      await this.#helperPath();
+      this.#recoveryInspectorReady = true;
       if (
         metadata.jonesSource !== undefined &&
         /^[a-f0-9]{40}$/.test(active.sourceSha) &&
@@ -940,11 +1687,21 @@ export class JonesDesktopUpdateController {
           journal.phase === "resumed" &&
           journal.intent.transactionId === active.transactionId &&
           journal.intent.staged.sourceSha === active.sourceSha &&
-          journal.intent.staged.appDigest === active.appDigest;
+          journal.intent.staged.appDigest === active.appDigest &&
+          journal.intent.staged.sourceTree === active.sourceTree &&
+          active.generation === journal.intent.transactionId;
         const rolledBack =
           journal.phase === "rolled-back" &&
           JSON.stringify(journal.intent.expected) === JSON.stringify(active);
+        if (committed) this.#activeCommittedTransaction = journal.intent.transactionId;
         if (committed || rolledBack) {
+          await this.#options.plan?.recordLaptopOutcome({
+            transactionId: journal.intent.transactionId,
+            status: committed ? "committed" : "rolled-back",
+            activeGeneration: active.generation,
+            activeSource: active.sourceSha,
+            activeTree: active.sourceTree,
+          });
           const outcomeTime = (await NodeFSP.stat(NodePath.join(directory, "journal.json")))
             .mtimeMs;
           if (outcomeTime >= latestOutcomeTime) {
@@ -952,7 +1709,9 @@ export class JonesDesktopUpdateController {
             this.#lastJournal = journal;
             this.#terminalPhase = committed ? "committed" : "rolled-back";
             this.#activationMessage =
-              journal.message ??
+              (rolledBack && journal.preEffect !== undefined
+                ? `Update did not start; nothing changed. Transaction ${entry}.`
+                : journal.message) ??
               (committed
                 ? `Update ${entry} committed; Jones Code ${active.version} is active.`
                 : `Update ${entry} rolled back; Jones Code ${active.version} remains active.`);
@@ -975,7 +1734,23 @@ export class JonesDesktopUpdateController {
           .filter(Boolean)
           .join(" ");
       }
+      // The native command acquires the same exclusion as install admission and
+      // startup reconciliation. Automatic startup only proposes manual retention.
+      try {
+        await NodeFSP.lstat(
+          NodePath.join(NodePath.dirname(this.manifestPath), "jones-manual-installs"),
+        );
+        await runNativeCommand("/usr/bin/python3", [
+          await this.#helperPath(),
+          "--manifest",
+          this.manifestPath,
+          "--inspect-install-retention",
+        ]);
+      } catch {
+        // Missing or unknown manual material grants no cleanup effect.
+      }
     } catch (cause) {
+      this.#activeCommittedTransaction = undefined;
       if (boundManifest) this.#activationBlocked = true;
       this.#activationMessage =
         cause instanceof Error ? cause.message : "Native app setup could not be proved.";
@@ -1034,11 +1809,25 @@ export class JonesDesktopUpdateController {
         this.#staged === undefined ? "checking" : "staged",
         this.#staged === undefined ? "checking" : "downloaded",
       );
+      const installedBundle = await (
+        this.#options.readInstalledBundleIdentity ?? readMacBundleIdentity
+      )(this.#options.appPath);
+      if (
+        !installedBundle.bundleIdentifier?.trim() ||
+        (this.#bootstrap?.bundleIdentifier !== undefined &&
+          this.#bootstrap.bundleIdentifier !== installedBundle.bundleIdentifier) ||
+        (installedBundle.bundleIdentifier === "com.jonessystems.jonescode" &&
+          this.#bootstrap?.bundleIdentifier !== installedBundle.bundleIdentifier)
+      ) {
+        throw new Error("Installed desktop identity is not admitted; update discovery held.");
+      }
       const result = await this.#client.check({
+        desktopBundleIdentifier: installedBundle.bundleIdentifier,
         installedSource: this.#source,
         platform: "darwin",
         architecture: this.#options.architecture,
       });
+      this.#checkClassification = result.classification;
       if (result.state === "available") {
         this.#latest = result.candidate;
         this.#latestBuildStartedAt = result.buildStartedAt;
@@ -1090,7 +1879,83 @@ export class JonesDesktopUpdateController {
     }
   }
 
-  async download(selection?: JonesDesktopDownloadSelection): Promise<JonesDesktopDownloadResult> {
+  #serializeDownloadBinding(work: DesktopDownloadWork, change: () => Promise<void>): Promise<void> {
+    const pending = work.binding.then(change);
+    work.binding = pending;
+    // A failed binding fences later admission too; retain the rejection without an unhandled promise.
+    void pending.catch(() => undefined);
+    return pending;
+  }
+
+  async download(
+    selection?: JonesDesktopDownloadSelection,
+    operation?: { readonly operationId: string },
+  ): Promise<JonesDesktopDownloadResult> {
+    const active = this.#download;
+    if (
+      active !== undefined &&
+      selection?.sourceSha === active.source &&
+      this.#candidate?.artifactId === selection.artifactId
+    ) {
+      if (operation !== undefined && active.operationId === undefined) {
+        try {
+          await this.#serializeDownloadBinding(active, async () => {
+            if (active.operationId !== undefined) return;
+            // Persist admission first: a crash between these writes must never leave an admitted
+            // copy represented by a transfer-only worker, even when admission preceded this plan.
+            if (active.admitted) {
+              if (this.#options.plan?.recordLaptopAdmission === undefined)
+                throw new Error("Copy admission cannot be bound to the plan.");
+              await this.#options.plan.recordLaptopAdmission(operation.operationId);
+            }
+            if (active.worker !== undefined) {
+              if (this.#options.plan?.recordLaptopWorker === undefined)
+                throw new Error("The preparation worker cannot be bound to the plan.");
+              await this.#options.plan.recordLaptopWorker({
+                operationId: operation.operationId,
+                ...active.worker,
+              });
+            }
+            active.operationId = operation.operationId;
+          });
+        } catch (cause) {
+          if (active.worker === undefined) throw cause;
+          this.#heldDownload = active.worker;
+          this.#heldCopy = active.admitted;
+          return {
+            accepted: true,
+            completed: false,
+            held: active.worker,
+            heldCode: active.admitted ? "copy-unconfirmed" : "exit-unproved",
+          };
+        }
+      }
+      if (operation === undefined || active.operationId === operation.operationId)
+        return active.pending ?? { accepted: false, completed: false };
+    }
+    if (this.#busy !== null || this.#heldDownload !== undefined)
+      return { accepted: false, completed: false };
+    const work: DesktopDownloadWork = {
+      token: operation?.operationId ?? NodeCrypto.randomUUID(),
+      source: selection?.sourceSha ?? this.#candidate?.source ?? "",
+      ...(operation === undefined ? {} : { operationId: operation.operationId }),
+      stopRequested: false,
+      admitted: false,
+      pending: undefined,
+      binding: Promise.resolve(),
+    };
+    this.#download = work;
+    work.pending = this.#performDownload(selection);
+    try {
+      return await work.pending;
+    } finally {
+      if (this.#download === work && this.#heldDownload === undefined) this.#download = undefined;
+    }
+  }
+
+  async #performDownload(
+    selection?: JonesDesktopDownloadSelection,
+  ): Promise<JonesDesktopDownloadResult> {
     if (
       selection !== undefined &&
       (this.#candidate === undefined ||
@@ -1113,6 +1978,8 @@ export class JonesDesktopUpdateController {
     this.#busy = "download";
     this.#selectedAttempt = undefined;
     try {
+      if (await this.#options.plan?.preparationHeld?.())
+        return { accepted: false, completed: false };
       await NodeFSP.mkdir(NodePath.join(this.updaterRoot, "apps"), {
         recursive: true,
         mode: 0o700,
@@ -1122,14 +1989,39 @@ export class JonesDesktopUpdateController {
         artifacts: NodePath.join(this.updaterRoot, "artifacts"),
         apps: NodePath.join(this.updaterRoot, "apps"),
       };
-      const onVerifying = () => this.#publish("verifying", "downloading");
+      const work = this.#download!;
+      if (work.stopRequested) throw new JonesStagingStopped();
+      const onVerifying = async () => {
+        work.admitted = true;
+        await this.#serializeDownloadBinding(work, async () => {
+          if (work.operationId !== undefined)
+            await this.#options.plan?.recordLaptopAdmission?.(work.operationId);
+        });
+        await this.#publish("verifying", "downloading");
+      };
       const prepared = await (this.#options.prepareStage === undefined
         ? prepareJonesStage(candidate, roots, this.#options.platform, {
             actions: this.#client,
             stageApp: this.#options.stageApp ?? stageJonesMacApp,
+            admit: async () => {
+              if (work.stopRequested) throw new JonesStagingStopped();
+              work.admitted = true;
+            },
             onVerifying,
           })
-        : this.#options.prepareStage(candidate, roots, onVerifying));
+        : this.#options.prepareStage(candidate, roots, onVerifying, {
+            token: work.token,
+            onStarted: async (worker) => {
+              work.worker = worker;
+              await this.#serializeDownloadBinding(work, async () => {
+                if (work.operationId !== undefined)
+                  await this.#options.plan?.recordLaptopWorker?.({
+                    operationId: work.operationId,
+                    ...worker,
+                  });
+              });
+            },
+          }));
       const artifact = prepared.artifact;
       this.#staged = await this.#bindPreparedStage(candidate, prepared);
       const selectionFile = await this.#selectionFile();
@@ -1154,6 +2046,27 @@ export class JonesDesktopUpdateController {
       return { accepted: true, completed: true };
     } catch (cause) {
       this.#staged = undefined;
+      if (cause instanceof JonesStagingExitUnproved) {
+        this.#heldDownload = cause.worker;
+        this.#heldCopy = cause.copyAdmitted;
+        await this.#publish(
+          "blocked",
+          "available",
+          cause.copyAdmitted
+            ? "The admitted copy did not finish with a validated stage. Its files and any mount are held for native recovery proof."
+            : "Stop not confirmed: the download process did not exit. Nothing new starts until its exit is proved.",
+        );
+        return {
+          accepted: true,
+          completed: false,
+          held: cause.worker,
+          heldCode: cause.copyAdmitted ? "copy-unconfirmed" : "exit-unproved",
+        };
+      }
+      if (cause instanceof JonesStagingStopped) {
+        await this.#publish("available", "available", "Download stopped. Nothing was installed.");
+        return { accepted: true, completed: false, stopped: true };
+      }
       await this.#publish(
         "error",
         "available",
@@ -1161,7 +2074,7 @@ export class JonesDesktopUpdateController {
       );
       return { accepted: true, completed: false };
     } finally {
-      this.#busy = null;
+      if (this.#heldDownload === undefined) this.#busy = null;
     }
   }
 
@@ -1580,14 +2493,121 @@ export class JonesDesktopUpdateController {
     return app;
   }
 
+  async #recoveryBinding(input: JonesRecoveryPreflightInput, allowClaimed = false) {
+    const staged = this.#staged,
+      expected = this.#bootstrap;
+    if (
+      staged === undefined ||
+      expected === undefined ||
+      this.#options.disabledByEnv ||
+      (this.#activationBlocked && !(allowClaimed && this.#busy === "install")) ||
+      input.environmentId !== expected.environmentId ||
+      input.stagedHandle !== staged.handle ||
+      input.currentVersion !== this.#state.currentVersion ||
+      input.currentVersion !== expected.version ||
+      input.expectedInstalledSource !== this.#source ||
+      input.expectedInstalledSource !== expected.sourceSha
+    )
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "The staged Laptop environment, version or installed source changed. Review again.",
+      );
+    const manifestRaw = await NodeFSP.readFile(this.manifestPath, "utf8");
+    if (JSON.stringify(decodeActiveInstall(JSON.parse(manifestRaw))) !== JSON.stringify(expected))
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "The native generation changed. Review again.",
+      );
+    const selectionPath = await this.#selectionFile();
+    const selectionRaw = await NodeFSP.readFile(selectionPath, "utf8");
+    const selection = decodeStageSelection(JSON.parse(selectionRaw));
+    if (
+      JSON.stringify(selection.app) !== JSON.stringify(staged) ||
+      JSON.stringify(selection.active) !== JSON.stringify(expected)
+    )
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "The native stage selection changed. Review again.",
+      );
+    const selectionSha256 = NodeCrypto.createHash("sha256").update(selectionRaw).digest("hex");
+    return {
+      input,
+      nativeIdentity: NodeCrypto.createHash("sha256")
+        .update(JSON.stringify([manifestRaw, selectionPath, selectionRaw]))
+        .digest("hex"),
+      selectionPath,
+      selectionSha256,
+    };
+  }
+
+  async recoveryPreflight(input: JonesRecoveryPreflightInput) {
+    if (this.#busy !== null || !this.#recoveryInspectorReady)
+      throw new RecoveryPreflightRefused(
+        "recovery-unsupported",
+        "Native update work is busy. Stop; wait for it to settle before reviewing.",
+      );
+    const binding = await this.#recoveryBinding(input);
+    // Read the already materialized immutable helper; inspection never installs helper files.
+    const helperHash = NodeCrypto.createHash("sha256")
+      .update(jonesNativeHelperSource)
+      .digest("hex");
+    const helper = NodePath.join(this.updaterRoot, `activate-v1-${helperHash}.py`);
+    if ((await NodeFSP.readFile(helper, "utf8")) !== jonesNativeHelperSource)
+      throw new RecoveryPreflightRefused(
+        "recovery-unsupported",
+        "Native recovery inspection helper is unavailable. Stop; restart after the current update work settles.",
+      );
+    const raw: unknown = JSON.parse(
+      await runNativeCommand("/usr/bin/python3", [
+        helper,
+        "--manifest",
+        this.manifestPath,
+        "--inspect-recovery",
+        input.stagedHandle,
+        "--selection",
+        binding.selectionPath,
+        "--selection-sha256",
+        binding.selectionSha256,
+      ]),
+    );
+    const fresh = await this.#recoveryBinding(input);
+    if (fresh.nativeIdentity !== binding.nativeIdentity || this.#busy !== null)
+      throw new RecoveryPreflightRefused(
+        "recovery-preflight-stale",
+        "Native update selection changed during inspection. Review again.",
+      );
+    return this.#recoveryPreflights.record(
+      binding,
+      raw,
+      Date.parse(await this.#options.timestamp()),
+      NodeCrypto.randomUUID(),
+    );
+  }
+
+  async validateRecoveryReview(
+    input: JonesRecoveryPreflightInput,
+    review: RecoveryReview,
+  ): Promise<void> {
+    this.#recoveryPreflights.require(
+      review,
+      await this.#recoveryBinding(input),
+      Date.parse(await this.#options.timestamp()),
+    );
+  }
+
   async install(
     handle?: string,
     campaignId?: string,
+    plan?: { readonly operationId: string; readonly recovery?: RecoveryReview },
   ): Promise<{
     accepted: boolean;
     completed: boolean;
     failed: boolean;
-    refusal?: "startup-gate-unavailable";
+    refusal?:
+      | "startup-gate-unavailable"
+      | "recovery-preflight-stale"
+      | "recovery-unsupported"
+      | "recovery-capacity";
   }> {
     const staged = this.#staged;
     const expected = this.#bootstrap;
@@ -1601,9 +2621,37 @@ export class JonesDesktopUpdateController {
     ) {
       return { accepted: false, completed: false, failed: false };
     }
+    // Refuse an inadmissible review before claims, preparation, or any activation effect.
+    if (plan?.recovery !== undefined) {
+      try {
+        await this.validateRecoveryReview(
+          {
+            environmentId: decodeEnvironmentId(expected.environmentId),
+            stagedHandle: handle,
+            currentVersion: this.#state.currentVersion,
+            expectedInstalledSource: expected.sourceSha,
+          },
+          plan.recovery,
+        );
+      } catch (cause) {
+        if (cause instanceof RecoveryPreflightRefused)
+          return { accepted: false, completed: false, failed: false, refusal: cause.code };
+        throw cause;
+      }
+    }
+    // Review awaited filesystem I/O; another native action may have won admission.
+    if (
+      this.#busy !== null ||
+      this.#staged !== staged ||
+      this.#bootstrap !== expected ||
+      this.#activationBlocked
+    )
+      return { accepted: false, completed: false, failed: false };
     this.#busy = "install";
     this.#selectedAttempt = undefined;
     try {
+      if (await this.#options.plan?.preparationHeld?.())
+        throw new Error("A retained plan preparation still requires native recovery proof.");
       // The helper checks the fixed candidate digest before stopping writers; preparation binds this active manifest.
       const current = decodeActiveInstall(
         JSON.parse(await NodeFSP.readFile(this.manifestPath, "utf8")),
@@ -1635,8 +2683,24 @@ export class JonesDesktopUpdateController {
       } catch (cause) {
         if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
       }
+      if (plan !== undefined) {
+        if (this.#options.plan === undefined)
+          throw new Error("Native plan persistence is unavailable.");
+        await this.#options.plan.bindLaptopInstall({
+          operationId: plan.operationId,
+          stagedHandle: handle,
+          targetSource: staged.sourceSha,
+          targetTree: staged.sourceTree,
+          transactionId,
+          fromGeneration: expected.generation,
+        });
+      }
       // Every process that can carry this claim's one backend request, captured before the claim.
-      const requesters = await this.#options.processProofs();
+      const captured = await captureJonesNativeProcesses(
+        helper,
+        await this.#options.processProofs(),
+      );
+      const requesters = captured.proofs;
       await this.#publish("preparing", "downloaded");
       // Claim preparation under the same native lock as discard before the backend can create effects.
       this.#activationBlocked = true;
@@ -1715,13 +2779,35 @@ export class JonesDesktopUpdateController {
           tx,
           new Error("Native continuation preparation is required."),
         );
+      if (plan?.recovery !== undefined) {
+        try {
+          this.#recoveryPreflights.require(
+            plan.recovery,
+            await this.#recoveryBinding(
+              {
+                environmentId: decodeEnvironmentId(expected.environmentId),
+                stagedHandle: handle,
+                currentVersion: this.#state.currentVersion,
+                expectedInstalledSource: expected.sourceSha,
+              },
+              true,
+            ),
+            Date.parse(await this.#options.timestamp()),
+          );
+        } catch (cause) {
+          return await this.#preparationFailed(transactionId, tx, cause);
+        }
+      }
       const intent = {
         protocol: 1,
         transactionId,
         staged,
         expected,
         continuationReceipt,
-        processes: await this.#options.processProofs(),
+        ...(plan?.recovery?.policy === "clone-required"
+          ? { stateRecovery: "clone-required" as const }
+          : {}),
+        processes: captured.processes,
         listener: await this.#options.listener(),
       };
       const requestPath = NodePath.join(tx, "activation-request.json");
@@ -1867,7 +2953,7 @@ export class JonesDesktopUpdateController {
       await this.#publish(
         "blocked",
         "downloaded",
-        `Update preparation stopped: ${reason}. Restart Jones Code to release this update attempt, then retry Install.`,
+        `Update preparation stopped: ${reason}. Its retained attempt still requires native recovery proof (${recovery.reason}). Quit Jones Code, then run the native helper's --retire-preparation recovery before another install.`,
       );
     }
     return { accepted: false, completed: false, failed: true };

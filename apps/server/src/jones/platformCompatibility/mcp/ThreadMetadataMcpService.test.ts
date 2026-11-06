@@ -33,22 +33,6 @@ const scope: McpInvocationContext.McpInvocationScope = {
   issuedAt: 1,
 };
 
-function layerService(
-  getThreadShell: ThreadManagement.ThreadManagementService["Service"]["getThreadShell"],
-) {
-  return ThreadMetadataMcp.layer.pipe(
-    Layer.provide(
-      Layer.merge(
-        Layer.mock(ThreadManagement.ThreadManagementService)({
-          getThreadShell,
-          getThreadRecords: () => Effect.die("projection must not load after shell failure"),
-        } satisfies Partial<ThreadManagement.ThreadManagementService["Service"]>),
-        NodeCrypto.layer,
-      ),
-    ),
-  );
-}
-
 it.effect("blocks project peers, permits self recovery, and denies foreign unblocking", () =>
   Effect.gen(function* () {
     const peerId = ThreadId.make("thread:metadata-peer");

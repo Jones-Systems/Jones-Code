@@ -9,6 +9,7 @@ import {
   JonesUpdater,
   readCurrentJonesBuildStartedAt,
   type JonesUpdaterHost,
+  type JonesInstallBeforeDispatchRefusal,
 } from "./JonesUpdater.ts";
 import { AutomaticActivationWithdrawn } from "./followerPolicy.ts";
 
@@ -101,6 +102,7 @@ describe("failed native attempt settlement", () => {
       const f = fixture({
         startupOutcome: () => ({ ...terminal, settlement, cause: "backup refused" }),
       });
+      f.updater.setPolicy({ role: "follower", leaderSource: null });
       expect(f.updater.snapshot()).toMatchObject({
         updateId: terminal.id,
         phase: "error",
@@ -121,6 +123,55 @@ describe("failed native attempt settlement", () => {
       message: "Previous attempt needs reconciliation",
       outcome: { status: "blocked" },
     });
+  });
+
+  it("retains a startup refusal through follower policy changes and later settlement", () => {
+    let noEffectProved = false;
+    const publications: JonesUpdateState[] = [];
+    const f = fixture({
+      initialState: {
+        ...fixture().updater.snapshot(),
+        phase: "error",
+        message: "Native installation requires reconciliation.",
+      },
+      startupOutcome: () => ({
+        ...terminal,
+        settlement: noEffectProved ? "legacy-reconciled" : "none",
+        cause: "backup refused",
+      }),
+      stateChanged: (state) => publications.push(state),
+    });
+    expect(f.updater.setPolicy({ role: "follower", leaderSource: null })).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "none",
+      message: "Previous attempt needs reconciliation",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+      policy: { role: "follower", leaderSource: null },
+    });
+    noEffectProved = true;
+    expect(f.updater.refreshStartupOutcome()).toMatchObject({
+      phase: "error",
+      updateId: terminal.id,
+      settlement: "legacy-reconciled",
+      cause: "backup refused",
+      message: "Update did not start: backup refused. Nothing changed.",
+      outcome: { status: "blocked", reason: "launcher-restarted" },
+    });
+    f.updater.setPolicy({
+      role: "follower",
+      leaderSource: candidate.source,
+      leaderTree: candidate.tree,
+    });
+    const waiting = f.updater.setPolicy({ role: "follower", leaderSource: null });
+    expect(waiting).toMatchObject({
+      phase: "error",
+      settlement: "legacy-reconciled",
+      message: "Update did not start: backup refused. Nothing changed.",
+      policy: { role: "follower", leaderSource: null },
+    });
+    expect(publications.at(-1)).toEqual(waiting);
+    expect(f.effects).toEqual([]);
   });
 });
 
@@ -238,7 +289,7 @@ describe("host-owned Jones updater", () => {
     expect(f.effects).toEqual(["stage"]);
   });
   it("decodes older update state without inventing installed source identity", () => {
-    const decoded = Schema.decodeUnknownSync(JonesUpdateState)(fixture().updater.snapshot());
+    const decoded = Schema.decodeSync(JonesUpdateState)(fixture().updater.snapshot());
     expect(decoded.installedSource).toBeUndefined();
   });
   it("keeps authenticated installed source separate from offered and staged candidates", async () => {
@@ -249,9 +300,9 @@ describe("host-owned Jones updater", () => {
     };
     const original = fixture().updater.snapshot();
     const f = fixture({ initialState: { ...original, installedSource } });
-    expect(
-      Schema.decodeUnknownSync(JonesUpdateState)(f.updater.snapshot()).installedSource,
-    ).toEqual(installedSource);
+    expect(Schema.decodeSync(JonesUpdateState)(f.updater.snapshot()).installedSource).toEqual(
+      installedSource,
+    );
     await f.updater.check();
     expect(f.updater.snapshot().installedSource).toEqual(installedSource);
     expect(f.updater.snapshot().provenance?.sourceSha).toBe(candidate.source);
@@ -448,6 +499,150 @@ describe("caller-bound exact-source replacement", () => {
     f.newer();
     return f;
   }
+
+  it("publishes a separate generic alternative while retaining the exact download and migrations", async () => {
+    const prepare = vi.fn(async () => ({
+      stagedHandle: "fixed-handle",
+      version: candidate.version,
+      payloadSha256: "e".repeat(64),
+      migrationPlan: { pendingUpstream: [42], pendingJones: [7] },
+    }));
+    const f = await staged({ prepare });
+    const retained = f.updater.snapshot();
+    const checked = await f.updater.check();
+    expect(checked).toMatchObject({
+      phase: "staged",
+      stagedHandle: retained.stagedHandle,
+      provenance: retained.provenance,
+      alternativeCandidate: {
+        checkedAt: checked.checkedAt,
+        provenance: { sourceSha: target, artifactId: 5 },
+      },
+    });
+    expect(checked.migrationPlan).toEqual({ pendingUpstream: [42], pendingJones: [7] });
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a captured generic offer once through native retirement, without Install", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    const selected = { ...replace, alternative: offer };
+    expect(await f.updater.stageExact(target, selected)).toMatchObject({
+      phase: "staged",
+      provenance: { sourceSha: target },
+    });
+    expect(f.updater.snapshot().alternativeCandidate).toBeUndefined();
+    await f.updater.stageExact(target, selected);
+    expect(retireStaged).toHaveBeenCalledTimes(1);
+    expect(f.effects).toEqual(["stage", "stage"]);
+  });
+
+  it("invalidates offers on failed or inapplicable discovery, policy and installed-source changes", async () => {
+    let installed = "a".repeat(40);
+    let fail = false;
+    const f = await staged({
+      installedSource: async () => {
+        if (fail) throw new Error("Synthetic discovery failure");
+        return installed;
+      },
+    });
+    const retained = f.updater.snapshot().provenance;
+    for (const result of [
+      { state: "no-new" },
+      { state: "building", retryAfterMs: 1000 },
+      { state: "blocked", reason: "unqualified", retryAfterMs: 1000 },
+    ] as const) {
+      expect((await f.updater.check()).alternativeCandidate).toBeDefined();
+      f.setCheckResult(result);
+      expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+      f.setCheckResult({
+        state: "available",
+        candidate: { ...candidate, source: target, artifactId: 5 },
+      });
+    }
+    await f.updater.check();
+    fail = true;
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    fail = false;
+    await f.updater.check();
+    installed = "9".repeat(40);
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    installed = "a".repeat(40);
+    await f.updater.check();
+    f.updater.setPolicy({ role: "follower", leaderSource: target, leaderTree: candidate.tree });
+    expect(f.updater.snapshot().alternativeCandidate).toBeUndefined();
+    expect((await f.updater.check()).alternativeCandidate).toBeUndefined();
+    expect(f.updater.snapshot().provenance).toEqual(retained);
+    expect(f.effects).toEqual(["stage"]);
+  });
+
+  it("refuses changed, expired and restart-retained offers before retirement", async () => {
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({ retireStaged });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    const selected = { ...replace, alternative: offer };
+    expect((await f.updater.stageExact("9".repeat(40), selected)).message).toContain(
+      "target changed",
+    );
+    f.setCheckResult({
+      state: "available",
+      candidate: { ...candidate, source: target, artifactId: 99 },
+    });
+    expect((await f.updater.stageExact(target, selected)).message).toContain("alternative changed");
+    const current = (await f.updater.check()).alternativeCandidate!;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2100-01-01T00:00:00Z"));
+    try {
+      expect(
+        (await f.updater.stageExact(target, { ...replace, alternative: current })).message,
+      ).toContain("expired");
+    } finally {
+      clock.mockRestore();
+    }
+    const restarted = replacement({ initialState: f.updater.snapshot(), retireStaged });
+    expect(restarted.updater.snapshot().alternativeCandidate).toBeUndefined();
+    expect(
+      (await restarted.updater.stageExact(target, { ...replace, alternative: current })).message,
+    ).toContain("changed or expired");
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
+
+  it("revalidates the offer after awaiting native installed-source evidence", async () => {
+    const entered = gate(),
+      release = gate();
+    let hold = false,
+      reads = 0;
+    const retireStaged = vi.fn(async () => {});
+    const f = await staged({
+      retireStaged,
+      installedSource: async () => {
+        if (hold && ++reads === 2) {
+          entered.release();
+          await release.promise;
+        }
+        return replace.expectedInstalledSource;
+      },
+    });
+    const offer = (await f.updater.check()).alternativeCandidate!;
+    hold = true;
+    const replacing = f.updater.stageExact(target, { ...replace, alternative: offer });
+    await entered.promise;
+    f.updater.recordOperation({
+      protocol: 1,
+      operationId: "22222222-2222-4222-8222-222222222222",
+      environmentId: replace.environmentId,
+      expectedInstalledSource: replace.expectedInstalledSource,
+      action: { kind: "download-exact", targetSource: target },
+      phase: "accepted",
+      acceptedAt: "2026-10-29T00:00:00Z",
+      updatedAt: "2026-10-29T00:00:00Z",
+    });
+    release.release();
+    expect((await replacing).message).toContain("changed or expired");
+    expect(retireStaged).not.toHaveBeenCalled();
+    expect(f.updater.snapshot().stagedHandle).toBe(replace.stagedHandle);
+  });
   function gate() {
     let release!: () => void;
     const promise = new Promise<void>((resolve) => {
@@ -1319,5 +1514,104 @@ describe("follower policy on the host updater", () => {
     expect(withdrawn.message).toContain("Input arrived.");
     expect(withdrawn.outcome).toBeUndefined();
     expect((await f.updater.install(install)).phase).toBe("installing");
+  });
+});
+
+it("publishes bounded discovery classification without claiming an exhaustive check", async () => {
+  const f = fixture();
+  const classification = {
+    kind: "incomplete-discovery" as const,
+    checkedAt: "2026-10-27T00:00:00Z",
+    pendingCount: 0,
+    failedQualificationCount: 0,
+    discovery: {
+      termination: "window-ended" as const,
+      bounded: false,
+      unresolvedLimits: ["producer-pages" as const],
+    },
+  };
+  f.setCheckResult({ state: "no-new", classification });
+  expect((await f.updater.check()).checkClassification).toEqual(classification);
+});
+
+it("blocks new work while an earlier job's exit is unproved and releases only that hold", async () => {
+  const f = fixture();
+  f.updater.setHeldJobs(["held-a", "held-b"]);
+  await f.updater.stageExact(candidate.source);
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  expect(f.effects).toEqual([]);
+  f.updater.releaseHeldJob("held-a");
+  expect(f.updater.admissionHeld()).toBe(true);
+  f.updater.releaseHeldJob("held-b");
+  expect(f.updater.admissionHeld()).toBe(false);
+  expect((await f.updater.check()).phase).toBe("available");
+});
+
+it("reports a typed exact refusal only before invoking the install adapter", async () => {
+  const native = vi.fn(async () => {
+    throw new Error("Synthetic lost native reply after possible dispatch.");
+  });
+  const f = fixture({ install: native });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
+  f.updater.setHeldJobs(["earlier-job"]);
+  await f.updater.install(request);
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    stagedHandle: request.stagedHandle,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
+  });
+  expect(native).not.toHaveBeenCalled();
+  proof.mockClear();
+  f.updater.releaseHeldJob("earlier-job");
+  expect((await f.updater.install(request)).phase).toBe("blocked");
+  expect(native).toHaveBeenCalledOnce();
+  expect(proof).not.toHaveBeenCalled();
+});
+
+it("emits the exact bound refusal when its host proves preparation stopped before dispatch", async () => {
+  const f = fixture({
+    install: async (_request, _step, onPreparationRefused) => {
+      onPreparationRefused?.();
+      throw new Error("Qualified runtime payload changed.");
+    },
+  });
+  await f.updater.check();
+  await f.updater.download({ artifactId: candidate.artifactId, sourceSha: candidate.source });
+  const proof = vi.fn<(refusal: JonesInstallBeforeDispatchRefusal) => void>();
+  const request = {
+    operationId: "11111111-1111-4111-8111-111111111111",
+    stagedHandle: "fixed-handle",
+    environmentId: EnvironmentId.make("fixture"),
+    currentVersion: "0.0.0-preview.20261002.1",
+    expectedInstalledSource: "a".repeat(40),
+    targetSource: candidate.source,
+    onBeforeDispatchRefusal: proof,
+  };
+  expect((await f.updater.install(request)).message).toContain(
+    "Qualified runtime payload changed.",
+  );
+  expect(proof).toHaveBeenCalledExactlyOnceWith({
+    kind: "before-dispatch",
+    operationId: request.operationId,
+    stagedHandle: request.stagedHandle,
+    environmentId: request.environmentId,
+    currentVersion: request.currentVersion,
+    expectedInstalledSource: request.expectedInstalledSource,
+    targetSource: request.targetSource,
   });
 });

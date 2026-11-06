@@ -22,6 +22,7 @@ import {
   scheduleFromDraft,
   taskToDraft,
   worktreeStrategyFromDraft,
+  workspaceStrategyFromDraft,
 } from "./scheduledTasksSettings.logic";
 
 const laptopId = EnvironmentId.make("laptop");
@@ -349,4 +350,18 @@ it("rejects dedupe templates without a request placeholder", () => {
   const draft = taskToDraft({ ...legacyTask, schedule: { type: "webhook", signature: null } });
   expect(scheduleFromDraft({ ...draft, replayKey: "literal" })).toBeNull();
   expect(scheduleFromDraft({ ...draft, coalesceKey: "{{body.bad" })).toBeNull();
+});
+
+describe("scheduled project allocation inheritance", () => {
+  it.each<ScheduledTask["workspaceStrategy"]>([
+    { type: "auto" },
+    { type: "auto", baseRef: "release", branch: "work/automation" },
+    { type: "worktree", baseRef: "release", startFromOrigin: true },
+    { type: "existing_worktree", worktreePath: "/checkouts/explicit" },
+    { type: "root" },
+  ])("round-trips stored $type without converting explicit choices", (workspaceStrategy) => {
+    const draft = taskToDraft({ ...legacyTask, workspaceStrategy });
+    expect(draft.workspaceMode).toBe(workspaceStrategy.type);
+    expect(workspaceStrategyFromDraft(draft)).toEqual(workspaceStrategy);
+  });
 });

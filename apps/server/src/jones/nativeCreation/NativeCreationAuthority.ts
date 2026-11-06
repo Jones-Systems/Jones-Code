@@ -308,7 +308,7 @@ const makeNativeCreationAuthority = Effect.gen(function* () {
     Effect.fn("NativeCreationAuthority.issueExecution")(function* (
       input: Parameters<NonNullable<NativeCreationAuthority["Service"]["issueExecution"]>>[0],
     ) {
-      const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)(
+      const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)(
         input.reference,
       ).pipe(
         Effect.mapError(

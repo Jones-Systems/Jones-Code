@@ -108,7 +108,11 @@
     "apps/desktop/src/jones/updates/updateChannels.test.ts",
     "apps/desktop/src/jones/updates/jonesColdBackendCustody.testFixtures.ts",
     "apps/server/src/jones/updates/trialGate.testFixtures.ts",
-    "apps/server/src/jones/cloud/qualifiedLauncher.testFixtures.ts"
+    "apps/server/src/jones/cloud/qualifiedLauncher.testFixtures.ts",
+    "apps/server/src/jones/updates/recoverQualifiedStage.ts",
+    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -127,6 +131,7 @@
     "packages/contracts/src/resourceTelemetry.ts",
     "packages/shared/package.json",
     "scripts/build-desktop-artifact.ts",
+    "scripts/smoke-cli-archive.ts",
     "apps/server/src/cli/service.ts",
     "apps/server/src/cli/servicePreflight.ts",
     "apps/server/src/cli/update.test.ts",
@@ -452,6 +457,14 @@
     {
       "from": "apps/server/src/server.ts",
       "to": "apps/server/src/jones/updates/sourceRelation.ts"
+    },
+    {
+      "from": "apps/server/src/cli/servicePreflight.ts",
+      "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts"
     }
   ]
 }

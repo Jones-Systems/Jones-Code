@@ -2,8 +2,9 @@ import { useSyncExternalStore } from "react";
 import { act, render, stubGlobal } from "../../../test/render";
 import { expect, it, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
+import { TooltipProvider } from "../../components/ui/tooltip";
 import { createAdmissionStore } from "./store";
-import { admissionFixture, admissionSnapshot } from "./testFixtures";
+import { admissionFixture, admissionSnapshot, contextAdmissionFixture } from "./testFixtures";
 import { RemoteAdmissionNotifications } from "./RemoteAdmissionNotifications";
 
 const mocks = vi.hoisted(() => ({
@@ -16,13 +17,18 @@ const environmentId = EnvironmentId.make("notification-receiver");
 let store: ReturnType<typeof createAdmissionStore>;
 let notificationMode = "off";
 vi.mock("../../components/ui/toast", () => ({ toastManager: mocks }));
+vi.mock("../../state/entities", () => ({ useProject: () => null, useThreadShell: () => null }));
 vi.mock("../../state/environments", () => ({
   useEnvironments: () => ({ environments: [{ environmentId, label: "Synthetic receiver" }] }),
 }));
 vi.mock("../../hooks/useSettings", () => ({
   useClientSettings: (
-    select: (settings: { inAppNotificationsEnabled: boolean; notificationMode: string }) => unknown,
-  ) => select({ inAppNotificationsEnabled: true, notificationMode }),
+    select: (settings: {
+      inAppNotificationsEnabled: boolean;
+      notificationMode: string;
+      timestampFormat: string;
+    }) => unknown,
+  ) => select({ inAppNotificationsEnabled: true, notificationMode, timestampFormat: "12-hour" }),
 }));
 vi.mock("@tanstack/react-router", async (original) => ({
   ...(await original<typeof import("@tanstack/react-router")>()),
@@ -88,6 +94,30 @@ it("closes stale inline actions while owner review is inaccessible", async () =>
   expect(mocks.close).toHaveBeenCalledWith("synthetic-toast");
   expect(store.getSnapshot().loadFailed).toBe(true);
   expect(store.getSnapshot().snapshot?.pending).toHaveLength(1);
+});
+
+it("renders the same context card inside the real notification's expandable content", async () => {
+  vi.clearAllMocks();
+  mocks.add.mockReturnValue("context-toast");
+  store = createAdmissionStore(
+    vi.fn().mockResolvedValue(admissionSnapshot([contextAdmissionFixture()])),
+  );
+  await store.refresh();
+  await using _notifications = await render(<RemoteAdmissionNotifications />);
+  const [options] = mocks.add.mock.calls[0]!;
+  await using screen = await render(
+    <TooltipProvider>{options.data.expandableContent}</TooltipProvider>,
+  );
+  const summary = screen.container.querySelector("summary")!;
+  expect(summary.textContent).toContain("From Authenticated laptop");
+  expect(summary.textContent).toContain("Sender project");
+  expect(summary.textContent).toContain("To synthetic-project / receiver-thread");
+  expect(summary.querySelector("time")?.dateTime).toBe("2026-10-24T11:59:00Z");
+  await act(() => summary.click());
+  expect(
+    [...screen.container.querySelectorAll("button")].map((button) => button.textContent),
+  ).toEqual(["Approve", "Deny"]);
+  expect(screen.container.querySelector("strong")?.textContent).toBe("synthetic workspace");
 });
 
 it.each([403, 404])(

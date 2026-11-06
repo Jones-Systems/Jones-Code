@@ -134,8 +134,7 @@ const make = Effect.gen(function* () {
   const settings = yield* Settings.ServerSettingsService;
   const repository = yield* Repository.NativeCreationRepository;
   const optionalOwner = yield* Effect.serviceOption(NativeWorkspacePhysicalOwner);
-  const owner = () =>
-    Option.isSome(optionalOwner) ? Effect.succeed(optionalOwner.value) : Effect.fail(unavailable());
+  const owner = () => Effect.fromOption(optionalOwner).pipe(Effect.mapError(unavailable));
   const directory = Effect.fn("NativeWorkspacePhysicalPorts.directory")(function* (path: string) {
     if (!NodePath.isAbsolute(path) || NodePath.normalize(path) !== path) return yield* conflict();
     const value = yield* fs.inspect(path);

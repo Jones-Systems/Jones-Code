@@ -49,6 +49,59 @@ client connections and provider-instance rebuilds. Releases are immutable, with 
 selecting the version for new processes. Running processes hold leases on their version. Updates
 and removal must respect those leases instead of replacing executables under a running agent.
 
+## Codex account failover
+
+An attributed native usage-limit or availability failure can continue on another enabled,
+compatible Codex instance. Compatibility must prove shared native history; a matching driver
+alone is insufficient. Saved thread defaults and the failed run's captured model/options have
+separate ownership: the switch preserves the former, while the continuation preserves the
+latter. Neither changes Claude behavior.
+
+The durable evidence and switch step bridge crashes between the failure, saved-selection
+change and continuation. The continuation's transaction revalidates selection revision and
+live admission before committing queue overrides. Only queued sends with recorded proof of
+inherited intent follow the switch; explicit selections and older unmarked runs remain fixed.
+A refused continuation leaves the saved target visible and applies the existing failure hold.
+
+Account runtimes keep separate provider-thread records while sharing the native conversation,
+so explicitly returning to an earlier account preserves its runtime-generation ownership.
+Detaching a Codex session interrupts native children, so failover waits for its owned native
+descendants to settle, including descendants of completed parents. Final turn-item updates
+wake deferred ancestors. The same pending decision holds delegated-child result delivery until continuation or
+exhaustion, preventing a transient failure from finalizing its parent. Startup reconciles these
+decisions after native runtime recovery and before delegated-result recovery and effect workers;
+evidence older than 24 hours cannot start an automatic continuation. Rejected command receipts
+are terminal and never become retry permission.
+
+Loaded Codex account transfers must retain the previous writer until its exact producer exits
+or its thread closes; an unsubscribe acknowledgement alone does not prove release. The detach
+outbox effect finishes after capturing that obligation, so unrelated destinations can proceed;
+normal preparation and manager admission still fence destinations sharing the native history
+(and unknown destinations). A retired runtime remains unusable for that thread even after
+cancellation, so returning to that account requires a fresh logical session behind the same
+proof barrier. Sources already idle-unloaded keep the existing ordinary rejoin behavior; this
+mechanism neither identifies nor clears a foreign writer.
+
+Codex control and startup uncertainty belongs to the affected conversation.
+Known native conversations remain fenced across account and runtime changes;
+unidentified creation also retains the original app thread and issuing process.
+Independent conversations can continue on the same account and process. A
+confirmed native open whose local binding failed retains its original result
+for local publication recovery; recovery does not repeat the native resume or
+the failed prompt. A refusal before dispatch or a proved non-applying protocol
+rejection does not create an unknown native effect.
+Completed publication proof survives a cancelled manager handoff. A later send
+can finish recording the original load without repeating publication or native
+work; a changed model or policy still takes the normal loading path.
+
+Captured runtime Stop and writer retirement retain their original completion
+observers after the caller stops waiting. They never retarget a replacement or
+send the same stop again. Exact retirement and manager cleanup complete the
+receipt; an ordinary subsequent send selects a fresh logical session while
+preserving its saved native conversation. An unavailable observer or an old
+completed-unknown receipt remains unknown. Shared-process thread retirement
+uses its own exact closure proof without stopping healthy sibling conversations.
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.
@@ -124,6 +177,16 @@ and adds that turn to it. One run can therefore own several native turns. `/goal
 start no Codex turn settle on a provider turn without a native ref, which native rollback must
 not count. Claude's SDK mode emits no goal events; its adapter reads goal state from the
 synthetic command output and Stop hook feedback in the transcript.
+
+Jones [goal continuity](../../apps/server/src/jones/goals/continuity/GoalContinuity.ts)
+stores semantic progress separately from native goal lifecycle. Its durable owner names the exact
+environment and provider conversation; a live execution witness authorizes agent writes, while
+authenticated owner administration can work without starting a provider. Recovery delivery history
+fences continuation even after the current record is detached or retired. A prepared capsule grants
+no send authority: dispatch requires a durably committed, single-use permit for the captured producer.
+Compaction recovery reads fresh persisted state and injects it as untrusted context. Injection and
+bound pause/interrupt remain asynchronous; they do not establish a strict barrier before every
+post-compaction token or tool. Native successors need the same continuity check as ordinary starts.
 
 Capabilities must describe what the provider can actually do. Antigravity can capture workspace
 checkpoints but cannot roll back its conversation. The [checkpoint boundary](./overview.md#turn-completion-and-checkpoints)

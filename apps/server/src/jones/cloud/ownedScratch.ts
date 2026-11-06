@@ -35,12 +35,9 @@ export class OwnedScratchCleanupError extends AggregateError {
 }
 
 /**
- * Creates one scratch directory under `parent` and removes exactly that directory afterwards.
- *
- * `body` settling successfully means its result is already durable (for staging, after the
- * atomic rename), so a removal failure must not discard it: the result is returned together
- * with the leftover path. A removal failure after `body` failed is attached to the original
- * error instead of replacing it. Earlier leftovers are never swept.
+ * Create one scratch directory under parent and remove only that directory, never earlier leftovers.
+ * Successful body results are already durable (staging uses atomic rename); return them with any cleanup leftover.
+ * After body failure, attach cleanup failure to the original error instead of replacing it.
  */
 export async function withOwnedScratch<A>(
   parent: string,

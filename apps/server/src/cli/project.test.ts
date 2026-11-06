@@ -27,6 +27,7 @@ import { Command } from "effect/cli";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { cli } from "../binCli.ts";
 import * as ServerConfig from "../config.ts";
+import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -75,6 +76,7 @@ const makeConfig = (baseDir: string) =>
       desktopBootstrapToken: undefined,
       autoBootstrapProjectFromCwd: false,
       logWebSocketEvents: false,
+      serverParallelism: resolveServerParallelismProfile(undefined),
       tailscaleServeEnabled: false,
       tailscaleServePort: 443,
     } satisfies ServerConfig.ServerConfig["Service"];

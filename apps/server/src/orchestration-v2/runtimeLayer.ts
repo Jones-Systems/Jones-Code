@@ -1,3 +1,8 @@
+import * as WorktreeMcpService from "../mcp/WorktreeMcpService.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
+import * as TitleStore from "../jones/threadTitle/store.ts";
+import * as GuestShareService from "../guest/GuestShareService.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as ThreadSelfConfiguration from "../jones/threadConfiguration/ThreadSelfConfiguration.ts";
 import * as WorkspaceLifecycleRuntime from "../jones/workspaceLifecycle/RuntimeIntegration.ts";
@@ -18,6 +23,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as OrchestrationCommandReceipts from "../persistence/OrchestrationCommandReceipts.ts";
 import * as OrchestrationEventStore from "../persistence/OrchestrationEventStore.ts";
 import * as McpAppModelContext from "../mcpApps/McpAppModelContext.ts";
+import * as PreviewAgentActivity from "../preview/PreviewAgentActivity.ts";
 import * as McpAppRequests from "../mcpApps/McpAppRequests.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as TextGeneration from "../textGeneration/TextGeneration.ts";
@@ -56,6 +62,7 @@ import * as ProviderSwitchService from "./ProviderSwitchService.ts";
 import * as ProviderTurnControlService from "./ProviderTurnControlService.ts";
 import * as ProviderTurnStartService from "./ProviderTurnStartService.ts";
 import * as TaskContinuationStore from "../jones/taskContinuation/TaskContinuationStore.ts";
+import * as GoalContinuityRuntime from "../jones/goals/continuity/RuntimeIntegration.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RunFinalizationService from "./RunFinalizationService.ts";
 import * as ResourceCleanupService from "./ResourceCleanupService.ts";
@@ -162,6 +169,7 @@ const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
       layerCommandOutputHubProvided,
       layerProviderAdapterRegistryProvided,
       layerEventSinkProvided,
+      layerEventStoreProvided,
       IdAllocator.layer,
       layerProviderEventIngestorProvided,
       ProjectionStore.layer,
@@ -212,6 +220,7 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       McpAppModelContext.layer,
+      PreviewAgentActivity.layer,
       layerCheckpointServiceProvided,
       layerEventSinkProvided,
       IdAllocator.layer,
@@ -221,7 +230,12 @@ const layerRunExecutionServiceProvided = RunExecutionService.layer.pipe(
   ),
 );
 
+// Reuse this exact layer reference for MCP and provider starts. Its captured
+// producer associations and single-use delivery permits belong to one service.
+const layerGoalContinuity = GoalContinuityRuntime.layer;
+
 const layerProviderTurnStartServiceProvided = ProviderTurnStartService.layer.pipe(
+  Layer.provide(layerGoalContinuity),
   Layer.provide(TaskContinuationStore.layer),
   Layer.provide(layerProviderSwitchServiceProvided),
   Layer.provide(ControlAdmission.layer),
@@ -300,8 +314,7 @@ const layerOrchestratorProvided = Orchestrator.layer.pipe(
       IdAllocator.layer,
       ProjectStore.layer,
       layerProviderAdapterRegistryProvided,
-      // Same layer reference as the continuation worker and the adapter
-      // infrastructure so layer memoization yields one shared request queue.
+      // Reuse the continuation worker's layer reference so memoization shares one request queue.
       ProviderContinuationRequests.layer,
       layerProviderEventIngestorProvided,
       layerRuntimePolicyProvided,
@@ -389,6 +402,7 @@ const layerProviderContinuationWorkerProvided = ProviderContinuationService.laye
   ),
 );
 const layerThreadTitleRegenerationProvided = ThreadTitleRegenerationService.layer.pipe(
+  Layer.provide(TitleStore.layer),
   Layer.provide(
     Layer.mergeAll(layerThreadManagementProvided, ProjectStore.layer, TextGeneration.layer),
   ),
@@ -397,6 +411,7 @@ const layerEffectExecutorProvided = EffectWorker.layerExecutor.pipe(
   Layer.provide(layerRestartPreparationProvided),
   Layer.provide(
     Layer.mergeAll(
+      layerCommandReceiptStoreProvided,
       layerRunFinalizationServiceProvided,
       layerCheckpointRollbackServiceProvided,
       layerProviderSessionManagerProvided,
@@ -443,6 +458,7 @@ const layerMcpAppRequestsProvided = McpAppRequests.layer.pipe(
 );
 
 export const layer = Layer.mergeAll(
+  layerGoalContinuity,
   layerPlannedUpdateContinuityProvided,
   layerStores,
   layerEventSinkProvided,
@@ -483,6 +499,9 @@ export const layerProduction = Layer.mergeAll(
   layerThreadLifecycleProvided,
   layerScheduledTaskProvided,
   layerSecretRequestsProvided,
+  GuestShareService.layer.pipe(
+    Layer.provide(Layer.merge(layerOrchestratorProvided, layerCommandOutputHubProvided)),
+  ),
   UsageLimitRecoveryWorker.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
@@ -501,4 +520,17 @@ export const layerProduction = Layer.mergeAll(
   Layer.provide(Scheduler.layer),
   Layer.provideMerge(layerEventInfrastructure),
   Layer.provideMerge(WorkspaceLifecycleRuntime.layer),
+  Layer.provideMerge(WorkspaceProvenance.layerLive),
+  Layer.provideMerge(
+    WorktreeMcpService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          layerThreadManagementProvided,
+          layerProjectService,
+          layerProjectSetupScriptRunner,
+        ),
+      ),
+    ),
+  ),
+  Layer.provideMerge(ConversationPolicy.layer),
 );

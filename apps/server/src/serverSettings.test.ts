@@ -60,6 +60,21 @@ const layerServerSettingsWithSecrets = () =>
     ),
   );
 
+const layerExplicitSelectionSettings = (
+  mode: "production" | "test",
+): Layer.Layer<
+  ServerSettingsModule.ServerSettingsService | ServerConfig.ServerConfig,
+  | Layer.Error<ReturnType<typeof layerServerSettings>>
+  | Layer.Error<ReturnType<typeof ServerSettingsModule.layerTest>>,
+  Layer.Services<ReturnType<typeof layerServerSettings>>
+> =>
+  mode === "production"
+    ? layerServerSettings()
+    : Layer.mergeAll(
+        ServerSettingsModule.layerTest(),
+        Layer.fresh(ServerConfig.layerTest(process.cwd(), { prefix: "t3code-selection-test-" })),
+      );
+
 const layerFailingSecretStore = (cause: ServerSecretStore.SecretStoreError) =>
   Layer.succeed(
     ServerSecretStore.ServerSecretStore,
@@ -94,6 +109,106 @@ const recordProviderUsage = (provider: string, instanceId: string | null = provi
   });
 
 it.layer(NodeServices.layer)("server settings", (it) => {
+  it.effect.each(
+    (["production", "test"] as const).flatMap((mode) =>
+      (["missing", "disabled", "unsupported"] as const).map((target) => ({ mode, target })),
+    ),
+  )(
+    "refuses explicit text-generation substitution for $target in $mode settings",
+    ({ mode, target }) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const writerId = ProviderInstanceId.make("writer_a");
+          const requestedId = ProviderInstanceId.make("foreign_b");
+          const selection = { instanceId: writerId, model: "writer-model" };
+          yield* service.updateSettings({
+            autoResumeLimitedThreads: false,
+            providerInstances: {
+              [writerId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+              ...(target === "missing"
+                ? {}
+                : {
+                    [requestedId]: {
+                      driver: ProviderDriverKind.make(
+                        target === "unsupported" ? "acpRegistry" : "codex",
+                      ),
+                      enabled: target !== "disabled",
+                      config:
+                        target === "unsupported"
+                          ? { agentId: "foreign", distribution: "auto" }
+                          : {},
+                    },
+                  }),
+            },
+            textGenerationModelSelection: selection,
+          });
+          const fs = mode === "production" ? yield* FileSystem.FileSystem : undefined;
+          const config = mode === "production" ? yield* ServerConfig.ServerConfig : undefined;
+          const before = fs && config ? yield* fs.readFileString(config.settingsPath) : undefined;
+          const result = yield* service
+            .updateSettings({
+              autoResumeLimitedThreads: true,
+              textGenerationModelSelection: { instanceId: requestedId, model: "requested-model" },
+            })
+            .pipe(Effect.result);
+          assert.equal(result._tag, "Failure");
+          if (result._tag === "Failure") {
+            assert.equal(result.failure.operation, "normalize");
+            assert.equal(result.failure.providerInstanceId, requestedId);
+          }
+          const after = yield* service.getSettings;
+          assert.deepEqual(after.textGenerationModelSelection, selection);
+          assert.isFalse(after.autoResumeLimitedThreads);
+          if (fs && config) assert.equal(yield* fs.readFileString(config.settingsPath), before);
+        }),
+      ).pipe(Effect.provide(layerExplicitSelectionSettings(mode))),
+  );
+
+  it.effect.each(["production", "test"] as const)(
+    "validates atomic provider mutations before publication in %s settings",
+    (mode) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* ServerSettingsModule.ServerSettingsService;
+          const writerId = ProviderInstanceId.make("writer_a");
+          const requestedId = ProviderInstanceId.make("foreign_b");
+          const selection = { instanceId: writerId, model: "writer-model" };
+          yield* service.updateSettings({
+            providerInstances: {
+              [writerId]: { driver: ProviderDriverKind.make("codex"), enabled: true, config: {} },
+            },
+            textGenerationModelSelection: selection,
+          });
+          const mutation = {
+            operation: "create" as const,
+            instanceId: requestedId,
+            instance: { driver: ProviderDriverKind.make("codex"), enabled: false, config: {} },
+          };
+          const refused = yield* service
+            .updateProviderInstance(mutation, {
+              textGenerationModelSelection: { instanceId: requestedId, model: "new-model" },
+            })
+            .pipe(Effect.result);
+          assert.equal(refused._tag, "Failure");
+          assert.isUndefined((yield* service.getSettings).providerInstances[requestedId]);
+          assert.deepEqual((yield* service.getSettings).textGenerationModelSelection, selection);
+          const accepted = yield* service.updateProviderInstance(
+            { ...mutation, instance: { ...mutation.instance, enabled: true } },
+            { textGenerationModelSelection: { instanceId: requestedId, model: "new-model" } },
+          );
+          assert.deepEqual(accepted.textGenerationModelSelection, {
+            instanceId: requestedId,
+            model: "new-model",
+          });
+          const optionsOnly = yield* service.updateSettings({
+            textGenerationModelSelection: { options: [{ id: "reasoningEffort", value: "high" }] },
+          });
+          assert.equal(optionsOnly.textGenerationModelSelection.instanceId, requestedId);
+        }),
+      ).pipe(Effect.provide(layerExplicitSelectionSettings(mode))),
+  );
+
   it.effect("serializes concurrent model preference edits without cancelling duplicate adds", () =>
     Effect.gen(function* () {
       const service = yield* ServerSettingsModule.ServerSettingsService;
@@ -209,6 +324,29 @@ it.layer(NodeServices.layer)("server settings", (it) => {
       );
       assert.equal(persisted.responseStreamingMode, "turn");
       assert.deepEqual(persisted.projectSettingsOverrides, settings.projectSettingsOverrides);
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("moves an idle compaction mode saved in the legacy switch to its own field", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fs = yield* FileSystem.FileSystem;
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      yield* fs.writeFileString(config.settingsPath, `{ "compactIdleThreads": "off" }`);
+
+      const settings = yield* service.getSettings;
+      // Shipped clients decode the switch as a boolean and drop the config otherwise.
+      assert.strictEqual(settings.compactIdleThreads, false);
+      assert.equal(settings.idleCompaction, "off");
+    }).pipe(Effect.provide(layerServerSettings())),
+  );
+
+  it.effect("tells clients it reads idle compaction modes before any settings are saved", () =>
+    Effect.gen(function* () {
+      const service = yield* ServerSettingsModule.ServerSettingsService;
+      const settings = yield* service.getSettings;
+      assert.equal(settings.idleCompaction, "onReturn");
+      assert.strictEqual(settings.compactIdleThreads, false);
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
@@ -387,8 +525,9 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
       const instanceId = ProviderInstanceId.make("acpRegistry_shared");
-      const results = yield* Effect.all(
-        ["First", "Second"].map((displayName) =>
+      const results = yield* Effect.forEach(
+        ["First", "Second"],
+        (displayName) =>
           serverSettings
             .updateProviderInstance({
               operation: "create",
@@ -400,7 +539,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
               },
             })
             .pipe(Effect.result),
-        ),
         { concurrency: "unbounded" },
       );
 
@@ -672,7 +810,7 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 
-  // A backend behind a custom model may refuse the built-in default (#12651).
+  // A backend behind a custom model may refuse the built-in default.
   it.effect("falls back to the thread default when it is a custom model on that instance", () =>
     Effect.gen(function* () {
       const serverSettings = yield* ServerSettingsModule.ServerSettingsService;
@@ -1301,7 +1439,6 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         assert.notInclude(yield* fs.readFileString(config.settingsPath), value);
         assert.notInclude(JSON.stringify(client), value);
       }
-      // Editing another field from the client's copy keeps the saved password.
       const clientConfig = client.providerInstances[opencode]?.config as Record<string, unknown>;
       const edited = yield* service.updateProviderInstance({
         operation: "upsert",

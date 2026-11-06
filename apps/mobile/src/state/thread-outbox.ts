@@ -10,29 +10,24 @@ export const threadOutboxManager = createThreadOutboxManager({
   storage: expoThreadOutboxStorage,
 });
 
-/**
- * An enqueued message is published to the atom immediately but its durable
- * write waits behind the mutation queue, so draining only the writes already
- * mid-file would miss it.
- */
+/** Drain queued mutations too; optimistic publication precedes the durable file write. */
 export async function flushThreadOutbox(): Promise<void> {
   await threadOutboxManager.serialize(async () => {});
   await flushThreadOutboxWrites();
 }
 
 export function enqueueThreadOutboxMessage(message: QueuedThreadMessage): Promise<void> {
-  return threadOutboxManager.enqueue(message);
+  return threadOutboxManager.enqueue({
+    ...message,
+    issuance: message.issuance ?? { state: "unissued" },
+  });
 }
 
 export function confirmThreadOutboxMessageQueued(message: QueuedThreadMessage): Promise<boolean> {
   return threadOutboxManager.confirmQueued(message);
 }
 
-/**
- * Rewrite a queued message; no-op (false) if it was removed in the meantime,
- * or (with `expectedRevision` from `threadOutboxRevision`) if any other write
- * was accepted since the revision was read.
- */
+/** Returns false if removed or if expectedRevision differs from threadOutboxRevision; otherwise rewrites the message. */
 export function updateThreadOutboxMessage(
   message: QueuedThreadMessage,
   expectedRevision?: number,
@@ -44,6 +39,4 @@ export function threadOutboxRevision(messageId: QueuedThreadMessage["messageId"]
   return threadOutboxManager.revisionOf(messageId);
 }
 
-// Removal lives in `thread-outbox-removal.ts`: taking a message out of the
-// outbox must also release its local attachment files, and that owner needs
-// the composer draft state this module must not depend on.
+// Removal needs draft-state ownership to release files; keep that dependency outside this module.

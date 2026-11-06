@@ -27,6 +27,7 @@ export function RoutingDiagnostics({
     setError(false);
     setLoading(Boolean(id));
   }
+  // oxlint-disable-next-line t3code/react-effect-budget -- Load routing diagnostics for this request and ignore responses after its viewer retires.
   useEffect(() => {
     let active = true;
     if (!request.id) return;

@@ -6,7 +6,10 @@ import {
   readDesktopProductMetadata,
 } from "./jones/previewCompanion/CompanionProduct.ts";
 import { configureDesktopUserDataOverride } from "./app/DesktopUserDataOverride.ts";
-import { holdJonesDesktopNativeWriterFence } from "./jones/updates/jonesNativeStartup.ts";
+import {
+  holdJonesDesktopNativeWriterFence,
+  reportJonesNativeStartupRefusal,
+} from "./jones/updates/jonesNativeStartup.ts";
 
 const electron = require("electron") as typeof import("electron");
 function startDesktop(): void {
@@ -26,18 +29,11 @@ function startDesktop(): void {
       metadata,
     });
   } catch (cause) {
-    // Electron handles uncaught exceptions without exiting. A denied writer must
-    // die so that any process-lifetime leases acquired during admission are freed.
-    try {
-      const detail = cause instanceof Error ? cause.message : "Unknown admission failure";
-      NodeFS.writeSync(
-        2,
-        `Jones Code refused native startup: ${detail.slice(0, 512).replace(/[\x00-\x1f\x7f]/g, " ")}\n`,
-      );
-    } catch {
-      // A closed stderr must not prevent releasing this process's leases.
-    }
-    electron.app.exit(1);
+    // Electron handles uncaught exceptions without exiting; denied writers must release their leases.
+    reportJonesNativeStartupRefusal(cause, {
+      showErrorBox: (title, content) => electron.dialog.showErrorBox(title, content),
+      exit: (code) => electron.app.exit(code),
+    });
     return;
   }
   configureCompanionProduct({

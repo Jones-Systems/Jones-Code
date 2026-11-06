@@ -3,6 +3,7 @@ import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state
 import {
   applyShellStreamEvent,
   createEnvironmentSnapshotAtom,
+  EMPTY_SHELL_STATE,
   type EnvironmentShellState,
   type EnvironmentShellStatus,
 } from "@t3tools/client-runtime/state/shell";
@@ -179,6 +180,7 @@ import {
   archiveCloudComposerDrafts,
   clearComposerDraftContent,
   clearComposerDraftContentState,
+  consumeSubmittedComposerModelPick,
   subscribeComposerDraftModelReconciliation,
   clearComposerDraftsEnvironment,
   ComposerDraftPersistenceError,
@@ -284,9 +286,9 @@ function modelReconciliationHarness(
     ],
   };
   const shellStateAtom = Atom.make<EnvironmentShellState>({
+    ...EMPTY_SHELL_STATE,
     snapshot: Option.some(initialSnapshot),
     status: initialStatus,
-    error: Option.none(),
   });
   const shellResultAtom = Atom.map(shellStateAtom, AsyncResult.success);
   const snapshotAtom = createEnvironmentSnapshotAtom(() => shellResultAtom)(environmentId);
@@ -473,7 +475,47 @@ describe("mobile composer drafts", () => {
     },
   );
 
-  it("retains a pick matching cached state until the live shell confirms it", () => {
+  it("consumes the submitted pick after enqueue while preserving new draft content and settings", async () => {
+    const key = "environment-1:thread-1";
+    const pick = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
+    const submitted = updateComposerDraftSettings(key, { modelSelection: pick }).modelSelection;
+    expect(submitted).toEqual(pick);
+    clearComposerDraftContent(key, { deferAttachmentCleanup: true });
+    setComposerDraftText(key, "next unsent message");
+    updateComposerDraftSettings(key, { runtimeMode: "approval-required", interactionMode: "plan" });
+    consumeSubmittedComposerModelPick(key, submitted);
+    expect(getComposerDraftSnapshot(key)).toMatchObject({
+      text: "next unsent message",
+      runtimeMode: "approval-required",
+      interactionMode: "plan",
+    });
+    expect(getComposerDraftSnapshot(key).modelSelection).toBeUndefined();
+    await flushComposerDrafts();
+    const persisted = decodePersistedComposerState(
+      JSON.parse(composerDraftFileMocks.getDocument()),
+    );
+    expect(persisted.drafts[key]?.modelSelection).toBeUndefined();
+  });
+
+  it.each(["same", "different"])(
+    "preserves a later %s picker edit when the submitted pick is consumed",
+    (choice) => {
+      const key = "environment-1:thread-1";
+      const pick = { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.5" };
+      const submitted = updateComposerDraftSettings(key, { modelSelection: pick }).modelSelection;
+      clearComposerDraftContent(key, { deferAttachmentCleanup: true });
+      const later = updateComposerDraftSettings(key, {
+        modelSelection: choice === "same" ? pick : { ...pick, model: "other-model" },
+      }).modelSelection;
+      expect(later).not.toBe(submitted);
+      consumeSubmittedComposerModelPick(key, submitted);
+      expect(getComposerDraftSnapshot(key).modelSelection).toBe(later);
+      consumeSubmittedComposerModelPick(key, undefined);
+      expect(getComposerDraftSnapshot(key).modelSelection).toBe(later);
+    },
+  );
+
+  it("retains a pick matching cached and live state until its enqueue is acknowledged", () => {
     const environmentId = EnvironmentId.make("environment-1");
     const threadId = ThreadId.make("thread-1");
     const key = `${environmentId}:${threadId}`;
@@ -493,10 +535,12 @@ describe("mobile composer drafts", () => {
     h.update({ modelSelection: pick }, "synchronizing");
     expect(getComposerDraftSnapshot(key)).toEqual(before);
     h.setStatus("live");
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    consumeSubmittedComposerModelPick(key, before.modelSelection);
     expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
   });
 
-  it("releases an inactive thread pick only after its queued model becomes durable", () => {
+  it("releases an inactive thread pick only after its matching enqueue is acknowledged", () => {
     const environmentId = EnvironmentId.make("environment-1");
     const threadId = ThreadId.make("thread-1");
     const key = `${environmentId}:${threadId}`;
@@ -533,6 +577,9 @@ describe("mobile composer drafts", () => {
       status: "running",
       modelSelection: { ...pick, options: [{ id: "fastMode", value: false }] },
     });
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    expect(getComposerDraftSnapshot(remoteKey)).toEqual(remoteBefore);
+    consumeSubmittedComposerModelPick(key, before.modelSelection);
     expect(getComposerDraftSnapshot(key)).toEqual({ ...before, modelSelection: undefined });
     expect(getComposerDraftSnapshot(remoteKey)).toEqual(remoteBefore);
 
@@ -578,6 +625,8 @@ describe("mobile composer drafts", () => {
       expect(getComposerDraftSnapshot(key)).toEqual(before);
     }
     h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
+    expect(getComposerDraftSnapshot(key)).toEqual(before);
+    consumeSubmittedComposerModelPick(key, before.modelSelection);
     expect(appAtomRegistry.get(composerDraftsAtom)[key]).toBeUndefined();
   });
 

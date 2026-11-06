@@ -1,3 +1,8 @@
+import * as RetirementOutcome from "../jones/workspaceRetirement/Outcome.ts";
+import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
+import { dispatchDeliveryEvidence } from "../jones/orchestration/deliveryEvidence.ts";
+import type { DispatchDeliveryEvidence } from "@t3tools/contracts/jones/deliveryEvidence";
+import * as Queue from "effect/Queue";
 import type { ObservationPorts } from "../jones/remoteDelegation/ObservationHooks.ts";
 import { IncomingLinkedMessage } from "../jones/peerTransport/LinkedMessageOrigin.ts";
 import {
@@ -25,6 +30,7 @@ import type {
   ProjectionRecordField,
   ProjectionRecordFilter,
   ProjectionRecords,
+  ShellSnapshotOptions,
 } from "./ProjectionStore.ts";
 import {
   resolveMessageModelSelection,
@@ -111,7 +117,7 @@ function existingThreadIdsForCommand(
     case "thread.create":
       return [];
     // Read-state commands only rewrite the thread payload's visited/unread
-    // watermark; they never touch messages, so they do not need the imported
+    // watermark and open stats; they never touch messages, so they do not need the imported
     // v1 transcript hydrated first. Visits fire on every thread-activity bump
     // while a thread is open, so keeping them off the import path matters.
     case "thread.visit":
@@ -336,6 +342,26 @@ export class ThreadManagementProviderInstanceDisabledError extends Schema.Tagged
   }
 }
 
+export class ThreadManagementBackgroundWaitError extends Schema.TaggedError<ThreadManagementBackgroundWaitError>()(
+  "ThreadManagementBackgroundWaitError",
+  {
+    threadId: ThreadId,
+    reason: Schema.Literals(["unsupported", "unavailable", "failed"]),
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    switch (this.reason) {
+      case "unsupported":
+        return "This provider cannot mark background work as awaited.";
+      case "unavailable":
+        return "This thread has no live provider session.";
+      case "failed":
+        return "Failed to update the awaited background work.";
+    }
+  }
+}
+
 export const ThreadManagementError = Schema.Union([
   ThreadManagementThreadNotFoundError,
   ThreadManagementRunNotFoundError,
@@ -425,9 +451,11 @@ export interface ThreadManagementServiceShape extends ObservationPorts {
   readonly getShellSnapshot: (options?: {
     readonly location?: "active" | "archive";
   }) => Effect.Effect<OrchestrationV2ThreadShellSnapshot, Orchestrator.OrchestratorV2Error>;
-  readonly readShellSnapshot: (options?: {
-    readonly location?: "active" | "archive";
-  }) => Effect.Effect<
+  readonly listActiveSubagentThreadIds: Orchestrator.OrchestratorV2["Service"]["listActiveSubagentThreadIds"];
+  readonly listOlderSettledThreads: Orchestrator.OrchestratorV2["Service"]["listOlderSettledThreads"];
+  readonly readShellSnapshot: (
+    options?: Pick<ShellSnapshotOptions, "location" | "familyOf" | "worktreePath" | "threadIds">,
+  ) => Effect.Effect<
     Effect.Effect<OrchestrationV2ThreadShellSnapshot, Orchestrator.OrchestratorV2Error>,
     Orchestrator.OrchestratorV2Error
   >;
@@ -451,22 +479,17 @@ export interface ThreadManagementServiceShape extends ObservationPorts {
     readonly projectId: ProjectId;
     readonly instanceId: ProviderInstanceId;
   }) => Effect.Effect<boolean>;
-  /**
-   * A caller resolving a target ahead of a dispatch under this same command id
-   * can use it to skip project-enablement filtering: the dispatch will only
-   * replay the recorded result, never start anything new, so the filter would
-   * just refuse a retry the project's settings no longer allow fresh.
-   */
+  /** Receipt replays start no work; skip enablement checks with the same command id so settings cannot reject accepted retries. */
   readonly hasReceipt: (commandId: CommandId) => Effect.Effect<boolean>;
+  readonly getCommandReceipt: CommandReceiptStore.CommandReceiptStoreV2["Service"]["getByCommandId"];
+  readonly getDispatchDeliveryEvidence: (
+    command: OrchestrationV2Command,
+  ) => Effect.Effect<DispatchDeliveryEvidence>;
   readonly waitForThread: (
     input: ThreadManagementWaitInput,
   ) => Effect.Effect<ThreadManagementWaitResult, ThreadManagementError>;
-  /**
-   * Settling stops the provider session, so an agent that settles its own
-   * thread uses this to wait for its turn to end. A run that ends any other
-   * way leaves the thread active, as does anything `thread.settle` refuses
-   * then, such as a queued message.
-   */
+  /** Waits for the agent's run to end before settling its thread and stopping the session.
+   * Other endings or settle refusals leave the thread active. */
   readonly settleAfterRun: (input: {
     readonly projectId: ProjectId;
     readonly threadId: ThreadId;
@@ -486,6 +509,14 @@ export interface ThreadManagementServiceShape extends ObservationPorts {
   readonly stopWorkflow: (
     input: OrchestrationV2StopWorkflowInput,
   ) => Effect.Effect<void, OrchestrationV2StopWorkflowError>;
+  readonly awaitBackgroundTasks: (input: {
+    readonly threadId: ThreadId;
+    readonly taskIds: ReadonlyArray<string>;
+    readonly awaited: boolean;
+  }) => Effect.Effect<
+    { readonly matched: ReadonlyArray<string>; readonly unmatched: ReadonlyArray<string> },
+    ThreadManagementBackgroundWaitError
+  >;
   readonly stopDelegatedTasks: (input: {
     readonly threadId: ThreadId;
     readonly commandId: CommandId;
@@ -836,28 +867,27 @@ const make = Effect.gen(function* () {
     fields,
     filter,
   ) =>
-    ensureProjectionTranscript(input.threadId)
-      .pipe(Effect.andThen(orchestrator.getThreadRecords(input.threadId, fields, filter)))
-      .pipe(
-        Effect.mapError(
-          (cause) =>
-            new ThreadManagementProjectionLoadError({
-              projectId: input.projectId,
-              threadId: input.threadId,
-              cause,
-            }),
-        ),
-        Effect.flatMap((projection) =>
-          projection.thread.projectId === input.projectId && projection.thread.deletedAt === null
-            ? Effect.succeed(projection)
-            : Effect.fail(
-                new ThreadManagementThreadNotFoundError({
-                  projectId: input.projectId,
-                  threadId: input.threadId,
-                }),
-              ),
-        ),
-      );
+    ensureProjectionTranscript(input.threadId).pipe(
+      Effect.andThen(orchestrator.getThreadRecords(input.threadId, fields, filter)),
+      Effect.mapError(
+        (cause) =>
+          new ThreadManagementProjectionLoadError({
+            projectId: input.projectId,
+            threadId: input.threadId,
+            cause,
+          }),
+      ),
+      Effect.flatMap((projection) =>
+        projection.thread.projectId === input.projectId && projection.thread.deletedAt === null
+          ? Effect.succeed(projection)
+          : Effect.fail(
+              new ThreadManagementThreadNotFoundError({
+                projectId: input.projectId,
+                threadId: input.threadId,
+              }),
+            ),
+      ),
+    );
 
   const promoteQueuedBatch: NonNullable<ThreadManagementServiceShape["promoteQueuedBatch"]> =
     Effect.fn("ThreadManagementService.promoteQueuedBatch")(function* (input) {
@@ -986,6 +1016,7 @@ const make = Effect.gen(function* () {
       attachments: input.attachments,
       ...(input.modelSelection === undefined ? {} : { modelSelection: input.modelSelection }),
       dispatchMode,
+      ...(input.mode === "auto" ? { deliveryIntent: "auto" as const } : {}),
 
       ...(input.creationSource === "mcp" &&
       (input.senderThreadId !== undefined || (yield* IncomingLinkedMessage)) &&
@@ -1129,7 +1160,27 @@ const make = Effect.gen(function* () {
         : { blockingQuestions: current.questions, observationChanged: current.questionChanged }),
       ...(current.resultRun === undefined ? {} : { resultRun: current.resultRun }),
     });
-    const initial = yield* evaluate(target.runs);
+    const dependencyChanges = yield* Effect.serviceOption(DependencyChanges.DependencyChanges);
+    const dependencySubscription = Option.isSome(dependencyChanges)
+      ? yield* dependencyChanges.value.subscribe
+      : undefined;
+    const continuationSignals = yield* Queue.unbounded<void>();
+    const watchingContinuations = new Set<RunId>();
+    const evaluateAndWatch = (runs: ReadonlyArray<OrchestrationV2Run>) =>
+      evaluate(runs).pipe(
+        Effect.tap((current) => {
+          if (!current.pending || watchingContinuations.has(current.run.id)) return Effect.void;
+          watchingContinuations.add(current.run.id);
+          return orchestrator
+            .awaitRestartContinuation(current.run)
+            .pipe(
+              Effect.andThen(Queue.offer(continuationSignals, undefined)),
+              Effect.forkScoped,
+              Effect.asVoid,
+            );
+        }),
+      );
+    const initial = yield* evaluateAndWatch(target.runs);
     if (initial.settled || initial.questionChanged) return settledResult(initial);
 
     // A declined continuation records no event, so its effect settling wakes
@@ -1171,13 +1222,18 @@ const make = Effect.gen(function* () {
             stored.event.payload.restartContinuationOfRunId !== undefined,
         ),
       ),
-      initial.pending
-        ? Stream.fromEffect(orchestrator.awaitRestartContinuation(initial.run))
-        : Stream.empty,
+      Stream.merge(
+        Stream.fromQueue(continuationSignals),
+        dependencySubscription === undefined
+          ? Stream.empty
+          : Stream.fromSubscription(dependencySubscription).pipe(
+              Stream.filter((change) => change.threadIds.includes(input.threadId)),
+            ),
+      ),
     ).pipe(
       Stream.mapEffect(() =>
         getProjectThreadRecords(input, ["runs"]).pipe(
-          Effect.flatMap((current) => evaluate(current.runs)),
+          Effect.flatMap((current) => evaluateAndWatch(current.runs)),
         ),
       ),
       Stream.filter((current) => current.settled || current.questionChanged),
@@ -1190,7 +1246,7 @@ const make = Effect.gen(function* () {
     // winning the race; the final projection read decides what actually
     // happened, so only a still-active run counts as timed out.
     return settledResult(yield* evaluate((yield* getProjectThreadRecords(input, ["runs"])).runs));
-  });
+  }, Effect.scoped);
 
   const settleAfterRun: ThreadManagementServiceShape["settleAfterRun"] = Effect.fn(
     "orchestrationV2.threadManagement.settleAfterRun",
@@ -1287,9 +1343,7 @@ const make = Effect.gen(function* () {
       if (records.thread.deletedAt !== null) {
         return yield* new OrchestrationV2StopWorkflowError({ ...input, reason: "unavailable" });
       }
-      // A limited caller (an agent over MCP) may not stop work on a thread
-      // running above its own modes. Checked under the thread lock, where the
-      // thread's user cannot raise the modes between this read and the stop.
+      // Check mode limits under the lock so users cannot raise modes between validation and Stop.
       const limit = yield* DispatchModeLimit;
       const exceeded =
         limit === undefined ? undefined : exceededDispatchModeLimit(limit, records.thread);
@@ -1360,6 +1414,55 @@ const make = Effect.gen(function* () {
     (effect, input) => effect.pipe((effect) => threadDispatch.withLock(input.threadId, effect)),
   );
 
+  const awaitBackgroundTasks: ThreadManagementServiceShape["awaitBackgroundTasks"] = Effect.fn(
+    "ThreadManagementService.awaitBackgroundTasks",
+  )(function* (input) {
+    const unavailable = (cause?: unknown) =>
+      new ThreadManagementBackgroundWaitError({
+        threadId: input.threadId,
+        reason: "unavailable",
+        ...(cause === undefined ? {} : { cause }),
+      });
+    const records = yield* orchestrator
+      .getThreadRecords(input.threadId, ["providerThreads"])
+      .pipe(Effect.mapError(unavailable));
+    const providerThread = records.providerThreads.find(
+      (candidate) =>
+        candidate.id === records.thread.activeProviderThreadId &&
+        candidate.appThreadId === input.threadId,
+    );
+    if (records.thread.deletedAt !== null || providerThread?.providerSessionId == null) {
+      return yield* unavailable();
+    }
+    const runtime = yield* sessions
+      .get(providerThread.providerSessionId)
+      .pipe(Effect.mapError(unavailable));
+    if (Option.isNone(runtime)) {
+      return yield* unavailable();
+    }
+    if (runtime.value.awaitBackgroundTasks === undefined) {
+      return yield* new ThreadManagementBackgroundWaitError({
+        threadId: input.threadId,
+        reason: "unsupported",
+      });
+    }
+    const { matched } = yield* runtime.value
+      .awaitBackgroundTasks({ providerThread, taskIds: input.taskIds, awaited: input.awaited })
+      .pipe(
+        Effect.timeout("15 seconds"),
+        Effect.mapError(
+          (cause) =>
+            new ThreadManagementBackgroundWaitError({
+              threadId: input.threadId,
+              reason: "failed",
+              cause,
+            }),
+        ),
+      );
+    const matchedIds = new Set(matched);
+    return { matched, unmatched: input.taskIds.filter((taskId) => !matchedIds.has(taskId)) };
+  });
+
   const reviewImported = orchestrator.reviewImportedHistory;
   const reviewImportedHistory =
     reviewImported === undefined
@@ -1428,6 +1531,7 @@ const make = Effect.gen(function* () {
         type: "thread.stop",
         commandId: CommandId.make(`${input.commandId}:stop:${threadId}`),
         threadId,
+        stopDelegatedTasks: false,
         ...(input.reason === undefined ? {} : { reason: input.reason }),
       }).pipe(
         Effect.andThen(stopDelegatedTasks({ ...input, threadId })),
@@ -1440,7 +1544,7 @@ const make = Effect.gen(function* () {
         ),
       );
     }
-    if (failures[0] !== undefined) return yield* Effect.fail(failures[0]);
+    if (failures[0] !== undefined) return yield* failures[0];
   });
 
   return ThreadManagementService.of({
@@ -1520,8 +1624,22 @@ const make = Effect.gen(function* () {
     getThreadRecords: (threadId, fields, filter) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getThreadRecords(threadId, fields, filter)),
+        Effect.flatMap((records) =>
+          Effect.gen(function* () {
+            const lookup = yield* RetirementOutcome.lookup;
+            return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+          }),
+        ),
       ),
-    getThreadProjection,
+    getThreadProjection: (threadId) =>
+      getThreadProjection(threadId).pipe(
+        Effect.flatMap((records) =>
+          Effect.gen(function* () {
+            const lookup = yield* RetirementOutcome.lookup;
+            return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+          }),
+        ),
+      ),
     getCheckpointContext,
     getThreadSnapshot,
     getThreadTranscript,
@@ -1529,6 +1647,8 @@ const make = Effect.gen(function* () {
     getProjectThreadRecords,
     getProjectThread,
     getShellSnapshot: orchestrator.getShellSnapshot,
+    listActiveSubagentThreadIds: orchestrator.listActiveSubagentThreadIds,
+    listOlderSettledThreads: orchestrator.listOlderSettledThreads,
     readShellSnapshot: orchestrator.readShellSnapshot,
     getThreadShell: orchestrator.getThreadShell,
     observeThreadActivity,
@@ -1537,12 +1657,15 @@ const make = Effect.gen(function* () {
     assertProviderInstanceEnabled,
     isProviderInstanceEnabledForProject,
     hasReceipt,
+    getCommandReceipt: receipts.getByCommandId,
+    getDispatchDeliveryEvidence: (command) => dispatchDeliveryEvidence(receipts, command),
     waitForThread,
     settleAfterRun,
     settleThread,
     interruptThread,
     stopDelegatedTasks,
     stopWorkflow,
+    awaitBackgroundTasks,
     getThreadEventSequence: orchestrator.getThreadEventSequence,
     recoverDelegatedTask: orchestrator.recoverDelegatedTask,
     delegatedTaskResultPending: orchestrator.delegatedTaskResultPending,

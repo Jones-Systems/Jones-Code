@@ -79,7 +79,7 @@ export const readBinding = Effect.fn("jones.system_boot_service.read_binding")(f
   if (Option.isSome(link))
     return yield* refuse("A system adoption receipt is a symlink; reconcile it before retrying.");
   const receipt = yield* fs.readFileString(receiptPath).pipe(
-    Effect.map(Option.some),
+    Effect.asSome,
     Effect.catchIf(
       (cause) => cause.reason._tag === "NotFound",
       () => Effect.succeed(Option.none<string>()),
@@ -116,7 +116,7 @@ export const readBinding = Effect.fn("jones.system_boot_service.read_binding")(f
   const invalid =
     "The system adoption receipt is damaged, incomplete or inconsistent with this home. Reconcile it through the external administrator; user-service fallback is unavailable.";
   const parsed = record(
-    yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(receipt.value).pipe(
+    yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(receipt.value).pipe(
       Effect.mapError(() => refuse(invalid)),
     ),
   );

@@ -3,10 +3,12 @@ import { createEnvironmentThreadShellAtoms } from "@t3tools/client-runtime/state
 import {
   applyShellStreamEvent,
   createEnvironmentSnapshotAtom,
+  EMPTY_SHELL_STATE,
   type EnvironmentShellState,
   type EnvironmentShellStatus,
 } from "@t3tools/client-runtime/state/shell";
 import { makeThreadProjectionFixture } from "./test-fixtures";
+import { acknowledgeComposerSelection } from "./jones/threadConfiguration/composerSelection";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import {
@@ -33,10 +35,6 @@ import {
 } from "@t3tools/contracts";
 import { createModelSelection } from "@t3tools/shared/model";
 import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
-import {
-  collectAssistantCitations,
-  serializeAssistantCitation,
-} from "@t3tools/shared/assistantCitations";
 
 const CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const CODEX_SECONDARY_INSTANCE = ProviderInstanceId.make("codex_secondary");
@@ -523,6 +521,42 @@ describe("composerDraftStore file attachments", () => {
     const draft = store.getComposerDraft(threadRef);
     expect(draft?.images).toHaveLength(PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1);
     expect(draft?.files.map((file) => file.id)).toEqual(["file-accepted"]);
+  });
+
+  it("reattaches a DNG with an older generic-MIME marker at attachment capacity", () => {
+    const store = useComposerDraftStore.getState();
+    const file = new File(["raw"], "photo.DNG", { type: "image/x-adobe-dng" });
+    const marker: ComposerFileAttachment = {
+      type: "file",
+      id: "dng-marker",
+      name: file.name,
+      mimeType: "application/octet-stream",
+      sizeBytes: file.size,
+      file: null,
+    };
+    store.addFiles(threadRef, [marker]);
+    store.addImages(
+      threadRef,
+      Array.from({ length: PROVIDER_SEND_TURN_MAX_ATTACHMENTS - 1 }, (_, index) =>
+        makeImage({
+          id: `image-${index}`,
+          name: `image-${index}.png`,
+          previewUrl: `blob:image-${index}`,
+        }),
+      ),
+    );
+
+    const repicked: ComposerFileAttachment = {
+      ...marker,
+      id: "dng-repicked",
+      mimeType: file.type,
+      file,
+    };
+    store.addFiles(threadRef, [repicked]);
+
+    const files = store.getComposerDraft(threadRef)?.files;
+    expect(files).toEqual([repicked]);
+    expect(files?.some(composerFileNeedsReattach)).toBe(false);
   });
 
   it("replaces a needs-reattach marker when the same file is picked again", () => {
@@ -1206,9 +1240,9 @@ function modelReconciliationHarness(
     ],
   };
   const shellStateAtom = Atom.make<EnvironmentShellState>({
+    ...EMPTY_SHELL_STATE,
     snapshot: Option.some(initialSnapshot),
     status: initialStatus,
-    error: Option.none(),
   });
   const shellResultAtom = Atom.map(shellStateAtom, AsyncResult.success);
   const snapshotAtom = createEnvironmentSnapshotAtom(() => shellResultAtom)(environmentId);
@@ -1281,10 +1315,10 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
-  it("retains a pick matching cached state until the live shell confirms it", () => {
+  it("retains a passive seed matching cached state until the live shell confirms it", () => {
     const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId, "cached");
     const pick = h.model();
-    useComposerDraftStore.getState().setModelSelection(threadRef, pick, { explicit: true });
+    useComposerDraftStore.getState().setModelSelection(threadRef, pick);
     h.flush();
     const before = draftFor(threadId, TEST_ENVIRONMENT_ID);
     expect(before?.modelSelectionByProvider[pick.instanceId]).toEqual(pick);
@@ -1365,6 +1399,7 @@ describe("composerDraftStore modelSelection", () => {
 
     h.update({ status: "queued" });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    acknowledgeComposerSelection(threadRef, before);
     h.update({ status: "running", modelSelection: modelSelection(CODEX_DRIVER, "gpt-5.5") });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual({
       ...before,
@@ -1443,6 +1478,9 @@ describe("composerDraftStore modelSelection", () => {
       h.update({ modelSelection });
       expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
     }
+    h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
+    expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toEqual(before);
+    acknowledgeComposerSelection(threadRef, before);
     h.update({ modelSelection: { ...pick, options: pick.options!.toReversed() } });
     expect(draftFor(threadId, TEST_ENVIRONMENT_ID)).toBeUndefined();
   });

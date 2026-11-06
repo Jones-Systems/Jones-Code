@@ -33,6 +33,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ManagedProjectFolders from "../project/ManagedProjectFolders.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as ScheduledTaskService from "../scheduledTasks/ScheduledTaskService.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as CommandReceiptStore from "../orchestration-v2/CommandReceiptStore.ts";
@@ -191,6 +192,7 @@ const layerTools = Layer.mergeAll(
       Layer.provide(NodeServices.layer),
     ),
   ),
+  Layer.provide(DocumentText.layer),
   Layer.provide(NodeServices.layer),
 );
 

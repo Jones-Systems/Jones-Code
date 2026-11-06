@@ -70,6 +70,7 @@ function EnvironmentProviderRows<Row extends ProviderRow>({
     base: typeof providerInstances;
     next: typeof providerInstances;
   } | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Fence asynchronous provider reorder responses to the lifetime of the mounted settings list.
   useEffect(() => {
     mounted.current = true;
     return () => {

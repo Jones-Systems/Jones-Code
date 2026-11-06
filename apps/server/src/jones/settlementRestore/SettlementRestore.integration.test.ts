@@ -1,3 +1,5 @@
+import { SETTLEMENT_RESTORE_CAPABILITY } from "@t3tools/contracts";
+import { AsyncResult } from "effect/reactivity";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -7,6 +9,9 @@ import {
   MessageId,
   type ModelSelection,
   type OrchestrationV2Command,
+  type SettlementRestoreCommand,
+  type SettlementRestoreInspectQuery,
+  type SettlementRestoreInspection,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -22,6 +27,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import type * as Scope from "effect/Scope";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import { vi } from "vite-plus/test";
@@ -116,6 +122,8 @@ const runtimeFor = <EC, ED, RD>(
     Layer.provide(ServerSettings.layerTest()),
     Layer.provide(
       Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
+        getCatalogSource: (instanceId) =>
+          instanceId === providerInstance.instanceId ? providerInstance : undefined,
         getInstance: (instanceId) =>
           Effect.succeed(instanceId === providerInstance.instanceId ? providerInstance : undefined),
         listInstances: Effect.succeed([providerInstance]),
@@ -663,7 +671,7 @@ it.layer(TestLayer)("settlement restore", (it) => {
       // can show is simulated directly.
       yield* send(threadId, "retry-later", { type: "thread.unpin" });
       yield* send(threadId, "retry-repin", { type: "thread.pin", orderKey: "s" });
-      yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore;
+      yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore();
       yield* sql`DELETE FROM orchestration_command_receipts WHERE command_id = 'retry-restore'`;
       const sequence = yield* (yield* Orchestrator.OrchestratorV2).getThreadEventSequence(threadId);
       const retried = yield* restore(threadId, "retry-settle", "retry-restore");
@@ -804,7 +812,7 @@ it.effect("the record survives restart and event compaction on the same database
         yield* send(threadId, "restart-pin", { type: "thread.pin" });
         const before = yield* placement(threadId);
         yield* send(threadId, "restart-settle", { type: "thread.settle" });
-        yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore;
+        yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).compactEventStore();
         return before;
       }).pipe(Effect.scoped, Effect.provide(runtime()));
       yield* Effect.gen(function* () {
@@ -815,10 +823,79 @@ it.effect("the record survives restart and event compaction on the same database
           0,
         );
         assert.equal((yield* inspect(threadId, "restart-settle")).status, "restorable");
-        assert.equal(
-          (yield* restore(threadId, "restart-settle", "restart-restore")).outcome,
-          "restored",
+        // Mobile uses a bundler module mode. Vitest loads its actual pure adapter without
+        // imposing the server's NodeNext classification on that separately checked app.
+        const { createMobileSettlementRestoreAction } = yield* Effect.promise(() =>
+          vi.importActual<{
+            createMobileSettlementRestoreAction: (ports: {
+              capabilities: () => { settlementRestore: typeof SETTLEMENT_RESTORE_CAPABILITY };
+              canOperate: () => boolean;
+              newCommandId: () => CommandId;
+              invalidateTransientUndo: (target: {
+                environmentId: EnvironmentId;
+                threadId: ThreadId;
+              }) => void;
+              alert: (title: string, message: string) => void;
+              inspect: (
+                environmentId: EnvironmentId,
+                query: SettlementRestoreInspectQuery,
+              ) => Promise<ReturnType<typeof AsyncResult.success<SettlementRestoreInspection>>>;
+              dispatch: (
+                environmentId: EnvironmentId,
+                command: Omit<SettlementRestoreCommand, "type">,
+              ) => Promise<ReturnType<typeof AsyncResult.success<unknown>>>;
+            }) => (target: {
+              environmentId: EnvironmentId;
+              threadId: ThreadId;
+            }) => Promise<boolean>;
+          }>("../../../../mobile/src/jones/settlementRestore/action.ts"),
         );
+        const { makePromisePorts } = yield* Effect.promise(() =>
+          vi.importActual<{
+            makePromisePorts: <R>() => Effect.Effect<
+              <A, E>(effect: Effect.Effect<A, E, R>) => Promise<A>,
+              never,
+              R | Scope.Scope
+            >;
+          }>("../../../../mobile/src/jones/settlementRestore/promisePorts.testkit.ts"),
+        );
+        const run = yield* makePromisePorts<SettlementRestore.SettlementRestore>();
+        const invalidations: string[] = [];
+        const alerts: string[] = [];
+        const mobileUndo = createMobileSettlementRestoreAction({
+          capabilities: () => ({ settlementRestore: SETTLEMENT_RESTORE_CAPABILITY }),
+          canOperate: () => true,
+          newCommandId: () => CommandId.make("restart-mobile-restore"),
+          invalidateTransientUndo: (target) => invalidations.push(target.threadId),
+          alert: (_title, message) => alerts.push(message),
+          inspect: (_environmentId, query) =>
+            run(
+              inspect(query.threadId, query.settleCommandId).pipe(Effect.map(AsyncResult.success)),
+            ),
+          dispatch: (_environmentId, command) =>
+            run(
+              Effect.gen(function* () {
+                assert.equal(command.settleCommandId, "restart-settle");
+                const result = yield* restore(
+                  command.threadId,
+                  command.settleCommandId,
+                  command.commandId,
+                );
+                assert.equal(result.outcome, "restored");
+                return AsyncResult.success(result);
+              }),
+            ),
+        });
+        assert.isTrue(
+          yield* Effect.promise(() =>
+            mobileUndo({
+              environmentId: EnvironmentId.make("environment:restore-test"),
+              threadId,
+            }),
+          ),
+        );
+        assert.deepEqual(invalidations, [threadId]);
+        assert.deepEqual(alerts, []);
         assert.deepEqual(yield* placement(threadId), {
           ...before,
           settledOverride: "active",

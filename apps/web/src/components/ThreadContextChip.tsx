@@ -41,9 +41,9 @@ export function ThreadContextChip(props: {
       <TooltipPopup side="top">
         {shell ? "Open thread" : "Thread no longer available"}
         {props.record.excerpt?.status === "captured"
-          ? " — bounded point-in-time context attached"
+          ? ". bounded point-in-time context attached"
           : props.record.excerpt?.status === "unavailable"
-            ? ` — context unavailable: ${props.record.excerpt.reason.replaceAll("_", " ")}; thread identity retained`
+            ? `. context unavailable: ${props.record.excerpt.reason.replaceAll("_", " ")}; thread identity retained`
             : ""}
       </TooltipPopup>
     </Tooltip>

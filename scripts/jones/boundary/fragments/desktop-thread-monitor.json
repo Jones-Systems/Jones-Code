@@ -1,0 +1,115 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "desktop-thread-monitor",
+  "jonesOwnedPaths": [
+    "apps/desktop/src/jones/threadMonitor/",
+    "apps/server/src/jones/threadMonitor/",
+    "apps/web/src/jones/threadMonitor/",
+    "packages/client-runtime/src/jones/threadMonitor/",
+    "apps/desktop/scripts/jones-thread-monitor-mac-smoke.mjs",
+    "apps/desktop/scripts/jones-thread-monitor-mac-smoke.test.mjs",
+    "apps/web/thread-monitor.html",
+    "docs/ui-map/desktop-thread-monitor.md",
+    ".github/workflows/jones-thread-monitor-native.yml"
+  ],
+  "hookPaths": ["apps/server/src/orchestration-v2/ShellStream.ts"],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/desktop/src/electron/ElectronWindow.ts",
+      "to": "apps/desktop/src/jones/threadMonitor/roles.ts"
+    },
+    {
+      "from": "apps/desktop/src/preload.ts",
+      "to": "apps/desktop/src/jones/threadMonitor/mainBridge.ts"
+    },
+    {
+      "from": "apps/desktop/src/preview/Manager.ts",
+      "to": "apps/desktop/src/jones/threadMonitor/throttle.ts"
+    },
+    {
+      "from": "apps/desktop/src/preview/Manager.test.ts",
+      "to": "apps/desktop/src/jones/threadMonitor/throttle.ts"
+    },
+    {
+      "from": "apps/desktop/src/window/DesktopWindow.test.ts",
+      "to": "apps/desktop/src/jones/threadMonitor/host.ts"
+    },
+    {
+      "from": "apps/desktop/src/window/DesktopWindow.ts",
+      "to": "apps/desktop/src/jones/threadMonitor/host.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "packages/contracts/src/jones/guardedThreadSettlement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/threadMonitor/guardedSettle.ts"
+    },
+    {
+      "from": "apps/web/src/AppRoot.tsx",
+      "to": "apps/web/src/jones/threadMonitor/MonitorController.tsx"
+    },
+    {
+      "from": "apps/web/src/components/WorkspacePageHeader.tsx",
+      "to": "apps/web/src/jones/threadMonitor/MonitorToggle.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/PanelLayoutControls.tsx",
+      "to": "apps/web/src/jones/threadMonitor/MonitorToggle.tsx"
+    },
+    {
+      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
+      "to": "apps/web/src/jones/threadMonitor/planFollowUp.ts"
+    },
+    {
+      "from": "apps/web/src/connection/platform.ts",
+      "to": "apps/web/src/jones/threadMonitor/store.ts"
+    },
+    {
+      "from": "apps/web/src/lib/backgroundActivityReporter.ts",
+      "to": "apps/web/src/jones/threadMonitor/nativeState.ts"
+    },
+    {
+      "from": "apps/web/src/vite-env.d.ts",
+      "to": "packages/contracts/src/jones/desktopThreadMonitor.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/operations/commands.ts",
+      "to": "packages/client-runtime/src/jones/threadMonitor/guardedSettle.ts"
+    },
+    {
+      "from": "packages/client-runtime/src/operations/commands.ts",
+      "to": "packages/contracts/src/jones/guardedThreadSettlement.ts"
+    },
+    {
+      "from": "packages/contracts/src/environment.ts",
+      "to": "packages/contracts/src/jones/guardedThreadSettlement.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/desktopThreadMonitor.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/guardedThreadSettlement.ts"
+    },
+    {
+      "from": "packages/contracts/src/ipc.ts",
+      "to": "packages/contracts/src/jones/desktopThreadMonitor.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestrationV2.ts",
+      "to": "packages/contracts/src/jones/guardedThreadSettlement.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/threadMonitor/codexCommandApprovalOptions.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ShellStream.ts",
+      "to": "packages/shared/src/jones/threadAttention.ts"
+    }
+  ]
+}

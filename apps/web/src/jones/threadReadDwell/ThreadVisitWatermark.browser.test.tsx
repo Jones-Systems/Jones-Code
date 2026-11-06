@@ -78,7 +78,7 @@ it("waits until 3000 continuous visible milliseconds before dispatching the visi
   await advance(1);
   expect(state.visit).toHaveBeenCalledExactlyOnceWith({
     environmentId: thread.environmentId,
-    input: { threadId: thread.id, visitedAt: updatedAt },
+    input: { threadId: thread.id, visitedAt: updatedAt, opened: true },
   });
 });
 it("cancels rapid navigation and gives the same thread ID in another environment a fresh dwell", async () => {
@@ -92,7 +92,7 @@ it("cancels rapid navigation and gives the same thread ID in another environment
   await advance(1);
   expect(state.visit).toHaveBeenCalledExactlyOnceWith({
     environmentId: next.environmentId,
-    input: { threadId: next.id, visitedAt: updatedAt },
+    input: { threadId: next.id, visitedAt: updatedAt, opened: true },
   });
 });
 it("does not restart initial dwell for streaming updates and dispatches the newest watermark", async () => {

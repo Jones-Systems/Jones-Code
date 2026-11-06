@@ -3,6 +3,7 @@ import { NodeServices } from "@effect/platform-node";
 import * as Config from "../config.ts";
 import * as Projects from "../project/ProjectService.ts";
 import * as Clones from "../project/ProjectCloneTracker.ts";
+import * as DocumentText from "../provider/DocumentText.ts";
 import * as Threads from "./ThreadManagementService.ts";
 import * as Launch from "./ThreadLaunchService.ts";
 import * as Sink from "./EventSink.ts";
@@ -65,6 +66,7 @@ function fixture(
   const receivingQueue = Bridge.layer.pipe(
     Layer.provide(
       Layer.mergeAll(
+        Layer.mock(DocumentText.DocumentText)({ ensure: () => unexpected("document-text") }),
         Layer.mock(Threads.ThreadManagementService)({ dispatch: () => unexpected("dispatch") }),
         Layer.mock(Launch.ThreadLaunchService)({
           launch: () => unexpected("launch"),

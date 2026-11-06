@@ -10,6 +10,9 @@ export const HOST_STATUS_NAMES = {
 export const HOST_STATUS_IDS = ["vps", "test", "mini", "home"] as const;
 
 const HOST_STATUS_MAX_AGE_MS = 30_000;
+const HOST_STATUS_MAX_FUTURE_SKEW_MS = 5_000;
+// oxlint-disable-next-line t3code/no-em-dash-copy -- Owner-approved missing-reading symbol, not prose punctuation.
+const UNAVAILABLE_READING = "—";
 
 function utilizationHealth(percent: number) {
   return percent > 90
@@ -24,7 +27,9 @@ function utilizationHealth(percent: number) {
 function freshHostStatus(host: HostStatus, now: number): HostStatus {
   if (host.status === "unavailable") return host;
   const age = now - Date.parse(host.sampledAt);
-  return !Number.isFinite(age) || age < 0 || age >= HOST_STATUS_MAX_AGE_MS
+  return !Number.isFinite(age) ||
+    age < -HOST_STATUS_MAX_FUTURE_SKEW_MS ||
+    age >= HOST_STATUS_MAX_AGE_MS
     ? { id: host.id, status: "unavailable", reason: "stale" }
     : host;
 }
@@ -40,35 +45,64 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
           invalid_response: "Invalid host status response",
           stale: "Host status sample is stale",
         }[host.reason];
+    const diagnosis =
+      host?.reason === "stale" && host.diagnostic === "collector_disconnected"
+        ? [
+            "Host status collector is disconnected",
+            "Check the collector connection to the Netdata parent",
+          ]
+        : host?.reason === "stale" && host.diagnostic === "sample_expired"
+          ? ["Host status sample has expired", "Wait for a recent collector sample"]
+          : host?.reason === "upstream_unavailable" && host.diagnostic === "upstream_failure"
+            ? [reason, "Check the host status source connection"]
+            : undefined;
+    const tooltipLines = diagnosis
+      ? [...diagnosis, "Retries every 10 seconds while visible"]
+      : [reason];
     return {
-      cpu: "—",
-      ram: "—",
+      cpu: UNAVAILABLE_READING,
+      ram: UNAVAILABLE_READING,
       cpuHealth: "unavailable",
       ramHealth: "unavailable",
       health: "unavailable",
-      detail: reason,
+      detail: tooltipLines.join(". "),
+      tooltipLines,
     } as const;
   }
   const cpuHealth = utilizationHealth(host.cpuUsagePercent);
   const cpu = `${Math.round(host.cpuUsagePercent)}%`;
   const availableMemoryBytes = host.availableMemoryBytes;
+  const formatGiB = (bytes: number) => `${Number((bytes / 1024 ** 3).toFixed(1))} GiB`;
+  const storageLabel =
+    host.storageMountPoint &&
+    host.storageMountPoint !== "/" &&
+    host.storageMountPoint !== "/System/Volumes/Data"
+      ? `Storage (${host.storageMountPoint})`
+      : "Storage";
+  const tooltipLines = [
+    `CPU ${cpu} of total cores`,
+    `RAM ${availableMemoryBytes === undefined ? "unavailable" : `${formatGiB(availableMemoryBytes)} available of ${formatGiB(host.totalMemoryBytes)}`}`,
+    ...(host.id === "mini" || host.id === "home"
+      ? [
+          `Swap I/O ${host.swapIoBytesPerSecond === undefined ? "unavailable" : `${(host.swapIoBytesPerSecond / 1024 ** 2).toFixed(1)} MiB/s`}`,
+        ]
+      : []),
+    `${storageLabel} ${host.availableStorageBytes === undefined || host.totalStorageBytes === undefined ? "unavailable" : `${formatGiB(host.availableStorageBytes)} free of ${formatGiB(host.totalStorageBytes)}`}`,
+  ];
   if (host.id === "mini" || host.id === "home") {
     const swap = host.swapIoBytesPerSecond;
     const swapMiB = swap === undefined ? undefined : swap / 1024 ** 2;
     const ramHealth = swapMiB === undefined ? "unavailable" : swapMiB > 10 ? "warning" : "healthy";
-    const ram = swapMiB === undefined ? "— mb/s" : `${swapMiB.toFixed(1)} mb/s`;
+    const ram = swapMiB === undefined ? UNAVAILABLE_READING : `${swapMiB.toFixed(1)} mb/s`;
     const health = cpuHealth === "healthy" && ramHealth === "warning" ? "warning" : cpuHealth;
-    const availableRam =
-      availableMemoryBytes === undefined
-        ? "unavailable"
-        : `${(availableMemoryBytes / 1024 ** 3).toFixed(1)} GiB (collector estimate, including reclaimable memory)`;
     return {
       health,
       cpuHealth,
       ramHealth,
       cpu,
       ram,
-      detail: `CPU ${cpu} of total cores. Swap I/O ${swapMiB === undefined ? "unavailable" : `${swapMiB.toFixed(1)} MiB/s (combined reads and writes, 10-second average)`}. Available RAM ${availableRam}. Swap activity above 10 MiB/s is amber; this is not native macOS memory pressure or an agent-admission decision.`,
+      detail: tooltipLines.join(". "),
+      tooltipLines,
     } as const;
   }
   const ramHealth =
@@ -76,7 +110,9 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
       ? "unavailable"
       : utilizationHealth(100 * (1 - availableMemoryBytes / host.totalMemoryBytes));
   const ram =
-    availableMemoryBytes === undefined ? "—" : String(Math.round(availableMemoryBytes / 1024 ** 3));
+    availableMemoryBytes === undefined
+      ? UNAVAILABLE_READING
+      : String(Math.round(availableMemoryBytes / 1024 ** 3));
   const health =
     availableMemoryBytes === undefined
       ? cpuHealth
@@ -89,7 +125,8 @@ export function hostStatusMetrics(sample: HostStatus | undefined) {
     ramHealth,
     cpu,
     ram,
-    detail: `CPU ${cpu} of total cores. Available RAM ${ram === "—" ? "unavailable" : `${ram} GiB (collector estimate, including reclaimable memory)`}. Colors reflect CPU and RAM utilization.`,
+    detail: tooltipLines.join(". "),
+    tooltipLines,
   } as const;
 }
 
@@ -155,7 +192,7 @@ export function observeHostStatus(
     } catch {
       if (!disposed) {
         cache.settledAt = Date.now();
-        publish(null);
+        publish(cache.snapshot);
       }
     } finally {
       pending = false;

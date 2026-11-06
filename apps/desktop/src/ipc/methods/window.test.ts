@@ -8,8 +8,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import { vi } from "vite-plus/test";
 
-import type * as Electron from "electron";
-
 const { focusedWebContents, ownerWindow, exposeInMainWorld, invoke } = vi.hoisted(() => ({
   focusedWebContents: vi.fn(),
   ownerWindow: vi.fn(),
@@ -20,7 +18,7 @@ vi.mock("electron", () => ({
   webContents: { getFocusedWebContents: focusedWebContents },
   BrowserWindow: { fromWebContents: ownerWindow },
   contextBridge: { exposeInMainWorld },
-  ipcRenderer: { invoke },
+  ipcRenderer: { invoke, sendSync: vi.fn(() => false) },
   webFrame: {},
   webUtils: {},
 }));
@@ -34,11 +32,12 @@ import * as IpcChannels from "../channels.ts";
 import * as DesktopBackendConfiguration from "../../backend/DesktopBackendConfiguration.ts";
 import * as DesktopBackendManager from "../../backend/DesktopBackendManager.ts";
 import * as DesktopBackendPool from "../../backend/DesktopBackendPool.ts";
+import * as DesktopAppSettings from "../../settings/DesktopAppSettings.ts";
+import * as ElectronDialog from "../../electron/ElectronDialog.ts";
+import * as ElectronWindow from "../../electron/ElectronWindow.ts";
 import {
   getLocalEnvironmentBootstraps,
   getPreviewAutomationRuntimeIdentity,
-  getWindowFullscreenState,
-  pasteAsText,
   pickProjectFavicon,
   getRelayTelemetryEnabled,
   probeRemoteEditors,
@@ -210,6 +209,78 @@ describe("getRelayTelemetryEnabled", () => {
   );
 });
 
+describe("pickProjectFavicon", () => {
+  const pickerLayer = (
+    pickFiles: () => Effect.Effect<Array<string>>,
+    settings?: DesktopAppSettings.DesktopSettings,
+  ) =>
+    Layer.mergeAll(
+      Layer.mock(ElectronDialog.ElectronDialog)({ pickFiles }),
+      Layer.mock(ElectronWindow.ElectronWindow)({
+        focusedMainOrFirst: Effect.succeedNone,
+      }),
+      DesktopAppSettings.layerTest(settings),
+    );
+
+  it.effect("opens a single-image picker from the project directory", () =>
+    Effect.gen(function* () {
+      const pickFiles = vi.fn(() => Effect.succeed(["/pictures/icon.png"]));
+      const result = yield* pickProjectFavicon
+        .handler("/project")
+        .pipe(Effect.provide(pickerLayer(pickFiles)));
+
+      assert.strictEqual(result, "/pictures/icon.png");
+      assert.deepEqual(pickFiles.mock.calls, [
+        [
+          {
+            owner: Option.none(),
+            defaultPath: Option.some("/project"),
+            multiple: false,
+            filters: [
+              {
+                name: "Images",
+                extensions: [
+                  "avif",
+                  "bmp",
+                  "gif",
+                  "ico",
+                  "heic",
+                  "heif",
+                  "jpeg",
+                  "jpg",
+                  "png",
+                  "svg",
+                  "tif",
+                  "tiff",
+                  "webp",
+                  "icns",
+                ],
+              },
+            ],
+          },
+        ],
+      ]);
+    }),
+  );
+
+  it.effect("does not open a picker while the local environment is off", () =>
+    Effect.gen(function* () {
+      const pickFiles = vi.fn(() => Effect.succeed(["/pictures/icon.png"]));
+      const result = yield* pickProjectFavicon.handler("/project").pipe(
+        Effect.provide(
+          pickerLayer(pickFiles, {
+            ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+            localEnvironmentEnabled: false,
+          }),
+        ),
+      );
+
+      assert.strictEqual(result, null);
+      assert.strictEqual(pickFiles.mock.calls.length, 0);
+    }),
+  );
+});
+
 it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
   "finds remote editors installed without PATH launchers",
   () =>
@@ -303,6 +374,7 @@ describe("getPreviewAutomationRuntimeIdentity", () => {
       const bridge = exposeInMainWorld.mock.calls.find(
         ([name]) => name === "desktopBridge",
       )?.[1] as DesktopBridge;
+      assert.equal(bridge.installPlan, undefined);
       invoke.mockResolvedValueOnce(descriptor);
       assert.deepEqual(await bridge.getPreviewAutomationRuntimeIdentity!(), descriptor);
       assert.deepEqual(invoke.mock.calls.at(-1), [

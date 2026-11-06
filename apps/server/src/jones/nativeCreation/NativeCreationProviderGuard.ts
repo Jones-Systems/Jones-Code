@@ -131,21 +131,19 @@ export const acknowledgeNativeProviderGuard = Effect.fn("acknowledgeNativeProvid
       input.providerThread.nativeThreadRef?.nativeId !== binding.nativeThreadId
     )
       return yield* refused("Native provider acknowledgement differs from its captured operation");
-    state.acknowledgement = yield* Schema.decodeUnknownEffect(NativeCreationWholeOperationEvidence)(
-      {
-        version: 1,
-        outcome: "confirmed_success",
-        effectId: state.effectId,
-        threadId: state.threadId,
-        commandId: state.commandId,
-        providerSessionId: binding.providerSessionId,
-        providerThreadId: binding.providerThreadId,
-        runtimeGeneration: binding.runtimeGeneration,
-        runId: input.runId,
-        attemptId: input.attemptId,
-        coverage: "whole_operation",
-      },
-    );
+    state.acknowledgement = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)({
+      version: 1,
+      outcome: "confirmed_success",
+      effectId: state.effectId,
+      threadId: state.threadId,
+      commandId: state.commandId,
+      providerSessionId: binding.providerSessionId,
+      providerThreadId: binding.providerThreadId,
+      runtimeGeneration: binding.runtimeGeneration,
+      runId: input.runId,
+      attemptId: input.attemptId,
+      coverage: "whole_operation",
+    });
   },
 );
 

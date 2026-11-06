@@ -1,0 +1,84 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "codex-failover",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/codexFailover/",
+    "apps/server/src/jones/threadConfiguration/selectionAdmission.ts",
+    "apps/server/src/jones/threadConfiguration/selectionAdmission.test.ts",
+    "apps/server/src/jones/provider/codex/CodexFailoverPeer.integration.test.ts",
+    "apps/server/src/jones/provider/codex/CodexFailoverSelection.ts",
+    "apps/server/src/jones/provider/codex/CodexFailoverSelection.test.ts",
+    "apps/server/src/jones/provider/codex/CodexFailoverFailure.ts",
+    "apps/server/src/jones/provider/codex/CodexFailoverFailure.test.ts",
+    "apps/mobile/src/jones/threadConfiguration/modelSelection.ts",
+    "apps/mobile/src/jones/threadConfiguration/queuedFollowUp.ts"
+  ],
+  "hookPaths": [
+    "apps/mobile/src/state/thread-outbox-model.ts",
+    "apps/mobile/src/state/thread-outbox.test.ts",
+    "apps/mobile/src/state/use-thread-outbox-drain.ts",
+    "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+    "apps/mobile/src/state/use-composer-drafts.test.ts",
+    "packages/client-runtime/src/operations/commands.ts",
+    "packages/client-runtime/src/operations/commands.test.ts"
+  ],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/codexFailover/CodexFailoverStore.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox-model.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-composer-drafts.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-composer-state.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-outbox-drain.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/queuedFollowUp.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/thread-outbox.test.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/modelSelection.ts"
+    },
+    {
+      "from": "apps/mobile/src/state/use-thread-outbox-drain.test.ts",
+      "to": "apps/mobile/src/jones/threadConfiguration/queuedFollowUp.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/codexFailover/CodexFailoverEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/codexFailover/CodexFailoverNativeEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/codexFailover/CodexFailover.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/codexFailover/CodexFailover.ts"
+    },
+    {
+      "from": "apps/server/src/server.ts",
+      "to": "apps/server/src/jones/codexFailover/CodexFailoverEvidence.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Adapters/CodexAdapterV2.ts",
+      "to": "apps/server/src/jones/provider/codex/CodexCapacityContinuation.ts"
+    }
+  ]
+}

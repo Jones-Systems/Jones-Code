@@ -10,7 +10,18 @@ import { importedHistoryCanonicalJson } from "@t3tools/shared/jones/importedHist
 
 export function importedHistoryContinuationEligible(
   projection:
-    | Pick<OrchestrationV2ThreadProjection, "thread" | "runs" | "providerThreads">
+    | {
+        readonly thread: Pick<OrchestrationV2ThreadProjection["thread"], "historyOrigin">;
+        readonly runs: ReadonlyArray<
+          Pick<OrchestrationV2ThreadProjection["runs"][number], "status">
+        >;
+        readonly providerThreads: ReadonlyArray<
+          Pick<
+            OrchestrationV2ThreadProjection["providerThreads"][number],
+            "providerSessionId" | "nativeThreadRef" | "nativeConversationHeadRef"
+          >
+        >;
+      }
     | null
     | undefined,
 ): boolean {

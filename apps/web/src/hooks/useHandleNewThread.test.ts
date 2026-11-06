@@ -5,8 +5,11 @@ const testState = vi.hoisted(() => {
   let completeProjectFileRead: (value: null) => void = () => undefined;
   let projectFileRead = Promise.resolve<null>(null);
   let projectRemoved = false;
+  let conversationWorkspace: boolean | undefined;
+  let allocation: "on-write" | "eager" = "on-write";
+  let connectedEnvironmentIds = ["environment-primary", "environment-ssh"];
   let targetSettings = {
-    defaultThreadEnvMode: "local" as "local" | "worktree",
+    defaultThreadEnvMode: "local" as "local" | "worktree" | null,
     newWorktreesStartFromOrigin: false,
     defaultModelSelection: null,
     defaultRuntimeMode: "full-access" as RuntimeMode,
@@ -46,21 +49,37 @@ const testState = vi.hoisted(() => {
     get projectRemoved() {
       return projectRemoved;
     },
+    get connectedEnvironmentIds() {
+      return connectedEnvironmentIds;
+    },
+    disconnect(environmentId: string) {
+      connectedEnvironmentIds = connectedEnvironmentIds.filter((id) => id !== environmentId);
+    },
     removeProject() {
       projectRemoved = true;
     },
+    get conversationWorkspace() {
+      return conversationWorkspace;
+    },
+    setConversationCapability(value: boolean | undefined, mode: "on-write" | "eager") {
+      conversationWorkspace = value;
+      allocation = mode;
+    },
     get targetSettings() {
-      return targetSettings;
+      return { ...targetSettings, worktreeAllocation: allocation };
     },
     reset(
       nextStoredDraft: typeof storedDraft,
       workspaceDefaults = {
-        envMode: "local" as "local" | "worktree",
+        envMode: "local" as "local" | "worktree" | null,
         startFromOrigin: false,
       },
     ) {
       storedDraft = nextStoredDraft;
       projectRemoved = false;
+      conversationWorkspace = undefined;
+      allocation = "on-write";
+      connectedEnvironmentIds = ["environment-primary", "environment-ssh"];
       targetSettings = {
         defaultThreadEnvMode: workspaceDefaults.envMode,
         newWorktreesStartFromOrigin: workspaceDefaults.startFromOrigin,
@@ -79,22 +98,47 @@ const testState = vi.hoisted(() => {
   };
 });
 
+const testEnvironment = (environmentId: string) => ({
+  environmentId,
+  label: "Synthetic environment",
+  platform: { os: "darwin", arch: "arm64" },
+  serverVersion: "0.0.0-test",
+  capabilities: {
+    repositoryIdentity: false,
+    ...(testState.conversationWorkspace === undefined
+      ? {}
+      : { conversationWorkspace: testState.conversationWorkspace }),
+  },
+});
+
 const testServerConfigs = () =>
   new Map([
     [
       "environment-primary",
       {
+        environment: testEnvironment("environment-primary"),
         settings: {
           ...testState.targetSettings,
           newWorktreesStartFromOrigin: !testState.targetSettings.newWorktreesStartFromOrigin,
         },
       },
     ],
-    ["environment-ssh", { settings: testState.targetSettings }],
+    [
+      "environment-ssh",
+      {
+        environment: testEnvironment("environment-ssh"),
+        settings: testState.targetSettings,
+      },
+    ],
   ]);
 
 vi.mock("../rpc/atomRegistry", () => ({
-  appAtomRegistry: { get: () => testServerConfigs() },
+  appAtomRegistry: {
+    get: (atom: unknown) =>
+      atom === "connected-environment-ids"
+        ? testState.connectedEnvironmentIds
+        : testServerConfigs(),
+  },
 }));
 
 vi.mock("@effect/atom-react", () => ({
@@ -108,11 +152,13 @@ vi.mock("@t3tools/client-runtime/environment", () => ({
   scopeProjectRef: (environmentId: string, projectId: string) => ({ environmentId, projectId }),
   scopeThreadRef: (environmentId: string, threadId: string) => ({ environmentId, threadId }),
 }));
-vi.mock("@t3tools/contracts", () => ({
+vi.mock("@t3tools/contracts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/contracts")>()),
   DEFAULT_RUNTIME_MODE: "default",
   DEFAULT_SERVER_SETTINGS: {},
 }));
-vi.mock("@t3tools/shared/projectSettings", () => ({
+vi.mock("@t3tools/shared/projectSettings", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@t3tools/shared/projectSettings")>()),
   resolveProjectSettings: (
     settings: Record<string, unknown>,
     _projectId: unknown,
@@ -130,9 +176,6 @@ vi.mock("@t3tools/shared/projectSettings", () => ({
     sources: { defaultModelSelection: "environment", defaultThreadEnvMode: "environment" },
     overrides: {},
   }),
-  resolveNewThreadEnvMode: (input: {
-    projectSettings: { settings: { defaultThreadEnvMode: "local" | "worktree" } };
-  }) => input.projectSettings.settings.defaultThreadEnvMode,
 }));
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => null,
@@ -187,6 +230,10 @@ vi.mock("../state/entities", () => {
     useThread: () => null,
   };
 });
+vi.mock("../state/olderSettledShelf", () => ({ readUnloadedThreadCount: () => 0 }));
+vi.mock("../state/presentation", () => ({
+  environmentSummaries: { connectedEnvironmentIdsAtom: "connected-environment-ids" },
+}));
 vi.mock("../state/server", () => ({
   environmentServerConfigsAtom: {},
   primaryServerSettingsAtom: "primary-settings",
@@ -243,4 +290,40 @@ describe.each([
     expect(testState.router.navigate).not.toHaveBeenCalled();
     expect(testState.draftStore.setLogicalProjectDraftThreadId).not.toHaveBeenCalled();
   });
+});
+
+const offlineAllocationCases: ReadonlyArray<{
+  capability: boolean | undefined;
+  allocation: "on-write" | "eager";
+  expected: "local" | "auto";
+}> = [
+  { capability: undefined, allocation: "on-write", expected: "local" },
+  { capability: false, allocation: "on-write", expected: "local" },
+  { capability: true, allocation: "eager", expected: "local" },
+  { capability: true, allocation: "on-write", expected: "auto" },
+];
+
+describe("useNewThreadHandler", () => {
+  it.each(offlineAllocationCases)(
+    "opens offline without project-file waits: capability=$capability, allocation=$allocation",
+    async ({ capability, allocation, expected }) => {
+      testState.reset(null, { envMode: null, startFromOrigin: false });
+      testState.setConversationCapability(capability, allocation);
+      testState.disconnect("environment-ssh");
+
+      const opened = await useNewThreadHandler()({
+        environmentId: "environment-ssh",
+        projectId: "project-remote",
+      } as never);
+
+      expect(opened).toEqual({ draftId: "draft-delayed", threadId: "thread-delayed" });
+      expect(testState.router.navigate).toHaveBeenCalledOnce();
+      expect(testState.draftStore.setLogicalProjectDraftThreadId).toHaveBeenCalledWith(
+        "remote-project",
+        { environmentId: "environment-ssh", projectId: "project-remote" },
+        "draft-delayed",
+        expect.objectContaining({ envMode: expected }),
+      );
+    },
+  );
 });

@@ -192,7 +192,7 @@ it.effect("production ports remain unavailable even with a current native operat
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provideMerge(repositoryLayer),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -373,7 +373,7 @@ it.effect("unknown native enrollment lookup denies through the authority port", 
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provide(RepositorySqlite.layer.pipe(Layer.provide(memory))),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -390,7 +390,7 @@ it.effect("rejects forged contexts and unavailable durable execution storage", (
       resources: value.resources,
     }).pipe(Effect.flip);
     assert.strictEqual(rejection.code, "unsupported_authority");
-    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+    const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
       version: 2,
       claimId: "fixture-claim",
       stageCommandId: "fixture-command",
@@ -408,7 +408,7 @@ it.effect("rejects forged contexts and unavailable durable execution storage", (
       Effect.provide(
         Authority.NativeCreationAuthorityUnavailable.pipe(
           Layer.provide(repositoryLayer),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
         ),
       ),
     );
@@ -422,14 +422,14 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
     let revoked = false;
     let starts = 0;
     let mismatchedStart = false;
-    const reference = yield* Schema.decodeUnknownEffect(NativeCreationExecutionReferenceV2)({
+    const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
       version: 2,
       claimId: "fixture-claim",
       stageCommandId: "fixture-command",
       effectId: "fixture-effect",
       stage: "native_command",
     });
-    const command = yield* Schema.decodeUnknownEffect(OrchestrationV2Command)({
+    const command = yield* Schema.decodeEffect(OrchestrationV2Command)({
       type: "thread.create",
       createdBy: "system",
       creationSource: "server",
@@ -454,7 +454,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
             Effect.gen(function* () {
               return {
                 history: {
-                  intent: yield* Schema.decodeUnknownEffect(Repository.NativeCreationStoredIntent)({
+                  intent: yield* Schema.decodeEffect(Repository.NativeCreationStoredIntent)({
                     claimId: "fixture-claim",
                     claimedBootId: "fixture-boot",
                     claimedAt: "2026-10-02T12:34:56Z",
@@ -501,7 +501,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
                   kind: "native_command" as const,
                   phase: "started" as const,
                   ordinal: 0,
-                  timestamp: yield* Schema.decodeUnknownEffect(IsoDateTime)(timestamp).pipe(
+                  timestamp: yield* Schema.decodeEffect(IsoDateTime)(timestamp).pipe(
                     Effect.mapError(
                       () =>
                         new Repository.NativeCreationRepositoryError({
@@ -551,7 +551,7 @@ it.effect("issues only after a matching durable start and rechecks revoked autho
       Effect.provide(
         Authority.NativeCreationAuthorityLive.pipe(
           Layer.provide(executionOwner),
-          Layer.provide(sessions(() => Effect.succeed(Option.some(value.session)))),
+          Layer.provide(sessions(() => Effect.succeedSome(value.session))),
           Layer.provide(
             Layer.succeed(Authority.NativeCreationGrantResolver, {
               resolveCurrent: () =>

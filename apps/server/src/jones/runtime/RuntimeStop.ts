@@ -9,12 +9,15 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as ProviderSessions from "../../orchestration-v2/ProviderSessionManager.ts";
@@ -25,6 +28,8 @@ import {
   nativeCreationCanonicalJson,
   nativeCreationSha256,
 } from "../nativeCreation/NativeCreationPreparation.ts";
+
+export const RUNTIME_STOP_WAIT_TIMEOUT_MS = 3_000;
 
 export class CurrentRuntimeStop extends Context.Service<
   CurrentRuntimeStop,
@@ -59,9 +64,27 @@ const make = Effect.gen(function* () {
   const manager = yield* ProviderSessions.ProviderSessionManagerV2;
   const sessions = yield* AuthSessions.AuthSessionRepository;
   const projections = yield* ProjectionStore.ProjectionStoreV2;
+  const scope = yield* Effect.scope;
   const captures = new Map<CommandId, CapturedRuntimeStop>();
+  const workers = new Map<CommandId, Deferred.Deferred<void, StopStore.RuntimeStopError>>();
   const error = (reason: string, cause?: unknown) =>
     new StopStore.RuntimeStopError({ reason, ...(cause === undefined ? {} : { cause }) });
+  const canObserveOrInitiate = Effect.fn("CurrentRuntimeStop.canObserveOrInitiate")(function* (
+    capture: CapturedRuntimeStop,
+  ) {
+    if (capture.retirement !== undefined && (yield* capture.retirement.started)) return true;
+    return yield* capture.isCurrent;
+  });
+  const awaitWorker = Effect.fn("CurrentRuntimeStop.awaitWorker")(
+    (worker: Deferred.Deferred<void, StopStore.RuntimeStopError>) => Deferred.await(worker),
+    (effect) =>
+      effect.pipe(
+        Effect.timeoutOrElse({
+          duration: RUNTIME_STOP_WAIT_TIMEOUT_MS,
+          orElse: () => Effect.fail(error("runtime_stop_retirement_pending")),
+        }),
+      ),
+  );
   const readTarget = Effect.fn("CurrentRuntimeStop.readTarget")(
     function* (threadId: ThreadId) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
@@ -85,7 +108,7 @@ const make = Effect.gen(function* () {
         };
       const held = yield* restartPreparation.captureHeldRuntimeStop(threadId);
       const captured = held ?? (yield* manager.captureCurrentThreadRuntimeStop(threadId));
-      if (captured === null || !(yield* captured.isCurrent))
+      if (captured === null || !(yield* canObserveOrInitiate(captured)))
         return {
           status: "unavailable" as const,
           reason: "physical_runtime_stop_capture_unavailable",
@@ -106,7 +129,7 @@ const make = Effect.gen(function* () {
   const observe = Effect.fn("CurrentRuntimeStop.observe")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeUnknownEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_observation")));
       if (input.target.binding.threadId !== input.threadId)
@@ -138,10 +161,13 @@ const make = Effect.gen(function* () {
         nativeCreationCanonicalJson(prior.identity.request) !== nativeCreationCanonicalJson(input)
       )
         return yield* error("stop_observation_identity_conflict");
+      const worker = workers.get(input.commandId);
+      if (worker !== undefined) yield* awaitWorker(worker).pipe(Effect.ignore);
+      const current = yield* eventSink.readRuntimeStop(input.commandId);
       return {
         commandId: input.commandId,
         threadId: input.threadId,
-        status: prior.status,
+        status: current?.status ?? prior.status,
         affectedRunIds: prior.identity.affectedRunIds,
         backgroundCoverage: "partial" as const,
       };
@@ -155,7 +181,7 @@ const make = Effect.gen(function* () {
   const stop = Effect.fn("CurrentRuntimeStop.stop")(
     function* (candidate: StopCurrentThreadRuntimeInput) {
       const principal = yield* EnvironmentAuthenticatedPrincipal;
-      const input = yield* Schema.decodeUnknownEffect(StopCurrentThreadRuntimeInput)(candidate, {
+      const input = yield* Schema.decodeEffect(StopCurrentThreadRuntimeInput)(candidate, {
         onExcessProperty: "error",
       }).pipe(Effect.mapError(() => error("invalid_stop_request")));
       if (input.target.binding.threadId !== input.threadId)
@@ -216,7 +242,8 @@ const make = Effect.gen(function* () {
         return yield* error("physical_runtime_stop_capture_unavailable_or_changed");
       const revalidate = Effect.gen(function* () {
         yield* authorize;
-        if (!(yield* captured.isCurrent)) return yield* error("captured_runtime_replaced");
+        if (!(yield* canObserveOrInitiate(captured)))
+          return yield* error("captured_runtime_replaced");
       });
       yield* revalidate;
       const projection = yield* projections.getThreadRecords(input.threadId, [
@@ -306,6 +333,8 @@ const make = Effect.gen(function* () {
       const state = yield* eventSink.readRuntimeStop(commandId);
       if (state === null) return yield* error("runtime_stop_has_no_acceptance");
       if (state.status === "stopped") return;
+      const worker = workers.get(commandId);
+      if (worker !== undefined) return yield* awaitWorker(worker);
       if (state.status === "unknown") return yield* error("runtime_stop_prior_completion_unknown");
       const capture = captures.get(commandId);
       if (!capture) return yield* error("runtime_stop_physical_capture_lost");
@@ -322,8 +351,78 @@ const make = Effect.gen(function* () {
           DateTime.toEpochMillis(session.value.expiresAt) <= DateTime.toEpochMillis(now)
         )
           return yield* error("current_stop_actor_unavailable");
-        if (!(yield* capture.isCurrent)) return yield* error("captured_runtime_replaced");
+        if (!(yield* canObserveOrInitiate(capture)))
+          return yield* error("captured_runtime_replaced");
       }).pipe(Effect.mapError(() => error("current_stop_actor_or_runtime_unavailable")));
+      const retirement = capture.retirement;
+      if (retirement !== undefined) {
+        if (
+          nativeCreationCanonicalJson(retirement.binding) !==
+          nativeCreationCanonicalJson(capture.binding)
+        )
+          return yield* error("runtime_stop_retirement_identity_conflict");
+        const pending = yield* Effect.uninterruptibleMask(() =>
+          Effect.gen(function* () {
+            const existing = workers.get(commandId);
+            if (existing !== undefined) return existing;
+            const pending = Deferred.makeUnsafe<void, StopStore.RuntimeStopError>();
+            workers.set(commandId, pending);
+            let invocationStarted = false;
+            const retryObservation = Effect.fn("CurrentRuntimeStop.retryObservation")(
+              function* <A, E>(observation: Effect.Effect<A, E>) {
+                const attempt = yield* observation.pipe(Effect.forkChild);
+                const result = yield* Fiber.await(attempt);
+                if (Exit.isFailure(result))
+                  return yield* error("runtime_stop_observation_pending", result.cause);
+                return result.value;
+              },
+              Effect.retry({ schedule: Schedule.spaced("1 second") }),
+            );
+            // The service scope owns this worker; a caller's deadline or cancellation only stops its wait.
+            yield* Effect.gen(function* () {
+              const started = yield* eventSink.startRuntimeStop!(
+                commandId,
+                state.identity.request.target,
+                revalidate,
+              );
+              if (!started) return yield* error("runtime_stop_prior_invocation_unknown");
+              invocationStarted = true;
+              if (!(yield* retirement.started)) {
+                yield* revalidate;
+                yield* Effect.exit(capture.stop);
+              }
+              const receipt = yield* retryObservation(retirement.awaitRetired);
+              if (
+                nativeCreationCanonicalJson(receipt.binding) !==
+                nativeCreationCanonicalJson(capture.binding)
+              )
+                return yield* error("runtime_stop_retirement_identity_conflict");
+              yield* retryObservation(eventSink.completeRuntimeStop!(commandId, "stopped"));
+              yield* restartPreparation.resolveAfterTeardown(capture.binding);
+              captures.delete(commandId);
+            }).pipe(
+              Effect.mapError((cause) =>
+                Schema.is(StopStore.RuntimeStopError)(cause)
+                  ? cause
+                  : error("runtime_stop_execution_unavailable", cause),
+              ),
+              Effect.onExit((exit) =>
+                Effect.sync(() => {
+                  if (
+                    (!invocationStarted || Exit.isSuccess(exit)) &&
+                    workers.get(commandId) === pending
+                  )
+                    workers.delete(commandId);
+                }).pipe(Effect.andThen(Deferred.done(pending, exit))),
+              ),
+              Effect.ignoreCause,
+              Effect.forkIn(scope, { uninterruptible: false }),
+            );
+            return pending;
+          }),
+        );
+        return yield* awaitWorker(pending);
+      }
       yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const started = yield* eventSink.startRuntimeStop!(

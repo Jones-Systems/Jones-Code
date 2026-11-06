@@ -55,7 +55,10 @@ export class RenderHostSelection extends Context.Service<
       threadId: string,
       selection: PreviewRenderHostSelection | null,
     ) => Effect.Effect<void, RenderHostSelectionWriteError>;
-    readonly bind: (key: DesktopTabKey) => Effect.Effect<PreviewRenderHostSelection>;
+    readonly bind: (
+      key: DesktopTabKey,
+      inherited?: PreviewRenderHostSelection,
+    ) => Effect.Effect<PreviewRenderHostSelection>;
     readonly binding: (key: DesktopTabKey) => Effect.Effect<PreviewRenderHostSelection | undefined>;
     readonly release: (key: DesktopTabKey) => Effect.Effect<void>;
   }
@@ -73,14 +76,14 @@ const make = Effect.gen(function* () {
     .pipe(
       Effect.catch((cause) =>
         cause.reason._tag === "NotFound"
-          ? Effect.succeed(undefined)
+          ? Effect.undefined
           : Effect.fail(new RenderHostSelectionReadError({ reason: "unreadable", cause })),
       ),
     );
   const decoded =
     stored === undefined
       ? Option.some(empty())
-      : Schema.decodeUnknownOption(Schema.fromJsonString(Stored))(stored);
+      : Schema.decodeOption(Schema.fromJsonString(Stored))(stored);
   if (Option.isNone(decoded)) return yield* new RenderHostSelectionReadError({ reason: "invalid" });
   let state: typeof Stored.Type = decoded.value;
   const bindings = new Map<string, { key: DesktopTabKey; selection: PreviewRenderHostSelection }>();
@@ -132,11 +135,22 @@ const make = Effect.gen(function* () {
           });
         return { ...state, threads };
       }),
-    bind: (key) =>
+    bind: (key, inherited) =>
       Effect.sync(() => {
         const existing = bindings.get(keyOf(key));
-        if (existing) return existing.selection;
-        const selection = effective(key.threadId);
+        if (existing) {
+          if (
+            inherited &&
+            (existing.selection._tag !== inherited._tag ||
+              (existing.selection._tag === "companion" &&
+                inherited._tag === "companion" &&
+                existing.selection.hostId !== inherited.hostId))
+          ) {
+            throw new Error("Popup render host conflicts with its opener's recorded selection.");
+          }
+          return existing.selection;
+        }
+        const selection = inherited ?? effective(key.threadId);
         bindings.set(keyOf(key), { key, selection });
         return selection;
       }),

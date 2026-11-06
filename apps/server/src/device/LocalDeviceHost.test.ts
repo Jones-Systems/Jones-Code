@@ -43,6 +43,11 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   const path = yield* Path.Path;
   const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-device-agent-start-" });
   const stateDir = agentDeviceStateDir(path, path.join(baseDir, "userdata"));
+  yield* fs.makeDirectory(`${baseDir}/bin`);
+  for (const command of ["xcrun", "xcodebuild"]) {
+    yield* fs.writeFileString(`${baseDir}/bin/${command}`, "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(`${baseDir}/bin/${command}`, 0o755);
+  }
   for (const [name, version, entry] of [
     ["expo-device-hub", DEVICE_HUB_VERSION, "dist/server/cli.mjs"],
     ["agent-device", AGENT_DEVICE_VERSION, "bin/agent-device.mjs"],
@@ -55,7 +60,7 @@ const agentFixture = Effect.fn("agentFixture")(function* (
   }
   const host = yield* LocalDeviceHost.make().pipe(
     Effect.provide(Layer.mergeAll(ServerConfig.layerTest(baseDir, baseDir), NetService.layer)),
-    Effect.provideService(HostProcess.Environment, { HOME: baseDir, PATH: "" }),
+    Effect.provideService(HostProcess.Environment, { HOME: baseDir, PATH: `${baseDir}/bin` }),
     Effect.provideService(HostProcess.IsExecutable, false),
     Effect.provideService(HostProcess.Platform, "darwin"),
     Effect.provideService(
@@ -207,6 +212,9 @@ const diagnose = (
   platform: NodeJS.Platform = "darwin",
 ) =>
   LocalDeviceHost.__testing.platformReason("android").pipe(
+    Effect.provideService(ProcessRunner.ProcessRunner, {
+      run: () => Effect.die("Android availability must not probe Xcode"),
+    }),
     Effect.provideService(HostProcess.Environment, environment),
     Effect.provideService(HostProcess.Platform, platform),
     Effect.provideService(
@@ -447,6 +455,8 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
     yield* fs.makeDirectory(`${baseDir}/bin`);
     yield* fs.writeFileString(`${baseDir}/bin/xcrun`, "#!/bin/sh\nexit 0\n");
     yield* fs.chmod(`${baseDir}/bin/xcrun`, 0o755);
+    yield* fs.writeFileString(`${baseDir}/bin/xcodebuild`, "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(`${baseDir}/bin/xcodebuild`, 0o755);
     for (const [directory, tool] of [
       ["platform-tools", "adb"],
       ["emulator", "emulator"],
@@ -472,7 +482,10 @@ it.effect("keeps local Android and iOS available without ffmpeg", () =>
         HttpClient.make(() => Effect.die(new Error("Readiness must not make network requests"))),
       ),
       Effect.provideService(ProcessRunner.ProcessRunner, {
-        run: () => Effect.die("Platform availability must not probe emulator video"),
+        run: (input) =>
+          input.command === "xcodebuild" && input.args[0] === "-checkFirstLaunchStatus"
+            ? Effect.succeed(processOutput(0))
+            : Effect.die("Platform availability must not probe emulator video"),
       }),
     );
     expect((yield* onTestHost(host.summary)).platforms).toEqual([

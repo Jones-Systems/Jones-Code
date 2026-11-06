@@ -1,3 +1,4 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as RemoteAdmissionMcp from "../jones/remoteAdmissionIntegration/mcp.ts";
 import {
   type EnvironmentId,
@@ -35,10 +36,7 @@ import {
   unavailable,
 } from "./threadAccess.ts";
 
-/**
- * Their private constructors only stop the type checker; this also stops
- * `Reflect.construct` and friends at runtime.
- */
+/** Private constructors only enforce types; the token also blocks runtime construction. */
 const builtHere: unique symbol = Symbol("t3/mcp/McpToolAccess/builtHere");
 
 const refuseOutsideConstruction = (token: symbol) => {
@@ -74,11 +72,7 @@ let handlersLayer: <Tools extends Record<string, Tool.Any>, EX, RX>(
   layer: Layer.Layer<Tool.HandlersFor<Tools>, EX, RX>,
 ) => HandlersLayer<Tools, EX, RX>;
 
-/**
- * Effect's own registration functions accept any handler, so the
- * `t3code/no-raw-mcp-registration` lint rule keeps Effect's `McpServer` inside
- * McpHttpServer.
- */
+/** t3code/no-raw-mcp-registration confines Effect's unchecked registration API to McpHttpServer. */
 export class Declaration<out Handler> {
   readonly #handle: Handler;
   readonly #remote: RemoteCheck<never> | undefined;
@@ -112,14 +106,33 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
   ),
 );
 
+const assertCheckoutAttached = Effect.fn("McpToolAccess.assertCheckoutAttached")(function* (
+  caller: Caller,
+) {
+  if (caller.scope.thread === undefined) return;
+  const policy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+  if (Option.isSome(policy))
+    yield* policy.value.assertAttached(caller.scope.thread.threadId).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "attach_required",
+            message: "attach_required: call t3_worktree_handoff before T3 MCP writes.",
+          }),
+      ),
+    );
+});
+
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(() => loadCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(assertCheckoutAttached),
 );
 
 const orchestratingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(() => readCaller()),
   Effect.tap(assertLiveCaller),
+  Effect.tap(assertCheckoutAttached),
 );
 
 const requireThreadCaller = McpInvocationContext.McpInvocationContext.pipe(
@@ -137,14 +150,33 @@ export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A
 
 /** The domain service checks immutable receipts before its locked execution guard. */
 export const actsAsCallerWithReceipt = <P, A, E, R>(
-  handle: (params: P) => Effect.Effect<A, E, R>,
+  handle: (
+    params: P,
+    beforeWrite: Effect.Effect<void, OrchestratorMcpFailure>,
+  ) => Effect.Effect<A, E, R>,
 ) =>
   declare(
     (params: P) =>
-      requireThreadCaller.pipe(
-        Effect.andThen(readCaller()),
-        Effect.flatMap(() => handle(params)),
-      ),
+      Effect.gen(function* () {
+        yield* requireThreadCaller;
+        yield* refuseReadOnlyClient;
+        const caller = yield* readCaller();
+        const beforeWrite = Effect.gen(function* () {
+          const fresh =
+            caller.caller === undefined
+              ? undefined
+              : yield* caller.threads
+                  .getThreadShell(caller.caller.id)
+                  .pipe(Effect.mapError(unavailable));
+          if (fresh === null)
+            return yield* new OrchestratorMcpFailure({
+              code: "thread_not_found",
+              message: "The calling thread no longer exists.",
+            });
+          yield* assertLiveCaller({ ...caller, caller: fresh });
+        });
+        return yield* handle(params, beforeWrite);
+      }),
     undefined,
   );
 
@@ -152,7 +184,7 @@ export const actsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A,
   declare(
     (params: P) =>
       requireThreadCaller.pipe(
-        Effect.flatMap(() => writingCaller),
+        Effect.andThen(writingCaller),
         Effect.flatMap(() => handle(params)),
       ),
     undefined,
@@ -232,6 +264,25 @@ export const writesThreads = <P, A, E, R>(
       }),
     () => writingCaller,
   );
+
+/** Operation-aware tools keep inspection available to read-only clients while
+ * every mutation passes the same caller, mode and link checks as writesThreads.
+ * The domain still checks the target and its exact binding at commit.
+ */
+export const readsOrWritesThreads = <P, A, E, R>(
+  isRead: (params: P) => boolean,
+  threads: (params: P) => ReadonlyArray<ThreadId | undefined>,
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) => {
+  const write = checkedHandler(writesThreads(threads, handle));
+  return declare(
+    (
+      params: P,
+    ): Effect.Effect<A, E | OrchestratorMcpFailure, R | Effect.Services<typeof writingCaller>> =>
+      isRead(params) ? handle(params) : write(params),
+    (params: P) => (isRead(params) ? Effect.void : writingCaller),
+  );
+};
 
 const escalationDenied = (refusal: DispatchModeRefusal) =>
   new OrchestratorMcpFailure({
@@ -351,10 +402,7 @@ export const startsOrContinuesThreads = <P, A, E, R>(
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";
 
-/**
- * `check` re-checks the caller wherever the handler waits before writing, such
- * as for a lock, since the caller's modes can change meanwhile.
- */
+/** Recheck after waits before writing; caller modes may have changed. */
 export const writesEnvironment = <P, A, E, R>(
   handle: (
     params: P,

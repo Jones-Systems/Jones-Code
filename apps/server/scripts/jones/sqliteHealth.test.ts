@@ -442,18 +442,26 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       profile: "health-offline-delete" as const,
       recipe: { kind: "coherent-v2" as const, threads: 2, historyTurns: 3, payloadBytes: 256 },
     };
-    let measuredSchemaRecords: number | null = null;
-    const readHealth = (context: ClosedSyntheticFixture) => {
+    const readSchema = (context: ClosedSyntheticFixture) => {
       const database = new NodeSqlite.DatabaseSync(context.fixture.canonicalPath, {
         readOnly: true,
       });
       try {
-        measuredSchemaRecords = Number(
-          database.prepare("SELECT COUNT(*) AS count FROM sqlite_schema").get()?.count,
-        );
+        return {
+          count: Number(
+            database.prepare("SELECT COUNT(*) AS count FROM sqlite_schema").get()?.count,
+          ),
+          prefix: database
+            .prepare("SELECT name, type FROM sqlite_schema ORDER BY type, name LIMIT 512")
+            .all()
+            .map((row) => ({ name: String(row.name), type: String(row.type) })),
+          journalMode: database.prepare("PRAGMA journal_mode").get()?.journal_mode,
+        };
       } finally {
         database.close();
       }
+    };
+    const readHealth = (context: ClosedSyntheticFixture) => {
       return runSqliteHealth(
         parseHealthArguments([
           "--fixture-root",
@@ -470,6 +478,65 @@ describe("jones-sqlite-health — closed fixture integration", () => {
         { receipt: context.fixture.receipt, expectedBinding: binding },
       );
     };
+    const expectBoundedHealth = (report: HealthEnvelope, schema: ReturnType<typeof readSchema>) => {
+      expect(schema.count).toBeGreaterThan(512);
+      expect(schema.prefix).toHaveLength(512);
+      expect(schema.journalMode).toBe("delete");
+      expect(
+        report.status,
+        JSON.stringify({
+          reason: report.reason,
+          components: Object.fromEntries(
+            Object.entries(report.results).map(([name, result]) => [
+              name,
+              { status: result.status, reason: result.reason },
+            ]),
+          ),
+          metadataRecords: report.results.metadata.data?.schema.length ?? null,
+          child: {
+            outcome: report.child.outcome,
+            closed: report.child.closed,
+            reaped: report.child.reaped,
+          },
+          cleanup: {
+            status: report.cleanup.status,
+            reason: report.cleanup.reason,
+            supervisorRetained: report.cleanup.supervisorRoot !== null,
+          },
+        }),
+      ).toBe("partial");
+      expect(report.reason).toBe("record_limit");
+      expect(report.limits.maxRecords).toBe(512);
+      expect(report.results.metadata.status).toBe("truncated");
+      expect(report.results.metadata.reason).toBe("record_limit");
+      expect(report.results.metadata.data?.schema).toHaveLength(512);
+      expect(report.results.metadata.data?.schema).toEqual(schema.prefix);
+      expect(report.results.counts.status).toBe("completed");
+      expect(report.results.integrity.status).toBe("completed");
+      expect(report.results.foreignKeys.status).toBe("completed");
+      expect(report.results.readonly.status).toBe("completed");
+      expect(report.results.allocation.status).toBe("omitted");
+      expect(report.schemaProfile).toBe("orchestration-v2");
+      expect(report.results.counts.data?.find((row) => row.name === "events")).toEqual({
+        name: "events",
+        status: "completed",
+        count: "21",
+      });
+      expect(report.results.counts.data?.find((row) => row.name === "commandReceipts")?.count).toBe(
+        "9",
+      );
+      expect(report.results.counts.data?.find((row) => row.name === "threads")?.count).toBe("2");
+      expect(report.results.counts.data?.find((row) => row.name === "messages")?.count).toBe("12");
+      expect(report.results.counts.data?.find((row) => row.name === "runs")?.count).toBe("6");
+      expect(report.results.integrity.data?.passed).toBe(true);
+      expect(report.results.foreignKeys.data?.passed).toBe(true);
+      expect(report.results.readonly.data?.unchanged).toBe(true);
+      expect(report.child.outcome).toBe("failed");
+      expect(report.child.closed).toBe(true);
+      expect(report.child.reaped).toBe(true);
+      expect(report.cleanup.status).toBe("completed");
+      expect(report.cleanup.supervisorRoot).toBeNull();
+    };
     const consumerClosed = (report: HealthEnvelope) =>
       report.child.closed &&
       report.child.reaped &&
@@ -480,10 +547,13 @@ describe("jones-sqlite-health — closed fixture integration", () => {
     let failure: unknown;
     try {
       safeToClean = false;
+      const adapted: { schema?: ReturnType<typeof readSchema> } = {};
       const accepted = await withClosedSyntheticFixture(
         { ...options, childName: "adapted" },
-        async (context) =>
-          sqliteHealthConsumerOutcome(context.receiptSha256, await readHealth(context)),
+        async (context) => {
+          adapted.schema = readSchema(context);
+          return sqliteHealthConsumerOutcome(context.receiptSha256, await readHealth(context));
+        },
       );
       safeToClean =
         accepted.cleanup.outcome === "complete" &&
@@ -491,80 +561,37 @@ describe("jones-sqlite-health — closed fixture integration", () => {
         accepted.childReceipt.reaped &&
         accepted.childReceipt.outcome !== "unknown" &&
         consumerClosed(accepted.value);
-      expect(
-        accepted.value.status,
-        JSON.stringify({
-          reason: accepted.value.reason,
-          components: Object.fromEntries(
-            Object.entries(accepted.value.results).map(([name, result]) => [
-              name,
-              { status: result.status, reason: result.reason },
-            ]),
-          ),
-          metadataRecords: accepted.value.results.metadata.data?.schema.length ?? null,
-          child: {
-            outcome: accepted.value.child.outcome,
-            closed: accepted.value.child.closed,
-            reaped: accepted.value.child.reaped,
-          },
-          cleanup: {
-            status: accepted.value.cleanup.status,
-            reason: accepted.value.cleanup.reason,
-            supervisorRetained: accepted.value.cleanup.supervisorRoot !== null,
-          },
-        }),
-      ).toBe("partial");
-      expect(accepted.value.reason).toBe("record_limit");
-      expect(accepted.value.limits.maxRecords).toBe(512);
-      // Native Workstreams adds enough sparse tables to exceed the fixed diagnostic cap.
-      // Keep the cap and prove honest truncation while all opted-in checks still complete.
-      expect(accepted.value.results.metadata.status).toBe("truncated");
-      expect(accepted.value.results.metadata.reason).toBe("record_limit");
-      expect(measuredSchemaRecords).toBeGreaterThan(512);
-      expect(accepted.value.results.metadata.data?.schema).toHaveLength(512);
-      expect(accepted.value.results.counts.status).toBe("completed");
+      if (!adapted.schema) throw new Error("adapted schema oracle is absent");
+      expectBoundedHealth(accepted.value, adapted.schema);
       const custodyPin = syntheticFixtureReceiptSha256(fixtureCustodyReceipt(accepted.receipt));
       expect(accepted.receipt.schema).toBe("jones-performance-fixture/v2");
       expect(accepted.receiptSha256).not.toBe(custodyPin);
       expect(accepted.value.fixture?.receiptSha256).toBe(custodyPin);
-      expect(accepted.value.schemaProfile).toBe("orchestration-v2");
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "events")).toEqual({
-        name: "events",
-        status: "completed",
-        count: "21",
-      });
-      expect(
-        accepted.value.results.counts.data?.find((row) => row.name === "commandReceipts")?.count,
-      ).toBe("9");
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "threads")?.count).toBe(
-        "2",
-      );
-      expect(
-        accepted.value.results.counts.data?.find((row) => row.name === "messages")?.count,
-      ).toBe("12");
-      expect(accepted.value.results.counts.data?.find((row) => row.name === "runs")?.count).toBe(
-        "6",
-      );
       const sharedReceipts = accepted.capture.tables.orchestration_command_receipts;
       const obsoleteReceipts = accepted.capture.tables.orchestration_v2_command_receipts;
       if (sharedReceipts?.status !== "present" || obsoleteReceipts?.status !== "present")
         throw new Error("current fixture receipt table capture is absent");
       expect(sharedReceipts.count).toBe(9);
       expect(obsoleteReceipts.count).toBe(0);
-      expect(accepted.value.results.integrity.data?.passed).toBe(true);
-      expect(accepted.value.results.foreignKeys.data?.passed).toBe(true);
-      expect(accepted.value.results.readonly.data?.unchanged).toBe(true);
       expect(accepted.capture.profile?.kind).toBe("health-offline-delete");
       expect(accepted.capture.profile?.stage).toBe("sealed");
+      expect(accepted.childReceipt.closed).toBe(true);
+      expect(accepted.childReceipt.reaped).toBe(true);
+      expect(accepted.childReceipt.outcome).not.toBe("unknown");
       expect(accepted.cleanup.outcome).toBe("complete");
       expect(NodeFS.existsSync(NodePath.join(root, "adapted"))).toBe(false);
 
       safeToClean = false;
-      const raw: { context?: ClosedSyntheticFixture; report?: HealthEnvelope } = {};
+      const raw: {
+        context?: ClosedSyntheticFixture;
+        schema?: ReturnType<typeof readSchema>;
+        report?: HealthEnvelope;
+      } = {};
       const rejected = await withClosedSyntheticFixture(
         { ...options, childName: "raw" },
         async (context) => {
           raw.context = context;
+          raw.schema = readSchema(context);
           raw.report = await readHealth(context);
           return raw.report as unknown as ClosedFixtureConsumerOutcome<HealthEnvelope>;
         },
@@ -591,9 +618,26 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       expect((rejected as SyntheticFixtureError).code).toBe("invalid_consumer_outcome");
       expect(evidence?.cleanup.outcome).toBe("retained");
       expect(NodeFS.existsSync(NodePath.join(root, "raw"))).toBe(true);
-      expect(raw.report?.status).toBe("partial");
-      expect(raw.report?.reason).toBe("record_limit");
-      expect(raw.report?.results.readonly.data?.unchanged).toBe(true);
+      if (!raw.context || !raw.report || !raw.schema)
+        throw new Error("raw fixture evidence is absent");
+      expectBoundedHealth(raw.report, raw.schema);
+      const rawCustodyPin = syntheticFixtureReceiptSha256(
+        fixtureCustodyReceipt(raw.context.receipt),
+      );
+      expect(raw.context.receipt.schema).toBe("jones-performance-fixture/v2");
+      expect(raw.context.receiptSha256).not.toBe(rawCustodyPin);
+      expect(raw.report.fixture?.receiptSha256).toBe(rawCustodyPin);
+      expect(raw.context.capture.profile?.kind).toBe("health-offline-delete");
+      expect(raw.context.capture.profile?.stage).toBe("sealed");
+      const rawSharedReceipts = raw.context.capture.tables.orchestration_command_receipts;
+      const rawObsoleteReceipts = raw.context.capture.tables.orchestration_v2_command_receipts;
+      if (rawSharedReceipts?.status !== "present" || rawObsoleteReceipts?.status !== "present")
+        throw new Error("raw current fixture receipt table capture is absent");
+      expect(rawSharedReceipts.count).toBe(9);
+      expect(rawObsoleteReceipts.count).toBe(0);
+      expect(raw.context.childReceipt.closed).toBe(true);
+      expect(raw.context.childReceipt.reaped).toBe(true);
+      expect(raw.context.childReceipt.outcome).not.toBe("unknown");
       expect(evidence).not.toHaveProperty("value");
       expect(safeToClean).toBe(true);
     } catch (error) {

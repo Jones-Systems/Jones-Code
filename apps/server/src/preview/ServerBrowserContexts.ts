@@ -28,9 +28,7 @@ const UA_PLATFORMS: Partial<Record<NodeJS.Platform, string>> = {
   win32: "Windows",
 };
 
-/**
- * Sites block a user agent that disagrees with `Sec-CH-UA`, so both change together.
- */
+/** Change user agent and Sec-CH-UA together; sites block mismatches. */
 const chromeIdentity = (
   headlessUserAgent: string,
   host: { readonly platform: NodeJS.Platform; readonly arch: string; readonly release: string },
@@ -196,6 +194,8 @@ export class ServerBrowserContexts {
   async clearProfile(profileId: string) {
     if (profileId === INCOGNITO_BROWSER_PROFILE_ID) return;
     const key = JSON.stringify([profileId, null]);
+    const existing = this.clearing.get(key);
+    if (existing) return existing;
     const clearing = (async () => {
       const pending = this.contexts.get(key);
       if (pending) {

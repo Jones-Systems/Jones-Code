@@ -73,7 +73,34 @@ describe("Pi orchestration prompt section", () => {
       assert.isDefined(result);
       assert.isTrue(result!.systemPrompt.startsWith(`${event.systemPrompt}\n\n`));
       assert.include(result!.systemPrompt, "orchestrator_capabilities");
+      assert.include(result!.systemPrompt, "App identity and build source are unavailable");
     }
+  });
+});
+
+describe("Pi app identity", () => {
+  it("uses the native section channel for identity and orchestration together", async () => {
+    const bridge = await loadMcpBridge();
+    const hook = bridge.handlers.get("before_agent_start")!;
+    const sections: Record<string, string> = {};
+    const result = await hook(
+      { systemPrompt: "base", systemPromptOptions: { sections } },
+      { ui: { notify: assert.fail } },
+    );
+    assert.isUndefined(result);
+    assert.include(sections.t3_code_app_identity!, "App identity and build source are unavailable");
+    assert.include(sections.t3_code_orchestration!, "orchestrator_capabilities");
+  });
+
+  it("injects unknown identity without MCP guidance when no bridge is attached", async () => {
+    const handlers = await loadHooks();
+    const hook = handlers.get("before_agent_start") as (event: { systemPrompt: string }) => {
+      systemPrompt: string;
+    };
+    const result = hook({ systemPrompt: "/original" });
+    assert.isTrue(result.systemPrompt.startsWith("/original\n\n"));
+    assert.include(result.systemPrompt, "App identity and build source are unavailable");
+    assert.notInclude(result.systemPrompt, "orchestrator_capabilities");
   });
 });
 

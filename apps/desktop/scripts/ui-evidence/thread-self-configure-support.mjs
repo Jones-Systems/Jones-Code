@@ -21,7 +21,7 @@ export const selectionB = {
 };
 
 export function issuedConnection(params) {
-  const config = params?.config?.mcp_servers?.["t3-code"];
+  const config = params?.config?.["mcp_servers.t3-code"];
   if (!config) throw new Error("App-issued MCP connection missing from thread/start");
   const url = new URL(config.url);
   if (
@@ -294,6 +294,7 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
     notify("item/started", {
       threadId: nativeThreadId,
       turnId: activeTurn.id,
+      startedAtMs: 1000,
       item: { ...item, text: "" },
     });
     notify("item/agentMessage/delta", {
@@ -302,7 +303,12 @@ export async function syntheticCodexPeer(connectionFromStart, decodeResponse) {
       itemId: item.id,
       delta: text,
     });
-    notify("item/completed", { threadId: nativeThreadId, turnId: activeTurn.id, item });
+    notify("item/completed", {
+      threadId: nativeThreadId,
+      turnId: activeTurn.id,
+      completedAtMs: 2000,
+      item,
+    });
     notify("turn/completed", {
       threadId: nativeThreadId,
       turn: { ...activeTurn, items: [item], status, completedAt: 2, durationMs: 1 },

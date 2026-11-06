@@ -1,3 +1,4 @@
+import { resolveServerParallelismProfile } from "../jones/serverParallelism/config.ts";
 import * as Schema from "effect/Schema";
 import * as PlatformError from "effect/PlatformError";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -65,6 +66,7 @@ const makeServerConfig = Effect.fn(function* (baseDir: string) {
   const derivedPaths = yield* ServerConfig.deriveServerPaths(baseDir, undefined);
 
   return {
+    serverParallelism: resolveServerParallelismProfile(undefined),
     ...derivedPaths,
     logLevel: "Error",
     traceMinLevel: "Info",

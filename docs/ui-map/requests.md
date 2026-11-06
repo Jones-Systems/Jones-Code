@@ -48,10 +48,27 @@ fixture; do not approve real tasks, change live settings or authenticate provide
    evaluator could not complete, not that the content was found unsafe. New
    failures show a bounded failure reason; old generic holds are not backfilled
    or automatically retried.
-2. Expand a request, then its **Full bound request and evaluator configuration**.
-   Inspect sender/client, operation, target, modes, category, full message,
-   evaluator reason and bound envelope. Long summaries and nested details must
-   remain readable without hiding the action explanation. Collapse and reopen.
+2. Check the card's source computer and machine glyph first. Its label comes
+   from the authenticated client, while the project / parent / current-thread
+   breadcrumb is explicitly reported by the sender. Missing breadcrumb parts
+   are skipped; an unknown icon keeps the context with a local fallback glyph.
+   Legacy bound origins can supply a thread, only for the matching link session.
+   The top-right clock says **Sent** only for a valid reported sender timestamp;
+   otherwise it says **Received**. Every clock uses America/New_York with EST or
+   EDT, comparing calendar days in that zone. Sender and receiver clock values
+   remain separate in the details; no delivery delay is inferred.
+   Receiver project and thread names follow live renames in that receiving
+   environment, falling back to the envelope IDs when cache entries are absent.
+   Deleted/missing labels require the captured target snapshot's evidence.
+   Paths appear only after expanding. Expand a request, then its **Full bound
+   request and evaluator configuration**. Inspect sender IDs, location,
+   operation, modes, category, full message, evaluator reason and bound envelope.
+   Body Markdown keeps lists/tables and plain code, including `jones-shell`;
+   links, images and task checkboxes become inert text. Raw HTML stays literal.
+   No body content navigates, fetches images or exposes terminal/file actions.
+   The collapsed preview remains plain text, limited to 280 characters.
+   Long summaries and nested details must remain readable without hiding the
+   action explanation. Collapse and reopen.
 3. With a fresh owner snapshot and matching policy revision, approve one held
    synthetic request and deny another. Verify the exact ID/binding is used,
    busy state blocks concurrent actions and the acknowledged state is shared
@@ -74,7 +91,9 @@ fixture; do not approve real tasks, change live settings or authenticate provide
 6. Exercise empty, loading, failed load/recovery, last-known snapshot, busy,
    unavailable owner authorization, capped results and long content on both wide
    and narrow shared-renderer viewports. Blocked decisions must expose their
-   explanation on focus/hover and resist activation.
+   explanation on focus/hover and resist activation. Check 320, 900 and 1440 px,
+   200% text and increased text spacing: the top-right time can wrap, cards
+   must not overflow horizontally and expanded Approve/Deny remain reachable.
 
 ## Limits and evidence
 
@@ -95,11 +114,15 @@ OS delivery, native-shell behavior, mobile, remote/relay/tunnel authorization or
 live provider-account acceptance. The evaluator's tool-free assessment capability
 does not constrain tools used by an accepted task after dispatch.
 
-Source inspected at `2af74a87e5db90ca5cf7d3e2421d9a7f444fe6b2`.
+Context-card source inspected on the C1 working patch based on
+`e6bf9516e3188fd78e01c641bf7ccecb6e5bbe38`.
 Focused checks are [store tests](../../apps/web/src/jones/remoteAdmission/store.test.ts),
 [inbox browser tests](../../apps/web/src/jones/remoteAdmission/RequestsPage.browser.test.tsx)
-and [notification browser tests](../../apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx)
-in `jones-remote-admission`. They were not executed in this documentation lane.
+and [notification browser tests](../../apps/web/src/jones/remoteAdmission/RemoteAdmissionNotifications.browser.test.tsx),
+with [card and target-adapter browser tests](../../apps/web/src/jones/remoteAdmission/RequestCard.browser.test.tsx),
+[presentation tests](../../apps/web/src/jones/remoteAdmission/presentation.test.ts) and
+[Eastern clock tests](../../apps/web/src/jones/remoteAdmission/requestTime.test.ts)
+in `jones-remote-admission`. They were not executed in this implementation lane.
 Primary integration owns synthetic UI proof and its exact revision/captures.
 Runtime build, viewport/text-size receipts and captures in this lane: **none**;
 all journeys above remain **unverified** here.

@@ -33,6 +33,16 @@ vi.mock("electron", async (importOriginal) => ({
   },
 }));
 
+// Window-only tests isolate the native monitor adapter; its lifecycle/security
+// behavior is covered by jones/threadMonitor/host.test.ts and real native smoke.
+vi.mock("../jones/threadMonitor/host.ts", () => ({
+  attachThreadMonitor: ({ main }: { main: Electron.BrowserWindow }) => ({
+    dispose: vi.fn(),
+    setMainBackgroundThrottling: (enabled: boolean) =>
+      main.webContents.setBackgroundThrottling(enabled),
+  }),
+}));
+
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -585,8 +595,6 @@ describe("DesktopWindow", () => {
     }),
   );
 
-  // Ctrl+wheel bypasses the menu accelerators, so it has to take the same
-  // zoom step, preview restore included, from the window's zoom-changed event.
   it.effect("zooms the app from Ctrl+wheel like the menu does", () =>
     Effect.gen(function* () {
       const fakeWindow = makeFakeBrowserWindow();

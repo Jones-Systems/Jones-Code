@@ -1,8 +1,9 @@
+import { supportsUserResponseAnswerNotes } from "@t3tools/contracts/jones/userResponseRequest";
+import type { ThreadStructure } from "@t3tools/client-runtime/state/shell";
 import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
   type ScopedThreadRef,
-  type OrchestrationV2ThreadProjection,
   type ProviderApprovalDecision,
   type RuntimeRequestId,
   type ThreadId,
@@ -59,7 +60,6 @@ const NO_PENDING_REQUESTS = { approvals: [], userInputs: [] } as const;
 const NO_PENDING_APPROVALS: ReturnType<typeof derivePendingApprovals> = [];
 const NO_PENDING_USER_INPUTS: ReturnType<typeof derivePendingUserInputs> = [];
 
-/** Writes the custom answer for a question of the pending user input the making render saw. */
 function makePendingCustomAnswerSetter(input: {
   readonly activePendingUserInput: PendingUserInput | null;
   readonly activePendingRequestKey: string;
@@ -84,21 +84,19 @@ function makePendingCustomAnswerSetter(input: {
           existing[activePendingRequestKey]?.[questionId],
           value,
           question,
+          { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) },
         ),
       },
     }));
+    // Resetting selection before rendering can re-enter Lexical with stale skill-token offsets.
   };
 }
 
-/**
- * Pending approvals and user-input questions for the active thread: what is
- * waiting, the user's in-progress answers, and the commands that respond.
- */
 export function usePendingThreadRequests(input: {
   readonly environmentId: EnvironmentId;
   readonly activeThreadId: ThreadId | null;
   readonly activeThread: { readonly id: ThreadId } | undefined;
-  readonly serverProjection: OrchestrationV2ThreadProjection | null;
+  readonly serverProjection: ThreadStructure | null;
   readonly supportsQuestionAttachments: boolean;
   readonly composerDraftTarget: ScopedThreadRef | DraftId;
   readonly setComposerDraftPrompt: (target: ScopedThreadRef | DraftId, prompt: string) => void;
@@ -270,10 +268,13 @@ export function usePendingThreadRequests(input: {
         activePendingUserInput.questions,
         activePendingDraftAnswers,
         activePendingQuestionIndex,
+        { notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) },
       )
     : null;
   const activePendingResolvedAnswers = activePendingUserInput
-    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers)
+    ? buildPendingUserInputAnswers(activePendingUserInput.questions, activePendingDraftAnswers, {
+        notes: supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability),
+      })
     : null;
   const activePendingIsResponding = activePendingUserInput
     ? activePendingUserInput.responseCapability === "not_resumable" ||
@@ -284,6 +285,7 @@ export function usePendingThreadRequests(input: {
   const onRespondToApproval = async (
     requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
+    feedback?: string,
   ) => {
     if (!activeThreadId || !readEnvironmentScope(environmentId, AuthOrchestrationOperateScope))
       return;
@@ -302,6 +304,7 @@ export function usePendingThreadRequests(input: {
         threadId: activeThreadId,
         requestId,
         decision,
+        ...(feedback === undefined ? {} : { feedback }),
       },
     });
     if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
@@ -412,17 +415,27 @@ export function usePendingThreadRequests(input: {
     }
     setPendingUserInputQuestionIndexByRequestId((existing) => ({
       ...existing,
-      [activePendingRequestKey]: nextQuestionIndex,
+      [activePendingRequestKey]: Math.max(
+        0,
+        Math.min(nextQuestionIndex, activePendingUserInput.questions.length - 1),
+      ),
     }));
   };
 
   const onSelectActivePendingUserInputOption = (questionId: string, optionValue: string) => {
-    if (!activePendingUserInput) {
+    if (!activePendingUserInput || activePendingIsResponding) return;
+    const question = activePendingUserInput.questions.find((entry) => entry.id === questionId);
+    if (
+      !question ||
+      !question.options.some((option) => (option.value ?? option.label) === optionValue)
+    )
       return;
-    }
-    // The option replaces the custom answer. Anything typed there is the
-    // user's text, so it goes back to the thread draft instead of vanishing.
-    const displacedAnswer = activePendingAnswerDrafts[questionId]?.customAnswer;
+    const currentAnswers = usePendingUserInputAnswers.getState()[activePendingRequestKey] ?? {};
+    // Live-provider choices replace text; preserve that displaced text in the thread draft.
+    const notes =
+      supportsUserResponseAnswerNotes(activePendingUserInput.responseCapability) &&
+      !activePendingUserInput.questions.find((question) => question.id === questionId)?.multiSelect;
+    const displacedAnswer = notes ? undefined : currentAnswers[questionId]?.customAnswer;
     const currentPrompt =
       useComposerDraftStore.getState().getComposerDraft(composerDraftTarget)?.prompt ?? "";
     const nextPrompt = carryDisplacedCustomAnswerIntoPrompt(currentPrompt, displacedAnswer);
@@ -446,27 +459,42 @@ export function usePendingThreadRequests(input: {
         );
       }
     }
-    setPendingUserInputAnswersByRequestId((existing) => {
-      const question =
-        (activePendingProgress?.activeQuestion?.id === questionId
-          ? activePendingProgress.activeQuestion
-          : undefined) ?? activePendingUserInput.questions.find((entry) => entry.id === questionId);
-      if (!question) {
-        return existing;
-      }
-
-      return {
-        ...existing,
-        [activePendingRequestKey]: {
-          ...existing[activePendingRequestKey],
-          [questionId]: togglePendingUserInputOptionSelection(
-            question,
-            existing[activePendingRequestKey]?.[questionId],
-            optionValue,
-          ),
-        },
-      };
+    // A single choice is a submission gesture, including retrying the same choice.
+    const draft = togglePendingUserInputOptionSelection(
+      question,
+      question.multiSelect
+        ? currentAnswers[questionId]
+        : { ...currentAnswers[questionId], selectedOptionValues: [] },
+      optionValue,
+      { notes },
+    );
+    const nextAnswers = { ...currentAnswers, [questionId]: draft };
+    setPendingUserInputAnswersByRequestId((existing) => ({
+      ...existing,
+      [activePendingRequestKey]: nextAnswers,
+    }));
+    if (question.multiSelect) return;
+    // Keep attachment readiness from the rendered drafts and use the newly selected answer.
+    const drafts = Object.fromEntries(
+      activePendingUserInput.questions.map((entry) => [
+        entry.id,
+        { ...activePendingDraftAnswers[entry.id], ...nextAnswers[entry.id] },
+      ]),
+    );
+    const answers = buildPendingUserInputAnswers(activePendingUserInput.questions, drafts, {
+      notes,
     });
+    if (answers) {
+      void onRespondToUserInput(activePendingUserInput.requestId, answers);
+    } else {
+      const progress = derivePendingUserInputProgress(
+        activePendingUserInput.questions,
+        drafts,
+        activePendingQuestionIndex,
+        { notes },
+      );
+      setActivePendingUserInputQuestionIndex(progress.firstUnansweredIndex);
+    }
   };
   const onSelectActivePendingUserInputOptionStable = useStableCallback(
     onSelectActivePendingUserInputOption,
@@ -484,7 +512,8 @@ export function usePendingThreadRequests(input: {
     if (
       !activePendingUserInput ||
       activePendingUserInput.responseCapability === "not_resumable" ||
-      !activePendingProgress
+      !activePendingProgress ||
+      !activePendingProgress.canAdvance
     ) {
       return;
     }
@@ -521,6 +550,7 @@ export function usePendingThreadRequests(input: {
     respondingRequestIds,
     onRespondToApproval: onRespondToApprovalStable,
     onDismissUserInput: onDismissUserInputStable,
+    onSelectActivePendingUserInputQuestion: setActivePendingUserInputQuestionIndex,
     onSelectActivePendingUserInputOption: onSelectActivePendingUserInputOptionStable,
     onChangeActivePendingUserInputCustomAnswer,
     onAdvanceActivePendingUserInput,

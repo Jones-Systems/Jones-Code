@@ -62,7 +62,7 @@ export const make = Effect.fn("makeTokenAccountingService")(function* (
   const binding = reader.checkBinding.pipe(Effect.flatMap(decodeBinding));
   const isAvailable = binding.pipe(
     Effect.map((value) => value.status === "bound"),
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
     Effect.catchDefect(() => Effect.succeed(false)),
     Effect.timeoutOption("5 seconds"),
     Effect.map((value) => Option.getOrElse(value, () => false)),
@@ -125,9 +125,7 @@ export const make = Effect.fn("makeTokenAccountingService")(function* (
       }
       return result;
     }).pipe(
-      Effect.catch(() =>
-        Effect.succeed(unavailable({ status: "reader_failed", reason: "reader_failed" })),
-      ),
+      Effect.orElseSucceed(() => unavailable({ status: "reader_failed", reason: "reader_failed" })),
       Effect.catchDefect(() =>
         Effect.succeed(unavailable({ status: "reader_failed", reason: "reader_failed" })),
       ),

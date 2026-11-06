@@ -1,0 +1,21 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "remote-owner-shell-retention",
+  "jonesOwnedPaths": [
+    "apps/web/src/jones/remoteDelegation/Sidebar.delegateRequests.browser.test.tsx",
+    "apps/mobile/src/jones/remoteDelegation/threadListV2.delegateRequests.test.ts",
+    "apps/mobile/src/jones/remoteDelegation/thread-order.delegateRequests.test.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/http.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
+    },
+    {
+      "from": "apps/server/src/ws.ts",
+      "to": "apps/server/src/jones/remoteDelegation/ShellRetention.ts"
+    }
+  ]
+}

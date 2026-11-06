@@ -54,6 +54,7 @@ import * as AnalyticsService from "./telemetry/AnalyticsService.ts";
 import { getServerOwners } from "./telemetry/Identify.ts";
 import * as ServerEnvironment from "./environment/ServerEnvironment.ts";
 import * as JonesTrialStartup from "./jones/updates/trialStartup.ts";
+import { startLauncherHandoff } from "./jones/updates/launcherHandoff.ts";
 import {
   logStartupPairingIssued,
   maybeOpenBrowser as maybeOpenJonesBrowser,
@@ -322,7 +323,7 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: resolveProjectSettings(settings, project.id, project).settings
             .defaultRuntimeMode,
-          workspaceStrategy: { type: "root" },
+          workspaceStrategy: { type: "auto" },
           createdBy: "system",
           creationSource: "server",
         })
@@ -369,19 +370,13 @@ const resolveStartupBrowserTarget = Effect.gen(function* () {
     : yield* serverAuth.issueStartupPairingUrl(baseTarget);
 });
 
-/**
- * Prints the startup pairing URL to stdout, where `t3` users and the dev runner
- * read it. The URL carries a one-time admin token, so it skips the logger: log
- * records also land in the trace file and any configured OTLP collector.
- */
+/** Prints the one-time admin pairing URL to stdout only; logger records reach trace files and collectors. */
 export const announceStartupPairingUrl = (pairingUrl: string) =>
   Effect.logInfo("Authentication required. Open T3 Code using the pairing URL.").pipe(
-    // Indented to match the annotation line the pretty logger printed before.
     Effect.andThen(Console.log(`  pairingUrl: ${pairingUrl}`)),
   );
 
-// No URL here: the browser target carries the pairing token, which
-// announceStartupPairingUrl has already printed to stdout.
+// Pairing tokens belong only in announceStartupPairingUrl's stdout output.
 export const logBrowserAutoOpenUnavailable = Effect.logInfo("browser auto-open unavailable", {
   hint: "Open the pairing URL above in your browser.",
 });
@@ -405,9 +400,7 @@ export const maybeOpenBrowser = Effect.fn("serverRuntimeStartup.maybeOpenBrowser
 
 const runStartupPhase = <A, E, R>(phase: string, effect: Effect.Effect<A, E, R>) =>
   effect.pipe(
-    // Attributes on the span itself, not annotateSpans: an annotation follows
-    // every fiber forked inside the phase, such as the effect worker, for the
-    // life of the server.
+    // Use span attributes; annotations would follow long-lived forked fibers for the server's lifetime.
     Effect.withSpan(`server.startup.${phase}`, { attributes: { "startup.phase": phase } }),
   );
 
@@ -464,6 +457,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   readonly awaitTrialCommit?: Effect.Effect<void, TrialError, TrialContext>;
   readonly importLegacyShells: Effect.Effect<Import, ImportError, ImportContext>;
   readonly recover: Effect.Effect<Recovery, RecoveryError, RecoveryContext>;
+  readonly recoverCodexFailover?: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly recoverDelegatedTasks: Effect.Effect<void, DelegationError, DelegationContext>;
   readonly startEffectWorker: Effect.Effect<void, WorkerError, WorkerContext>;
   readonly autoBootstrap: Effect.Effect<Bootstrap, BootstrapError, BootstrapContext>;
@@ -471,6 +465,7 @@ export const runOrderedV2StartupPhases = Effect.fn(
   yield* input.awaitTrialCommit ?? Effect.void;
   yield* input.importLegacyShells;
   const recovery = yield* input.recover;
+  yield* input.recoverCodexFailover ?? Effect.void;
   yield* input.recoverDelegatedTasks;
   yield* input.startEffectWorker;
   const bootstrap = yield* input.autoBootstrap;
@@ -647,6 +642,10 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
           return yield* providerRuntimeRecovery.recover;
         }),
       ),
+      recoverCodexFailover: runStartupPhase(
+        "orchestration-v2.codex-failover.recover",
+        orchestrator.recoverCodexFailover ?? Effect.void,
+      ),
       recoverDelegatedTasks: runStartupPhase(
         "orchestration-v2.delegated-tasks.recover",
         orchestrator.recoverDelegatedTasks.pipe(
@@ -784,6 +783,8 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
     );
     yield* Effect.logDebug("startup phase: complete");
     yield* flushCompileCache;
+    yield* launcher.markRuntimeReady ?? Effect.void;
+    yield* startLauncherHandoff(launcher);
   }).pipe(
     Effect.withSpan("server.startup", {
       kind: "server",
@@ -846,5 +847,3 @@ const make = Effect.fn("serverRuntimeStartup.make")(function* (options?: Startup
 
 export const layerWithOptions = (options?: StartupOptions) =>
   Layer.effect(ServerRuntimeStartup, make(options));
-
-const layer = layerWithOptions();

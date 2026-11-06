@@ -11,11 +11,9 @@ import {
 import type { ProjectionRuntimeRecoveryState } from "./ProjectionStore.ts";
 
 /**
- * Whether a restart must leave this run for the user: the thread is put away,
- * the provider turn already ended, or the user owes an answer. Checked when
- * intent is recorded and again when the continuation is delivered. A
- * `settled` run is woken for the awaited work it lost, so its ended provider
- * turn does not block it.
+ * Check restart eligibility at intent and delivery: leave archived, deleted, explicitly settled or snoozed
+ * threads and pending user answers for the user. Ended provider turns also block unless a settled run
+ * is being woken for the awaited work it lost.
  */
 export function restartContinuationBlocked(
   projection: Pick<

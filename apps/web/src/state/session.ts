@@ -119,7 +119,6 @@ export function refreshEnvironmentSession(environmentId: EnvironmentId): Promise
   return awaitEnvironmentSession(environmentId, true);
 }
 
-// Keyed by scope and ids so callers get one Set per session change, not one per render.
 const environmentsWithScopeAtom = Atom.family((key: string) => {
   const [scope, idsKey = ""] = key.split(/\n(.*)/s) as [AuthEnvironmentScope, string?];
   const ids = idsKey === "" ? [] : (idsKey.split("\n") as EnvironmentId[]);

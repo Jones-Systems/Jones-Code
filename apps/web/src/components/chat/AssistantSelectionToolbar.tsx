@@ -15,7 +15,6 @@ import {
 import {
   isSelectionRectVisible,
   observeSelectionActions,
-  resolveSelectionActionPosition,
   type SelectionActionPoint,
 } from "~/lib/selectionActions";
 import { Button } from "../ui/button";

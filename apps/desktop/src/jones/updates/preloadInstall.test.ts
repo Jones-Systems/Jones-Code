@@ -2,7 +2,6 @@ import { it as effectIt } from "@effect/vitest";
 import type { DesktopBridge } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import {
@@ -18,11 +17,20 @@ import { createInitialDesktopUpdateState } from "../../updates/updateMachine.ts"
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn().mockResolvedValue({ accepted: true }),
   expose: vi.fn(),
+  on: vi.fn(),
+  removeListener: vi.fn(),
 }));
 
 vi.mock("electron", () => ({
   contextBridge: { exposeInMainWorld: mocks.expose },
-  ipcRenderer: { invoke: mocks.invoke, sendSync: vi.fn() },
+  ipcRenderer: {
+    invoke: mocks.invoke,
+    sendSync: vi.fn((channel: string) =>
+      channel === "desktop:jones-install-plan-available" ? true : undefined,
+    ),
+    on: mocks.on,
+    removeListener: mocks.removeListener,
+  },
   webFrame: {},
   webUtils: {},
 }));
@@ -38,6 +46,19 @@ beforeAll(async () => {
 afterAll(() => vi.unstubAllGlobals());
 
 describe("desktop preload install bridge", () => {
+  it("keeps native plan mutation limited to the typed request and disposes its event subscription", async () => {
+    await bridge.installPlan!({ type: "read" });
+    expect(mocks.invoke).toHaveBeenLastCalledWith("desktop:jones-install-plan", { type: "read" });
+    const listener = vi.fn();
+    const unsubscribe = bridge.onInstallPlan!(listener);
+    const [channel, wrapped] = mocks.on.mock.calls.at(-1)!;
+    expect(channel).toBe("desktop:jones-install-plan-state");
+    unsubscribe();
+    expect(mocks.removeListener).toHaveBeenCalledWith(channel, wrapped);
+    expect("bindLaptopInstall" in bridge).toBe(false);
+    expect("recordLaptopOutcome" in bridge).toBe(false);
+  });
+
   it("forwards the exact Download selection and preserves argument-free upstream requests", async () => {
     const selection = { artifactId: 123, sourceSha: "a".repeat(40) };
     await bridge.downloadUpdate(selection);
@@ -99,7 +120,7 @@ describe("desktop install IPC decoding", () => {
       isInstallActive: Effect.succeed(false),
       subscribe: Effect.succeed({ latest: state, changes: Stream.empty }),
       emitState: Effect.void,
-      disabledReason: Effect.succeed(Option.none()),
+      disabledReason: Effect.succeedNone,
       configure: Effect.void,
       setChannel: () => Effect.succeed(state),
       check: () => Effect.succeed({ checked: true, state }),

@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -30,8 +30,22 @@ import {
   type UpdateOperationSettlement,
 } from "./launcherOperation.ts";
 
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const original = await importOriginal<typeof NodeFSP>();
+  return {
+    ...original,
+    opendir: vi.fn(original.opendir),
+    lstat: vi.fn(original.lstat),
+    open: vi.fn(original.open),
+  };
+});
+
 const roots: string[] = [];
 afterEach(async () => {
+  const original = await vi.importActual<typeof NodeFSP>("node:fs/promises");
+  vi.mocked(NodeFSP.opendir).mockReset().mockImplementation(original.opendir);
+  vi.mocked(NodeFSP.lstat).mockReset().mockImplementation(original.lstat);
+  vi.mocked(NodeFSP.open).mockReset().mockImplementation(original.open);
   for (const root of roots.splice(0)) {
     await NodeFSP.rm(root, { recursive: true, force: true });
     await expect(NodeFSP.lstat(root)).rejects.toMatchObject({ code: "ENOENT" });
@@ -43,6 +57,90 @@ const laterId = "32345678-1234-4234-8234-123456789abc";
 const receipts = (baseDir: string) => NodePath.join(baseDir, "runtime", "jones-update-operations");
 const outcomeFile = (baseDir: string, id: string) =>
   NodePath.join(receipts(baseDir), `${id}.outcome.json`);
+const historyId = (index: number) =>
+  `${index.toString(16).padStart(8, "0")}-1234-4234-8234-123456789abc`;
+
+// A lazy filesystem seam exercises large complete walks without allocating thousands
+// of files or a history-sized fixture collection. Ordinary filesystem tests remain below.
+async function streamedHistory(
+  f: Awaited<ReturnType<typeof fixture>>,
+  count: number,
+  damage?: "unknown" | "malformed" | "orphan" | "symlink" | "interrupted",
+) {
+  const original = await vi.importActual<typeof NodeFSP>("node:fs/promises");
+  const path = receipts(f.baseDir);
+  await NodeFSP.mkdir(path, { recursive: true });
+  const sample = NodePath.join(f.baseDir, "sample");
+  await NodeFSP.writeFile(sample, "{}", { mode: 0o600 });
+  const stat = await original.lstat(sample);
+  const counters = { opens: 0, active: 0, peak: 0, walks: 0, closed: 0, unread: 0, lead: 0 };
+  const tail = historyId(count);
+  const virtual = (file: unknown) => typeof file === "string" && NodePath.dirname(file) === path;
+  vi.mocked(NodeFSP.opendir).mockImplementation(async (...args) => {
+    if (String(args[0]) !== path) return original.opendir(...args);
+    counters.walks++;
+    return {
+      async *[Symbol.asyncIterator]() {
+        try {
+          for (let i = 0; i < count; i++) {
+            for (const suffix of [".json", ".outcome.json"]) {
+              counters.unread++;
+              counters.lead = Math.max(counters.lead, counters.unread);
+              yield { name: historyId(i) + suffix, isFile: () => true };
+            }
+          }
+          if (damage === "interrupted") throw new Error("injected incomplete traversal");
+          if (damage !== undefined)
+            yield {
+              name: damage === "unknown" ? "unknown-entry" : `${tail}.outcome.json`,
+              isFile: () => damage !== "symlink",
+            };
+        } finally {
+          counters.closed++;
+        }
+      },
+    } as unknown as Awaited<ReturnType<typeof NodeFSP.opendir>>;
+  });
+  vi.mocked(NodeFSP.lstat).mockImplementation(async (...args) => {
+    vi.mocked(NodeFSP.lstat).mockClear();
+    if (!virtual(args[0])) return original.lstat(...args);
+    if (damage === "orphan" && String(args[0]) === NodePath.join(path, `${tail}.json`))
+      throw Object.assign(new Error("missing companion"), { code: "ENOENT" });
+    return stat;
+  });
+  vi.mocked(NodeFSP.open).mockImplementation(async (...args) => {
+    // Spy recordings must not themselves retain the synthetic history's buffers.
+    vi.mocked(NodeFSP.open).mockClear();
+    if (!virtual(args[0])) return original.open(...args);
+    counters.unread = 0;
+    const name = NodePath.basename(String(args[0]));
+    const id = name.slice(0, 36);
+    const bytes = Buffer.from(
+      damage === "malformed" && id === tail
+        ? "{"
+        : JSON.stringify({
+            schema: 1,
+            operationId: id,
+            binding: operationBinding(f.qualified),
+            ...(name.endsWith(".outcome.json") ? { status: "committed" } : {}),
+          }),
+    );
+    counters.opens++;
+    counters.active++;
+    counters.peak = Math.max(counters.peak, counters.active);
+    return {
+      stat: async () => stat,
+      read: async (buffer: Buffer, offset: number, length: number, position: number) => ({
+        bytesRead: bytes.copy(buffer, offset, position, position + length),
+        buffer,
+      }),
+      close: async () => {
+        counters.active--;
+      },
+    } as unknown as Awaited<ReturnType<typeof NodeFSP.open>>;
+  });
+  return counters;
+}
 
 it("admits a fresh operation after a digest-bound launcher-recorded failure", async () => {
   const { baseDir, qualified, pending } = await fixture();
@@ -492,6 +590,108 @@ async function retiredFixture() {
 }
 
 describe("retired-operation tombstones", () => {
+  it("preserves accepted failure and its exact public binding after native state advances", async () => {
+    const f = await retiredFixture();
+    await publishUpdateOperationSettlement(f.baseDir, f.tombstone);
+    const file = settlementFile(f.baseDir);
+    const bytes = await NodeFSP.readFile(file);
+    for (const current of [undefined, { ...f.pending, id: laterId }, f.failed]) {
+      expect(await reconcileUpdateOperation(f.baseDir, operationId, current)).toEqual({
+        state: "blocked",
+        operationId,
+        updateId: operationId,
+        binding: {
+          environmentId: f.qualified.binding.environmentId,
+          currentVersion: f.qualified.binding.activeVersion,
+          expectedInstalledSource: f.qualified.binding.activeSourceSha,
+          targetSource: f.qualified.receipt.sourceSha,
+          stagedHandle: f.qualified.stagedHandle,
+        },
+        settlement: { basis: "retired-exception", recordedAt: f.tombstone.evidence.recordedAt },
+      });
+      expect(await resolveUpdateOperation(f.baseDir, operationId, current)).toEqual({
+        outcome: "accepted",
+      });
+    }
+    for (const current of [
+      f.pending,
+      { ...f.failed, qualified: { ...f.qualified, stagedHandle: "another-handle" } },
+    ]) {
+      const held = await reconcileUpdateOperation(f.baseDir, operationId, current);
+      expect(held.state).toBe("blocked");
+      expect(held.updateId).toBeUndefined();
+      // Independent native acceptance still wins in the launcher query.
+      expect(await resolveUpdateOperation(f.baseDir, operationId, current)).toEqual({
+        outcome: "accepted",
+      });
+    }
+    await expect(
+      reserveUpdateOperation(f.baseDir, operationId, operationBinding(f.qualified)),
+    ).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await NodeFSP.readFile(file)).toEqual(bytes);
+  });
+
+  it.each([
+    "lost-outcome",
+    "corrupt-reservation",
+    "digest",
+    "path",
+    "binding",
+    "tombstone",
+    "symlink",
+  ])(
+    "keeps damaged retired proof %s blocked and unknown without retry authority",
+    async (damage) => {
+      const f = await retiredFixture();
+      await publishUpdateOperationSettlement(f.baseDir, f.tombstone);
+      const reservation = NodePath.join(f.directory, `${operationId}.json`);
+      const outcome = NodePath.join(f.directory, `${operationId}.outcome.json`);
+      if (damage === "lost-outcome") await NodeFSP.unlink(outcome);
+      if (damage === "corrupt-reservation") await NodeFSP.writeFile(reservation, "{");
+      if (damage === "digest") await NodeFSP.appendFile(reservation, " ");
+      if (damage === "path")
+        await NodeFSP.writeFile(
+          settlementFile(f.baseDir),
+          JSON.stringify({
+            ...f.tombstone,
+            evidence: { ...f.tombstone.evidence, retiredLocation: "../escape" },
+          }),
+        );
+      if (damage === "binding") {
+        const row = JSON.parse(await NodeFSP.readFile(outcome, "utf8"));
+        await NodeFSP.writeFile(
+          outcome,
+          JSON.stringify({
+            ...row,
+            binding: { ...row.binding, targetSource: "0".repeat(40) },
+          }),
+        );
+      }
+      if (damage === "tombstone") await NodeFSP.writeFile(settlementFile(f.baseDir), "{");
+      if (damage === "symlink") {
+        const copy = NodePath.join(f.baseDir, "retained-outcome");
+        await NodeFSP.rename(outcome, copy);
+        await NodeFSP.symlink(copy, outcome);
+      }
+      for (const current of [undefined, { ...f.pending, id: laterId }]) {
+        const receipt = await reconcileUpdateOperation(f.baseDir, operationId, current);
+        expect(receipt.state).toBe("blocked");
+        expect(receipt.binding).toBeUndefined();
+        expect(receipt.updateId).toBeUndefined();
+        expect(receipt.settlement).toBeUndefined();
+        expect((await resolveUpdateOperation(f.baseDir, operationId, current)).outcome).toBe(
+          "unknown",
+        );
+      }
+      expect((await resolveUpdateOperation(f.baseDir, operationId, f.failed)).outcome).toBe(
+        "accepted",
+      );
+      await expect(
+        reserveUpdateOperation(f.baseDir, operationId, operationBinding(f.qualified)),
+      ).rejects.toThrow();
+    },
+  );
+
   it("binds retained copies and permanently refuses reuse even when those copies are lost", async () => {
     const f = await retiredFixture();
     expect(await verifyRetiredUpdateOperation({ ...f, operationId })).toMatchObject({
@@ -632,6 +832,71 @@ describe("legacy failed-operation predicates", () => {
 });
 
 describe("native update operation receipts", () => {
+  it.each([2048, 2049, 4097])(
+    "admits and settles %i released-format terminal pairs with linear file work and bounded streaming",
+    async (count) => {
+      const f = await fixture();
+      const counters = await streamedHistory(f, count);
+      await settleAbandonedUpdateOperations(f.baseDir, undefined);
+      await assertNoUnreconciledUpdateOperations(f.baseDir, undefined);
+      expect(counters.opens).toBeGreaterThanOrEqual(count * 2);
+      expect(counters.opens).toBeLessThanOrEqual(count * 20);
+      expect(counters.peak).toBe(1);
+      expect(counters.active).toBe(0);
+      expect(counters.lead).toBe(1);
+      expect(counters.walks).toBe(4);
+      expect(counters.closed).toBe(counters.walks);
+    },
+  );
+
+  it.each(["unknown", "malformed", "orphan", "symlink", "interrupted"] as const)(
+    "refuses %s evidence after 2049 terminal pairs and closes the incomplete traversal",
+    async (damage) => {
+      const f = await fixture();
+      const counters = await streamedHistory(f, 2049, damage);
+      await expect(settleAbandonedUpdateOperations(f.baseDir, undefined)).rejects.toThrow();
+      await expect(assertNoUnreconciledUpdateOperations(f.baseDir, undefined)).rejects.toThrow(
+        "requires reconciliation",
+      );
+      expect(counters.opens).toBeGreaterThan(4096);
+      expect(counters.active).toBe(0);
+      expect(counters.closed).toBe(counters.walks);
+    },
+  );
+
+  it("validates all outcome contents before rejecting abandoned reservations or cleaning staging", async () => {
+    const f = await fixture();
+    await reserveUpdateOperation(f.baseDir, operationId, operationBinding(f.qualified));
+    await reserveUpdateOperation(f.baseDir, laterId, operationBinding(f.qualified));
+    await NodeFSP.writeFile(outcomeFile(f.baseDir, laterId), "{");
+    const scratch = NodePath.join(`${receipts(f.baseDir)}.staging`, "retained-prefix");
+    await NodeFSP.writeFile(scratch, "unfinished");
+    await expect(settleAbandonedUpdateOperations(f.baseDir, undefined)).rejects.toThrow();
+    await expect(NodeFSP.lstat(outcomeFile(f.baseDir, operationId))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    expect(await NodeFSP.readFile(scratch, "utf8")).toBe("unfinished");
+  });
+
+  it("requires a fresh complete traversal after publishing abandoned outcomes", async () => {
+    const f = await fixture();
+    await reserveUpdateOperation(f.baseDir, operationId, operationBinding(f.qualified));
+    const original = await vi.importActual<typeof NodeFSP>("node:fs/promises");
+    let walks = 0;
+    vi.mocked(NodeFSP.opendir).mockImplementation(async (...args) => {
+      if (String(args[0]) === receipts(f.baseDir) && ++walks === 3)
+        throw new Error("injected fresh traversal failure");
+      return original.opendir(...args);
+    });
+    await expect(settleAbandonedUpdateOperations(f.baseDir, undefined)).rejects.toThrow(
+      "fresh traversal failure",
+    );
+    expect(
+      JSON.parse(await NodeFSP.readFile(outcomeFile(f.baseDir, operationId), "utf8")),
+    ).toMatchObject({ operationId, status: "rejected" });
+    expect(walks).toBe(3);
+  });
+
   it("distinguishes no request from a crash between reservation and native acceptance", async () => {
     const { baseDir, qualified, pending } = await fixture();
     expect((await reconcileUpdateOperation(baseDir, operationId, undefined)).state).toBe("absent");

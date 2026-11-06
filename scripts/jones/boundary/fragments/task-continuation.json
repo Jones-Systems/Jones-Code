@@ -67,6 +67,18 @@
     {
       "from": "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
       "to": "apps/server/src/jones/taskContinuation/requiredNativeSession.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/taskContinuation/provenance.ts"
+    },
+    {
+      "from": "packages/contracts/src/orchestratorMcp.ts",
+      "to": "packages/contracts/src/jones/delegatedTaskNativeSession.ts"
+    },
+    {
+      "from": "packages/contracts/src/index.ts",
+      "to": "packages/contracts/src/jones/delegatedTaskNativeSession.ts"
     }
   ]
 }

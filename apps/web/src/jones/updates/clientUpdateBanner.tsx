@@ -1,11 +1,10 @@
 import { ClientServerBuildLabels } from "./ClientServerBuildLabels";
 import type { EnvironmentId, ServerConfig } from "@t3tools/contracts";
 import { InfoIcon } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import type { ComposerBannerStackItem } from "../../components/chat/ComposerBannerStack";
 import {
-  dismissVersionMismatch,
-  isVersionMismatchDismissed,
+  useVersionMismatchDismissals,
   resolveServerConfigClientUpdateNotice,
 } from "../../versionSkew";
 import type { ExactSourceTarget } from "./ExactSourceUpdateAction";
@@ -21,7 +20,7 @@ export interface ClientUpdateBannerInput {
   readonly activeEnvironment: NoticeEnvironment | null | undefined;
   readonly automaticEnvironment: boolean;
   readonly eligibleEnvironments: readonly NoticeEnvironment[];
-  /** Renders the exact-source action of a preview-source notice; fixtures inject a synthetic host. */
+  /** Renders the qualified action for an older preview server; fixtures inject a synthetic host. */
   readonly renderExactSourceAction?: (target: ExactSourceTarget) => ReactNode;
 }
 
@@ -35,7 +34,7 @@ export function useClientUpdateBanners({
   eligibleEnvironments,
   renderExactSourceAction = renderProductionAction,
 }: ClientUpdateBannerInput): ComposerBannerStackItem[] {
-  const [dismissed, setDismissed] = useState<ReadonlySet<string>>(() => new Set());
+  const [dismissed, setDismissed] = useVersionMismatchDismissals();
   const environments = automaticEnvironment
     ? eligibleEnvironments
     : activeEnvironment
@@ -45,29 +44,31 @@ export function useClientUpdateBanners({
     const notice = resolveServerConfigClientUpdateNotice(environment.serverConfig);
     if (!notice) return [];
     const key = JSON.stringify([
-      "jones-client-notice-v1",
+      "jones-client-notice-v2",
       environment.environmentId,
       notice.kind,
       notice.clientVersion,
       notice.serverVersion,
       notice.clientSourceSha ?? null,
       notice.serverSourceSha ?? null,
+      notice.clientBuildStartedAt ?? null,
+      notice.serverBuildStartedAt ?? null,
     ]);
-    if (dismissed.has(key) || isVersionMismatchDismissed(key)) return [];
+    if (dismissed.keys.includes(key)) return [];
     return [
       {
         id: key,
         variant: "default",
         priority: "notice",
         icon: <InfoIcon />,
-        title: `${environment.label}: ${notice.kind === "server-newer" ? "Client update available" : "Different preview sources"}`,
+        title: `${environment.label}: ${notice.kind === "server-newer" ? "Client update available" : notice.kind === "client-newer" ? "Server update available" : "Preview build identity mismatch"}`,
         description: (
           <span className="break-words">
-            {notice.hint} <ClientServerBuildLabels builds={notice} />.
+            <ClientServerBuildLabels builds={notice} />. {notice.hint}
           </span>
         ),
-        // The target is always this app's own source; a newer-server notice has no exact action.
-        ...(notice.kind === "preview-source-difference" && notice.clientSourceSha
+        // Only an older server gets an action toward this app's verified source.
+        ...(notice.kind === "client-newer" && notice.clientSourceSha
           ? {
               actions: renderExactSourceAction({
                 environmentId: environment.environmentId,
@@ -78,8 +79,9 @@ export function useClientUpdateBanners({
           : {}),
         dismissLabel: "Dismiss client version notice",
         onDismiss: () => {
-          dismissVersionMismatch(key);
-          setDismissed((previous) => new Set(previous).add(key));
+          setDismissed((previous) => ({
+            keys: previous.keys.includes(key) ? previous.keys : [...previous.keys, key],
+          }));
         },
       },
     ];

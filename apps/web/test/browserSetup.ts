@@ -5,6 +5,10 @@ declare module "vite-plus/test/browser" {
   interface BrowserCommands {
     /** Defined in vite.config.ts. Moves Playwright's mouse off the page. */
     resetPointer: () => Promise<void>;
+    wordCiTrace: (
+      action: "start" | "finish",
+      evidence?: import("../src/jones/wordCiTrace").WordWorkerEvidence,
+    ) => Promise<import("../src/jones/wordCiTrace").WordTracePacket | null>;
   }
 }
 

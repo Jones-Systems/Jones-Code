@@ -11,12 +11,12 @@ import {
 describe("saved token accounting projection", () => {
   it("preserves a known sum independently from an unknown complete total", () => {
     const metric = { known_sum: 42, total: null, known_requests: 1, missing_requests: 1 };
-    expect(Schema.decodeUnknownSync(TokenAccountingMetric)(metric)).toEqual(metric);
+    expect(Schema.decodeSync(TokenAccountingMetric)(metric)).toEqual(metric);
   });
 
   it("preserves entirely unknown metrics instead of normalizing them to zero", () => {
     const metric = { known_sum: null, total: null, known_requests: 0, missing_requests: 2 };
-    expect(Schema.decodeUnknownSync(TokenAccountingMetric)(metric)).toEqual(metric);
+    expect(Schema.decodeSync(TokenAccountingMetric)(metric)).toEqual(metric);
   });
 
   it("rejects unsafe counts and undeclared metric fields", () => {

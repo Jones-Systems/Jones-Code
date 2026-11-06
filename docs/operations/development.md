@@ -288,6 +288,14 @@ files to packages with [ci-changes.cjs](../../.github/scripts/ci-changes.cjs), a
 compares against the merge base with `origin/main`, or with a ref you pass. CI still runs the full
 test suites and the jobs the summary lists, so a local pass does not promise a green CI run.
 
+For provider lifecycle, thread admission, or selection hooks, also run the affected Jones
+integration commands from [the maintained check recipes](../../scripts/jones/boundary/checks.json)
+(`jones-provider-core-reliability`, plus the affected provider retirement and selection groups)
+at the implementation checkpoint and before publication. Keep the changed-file checks for quick
+iteration; `check:changed` does not automatically consume those integration recipes. Await the
+specific run or effect's completion in asynchronous tests; a worker drain alone does not join
+work already claimed by another daemon lane.
+
 While you iterate, run single checks:
 
 ```sh
@@ -300,56 +308,31 @@ In `apps/web`, a test that renders React or touches the DOM is named `*.browser.
 and runs in headless Chromium with the React Compiler on, like the app. There is no jsdom; other
 `*.test.ts` files run in Node.
 
-TypeScript workspaces typecheck with tsc-rs, which has Effect diagnostics built in.
-Keep `typescript`, `@effect/tsgo`, and the `effect-tsgo patch` prepare step: editors
-still use them for Effect quick fixes and refactors. Keep `@effect/tsgo` on the
-effect-tsgo version that tsc-rs ports (see the tsc-rs README), or the two disagree
-on rule names.
-Marketing keeps `astro check` for Astro files.
+TypeScript workspace commands run the verified official Effect-patched TSRS
+launcher. Root `typecheck` and `tc` first run uncached compiler admission, then
+Vite+'s cached recursive checks. The `typescript` catalog entry remains
+`npm:@tsc-rs/typescript@0.8.0` for editors and the pinned local fallback on
+unsupported hosts. Marketing keeps `astro check` for Astro files. See the
+[compiler guide](../internals/typecheck-compiler.md) for provenance, rationale,
+platform limits and installation repair. Candidate adoption remains subject to
+[complete qualification](https://github.com/Jones-Systems/Jones-Code/issues/711).
 
-For repeated local checks, use `pnpm typecheck:incremental packages/shared apps/server`
-(or `--all` for workspaces whose checker is exactly `tsc-rs --noEmit`). This opt-in
-command retains native incremental state while still running TypeScript and Effect
-checks every time. It excludes the root recursive command and Astro. Retained mode
-supports the repository base config and the qualified Expo base; use `--fresh` to
-bypass retained state for other config inheritance. Caches live in this worktree's
-`node_modules/.cache/jones/incremental-typecheck`; they last with the dependency
-cache. Interrupted runs clean their own files; crash residue is ignored and counted
-toward storage admission, without automatic reclamation. Admission and accepted
-payload limits are not a hard concurrent disk quota. Normal `typecheck` remains
-the authoritative fallback.
+For repeated local checks on supported TSRS hosts, use
+`pnpm typecheck:incremental packages/shared apps/server` (or `--all` for exact
+verified-launcher workspace scripts). This opt-in command retains native state
+while running TypeScript and Effect checks every time. It excludes Vite task
+entrypoints, the root recursive command and Astro. Retained mode supports the
+repository base config and qualified Expo base; `--fresh` bypasses retention
+for other config inheritance. The v2 namespace lives under this worktree's
+`node_modules/.cache/jones/incremental-typecheck/v2`, with the dependency-cache
+lifetime. Legacy v1 is ignored and preserved with an exact-path notice.
+Interrupted runs clean their owned files after process exit; crash residue is
+ignored and counted toward admission, without automatic reclamation. Admission
+and accepted payload limits are not a hard concurrent disk quota. Unsupported
+hosts use regular `typecheck`, whose local fallback includes Effect diagnostics.
 
 Use `vp run lint:mobile` for native mobile changes. CI owns the full suite; see
 [ci.yml](../../.github/workflows/ci.yml) for its current jobs.
-
-### Experimental tsrs checking
-
-For an optional TypeScript-only check of explicitly selected workspaces:
-
-```sh
-pnpm typecheck:tsrs:experimental packages/shared apps/server
-pnpm typecheck:tsrs:experimental @t3tools/shared --checkers 2
-```
-
-This uses the pinned local tsrs package and each selected project's existing
-`tsconfig.json`. Projects run serially with two checkers by default;
-`--checkers N` accepts a positive integer. Select package names or
-repository-relative workspace paths. Only the existing `tsc-rs --noEmit`
-script shape is supported; marketing's Astro check is outside coverage.
-Other compiler flags and implicit all-project selection are rejected.
-
-**This command omits configured Effect diagnostics.** Run the normal
-authoritative typecheck before accepting changes. The experimental compiler
-uses an older TypeScript snapshot and can fail projects that the normal checker
-accepts, including known web TS2883/TS4023 errors; diagnostics and nonzero exits
-are preserved. A passing result does not establish workspace parity.
-
-The runner prints selected projects, compiler/package versions and effective
-flags. It never downloads a compiler or falls back to the normal checker.
-It isolates incremental build information under an invocation-owned directory
-in root `node_modules`, leaving existing build information intact, and cleans
-that directory after success, failure, SIGINT or SIGTERM. Uncatchable process
-or host termination cannot run cleanup.
 
 ### Unused code
 
@@ -368,6 +351,49 @@ The full export audit still has findings and is not a repo-wide CI gate. Extend 
 export check's workspace selectors as more workspaces become clean. Review callers before
 deleting code; production mode can also report development scripts and test fixtures.
 Runtime-discovered entrypoints and dependency exceptions belong in [knip.jsonc](../../knip.jsonc).
+
+### Server parallelism qualification
+
+Run the synthetic pool harness only on a host admitted for the repository's
+supported Node/native dependencies and storage budget. It writes disposable state,
+never live userdata. The source changes alone are not qualification evidence.
+
+Create a command manifest using `scripts/jones/serverParallelism/source-command.mjs`
+for the absolute source `apps/server/src/bin.ts`, or `artifact-command.mjs` for an
+actual bundled Node, Electron Node-mode or SEA installed layout. The latter takes
+`<bundle|electron|sea> <absolute executable> <absolute entry or -> <absolute manifest>`.
+Each manifest binds the hidden command and actual build identity; the harness
+reconstructs the production minimal child environment rather than accepting secrets.
+
+Invoke `qualify.mjs <manifest> <absolute report> <laptop|vps> [baseline-report]` for
+each profile/runtime form. It runs three steady combined reader/writer/control and
+productive-native windows with at least 500 acquisitions, then overflow and churn.
+Reports retain aggregate process samples and explicit missing capabilities.
+A passing source test or idle PID is not proof of N-way productive CPU overlap.
+No baseline means writer/throughput regression acceptance remains unknown. A failed
+retirement retains its exact scratch/journal for owner reconciliation; successful
+retirement permits the invoking harness to remove its own fixture.
+
+The advisory `Server parallel qualification` workflow defaults to bounded
+`source-evidence`: one unchanged baseline and one real source run for each
+profile, including churn and shutdown. It also runs matching-build and
+wrong-build dispatch checks. These reports cannot qualify the full matrix.
+After reviewing those prerequisites, select `scope: full` on the workflow's
+manual dispatch to exercise source, bundle, Electron and SEA on both platforms.
+Missing or failed cells remain explicit; a narrower diagnostic scope never
+substitutes for full performance qualification.
+
+Set `JONES_SP_COMMAND_MANIFEST` to the qualified manifest when running
+`nativeProcess.integration.test.ts`; absent manifests produce explicit skips.
+Run the native file separately for each of the four runtime forms. Its parent-loss
+case kills only its captured fixture parent, then proves child absence through the
+same conservative OS probe as restart admission. Source/bundle/Linux checks do not
+substitute for Electron/SEA/macOS packaging evidence.
+
+`snapshot.mjs <absolute report> [thread-count]` measures real shell capture, deferred
+decode, schema projection, synchronous JSON encoding and compression separately.
+Only measured contiguous encoding or qualified decode/projection/loop attribution
+activates a snapshot-offload follow-up. A payload-size guess does not activate it.
 
 ## Desktop artifacts
 

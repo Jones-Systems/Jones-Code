@@ -9,7 +9,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { useEffect, useEffectEvent, useState } from "react";
 import { useStableCallback } from "../../hooks/useStableCallback";
 
-// Jones retry policy repairs upstream #24899's single-selection failure budget.
+// Jones retry policy gives each provider/workspace selection its own failure budget.
 import {
   createProviderWorkspaceRefresh,
   providerWorkspaceRefreshKey,

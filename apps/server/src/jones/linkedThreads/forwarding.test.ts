@@ -3,13 +3,14 @@ import { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
+
 import * as Schema from "effect/Schema";
 import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import { ProjectToolkit } from "../../mcp/toolkits/project/tools.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Forwarding from "../../peer/PeerForwarding.ts";
+import * as Projects from "../../project/ProjectService.ts";
 import * as Peers from "../../peer/PeerMcpClient.ts";
 import * as PeerLinks from "../../peer/PeerLinks.ts";
 import * as Links from "./LinkedThreads.ts";
@@ -46,11 +47,12 @@ it.effect(
       Layer.mock(Threads.ThreadManagementService)({
         getThreadShell: (threadId) => Effect.succeed(liveThreadShell(threadId)),
       }),
-      Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeed(Option.none()) }),
+      Layer.mock(Projects.ProjectService)({ getById: () => Effect.succeedNone }),
+      Layer.mock(PeerLinks.PeerLinks)({ get: () => Effect.succeedNone }),
       Layer.mock(Peers.PeerMcpClient)({
         call: (input) => {
           calls.push(input);
-          return Schema.decodeUnknownEffect(input.success)({
+          return Schema.decodeEffect(input.success)({
             threadId: destination,
             projectId: liveThreadShell(destination).projectId,
             modelSelection: liveThreadShell(destination).modelSelection,

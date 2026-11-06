@@ -106,14 +106,12 @@ function fixture(options?: {
         );
       }
       if (options?.failMaster) {
-        return yield* Effect.fail(
-          PlatformError.systemError({
-            _tag: "NotFound",
-            module: "ChildProcess",
-            method: "spawn",
-            description: "ssh unavailable",
-          }),
-        );
+        return yield* PlatformError.systemError({
+          _tag: "NotFound",
+          module: "ChildProcess",
+          method: "spawn",
+          description: "ssh unavailable",
+        });
       }
       const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
       let running = true;

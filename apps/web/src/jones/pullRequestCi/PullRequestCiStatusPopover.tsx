@@ -67,7 +67,7 @@ export function PullRequestCiStatusPopover({
       </Tooltip>
       <PopoverPopup align="end" width="lg" padding="compact">
         <div className="px-1 pt-2">
-          <PopoverTitle>CI jobs — connected repositories</PopoverTitle>
+          <PopoverTitle>CI jobs. connected repositories</PopoverTitle>
         </div>
         <div className="space-y-3 px-1 py-3">
           {scopedEnvironmentId === null && environments.length > 1 ? (
@@ -118,6 +118,7 @@ function SectionNotice({ state, reasons }: { state: string; reasons: readonly st
 function CiStatus({ environmentId }: { environmentId: EnvironmentId }) {
   const [visible, setVisible] = useState(() => document.visibilityState === "visible");
   const [now, setNow] = useState(Date.now);
+  // oxlint-disable-next-line t3code/react-effect-budget -- Own visibility and freshness timers for the CI status view, releasing both on unmount.
   useEffect(() => {
     const update = () => {
       setVisible(document.visibilityState === "visible");

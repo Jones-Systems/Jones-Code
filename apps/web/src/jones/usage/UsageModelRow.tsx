@@ -31,7 +31,7 @@ export function UsageModelRow({
   const detailId = `usage-model-${encodeURIComponent(key)}`;
   const value = metric === "tokens" ? model.totalTokens : model.costUsd;
   const costShare = modelShare(model, "cost");
-  const costPercent = costShare === null ? "—" : formatPercent(costShare);
+  const costPercent = costShare === null ? "N/A" : formatPercent(costShare);
   const tokenPercent = formatPercent(model.tokenShare);
   const rowFigures = cn("transition-opacity", loading && "opacity-40 delay-150");
   const presentation = PROVIDER_PRESENTATION[model.provider];

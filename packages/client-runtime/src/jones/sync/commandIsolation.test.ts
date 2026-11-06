@@ -22,6 +22,7 @@ import * as SubscriptionRef from "effect/SubscriptionRef";
 import { Atom, AtomRegistry } from "effect/reactivity";
 import { vi } from "vite-plus/test";
 
+import { BearerConnectionTarget } from "../../connection/model.ts";
 import * as EnvironmentRegistry from "../../connection/registry.ts";
 import * as EnvironmentSupervisor from "../../connection/supervisor.ts";
 import type { RpcSession } from "../../rpc/session.ts";
@@ -48,7 +49,11 @@ describe("stop observation isolation evidence", () => {
         reply: Deferred.Deferred<{ sequence: number }>;
       }>();
       const supervisor = EnvironmentSupervisor.EnvironmentSupervisor.of({
-        target: { environmentId },
+        target: new BearerConnectionTarget({
+          environmentId,
+          label: "Command isolation environment",
+          connectionId: "command-isolation-connection",
+        }),
         session: yield* SubscriptionRef.make(
           Option.some({
             client: {

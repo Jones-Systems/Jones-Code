@@ -135,11 +135,13 @@ export function DesignRequestsPage() {
           ...(route.workstream ? { workstream: route.workstream } : {}),
         };
   const { phase: channelPhase, send: sendToGallery } = channel;
+  // oxlint-disable-next-line t3code/react-effect-budget -- Publish the committed route to the connected external gallery channel.
   useEffect(() => {
     if (channelPhase === "connected") sendToGallery(routeMessage);
   }, [channelPhase, sendToGallery, routeMessage]);
 
   // Publish the committed binding and route before the browser can deliver gallery messages.
+  // oxlint-disable-next-line t3code/react-effect-budget -- Install the committed gallery message handler before browser events can deliver submissions.
   useLayoutEffect(() => {
     handleMessage.current = (message) => {
       if (message.type === "jones.design-request.hello") return;

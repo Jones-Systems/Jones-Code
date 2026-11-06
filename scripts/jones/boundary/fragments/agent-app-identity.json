@@ -5,7 +5,8 @@
     "apps/server/src/jones/runtimeIdentity/AppIdentity.ts",
     "apps/server/src/jones/runtimeIdentity/AppIdentity.test.ts",
     "apps/server/src/jones/runtimeIdentity/CodexReplayIdentity.ts",
-    "packages/provider-core/src/server/jones/AppIdentity.ts"
+    "packages/provider-core/src/server/jones/AppIdentity.ts",
+    "packages/provider-core/src/server/jones/OrchestrationInstructions.ts"
   ],
   "hookPaths": [
     "packages/provider-core/src/server/runtimeInstructions.ts",
@@ -91,6 +92,10 @@
     {
       "from": "apps/server/src/provider/ProviderHostLive.ts",
       "to": "apps/server/src/jones/runtimeIdentity/AppIdentity.ts"
+    },
+    {
+      "from": "packages/provider-core/src/server/orchestrationInstructions.ts",
+      "to": "packages/provider-core/src/server/jones/OrchestrationInstructions.ts"
     }
   ]
 }

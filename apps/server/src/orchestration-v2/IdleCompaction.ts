@@ -41,6 +41,7 @@ export function idleCompactionWindow(
     contextTransfers,
   }: IdleCompactionRecords,
   nowMs: number,
+  dependencies?: ReadonlyArray<import("@t3tools/contracts").OrchestrationV2PendingBackgroundTask>,
 ): {
   readonly runId: (typeof runs)[number]["id"];
   readonly startMs: number;
@@ -70,6 +71,7 @@ export function idleCompactionWindow(
     ) ||
     // Background work reports into the next turn; compaction would swallow it.
     derivePendingBackgroundWork({
+      dependencies,
       latestRun,
       runs,
       providerThreads,

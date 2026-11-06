@@ -36,7 +36,6 @@ export class CursorAgentSdkRunnerError extends Schema.TaggedError<CursorAgentSdk
   }
 }
 
-/** The failure text a user sees: the SDK's own reason, which the error's message leaves out. */
 export function cursorSdkFailureMessage(error: CursorAgentSdkRunnerError): string {
   const reason = sdkErrorReason(error.cause);
   return reason === undefined
@@ -44,10 +43,8 @@ export function cursorSdkFailureMessage(error: CursorAgentSdkRunnerError): strin
     : `Cursor Agent SDK ${error.method} failed: ${reason}`;
 }
 
-/** Codes Cursor sends when it has no specific one. */
 const GENERIC_SDK_ERROR_CODES = new Set(["", "error", "unknown"]);
 
-/** The SDK's own message, with the code and HTTP status its errors carry. */
 function sdkErrorReason(cause: unknown): string | undefined {
   if (!(cause instanceof Error)) return undefined;
   const message = cause.message.trim();
@@ -83,6 +80,7 @@ export interface CursorAgentSdkRun {
   readonly runId: string;
   readonly agentId: string;
   readonly wait: Effect.Effect<RunResult, CursorAgentSdkRunnerError>;
+  readonly nativeWait: Effect.Effect<RunResult, CursorAgentSdkRunnerError>;
   readonly cancel: Effect.Effect<void, CursorAgentSdkRunnerError>;
 }
 
@@ -330,13 +328,7 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
 ) {
   const { Agent, createAgentPlatform } = yield* CursorSdk.CursorSdk;
 
-  /**
-   * The Cursor SDK decides once per process whether local sandboxing works, and
-   * caches the answer the first time any run starts. Only sandboxed runs point it
-   * at its `cursorsandbox` helper first, so after an unsandboxed (Full access)
-   * run it caches "unsupported" and rejects every later sandboxed run until the
-   * server restarts.
-   */
+  // Prime with cursorsandbox before any Full access run; the SDK caches sandbox support per process.
   const sandboxSupportPrimeStarted = yield* Ref.make(false);
   const sandboxSupportPrimed = yield* Deferred.make<void>();
   const primeCursorSandboxSupport = Effect.fn("CursorAgentSdkRunner.primeSandboxSupport")(
@@ -482,21 +474,32 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
                   if (activeRun === undefined) {
                     return yield* error;
                   }
-                  yield* log({
-                    direction: "outgoing",
-                    stage: "decoded",
-                    payload: { type: "run.cancel", runId: activeRun.id },
-                  });
                   yield* Effect.tryPromise({
                     try: () => Agent.cancelRun(activeRun.id, runOptions),
                     catch: (cause) => runnerError(cause, "agent.cancelRun"),
-                  });
+                  }).pipe(
+                    Effect.onExit(() =>
+                      log({
+                        direction: "outgoing",
+                        stage: "decoded",
+                        payload: { type: "run.cancel", runId: activeRun.id },
+                      }),
+                    ),
+                  );
                   return yield* startRun();
                 }),
             ),
           );
           abandonedRunRecoveryAvailable = false;
           runId = run.id;
+          // Preserve the native observer before any diagnostic/callback drain can block it.
+          const nativeWait = yield* Effect.cached(
+            Effect.tryPromise({
+              try: () => run.wait(),
+              catch: (cause) => runnerError(cause, "run.wait"),
+            }),
+          );
+          yield* nativeWait.pipe(Effect.exit, Effect.forkDetach({ startImmediately: true }));
           yield* log({
             direction: "incoming",
             stage: "decoded",
@@ -517,17 +520,17 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           return {
             runId: run.id,
             agentId: run.agentId,
-            wait: Effect.tryPromise({
-              try: async () => {
-                const result = await run.wait();
-                await callbackChain;
-                if (callbackFailure !== undefined) {
-                  throw callbackFailure.cause;
-                }
-                return result;
-              },
-              catch: (cause) => runnerError(cause, "run.wait"),
-            }).pipe(
+            nativeWait,
+            wait: nativeWait.pipe(
+              Effect.tap(() =>
+                Effect.tryPromise({
+                  try: async () => {
+                    await callbackChain;
+                    if (callbackFailure !== undefined) throw callbackFailure.cause;
+                  },
+                  catch: (cause) => runnerError(cause, "run.wait"),
+                }),
+              ),
               Effect.tap((result) =>
                 log({
                   direction: "incoming",
@@ -539,26 +542,21 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
                 }),
               ),
             ),
-            cancel: log({
-              direction: "outgoing",
-              stage: "decoded",
-              payload: {
-                type: "run.cancel",
-                runId: run.id,
+            cancel: Effect.tryPromise({
+              try: async () => {
+                try {
+                  await run.cancel();
+                } catch (cause) {
+                  if (!isCursorCancellationError(cause)) throw cause;
+                }
               },
+              catch: (cause) => runnerError(cause, "run.cancel"),
             }).pipe(
-              Effect.andThen(
-                Effect.tryPromise({
-                  try: async () => {
-                    try {
-                      await run.cancel();
-                    } catch (cause) {
-                      if (!isCursorCancellationError(cause)) {
-                        throw cause;
-                      }
-                    }
-                  },
-                  catch: (cause) => runnerError(cause, "run.cancel"),
+              Effect.onExit(() =>
+                log({
+                  direction: "outgoing",
+                  stage: "decoded",
+                  payload: { type: "run.cancel", runId: run.id },
                 }),
               ),
             ),
@@ -594,18 +592,15 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
             }),
           ),
         ),
-        close: log({
-          direction: "outgoing",
-          stage: "decoded",
-          payload: {
-            type: "agent.close",
-            agentId: agent.agentId,
-          },
+        close: Effect.try({
+          try: () => agent.close(),
+          catch: (cause) => runnerError(cause, "agent.close"),
         }).pipe(
-          Effect.andThen(
-            Effect.try({
-              try: () => agent.close(),
-              catch: (cause) => runnerError(cause, "agent.close"),
+          Effect.onExit(() =>
+            log({
+              direction: "outgoing",
+              stage: "decoded",
+              payload: { type: "agent.close", agentId: agent.agentId },
             }),
           ),
         ),
