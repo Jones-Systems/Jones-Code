@@ -7,6 +7,7 @@ import { runJonesMigrations } from "../JonesMigrationGuard.ts";
 import { jonesMigrationEntries } from "../JonesMigrations.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
+const through135 = jonesMigrationEntries.filter(([id]) => id <= 135);
 
 it.effect(
   "135 adds only sparse Jones storage and leaves upstream objects and its ledger unchanged",
@@ -18,10 +19,7 @@ it.effect(
       const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       const objects = yield* sql`SELECT type, name, tbl_name, sql FROM sqlite_master
       WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`;
-      assert.deepEqual(
-        yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 135)),
-        [[135, "IdleWorktreeAdmission"]],
-      );
+      assert.deepEqual(yield* runJonesMigrations(through135), [[135, "IdleWorktreeAdmission"]]);
       assert.deepEqual(
         yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
         ledger,
@@ -39,9 +37,6 @@ it.effect(
         after.filter(({ name }) => !name.includes("jones_idle_worktree_admission")),
         objects,
       );
-      assert.deepEqual(
-        yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 135)),
-        [],
-      );
+      assert.deepEqual(yield* runJonesMigrations(through135), []);
     }).pipe(Effect.provide(memory)),
 );

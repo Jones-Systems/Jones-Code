@@ -88,6 +88,7 @@ export function createManifest({ runId, provenance, scenario, inner = {}, cleanu
     },
     resources: inner.resources ?? null,
     namespaceProcess: inner.namespaceProcess ?? null,
+    boundary: inner.boundary ?? null,
     coverage: {
       claims:
         inner.assertions?.filter((item) => item.status === "passed").map((item) => item.name) ?? [],

@@ -33,6 +33,7 @@ export interface PendingSend {
   readonly onRejected?: ((entry: PendingSend) => void) | undefined;
   readonly deliveryEvidence?: DeliveryEvidence | undefined;
   readonly creationAccepted?: boolean;
+  readonly durable?: boolean;
 }
 
 export function createPendingSendStore(revoke = (url: string) => URL.revokeObjectURL(url)) {
@@ -172,6 +173,18 @@ export function createPendingSendStore(revoke = (url: string) => URL.revokeObjec
     },
     prepared(entryKey: string, prepared: PreparedThreadTurn, retry: () => Promise<unknown>) {
       update(entryKey, (entry) => ({ ...entry, prepared, retry }));
+    },
+    awaitingCreation(entryKey: string, retry: () => Promise<unknown>, inFlight: boolean) {
+      update(entryKey, (entry) => ({
+        ...entry,
+        durable: true,
+        retry,
+        inFlight,
+        delivery: inFlight ? "sending" : "uncertain",
+      }));
+    },
+    retainDurably(entryKey: string) {
+      update(entryKey, (entry) => (entry.durable ? entry : { ...entry, durable: true }));
     },
     confirmThreadCreation(environmentId: EnvironmentId, threadId: ThreadId, messageId: MessageId) {
       const entry = get(environmentId, threadId, messageId);
