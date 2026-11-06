@@ -10,6 +10,7 @@ import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import { canonicalJson } from "../../operations/encoding.ts";
 import { RegistryError } from "../registry/session.ts";
 import type { AdmittedMemberWrite } from "../runtime/memberAdmission.ts";
+import { memberWriteRouteMatches } from "../runtime/memberRecordedCaller.ts";
 
 const sha = (body: string) => NodeCrypto.createHash("sha256").update(body).digest("hex");
 const same = (a: unknown, b: unknown) => canonicalJson(a) === canonicalJson(b);
@@ -124,7 +125,7 @@ const make = Effect.gen(function* () {
       a.pin_bound_revision !== i.member_pin_bound_revision ||
       a.link_generation !== i.outbound_link_generation ||
       sha(canonicalJson(admitted.record)) !== i.recorded_caller_sha256 ||
-      admitted.record.local.link_origin !== null ||
+      !memberWriteRouteMatches(request, admitted.record) ||
       !same(yield* admitted.checkCurrent(), admitted.limits) ||
       admitted.limits.interactionMode !== "default"
     )

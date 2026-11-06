@@ -19,7 +19,10 @@ import * as Links from "../../../../peer/PeerLinks.ts";
 import { RegistryError } from "../registry/session.ts";
 import * as Admission from "../runtime/memberAdmission.ts";
 import * as Members from "../runtime/memberEnrollment.ts";
-import type { MemberLocalWriteCallerV2 } from "../runtime/memberRecordedCaller.ts";
+import {
+  memberWriteRouteMatches,
+  type MemberLocalWriteCallerV2,
+} from "../runtime/memberRecordedCaller.ts";
 import * as Pins from "../runtime/peerSessionPins.ts";
 import * as Operations from "../store/operationStore.ts";
 
@@ -177,7 +180,7 @@ const validate = Effect.fn("SourceReadmission.validate")(function* (
     a.member_pin_id !== i.member_pin_id ||
     a.pin_bound_revision !== i.member_pin_bound_revision ||
     a.link_generation !== i.outbound_link_generation ||
-    caller.local.link_origin !== null ||
+    !memberWriteRouteMatches(forward, caller) ||
     (target.kind === "metadata"
       ? row.thread_id !== null || row.thread_environment_id !== null
       : target.environment_id !== a.source.environment_id ||

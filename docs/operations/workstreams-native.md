@@ -138,9 +138,16 @@ its narrowed limits. The selected server still owns thread qualification and
 native admission; a body's thread environment never selects a route. A denied or
 unavailable peer never falls back locally. Retain the same operation ID and
 request at the original selected destination after an unknown result.
-Linked calls do not gain native authority from routing; unsupported peer admission
-continues to refuse. Scheduled provider runs use the same authenticated agent
-origin and caller limits; a tool body cannot select trusted queue origin.
+A public `set_primary` call from the bound home's authenticated native link may
+place a thread owned by the selected member. The member retains that incoming
+link session and the original narrowed limits, qualifies its own target thread,
+and attaches fresh source evidence. The home admits only that exact high-level
+placement through its private atomic-operation proof and current SQL grant.
+Lost replies recover by looking up the same accepted intent; they never authorize
+redispatch. Other linked sessions, linked local-agent writes, metadata, appearance
+and raw commands remain refused. The generic hop guard is unchanged.
+Scheduled provider runs use the same authenticated agent origin and caller limits;
+a tool body cannot select trusted queue origin.
 
 Authenticated clients can explicitly query the selected home or member at
 `POST /api/workstreams/native/v1/read` using the existing closed

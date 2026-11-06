@@ -11,6 +11,8 @@ import {
   AuthSessionId,
   EnvironmentAuthenticatedPrincipal,
   ThreadId,
+  OrchestrationV2LinkOrigin,
+  linkOriginIsFenced,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -25,6 +27,8 @@ import * as Threads from "../../../../orchestration-v2/ThreadManagementService.t
 import * as Providers from "../../../../orchestration-v2/ProviderSessionManager.ts";
 import { readCaller, assertTargetWithinLimits } from "../../../../mcp/threadAccess.ts";
 import { callerLinkOrigin } from "../../../../mcp/linkOrigin.ts";
+import * as Pins from "./peerSessionPins.ts";
+import type { WorkstreamsForwardRequest } from "@t3tools/contracts/jones/workstreamsForwarding";
 import { canonicalJson } from "../../operations/encoding.ts";
 import * as Recorded from "./recordedCaller.ts";
 
@@ -89,6 +93,53 @@ export const MemberRecordedWriteCallerV2 = Schema.Struct({
   original_outbound_ceiling: WorkstreamsTransportCeiling,
 });
 export type MemberRecordedWriteCallerV2 = typeof MemberRecordedWriteCallerV2.Type;
+
+const decodeLinkOrigin = Schema.decodeUnknownSync(
+  Schema.fromJsonString(OrchestrationV2LinkOrigin),
+  { onExcessProperty: "error" },
+);
+/** Retained link identity is evidence of this incoming MCP session, never a local agent credential. */
+export const memberWriteLink = (record: MemberLocalWriteCallerV2) => {
+  if (
+    record.link_origin === null ||
+    record.auth.kind !== "mcp_client" ||
+    record.target.kind !== "thread"
+  )
+    return null;
+  try {
+    const link = decodeLinkOrigin(record.link_origin);
+    return link.sessionId === record.auth.session_id &&
+      link.access === record.auth.approved_access &&
+      canonicalJson(record.link_session) === canonicalJson(record.session)
+      ? link
+      : null;
+  } catch {
+    return null;
+  }
+};
+/** The only relayed linked write is the exact supplied-evidence placement of this source's thread. */
+export const memberWriteRouteMatches = (
+  forward: WorkstreamsForwardRequest,
+  caller: MemberRecordedWriteCallerV2,
+) => {
+  const relay = forward.request.relay;
+  if (caller.local.link_origin === null) return relay.linked_origin_environment_id === null;
+  const target = caller.local.target;
+  return (
+    memberWriteLink(caller.local) !== null &&
+    target.kind === "thread" &&
+    target.environment_id === caller.association.source.environment_id &&
+    forward.kind === "operation" &&
+    forward.request.request.kind === "set_primary" &&
+    forward.request.evidence !== undefined &&
+    forward.request.request.origin.kind === "agent" &&
+    forward.request.request.thread.environment_id === target.environment_id &&
+    forward.request.request.thread.thread_id === target.thread_id &&
+    relay.hop === 1 &&
+    relay.source_environment_id === target.environment_id &&
+    relay.linked_origin_environment_id === caller.association.home.home_environment_id
+  );
+};
 
 const decodeWrite = Schema.decodeUnknownEffect(MemberLocalWriteCallerV2, {
   onExcessProperty: "error",
@@ -182,6 +233,8 @@ export class MemberLocalCallers extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sessions = yield* Sessions.AuthSessionRepository;
+  // Keep the original native authenticator registration through all checks in this request.
+  const links = new WeakMap<Mcp.McpInvocationScope, Pins.QualifiedPeerPin>();
   const snapshot = Effect.fn("MemberLocalCallers.snapshot")(function* (
     environmentId: string,
     original?: MemberLocalCallerV1,
@@ -279,6 +332,8 @@ const make = Effect.gen(function* () {
         request_namespace: original.request_namespace,
         invocation_issued_at: original.invocation_issued_at,
         origin: original.origin,
+        link_origin: original.link_origin,
+        link_session: original.link_session,
         auth: { ...original.auth, approved_access: access },
         session: {
           issued_at: row.issuedAt.epochMilliseconds,
@@ -314,7 +369,7 @@ const make = Effect.gen(function* () {
     if (
       scope.environmentId !== environmentId ||
       !scope.capabilities.has("orchestration") ||
-      scope.client?.linked ||
+      (scope.client?.linked && !write) ||
       scope.client?.remoteOrigin ||
       Boolean(scope.thread) === Boolean(scope.client)
     )
@@ -330,9 +385,43 @@ const make = Effect.gen(function* () {
       const row = yield* currentSession(client.sessionId);
       if (row.subject !== "mcp-client" || row.method !== "bearer-access-token")
         return yield* fence();
+      let link: Pins.QualifiedPeerPin | undefined;
+      if (client.linked) {
+        link = links.get(scope);
+        if (!link) {
+          const pins = yield* Effect.serviceOption(Pins.PeerSessionPins);
+          if (Option.isNone(pins)) return yield* fence();
+          link = yield* pins.value
+            .forInvocation(scope, { role: "home_source" })
+            .pipe(Effect.mapError(fence));
+          if (link.pin.state !== "bound") return yield* fence();
+          links.set(scope, link);
+        }
+        yield* link.checkCurrent().pipe(Effect.mapError(fence));
+        if (!Pins.ceilingAllows(link.ceiling, "workstreams:write")) return yield* fence();
+      }
       const limits = Mcp.clientModeCeiling(client);
       return {
         ...common,
+        // OAuth authenticates a fresh invocation per request. Its timestamp cannot replace
+        // the accepted invocation; current session, namespace and native registration still qualify replay.
+        invocation_issued_at:
+          link && original?.auth.kind === "mcp_client"
+            ? original.invocation_issued_at
+            : common.invocation_issued_at,
+        link_origin: link
+          ? canonicalJson({
+              sessionId: client.sessionId,
+              label: client.label,
+              access: client.access,
+            })
+          : null,
+        link_session: link
+          ? {
+              issued_at: row.issuedAt.epochMilliseconds,
+              expires_at: row.expiresAt.epochMilliseconds,
+            }
+          : null,
         auth: {
           kind: "mcp_client" as const,
           session_id: row.sessionId,
@@ -547,8 +636,10 @@ const make = Effect.gen(function* () {
       (target.kind === "thread" && target.environment_id !== record.environment_id)
     )
       return yield* fence();
-    // A linked write needs the later exact home-transaction proof; local evidence alone is insufficient.
-    if (record.link_origin !== null) return yield* fence();
+    // Local linked agents remain fenced; this exception preserves the actual incoming native client.
+    const link = memberWriteLink(record);
+    if (record.link_origin !== null && (link === null || target.kind !== "thread"))
+      return yield* fence();
     const refresh = Effect.fn("MemberLocalCallers.refreshWrite")(function* () {
       const latest = yield* snapshot(record.environment_id, original, retained, true);
       if (canonicalJson(identity(original)) !== canonicalJson(identity(latest)))
@@ -589,9 +680,11 @@ const make = Effect.gen(function* () {
         !shell ||
         shell.archivedAt !== null ||
         shell.deletedAt !== null ||
-        shell.linkOrigin !== undefined ||
+        (shell.linkOrigin !== undefined && link === null) ||
         !current.limits
       )
+        return yield* fence();
+      if (link && linkOriginIsFenced(link) && shell.linkOrigin?.sessionId !== link.sessionId)
         return yield* fence();
       yield* assertTargetWithinLimits(effective, shell).pipe(Effect.mapError(fence));
     });

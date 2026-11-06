@@ -20,6 +20,9 @@ import { expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 import {
   EnvironmentId,
+  AuthSessionId,
+  ThreadId,
+  ProviderInstanceId,
   EnvironmentAuthenticatedPrincipal,
   EnvironmentAuthenticatedAuth,
   EnvironmentHttpApi,
@@ -89,6 +92,9 @@ import m129 from "../../../persistence/Migrations/129_JonesWorkstreamsMemberBind
 import m130 from "../../../persistence/Migrations/130_JonesWorkstreamsForwardReceipts.ts";
 import * as MemberApp from "../runtime/memberApplication.ts";
 import * as PublicOperations from "../../operations/service.ts";
+import * as PublicMcpTools from "../../../mcp/workstreams/tools.ts";
+import * as PublicMcpHandlers from "../../../mcp/workstreams/handlers.ts";
+import * as PeerForwarding from "../../../../peer/PeerForwarding.ts";
 import * as OperationWire from "@t3tools/contracts/jones/workstreamOperations";
 import * as MemberServices from "../runtime/memberServices.ts";
 import * as NativeDescriptor from "../runtime/descriptor.ts";
@@ -177,7 +183,6 @@ const address: W.WorkstreamsPeerSetupAddress = {
   source_environment_id: "member:test",
   expected_home: home,
 };
-const threads = Layer.mock(ThreadManagementService)({ getThreadShell: () => Effect.succeed(null) });
 const mode = Schema.decodeUnknownSync(
   Schema.Struct({ runtimeMode: RuntimeMode, interactionMode: ProviderInteractionMode }),
 );
@@ -387,6 +392,7 @@ const fixture = Effect.gen(function* () {
     scope: Mcp.McpInvocationScope;
   }> = [];
   const state = {
+    projection: new Map<string, ReturnType<typeof liveThreadShell>>(),
     narrow: false,
     mutateFinal: false,
     loseBindReply: false,
@@ -532,8 +538,8 @@ const fixture = Effect.gen(function* () {
         environmentId: EnvironmentId.make(receiver),
         thread: undefined,
         capabilities: new Set(["orchestration"]),
-        issuedAt: Date.parse(Test.now),
-        requestNamespace: "final:" + receiver + ":" + calls.length,
+        issuedAt: yield* Clock.currentTimeMillis,
+        requestNamespace: "client:" + client.sessionId,
         client: {
           sessionId: client.sessionId,
           label: client.label,
@@ -588,7 +594,11 @@ const fixture = Effect.gen(function* () {
       })();
       const reply = yield* handled.pipe(
         Effect.provideService(Mcp.McpInvocationContext, scope),
-        Effect.provide(threads.pipe(Layer.provideMerge(Layer.succeedContext(at.all)))),
+        Effect.provide(
+          Layer.mock(ThreadManagementService)({
+            getThreadShell: (id) => Effect.succeed(state.projection.get(id) ?? null),
+          }).pipe(Layer.provideMerge(Layer.succeedContext(at.all))),
+        ),
       );
       if (!reply || reply.isFailure)
         return Response.json({
@@ -1346,9 +1356,10 @@ it.effect(
           Layer.mock(ThreadManagementService)({
             getThreadShell: (id) =>
               Effect.succeed(
-                id === "thread:retained-source"
-                  ? liveThreadShell(id, { runtimeMode: "approval-required" })
-                  : null,
+                f.state.projection.get(id) ??
+                  (id === "thread:retained-source"
+                    ? liveThreadShell(id, { runtimeMode: "approval-required" })
+                    : null),
               ),
           }),
         );
@@ -1402,10 +1413,13 @@ it.effect(
             .pipe(Effect.provide(resources))).problem?.code,
         ).toBe("authority_fenced");
         let currentSourceBuild = bind.source.enrollment.context.build;
+        let beforeSourceBuild: Effect.Effect<void> = Effect.void;
         const providerPorts = {
           ...ProviderTest.makeProviderFixture().ports,
           authority: { readCurrent: f.M.live.readCurrent },
-          build: Effect.sync(() => Option.some(currentSourceBuild)),
+          build: Effect.suspend(() =>
+            beforeSourceBuild.pipe(Effect.as(Option.some(currentSourceBuild))),
+          ),
         };
         const runtime = Runtime.NativeWorkstreamsRuntime.of({
           provider: makeWorkstreamsNativeProvider(providerPorts),
@@ -3073,6 +3087,251 @@ it.effect(
         expect(
           yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id='command:retained-source-application-01'`,
         ).toEqual([{ state: "accepted" }]);
+        // Route S: a real native link invocation enters B through the public MCP tool.
+        // A's projection/credential fixture supplies caller limits; it is never relabelled as a B agent.
+        const linkedTarget = ThreadId.make("thread:linked-own-source");
+        f.state.projection.set(
+          linkedTarget,
+          liveThreadShell(linkedTarget, { runtimeMode: "approval-required" }),
+        );
+        const actualBackend = yield* PublicMcpTools.WorkstreamToolsBackend.pipe(
+          Effect.provide(
+            PublicMcpHandlers.backendLayer.pipe(
+              Layer.provide(Layer.succeedContext(selectedServices)),
+            ),
+          ),
+        );
+        const publicBox = yield* PublicMcpTools.WorkstreamToolkit.pipe(
+          Effect.provide(
+            Access.HandlersLayer.layer(PublicMcpHandlers.handlers).pipe(
+              Layer.provide(Layer.succeed(PublicMcpTools.WorkstreamToolsBackend, actualBackend)),
+            ),
+          ),
+        );
+        for (const name of ["t3_thread_workstream_set", "t3_workstream_create"] as const) {
+          const decode = Schema.decodeUnknownEffect(
+            PublicMcpTools.WorkstreamToolkit.tools[name].parametersSchema,
+          );
+          f.mountTool(f.M.env, name, (args) =>
+            decode(args).pipe(
+              Effect.flatMap((input) =>
+                publicBox.handle(name, input).pipe(
+                  Stream.unwrap,
+                  Stream.runCollect,
+                  Effect.map((replies) => replies.at(-1)),
+                ),
+              ),
+              Effect.orDie,
+            ),
+          );
+        }
+        const callerShell = liveThreadShell(ThreadId.make("thread:home-agent"), {
+          runtimeMode: "approval-required",
+        });
+        const callerScope: Mcp.McpInvocationScope = {
+          environmentId: EnvironmentId.make(f.H.env),
+          requestNamespace: "original-home-agent",
+          issuedAt: Date.parse(Test.now),
+          capabilities: new Set(["orchestration"]),
+          thread: {
+            threadId: ThreadId.make(callerShell.id),
+            providerSessionId: "fixture-original-agent-credential",
+            providerInstanceId: ProviderInstanceId.make("codex"),
+          },
+          client: undefined,
+        };
+        const forwarding = yield* PeerForwarding.PeerForwarding.pipe(
+          Effect.provide(
+            PeerForwarding.layer.pipe(
+              Layer.provide(
+                Layer.mock(ThreadManagementService)({
+                  getThreadShell: (id) =>
+                    Effect.succeed(id === callerShell.id ? callerShell : null),
+                }),
+              ),
+              Layer.provide(Layer.succeedContext(f.H.all)),
+            ),
+          ),
+        );
+        const linkedRequest: OperationWire.WorkstreamSetPrimaryRequest = {
+          contract: "workstream-operations/1.0.0",
+          operation_id: "operation:linked-own-source-01",
+          origin: { kind: "agent" },
+          kind: "set_primary",
+          thread: { environment_id: f.M.env, thread_id: linkedTarget },
+          target: {
+            kind: "workstream",
+            registry_id: home.registry_instance_id,
+            owner_id: home.owner_id,
+            workstream_id: publicId,
+          },
+          expected: { kind: "any" },
+        };
+        const callLinked = (request: OperationWire.WorkstreamSetPrimaryRequest) =>
+          forwarding.call(
+            callerScope,
+            PublicMcpTools.WorkstreamToolkit.tools.t3_thread_workstream_set,
+            EnvironmentId.make(f.M.env),
+            { request, wait_ms: 0 },
+          );
+        const beforeLinked = f.calls.length;
+        const linked = yield* callLinked(linkedRequest);
+        expect(linked).toMatchObject({
+          state: "committed",
+          kind: "set_primary",
+          operation_id: linkedRequest.operation_id,
+        });
+        const linkedForward = f.calls
+          .slice(beforeLinked)
+          .find((call) => call.tool === HomePort.HOME_FORWARD_TOOL);
+        expect(linkedForward?.args).toMatchObject({
+          kind: "operation",
+          request: {
+            request: linkedRequest,
+            relay: {
+              source_environment_id: f.M.env,
+              linked_origin_environment_id: f.H.env,
+              hop: 1,
+            },
+          },
+        });
+        const originalIncoming = f.calls
+          .slice(beforeLinked)
+          .find((call) => call.tool === "t3_thread_workstream_set");
+        expect(originalIncoming?.scope.client).toMatchObject({
+          linked: true,
+          narrowedTo: { runtimeMode: "approval-required", interactionMode: "default" },
+        });
+        expect(originalIncoming?.scope.thread).toBeUndefined();
+        yield* TestClock.adjust(1);
+        expect(yield* callLinked(linkedRequest)).toEqual(linked);
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${linkedRequest.operation_id}`,
+        ).toEqual([{ state: "committed" }]);
+        const linkedCalls = f.calls.filter(
+          (call) => call.tool === HomePort.HOME_FORWARD_TOOL,
+        ).length;
+        for (const fault of [
+          "unregistered",
+          "changed-final-scope",
+          "plan",
+          "foreign-thread",
+          "target-limits",
+          "same-registration",
+        ] as const) {
+          f.state.register = fault !== "unregistered";
+          f.state.mutateFinal = fault === "changed-final-scope";
+          f.state.narrow = fault === "plan";
+          f.state.projection.set(
+            linkedTarget,
+            liveThreadShell(linkedTarget, {
+              runtimeMode: fault === "target-limits" ? "full-access" : "approval-required",
+            }),
+          );
+          let replacedRegistration = false;
+          if (fault === "same-registration")
+            beforeSourceBuild = Effect.gen(function* () {
+              beforeSourceBuild = Effect.void;
+              const incoming = f.calls.findLast((call) => call.tool === "t3_thread_workstream_set");
+              if (!incoming) return yield* Effect.die("Missing actual incoming invocation");
+              yield* Context.get(f.M.all, NativeAuth.PeerMcpAuthentication).register(
+                HttpRequest.fromWeb(
+                  new Request("https://member.invalid/mcp", {
+                    headers: { authorization: "Bearer " + f.M.issued.token },
+                  }),
+                ),
+                incoming.scope,
+              );
+              replacedRegistration = true;
+            });
+          const refused = {
+            ...linkedRequest,
+            operation_id: "operation:linked-refused-" + fault,
+            thread: {
+              ...linkedRequest.thread,
+              environment_id: fault === "foreign-thread" ? f.H.env : f.M.env,
+            },
+          };
+          expect((yield* callLinked(refused).pipe(Effect.result))._tag).toBe("Failure");
+          if (fault === "same-registration") expect(replacedRegistration).toBe(true);
+          beforeSourceBuild = Effect.void;
+          expect(
+            yield* msql`SELECT operation_id FROM jones_workstreams_operations WHERE operation_id=${refused.operation_id}`,
+          ).toEqual([]);
+        }
+        f.state.register = true;
+        f.state.mutateFinal = false;
+        f.state.narrow = false;
+        f.state.projection.set(
+          linkedTarget,
+          liveThreadShell(linkedTarget, { runtimeMode: "approval-required" }),
+        );
+        expect(f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
+          linkedCalls,
+        );
+        expect(
+          (yield* forwarding
+            .call(
+              callerScope,
+              PublicMcpTools.WorkstreamToolkit.tools.t3_workstream_create,
+              EnvironmentId.make(f.M.env),
+              {
+                request: {
+                  ...request,
+                  origin: { kind: "agent" },
+                  operation_id: "operation:linked-metadata-refused",
+                },
+                wait_ms: 0,
+              },
+            )
+            .pipe(Effect.result))._tag,
+        ).toBe("Failure");
+        expect(
+          yield* msql`SELECT operation_id FROM jones_workstreams_operations WHERE operation_id='operation:linked-metadata-refused'`,
+        ).toEqual([]);
+        // A lost home reply recovers the SAME accepted caller and destination with lookup only.
+        const lostLinkedRequest: OperationWire.WorkstreamSetPrimaryRequest = {
+          ...linkedRequest,
+          operation_id: "operation:linked-lost-reply-01",
+          target: {
+            kind: "unassigned",
+            registry_id: home.registry_instance_id,
+            owner_id: home.owner_id,
+          },
+        };
+        f.state.loseForwardReply = true;
+        expect((yield* callLinked(lostLinkedRequest)).state).toBe("reconciling");
+        f.state.loseForwardReply = false;
+        const sentBeforeLinkedRecovery = f.calls.filter(
+          (call) => call.tool === HomePort.HOME_FORWARD_TOOL,
+        ).length;
+        yield* TestClock.adjust(30_000);
+        yield* recovery.sweep();
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${lostLinkedRequest.operation_id}`,
+        ).toEqual([{ state: "committed" }]);
+        expect(f.calls.filter((call) => call.tool === HomePort.HOME_FORWARD_TOOL)).toHaveLength(
+          sentBeforeLinkedRecovery,
+        );
+        const revokedLinkedRequest = {
+          ...linkedRequest,
+          operation_id: "operation:linked-revoked-recovery-01",
+        };
+        f.state.loseForwardReply = true;
+        expect((yield* callLinked(revokedLinkedRequest)).state).toBe("reconciling");
+        f.state.loseForwardReply = false;
+        const beforeLinkRevocation = f.calls.length;
+        if (!originalIncoming?.scope.client)
+          return yield* Effect.die("Missing original link caller");
+        expect(
+          yield* auth.revokeSession(AuthSessionId.make(originalIncoming.scope.client.sessionId)),
+        ).toBe(true);
+        yield* TestClock.adjust(30_000);
+        yield* recovery.sweep();
+        expect(
+          yield* msql`SELECT state FROM jones_workstreams_operations WHERE operation_id=${revokedLinkedRequest.operation_id}`,
+        ).toEqual([{ state: "reconciling" }]);
+        expect(f.calls).toHaveLength(beforeLinkRevocation);
         expect(yield* msql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
         expect(yield* msql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
       }),

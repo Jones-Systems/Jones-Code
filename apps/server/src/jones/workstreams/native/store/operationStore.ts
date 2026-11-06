@@ -19,7 +19,10 @@ import {
   WorkstreamsForwardRequest,
 } from "@t3tools/contracts/jones/workstreamsForwarding";
 import { WorkstreamsNativeDigest } from "@t3tools/contracts/jones/workstreamsNative";
-import { MemberRecordedWriteCallerV2 } from "../runtime/memberRecordedCaller.ts";
+import {
+  MemberRecordedWriteCallerV2,
+  memberWriteRouteMatches,
+} from "../runtime/memberRecordedCaller.ts";
 import * as Callers from "../runtime/recordedCaller.ts";
 
 export type OperationState =
@@ -140,7 +143,7 @@ const validateMember = Effect.fn("OperationStore.validateMember")(function* (
         }))) ||
     !caller.local.ceiling.permissions.includes("workstreams:write") ||
     caller.local.ceiling.limits?.interactionMode !== "default" ||
-    caller.local.link_origin !== null ||
+    !memberWriteRouteMatches(forward, caller) ||
     caller.original_outbound_ceiling.access === "read-only" ||
     caller.original_outbound_ceiling.interaction_mode === "plan" ||
     !caller.original_outbound_ceiling.permissions.includes("workstreams:write") ||

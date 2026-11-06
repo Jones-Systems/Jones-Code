@@ -16,6 +16,7 @@ import { workstreamCapabilities } from "../registry/capabilities.ts";
 import type { PublicOperation } from "./memberOperationRead.ts";
 import { projectOperation } from "./memberOperations.ts";
 import * as Member from "./memberPublicOperations.ts";
+import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
 
 const isSetupStatus = Schema.is(Wire.WorkstreamSetupStatus);
 const at = "2026-01-01T00:00:00.000Z";
@@ -363,4 +364,46 @@ it.effect(
         (yield* Effect.result(projectOperation(request, { ...view, state: "committed" })))._tag,
       ).toBe("Failure");
     }),
+);
+
+// Synthetic application port proves only adapter selection; actual peer qualification lives in the combined harness.
+it.effect(
+  "linked placement uses the target-qualified application path without generic access bootstrap",
+  () => {
+    const f = fixture();
+    const placement = Wire.parseWorkstreamOperationRequest({
+      contract: Wire.WORKSTREAM_OPERATIONS_CONTRACT,
+      operation_id: "operation:linked-adapter-01",
+      kind: "set_primary",
+      origin: { kind: "agent" },
+      thread: { environment_id: "member:test", thread_id: "thread:member" },
+      target: {
+        kind: "unassigned",
+        registry_id: home.registry_instance_id,
+        owner_id: home.owner_id,
+      },
+      expected: { kind: "any" },
+    });
+    f.state.result = pending(placement);
+    const invocation: Mcp.McpInvocationScope = {
+      environmentId: EnvironmentId.make("member:test"),
+      requestNamespace: "link-original",
+      issuedAt: 1,
+      capabilities: new Set(["orchestration"]),
+      thread: undefined,
+      client: { sessionId: "link:home", label: "fixture", access: "full-access", linked: true },
+    };
+    return Effect.gen(function* () {
+      const publicOperations = yield* Public.WorkstreamOperations;
+      expect(yield* publicOperations.submit({ request: placement, wait_ms: 0 })).toEqual(
+        pending(placement),
+      );
+      expect(f.state.accesses).toBe(0);
+      expect(f.state.submissions).toEqual([{ request: placement, wait_ms: 0 }]);
+      f.state.error = new RegistryError({ code: "not_granted" });
+      expect(
+        yield* publicOperations.submit({ request: placement, wait_ms: 0 }).pipe(Effect.flip),
+      ).toBeInstanceOf(Public.OperationInternalError);
+    }).pipe(Effect.provide(f.layer), Effect.provideService(Mcp.McpInvocationContext, invocation));
+  },
 );

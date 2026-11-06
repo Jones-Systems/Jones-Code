@@ -7,6 +7,8 @@ import * as Layer from "effect/Layer";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
+import * as Mcp from "../../../../mcp/McpInvocationContext.ts";
+import * as Option from "effect/Option";
 import * as Public from "../../operations/service.ts";
 import { canonicalJson } from "../../operations/encoding.ts";
 import * as Recorded from "../runtime/recordedCaller.ts";
@@ -92,16 +94,10 @@ const make = Effect.gen(function* () {
   });
   return Public.WorkstreamOperations.of({
     submit: Effect.fn("MemberPublicOperations.submit")((input) =>
-      run(true, (home) =>
-        Effect.gen(function* () {
-          const parsed = yield* decodeInput(input).pipe(Effect.mapError(invalid));
-          const request = parsed.request;
-          const registry = request.kind === "set_primary" ? request.target : request.registry;
-          if (
-            registry.registry_id !== home.home.registry_instance_id ||
-            registry.owner_id !== home.home.owner_id
-          )
-            return yield* new RegistryError({ code: "registry_mismatch" });
+      Effect.gen(function* () {
+        const parsed = yield* decodeInput(input).pipe(Effect.mapError(invalid));
+        const request = parsed.request;
+        const perform = Effect.gen(function* () {
           const result = yield* decodeResult(yield* app.submitOperation(parsed)).pipe(
             Effect.mapError(invalid),
           );
@@ -114,8 +110,23 @@ const make = Effect.gen(function* () {
           )
             return yield* invalid();
           return result;
-        }),
-      ).pipe(
+        });
+        const invocation = yield* Effect.serviceOption(Mcp.McpInvocationContext);
+        if (
+          request.kind === "set_primary" &&
+          Option.isSome(invocation) &&
+          invocation.value.client?.linked
+        )
+          // Source admission and the exact receiving-home writer independently qualify this target.
+          return yield* perform;
+        return yield* run(true, (home) => {
+          const registry = request.kind === "set_primary" ? request.target : request.registry;
+          return registry.registry_id === home.home.registry_instance_id &&
+            registry.owner_id === home.home.owner_id
+            ? perform
+            : Effect.fail(new RegistryError({ code: "registry_mismatch" }));
+        });
+      }).pipe(
         Effect.mapError((error) =>
           error.code === "operation_id_conflict" || error.code === "thread_operation_in_progress"
             ? new Public.OperationConflict({ code: error.code })

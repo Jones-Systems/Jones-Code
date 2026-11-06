@@ -15,6 +15,7 @@ import type { PeerCallLimits } from "../../../../peer/PeerMcpClient.ts";
 import { canonicalJson } from "../../operations/encoding.ts";
 import { RegistryError } from "../registry/session.ts";
 import * as Members from "./memberEnrollment.ts";
+import { decodeSetupRequest } from "../store/peerSessionPinStore.ts";
 import * as Local from "./memberRecordedCaller.ts";
 import * as Startup from "./startup.ts";
 
@@ -215,6 +216,21 @@ const make = Effect.gen(function* () {
           canonicalJson(bound.intent.home_setup.pin.session.ceiling)
       )
         return yield* refused();
+      if (record.local.link_origin !== null) {
+        const link = Local.memberWriteLink(record.local);
+        const pin = decodeSetupRequest(bound.intent.member_setup_request_body).pin;
+        if (
+          !link ||
+          link.sessionId !== pin.session.session_id ||
+          pin.peer_environment_id !== record.association.home.home_environment_id ||
+          canonicalJson(record.local.link_session) !==
+            canonicalJson({
+              issued_at: Date.parse(pin.session.issued_at),
+              expires_at: Date.parse(pin.session.expires_at),
+            })
+        )
+          return yield* refused();
+      }
       return bound;
     });
     const refresh = Effect.fn("MemberAdmission.refreshWrite")(function* () {

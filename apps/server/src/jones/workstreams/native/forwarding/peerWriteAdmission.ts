@@ -187,7 +187,13 @@ const make = Effect.gen(function* () {
       i.source_binding_version !== pin.source_binding_version ||
       i.source_authority.environment_id !== pin.peer_environment_id ||
       ("kind" in request &&
-        (request.request.relay.linked_origin_environment_id !== null ||
+        ((request.request.relay.linked_origin_environment_id !== null &&
+          !(
+            request.kind === "operation" &&
+            request.request.request.kind === "set_primary" &&
+            request.request.evidence !== undefined &&
+            request.request.relay.linked_origin_environment_id === home.home_environment_id
+          )) ||
           (request.kind === "operation" &&
             request.request.request.kind === "set_primary" &&
             request.request.request.thread.environment_id !== pin.peer_environment_id)))

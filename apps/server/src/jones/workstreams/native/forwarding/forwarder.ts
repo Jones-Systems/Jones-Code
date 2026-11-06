@@ -291,6 +291,13 @@ const make = Effect.gen(function* () {
                 : yield* fail("target_unavailable")
               : { kind: "metadata" };
         const caller = yield* admission.captureWrite(target);
+        if (
+          caller.local.link_origin !== null &&
+          (decoded.kind !== "operation" ||
+            decoded.request.kind !== "set_primary" ||
+            input.evidence === undefined)
+        )
+          return yield* fail("home_route_required");
         const admitted = yield* admission.readmitWrite(caller);
         const a = caller.association,
           digest = sha(input.body);
@@ -352,7 +359,8 @@ const make = Effect.gen(function* () {
           relay: {
             source_environment_id: a.source.environment_id,
             origin,
-            linked_origin_environment_id: null,
+            linked_origin_environment_id:
+              caller.local.link_origin === null ? null : a.home.home_environment_id,
             hop: 1 as const,
           },
         };
