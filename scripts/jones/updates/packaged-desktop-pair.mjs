@@ -14,6 +14,61 @@ function assertDarwin() {
   NodeAssert.equal(process.platform, "darwin");
 }
 
+const packagedDesktopSessionScript = String.raw`
+ObjC.import("CoreGraphics");
+var raw = $.CGSessionCopyCurrentDictionary();
+var session = raw ? ObjC.deepUnwrap(ObjC.castRefToObject(raw)) : null;
+function booleanOrNull(value) { return typeof value === "boolean" ? value : null; }
+JSON.stringify({
+  schema: "jones-packaged-desktop-gui-session/v1",
+  sessionAvailable: session !== null,
+  onConsole: session ? booleanOrNull(session.kCGSSessionOnConsoleKey) : null,
+  loginDone: session ? booleanOrNull(session.kCGSessionLoginDoneKey) : null,
+  screenLocked: session ? booleanOrNull(session.CGSSessionScreenIsLocked) : null,
+  sessionUid: session && typeof session.kCGSSessionUserIDKey === "number"
+    ? session.kCGSSessionUserIDKey : null
+});
+`;
+
+export function validatePackagedDesktopGuiSession(receipt, { uid }) {
+  NodeAssert.equal(receipt.schema, "jones-packaged-desktop-gui-session/v1");
+  NodeAssert.ok(Number.isSafeInteger(uid) && uid >= 0);
+  NodeAssert.equal(receipt.sessionAvailable, true, "Packaged desktop GUI session is unavailable.");
+  NodeAssert.equal(
+    receipt.sessionUid,
+    uid,
+    "Packaged desktop GUI session belongs to another user.",
+  );
+  NodeAssert.equal(receipt.onConsole, true, "Packaged desktop GUI session is not on console.");
+  NodeAssert.equal(receipt.loginDone, true, "Packaged desktop GUI login is incomplete.");
+  NodeAssert.equal(
+    receipt.screenLocked,
+    false,
+    receipt.screenLocked === true
+      ? "Packaged desktop GUI screen is locked."
+      : "Packaged desktop GUI screen-lock state is unknown.",
+  );
+  return Object.freeze({ ...receipt });
+}
+
+export async function assertPackagedDesktopGuiSession({ fixtureRoot, signal }) {
+  assertDarwin();
+  const result = await runOwnedChild(
+    "/usr/bin/osascript",
+    ["-l", "JavaScript", "-e", packagedDesktopSessionScript],
+    {
+      cwd: fixtureRoot,
+      env: { PATH: "/usr/bin:/bin", HOME: fixtureRoot },
+      signal,
+      timeout: 5000,
+    },
+  );
+  NodeAssert.equal(result.signal, null, result.stderr);
+  NodeAssert.equal(result.code, 0, result.stderr || result.stdout);
+  NodeAssert.ok(result.stdout.length <= 4096);
+  return validatePackagedDesktopGuiSession(JSON.parse(result.stdout), { uid: process.getuid() });
+}
+
 const shaPattern = /^[0-9a-f]{64}$/;
 const sourcePattern = /^[0-9a-f]{40}$/;
 const sha = (value) => NodeCrypto.createHash("sha256").update(value).digest("hex");
@@ -273,6 +328,7 @@ export async function exercisePackagedDesktopStartupRefusal({
     T3CODE_DESKTOP_USER_DATA_DIR: profile,
     NODE_DISABLE_COMPILE_CACHE: "1",
   };
+  await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal });
   const observer = await startObserver(mutationObserver.executable, [home, profile], signal);
   let result;
   let dialog;
@@ -554,6 +610,7 @@ export async function exercisePackagedDesktopPreparationRefusal({
   NodeAssert.ok(["started", "skipped"].includes(expectedRelaunch));
   await confined(pair.fixtureRoot, temporary, true);
   const binding = await bindPackagedDesktopPreparedIntent({ pair, helper, manifest, intent });
+  await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal });
   const fault = await preparePackagedDesktopHelperFault({
     fixtureRoot: pair.fixtureRoot,
     helper,
@@ -708,6 +765,7 @@ export async function exercisePackagedDesktopInterruptedStartup({
   let settlement;
   let journalSha256;
   let stopRequested = false;
+  await assertPackagedDesktopGuiSession({ fixtureRoot: pair.fixtureRoot, signal });
   const execution = await runOwnedChild(pair.active.executablePath, [], {
     cwd: pair.fixtureRoot,
     env: {

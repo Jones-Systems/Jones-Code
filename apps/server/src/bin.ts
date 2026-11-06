@@ -1,7 +1,7 @@
 /**
  * Every ACP agent spawns `t3 acp-mcp-bridge` while opening its session, and terminal-fallback
  * agents run `t3 acp-mcp-call` per tool call, so their startup sits on first-message latency.
- * They, Codex's managed-token helper, native restore, and update preparation dispatch
+ * They, Codex's managed-token helper, native restore, and update preparation maintenance dispatch
  * before the full CLI module graph; other commands defer to ./binCli.ts.
  */
 import { isEntrypoint } from "./entrypoint.ts";
@@ -14,7 +14,11 @@ if (
   })
 ) {
   const command = process.argv[2];
-  if (command === "__jones-server-compute") {
+  if (command === "__jones-reconcile-preparation") {
+    const { runNativeEffectsRecoveryCommand } =
+      await import("./jones/updates/preparation/nativeEffectsRecovery.ts");
+    await runNativeEffectsRecoveryCommand(process.argv.slice(3));
+  } else if (command === "__jones-server-compute") {
     // Closed private protocol: never fall through to CLI/server initialization,
     // including when bootstrap validation or native loading rejects the command.
     const { runServerComputeWorkerCommand } = await import("./jones/serverCompute/worker.ts");

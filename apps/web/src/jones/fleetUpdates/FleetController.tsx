@@ -52,6 +52,9 @@ export async function readFleetPublicationSource() {
   const bridge = window.desktopBridge;
   if (bridge?.installPlan === undefined)
     return (await bridge?.getUpdateState())?.jones?.installedSource;
-  const result = await bridge.installPlan({ type: "publication" });
-  return result.publication?.kind === "committed" ? result.publication.source : undefined;
+  const result = await bridge.installPlan({ type: "publication", acceptOrdinaryRecovery: 1 });
+  return result.publication?.kind === "committed" ||
+    result.publication?.kind === "ordinary-verified"
+    ? result.publication.source
+    : undefined;
 }

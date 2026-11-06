@@ -7,6 +7,10 @@
       "types": "./src/jones/deliveryEvidence.ts",
       "default": "./src/jones/deliveryEvidence.ts"
     },
+    "./jones/planCreationOperation": {
+      "types": "./src/jones/planCreationOperation.ts",
+      "default": "./src/jones/planCreationOperation.ts"
+    },
     "./jones/preparedThreadTurn": {
       "types": "./src/jones/preparedThreadTurn.ts",
       "default": "./src/jones/preparedThreadTurn.ts"

@@ -10,6 +10,7 @@ import {
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import { ProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import * as NetAddress from "effect/net/NetAddress";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
@@ -2694,6 +2695,61 @@ it.effect("ProviderSessionManagerV2 refuses replacement until the retiring scope
       ),
     );
   }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 retains the writer fence after an unknown-control finalizer fails",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      yield* Effect.gen(function* () {
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const sink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const threadId = ThreadId.make("uncertain-native-scope-close");
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* sink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        const input = { threadId, providerSessionId, modelSelection, runtimePolicy };
+        yield* manager.open(input);
+        const released = yield* Effect.exit(
+          manager.release({
+            providerSessionId,
+            reason: "manual_shutdown",
+          }),
+        );
+        assert.isTrue(
+          Exit.isFailure(released),
+          "a failed adapter finalizer cannot confirm scope cleanup",
+        );
+        assert.isTrue(Option.isNone(yield* manager.get(providerSessionId)));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(manager.open(input))));
+        assert.equal((yield* Ref.get(state)).openCount, 1);
+      }).pipe(
+        Effect.provide(
+          layerTest({
+            state,
+            idleTimeoutMs: 60_000,
+            beforeOpen: (input) =>
+              Effect.addFinalizer(() =>
+                Effect.die(
+                  new ProviderControlOutcomeUnknown({
+                    driver: CODEX_DRIVER,
+                    providerSessionId: input.providerSessionId,
+                    nativeThreadId: "synthetic-unconfirmed-native-thread",
+                    operation: "retire",
+                  }),
+                ),
+              ),
+          }),
+        ),
+      );
+    }),
 );
 
 it.effect("ProviderSessionManagerV2 persists release when session scope close hangs", () =>
