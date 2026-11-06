@@ -270,6 +270,7 @@ export const make = Effect.gen(function* () {
       projectWorktreeCleanup: true,
       settledWorktreeCleanup: true,
       settledWorktreeRetirement: true,
+      checkoutRecreation: true,
       worktreesDirectory: true,
       threadAutoSettlementScope: true,
       threadRestartContinuation: true,

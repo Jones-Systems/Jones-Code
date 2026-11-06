@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off - private ownership probes require lstat; FileSystem.stat follows symlinks.
 import * as NodeFSP from "node:fs/promises";
+import { recreate, RecreationHold } from "../jones/workspaceRecreation/Native.ts";
 import * as Cache from "effect/Cache";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
@@ -5545,6 +5546,25 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     createWorktree: Effect.fnUntraced(function* (input, options) {
       return yield* createWorktree(input, options).pipe(
         Effect.ensuring(invalidateWorktreeCreationCaches(input.cwd)),
+      );
+    }),
+    recreateCheckout: Effect.fnUntraced(function* (input) {
+      return yield* withListRefsInvalidation(
+        input.cwd,
+        Effect.tryPromise({
+          try: () => recreate(input),
+          catch: (cause) =>
+            cause instanceof RecreationHold
+              ? cause
+              : new RecreationHold(
+                  "unknown",
+                  input.source.binding.path,
+                  input.owner,
+                  "native recreation observation unavailable",
+                  "Reconcile this exact checkout before retrying.",
+                  { cause },
+                ),
+        }).pipe(Effect.uninterruptible),
       );
     }),
     fetchRefIntoBranch: Effect.fnUntraced(function* (input) {

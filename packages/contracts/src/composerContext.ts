@@ -1,5 +1,6 @@
 import * as Schema from "effect/Schema";
 import { ThreadReferenceExcerpt } from "./jones/threadReferenceExcerpt.ts";
+import { CheckoutRecreationRequest } from "./jones/workspaceRecreation.ts";
 
 import {
   EnvironmentId,
@@ -285,6 +286,7 @@ export type GuestMessageAttribution = typeof GuestMessageAttribution.Type;
 /** Structured context riding on a user message. Undecodable records are dropped, not fatal. */
 export const OrchestrationMessageContext = Schema.Struct({
   version: Schema.Literal(1),
+  checkoutRecreation: Schema.optional(CheckoutRecreationRequest),
   guest: Schema.optional(GuestMessageAttribution),
   records: Schema.Array(Schema.Unknown)
     .check(

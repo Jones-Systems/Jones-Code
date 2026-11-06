@@ -1,4 +1,9 @@
 import * as NodeBuffer from "node:buffer";
+import type {
+  RecreationInput,
+  RecreationResult,
+  RecreationHold,
+} from "../jones/workspaceRecreation/Native.ts";
 
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
@@ -458,6 +463,9 @@ export class GitVcsDriver extends Context.Service<
       input: VcsCreateWorktreeInput,
       options?: CreateWorktreeOptions,
     ) => Effect.Effect<VcsCreateWorktreeResult, GitCommandError>;
+    readonly recreateCheckout?: (
+      input: RecreationInput,
+    ) => Effect.Effect<RecreationResult, RecreationHold>;
     /** Force-updates local `branch` to the primary remote's `ref`. */
     readonly fetchRefIntoBranch: (
       input: GitFetchRefInput & { readonly branch: string },

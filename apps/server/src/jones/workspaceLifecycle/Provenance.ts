@@ -2,6 +2,7 @@
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import { readBreadcrumb } from "../workspaceRecreation/Native.ts";
 import type { WorktreeProvenanceEntry } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -159,7 +160,11 @@ const threadSchema = Schema.fromJsonString(
     branch: Schema.NullOr(Schema.String),
   }),
 );
-const incarnation = (environment: string, source: Sources.CheckoutSource) =>
+const incarnation = (
+  environment: string,
+  source: Sources.CheckoutSource,
+  recreation: string | null,
+) =>
   `workspace:${digest({
     environment,
     project: source.target.projectId,
@@ -167,6 +172,7 @@ const incarnation = (environment: string, source: Sources.CheckoutSource) =>
     birth: source.target.directoryIdentity,
     common: source.target.gitCommonIdentity,
     admin: source.target.gitDirectoryIdentity,
+    ...(recreation === null ? {} : { recreation }),
   })}`;
 const compiledIncomingSchema2 = Schema.is(LifecycleError);
 
@@ -223,7 +229,11 @@ const make = Effect.gen(function* () {
         thread.delegatedFrom !== undefined)
         ? "delegate"
         : input.reason;
-    const id = incarnation(environment, source);
+    const recreated = yield* Effect.tryPromise({
+      try: () => readBreadcrumb(target.gitDirectory!),
+      catch: error,
+    });
+    const id = incarnation(environment, source, recreated?.breadcrumb ?? null);
     const predecessors = yield* store.lookup({ threadId: input.threadId });
     const physicalHistory = predecessors.findLast(
       (p) =>
@@ -341,8 +351,15 @@ const make = Effect.gen(function* () {
       });
     }, Effect.mapError(error)),
     record: Effect.fn("Provenance.record")(function* (source, fact) {
+      const recreated =
+        source.target.gitDirectory === null
+          ? null
+          : yield* Effect.tryPromise({
+              try: () => readBreadcrumb(source.target.gitDirectory!),
+              catch: error,
+            });
       if (
-        incarnation(environment, source) !== fact.incarnation_id ||
+        incarnation(environment, source, recreated?.breadcrumb ?? null) !== fact.incarnation_id ||
         source.target.threadId !== fact.thread_id
       )
         return yield* new LifecycleError({ reason: "identity" });

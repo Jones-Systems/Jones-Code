@@ -2806,7 +2806,18 @@
     "apps/web/src/components/BranchToolbarEnvModeSelector.tsx": "hook",
     "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx": "jones-tests-in-upstream",
     "apps/server/src/jones/cleanup/RuntimeUseConversation.ts": "jones-owned",
-    "apps/server/src/provider/agentContextBudget.json": "accepted-shared"
+    "apps/server/src/provider/agentContextBudget.json": "accepted-shared",
+    "apps/server/src/jones/workspaceRecreation/Native.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Runtime.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Runtime.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workspaceRecreation.ts": "jones-owned",
+    "packages/contracts/src/jones/workspaceRecreation.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-recreation.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
