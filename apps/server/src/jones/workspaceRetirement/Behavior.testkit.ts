@@ -1,9 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Task-owned synthetic filesystem/SQLite fixtures; every fixture has exact finally cleanup.
-import assert from "node:assert/strict";
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { spawnSync } from "node:child_process";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
+import * as NodeChildProcess from "node:child_process";
 import { fixture, command, completeConsumers } from "./Conformance.testkit.ts";
 import { canonical, openAbsolute, openRelative } from "./Filesystem.ts";
 import { attest, binding, contentManifest, manifestBytes, verify } from "./OutputAttestation.ts";
@@ -17,19 +17,19 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
   "descriptor-relative root duplication retains the directory and rejects symlink entries":
     async () =>
       fixture(async ({ base, worktree }) => {
-        const root = Path.join(worktree, "build");
-        await FS.mkdir(root);
+        const root = NodePath.join(worktree, "build");
+        await NodeFSP.mkdir(root);
         const directory = await openAbsolute(root, true);
         try {
           const copy = await openRelative(directory, "", true);
           try {
-            assert.equal((await copy.stat()).ino, (await directory.stat()).ino);
-            assert.notEqual(copy.fd, directory.fd);
+            NodeAssert.equal((await copy.stat()).ino, (await directory.stat()).ino);
+            NodeAssert.notEqual(copy.fd, directory.fd);
           } finally {
             await copy.close();
           }
-          await FS.symlink(base, Path.join(root, "escape"));
-          await assert.rejects(openRelative(directory, "escape", true));
+          await NodeFSP.symlink(base, NodePath.join(root, "escape"));
+          await NodeAssert.rejects(openRelative(directory, "escape", true));
         } finally {
           await directory.close();
         }
@@ -44,7 +44,7 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
           mode: 420,
           sha256: "0".repeat(64),
         }));
-        assert.deepEqual(
+        NodeAssert.deepEqual(
           manifestBytes(entries)
             .toString()
             .trim()
@@ -52,17 +52,17 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
             .map((line) => JSON.parse(line).relpath),
           ["\ue000", "😀"],
         );
-        const root = Path.join(worktree, "build");
-        await FS.mkdir(root);
-        await FS.symlink(Buffer.from([255]), Path.join(root, "invalid-target"));
-        assert.equal((await contentManifest(root)).observation.verification, "unverifiable");
+        const root = NodePath.join(worktree, "build");
+        await NodeFSP.mkdir(root);
+        await NodeFSP.symlink(Buffer.from([255]), NodePath.join(root, "invalid-target"));
+        NodeAssert.equal((await contentManifest(root)).observation.verification, "unverifiable");
       }),
   "two-pass proof binds additions, modes, targets, immutable baselines and incarnation": async () =>
     fixture(async ({ base, worktree, input }) => {
-      const root = Path.join(worktree, "build");
-      await FS.mkdir(root);
-      await FS.writeFile(Path.join(root, "a"), "abc");
-      await FS.symlink(Path.join(base, "never-read"), Path.join(root, "link"));
+      const root = NodePath.join(worktree, "build");
+      await NodeFSP.mkdir(root);
+      await NodeFSP.writeFile(NodePath.join(root, "a"), "abc");
+      await NodeFSP.symlink(NodePath.join(base, "never-read"), NodePath.join(root, "link"));
       const record = await attest({
         worktree,
         root,
@@ -70,7 +70,7 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
         status: "succeeded",
         participantGuard,
       });
-      assert.equal((await verify(record.sidecar, worktree)).verification, "content");
+      NodeAssert.equal((await verify(record.sidecar, worktree)).verification, "content");
       const second = await attest({
         worktree,
         root,
@@ -78,40 +78,42 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
         status: "failed",
         participantGuard,
       });
-      assert.notEqual(record.sidecar, second.sidecar);
-      assert.equal(second.status, "failed");
-      await FS.chmod(Path.join(root, "a"), 0o600);
-      assert.equal((await verify(record.sidecar, worktree)).verification, "mismatch");
-      await FS.chmod(Path.join(root, "a"), 0o644);
-      await FS.unlink(Path.join(root, "link"));
-      await FS.symlink("changed-target", Path.join(root, "link"));
-      assert.equal((await verify(record.sidecar, worktree)).verification, "mismatch");
-      await FS.writeFile(
-        Path.join(input.expected.git_dir, "workspace-provenance.json"),
+      NodeAssert.notEqual(record.sidecar, second.sidecar);
+      NodeAssert.equal(second.status, "failed");
+      await NodeFSP.chmod(NodePath.join(root, "a"), 0o600);
+      NodeAssert.equal((await verify(record.sidecar, worktree)).verification, "mismatch");
+      await NodeFSP.chmod(NodePath.join(root, "a"), 0o644);
+      await NodeFSP.unlink(NodePath.join(root, "link"));
+      await NodeFSP.symlink("changed-target", NodePath.join(root, "link"));
+      NodeAssert.equal((await verify(record.sidecar, worktree)).verification, "mismatch");
+      await NodeFSP.writeFile(
+        NodePath.join(input.expected.git_dir, "workspace-provenance.json"),
         canonical({ incarnation_id: "new-incarnation" }),
       );
-      assert.equal((await verify(record.sidecar, worktree)).reason, "identity_mismatch");
+      NodeAssert.equal((await verify(record.sidecar, worktree)).reason, "identity_mismatch");
     }),
   "protection scan refuses unreadable sensitive files before hashing and cannot follow directory symlinks":
     async () =>
       fixture(async ({ base, worktree, input }) => {
-        const root = Path.join(worktree, "build");
-        await FS.mkdir(root);
-        await FS.writeFile(Path.join(root, "a"), "output");
-        await FS.writeFile(Path.join(root, ".env"), "synthetic protected fixture", { mode: 0 });
+        const root = NodePath.join(worktree, "build");
+        await NodeFSP.mkdir(root);
+        await NodeFSP.writeFile(NodePath.join(root, "a"), "output");
+        await NodeFSP.writeFile(NodePath.join(root, ".env"), "synthetic protected fixture", {
+          mode: 0,
+        });
         const proof = await contentManifest(root);
-        assert.deepEqual(proof.observation.reasons, ["sensitive_ignored"]);
-        assert.equal(proof.payload.length, 0);
+        NodeAssert.deepEqual(proof.observation.reasons, ["sensitive_ignored"]);
+        NodeAssert.equal(proof.payload.length, 0);
         const result = await classifyIgnored({
           worktree,
           root,
           common: input.expected.git_common_dir,
           coverage: { exactRoots: [root], classes: ["declared_cache"] },
         });
-        assert.equal(result.reason, "sensitive_ignored");
-        await FS.mkdir(Path.join(root, "nested"));
-        await FS.symlink(Path.join(base, "outside"), Path.join(root, "nested/.git"));
-        assert.equal(
+        NodeAssert.equal(result.reason, "sensitive_ignored");
+        await NodeFSP.mkdir(NodePath.join(root, "nested"));
+        await NodeFSP.symlink(NodePath.join(base, "outside"), NodePath.join(root, "nested/.git"));
+        NodeAssert.equal(
           (
             await classifyIgnored({
               worktree,
@@ -122,25 +124,25 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
           ).reason,
           "nested_repository",
         );
-        const linked = Path.join(worktree, "symlink-output");
-        await FS.symlink(root, linked);
-        assert.equal((await contentManifest(linked)).observation.verification, "unverifiable");
+        const linked = NodePath.join(worktree, "symlink-output");
+        await NodeFSP.symlink(root, linked);
+        NodeAssert.equal((await contentManifest(linked)).observation.verification, "unverifiable");
       }),
   "recognized roots still protect registered and bare common stores": async () =>
     fixture(async ({ base, worktree, input }) => {
-      const root = Path.join(worktree, "cache"),
-        bare = Path.join(root, "store.git");
-      await FS.mkdir(root);
+      const root = NodePath.join(worktree, "cache"),
+        bare = NodePath.join(root, "store.git");
+      await NodeFSP.mkdir(root);
       await command(root, ["init", "--bare", bare]);
       const classified = await classifyIgnored({
         worktree,
         root,
         common: input.expected.git_common_dir,
         coverage: { exactRoots: [root] },
-        registered: [{ path: Path.join(base, "external-checkout"), common: bare }],
+        registered: [{ path: NodePath.join(base, "external-checkout"), common: bare }],
       });
-      assert.equal(classified.reason, "shared_common_store");
-      assert.equal(
+      NodeAssert.equal(classified.reason, "shared_common_store");
+      NodeAssert.equal(
         (
           await classifyIgnored({
             worktree,
@@ -151,20 +153,22 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
         ).reason,
         "nested_repository",
       );
-      assert.ok((await contentManifest(root)).observation.reasons.includes("nested_repository"));
+      NodeAssert.ok(
+        (await contentManifest(root)).observation.reasons.includes("nested_repository"),
+      );
     }),
   "bounds may shorten but cannot expand and malformed evidence cannot become a baseline":
     async () =>
       fixture(async ({ worktree }) => {
-        const root = Path.join(worktree, "build");
-        await FS.mkdir(root);
-        await FS.writeFile(Path.join(root, "a"), "abc");
-        assert.ok(
+        const root = NodePath.join(worktree, "build");
+        await NodeFSP.mkdir(root);
+        await NodeFSP.writeFile(NodePath.join(root, "a"), "abc");
+        NodeAssert.ok(
           (await contentManifest(root, { bytes: 2 })).observation.reasons.includes(
             "bound_exceeded",
           ),
         );
-        await assert.rejects(contentManifest(root, { seconds: 301 }), /invalid_bounds/);
+        await NodeAssert.rejects(contentManifest(root, { seconds: 301 }), /invalid_bounds/);
         const record = await attest({
           worktree,
           root,
@@ -172,10 +176,10 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
           status: "cancelled",
           participantGuard,
         });
-        assert.equal(record.status, "cancelled");
-        await FS.appendFile(record.sidecar.replace(/\.json$/, ".manifest.jsonl"), "altered\n");
-        assert.equal((await verify(record.sidecar, worktree)).verification, "mismatch");
-        assert.equal(
+        NodeAssert.equal(record.status, "cancelled");
+        await NodeFSP.appendFile(record.sidecar.replace(/\.json$/, ".manifest.jsonl"), "altered\n");
+        NodeAssert.equal((await verify(record.sidecar, worktree)).verification, "mismatch");
+        NodeAssert.equal(
           (await verify(record.sidecar + ".absent", worktree)).verification,
           "unverifiable",
         );
@@ -183,44 +187,44 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
   "cheap finalization records ownership and all terminal outcomes without hashing or proving disposability":
     async () =>
       fixture(async ({ worktree }) => {
-        const root = Path.join(worktree, "node_modules");
-        await FS.mkdir(root);
-        await FS.writeFile(Path.join(root, ".env"), "synthetic", { mode: 0 });
+        const root = NodePath.join(worktree, "node_modules");
+        await NodeFSP.mkdir(root);
+        await NodeFSP.writeFile(NodePath.join(root, ".env"), "synthetic", { mode: 0 });
         for (const status of ["succeeded", "failed", "cancelled"] as const) {
           const session = await beginProduction(worktree, "fixture", [root]);
           const result = await finishProduction(session, status);
-          assert.equal(result.status, status);
-          assert.equal(result.owner, "fixture");
-          assert.equal(result.outcome, "retained");
-          assert.equal(result.proofStatus, "deferred");
-          assert.deepEqual(result.sidecars, []);
-          assert.deepEqual(result.reasons, ["content_verification_deferred"]);
-          assert.equal(
-            await FS.stat(Path.join(session.record.binding.git_dir, "workspace-outputs")).catch(
-              () => null,
-            ),
+          NodeAssert.equal(result.status, status);
+          NodeAssert.equal(result.owner, "fixture");
+          NodeAssert.equal(result.outcome, "retained");
+          NodeAssert.equal(result.proofStatus, "deferred");
+          NodeAssert.deepEqual(result.sidecars, []);
+          NodeAssert.deepEqual(result.reasons, ["content_verification_deferred"]);
+          NodeAssert.equal(
+            await NodeFSP.stat(
+              NodePath.join(session.record.binding.git_dir, "workspace-outputs"),
+            ).catch(() => null),
             null,
           );
-          await assert.rejects(finishProduction(session, status), /already_finalized/);
+          await NodeAssert.rejects(finishProduction(session, status), /already_finalized/);
         }
-        assert.deepEqual(await outputObligations(worktree), []);
+        NodeAssert.deepEqual(await outputObligations(worktree), []);
       }),
   "explicit producer finalization captures content, unknown effects remain durable and target-local":
     async () =>
       fixture(async ({ worktree, input }) => {
-        const root = Path.join(worktree, "build");
-        await FS.mkdir(root);
-        await FS.writeFile(Path.join(root, "a"), "abc");
+        const root = NodePath.join(worktree, "build");
+        await NodeFSP.mkdir(root);
+        await NodeFSP.writeFile(NodePath.join(root, "a"), "abc");
         const session = await beginProduction(worktree, "fixture", [root]);
         const result = await finishProduction(session, "failed", [], { verifyContent: true });
-        assert.equal(result.outcome, "retained");
-        assert.equal(result.sidecars.length, 1);
-        assert.equal(result.proofStatus, "attested");
-        assert.equal((await verify(result.sidecars[0]!, worktree)).verification, "content");
+        NodeAssert.equal(result.outcome, "retained");
+        NodeAssert.equal(result.sidecars.length, 1);
+        NodeAssert.equal(result.proofStatus, "attested");
+        NodeAssert.equal((await verify(result.sidecars[0]!, worktree)).verification, "content");
         const unfinished = await beginProduction(worktree, "unknown-script", []);
         await finishProduction(unfinished, "cancelled");
-        assert.equal((await outputObligations(worktree))[0]?.status, "cancelled");
-        assert.ok(
+        NodeAssert.equal((await outputObligations(worktree))[0]?.status, "cancelled");
+        NodeAssert.ok(
           (
             await qualify({ ...input, attestations: { [root]: result.sidecars[0]! } })
           ).reasons.includes("obligation"),
@@ -231,8 +235,11 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
       fixture(async ({ worktree, input }) => {
         const bound = input.expected;
         await participantGuard(bound, async () => {
-          const path = Path.join(bound.git_common_dir, "workspace-lifecycle/reservations.sqlite3");
-          const attempt = spawnSync(
+          const path = NodePath.join(
+            bound.git_common_dir,
+            "workspace-lifecycle/reservations.sqlite3",
+          );
+          const attempt = NodeChildProcess.spawnSync(
             process.execPath,
             [
               "--input-type=module",
@@ -242,11 +249,14 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
             ],
             { encoding: "utf8", timeout: 3000 },
           );
-          assert.equal(attempt.status, 0, attempt.stderr);
-          assert.equal(attempt.stdout, "locked");
+          NodeAssert.equal(attempt.status, 0, attempt.stderr);
+          NodeAssert.equal(attempt.stdout, "locked");
         });
-        const path = Path.join(bound.git_common_dir, "workspace-lifecycle/reservations.sqlite3"),
-          db = new DatabaseSync(path);
+        const path = NodePath.join(
+            bound.git_common_dir,
+            "workspace-lifecycle/reservations.sqlite3",
+          ),
+          db = new NodeSqlite.DatabaseSync(path);
         try {
           db.exec("BEGIN IMMEDIATE");
           db.prepare("INSERT INTO reservations VALUES(?,?,?)").run(
@@ -259,31 +269,33 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
           db.close();
         }
         let wrote = false;
-        await assert.rejects(
+        await NodeAssert.rejects(
           participantGuard(bound, async () => {
             wrote = true;
           }),
           /retiring/,
         );
-        assert.equal(wrote, false);
-        await assert.rejects(beginProduction(worktree, "fixture", []), /retiring/);
-        assert.equal(
-          await FS.stat(Path.join(bound.git_dir, "workspace-output-obligations")).catch(() => null),
+        NodeAssert.equal(wrote, false);
+        await NodeAssert.rejects(beginProduction(worktree, "fixture", []), /retiring/);
+        NodeAssert.equal(
+          await NodeFSP.stat(NodePath.join(bound.git_dir, "workspace-output-obligations")).catch(
+            () => null,
+          ),
           null,
         );
       }),
   "guard passes absent common stores without creating and refuses malformed stores": async () =>
     fixture(async ({ base, input }) => {
-      const absent = Path.join(base, "absent-common");
-      assert.equal(
+      const absent = NodePath.join(base, "absent-common");
+      NodeAssert.equal(
         await participantGuard({ ...input.expected, git_common_dir: absent }, async () => 42),
         42,
       );
-      assert.equal(await FS.stat(absent).catch(() => null), null);
-      const parent = Path.join(input.expected.git_common_dir, "workspace-lifecycle");
-      await FS.mkdir(parent);
-      await FS.writeFile(Path.join(parent, "reservations.sqlite3"), "malformed store");
-      await assert.rejects(participantGuard(input.expected, async () => 42));
+      NodeAssert.equal(await NodeFSP.stat(absent).catch(() => null), null);
+      const parent = NodePath.join(input.expected.git_common_dir, "workspace-lifecycle");
+      await NodeFSP.mkdir(parent);
+      await NodeFSP.writeFile(NodePath.join(parent, "reservations.sqlite3"), "malformed store");
+      await NodeAssert.rejects(participantGuard(input.expected, async () => 42));
     }),
   "consumer evidence names the missing adapter, freshness and platform limits without retaining argv":
     async () =>
@@ -295,24 +307,24 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
           limits: ["loaded services not observed"],
         };
         const decision = consumerDecision(worktree, consumers, 1000);
-        assert.deepEqual(decision.unknown, ["consumer_evidence_unavailable"]);
-        assert.equal(decision.coverage.services?.reason, "incomplete_services_coverage");
-        assert.equal(
+        NodeAssert.deepEqual(decision.unknown, ["consumer_evidence_unavailable"]);
+        NodeAssert.equal(decision.coverage.services?.reason, "incomplete_services_coverage");
+        NodeAssert.equal(
           consumerDecision(worktree, completeConsumers(0), 120001).coverage.native?.reason,
           "stale_or_invalid_observation",
         );
-        const file = Path.join(base, "fixture.service");
-        await FS.writeFile(
+        const file = NodePath.join(base, "fixture.service");
+        await NodeFSP.writeFile(
           file,
           "ExecStart=" + worktree + "/bin/server --synthetic-secret=do-not-emit",
         );
         const services = await serviceProbe(worktree, [file]);
-        assert.equal(services.status, "partial");
-        assert.deepEqual(services.paths, [worktree]);
-        assert.ok(!JSON.stringify(services).includes("do-not-emit"));
+        NodeAssert.equal(services.status, "partial");
+        NodeAssert.deepEqual(services.paths, [worktree]);
+        NodeAssert.ok(!JSON.stringify(services).includes("do-not-emit"));
         const unsupported = await processProbe(worktree, "win32");
-        assert.equal(unsupported.status, "unavailable");
-        assert.ok(unsupported.limits.includes("unsupported platform"));
+        NodeAssert.equal(unsupported.status, "unavailable");
+        NodeAssert.ok(unsupported.limits.includes("unsupported platform"));
       }),
   "Linux and Darwin process adapters report cwd, executable text and argv with partial coverage on failures":
     async () => {
@@ -336,10 +348,10 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
       };
       for (const platform of ["linux", "darwin"] as const) {
         const probe = await processProbe(target, platform, io);
-        assert.equal(probe.status, "complete");
-        assert.ok(probe.paths.includes(target));
-        assert.ok(probe.paths.includes(target + "/mapped"));
-        assert.ok(!JSON.stringify(probe).includes("synthetic-do-not-emit"));
+        NodeAssert.equal(probe.status, "complete");
+        NodeAssert.ok(probe.paths.includes(target));
+        NodeAssert.ok(probe.paths.includes(target + "/mapped"));
+        NodeAssert.ok(!JSON.stringify(probe).includes("synthetic-do-not-emit"));
         const failed = await processProbe(target, platform, {
           ...io,
           read: async () => {
@@ -350,29 +362,32 @@ export const behaviorCases: Record<string, () => Promise<void>> = {
             return io.command(file, args);
           },
         });
-        assert.equal(failed.status, "partial");
+        NodeAssert.equal(failed.status, "partial");
       }
     },
   "final check detects a new ignored root and stale bindings without acquiring removal authority":
     async () =>
       fixture(async ({ worktree, input }) => {
         const initial = await qualify(input);
-        assert.equal(initial.outcome, "retirable");
-        await FS.mkdir(Path.join(worktree, "build"));
-        await FS.writeFile(Path.join(worktree, "build/note"), "unique");
-        assert.equal((await finalCheck(input, initial)).conflict, true);
+        NodeAssert.equal(initial.outcome, "retirable");
+        await NodeFSP.mkdir(NodePath.join(worktree, "build"));
+        await NodeFSP.writeFile(NodePath.join(worktree, "build/note"), "unique");
+        NodeAssert.equal((await finalCheck(input, initial)).conflict, true);
         const stale = await qualify({
           ...input,
           expected: { ...input.expected, ino: input.expected.ino + 1 },
         });
-        assert.deepEqual(stale.reasons, ["identity_mismatch"]);
-        assert.equal(stale.authority_effect, "none");
-        assert.equal((await binding(worktree)).ino, input.expected.ino);
+        NodeAssert.deepEqual(stale.reasons, ["identity_mismatch"]);
+        NodeAssert.equal(stale.authority_effect, "none");
+        NodeAssert.equal((await binding(worktree)).ino, input.expected.ino);
       }),
   "setup unknown effects survive missing producer records": async () =>
     fixture(async ({ worktree, input }) => {
-      await FS.mkdir(Path.join(worktree, ".t3"));
-      await FS.writeFile(Path.join(worktree, ".t3/setup-unfinalized"), "setup_unfinalized\n");
-      assert.ok((await qualify(input)).reasons.includes("setup_unfinalized"));
+      await NodeFSP.mkdir(NodePath.join(worktree, ".t3"));
+      await NodeFSP.writeFile(
+        NodePath.join(worktree, ".t3/setup-unfinalized"),
+        "setup_unfinalized\n",
+      );
+      NodeAssert.ok((await qualify(input)).reasons.includes("setup_unfinalized"));
     }),
 };

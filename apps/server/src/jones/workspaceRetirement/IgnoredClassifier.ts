@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Bounded metadata/proof adapter; no removal or owner authentication.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import {
   canonical,
   exists,
@@ -86,14 +86,14 @@ async function sharedStore(
   registered: readonly { path: string; common: string }[],
 ) {
   for (const relative of nested) {
-    const path = Path.join(root, relative);
+    const path = NodePath.join(root, relative);
     if (registered.some((r) => inside(r.path, root) || inside(r.common, root))) return true;
     try {
-      const stat = await FS.lstat(path);
+      const stat = await NodeFSP.lstat(path);
       // Resolve only native pointer metadata. Running Git here would also parse
       // an ignored repository's config/includes before returning its store.
       if (stat.isSymbolicLink()) {
-        const target = Path.resolve(Path.dirname(path), await FS.readlink(path));
+        const target = NodePath.resolve(NodePath.dirname(path), await NodeFSP.readlink(path));
         if (registered.some((r) => r.common === target)) return true;
         continue;
       }
@@ -103,21 +103,21 @@ async function sharedStore(
           .toString()
           .match(/^gitdir: ([^\r\n]+)\r?\n?$/);
         if (!pointer) continue;
-        admin = Path.resolve(Path.dirname(path), pointer[1]!);
+        admin = NodePath.resolve(NodePath.dirname(path), pointer[1]!);
       }
       const directory = await openAbsolute(admin, true);
       await directory.close();
-      const commonFile = Path.join(admin, "commondir");
+      const commonFile = NodePath.join(admin, "commondir");
       const common = (await exists(commonFile))
-        ? Path.resolve(admin, (await readBounded(commonFile, 65536)).toString().trim())
+        ? NodePath.resolve(admin, (await readBounded(commonFile, 65536)).toString().trim())
         : admin;
       if (registered.some((r) => r.common === common)) return true;
       if (
-        (await exists(Path.join(common, "worktrees"))) &&
-        (await FS.readdir(Path.join(common, "worktrees"))).length > 0
+        (await exists(NodePath.join(common, "worktrees"))) &&
+        (await NodeFSP.readdir(NodePath.join(common, "worktrees"))).length > 0
       )
         return true;
-      if (await exists(Path.join(common, "objects/info/alternates"))) return true;
+      if (await exists(NodePath.join(common, "objects/info/alternates"))) return true;
     } catch {
       /* An unresolvable nested store remains protected as a nested repository. */
     }
@@ -151,12 +151,12 @@ export async function classifyIgnored(input: {
     ...(manifestSha256 ? { manifestSha256 } : {}),
   });
   try {
-    const info = await FS.lstat(root);
+    const info = await NodeFSP.lstat(root);
     let nested: string[] = [],
       sensitivePaths: string[] = [],
       entries: string[] = [],
-      unobservedSensitiveDirectory = info.isDirectory() && sensitive(Path.basename(root));
-    if (root.split(Path.sep).some(sensitive)) sensitivePaths.push(root);
+      unobservedSensitiveDirectory = info.isDirectory() && sensitive(NodePath.basename(root));
+    if (root.split(NodePath.sep).some(sensitive)) sensitivePaths.push(root);
     if (info.isDirectory()) {
       const dir = await openAbsolute(root, true);
       try {
@@ -165,10 +165,10 @@ export async function classifyIgnored(input: {
           bytes: LIMITS.bytes,
         });
         nested = m.nested;
-        sensitivePaths.push(...m.sensitivePaths.map((p) => Path.join(root, p)));
+        sensitivePaths.push(...m.sensitivePaths.map((p) => NodePath.join(root, p)));
         entries = m.entries.map((e) => e.relpath);
         unobservedSensitiveDirectory ||= m.entries.some(
-          (e) => e.type === "directory" && sensitive(Path.basename(e.relpath)),
+          (e) => e.type === "directory" && sensitive(NodePath.basename(e.relpath)),
         );
         if (m.reasons.some((r) => r !== "nested_repository" && r !== "sensitive_ignored"))
           return hold("attestation_unverifiable");
@@ -176,7 +176,7 @@ export async function classifyIgnored(input: {
         await dir.close();
       }
     } else if (!info.isFile() && !info.isSymbolicLink()) return hold("attestation_unverifiable");
-    if (Path.basename(root) === ".git") nested.push("");
+    if (NodePath.basename(root) === ".git") nested.push("");
     if (input.registered?.some((r) => inside(r.path, root) || inside(r.common, root)))
       return hold("shared_common_store");
     if (nested.length)
@@ -217,18 +217,18 @@ export async function classifyIgnored(input: {
       return exact ? allow("covered, including additions") : hold("preservation_unverified");
     }
     if (exact) return allow("covered, including additions");
-    if (Path.basename(root) === "__pycache__" || root.endsWith(".pyc"))
+    if (NodePath.basename(root) === "__pycache__" || root.endsWith(".pyc"))
       return hold("unattested_ignored");
     const classes = coverage.classes ?? [];
     if (
       classes.includes("declared_cache") &&
       info.isDirectory() &&
-      !["node_modules", "vendor", ".venv"].includes(Path.basename(root)) &&
-      !entries.some((p) => Path.basename(p) === "pyvenv.cfg") &&
-      (await exists(Path.join(root, "CACHEDIR.TAG")))
+      !["node_modules", "vendor", ".venv"].includes(NodePath.basename(root)) &&
+      !entries.some((p) => NodePath.basename(p) === "pyvenv.cfg") &&
+      (await exists(NodePath.join(root, "CACHEDIR.TAG")))
     ) {
       if (
-        (await readBounded(Path.join(root, "CACHEDIR.TAG"), 4096))
+        (await readBounded(NodePath.join(root, "CACHEDIR.TAG"), 4096))
           .toString()
           .startsWith("Signature: 8a477f597d28d172789f06886806bc55")
       )
@@ -236,7 +236,7 @@ export async function classifyIgnored(input: {
     }
     if (
       classes.includes("format_recognized") &&
-      Path.basename(root) === ".DS_Store" &&
+      NodePath.basename(root) === ".DS_Store" &&
       info.isFile()
     ) {
       const file = await openAbsolute(root);
@@ -251,9 +251,9 @@ export async function classifyIgnored(input: {
     }
     if (
       classes.includes("dependency_reproduction") &&
-      ["node_modules", "vendor", ".venv"].includes(Path.basename(root))
+      ["node_modules", "vendor", ".venv"].includes(NodePath.basename(root))
     ) {
-      const parent = Path.relative(worktree, Path.dirname(root));
+      const parent = NodePath.relative(worktree, NodePath.dirname(root));
       const tracked = new Set(
         (await git(worktree, ["ls-tree", "-r", "--name-only", "HEAD"])).toString().split("\n"),
       );
@@ -270,7 +270,7 @@ export async function classifyIgnored(input: {
         return allow("covered, including additions");
     }
     return hold("unattested_ignored", {
-      paths: [root, ...entries.slice(0, 19).map((path) => Path.join(root, path))],
+      paths: [root, ...entries.slice(0, 19).map((path) => NodePath.join(root, path))],
       count: 1 + entries.length,
     });
   } catch (cause) {

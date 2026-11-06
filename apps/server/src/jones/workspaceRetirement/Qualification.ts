@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Read-only Git/filesystem qualification adapter; exclusion and removal belong to J3.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
 import { canonical, exists, git, inside, readBounded, sha256 } from "./Filesystem.ts";
 import { binding, type Binding } from "./OutputAttestation.ts";
 import {
@@ -187,7 +187,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     const own = registrations.find((row) => row.worktree === current.path);
     if (!own) reasons.add("identity_mismatch");
     if (own?.locked) reasons.add("locked");
-    if (input.projectRoots.some((root) => inside(Path.resolve(root), current.path)))
+    if (input.projectRoots.some((root) => inside(NodePath.resolve(root), current.path)))
       reasons.add("project_root");
     result.head = (await g(["rev-parse", "HEAD"])).toString().trim();
     result.branch =
@@ -222,7 +222,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       untracked.some(
         (path) =>
           input.coverage?.keepMode !== "tracked-changes" ||
-          !input.coverage?.exactRoots?.includes(Path.join(current.path, path)),
+          !input.coverage?.exactRoots?.includes(NodePath.join(current.path, path)),
       )
     )
       reasons.add("untracked");
@@ -234,7 +234,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     else
       for (const entry of flags) {
         const path = entry.slice(2);
-        if (!(await exists(Path.join(current.path, path)))) {
+        if (!(await exists(NodePath.join(current.path, path)))) {
           if (entry[0] !== "S") reasons.add("index_flags");
           continue;
         }
@@ -245,7 +245,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
           reasons.add("index_flags");
           continue;
         }
-        const content = await readBounded(Path.join(current.path, path), 16 * 1024 * 1024);
+        const content = await readBounded(NodePath.join(current.path, path), 16 * 1024 * 1024);
         if (!content.equals(await g(["cat-file", "blob", object[1]!]))) reasons.add("index_flags");
       }
     for (const file of [
@@ -258,7 +258,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       "sequencer",
       "BISECT_LOG",
     ])
-      if (await exists(Path.join(current.git_dir, file))) reasons.add("operation_in_progress");
+      if (await exists(NodePath.join(current.git_dir, file))) reasons.add("operation_in_progress");
     if ((await g(["for-each-ref", "--format=%(refname)", "refs/worktree/", "refs/bisect/"])).length)
       reasons.add("per_worktree_refs");
     const anchored =
@@ -300,13 +300,13 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
     result.preservationTips = [
       ...new Set([...orphan, ...(!result.branch && !other.length ? [result.head] : [])]),
     ];
-    const alternates = Path.join(current.git_common_dir, "objects/info/alternates");
+    const alternates = NodePath.join(current.git_common_dir, "objects/info/alternates");
     if (await exists(alternates))
       for (const alternate of (await readBounded(alternates, 65536))
         .toString()
         .split("\n")
         .filter(Boolean)) {
-        const objectRoot = Path.resolve(current.git_common_dir, "objects", alternate);
+        const objectRoot = NodePath.resolve(current.git_common_dir, "objects", alternate);
         if (
           !input.durableRepositories.some((root) => inside(objectRoot, root)) ||
           input.temporaryRoots.some((root) => inside(objectRoot, root))
@@ -319,19 +319,19 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       if (line.startsWith("160000 ")) {
         const path = line.slice(line.indexOf("\t") + 1);
         if (
-          (await exists(Path.join(current.path, path))) &&
-          (await FS.readdir(Path.join(current.path, path))).length
+          (await exists(NodePath.join(current.path, path))) &&
+          (await NodeFSP.readdir(NodePath.join(current.path, path))).length
         )
           reasons.add("populated_submodules");
       }
     for (const modules of [
-      Path.join(current.git_dir, "modules"),
-      Path.join(current.git_common_dir, "modules"),
+      NodePath.join(current.git_dir, "modules"),
+      NodePath.join(current.git_common_dir, "modules"),
     ])
-      if ((await exists(modules)) && (await FS.readdir(modules)).length)
+      if ((await exists(modules)) && (await NodeFSP.readdir(modules)).length)
         reasons.add("submodule_gitdirs");
     result.capturedConfig = {};
-    const config = Path.join(current.git_dir, "config.worktree");
+    const config = NodePath.join(current.git_dir, "config.worktree");
     if (await exists(config)) {
       const pairs = (await g(["config", "--null", "--file", config, "--list"]))
         .toString()
@@ -347,7 +347,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
           reasons.add("worktree_config_unpreservable");
         else result.capturedConfig[key!] = rest.join("\n");
       }
-      const patterns = Path.join(current.git_dir, "info/sparse-checkout");
+      const patterns = NodePath.join(current.git_dir, "info/sparse-checkout");
       if (await exists(patterns))
         result.sparsePatterns = (await readBounded(patterns, 1024 * 1024)).toString();
     }
@@ -359,7 +359,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       .toString()
       .split("\0")
       .filter(Boolean)
-      .map((p) => Path.join(current.path, p.replace(/\/$/, "")));
+      .map((p) => NodePath.join(current.path, p.replace(/\/$/, "")));
     if (ignoredRaw.length > 1000000) throw new Error("bound_exceeded");
     result.ignored = [];
     for (const root of ignoredRaw) {
@@ -389,9 +389,9 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         ))
       )
         reasons.add("preservation_unverified");
-    const running = Path.join(current.path, ".t3/setup-running");
+    const running = NodePath.join(current.path, ".t3/setup-running");
     if (await exists(running)) reasons.add("setup_unfinalized");
-    if (await exists(Path.join(current.path, ".t3/setup-unfinalized")))
+    if (await exists(NodePath.join(current.path, ".t3/setup-unfinalized")))
       reasons.add("setup_unfinalized");
     if ((await outputObligations(current.path)).length) reasons.add("obligation");
     result.consumers = consumerDecision(current.path, input.consumers);
