@@ -1160,7 +1160,6 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
         Stream.groupedWithin(512, Duration.millis(50)),
         Stream.mapEffect((events) => projectShellItems(Array.from(events))),
         Stream.flatMap(Stream.fromIterable),
-        skipUnchangedThreadShells,
       );
 
     const liveFrom = (afterSequence: number) =>
@@ -1319,6 +1318,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
 
     return stream.pipe(
       Stream.filter(shellDelivery.accepts),
+      (merged) => skipUnchangedThreadShells(merged, { canSuppress: shellDelivery.canSuppress }),
       dedupeShellEnrichment,
       Stream.mapError(
         (cause) =>

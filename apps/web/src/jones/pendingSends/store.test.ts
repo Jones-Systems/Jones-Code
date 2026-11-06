@@ -5,6 +5,7 @@ import {
   ThreadId,
   CommandId,
   ProjectId,
+  RunId,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import type { ChatMessage } from "../../types";
@@ -34,7 +35,9 @@ function projection(
 ) {
   return {
     messages: input.message ? [{ id: message.id }] : [],
-    runs: input.run ? [{ userMessageId: message.id, status: input.status ?? "completed" }] : [],
+    runs: input.run
+      ? [{ id: RunId.make("run"), userMessageId: message.id, status: input.status ?? "completed" }]
+      : [],
     visibleTurnItems: input.visible
       ? [
           {
@@ -47,6 +50,44 @@ function projection(
 }
 
 describe("pending sends", () => {
+  it.each(["preparing", "starting", "running", "waiting"])(
+    "keeps sidebar activity through %s acknowledgement until the shell catches up",
+    (status) => {
+      const store = createPendingSendStore();
+      store.admit(env, thread, message);
+      const stale = { latestRunId: RunId.make("previous"), activeRunId: null };
+      store.reconcile(env, thread, projection({ message: true, run: true, status }), stale);
+      expect(store.getSnapshot()).toMatchObject([{ delivery: "accepted", working: true }]);
+      const visible = projection({ message: true, run: true, visible: true, status });
+      store.reconcile(env, thread, visible, stale);
+      expect(store.getSnapshot()).toMatchObject([{ visible: true, working: true }]);
+      const stable = store.getSnapshot();
+      store.reconcile(env, thread, visible, stale);
+      expect(store.getSnapshot()).toBe(stable);
+      store.reconcile(env, thread, visible, { latestRunId: RunId.make("run"), activeRunId: null });
+      expect(store.getSnapshot()).toEqual([]);
+    },
+  );
+  it.each(["completed", "interrupted", "failed", "cancelled", "rolled_back"])(
+    "releases sidebar activity on authoritative %s even while the shell lags",
+    (status) => {
+      const store = createPendingSendStore();
+      store.admit(env, thread, message);
+      store.reconcile(env, thread, projection({ run: true, visible: true, status: "starting" }));
+      expect(store.getSnapshot()[0]?.working).toBe(true);
+      store.reconcile(env, thread, projection({ run: true, visible: true, status }));
+      expect(store.getSnapshot()).toEqual([]);
+    },
+  );
+  it("hands activity to the shell's active run even when a newer queued run is latest", () => {
+    const store = createPendingSendStore();
+    store.admit(env, thread, message);
+    store.reconcile(env, thread, projection({ run: true, visible: true, status: "running" }), {
+      latestRunId: RunId.make("queued"),
+      activeRunId: RunId.make("run"),
+    });
+    expect(store.getSnapshot()).toEqual([]);
+  });
   it("retains accepted creation independently through later uncertain replies and rejected first-message recovery", () => {
     const store = createPendingSendStore();
     const key = store.admit(env, thread, message);

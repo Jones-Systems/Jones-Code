@@ -2,7 +2,7 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "shell-materialization-efficiency",
   "jonesOwnedPaths": [],
-  "hookPaths": [],
+  "hookPaths": ["apps/server/src/orchestration-v2/ShellStream.ts"],
   "tombstones": [],
   "allowedImports": [
     {

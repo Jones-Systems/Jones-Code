@@ -524,6 +524,7 @@ const UNCHANGED_THREAD_SHELL_RESEND_MS = 5_000;
 /** Resend unchanged shells after UNCHANGED_THREAD_SHELL_RESEND_MS so skipped deltas cannot leave resume cursors behind. */
 export function skipUnchangedThreadShells<A extends OrchestrationV2ShellStreamItem, E, R>(
   stream: Stream.Stream<A, E, R>,
+  options?: { readonly canSuppress: (item: A) => boolean },
 ): Stream.Stream<A, E, R> {
   return Stream.suspend(() => {
     const lastSent = new Map<
@@ -538,6 +539,10 @@ export function skipUnchangedThreadShells<A extends OrchestrationV2ShellStreamIt
             return true;
           }
           if (item.kind !== "thread.updated") return true;
+          if (options?.canSuppress(item) === false) {
+            lastSent.delete(item.thread.id);
+            return true;
+          }
           const previous = lastSent.get(item.thread.id);
           if (
             previous !== undefined &&

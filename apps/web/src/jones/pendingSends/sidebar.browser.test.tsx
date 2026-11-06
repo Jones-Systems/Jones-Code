@@ -5,10 +5,12 @@ import {
   ProviderInstanceId,
   MessageId,
   RuntimeRequestId,
+  RunId,
   ThreadId,
   type AuthSessionState,
   type OrchestrationV2ShellSnapshot,
   type OrchestrationV2ThreadShell,
+  type OrchestrationV2ThreadProjection,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -24,6 +26,7 @@ import {
   isShownUnderParent,
 } from "@t3tools/client-runtime/state/threads";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
+import { presentThreadShell } from "@t3tools/client-runtime/state/models";
 
 vi.mock("../../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 vi.mock("@t3tools/client-runtime/state/session", async () => {
@@ -168,6 +171,64 @@ function InputHookCarrier(props: {
   });
   return null;
 }
+
+it("keeps row and list Working after detail acknowledgement until their shell catches up", async () => {
+  expect(pendingSends.getSnapshot()).toEqual([]);
+  const runId = RunId.make("handoff-run");
+  const oldWire = {
+    ...v2ThreadShell,
+    status: "completed" as const,
+    latestRunId: RunId.make("previous-run"),
+    latestRunCompletedAt: v2Now,
+  };
+  const base = presentThreadShell(A, oldWire, null);
+  const next = presentThreadShell(
+    A,
+    {
+      ...oldWire,
+      status: "starting",
+      latestRunId: runId,
+      activeRunId: runId,
+      latestRunCompletedAt: null,
+    },
+    null,
+  );
+  const msg = message("handoff-message", "2026-06-20T00:01:00Z");
+  const projection = {
+    messages: [{ id: msg.id }],
+    runs: [{ id: runId, userMessageId: msg.id, status: "starting" }],
+    visibleTurnItems: [
+      { sourceThreadId: base.id, item: { type: "user_message", messageId: msg.id } },
+    ],
+  } as unknown as OrchestrationV2ThreadProjection;
+  const ledger: InputLedger = { row: undefined, all: [] };
+  const record = (row: EnvironmentThreadShell, all: readonly EnvironmentThreadShell[]) => {
+    ledger.row = row;
+    ledger.all = all;
+  };
+  using screen = await render(
+    <InputHookCarrier thread={base} threads={[base]} onCommit={record} />,
+    { router: false },
+  );
+  let ownedKey: string | undefined;
+  try {
+    await act(() => {
+      ownedKey = pendingSends.admit(A, base.id, msg);
+      pendingSends.reconcile(A, base.id, projection, oldWire);
+    });
+    expect(ledger.row?.source.status).toBe("completed");
+    expect(ledger.row?.runtime?.status).toBe("running");
+    expect(ledger.all[0]?.runtime?.status).toBe("running");
+    await screen.rerender(<InputHookCarrier thread={next} threads={[next]} onCommit={record} />);
+    await act(() => pendingSends.reconcile(A, base.id, projection, next.source));
+    expect(pendingSends.getSnapshot()).toEqual([]);
+    expect(ledger.row).toBe(next);
+    expect(ledger.all[0]).toBe(next);
+    expect(ledger.row?.runtime?.status).toBe("starting");
+  } finally {
+    if (ownedKey) await act(() => pendingSends.dismiss(ownedKey!));
+  }
+});
 
 type Graph = ReturnType<typeof createEnvironmentThreadShellAtoms>;
 type Ledger = {
