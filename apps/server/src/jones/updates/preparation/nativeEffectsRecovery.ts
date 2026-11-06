@@ -75,12 +75,15 @@ function decode(
   return r as unknown as NativeEffectsRecoveryRequest;
 }
 
-async function directory(path: string): Promise<void> {
+async function directory(
+  path: string,
+  kind: "private" | "shared-ancestor" = "private",
+): Promise<void> {
   const stat = await NodeFSP.lstat(path);
   if (
     !stat.isDirectory() ||
     stat.isSymbolicLink() ||
-    (stat.mode & 0o077) !== 0 ||
+    (stat.mode & (kind === "shared-ancestor" ? 0o022 : 0o077)) !== 0 ||
     stat.uid !== process.getuid?.() ||
     (await NodeFSP.realpath(path)) !== path
   )
@@ -266,9 +269,9 @@ export async function recoverNativeEffects(
     (dependencies.architecture ?? process.arch) !== "arm64"
   )
     return fail();
-  await directory(input.baseDir);
+  await directory(input.baseDir, "shared-ancestor");
   const runtime = NodePath.join(input.baseDir, "runtime");
-  await directory(runtime);
+  await directory(runtime, "shared-ancestor");
   const root = NodePath.join(runtime, "jones-preparation");
   await directory(root);
   return withQualifiedRuntimeLock(input.baseDir, PREPARATION_LOCK, () =>
