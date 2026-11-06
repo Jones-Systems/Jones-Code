@@ -59,6 +59,42 @@ describe("Codex startup caller budget", () => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect.each(["ensure", "fork"] as const)(
+    "refuses a %s permit handoff at its deadline before issuing a native request",
+    (operation) =>
+      Effect.gen(function* () {
+        const startup = makeCodexStartup();
+        const producer = yield* makeProducer();
+        const permit = yield* Semaphore.make(1);
+        const held = yield* Deferred.make<void>();
+        const owner = yield* startup
+          .run(
+            "resume",
+            permit.withPermits(1)(
+              startup.withinPermit(
+                Deferred.succeed(held, undefined).pipe(Effect.andThen(Effect.never)),
+              ),
+            ),
+          )
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(held);
+        let dispatches = 0;
+        const request = startup.observe(producer, Effect.sync(() => ++dispatches));
+        const waiter = yield* startup
+          .run(operation, permit.withPermits(1)(startup.withinPermit(request)))
+          .pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS);
+        yield* Fiber.join(owner);
+        const expired = yield* Fiber.join(waiter);
+        assert.equal(expired._tag, "Failure");
+        if (expired._tag === "Failure")
+          assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
+        assert.equal(dispatches, 0);
+        assert.isFalse(startup.isUncertain(producer));
+        assert.equal(yield* startup.run(operation, startup.withinPermit(request)), 1);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps an explicit fork rejection known without poisoning its producer", () =>
     Effect.gen(function* () {
       const startup = makeCodexStartup();

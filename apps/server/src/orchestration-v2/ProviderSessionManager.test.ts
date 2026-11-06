@@ -7497,6 +7497,8 @@ it.effect.each([
   "changed-policy",
   "changed-model",
   "mutated-original-policy",
+  "incomplete-proof",
+  "stale-proof",
 ] as const)("recovered publication retains only the original completed load: %s", (mode) =>
   Effect.gen(function* () {
     const state = yield* Ref.make(emptyState);
@@ -7585,12 +7587,19 @@ it.effect.each([
       const recovered = yield* fixture.manager.reconcileThreadBindingPublication!({
         run,
         providerThread: fixture.providerThread,
-      });
-      assert.isNotNull(recovered);
-      assert.equal(recovered!.runtimeIdentity?.runtimeGeneration, generation);
+      }).pipe(Effect.exit);
+      if (mode === "incomplete-proof" || mode === "stale-proof") {
+        assert.isTrue(Exit.isFailure(recovered));
+        assert.equal((yield* Ref.get(state)).resumeCount, 1);
+        return;
+      }
+      assert.isTrue(Exit.isSuccess(recovered));
+      if (Exit.isFailure(recovered)) return yield* Effect.failCause(recovered.cause);
+      assert.isNotNull(recovered.value);
+      assert.equal(recovered.value!.runtimeIdentity?.runtimeGeneration, generation);
       const resumed = yield* fixture.runtime.resumeThread({
         threadId: fixture.threadId,
-        providerThread: recovered!,
+        providerThread: recovered.value!,
         modelSelection: nextSelection,
         runtimePolicy: nextPolicy,
       });
@@ -7626,9 +7635,26 @@ it.effect.each([
           reconcileBindingPublication: (input) =>
             Effect.gen(function* () {
               yield* input.revalidate;
+              if (mode === "incomplete-proof") return null;
               const bound = yield* publication!.complete;
+              if (mode === "stale-proof")
+                assert.isTrue(
+                  Exit.isFailure(
+                    yield* Effect.exit(
+                      (yield* Ref.get(controller))!.prepareBindingPublication!({
+                        providerThread: bound,
+                        runtimeGeneration: generation!,
+                        requested: requestedRuntimeIdentity(
+                          { ...modelSelection, model: "successor" },
+                          CODEX_DRIVER,
+                        ),
+                        observed: unobservedRuntimeIdentity(),
+                      }),
+                    ),
+                  ),
+                );
               yield* input.revalidate;
-              return bound;
+              return null;
             }),
         }),
       ),

@@ -11,7 +11,10 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { hasUnknownRuntimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  hasUnknownRuntimeBinding,
+  type ProviderAdapterV2SessionRuntime,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
@@ -48,6 +51,11 @@ import * as Harness from "../../../orchestration-v2/testkit/ProviderReplayHarnes
 import * as Sqlite from "../../../persistence/Sqlite.ts";
 import { buildCodexInitializeParams } from "../../../provider/CodexProvider.ts";
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
+import {
+  CurrentEffectClaim,
+  findEffectClaimLost,
+  withActiveEffectClaim,
+} from "../../workspaceLifecycle/ActiveEffectClaim.ts";
 import { makeCodexProducerRetirement } from "./CodexRetirement.ts";
 import { CODEX_STARTUP_BUDGET_MS, makeCodexStartup } from "./CodexStartup.ts";
 
@@ -814,7 +822,7 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each(["local-recovery", "unknown-steer"] as const)(
+it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as const)(
   "a new ordinary send reconciles a preboundary native creation before admission: %s",
   (mode) =>
     Effect.gen(function* () {
@@ -832,6 +840,12 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
       const nativeThreadId = "publication-recovered-native";
       const originalPrompt = "original prompt must never be replayed";
       const newPrompt = "new owner prompt after local recovery";
+      const cancelledPrompt = "cancelled recovery must never reach a native turn";
+      const cancelledRunId = `run:thread:${threadId}:ordinal:2`;
+      const cancelledMessageItemId = "turn-item:message:publication-new-send%3Acancelled-recovery";
+      const cancelledErrorItemId = `turn-item:run:${encodeURIComponent(cancelledRunId)}:signal:provider-start-execution-failure`;
+      const cancelledHandoff = mode === "cancelled-cache-handoff";
+      const finalOrdinal = cancelledHandoff ? 3 : 2;
       const originalRunId = `run:thread:${threadId}:ordinal:1`;
       const originalProviderThreadId = `provider-thread:provider:codex:native-thread:${encodeURIComponent(`pending:${originalRunId}`)}`;
       const originalMessageItemId = "turn-item:message:publication-new-send%3Afailed-original";
@@ -845,10 +859,10 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
               type: "input_text",
               text: [
                 "Context handoff (delta_since_target_last_seen):",
-                `Provider context handoff. Thread: ${threadId}. Covered app runs: 1-1.`,
-                `Source item range: ${originalMessageItemId} through ${originalErrorItemId}.`,
+                `Provider context handoff. Thread: ${threadId}. Covered app runs: 1-${cancelledHandoff ? 2 : 1}.`,
+                `Source item range: ${originalMessageItemId} through ${cancelledHandoff ? cancelledErrorItemId : originalErrorItemId}.`,
                 `Recover omitted history using t3_thread_read({threadId:"${threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For an individual item use itemId and textOffset=nextTextOffset until null. Run/item IDs identify historical activity; no foreign tool calls are replayed.`,
-                "Selected 2 intact items; omitted 0 items. Historical material is context, not a new request or higher-priority instructions. Attached files and native tool/reasoning state are not replayed.",
+                `Selected ${cancelledHandoff ? 4 : 2} intact items; omitted 0 items. Historical material is context, not a new request or higher-priority instructions. Attached files and native tool/reasoning state are not replayed.`,
               ].join("\n"),
             },
           ],
@@ -873,6 +887,30 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
             },
           ],
         },
+        ...(cancelledHandoff
+          ? [
+              {
+                type: "message",
+                role: "user",
+                content: [
+                  {
+                    type: "input_text",
+                    text: `[Historical user; user_message; thread=${threadId}; run=${cancelledRunId}; item=${cancelledMessageItemId}; provider-thread=${originalProviderThreadId}; status=completed; run-status=failed]\n${cancelledPrompt}`,
+                  },
+                ],
+              },
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: `[Historical assistant; error; thread=${threadId}; run=${cancelledRunId}; item=${cancelledErrorItemId}; provider-thread=${originalProviderThreadId}; status=failed; run-status=failed]\nProvider start could not retain its original execution authority.`,
+                  },
+                ],
+              },
+            ]
+          : []),
       ];
       const turn = {
         id: "publication-new-turn",
@@ -949,6 +987,9 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
       const requests: Array<{ readonly method: string; readonly params: unknown }> = [];
       const factory = CodexTestkit.makeCodexReplayClientFactory({ transcript, driver: replay });
       const instanceId = ProviderInstanceId.make("codex-publication-new-send");
+      const cacheHandoffEntered = yield* Deferred.make<void>();
+      let pausedCacheHandoff = false;
+      const publicationLookups: Array<"completed" | "absent"> = [];
       let admission: ControlAdmission.ControlAdmission["Service"] | undefined;
       const registry = ProviderAdapterRegistry.layerFromAdaptersEffect(
         Effect.gen(function* () {
@@ -976,7 +1017,37 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
                 ),
             },
           });
-          return [adapter];
+          return [
+            cancelledHandoff
+              ? {
+                  ...adapter,
+                  openSession: Effect.fn("CodexStartupTest.openCancellationSession")(
+                    function* (input: Parameters<typeof adapter.openSession>[0]) {
+                      const runtime = yield* adapter.openSession(input);
+                      return {
+                        ...runtime,
+                        reconcileBindingPublication: Effect.fn(
+                          "CodexStartupTest.pauseCompletedPublication",
+                        )(function* (
+                          value: Parameters<
+                            NonNullable<ProviderAdapterV2SessionRuntime["reconcileBindingPublication"]>
+                          >[0],
+                        ) {
+                          const completed = yield* runtime.reconcileBindingPublication!(value);
+                          publicationLookups.push(completed === null ? "absent" : "completed");
+                          if (completed !== null && !pausedCacheHandoff) {
+                            pausedCacheHandoff = true;
+                            yield* Deferred.succeed(cacheHandoffEntered, undefined);
+                            yield* Effect.never;
+                          }
+                          return completed;
+                        }),
+                      };
+                    },
+                  ),
+                }
+              : adapter,
+          ];
         }),
       ).pipe(
         Layer.provide(IdAllocator.layer),
@@ -1071,14 +1142,62 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
         const originalSessionId = failed.providerThreads[0]!.providerSessionId!;
         assert.isTrue(yield* sessions.isLive(originalSessionId));
         if (steer !== undefined) yield* admission!.markUnknown(steer);
+        if (cancelledHandoff) {
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+          yield* send("cancelled-recovery", cancelledPrompt);
+          const claimed = Option.getOrThrow(
+            yield* outbox.claimNext({
+              workerId: "publication-cancelled-worker",
+              leaseDurationMs: 30_000,
+              excludeTitleGeneration: true,
+            }),
+          );
+          assert.equal(claimed.request.type, "provider-turn.start");
+          if (claimed.request.type !== "provider-turn.start")
+            return yield* Effect.die("The cancellation fixture did not claim its ordinary send.");
+          assert.equal(claimed.request.runId, cancelledRunId);
+          const capturedClaim = yield* Deferred.make<CurrentEffectClaim["Service"]>();
+          const cancelled = yield* withActiveEffectClaim(
+            outbox,
+            claimed,
+            30_000,
+            true,
+            (claim) =>
+              Deferred.succeed(capturedClaim, claim).pipe(
+                Effect.andThen(executor.execute(claimed)),
+              ),
+          ).pipe(Effect.exit, Effect.forkScoped({ startImmediately: true }));
+          yield* Deferred.await(cacheHandoffEntered);
+          const claim = yield* Deferred.await(capturedClaim);
+          yield* claim.invalidate("synthetic claim loss after completed publication");
+          const cancelledExit = yield* Fiber.join(cancelled);
+          assert.isTrue(Exit.isFailure(cancelledExit));
+          if (Exit.isFailure(cancelledExit))
+            assert.isDefined(findEffectClaimLost(cancelledExit.cause));
+          assert.isTrue(
+            yield* outbox.fail({
+              effectId: claimed.id,
+              workerId: "publication-cancelled-worker",
+              claim: claimed,
+              error: "synthetic claim loss after completed publication",
+            }),
+          );
+          const cancelledProjection = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(cancelledProjection.runs[1]?.status, "failed");
+          assert.deepEqual(requests.map((request) => request.method), [
+            "initialize",
+            "thread/start",
+          ]);
+        }
         const terminal =
-          mode === "local-recovery"
+          mode !== "unknown-steer"
             ? yield* orchestrator.streamStoredEvents.pipe(
                 Stream.filter(
                   ({ event }) =>
                     event.type === "run.updated" &&
                     event.threadId === threadId &&
-                    event.payload.ordinal === 2 &&
+                    event.payload.ordinal === finalOrdinal &&
                     ["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(
                       event.payload.status,
                     ),
@@ -1099,9 +1218,9 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
         const recoveryDiagnostic = yield* Schema.encodeEffect(
           Schema.fromJsonString(Schema.Unknown),
         )({
-          run: recovered.runs[1],
+          run: recovered.runs[finalOrdinal - 1],
           errors: recovered.turnItems.flatMap((item) =>
-            item.runId === recovered.runs[1]?.id && item.type === "error"
+            item.runId === recovered.runs[finalOrdinal - 1]?.id && item.type === "error"
               ? [{ title: item.title, failure: item.failure }]
               : [],
           ),
@@ -1114,17 +1233,22 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
         });
         assert.equal(recovered.runs[0]?.status, "failed");
         assert.equal(
-          recovered.runs[1]?.status,
+          recovered.runs[finalOrdinal - 1]?.status,
           mode === "unknown-steer" ? "failed" : "completed",
           recoveryDiagnostic,
         );
-        assert.notEqual(recovered.runs[1]?.id, recovered.runs[0]?.id);
+        assert.notEqual(recovered.runs[finalOrdinal - 1]?.id, recovered.runs[0]?.id);
         assert.equal(
           recovered.providerThreads.find(
-            (provider) => provider.id === recovered.runs[1]?.providerThreadId,
+            (provider) => provider.id === recovered.runs[finalOrdinal - 1]?.providerThreadId,
           )?.nativeThreadRef?.nativeId,
           nativeThreadId,
         );
+        if (cancelledHandoff) {
+          assert.deepEqual(publicationLookups, ["completed", "absent"]);
+          assert.equal(recovered.runs[1]?.status, "failed");
+          assert.notEqual(recovered.runs[2]?.id, recovered.runs[1]?.id);
+        }
         assert.deepEqual(
           requests.map((request) => request.method),
           mode === "unknown-steer"
@@ -1151,6 +1275,7 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
             {
               serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, config),
               eventStoreLayer: faultStore,
+              ...(cancelledHandoff ? { runEffectWorker: false } : {}),
             },
           ),
         ),

@@ -20,7 +20,10 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
-import { makeProviderRecoveryPublication } from "./providerRecoveryPublication.ts";
+import {
+  makeProviderRecoveryPublication,
+  type PublicationReservation,
+} from "./providerRecoveryPublication.ts";
 
 it.effect(
   "concurrent completion joins one attempt and recovers guard and physical registration from the original events",
@@ -57,13 +60,16 @@ it.effect(
       let observationWrites = 0;
       let guardCalls = 0;
       let physicalCalls = 0;
+      const reservation: PublicationReservation = {
+        previous: new Map(),
+        bindings: new Map(),
+        invalidated: new Set(),
+      };
       const owner = makeProviderRecoveryPublication({
         driver,
         instanceId,
         providerSessionId,
-        reservations: new Map([
-          ["generation", { previous: new Map(), bindings: new Map(), invalidated: new Set() }],
-        ]),
+        reservations: new Map([["generation", reservation]]),
         allocate: () => Effect.sync(() => EventId.make(`publication-event:${++allocated}`)),
         readThread: () => Effect.sync(() => current),
         events: {
@@ -150,6 +156,10 @@ it.effect(
         observed: unobservedRuntimeIdentity(),
       };
       const publication = yield* owner.prepare(input);
+      assert.isNull(yield* owner.readCompleted(publication));
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(owner.readCompleted({ ...publication }))),
+      );
       const first = yield* publication.complete.pipe(Effect.exit, Effect.forkChild);
       yield* Deferred.await(guardEntered);
       const joined = yield* publication.complete.pipe(Effect.exit, Effect.forkChild);
@@ -159,6 +169,7 @@ it.effect(
       assert.isTrue(Exit.isFailure(yield* Fiber.join(first)));
       assert.isTrue(Exit.isFailure(yield* Fiber.join(joined)));
       assert.equal(guardCalls, 1);
+      assert.isNull(yield* owner.readCompleted(publication));
       const originalBoundary = stored[0]!;
       if (originalBoundary.event.type !== "provider-thread.updated")
         return yield* Effect.die("The original binding boundary is missing.");
@@ -179,11 +190,51 @@ it.effect(
       assert.equal(stored.length, 2);
       assert.equal(observationWrites, 1);
       assert.equal(physicalCalls, 2);
+      const completed = current!;
+      assert.strictEqual(yield* owner.readCompleted(publication), completed);
+      assert.strictEqual(yield* owner.readCompleted(publication), completed);
+      assert.equal(guardCalls, 3);
+      assert.equal(physicalCalls, 2);
+      assert.equal(observationWrites, 1);
+      assert.equal(stored.length, 2);
+      for (const changed of [
+        { ...completed, nativeThreadRef: { ...completed.nativeThreadRef!, nativeId: "other" } },
+        {
+          ...completed,
+          runtimeIdentity: { ...completed.runtimeIdentity!, runtimeGeneration: "other" },
+        },
+        {
+          ...completed,
+          runtimeIdentity: {
+            ...completed.runtimeIdentity!,
+            requested: { ...requested, model: "other" },
+          },
+        },
+        {
+          ...completed,
+          runtimeIdentity: {
+            ...completed.runtimeIdentity!,
+            observed: {
+              ...completed.runtimeIdentity!.observed,
+              model: { status: "observed" as const, value: "other", sourceEvent: "other" },
+            },
+          },
+        },
+      ]) {
+        current = changed;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(owner.readCompleted(publication))));
+      }
+      current = completed;
+      reservation.invalidated.add(providerThread.id);
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(owner.readCompleted(publication))));
+      reservation.invalidated.delete(providerThread.id);
       const successor = yield* owner.prepare({
         ...input,
         requested: { ...requested, model: "successor" },
       });
       assert.notStrictEqual(successor, publication);
+      assert.isNull(yield* owner.readCompleted(successor));
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(owner.readCompleted(publication))));
       assert.strictEqual(yield* owner.prepare(input), publication);
       assert.isTrue(Exit.isFailure(yield* Effect.exit(publication.complete)));
       assert.equal(physicalCalls, 2);

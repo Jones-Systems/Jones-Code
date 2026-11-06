@@ -76,6 +76,10 @@ export function makeProviderRecoveryPublication(ports: {
     Array<{
       readonly input: RuntimeBindingPublicationInput;
       readonly handle: CapturedRuntimeBindingPublication;
+      readonly readCompleted: Effect.Effect<
+        OrchestrationV2ProviderThread,
+        ProviderRuntimeBindingError
+      >;
       completed: boolean;
     }>
   >();
@@ -309,7 +313,15 @@ export function makeProviderRecoveryPublication(ports: {
           }),
         );
       const handle: CapturedRuntimeBindingPublication = { binding, complete };
-      retained.set(key, [...operations, { input, handle, completed: false }]);
+      const readCompleted = assertCurrent.pipe(
+        Effect.flatMap((current) =>
+          sameObserved(current.runtimeIdentity?.observed, input.observed)
+            ? Effect.succeed(current)
+            : failure("The completed runtime identity observation changed."),
+        ),
+        Effect.mapError(failure),
+      );
+      retained.set(key, [...operations, { input, handle, readCompleted, completed: false }]);
       return handle;
     },
     Effect.mapError(failure),
@@ -317,6 +329,19 @@ export function makeProviderRecoveryPublication(ports: {
   );
   return {
     prepare,
+    readCompleted: Effect.fn("providerRecovery.readCompletedPublication")(function* (
+      handle: CapturedRuntimeBindingPublication,
+    ) {
+      const key = publicationKey([
+        handle.binding.runtimeGeneration,
+        handle.binding.providerThreadId,
+      ]);
+      const operation = retained.get(key)?.at(-1);
+      if (operation?.handle !== handle)
+        return yield* failure("The completed publication is not the original latest operation.");
+      if (!operation.completed) return null;
+      return yield* operation.readCompleted;
+    }),
     bind: (input: RuntimeBindingPublicationInput) =>
       prepare(input).pipe(Effect.flatMap((publication) => publication.complete)),
   };

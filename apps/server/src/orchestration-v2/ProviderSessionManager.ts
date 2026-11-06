@@ -434,6 +434,15 @@ export const layerWithOptions = (
         };
         readonly loadKey: string;
         binding: ProviderRuntimeBinding | undefined;
+        publication:
+          | {
+              readonly handle: ProviderAdapter.CapturedRuntimeBindingPublication;
+              readonly readCompleted: Effect.Effect<
+                OrchestrationV2ProviderThread | null,
+                ProviderAdapter.ProviderAdapterV2Error
+              >;
+            }
+          | undefined;
       };
       const originalThreadLoads = new WeakMap<
         ProviderAdapterV2SessionRuntime,
@@ -506,8 +515,10 @@ export const layerWithOptions = (
           )
             return;
           const original = originalThreadLoads.get(runtime)?.get(threadId);
-          if (original?.target.id === value.providerThread.id && original.binding === undefined)
+          if (original?.target.id !== value.providerThread.id) return;
+          if (original.binding === undefined)
             original.binding = runtimeBinding(value.providerThread, value.runtimeGeneration);
+          return { runtime, threadId, original };
         });
         return {
           reserve: Effect.fn("ProviderSessionManager.reserve")((threadId) =>
@@ -577,8 +588,34 @@ export const layerWithOptions = (
               }
             }).pipe(Effect.mapError(protocolError)),
           ),
-          prepareBindingPublication: (value) =>
-            captureOriginalLoadBinding(value).pipe(Effect.andThen(publication.prepare(value))),
+          prepareBindingPublication: Effect.fn(
+            "ProviderSessionManager.prepareBindingPublication",
+          )((value: Parameters<ProviderRuntimeLifecycle["bind"]>[0]) =>
+            Effect.uninterruptibleMask((restore) =>
+              Effect.gen(function* () {
+                const captured = yield* restore(captureOriginalLoadBinding(value));
+                const handle = yield* restore(publication.prepare(value));
+                if (captured !== undefined) {
+                  const current = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+                  if (
+                    current?.runtime !== captured.runtime ||
+                    originalThreadLoads.get(captured.runtime)?.get(captured.threadId) !==
+                      captured.original ||
+                    (captured.original.publication !== undefined &&
+                      captured.original.publication.handle !== handle)
+                  )
+                    return yield* protocolError(
+                      "The original load changed before publication preparation completed.",
+                    );
+                  captured.original.publication ??= {
+                    handle,
+                    readCompleted: publication.readCompleted(handle),
+                  };
+                }
+                return handle;
+              }),
+            ),
+          ),
           bind: (value) =>
             captureOriginalLoadBinding(value).pipe(Effect.andThen(publication.bind(value))),
           abandon: Effect.fn("ProviderSessionManager.abandon")((generation) =>
@@ -2430,6 +2467,7 @@ export const layerWithOptions = (
                       : { runtimePolicy: value.runtimePolicy }),
                   }),
                   binding: undefined,
+                  publication: undefined,
                 });
           if (original !== undefined) loads.set(value.threadId, original);
           const forget = Effect.sync(() => {
@@ -3186,14 +3224,22 @@ export const layerWithOptions = (
               );
           }).pipe(Effect.mapError(refused));
           yield* revalidate;
-          const recovered = yield* reconcile({
+          let recovered = yield* reconcile({
             threadId: run.threadId,
             providerThreadId: providerThread.id,
             nativeThreadId,
             revalidate,
           });
           yield* revalidate;
-          if (recovered === null) return null;
+          const loads = originalThreadLoads.get(entry.runtime);
+          const original = loads?.get(run.threadId);
+          if (recovered === null) {
+            if (original?.publication === undefined) return null;
+            recovered = yield* original.publication.readCompleted;
+            if (recovered === null)
+              return yield* refused("The retained original publication is not complete.");
+            yield* revalidate;
+          }
           const records = yield* projectionStore.getThreadRecords(run.threadId, [
             "providerThreads",
           ]);
@@ -3224,8 +3270,6 @@ export const layerWithOptions = (
             return yield* refused(
               "Recovered publication does not match the current exact binding.",
             );
-          const loads = originalThreadLoads.get(entry.runtime);
-          const original = loads?.get(run.threadId);
           if (original !== undefined) {
             if (
               original.target.id !== current.id ||
@@ -3259,6 +3303,7 @@ export const layerWithOptions = (
                 latest.loadedProviderThreadKeyByThread,
               );
               loadedProviderThreadKeyByThread.set(run.threadId, loadedKey);
+              loads?.delete(run.threadId);
               return [
                 true,
                 new Map(entries).set(sessionKey(providerSessionId), {
@@ -3271,7 +3316,6 @@ export const layerWithOptions = (
               return yield* refused(
                 "The runtime changed before the recovered load could be recorded.",
               );
-            loads?.delete(run.threadId);
           }
           return current;
         },

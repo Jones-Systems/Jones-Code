@@ -90,6 +90,9 @@ confirmed native open whose local binding failed retains its original result
 for local publication recovery; recovery does not repeat the native resume or
 the failed prompt. A refusal before dispatch or a proved non-applying protocol
 rejection does not create an unknown native effect.
+Completed publication proof survives a cancelled manager handoff. A later send
+can finish recording the original load without repeating publication or native
+work; a changed model or policy still takes the normal loading path.
 
 Captured runtime Stop and writer retirement retain their original completion
 observers after the caller stops waiting. They never retarget a replacement or

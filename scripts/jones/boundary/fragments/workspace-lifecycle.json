@@ -189,6 +189,10 @@
     {
       "from": "apps/server/src/mcp/WorktreeMcpService.test.ts",
       "to": "apps/server/src/jones/workspaceLifecycle/Protocol.ts"
+    },
+    {
+      "from": "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.ts"
     }
   ]
 }

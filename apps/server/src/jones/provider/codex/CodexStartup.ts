@@ -5,6 +5,7 @@ import {
   ProviderRuntimeBindingError,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -23,6 +24,7 @@ interface StartupProducer {
 }
 interface StartupAttempt {
   readonly operation: StartupOperation;
+  readonly deadlineAtMillis: number;
   producer: StartupProducer | undefined;
   target: ControlAdmission.ControlAdmissionTarget | undefined;
   hold: ControlAdmission.StartupHold | undefined;
@@ -105,6 +107,14 @@ export function makeCodexStartup(
         "Codex startup has an unconfirmed native effect for this conversation; another admission is not safe.",
       ...(cause === undefined ? {} : { cause }),
     });
+  const budgetFailure = (attempt: StartupAttempt) =>
+    attempt.mayHaveIssued
+      ? unknown()
+      : new ProviderAdapterProtocolError({
+          driver: ProviderDriverKind.make("codex"),
+          detail: "Codex startup exceeded its caller budget before native dispatch",
+          cause: new CodexStartupNotDispatched({ operation: attempt.operation, budgetMs }),
+        });
   const completeWith = Effect.fn("CodexStartup.completeWith")(function* <A>(handoff: () => A) {
     const attempt = yield* StartupAttemptContext;
     return yield* Effect.suspend(() => {
@@ -127,6 +137,7 @@ export function makeCodexStartup(
     ) {
       const attempt: StartupAttempt = {
         operation,
+        deadlineAtMillis: (yield* Clock.currentTimeMillis) + budgetMs,
         producer: undefined,
         target,
         hold: undefined,
@@ -139,15 +150,7 @@ export function makeCodexStartup(
           Effect.gen(function* () {
             if (attempt.complete) return yield* Effect.never;
             yield* abandon(attempt);
-            return yield* (
-              attempt.mayHaveIssued
-                ? unknown()
-                : new ProviderAdapterProtocolError({
-                    driver: ProviderDriverKind.make("codex"),
-                    detail: "Codex startup exceeded its caller budget before native dispatch",
-                    cause: new CodexStartupNotDispatched({ operation, budgetMs }),
-                  }),
-            );
+            return yield* budgetFailure(attempt);
           }),
         ),
       );
@@ -181,6 +184,11 @@ export function makeCodexStartup(
     ) {
       const attempt = yield* StartupAttemptContext;
       if (attempt === undefined) return yield* effect;
+      // A simultaneous owner timeout can hand off the permit before this caller's timer runs.
+      if (!attempt.complete && (yield* Clock.currentTimeMillis) >= attempt.deadlineAtMillis) {
+        yield* abandon(attempt);
+        return yield* budgetFailure(attempt);
+      }
       return yield* effect.pipe(
         Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon(attempt) : Effect.void)),
         Effect.mapError((cause) =>
