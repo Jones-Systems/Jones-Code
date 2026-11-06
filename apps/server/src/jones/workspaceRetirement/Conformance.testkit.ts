@@ -62,6 +62,7 @@ export async function fixture<T>(
   }) => Promise<T>,
 ) {
   const base = await FS.realpath(await FS.mkdtemp(Path.join(OS.tmpdir(), "jones-swl-j2-")));
+  const owner = await FS.lstat(base);
   try {
     const repo = Path.join(base, "repo"),
       worktree = Path.join(base, "checkout");
@@ -91,7 +92,16 @@ export async function fixture<T>(
       },
     });
   } finally {
+    const current = await FS.lstat(base);
+    if (current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino)
+      throw new Error("fixture_owner_changed:" + base);
     await FS.rm(base, { recursive: true, force: true });
+    try {
+      await FS.lstat(base);
+      throw new Error("fixture_cleanup_unproved:" + base);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    }
   }
 }
 export async function executeRecipe(recipe: Recipe) {

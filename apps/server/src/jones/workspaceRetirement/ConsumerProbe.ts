@@ -4,7 +4,7 @@ import * as Path from "node:path";
 import { execFile } from "node:child_process";
 import { inside, readBounded } from "./Filesystem.ts";
 
-const CONSUMER_LIMITS = [
+export const CONSUMER_LIMITS = [
   "other-user/root processes",
   "remote consumers",
   "unmanaged writers and tools without claims or reservations",

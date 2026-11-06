@@ -639,6 +639,14 @@ export const make = Effect.gen(function* () {
         }),
       );
       if(retirement !== null && retirementIntent !== null && !(yield* retirement.startScript(retirementIntent.event_id))) return;
+      if (retirement !== null && retirementIntent !== null) yield* retirement.outcome(retirementIntent.event_id,{
+        state:"held",reasonCodes:["settle_script_pending"],receiptId:null,fingerprint:null,paths:[],
+        details:[{reason:"settle_script_pending",target:worktreePath,root:worktreePath,
+          fact:"The durable settle-script intent has started and its completion is pending.",
+          missingFact:"durable_settle_script_completion",lineage:[{threadId}],
+          nextAction:"Wait for the actual script completion; ten minutes without completion holds retirement."}],
+        outputObligations:[],
+      });
       const run = yield* projectScripts.runForThread({
         threadId,
         projectId: thread.projectId,

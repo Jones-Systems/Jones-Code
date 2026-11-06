@@ -16,6 +16,7 @@ export const tap=f=>e=>effect(async c=>{const v=await e.run(c);await f(v).run(c)
 export const flatMap=f=>e=>effect(async c=>f(await e.run(c)).run(c));
 export const andThen=n=>flatMap(()=>n), asVoid=e=>map(()=>undefined)(e), as=x=>map(()=>x);
 export const catch_=f=>e=>effect(async c=>{try{return await e.run(c)}catch(x){return f(x).run(c)}});export {catch_ as catch,catch_ as catchCause};
+export const tapError=f=>e=>effect(async c=>{try{return await e.run(c)}catch(x){await f(x).run(c);throw x}});
 export const mapError=f=>e=>effect(async c=>{try{return await e.run(c)}catch(x){throw f(x)}});
 export const result=e=>effect(async c=>{try{return {_tag:'Success',value:await e.run(c)}}catch(failure){return {_tag:'Failure',failure}}});
 export const ensuring=n=>e=>effect(async c=>{try{return await e.run(c)}finally{await n.run(c)}});
@@ -25,9 +26,10 @@ export const provide=layer=>e=>effect(async c=>{if(layer instanceof Map)return e
 export const context=()=>effect(async c=>c), serviceOption=tag=>effect(async c=>c.has(tag)?{_tag:'Some',value:c.get(tag)}:{_tag:'None'});
 export const runPromise=e=>e.run(new Map());
 `,
+  'effect/DateTime': `export const nowUnsafe=()=>new Date();export const formatIso=value=>value.toISOString();`,
   'effect/Context': `import {effect} from 'effect/Effect';export const Service=()=>()=>class {static of(x){return x}static *[Symbol.iterator](){return yield effect(c=>{if(!c.has(this))throw Error('Missing test service '+this.name);return c.get(this)})}};`,
   'effect/Layer': `export const effect=(tag,value)=>({tag,value});`,
-  'effect/Schema': `export const String={},Defect=()=>({}),optional=x=>x;export const TaggedError=()=>()=>class extends Error {constructor(v){super(v.reason);Object.assign(this,v)}};export const is=c=>v=>v instanceof c;`,
+  'effect/Schema': `import {fail as failEffect} from 'effect/Effect';export const String={},Defect=()=>({}),optional=x=>x;export const TaggedError=()=>()=>class extends Error {constructor(v){super(v.reason);Object.assign(this,v)}*[Symbol.iterator](){return yield failEffect(this)}};export const is=c=>v=>v instanceof c;`,
   'effect/sql/SqlClient': `import {Service} from 'effect/Context';export class SqlClient extends Service()('SqlClient'){};`,
   'effect/Semaphore': `export const makeUnsafe=()=>({withPermit:e=>e});`,
 };

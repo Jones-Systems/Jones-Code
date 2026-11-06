@@ -5,7 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import {migrationManifest,runMigrations} from "../../../persistence/Migrations.ts";
 import {runJonesMigrations} from "../JonesMigrationGuard.ts";
 import {jonesMigrationEntries} from "../JonesMigrations.ts";
-it.effect("137 adds only Jones retirement tables and preserves upstream rows and ledger",()=>Effect.gen(function*(){
+it.effect("138 adds only Jones retirement tables and preserves upstream rows and ledger",()=>Effect.gen(function*(){
   const sql=yield* SqlClient.SqlClient;
   yield* runMigrations({toMigrationInclusive:migrationManifest.at(-1)![0]});
   yield* runJonesMigrations(jonesMigrationEntries.filter(([id])=>id<138));

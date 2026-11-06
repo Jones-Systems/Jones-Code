@@ -1,6 +1,10 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Read-only target observations; all effects flow through the common executor.
 import * as FS from "node:fs/promises";
 import * as Path from "node:path";
+import * as OS from "node:os";
+import * as EffectPath from "effect/Path";
+import * as ProcessRunner from "../../processRunner.ts";
+import * as Provenance from "../workspaceLifecycle/Provenance.ts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -34,7 +38,13 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
   const projections=yield* Projections.ProjectionStoreV2;
   const config=yield* Config.ServerConfig;
   const selected=config.workspaceLifecycle===undefined ? null : yield* Schema.decodeUnknownEffect(Configuration)(config.workspaceLifecycle).pipe(Effect.mapError(cause=>new RetirementError({target:request.worktree,reason:"configuration_unavailable",cause})));
-  const registry=selected===null ? null : yield* Registry.LifecycleRegistry.pipe(Effect.provide(Registry.layer(selected.registry,selected.outputs)));
+  const runner = yield* Effect.serviceOption(ProcessRunner.ProcessRunner);
+  const effectPath = yield* Effect.serviceOption(EffectPath.Path);
+  const registry=selected===null || Option.isNone(runner) || Option.isNone(effectPath) ? null : yield* Registry.LifecycleRegistry.pipe(
+    Effect.provide(Registry.layer(selected.registry,selected.outputs)),
+    Effect.provideService(ProcessRunner.ProcessRunner,runner.value),
+    Effect.provideService(EffectPath.Path,effectPath.value),
+  );
   const bound=yield* io(request.worktree,()=>binding(request.worktree));
   const projectCommon=yield* io(request.worktree,async()=>FS.realpath((await git(request.projectRoot,["rev-parse","--path-format=absolute","--git-common-dir"])).toString().trim()));
   if(projectCommon!==bound.git_common_dir) return yield* new RetirementError({target:request.worktree,reason:"repository_identity_changed"});
@@ -42,8 +52,12 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
   let outputs:readonly Registry.OutputRecord[]=[];
   const mapError=Effect.mapError((cause:unknown)=>cause instanceof RetirementError ? cause : new RetirementError({target:request.worktree,reason:"observation_failed",cause}));
   const scriptGate=Effect.gen(function* () {
-    const pending=yield* sql<{script_state:string}>`SELECT i.script_state FROM jones_workspace_retirement_intents i WHERE i.worktree=${request.worktree} AND i.rowid IN (SELECT MAX(rowid) FROM jones_workspace_retirement_intents WHERE worktree=${request.worktree} GROUP BY thread_id) AND i.script_state!='completed'`;
-    if(pending.length) return yield* new RetirementError({target:request.worktree,reason:"settle_script_unfinished"});
+    const pending=yield* sql<{script_state:string;script_started_at:string|null;settled_at:string}>`SELECT i.script_state,i.script_started_at,i.settled_at FROM jones_workspace_retirement_intents i WHERE i.worktree=${request.worktree} AND i.rowid IN (SELECT MAX(rowid) FROM jones_workspace_retirement_intents WHERE worktree=${request.worktree} GROUP BY thread_id) AND i.script_state!='completed'`;
+    if(pending.length) {
+      const timedOut = pending.some(i=>settlementAdmission({script:i.script_state as "pending"|"running"|"failed"|"cancelled",
+        startedAt:Date.parse(i.script_started_at ?? i.settled_at),now:Date.now(),checkpoint:"pending",enabled:true}).reason==="settle_script_unfinished");
+      return yield* new RetirementError({target:request.worktree,reason:timedOut ? "settle_script_unfinished" : "settle_script_pending"});
+    }
     const threads=yield* sql<{thread_id:string}>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath')=${request.worktree} LIMIT 201`;
     if(threads.length>200) return yield* new RetirementError({target:request.worktree,reason:"consumer_bound_exceeded"});
     for(const row of threads) {
@@ -101,7 +115,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       }
     });
     const nativeGuard=yield* sql<{worktree_path:string}>`SELECT worktree_path FROM native_creation_intents WHERE worktree_path=${request.worktree} UNION SELECT worktree_path FROM jones_native_workspace_admissions WHERE worktree_path=${request.worktree}`;
-    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:[],nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>processProbe(request.worktree))}} satisfies QualificationInput;
+    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:[OS.tmpdir(),"/tmp","/private/tmp","/var/tmp","/private/var/tmp"],nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>processProbe(request.worktree))}} satisfies QualificationInput;
   }).pipe(mapError);
   // Automatic assessment may only replace an obligation-free current-incarnation record, and always precedes acquisition.
   const assess=Effect.gen(function* () {
@@ -110,13 +124,14 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
     const a=current.assessment?.assessment;
     if(!current.binding || current.binding.git_dir!==bound.git_dir || current.binding.git_common_dir!==bound.git_common_dir || (a && (a.remaining_work.length || a.unresolved_obligations.length || ["preserve","needs_handoff"].includes(a.disposition)))) return;
     const claims=yield* store.claims(request.worktree);if(claims.length) return;
-    yield* registry.assess({schema:"workspace-assessment/v1",binding:current.binding,role:"authoring",disposition:"cleanup_candidate",remaining_work:[],preservation_refs:a?.preservation_refs ?? [],handoff_refs:a?.handoff_refs ?? [],artifact_destinations:a?.artifact_destinations ?? [],unresolved_obligations:[]},current.generation);
+    firstGeneration = yield* registry.assess({schema:"workspace-assessment/v1",binding:current.binding,role:"authoring",disposition:"cleanup_candidate",remaining_work:[],preservation_refs:a?.preservation_refs ?? [],handoff_refs:a?.handoff_refs ?? [],artifact_destinations:a?.artifact_destinations ?? [],unresolved_obligations:[]},current.generation);
   }).pipe(mapError);
   const result=yield* Effect.gen(function* () {
     if(!request.execute) {
+      yield* scriptGate;
       const input=yield* observe;
       const qualification=yield* io(request.worktree,()=>qualify(input));
-      return {state:"proposed" as const,qualification,reasons:qualification.reasons,outputs};
+      return {state:qualification.outcome==="retirable" ? "proposed" as const : "held" as const,qualification,reasons:qualification.reasons,outputs};
     }
     if(request.ownerCoverage) {
       const baseInput=yield* observe;
@@ -127,6 +142,32 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       ownerPaths=request.ownerCoverage.paths;
     }
     yield* scriptGate;
+    const provenance = yield* Effect.serviceOption(Provenance.Provenance);
+    if (Option.isSome(provenance) && provenance.value.production && request.threadId) {
+      // This explicit lifecycle boundary can link existing production facts. Ordinary work
+      // keeps J1's unbounded-sink skip; this is never called while holding our reservation.
+      const references = yield* io(request.worktree, async () => {
+        const directory = Path.join(bound.git_dir, "workspace-completions");
+        if (!await exists(directory)) return [];
+        const names = await FS.readdir(directory);
+        if (names.length > 20) return [];
+        const matching: string[] = [];
+        let bytes = 65536;
+        for (const name of names) {
+          if (!/^[a-f0-9]{32}\.json$/.test(name)) continue;
+          const reference = Path.join(directory, name), content = await readBounded(reference, bytes);
+          bytes -= content.length;
+          const value = JSON.parse(content.toString());
+          if (value.schema === "workspace-output-observation/v1" && value.proofStatus === "deferred" &&
+              value.lineage?.threadId === request.threadId && value.lineage?.gitDirectory === bound.git_dir &&
+              value.lineage?.rootDevice === String(bound.dev) && value.lineage?.rootInode === String(bound.ino)) matching.push(reference);
+        }
+        return matching;
+      }).pipe(Effect.catch(() => Effect.succeed([] as string[])));
+      for (const reference of references) yield* provenance.value.production(request.threadId, reference, request.worktree).pipe(
+        Effect.catch(() => Effect.logDebug("Optional producer fact unavailable", {threadId: request.threadId})),
+      );
+    }
     yield* assess;
     return yield* retire({cause:request.cause,worktree:request.worktree,projectRoot:request.projectRoot,maxLevel:request.rules.worktreeSettledScope,admit:request.admit,observe,revalidate:scriptGate.pipe(Effect.andThen(request.revalidate)),finalizeOutputs:receipt=>{
       const internal=outputs.filter(r=>inside(r.path,request.worktree) && r.state==="active" && r.class!=="evidence");

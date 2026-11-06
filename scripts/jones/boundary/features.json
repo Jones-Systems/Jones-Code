@@ -6,8 +6,14 @@
     {
       "id": "workspace-retirement-settlement",
       "tests": [
+        "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepositoryMigration.test.ts",
+        "apps/server/src/jones/persistence/Migrations.test.ts",
+        "apps/server/src/jones/persistence/Migrations/137_JonesNativeCreationLeaseRenewal.test.ts",
         "apps/server/src/jones/persistence/Migrations/138_JonesWorkspaceRetirement.test.ts",
+        "apps/server/src/jones/persistence/UpstreamIsolation.test.ts",
+        "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",

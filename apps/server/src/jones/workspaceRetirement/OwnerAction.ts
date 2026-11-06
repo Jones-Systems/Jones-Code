@@ -34,7 +34,15 @@ export const make = Effect.gen(function* () {
       const result=yield* evaluate({worktree:item.worktreePath,projectRoot:project.value.workspaceRoot,threadId:item.threadId,rules,cause:"owner_action",execute:input.action==="retire",
         ...(input.action==="retire" ? {ownerCoverage:{fingerprint:input.expectedFingerprint!,paths:input.coveredPaths ?? []}} : {}),
         admit:withOperation({id:`retire:${item.threadId}`,kind:"preservation",threadId:item.threadId,worktree:item.worktreePath,boundaries:["cleanup"],inherit:false,check:revalidate},beforeCleanup({id:`retire:${item.threadId}`,threadId:item.threadId,boundary:"cleanup"})).pipe(Effect.mapError(cause=>new RetirementError({target:item.worktreePath,reason:"workspace_preservation_hold",cause}))),revalidate,
-      }).pipe(Effect.provide(context));
+      }).pipe(Effect.provide(context), Effect.catch((error) => {
+        const reason = error instanceof RetirementError ? error.reason : "target_observation_unavailable";
+        return Effect.succeed({state:"held" as const,reasons:[reason],outcome:{
+          state:"held" as const,reasonCodes:[reason],receiptId:null,fingerprint:null,paths:[],
+          details:[{reason,target:item.worktreePath,root:item.worktreePath,fact:reason,missingFact:reason,
+            lineage:[{threadId:item.threadId}],nextAction:"Repeat the named observation for this checkout with its owning adapter."}],
+          outputObligations:[],
+        }});
+      }));
       entries.push({kind:"worktree",outcome:result.state==="retired" ? "removed" : result.state==="partial" || result.state==="unknown" ? "failed" : "kept",reason:result.reasons.join(", ") || (input.action==="propose" ? "Retirement proposed; confirmation is required." : result.state),path:item.worktreePath,projectPath:project.value.workspaceRoot,threadId:item.threadId,threadTitle:thread.title,bytes:null,files:null,retirement:result.outcome});
     }
     return {trigger:"manual",startedAt:DateTime.formatIso(now),finishedAt:DateTime.formatIso(yield* DateTime.now),entries,counts:{removed:entries.filter(e=>e.outcome==="removed").length,kept:entries.filter(e=>e.outcome==="kept").length,failed:entries.filter(e=>e.outcome==="failed").length},omittedCount:Math.max(0,selected.length-200),bytesFreed:0} satisfies StorageCleanupReport;

@@ -115,7 +115,7 @@ export const layer = (configuration: RegistryCommand, outputs?: RegistryCommand)
         }),
         forgetOutputs: Effect.fn("LifecycleRegistry.forgetOutputs")(function* (records) {
           for(const r of records) {
-            const value=yield* outputRun(["forget","--id",r.id,"--by",r.owner,"--reason","Checkout retired; external durable receipt retained."]);
+            const value=yield* outputRun(["forget","--id",r.id,"--path",r.path,"--by",r.owner,"--reason","Checkout retired; external durable receipt retained."]);
             if(value.schema!=="build-outputs-cli/v1" || value.outcome!=="forgotten") return yield* new LifecycleError({reason:"unknown"});
           }
         }),

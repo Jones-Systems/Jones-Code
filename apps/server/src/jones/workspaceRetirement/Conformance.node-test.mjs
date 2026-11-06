@@ -1,3 +1,6 @@
+// Only the explicit-proof timestamp formatter is substituted; Git, descriptors and proof algorithms execute production code.
+import { installEffectSeam } from "./EffectSeam.node-test-support.mjs";
+installEffectSeam();
 import assert from "node:assert/strict";
 import * as FS from "node:fs/promises";
 import { test } from "node:test";

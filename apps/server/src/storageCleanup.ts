@@ -1,5 +1,5 @@
 import * as RetirementOwnerAction from "./jones/workspaceRetirement/OwnerAction.ts";
-import type { WorkspaceRetirementAction } from "@t3tools/contracts";
+import type { WorkspaceRetirementAction, WorkspaceRetirementOutcome } from "@t3tools/contracts";
 import * as RetirementGate from "./jones/workspaceRetirement/RemovalGate.ts";
 import * as RetirementRuntime from "./jones/workspaceRetirement/Runtime.ts";
 import { RetirementError } from "./jones/workspaceRetirement/Receipts.ts";
@@ -682,7 +682,8 @@ const make = Effect.gen(function* () {
         bytes: null,
         files: null,
       };
-      const keep = (reason: string) => entries.push({ ...entry, reason: sentence(reason) });
+      let retirementOutcome: WorkspaceRetirementOutcome | undefined;
+      const keep = (reason: string) => entries.push({ ...entry, ...(retirementOutcome ? {retirement:retirementOutcome} : {}), reason: sentence(reason) });
       yield* Effect.gen(function* () {
         if (deleted && sink.readDeletionWorktreeRemovalStartForTarget !== undefined) {
           const original = yield* sink.readDeletionWorktreeRemovalStartForTarget(thread.id, {
@@ -907,12 +908,7 @@ const make = Effect.gen(function* () {
           yield* settingsService.getSettings,
           thread.projectId,
         );
-        if (
-          Object.keys(settings).some(
-            (key) =>
-              current[key as keyof typeof settings] !== settings[key as keyof typeof settings],
-          )
-        )
+        if (!Equal.equals(current,settings))
           return keep("settings changed since check");
         if (deleted) {
           if (sink.startDeletionWorktreeRemoval === undefined) return;
@@ -961,9 +957,10 @@ const make = Effect.gen(function* () {
               if(!Equal.equals(current,settings)) return yield* new RetirementError({target:worktreePath,reason:"settings_changed"});
             }).pipe(Effect.mapError(cause=>cause instanceof RetirementError ? cause : new RetirementError({target:worktreePath,reason:"observation_failed",cause}))),
           });
+          retirementOutcome=result.outcome;
           if(result.state!=="retired") return keep(result.reasons.join(", ") || "retirement proposed");
         }
-        entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
+        entries.push({ ...entry, ...(retirementOutcome ? {retirement:retirementOutcome} : {}), outcome: "removed", reason: sentence(removalReason), bytes });
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
