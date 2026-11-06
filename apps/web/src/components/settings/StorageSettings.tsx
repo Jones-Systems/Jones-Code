@@ -187,6 +187,20 @@ function lastRunSummary(
   return entries.map((entry) => `${entry.label}: ${entry.counts}`).join(" · ");
 }
 
+function factsWithKeys<A>(values: readonly A[], identity: (value: A) => string) {
+  const occurrences = new Map<string, number>();
+  return values.map((value) => {
+    const fact = identity(value);
+    const occurrence = occurrences.get(fact) ?? 0;
+    occurrences.set(fact, occurrence + 1);
+    return { value, key: `${fact}:${occurrence}` };
+  });
+}
+
+function lineageIdentity(lineage: Readonly<Record<string, string>>) {
+  return JSON.stringify(Object.entries(lineage).sort(([left], [right]) => left.localeCompare(right)));
+}
+
 function CleanupResults({
   report,
   environmentLabel,
@@ -221,13 +235,23 @@ function CleanupResults({
                     Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
                   </span>
                 )}
-                {entry.retirement?.details.map((detail, index) => (
-                  <span key={`${detail.reason}:${detail.root}:${index}`} className="block">
+                {factsWithKeys(entry.retirement?.details ?? [], (detail) =>
+                  JSON.stringify([
+                    detail.target,
+                    detail.root,
+                    detail.reason,
+                    detail.fact,
+                    detail.missingFact,
+                    detail.nextAction,
+                    detail.lineage.map(lineageIdentity),
+                  ]),
+                ).map(({ value: detail, key }) => (
+                  <span key={key} className="block">
                     <code>{detail.root}</code>: {detail.fact}{" "}
                     {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
                     {detail.nextAction}
-                    {detail.lineage.map((lineage, n) => (
-                      <span key={n} className="block">
+                    {factsWithKeys(detail.lineage, lineageIdentity).map(({ value: lineage, key }) => (
+                      <span key={key} className="block">
                         {Object.entries(lineage)
                           .map(([key, value]) => `${key}: ${value}`)
                           .join(" · ")}

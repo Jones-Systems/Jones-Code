@@ -32,7 +32,7 @@ const command = (file: string, args: string[]) =>
       (error, out) => (error ? reject(error) : resolve(out.trim())),
     ),
   );
-// oxlint-disable-next-line t3code/no-global-process-runtime -- Reservation recovery identifies the actual executor PID, independent of injected application runtime values.
+// Reservation recovery identifies the actual executor PID, independent of injected application runtime values.
 export const nativePid = process.pid;
 export async function holderIdentity() {
   const boot_id =

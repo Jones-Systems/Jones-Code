@@ -374,6 +374,7 @@ export interface TerminalStartInput extends TerminalOpenInput {
 
 interface TerminalSessionState {
   workspaceDutyIdentity?: DutyIdentity | undefined;
+  launchWorkspaceIdentity?: string | null;
   shellName?: string | null;
   idlePrompt?: ShellIdlePrompt;
   idleExpiryEnabled?: boolean;
@@ -1626,11 +1627,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const path = yield* Path.Path;
   const workspaceDuty = yield* WorkspaceDuty.hooks;
   const terminalWorkspaceObservation = yield* TerminalWorkspaceObservation;
-  const withTerminalWorkspaceLease = <A, E, R>(
-    input: { cwd: string; worktreePath?: string | null | undefined },
-    effect: Effect.Effect<A, E, R>,
-  ) =>
-    Effect.gen(function* () {
+  const withTerminalWorkspaceLease = Effect.fn("TerminalManager.withTerminalWorkspaceLease")(
+    function* <A, E, R>(
+      input: { cwd: string; worktreePath?: string | null | undefined },
+      effect: Effect.Effect<A, E, R>,
+    ) {
       const observed = yield* Effect.tryPromise({
         try: () => terminalWorkspaceObservation.observe(input.cwd, input.worktreePath),
         catch: (cause) => new TerminalCwdStatError({ cwd: input.cwd, cause }),
@@ -1645,7 +1646,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
           Effect.provideService(TerminalWorkspaceAdmission, observed),
         ),
       );
-    });
+    },
+  );
+
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
   const scriptObserver = makeProjectScriptObserver({
@@ -2453,6 +2456,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       isShellRunTerminal(session.threadId, session.terminalId);
     const startingAt = yield* nowIso;
     const workspaceAdmission = yield* TerminalWorkspaceAdmission;
+    session.launchWorkspaceIdentity = workspaceAdmission?.launchIdentity ?? null;
     yield* modifyManagerState((state) => {
       session.status = "starting";
       session.cwd = input.cwd;
@@ -3317,12 +3321,19 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const targetCols = input.cols ?? liveSession.cols;
     const targetRows = input.rows ?? liveSession.rows;
     const runtimeEnvChanged = !Equal.equals(currentRuntimeEnv, nextRuntimeEnv);
+    const workspaceAdmission = yield* TerminalWorkspaceAdmission;
     const nextWorktreePath =
-      input.worktreePath !== undefined ? (input.worktreePath ?? null) : liveSession.worktreePath;
+      workspaceAdmission === null
+        ? input.worktreePath !== undefined
+          ? (input.worktreePath ?? null)
+          : liveSession.worktreePath
+        : workspaceAdmission.worktree;
     const launchContextChanged =
       liveSession.cwd !== input.cwd ||
       runtimeEnvChanged ||
-      liveSession.worktreePath !== nextWorktreePath;
+      liveSession.worktreePath !== nextWorktreePath ||
+      (workspaceAdmission !== null &&
+        liveSession.launchWorkspaceIdentity !== workspaceAdmission.launchIdentity);
 
     if (launchContextChanged) {
       yield* stopProcess(liveSession);

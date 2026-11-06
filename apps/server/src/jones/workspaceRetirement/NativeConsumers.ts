@@ -11,7 +11,7 @@ export interface ServiceIO {
   command: (file: string, args: string[], remainingMs: number) => Promise<string>;
 }
 const nativeIO: ServiceIO = {
-  // oxlint-disable-next-line t3code/no-global-process-runtime -- Native service domains belong to the real server UID, never an injected client platform.
+  // Native service domains belong to the real server UID, never an injected client platform.
   uid: () => process.getuid?.(),
   command: (file, args, remainingMs) =>
     new Promise((resolve, reject) =>
@@ -156,27 +156,29 @@ export async function nativeServices(
   }
 }
 
-export const nativeWorkloads = (sql: SqlClient.SqlClient, worktree: string) =>
-  Effect.gen(function* () {
-    // Read identifiers/status/bindings only: no prompts, transcript or task payload is loaded.
-    const runs = yield* sql<{
-      run_id: string;
-    }>`SELECT r.run_id FROM orchestration_v2_projection_runs r JOIN orchestration_v2_projection_threads t ON t.thread_id=r.thread_id WHERE json_extract(t.payload_json,'$.worktreePath')=${worktree} AND r.status NOT IN ('completed','failed','interrupted','cancelled','rolled_back') LIMIT 201`;
-    const tasks = yield* sql<{
-      task_id: string;
-    }>`SELECT s.task_id FROM scheduled_tasks s LEFT JOIN orchestration_v2_projection_threads t ON t.thread_id=s.thread_id WHERE (s.enabled=1 OR s.last_run_status='running' OR EXISTS (SELECT 1 FROM jones_scheduled_webhook_pending_runs p WHERE p.task_id=s.task_id)) AND (json_extract(s.workspace_strategy_json,'$.worktreePath')=${worktree} OR json_extract(t.payload_json,'$.worktreePath')=${worktree}) LIMIT 201`;
-    const pending = yield* sql<{
-      delivery_id: string;
-    }>`SELECT delivery_id FROM scheduled_task_webhook_pending WHERE state IN ('pending','dispatching','running') AND json_extract(task_json,'$.workspaceStrategy.type')='existing_worktree' AND json_extract(task_json,'$.workspaceStrategy.worktreePath')=${worktree} LIMIT 201`;
-    return {
-      observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
-      status:
-        runs.length > 200 || tasks.length > 200 || pending.length > 200
-          ? ("partial" as const)
-          : ("complete" as const),
-      paths: runs.length || tasks.length || pending.length ? [worktree] : [],
-      limits: [
-        "Jones-owned bound runs, queued turns, schedules and pending webhook deliveries; native processes and services are observed separately",
-      ],
-    } satisfies Probe;
-  });
+export const nativeWorkloads = Effect.fn("WorkspaceRetirement.nativeWorkloads")(function* (
+  sql: SqlClient.SqlClient,
+  worktree: string,
+) {
+  // Read identifiers/status/bindings only: no prompts, transcript or task payload is loaded.
+  const runs = yield* sql<{
+    run_id: string;
+  }>`SELECT r.run_id FROM orchestration_v2_projection_runs r JOIN orchestration_v2_projection_threads t ON t.thread_id=r.thread_id WHERE json_extract(t.payload_json,'$.worktreePath')=${worktree} AND r.status NOT IN ('completed','failed','interrupted','cancelled','rolled_back') LIMIT 201`;
+  const tasks = yield* sql<{
+    task_id: string;
+  }>`SELECT s.task_id FROM scheduled_tasks s LEFT JOIN orchestration_v2_projection_threads t ON t.thread_id=s.thread_id WHERE (s.enabled=1 OR s.last_run_status='running' OR EXISTS (SELECT 1 FROM jones_scheduled_webhook_pending_runs p WHERE p.task_id=s.task_id)) AND (json_extract(s.workspace_strategy_json,'$.worktreePath')=${worktree} OR json_extract(t.payload_json,'$.worktreePath')=${worktree}) LIMIT 201`;
+  const pending = yield* sql<{
+    delivery_id: string;
+  }>`SELECT delivery_id FROM scheduled_task_webhook_pending WHERE state IN ('pending','dispatching','running') AND json_extract(task_json,'$.workspaceStrategy.type')='existing_worktree' AND json_extract(task_json,'$.workspaceStrategy.worktreePath')=${worktree} LIMIT 201`;
+  return {
+    observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+    status:
+      runs.length > 200 || tasks.length > 200 || pending.length > 200
+        ? ("partial" as const)
+        : ("complete" as const),
+    paths: runs.length || tasks.length || pending.length ? [worktree] : [],
+    limits: [
+      "Jones-owned bound runs, queued turns, schedules and pending webhook deliveries; native processes and services are observed separately",
+    ],
+  } satisfies Probe;
+});

@@ -20,19 +20,18 @@ export class ClaimAbsence extends Context.Reference<{
   ) => Effect.Effect<{ holder: string; status: "verified_absent" | "present" | "unknown" }>;
 }>("jones/workspaceRetirement/ClaimAbsence", {
   defaultValue: () => ({
-    observe: (claim) =>
-      Effect.gen(function* () {
-        if (claim.native_owner_json === null)
-          return { holder: claim.holder_json, status: "unknown" as const };
-        const owner = yield* Schema.decodeEffect(NativeDutyOwnerJson)(claim.native_owner_json).pipe(
-          Effect.result,
-        );
-        // Invalid durable facts remain unknown; a decode failure never proves absence.
-        if (owner._tag === "Failure")
-          return { holder: claim.holder_json, status: "unknown" as const };
-        const status = yield* Effect.promise(() => observeNativeOwner(owner.success));
-        return { holder: claim.holder_json, status };
-      }),
+    observe: Effect.fn("WorkspaceRetirement.observeClaimAbsence")(function* (claim: PersistedDuty) {
+      if (claim.native_owner_json === null)
+        return { holder: claim.holder_json, status: "unknown" as const };
+      const owner = yield* Schema.decodeEffect(NativeDutyOwnerJson)(claim.native_owner_json).pipe(
+        Effect.result,
+      );
+      // Invalid durable facts remain unknown; a decode failure never proves absence.
+      if (owner._tag === "Failure")
+        return { holder: claim.holder_json, status: "unknown" as const };
+      const status = yield* Effect.promise(() => observeNativeOwner(owner.success));
+      return { holder: claim.holder_json, status };
+    }),
   }),
 }) {}
 export const reconcile = Effect.fn("WorkspaceRetirement.reconcileClaims")(function* (

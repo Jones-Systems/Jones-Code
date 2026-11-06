@@ -326,11 +326,11 @@ export const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, retirementSql.value),
       )
     : null;
-  const recordRetirementProposal = (
-    thread: Pick<OrchestrationV2ThreadShell, "id" | "projectId">,
-    worktreePath: string,
-  ) =>
-    Effect.gen(function* () {
+  const recordRetirementProposal = Effect.fn("ThreadSettlementServiceV2.recordRetirementProposal")(
+    function* (
+      thread: Pick<OrchestrationV2ThreadShell, "id" | "projectId">,
+      worktreePath: string,
+    ) {
       if (Option.isNone(retirementSql) || Option.isNone(retirementConfig)) return;
       const project = yield* projectStore.get(thread.projectId);
       if (Option.isNone(project)) return;
@@ -350,7 +350,8 @@ export const make = Effect.gen(function* () {
         Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
         Effect.catch(() => Effect.void),
       );
-    });
+    },
+  );
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
     mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,

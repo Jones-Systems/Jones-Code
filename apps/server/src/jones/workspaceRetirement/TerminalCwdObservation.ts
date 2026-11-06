@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Metadata-only observation of the exact owned PTY; deadline termination drains its worker.
 import * as NodeChildProcess from "node:child_process";
-import * as NodeWorker from "node:worker_threads";
-import { performance } from "node:perf_hooks";
-import { setTimeout as wait } from "node:timers/promises";
+import * as NodeWorkerThreads from "node:worker_threads";
+import * as NodePerfHooks from "node:perf_hooks";
+import * as NodeTimersPromises from "node:timers/promises";
 import * as Context from "effect/Context";
 import { nativePlatform } from "./Filesystem.ts";
 import type { DutyIdentity } from "./DutyIdentity.ts";
@@ -28,7 +28,7 @@ async function observe(pid: number, physical: DutyIdentity | undefined): Promise
   if (!Number.isSafeInteger(pid) || pid <= 0 || physical?.status !== "bound" || observing.has(pid))
     return null;
   observing.add(pid);
-  const started = performance.now();
+  const started = NodePerfHooks.performance.now();
   try {
     let suppliedCwd: string | undefined;
     if (nativePlatform === "darwin") {
@@ -49,9 +49,9 @@ async function observe(pid: number, physical: DutyIdentity | undefined): Promise
       if (paths.length !== 1) return null;
       suppliedCwd = paths[0]!;
     } else if (nativePlatform !== "linux") return null;
-    const remaining = 100 - (performance.now() - started);
+    const remaining = 100 - (NodePerfHooks.performance.now() - started);
     if (remaining <= 0) return null;
-    const worker = new NodeWorker.Worker(PROGRAM, {
+    const worker = new NodeWorkerThreads.Worker(PROGRAM, {
       eval: true,
       execArgv: [],
       workerData: { pid, physical, suppliedCwd },
@@ -76,7 +76,7 @@ async function observe(pid: number, physical: DutyIdentity | undefined): Promise
       worker.once("message", (value) => void finish(value));
       worker.once("error", () => void finish(null));
       worker.once("exit", () => void finish(null));
-      void wait(remaining, undefined, { signal: deadline.signal, ref: false }).then(
+      void NodeTimersPromises.setTimeout(remaining, undefined, { signal: deadline.signal, ref: false }).then(
         () => void finish(null),
         () => {
           if (!deadline.signal.aborted) void finish(null);

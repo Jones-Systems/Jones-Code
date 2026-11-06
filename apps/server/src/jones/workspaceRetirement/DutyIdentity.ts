@@ -77,6 +77,7 @@ interface TerminalWorkspace {
   readonly cwdInode: string;
   readonly worktree: string | null;
   readonly identity: DutyIdentity | null;
+  readonly launchIdentity: string;
 }
 
 /** Native checkout membership, independent of optional provenance or client hints. */
@@ -113,6 +114,13 @@ export async function terminalWorkspace(
       cwdInode: String(before.ino),
       worktree: root,
       identity,
+      // Comparison data from this native observation, never a claim or removal token.
+      launchIdentity: JSON.stringify([
+        physicalCwd,
+        String(before.dev),
+        String(before.ino),
+        identity?.status === "bound" ? identity.incarnation : null,
+      ]),
     };
     await revalidateTerminalWorkspace(result);
     return result;

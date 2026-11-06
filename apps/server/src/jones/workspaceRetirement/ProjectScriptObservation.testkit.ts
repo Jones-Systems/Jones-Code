@@ -1,7 +1,7 @@
 import type { PtyExitEvent } from "@t3tools/shared/PtyAdapter";
 // @effect-diagnostics nodeBuiltinImport:off -- Controlled native-terminal seams execute the real optional observer; no live terminals or private state.
-import * as assert from "node:assert/strict";
-import * as childProcess from "node:child_process";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeChildProcess from "node:child_process";
 import { makeProjectScriptObserver } from "./ProjectScriptObservation.ts";
 import { completionSentinel, wrapCommandForCompletion } from "./ScriptCompletionProtocol.ts";
 import type { CompletionObservation } from "./CompletionObservation.ts";
@@ -111,39 +111,39 @@ export const scriptObservationCases: Record<string, () => Promise<void>> = {
     async () => {
       const f = fixture();
       f.observer.write(f.input, f.terminal, f.submit);
-      assert.equal(f.writes.length, 1);
-      assert.equal(f.captures.length, 0);
-      assert.equal(f.dataListeners.size, 1);
-      assert.equal(f.exitListeners.size, 1);
-      assert.ok(f.writes[0]!.startsWith(" { "));
+      NodeAssert.equal(f.writes.length, 1);
+      NodeAssert.equal(f.captures.length, 0);
+      NodeAssert.equal(f.dataListeners.size, 1);
+      NodeAssert.equal(f.exitListeners.size, 1);
+      NodeAssert.ok(f.writes[0]!.startsWith(" { "));
       f.emit(f.writes[0]!);
-      assert.equal(f.captures.length, 0);
+      NodeAssert.equal(f.captures.length, 0);
       const marker = completionSentinel(nonce) + "0\n";
       f.emit(marker.slice(0, 20));
       f.emit(marker.slice(20));
-      assert.equal(f.captures.length, 1);
-      assert.equal(f.captures[0]!.status, "succeeded");
-      assert.equal(f.captures[0]!.proofStatus, "deferred");
-      assert.deepEqual(f.captures[0]!.roots, []);
-      assert.equal(f.captures[0]!.worktree, "/fixture/worktree");
-      assert.equal(f.captures[0]!.lineage.rootInode, "2");
-      assert.equal(f.dataListeners.size, 0);
-      assert.equal(f.exitListeners.size, 0);
+      NodeAssert.equal(f.captures.length, 1);
+      NodeAssert.equal(f.captures[0]!.status, "succeeded");
+      NodeAssert.equal(f.captures[0]!.proofStatus, "deferred");
+      NodeAssert.deepEqual(f.captures[0]!.roots, []);
+      NodeAssert.equal(f.captures[0]!.worktree, "/fixture/worktree");
+      NodeAssert.equal(f.captures[0]!.lineage.rootInode, "2");
+      NodeAssert.equal(f.dataListeners.size, 0);
+      NodeAssert.equal(f.exitListeners.size, 0);
     },
   "nonzero completion remains failure and a duplicate invocation never sends another wrapper":
     async () => {
       const f = fixture();
       f.observer.write(f.input, f.terminal, f.submit);
       f.emit(completionSentinel(nonce) + "23\n");
-      assert.equal(f.captures[0]!.status, "failed");
-      assert.equal(f.captures[0]!.lineage.exitCode, "23");
+      NodeAssert.equal(f.captures[0]!.status, "failed");
+      NodeAssert.equal(f.captures[0]!.lineage.exitCode, "23");
       f.observer.write(f.input, f.terminal, f.submit);
-      assert.equal(f.writes.length, 1);
-      assert.throws(
+      NodeAssert.equal(f.writes.length, 1);
+      NodeAssert.throws(
         () => f.observer.write({ ...f.input, data: "different\r" }, f.terminal, f.submit),
         /invocation_changed/,
       );
-      assert.equal(f.writes.length, 1);
+      NodeAssert.equal(f.writes.length, 1);
     },
   "lost write response retains late native completion without replay or fallback": async () => {
     const f = fixture(),
@@ -152,24 +152,24 @@ export const scriptObservationCases: Record<string, () => Promise<void>> = {
       f.writes.push(data);
       throw lost;
     };
-    assert.throws(
+    NodeAssert.throws(
       () => f.observer.write(f.input, f.terminal, submit),
       (error) => error === lost,
     );
-    assert.equal(f.writes.length, 1);
-    assert.equal(f.captures.length, 0);
-    assert.throws(
+    NodeAssert.equal(f.writes.length, 1);
+    NodeAssert.equal(f.captures.length, 0);
+    NodeAssert.throws(
       () => f.observer.write(f.input, f.terminal, submit),
       (error) => error === lost,
     );
-    assert.equal(f.writes.length, 1);
+    NodeAssert.equal(f.writes.length, 1);
     f.emit(completionSentinel(nonce) + "0\n");
-    assert.equal(f.captures.length, 1);
-    assert.throws(
+    NodeAssert.equal(f.captures.length, 1);
+    NodeAssert.throws(
       () => f.observer.write(f.input, f.terminal, submit),
       (error) => error === lost,
     );
-    assert.equal(f.writes.length, 1);
+    NodeAssert.equal(f.writes.length, 1);
   },
   "terminal exit, close and replaced lifecycles remain unknown and detach listeners": async () => {
     for (const mode of ["exit", "close", "replaced"]) {
@@ -181,10 +181,10 @@ export const scriptObservationCases: Record<string, () => Promise<void>> = {
         f.setCurrent(false);
         f.emit(completionSentinel(nonce) + "0\n");
       }
-      assert.equal(f.captures.length, 0);
-      assert.equal(f.dataListeners.size, 0);
-      assert.equal(f.exitListeners.size, 0);
-      assert.ok(f.diagnostics.length > 0);
+      NodeAssert.equal(f.captures.length, 0);
+      NodeAssert.equal(f.dataListeners.size, 0);
+      NodeAssert.equal(f.exitListeners.size, 0);
+      NodeAssert.ok(f.diagnostics.length > 0);
     }
   },
   "prewrite observer failure and wrapper bounds preserve exactly one original native write":
@@ -211,9 +211,9 @@ export const scriptObservationCases: Record<string, () => Promise<void>> = {
             throw Error("observation unavailable");
           };
         f.observer.write(f.input, f.terminal, f.submit);
-        assert.deepEqual(f.writes, [f.input.data]);
-        assert.equal(f.captures.length, 0);
-        assert.equal(f.dataListeners.size, 0);
+        NodeAssert.deepEqual(f.writes, [f.input.data]);
+        NodeAssert.equal(f.captures.length, 0);
+        NodeAssert.equal(f.dataListeners.size, 0);
       }
     },
   "metadata capture failure and bounded output never change native issuance": async () => {
@@ -229,15 +229,15 @@ export const scriptObservationCases: Record<string, () => Promise<void>> = {
     });
     observer.write(f.input, f.terminal, f.submit);
     f.emit(completionSentinel(nonce) + "0\n");
-    assert.equal(captures, 1);
-    assert.equal(f.writes.length, 1);
-    assert.ok(f.diagnostics.includes("completion_capture_unavailable"));
+    NodeAssert.equal(captures, 1);
+    NodeAssert.equal(f.writes.length, 1);
+    NodeAssert.ok(f.diagnostics.includes("completion_capture_unavailable"));
     const g = fixture();
     g.observer.write(g.input, g.terminal, g.submit);
     g.emit("x".repeat(65537));
-    assert.equal(g.captures.length, 0);
-    assert.equal(g.dataListeners.size, 0);
-    assert.equal(g.exitListeners.size, 0);
+    NodeAssert.equal(g.captures.length, 0);
+    NodeAssert.equal(g.dataListeners.size, 0);
+    NodeAssert.equal(g.exitListeners.size, 0);
   },
   "a busy observer creates no backlog or synthetic duty and preserves a second ordinary command":
     async () => {
@@ -252,11 +252,11 @@ export const scriptObservationCases: Record<string, () => Promise<void>> = {
         data: "second\r",
       };
       f.observer.write(second, f.terminal, f.submit);
-      assert.equal(f.writes.length, 2);
-      assert.equal(f.writes[1], second.data);
-      assert.equal(f.dataListeners.size, 1);
+      NodeAssert.equal(f.writes.length, 2);
+      NodeAssert.equal(f.writes[1], second.data);
+      NodeAssert.equal(f.dataListeners.size, 1);
       f.observer.close(f.terminal.process);
-      assert.equal(f.dataListeners.size, 0);
+      NodeAssert.equal(f.dataListeners.size, 0);
     },
   "the actual POSIX wrapper preserves shell state and reports command exit": async () => {
     const marker = completionSentinel(nonce);
@@ -267,14 +267,14 @@ export const scriptObservationCases: Record<string, () => Promise<void>> = {
       true,
     ).replaceAll("\r", "\n");
     const output = await new Promise<string>((resolve, reject) =>
-      childProcess.execFile(
+      NodeChildProcess.execFile(
         "/bin/sh",
         ["-c", wrapper + '\nprintf "state:%s\\n" "$JONES_SCRIPT_OBSERVER_FIXTURE"'],
         { timeout: 2000, maxBuffer: 65536, encoding: "utf8" },
         (error, out) => (error ? reject(error) : resolve(out)),
       ),
     );
-    assert.ok(output.includes(marker + "1"));
-    assert.ok(output.includes("state:preserved"));
+    NodeAssert.ok(output.includes(marker + "1"));
+    NodeAssert.ok(output.includes("state:preserved"));
   },
 };

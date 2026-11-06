@@ -1,6 +1,6 @@
 // Dependency-free, sequential test interpreter. It executes production generators and SQL,
 // but does not qualify Effect scheduling, interruption, scopes, diagnostics or type safety.
-import { registerHooks } from "node:module";
+import * as NodeModule from "node:module";
 const sources = {
   "effect/Effect": `
 export const effect = run => ({run,pipe(...f){return f.reduce((x,p)=>p(x),this)},*[Symbol.iterator](){return yield this}});
@@ -49,7 +49,7 @@ export const TaggedError=()=>()=>class extends Error {constructor(v){super(v.rea
   "effect/Semaphore": `export const makeUnsafe=()=>({withPermit:e=>e});`,
 };
 export function installEffectSeam() {
-  registerHooks({
+  NodeModule.registerHooks({
     resolve(specifier, context, next) {
       return sources[specifier]
         ? {

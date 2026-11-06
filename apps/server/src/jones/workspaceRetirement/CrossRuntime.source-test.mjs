@@ -2,24 +2,24 @@
 // mutation, live registry, provider, or configured-runner qualification is implied.
 import { installEffectSeam } from "./EffectSeam.node-test-support.mjs";
 installEffectSeam();
-import * as assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import * as childProcess from "node:child_process";
-import { createHash } from "node:crypto";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 const { fixture, command } = await import("./Conformance.testkit.ts");
 const { acquireReservation, releaseReservation, holderIdentity } = await import("./Reservation.ts");
 const { incarnation } = await import("./OutputAttestation.ts");
 const { participantGuard, reservationTransaction } = await import("./ParticipantGuard.ts");
 const source = process.argv[2],
   python = process.argv[3];
-assert.ok(
-  source && python && path.isAbsolute(source) && path.isAbsolute(python),
+NodeAssert.ok(
+  source && python && NodePath.isAbsolute(source) && NodePath.isAbsolute(python),
   "explicit pinned V3 source repository and qualified interpreter paths required",
 );
 const revision = "8b4abb6d24da5f994ea66e6cc7c591e645754f43";
 const tree = "3459d9c63dbbd428952e69f3738c96ef77853ec7";
-assert.equal(await command(source, ["rev-parse", revision + "^{tree}"]), tree);
+NodeAssert.equal(await command(source, ["rev-parse", revision + "^{tree}"]), tree);
 const files = [
   "workspace_lifecycle.py",
   "workspace_reservation.py",
@@ -78,30 +78,30 @@ elif r['action']=='busy':
  print(json.dumps({'busy':True,'sqlite_write':False}))
 `;
 await fixture(async ({ base, repo, worktree, input }) => {
-  const extracted = path.join(base, "pinned-source"),
-    database = path.join(base, "registry", "lifecycle.sqlite3");
-  await fs.mkdir(path.dirname(database));
+  const extracted = NodePath.join(base, "pinned-source"),
+    database = NodePath.join(base, "registry", "lifecycle.sqlite3");
+  await NodeFSP.mkdir(NodePath.dirname(database));
   const blobs = {};
   for (const file of files) {
-    const target = path.join(extracted, "codex_v3", file);
-    await fs.mkdir(path.dirname(target), { recursive: true });
+    const target = NodePath.join(extracted, "codex_v3", file);
+    await NodeFSP.mkdir(NodePath.dirname(target), { recursive: true });
     const body = await new Promise((resolve, reject) =>
-      childProcess.execFile(
+      NodeChildProcess.execFile(
         "git",
         ["-C", source, "show", `${revision}:src/codex_v3/${file}`],
         { encoding: "buffer", timeout: 10000, maxBuffer: 1024 * 1024 },
         (error, out) => (error ? reject(error) : resolve(out)),
       ),
     );
-    await fs.writeFile(target, body);
+    await NodeFSP.writeFile(target, body);
     blobs[file] = await command(source, ["rev-parse", `${revision}:src/codex_v3/${file}`]);
-    assert.equal(
-      createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex"),
+    NodeAssert.equal(
+      NodeCrypto.createHash("sha1").update(`blob ${body.length}\0`).update(body).digest("hex"),
       blobs[file],
     );
   }
   for (const sub of ["", "build_outputs", "git"])
-    await fs.writeFile(path.join(extracted, "codex_v3", sub, "__init__.py"), "");
+    await NodeFSP.writeFile(NodePath.join(extracted, "codex_v3", sub, "__init__.py"), "");
   const bound = input.expected,
     binding = {
       environment_id: "fixture",
@@ -129,7 +129,7 @@ await fixture(async ({ base, repo, worktree, input }) => {
   };
   const run = (action, extra = {}) =>
     new Promise((resolve, reject) => {
-      const child = childProcess.execFile(
+      const child = NodeChildProcess.execFile(
         python,
         ["-B", "-c", program, extracted],
         { timeout: 10000, maxBuffer: 65536, encoding: "utf8" },
@@ -154,7 +154,7 @@ await fixture(async ({ base, repo, worktree, input }) => {
   // writers refuse before even opening their participant SQLite connection.
   await acquireReservation(bound, record);
   try {
-    assert.deepEqual(await run("refuse", { generation }), {
+    NodeAssert.deepEqual(await run("refuse", { generation }), {
       assess: "retiring",
       resume: "retiring",
       participant_opens: 0,
@@ -167,7 +167,7 @@ await fixture(async ({ base, repo, worktree, input }) => {
   // retirement's subsequent generation read must therefore reject its old token.
   const before = generation;
   ({ generation } = await run("write", { generation }));
-  assert.notEqual(generation, before);
+  NodeAssert.notEqual(generation, before);
   await acquireReservation(bound, record);
   try {
     await run("refuse", { generation });
@@ -180,33 +180,33 @@ await fixture(async ({ base, repo, worktree, input }) => {
     physical: bound,
     holder: { executor: "v3-fixture", receipt: "reverse-FC5", ...holder },
   });
-  const jonesPath = path.join(base, "jones-writer.sqlite3");
-  await fs.writeFile(jonesPath, "untouched participant");
+  const jonesPath = NodePath.join(base, "jones-writer.sqlite3");
+  await NodeFSP.writeFile(jonesPath, "untouched participant");
   const digest = () =>
-    fs.readFile(jonesPath).then((bytes) => createHash("sha256").update(bytes).digest("hex"));
+    NodeFSP.readFile(jonesPath).then((bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex"));
   const initial = await digest();
   let writes = 0;
   try {
-    await assert.rejects(
+    await NodeAssert.rejects(
       participantGuard(bound, async () => {
         writes++;
-        await fs.writeFile(jonesPath, "incorrect");
+        await NodeFSP.writeFile(jonesPath, "incorrect");
       }),
       /retiring/,
     );
-    assert.equal(writes, 0);
-    assert.equal(await digest(), initial);
+    NodeAssert.equal(writes, 0);
+    NodeAssert.equal(await digest(), initial);
   } finally {
     await run("release", { physical: bound, record: reverse });
   }
   // RV03: busy admission is refused without participant writes.
   await reservationTransaction(bound, async () => {
-    assert.deepEqual(await run("busy", { generation }), { busy: true, sqlite_write: false });
+    NodeAssert.deepEqual(await run("busy", { generation }), { busy: true, sqlite_write: false });
   });
   // The absent-store vector must not create a common directory.
-  const absent = path.join(base, "absent-common");
+  const absent = NodePath.join(base, "absent-common");
   await participantGuard({ ...bound, git_common_dir: absent }, async () => {});
-  await assert.rejects(fs.lstat(absent), { code: "ENOENT" });
+  await NodeAssert.rejects(NodeFSP.lstat(absent), { code: "ENOENT" });
   console.log(
     JSON.stringify({
       source: { revision, tree, blobs },

@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- A bounded optional terminal observer; command issuance remains the native terminal owner's effect.
-import { setTimeout as wait } from "node:timers/promises";
+import * as NodeTimersPromises from "node:timers/promises";
 import * as NodeCrypto from "node:crypto";
 import type { TerminalWriteInput } from "@t3tools/contracts";
 import type { PtyProcess } from "@t3tools/shared/PtyAdapter";
@@ -246,7 +246,7 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
           // This native timer is owned by the observer. Abort synchronously clears
           // it on every detach; the rejection branch drains cancellation quietly.
           const signal = deadline.signal;
-          void wait(10 * 60 * 1000, undefined, { signal, ref: false }).then(
+          void NodeTimersPromises.setTimeout(10 * 60 * 1000, undefined, { signal, ref: false }).then(
             () => finish(null, "observer_timeout; observation_unknown"),
             () => {
               if (!signal.aborted) finish(null, "observer_timer_unavailable; observation_unknown");
