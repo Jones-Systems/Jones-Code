@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, it, vi } from "@effect/vitest";
 import { CommandId, ProjectId, ThreadId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
@@ -19,6 +20,12 @@ import * as ProjectService from "../../../project/ProjectService.ts";
 import * as ProjectSetupScriptRunner from "../../../project/ProjectSetupScriptRunner.ts";
 
 it.effect("resolves setup scripts through the standalone project service", () => {
+  const assertObservedCommand = (data: string | undefined, command: string) => {
+    assert.ok(data);
+    const token = /__T3_SETUP_DONE___([a-f0-9]{32}):/.exec(data)?.[1];
+    assert.ok(token);
+    assert.equal(data, ` ( ${command}\r); printf '\\n__T3_SETUP_DONE___${token}:%s\\n' "$?"\r`);
+  };
   const listeners = new Set<
     Parameters<TerminalManager.TerminalManager["Service"]["subscribe"]>[0]
   >();
@@ -136,7 +143,8 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       worktreePath: "/repo-worktree",
     });
     if (result.status !== "started") return yield* Effect.die("Expected started setup.");
-    const { writeCompletion, ...started } = result;
+    const { writeCompletion, completion: automaticCompletion, ...started } = result;
+    assert.ok(Effect.isEffect(automaticCompletion));
     assert.deepEqual(started, {
       status: "started",
       async: true,
@@ -155,7 +163,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       FORCE_COLOR: "0",
     });
     yield* writeCompletion;
-    assert.equal(write.mock.calls[0]?.[0].data, " vp install\r");
+    assertObservedCommand(write.mock.calls[0]?.[0].data, "vp install");
     const lines: string[] = [];
     const observed = yield* runner.runForThread({
       threadId: "thread-1",
@@ -190,7 +198,7 @@ it.effect("resolves setup scripts through the standalone project service", () =>
     yield* settle.writeCompletion;
     const settleTerminalId = settle.terminalId;
     assert.match(settleTerminalId, /^settle-clean-/);
-    assert.equal(write.mock.calls.at(-1)?.[0].data, " cargo clean\r");
+    assertObservedCommand(write.mock.calls.at(-1)?.[0].data, "cargo clean");
 
     const observedSettle = yield* runner.runForThread({
       threadId: "thread-1",
@@ -251,7 +259,12 @@ it.effect("resolves setup scripts through the standalone project service", () =>
       worktreePath: "/repo-worktree",
     });
     assert.equal(trusted.status, "started");
-  }).pipe(Effect.scoped, Effect.provide(layer));
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(layer),
+    Effect.provideService(HostProcess.Platform, "linux"),
+    Effect.provideService(HostProcess.Environment, { SHELL: "/bin/sh" }),
+  );
 });
 
 it.effect(
