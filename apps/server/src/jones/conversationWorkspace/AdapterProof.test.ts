@@ -38,6 +38,7 @@ import * as Invocation from "../../mcp/McpInvocationContext.ts";
 import * as ToolAccess from "../../mcp/McpToolAccess.ts";
 import * as Handlers from "../../mcp/toolkits/worktree/handlers.ts";
 import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
+import RetirementMigration from "../persistence/Migrations/138_JonesWorkspaceRetirement.ts";
 import Migration from "../persistence/Migrations/139_JonesConversationWorkspace.ts";
 import * as Policy from "./ConversationPolicy.ts";
 
@@ -168,6 +169,12 @@ it.effect.each([
             Effect.gen(function* () {
               assert.equal(input.worktreePath, checkout);
               assert.equal(input.projectCwd, repo);
+              const sql = yield* SqlClient.SqlClient;
+              assert.lengthOf(
+                yield* sql`SELECT claim_id FROM jones_workspace_duty_claims
+                  WHERE worktree=${checkout} AND kind='handoff' AND owner=${threadId} AND released_at IS NULL`,
+                1,
+              );
               setupCount++;
               if (scenario === "setup-unknown")
                 return yield* new Setup.ProjectSetupScriptOperationError({
@@ -219,6 +226,7 @@ it.effect.each([
       );
       yield* Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+        yield* RetirementMigration;
         yield* Migration;
         yield* sql`CREATE TABLE projection_projects(workspace_root TEXT, deleted_at TEXT)`;
         yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, payload_json TEXT, deleted_at TEXT)`;
@@ -301,6 +309,10 @@ it.effect.each([
           assert.equal(created, 1);
           assert.equal(sent.size, 0);
           assert.equal((yield* policy.readHandoff(threadId))?.phase, "setup_issued");
+          assert.deepEqual(
+            yield* sql`SELECT claim_id FROM jones_workspace_duty_claims WHERE released_at IS NULL`,
+            [],
+          );
           return;
         }
         if (scenario === "terminal") {
@@ -309,6 +321,10 @@ it.effect.each([
           assert.equal(setupCount, 1);
           assert.equal(sent.size, 0);
           assert.isFalse(yield* policy.acceptsCwd(threadId, binding.path));
+          assert.deepEqual(
+            yield* sql`SELECT claim_id FROM jones_workspace_duty_claims WHERE released_at IS NULL`,
+            [],
+          );
           return;
         }
         const result = yield* Effect.gen(function* () {
@@ -338,6 +354,10 @@ it.effect.each([
         assert.equal(setupCount, 1);
         assert.equal(sent.size, 1);
         assert.equal(result.continuation.status, "scheduled");
+        assert.deepEqual(
+          yield* sql`SELECT claim_id FROM jones_workspace_duty_claims WHERE released_at IS NULL`,
+          [],
+        );
         assert.equal(result.startedFromOrigin, false);
         assert.equal(git(checkout, "rev-parse", "HEAD"), turn!.binding.commit);
         if (scenario === "nonempty") {

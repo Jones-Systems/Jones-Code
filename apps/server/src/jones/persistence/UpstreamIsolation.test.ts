@@ -336,6 +336,7 @@ it.effect(
         [135, "IdleWorktreeAdmission"],
         [136, "WorkspaceProvenance"],
         [137, "NativeCreationLeaseRenewal"],
+        [138, "WorkspaceRetirement"],
         [139, "ConversationWorkspace"],
       ]);
       assert.deepStrictEqual(

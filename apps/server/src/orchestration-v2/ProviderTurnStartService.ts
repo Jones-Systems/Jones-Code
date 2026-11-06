@@ -1,3 +1,4 @@
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
@@ -2326,12 +2327,20 @@ export const layer: Layer.Layer<
             input.threadId,
             input.runId,
           );
-          const providerTurn = yield* start({
-            threadId: input.threadId,
-            runId: input.runId,
-            nativeCreationGuard: input.guard,
-          });
-          if (providerTurn !== undefined) yield* providerTurn;
+          const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
+          yield* WorkspaceDuty.withDuty(
+            thread.worktreePath,
+            "turn",
+            input.runId,
+            Effect.gen(function* () {
+              const providerTurn = yield* start({
+                threadId: input.threadId,
+                runId: input.runId,
+                nativeCreationGuard: input.guard,
+              });
+              if (providerTurn !== undefined) yield* providerTurn;
+            }),
+          );
           const evidence = NativeProvider.readNativeProviderAcknowledgement(input.guard);
           if (evidence === undefined)
             return yield* new ProviderTurnStartError({
@@ -2361,10 +2370,17 @@ export const layer: Layer.Layer<
           // Storage cleanup removes worktrees under the same lease. Only startup
           // holds it; the provider turn runs after it is released.
           const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
-          const providerTurn = yield* thread.worktreePath === null
-            ? start(input)
-            : withWorkspaceLease(path.resolve(thread.worktreePath), start(input));
-          if (providerTurn !== undefined) yield* providerTurn;
+          yield* WorkspaceDuty.withDuty(
+            thread.worktreePath,
+            "turn",
+            input.runId,
+            Effect.gen(function* () {
+              const providerTurn = yield* thread.worktreePath === null
+                ? start(input)
+                : withWorkspaceLease(path.resolve(thread.worktreePath), start(input));
+              if (providerTurn !== undefined) yield* providerTurn;
+            }),
+          );
         },
         (effect, input) =>
           attestStart(

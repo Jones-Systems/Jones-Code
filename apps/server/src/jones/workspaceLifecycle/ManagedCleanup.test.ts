@@ -1,3 +1,6 @@
+import { NativeObservations } from "../workspaceRetirement/NativeObservations.ts";
+import { LifecycleRegistry } from "./RegistryCli.ts";
+import * as RetirementGate from "../workspaceRetirement/RemovalGate.ts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -47,6 +50,14 @@ const recordLineage = Effect.fnUntraced(function* (f: Effect.Success<typeof fixt
     commandId: CommandId.make("cleanup-settle"),
     threadId,
   });
+});
+
+// No shared-host service/process scan is performed by these isolated native-policy fixtures.
+const fixtureProbe = () => ({
+  observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+  status: "complete" as const,
+  paths: [],
+  limits: ["isolated synthetic cleanup fixture"],
 });
 
 const decodeCleanupRules = Schema.decodeUnknownEffect(WorktreeCleanupRules);
@@ -138,6 +149,11 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
         const f = yield* fixture;
         yield* Effect.gen(function* () {
           yield* recordLineage(f);
+          // This cleanup fixture launches no settle script. Supply its explicit
+          // synthetic no-script acknowledgement; completion admission itself is
+          // exercised by the real settlement owner above and the retirement suite.
+          const fixtureSql = yield* SqlClient.SqlClient;
+          yield* fixtureSql`UPDATE jones_workspace_retirement_intents SET script_state='completed',script_completed_at=settled_at,script_exit_code=0 WHERE worktree=${f.linked}`;
           if (mode !== "missing") f.state.assess();
           if (mode === "head-changed")
             yield* f.runGit(["commit", "--allow-empty", "-m", "changed-head"], f.linked);
@@ -181,6 +197,12 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
                 Layer.provide(
                   Removal.producerLayer.pipe(
                     Layer.provide(
+                      RetirementGate.layer.pipe(
+                        Layer.provide(f.configured),
+                        Layer.provide(Settings.layerTest()),
+                      ),
+                    ),
+                    Layer.provide(
                       Layer.succeed(Removal.DeletionWorktreeGit, { execute: f.git.execute }),
                     ),
                   ),
@@ -192,7 +214,20 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           expect(Exit.isSuccess(result)).toBe(mode === "matching");
           expect(yield* f.fs.exists(f.linked)).toBe(mode !== "matching");
           expect(f.state.resumes).toBe(1);
-        }).pipe(Effect.provide(f.layer));
+        }).pipe(
+          Effect.provideService(NativeObservations, {
+            services: async () => fixtureProbe(),
+            processes: async () => fixtureProbe(),
+            workloads: () => Effect.sync(fixtureProbe),
+            temporaryRoots: [],
+          }),
+          Effect.provideService(LifecycleRegistry, {
+            resume: () => Effect.die("Cleanup fixtures must not resume or register a workspace"),
+            show: () => Effect.sync(f.state.view),
+            outputs: () => Effect.succeed([]),
+          }),
+          Effect.provide(f.layer),
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -205,6 +240,11 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
         const f = yield* fixture;
         yield* Effect.gen(function* () {
           yield* recordLineage(f);
+          // This cleanup fixture launches no settle script. Supply its explicit
+          // synthetic no-script acknowledgement; completion admission itself is
+          // exercised by the real settlement owner above and the retirement suite.
+          const fixtureSql = yield* SqlClient.SqlClient;
+          yield* fixtureSql`UPDATE jones_workspace_retirement_intents SET script_state='completed',script_completed_at=settled_at,script_exit_code=0 WHERE worktree=${f.linked}`;
           if (mode !== "missing") f.state.assess();
           if (mode === "head-changed")
             yield* f.runGit(["commit", "--allow-empty", "-m", "changed-head"], f.linked);
@@ -246,7 +286,20 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           );
           expect(yield* f.fs.exists(f.linked)).toBe(mode !== "matching");
           expect(f.state.resumes).toBe(1);
-        }).pipe(Effect.provide(f.layer));
+        }).pipe(
+          Effect.provideService(NativeObservations, {
+            services: async () => fixtureProbe(),
+            processes: async () => fixtureProbe(),
+            workloads: () => Effect.sync(fixtureProbe),
+            temporaryRoots: [],
+          }),
+          Effect.provideService(LifecycleRegistry, {
+            resume: () => Effect.die("Cleanup fixtures must not resume or register a workspace"),
+            show: () => Effect.sync(f.state.view),
+            outputs: () => Effect.succeed([]),
+          }),
+          Effect.provide(f.layer),
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );

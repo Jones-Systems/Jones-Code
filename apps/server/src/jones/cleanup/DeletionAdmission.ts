@@ -1,3 +1,4 @@
+import { RetirementReservationOwner } from "../workspaceRetirement/Receipts.ts";
 import { withOperation } from "../workspaceLifecycle/NativeOperation.ts";
 import { beforeCleanup, beforeCleanupPath } from "../workspaceLifecycle/NativeBoundary.ts";
 import * as EffectPath from "effect/Path";
@@ -122,6 +123,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     left.startsWith(`${right}${path.sep}`) ||
     right.startsWith(`${left}${path.sep}`);
   const newlyIssuedStarts = new Set<string>();
+  const consumedStarts = new Set<string>();
   const receipts = yield* Receipts.CommandReceiptStoreV2;
   const failure = (reason: string) => new DeletionAdmissionError({ reason });
   const load = Effect.fn("DeletionAdmission.load")(function* (effectId: string) {
@@ -131,9 +133,23 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       readonly state: string;
     }>`SELECT binding_json,start_json,state FROM jones_deletion_worktree_admissions WHERE effect_id=${effectId}`;
     if (rows.length !== 1) return null;
+    const savedBinding = rows[0]!.binding_json;
+    const start = yield* Schema.decodeEffect(jsonStart)(rows[0]!.start_json);
+    const savedBindingSha256 = nativeCreationSha256(savedBinding);
+    // The original canonical bytes own receipt identity. Decoding a legacy
+    // policy may add defaults; that resolved view must never replace its digest.
+    if (
+      nativeCreationCanonicalJson(
+        yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(savedBinding),
+      ) !== savedBinding ||
+      start.effectId !== effectId ||
+      savedBindingSha256 !== start.bindingSha256
+    )
+      return yield* failure("original_removal_binding_changed");
     return {
-      binding: yield* Schema.decodeEffect(jsonBinding)(rows[0]!.binding_json),
-      start: yield* Schema.decodeEffect(jsonStart)(rows[0]!.start_json),
+      binding: yield* Schema.decodeEffect(jsonBinding)(savedBinding),
+      savedBindingSha256,
+      start,
       state: rows[0]!.state,
     };
   });
@@ -252,8 +268,9 @@ export const makeDeletionAdmission = Effect.gen(function* () {
   ) {
     if (currentRules === undefined || currentLive === undefined)
       return yield* failure("current_policy_owner_unavailable");
-    const rules = yield* currentRules;
-    if (!rules.worktreeOnDelete || !same(rules, binding.rules))
+    const rules = yield* Schema.decodeEffect(WorktreeCleanupRules)(yield* currentRules);
+    const resolvedBindingRules = yield* Schema.decodeEffect(WorktreeCleanupRules)(binding.rules);
+    if (!rules.worktreeOnDelete || !same(rules, resolvedBindingRules))
       return yield* failure("original_worktree_policy_changed");
     if (!(yield* currentLive))
       return yield* failure("current_cleanup_owner_or_live_prerequisites_changed");
@@ -285,7 +302,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       commandId: CommandId.make(deletion.command_id!),
       deletionPayload: deletion.payload_json,
       target: input.target,
-      rules: input.rules,
+      rules: yield* Schema.decodeEffect(WorktreeCleanupRules)(input.rules),
     };
     yield* checkCurrent(binding, input.currentRules, input.currentLive);
     return binding;
@@ -393,8 +410,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
           original.state !== "started" ||
           ordinal !== 0 ||
           !same(original.start, captured) ||
-          nativeCreationSha256(nativeCreationCanonicalJson(original.binding)) !==
-            captured.bindingSha256
+          original.savedBindingSha256 !== captured.bindingSha256
         )
           return yield* failure("original_start_no_longer_executable");
         const outcomes =
@@ -420,7 +436,9 @@ export const makeDeletionAdmission = Effect.gen(function* () {
           Effect.andThen(
             Effect.suspend(() =>
               newlyIssuedStarts.delete(captured.effectId)
-                ? Effect.void
+                ? Effect.sync(() => {
+                    consumedStarts.add(captured.effectId);
+                  })
                 : failure("original_start_observation_only"),
             ),
           ),
@@ -431,6 +449,58 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       Schema.is(DeletionAdmissionError)(cause)
         ? cause
         : new DeletionAdmissionError({ reason: "original_start_revalidation_failed", cause }),
+    ),
+  );
+  // Readback never issues, consumes or recreates an execution permit. The producer
+  // must already have consumed its one-shot start in this exact owner lifetime.
+  const checkRetained = Effect.fn("DeletionAdmission.checkRetained")(
+    function* (
+      captured: DeletionWorktreeRemovalStartV1,
+      ordinal: number,
+      rules?: DeletionPolicyRead,
+      live?: DeletionLiveRead,
+    ) {
+      const own = yield* RetirementReservationOwner;
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const original = yield* load(captured.effectId);
+          if (
+            original === null ||
+            original.state !== "started" ||
+            ordinal !== 0 ||
+            !same(original.start, captured) ||
+            original.savedBindingSha256 !== captured.bindingSha256
+          )
+            return yield* failure("original_start_no_longer_executable");
+          if (!consumedStarts.has(captured.effectId))
+            return yield* failure("original_start_observation_only");
+          const observed =
+            yield* sql`SELECT 1 FROM jones_deletion_worktree_observations WHERE effect_id=${captured.effectId} LIMIT 1`;
+          if (observed.length) return yield* failure("original_start_already_observed");
+          const rows = yield* sql<{
+            incarnation_id: string;
+            receipt_id: string;
+          }>`SELECT incarnation_id,receipt_id FROM jones_workspace_retirement_state WHERE worktree=${captured.target.path} AND state='retiring'`;
+          if (own === null) {
+            if (rows.length) return yield* failure("conflicting_retirement");
+          } else if (
+            own.worktree !== captured.target.path ||
+            rows.length !== 1 ||
+            rows[0]!.receipt_id !== own.record.receipt ||
+            rows[0]!.incarnation_id !== own.record.incarnation
+          ) {
+            return yield* failure("retirement_ownership_lost");
+          }
+          // The executor verifies the actual common-store row before this SQL-only
+          // callback; no guarded writer is entered under our own reservation.
+          yield* checkCurrent(original.binding, rules, live);
+        }),
+      );
+    },
+    Effect.mapError((cause) =>
+      Schema.is(DeletionAdmissionError)(cause)
+        ? cause
+        : new DeletionAdmissionError({ reason: "original_start_readback_failed", cause }),
     ),
   );
   const qualify = (input: DeletionWorktreeRemovalObservationV1) =>
@@ -447,8 +517,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
             original === null ||
             observation.startOrdinal !== 0 ||
             !same(original.start, observation.start) ||
-            nativeCreationSha256(nativeCreationCanonicalJson(original.binding)) !==
-              observation.start.bindingSha256 ||
+            original.savedBindingSha256 !== observation.start.bindingSha256 ||
             Option.isNone(observedAt) ||
             Option.isNone(startTime) ||
             DateTime.formatIso(observedAt.value) !== observation.observedAt ||
@@ -515,5 +584,5 @@ export const makeDeletionAdmission = Effect.gen(function* () {
             : new DeletionAdmissionError({ reason: "observation_qualification_failed", cause }),
         ),
       );
-  return { start, read, readTarget, revalidate, qualify };
+  return { start, read, readTarget, revalidate, checkRetained, qualify };
 });

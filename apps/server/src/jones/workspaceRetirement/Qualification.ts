@@ -27,6 +27,7 @@ export interface QualificationInput {
   preservations?: readonly Preservation[];
   registeredStores?: readonly { path: string; common: string }[];
   lineage?: Readonly<Record<string, string>>;
+  dutyDetails?: readonly ReasonDetail[];
 }
 export interface ReasonDetail {
   reason: string;
@@ -55,6 +56,7 @@ export interface QualificationResult {
   branch?: string | null;
   containingRefs?: string[];
   preservationTips?: string[];
+  untrackedPaths?: string[];
   ignored?: IgnoredResult[];
   consumers?: ReturnType<typeof consumerDecision>;
   capturedConfig?: Record<string, string>;
@@ -93,6 +95,21 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       ...(result.lineageObservation?.lineage ?? []),
     ];
     result.details = result.reasons.flatMap((reason) => {
+      if (reason === "active_consumer" && input.dutyDetails?.length) return [...input.dutyDetails];
+      if (reason === "consumer_evidence_unavailable") {
+        return Object.entries(result.consumers?.coverage ?? {})
+          .filter(([, probe]) => probe.reason !== null)
+          .map(([name, probe]) => ({
+            reason,
+            target: input.worktree,
+            root: input.worktree,
+            category: "unavailable_observation" as const,
+            fact: `${name}: ${probe.reason}. ${probe.limits.join("; ")}`,
+            missingFact: `fresh_complete_${name}_observation`,
+            lineage,
+            nextAction: `Obtain only this target's ${name} readback from its named native owner; ${probe.limits.join("; ")}`,
+          }));
+      }
       const roots =
         result.ignored?.filter((item) => item.reason === reason).map((item) => item.path) ?? [];
       return (roots.length ? roots : [input.worktree]).map((root) => {
@@ -148,7 +165,21 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       });
     });
     result.observationMs = performance.now() - started;
-    result.fingerprint = sha256(canonical({ ...result, observationMs: 0, fingerprint: undefined }));
+    result.fingerprint = sha256(
+      canonical({
+        binding: result.binding,
+        head: result.head,
+        branch: result.branch,
+        containingRefs: result.containingRefs,
+        preservationTips: result.preservationTips,
+        untrackedPaths: result.untrackedPaths,
+        ignored: result.ignored,
+        capturedConfig: result.capturedConfig,
+        sparsePatterns: result.sparsePatterns,
+        reasons: result.reasons,
+        level: result.level,
+      }),
+    );
     return result;
   };
   try {
@@ -218,6 +249,8 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
         if (code.includes("R") || code.includes("C")) i++;
       }
     }
+    result.untrackedPaths = untracked;
+    if (untracked.length > 10000) reasons.add("untracked_paths_bound");
     if (
       untracked.some(
         (path) =>
@@ -420,6 +453,7 @@ export async function finalCheck(input: QualificationInput, previous: Qualificat
       branch: r.branch,
       containingRefs: r.containingRefs,
       preservationTips: r.preservationTips,
+      untrackedPaths: r.untrackedPaths,
       ignored: r.ignored,
       capturedConfig: r.capturedConfig,
       sparsePatterns: r.sparsePatterns,

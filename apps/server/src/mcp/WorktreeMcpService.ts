@@ -1,3 +1,5 @@
+import * as RetirementOutcome from "../jones/workspaceRetirement/Outcome.ts";
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import { resolveSource } from "../jones/conversationWorkspace/SourceBroker.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Stable legacy request identity; explicit clientRequestId remains preferred.
@@ -87,6 +89,7 @@ const encodeHandoffRequest = Schema.encodeEffect(
 );
 
 export const make = Effect.gen(function* () {
+  const retirementOutcome = yield* RetirementOutcome.lookup;
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
   const conversationPolicy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
   const lookupProvenance = yield* WorkspaceProvenance.optionalLookup;
@@ -372,6 +375,10 @@ export const make = Effect.gen(function* () {
                   ),
           );
 
+        const duty = yield* WorkspaceDuty.hooks;
+        const releaseDuty = yield* duty
+          .hold(worktreePath, "handoff", scope.thread.threadId)
+          .pipe(asOperationFailed("Workspace handoff duty refused"));
         const continuation = yield* recheckAndBind.pipe(
           Effect.andThen(
             captureProvenance({
@@ -383,6 +390,7 @@ export const make = Effect.gen(function* () {
             }),
           ),
           Effect.andThen(queueContinuation),
+          Effect.ensuring(releaseDuty.pipe(Effect.orDie)),
         );
 
         yield* vcsStatusBroadcaster
@@ -603,126 +611,132 @@ export const make = Effect.gen(function* () {
     if (worktreePath === null)
       return yield* failure("operation_failed", "Handoff journal has no checkout path.");
     const commandKey = `conversation-handoff:${encodeURIComponent(threadId)}:${encodeURIComponent(requestId)}`;
+    const duty = yield* WorkspaceDuty.hooks;
     return yield* Effect.uninterruptible(
       Effect.gen(function* () {
-        if (record.phase === "checkout_created") {
-          for (const member of record.members) {
-            const memberId = ThreadId.make(member);
-            const fresh = yield* loadThread({ thread: { threadId: memberId } });
-            if (
-              fresh.thread.projectId !== project.id ||
-              (fresh.thread.worktreePath !== null && fresh.thread.worktreePath !== worktreePath)
-            )
-              return yield* failure(
-                "already_in_worktree",
-                "A shared thread binding changed during handoff.",
-              );
-            yield* threadManagement
-              .dispatch({
-                type: "thread.metadata.update",
-                commandId: CommandId.make(`${commandKey}:bind:${encodeURIComponent(member)}`),
-                threadId: memberId,
-                branch: input.branch,
-                worktreePath,
-              })
-              .pipe(asOperationFailed("Unable to bind shared handoff checkout"));
-            yield* policy
-              .markAttached(member)
-              .pipe(asOperationFailed("Unable to record shared checkout binding"));
+        const releaseDuty = yield* duty
+          .hold(worktreePath, "handoff", threadId)
+          .pipe(asOperationFailed("Workspace handoff duty refused"));
+        return yield* Effect.gen(function* () {
+          if (record.phase === "checkout_created") {
+            for (const member of record.members) {
+              const memberId = ThreadId.make(member);
+              const fresh = yield* loadThread({ thread: { threadId: memberId } });
+              if (
+                fresh.thread.projectId !== project.id ||
+                (fresh.thread.worktreePath !== null && fresh.thread.worktreePath !== worktreePath)
+              )
+                return yield* failure(
+                  "already_in_worktree",
+                  "A shared thread binding changed during handoff.",
+                );
+              yield* threadManagement
+                .dispatch({
+                  type: "thread.metadata.update",
+                  commandId: CommandId.make(`${commandKey}:bind:${encodeURIComponent(member)}`),
+                  threadId: memberId,
+                  branch: input.branch,
+                  worktreePath,
+                })
+                .pipe(asOperationFailed("Unable to bind shared handoff checkout"));
+              yield* policy
+                .markAttached(member)
+                .pipe(asOperationFailed("Unable to record shared checkout binding"));
+            }
+            for (const member of record.members)
+              yield* policy
+                .dispose(member, true)
+                .pipe(asOperationFailed("Unable to dispose the attached conversation directory"));
+            yield* captureProvenance({
+              threadId,
+              reason: "handoff",
+              createdBy: "agent",
+              baseRef: record.baseRef,
+              baseIsCurrentHead: true,
+            });
+            record = yield* step({ phase: "bound" });
           }
-          for (const member of record.members)
-            yield* policy
-              .dispose(member, true)
-              .pipe(asOperationFailed("Unable to dispose the attached conversation directory"));
-          yield* captureProvenance({
-            threadId,
-            reason: "handoff",
-            createdBy: "agent",
-            baseRef: record.baseRef,
-            baseIsCurrentHead: true,
-          });
-          record = yield* step({ phase: "bound" });
-        }
-        if (record.phase === "bound") {
-          // Persist issuance before setup. An interrupted setup is never blindly rerun.
-          record = yield* step({ phase: "setup_issued" });
-          const setup: WorktreeMcpSetupScriptStatus =
-            input.runSetupScript === false
+          if (record.phase === "bound") {
+            // Persist issuance before setup. An interrupted setup is never blindly rerun.
+            record = yield* step({ phase: "setup_issued" });
+            const setup: WorktreeMcpSetupScriptStatus =
+              input.runSetupScript === false
+                ? { status: "skipped" }
+                : yield* setupScriptRunner
+                    .runForThread({
+                      threadId,
+                      projectId: project.id,
+                      projectCwd: project.workspaceRoot,
+                      worktreePath,
+                      preferredTerminalId: `conversation-setup-${NodeCrypto.createHash("sha256").update(commandKey).digest("hex").slice(0, 24)}`,
+                      project: {
+                        id: project.id,
+                        workspaceRoot: project.workspaceRoot,
+                        scripts: project.scripts,
+                      },
+                    })
+                    .pipe(
+                      Effect.flatMap((result) =>
+                        result.status === "started"
+                          ? result.writeCompletion.pipe(
+                              Effect.as<WorktreeMcpSetupScriptStatus>({
+                                status: "started",
+                                scriptName: result.scriptName,
+                                terminalId: result.terminalId,
+                              }),
+                            )
+                          : Effect.succeed<WorktreeMcpSetupScriptStatus>(
+                              result.status === "skipped-for-link"
+                                ? { status: "skipped" }
+                                : { status: "no-script" },
+                            ),
+                      ),
+                      asOperationFailed("Setup outcome must be reconciled before retry"),
+                    );
+            record = yield* step({ phase: "setup_done", setup });
+          } else if (record.phase === "setup_issued")
+            return yield* failure(
+              "handoff_in_progress",
+              "handoff_unknown: setup was issued; retain its checkout and reconcile the original setup before continuing.",
+            );
+          if (record.phase === "setup_done") record = yield* step({ phase: "continuation_issued" });
+          const continuation: WorktreeMcpContinuationStatus =
+            input.continuationPrompt === undefined
               ? { status: "skipped" }
-              : yield* setupScriptRunner
-                  .runForThread({
-                    threadId,
+              : yield* threadManagement
+                  .sendToThread({
                     projectId: project.id,
-                    projectCwd: project.workspaceRoot,
-                    worktreePath,
-                    preferredTerminalId: `conversation-setup-${NodeCrypto.createHash("sha256").update(commandKey).digest("hex").slice(0, 24)}`,
-                    project: {
-                      id: project.id,
-                      workspaceRoot: project.workspaceRoot,
-                      scripts: project.scripts,
-                    },
+                    commandId: CommandId.make(`${commandKey}:continue`),
+                    threadId,
+                    messageId: MessageId.make(`${commandKey}:message`),
+                    text: input.continuationPrompt,
+                    attachments: continuationAttachments,
+                    mode: "queue",
+                    createdBy: "agent",
+                    creationSource: "mcp",
                   })
                   .pipe(
-                    Effect.flatMap((result) =>
-                      result.status === "started"
-                        ? result.writeCompletion.pipe(
-                            Effect.as<WorktreeMcpSetupScriptStatus>({
-                              status: "started",
-                              scriptName: result.scriptName,
-                              terminalId: result.terminalId,
-                            }),
-                          )
-                        : Effect.succeed<WorktreeMcpSetupScriptStatus>(
-                            result.status === "skipped-for-link"
-                              ? { status: "skipped" }
-                              : { status: "no-script" },
-                          ),
-                    ),
-                    asOperationFailed("Setup outcome must be reconciled before retry"),
+                    Effect.map((sent): WorktreeMcpContinuationStatus => ({
+                      status: "scheduled",
+                      delivery: sent.delivery,
+                    })),
+                    asOperationFailed("Unable to queue handoff continuation"),
                   );
-          record = yield* step({ phase: "setup_done", setup });
-        } else if (record.phase === "setup_issued")
-          return yield* failure(
-            "handoff_in_progress",
-            "handoff_unknown: setup was issued; retain its checkout and reconcile the original setup before continuing.",
-          );
-        if (record.phase === "setup_done") record = yield* step({ phase: "continuation_issued" });
-        const continuation: WorktreeMcpContinuationStatus =
-          input.continuationPrompt === undefined
-            ? { status: "skipped" }
-            : yield* threadManagement
-                .sendToThread({
-                  projectId: project.id,
-                  commandId: CommandId.make(`${commandKey}:continue`),
-                  threadId,
-                  messageId: MessageId.make(`${commandKey}:message`),
-                  text: input.continuationPrompt,
-                  attachments: continuationAttachments,
-                  mode: "queue",
-                  createdBy: "agent",
-                  creationSource: "mcp",
-                })
-                .pipe(
-                  Effect.map((sent): WorktreeMcpContinuationStatus => ({
-                    status: "scheduled",
-                    delivery: sent.delivery,
-                  })),
-                  asOperationFailed("Unable to queue handoff continuation"),
-                );
-        const directory = yield* policy
-          .dispose(threadId, true)
-          .pipe(asOperationFailed("Unable to finalize conversation directory ownership"));
-        const result: WorktreeMcpHandoffResult = {
-          worktreePath,
-          branch: input.branch,
-          baseRef: record.baseRef,
-          startedFromOrigin: record.startedFromOrigin,
-          setupScript: record.setup ?? { status: "skipped" },
-          continuation,
-          note: `Handoff recorded at source commit ${record.commit}. The current provider turn ends after the workspace changes; continuation is ${continuation.status}. Conversation directory: ${directory ?? "none"}. Nonempty content is retained with its original owner obligation.`,
-        };
-        record = yield* step({ phase: "done", result });
-        return result;
+          const directory = yield* policy
+            .dispose(threadId, true)
+            .pipe(asOperationFailed("Unable to finalize conversation directory ownership"));
+          const result: WorktreeMcpHandoffResult = {
+            worktreePath,
+            branch: input.branch,
+            baseRef: record.baseRef,
+            startedFromOrigin: record.startedFromOrigin,
+            setupScript: record.setup ?? { status: "skipped" },
+            continuation,
+            note: `Handoff recorded at source commit ${record.commit}. The current provider turn ends after the workspace changes; continuation is ${continuation.status}. Conversation directory: ${directory ?? "none"}. Nonempty content is retained with its original owner obligation.`,
+          };
+          record = yield* step({ phase: "done", result });
+          return result;
+        }).pipe(Effect.ensuring(releaseDuty.pipe(Effect.orDie)));
       }),
     );
   });
@@ -785,6 +799,7 @@ export const make = Effect.gen(function* () {
               .readHandoff(binding.ownerThreadId)
               .pipe(asOperationFailed("Unable to read handoff status"));
       const result: WorktreeMcpStatusResult = {
+        ...(yield* retirementOutcome(scope.thread.threadId)),
         ...(binding === null || recorded === null
           ? {}
           : {
