@@ -109,6 +109,34 @@ it.effect.each([
       let created = 0;
       let setupCount = 0;
       const sent = new Map<string, string>();
+      const database = NodeSqlite.layer({ filename: ":memory:" });
+      const setupLayer = Layer.unwrap(
+        Effect.gen(function* () {
+          // Capture the same memoized database as Policy and the fixture body.
+          const sql = yield* SqlClient.SqlClient;
+          return Layer.mock(Setup.ProjectSetupScriptRunner)({
+            runForThread: (input) =>
+              Effect.gen(function* () {
+                assert.equal(input.worktreePath, checkout);
+                assert.equal(input.projectCwd, repo);
+                assert.lengthOf(
+                  yield* sql`SELECT claim_id FROM jones_workspace_duty_claims
+                    WHERE worktree=${checkout} AND kind='handoff' AND owner=${threadId} AND released_at IS NULL`.pipe(Effect.orDie),
+                  1,
+                );
+                setupCount++;
+                if (scenario === "setup-unknown")
+                  return yield* new Setup.ProjectSetupScriptOperationError({
+                    threadId,
+                    worktreePath: checkout,
+                    operation: "writeCommand",
+                    cause: "Synthetic setup acknowledgement lost",
+                  });
+                return { status: "no-script" as const };
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(database));
       const external = Layer.mergeAll(
         Layer.mock(Threads.ThreadManagementService)({
           getThreadRecords: (id) => Effect.succeed({ thread: members.get(id)! } as never),
@@ -164,32 +192,10 @@ it.effect.each([
               isRepo: true,
             } as never),
         }),
-        Layer.mock(Setup.ProjectSetupScriptRunner)({
-          runForThread: (input) =>
-            Effect.gen(function* () {
-              assert.equal(input.worktreePath, checkout);
-              assert.equal(input.projectCwd, repo);
-              const sql = yield* SqlClient.SqlClient;
-              assert.lengthOf(
-                yield* sql`SELECT claim_id FROM jones_workspace_duty_claims
-                  WHERE worktree=${checkout} AND kind='handoff' AND owner=${threadId} AND released_at IS NULL`,
-                1,
-              );
-              setupCount++;
-              if (scenario === "setup-unknown")
-                return yield* new Setup.ProjectSetupScriptOperationError({
-                  threadId,
-                  worktreePath: checkout,
-                  operation: "writeCommand",
-                  cause: "Synthetic setup acknowledgement lost",
-                });
-              return { status: "no-script" as const };
-            }),
-        }),
+        setupLayer,
         Layer.mock(VcsStatus.VcsStatusBroadcaster)({ refreshStatus: () => Effect.void as never }),
         ServerSettings.layerTest({ newWorktreesStartFromOrigin: true }),
       );
-      const database = NodeSqlite.layer({ filename: ":memory:" });
       const config = ServerConfig.layerTest(root, state).pipe(
         Layer.provide(NodeServices.layer),
         Layer.orDie,

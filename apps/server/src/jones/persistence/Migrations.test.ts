@@ -50,7 +50,11 @@ const readLedger = Effect.gen(function* () {
 });
 const readSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`;
+  return yield* sql<{
+    readonly type: string;
+    readonly name: string;
+    readonly sql: string | null;
+  }>`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`;
 });
 
 const seedLegacy = (prefix = 6) =>
