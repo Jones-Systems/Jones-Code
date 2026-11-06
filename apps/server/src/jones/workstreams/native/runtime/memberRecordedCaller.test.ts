@@ -619,3 +619,121 @@ it.effect.each([
       }).pipe(Effect.provide(Local.layer), Effect.provideService(Mcp.McpInvocationContext, scope));
     }).pipe(Effect.provide(persistence)),
 );
+
+const publicClient = Effect.gen(function* () {
+  const f = yield* setup;
+  const id = AuthSessionId.make("public-oauth-original");
+  yield* f.sessions.create({
+    sessionId: id,
+    subject: "mcp-client",
+    method: "bearer-access-token",
+    scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+    issuedAt: DateTime.makeUnsafe(0),
+    expiresAt: DateTime.makeUnsafe(100000),
+    client: {
+      label: "public OAuth client",
+      ipAddress: null,
+      userAgent: null,
+      deviceType: "bot",
+      os: null,
+      browser: null,
+    },
+  });
+  const scope: Mcp.McpInvocationScope = {
+    environmentId,
+    capabilities: new Set(["orchestration"]),
+    issuedAt: 1000,
+    requestNamespace: "client:public-oauth-original",
+    thread: undefined,
+    client: { sessionId: id, label: "public OAuth client", access: "full-access" },
+  };
+  return { ...f, id, scope };
+});
+
+it.effect.each(["read", "write"] as const)(
+  "public OAuth %s admission retains the original timestamp across authenticated requests",
+  (kind) =>
+    Effect.gen(function* () {
+      const f = yield* publicClient;
+      yield* Effect.gen(function* () {
+        const callers = yield* Local.MemberLocalCallers;
+        if (kind === "read") {
+          const original = yield* callers.capture(environmentId);
+          yield* TestClock.setTime(2000);
+          const admitted = yield* callers
+            .readmit(original)
+            .pipe(Effect.provideService(Mcp.McpInvocationContext, { ...f.scope, issuedAt: 2000 }));
+          expect(admitted.record).toEqual(original);
+          expect(admitted.record.invocation_issued_at).toBe(1000);
+          yield* TestClock.setTime(3000);
+          yield* admitted
+            .checkTarget(null)
+            .pipe(Effect.provideService(Mcp.McpInvocationContext, { ...f.scope, issuedAt: 3000 }));
+        } else {
+          const original = yield* callers.captureWrite(environmentId, { kind: "metadata" });
+          yield* TestClock.setTime(2000);
+          const admitted = yield* callers
+            .readmitWrite(original)
+            .pipe(Effect.provideService(Mcp.McpInvocationContext, { ...f.scope, issuedAt: 2000 }));
+          expect(admitted.record).toEqual(original);
+          expect(admitted.record.invocation_issued_at).toBe(1000);
+          yield* TestClock.setTime(3000);
+          yield* admitted
+            .checkTarget()
+            .pipe(Effect.provideService(Mcp.McpInvocationContext, { ...f.scope, issuedAt: 3000 }));
+        }
+      }).pipe(
+        Effect.provide(Local.layer),
+        Effect.provideService(Mcp.McpInvocationContext, f.scope),
+      );
+    }).pipe(Effect.provide(persistence)),
+);
+
+it.effect.each(["namespace", "session", "capability", "read-only", "expired", "revoked"] as const)(
+  "later public OAuth request still refuses changed %s",
+  (change) =>
+    Effect.gen(function* () {
+      const f = yield* publicClient;
+      yield* Effect.gen(function* () {
+        const callers = yield* Local.MemberLocalCallers;
+        const original = yield* callers.captureWrite(environmentId, { kind: "metadata" });
+        yield* TestClock.setTime(2000);
+        let current = { ...f.scope, issuedAt: 2000 };
+        if (change === "namespace") current = { ...current, requestNamespace: "replacement" };
+        if (change === "session") {
+          const replacement = AuthSessionId.make("public-oauth-replacement");
+          yield* f.sessions.create({
+            sessionId: replacement,
+            subject: "mcp-client",
+            method: "bearer-access-token",
+            scopes: [AuthOrchestrationReadScope, AuthOrchestrationOperateScope],
+            issuedAt: DateTime.makeUnsafe(0),
+            expiresAt: DateTime.makeUnsafe(100000),
+            client: {
+              label: null,
+              ipAddress: null,
+              userAgent: null,
+              deviceType: "bot",
+              os: null,
+              browser: null,
+            },
+          });
+          current = { ...current, client: { ...f.scope.client!, sessionId: replacement } };
+        }
+        if (change === "capability") current = { ...current, capabilities: new Set<never>() };
+        if (change === "read-only")
+          current = { ...current, client: { ...f.scope.client!, access: "read-only" } };
+        if (change === "expired") yield* TestClock.setTime(100000);
+        if (change === "revoked")
+          yield* f.sessions.revoke({ sessionId: f.id, revokedAt: DateTime.makeUnsafe(2000) });
+        expect(
+          yield* callers
+            .readmitWrite(original)
+            .pipe(Effect.provideService(Mcp.McpInvocationContext, current), Effect.result),
+        ).toMatchObject({ _tag: "Failure" });
+      }).pipe(
+        Effect.provide(Local.layer),
+        Effect.provideService(Mcp.McpInvocationContext, f.scope),
+      );
+    }).pipe(Effect.provide(persistence)),
+);

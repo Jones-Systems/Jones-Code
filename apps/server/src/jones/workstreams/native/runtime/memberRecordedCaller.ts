@@ -412,7 +412,7 @@ const make = Effect.gen(function* () {
         // OAuth authenticates a fresh invocation per request. Its timestamp cannot replace
         // the accepted invocation; current session, namespace and native registration still qualify replay.
         invocation_issued_at:
-          link && original?.auth.kind === "mcp_client"
+          original?.auth.kind === "mcp_client"
             ? original.invocation_issued_at
             : common.invocation_issued_at,
         link_origin: link
