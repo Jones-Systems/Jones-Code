@@ -235,6 +235,7 @@ const fixture = Effect.gen(function* () {
   const controls = {
     linkStatus: "present" as "present" | "missing" | "expired",
     changedGeneration: false,
+    trustedSources: new Set<string>(),
     beforeSecret: (_env: string, _name: string): Effect.Effect<void> => Effect.void,
   };
   const makeEnvironment = (
@@ -377,7 +378,21 @@ const fixture = Effect.gen(function* () {
           };
         }),
         trustProvider: {
-          readTrustSnapshot: () => ({ readiness: "ready", trustedEnvironments: [] }),
+          readTrustSnapshot: () => {
+            const authority = JSON.parse(NodeFS.readFileSync(f.authorityPath, "utf8"));
+            return {
+              readiness: "ready",
+              trustedEnvironments: controls.trustedSources.has(env)
+                ? [
+                    {
+                      environmentId: env,
+                      authorityNamespace: authority.authority_namespace as string,
+                      storeGeneration: authority.store_generation as number,
+                    },
+                  ]
+                : [],
+            };
+          },
         },
       });
       const owner = yield* Owner.makeStandaloneSetupOwner(
@@ -2231,6 +2246,25 @@ it.effect(
           (yield* decodeNativePlacement(yield* Effect.promise(() => readOnlyPlacement.json()))).page
             .items,
         ).toEqual(nativePlacement.page.items);
+        const threadAssignment = () =>
+          operations
+            .read({ thread: { environment_id: f.M.env, thread_id: "thread:retained-source" } })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, nextPrincipal));
+        expect(yield* threadAssignment()).toEqual({
+          assignment: { kind: "unverified" },
+          open_operation: null,
+        });
+        // Trust is independently enabled by the synthetic local authority, never copied from the remote page.
+        f.controls.trustedSources.add(f.M.env);
+        expect(yield* threadAssignment()).toEqual({
+          assignment: { kind: "primary", workstream_id: publicId, name: request.workstream.name },
+          open_operation: null,
+        });
+        f.controls.trustedSources.clear();
+        expect(yield* threadAssignment()).toEqual({
+          assignment: { kind: "unverified" },
+          open_operation: null,
+        });
         expect((yield* requestPlacements(undefined, "workstreams-t3-placement/2.0.0")).status).toBe(
           401,
         );

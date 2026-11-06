@@ -1,10 +1,21 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Match the unchanged canonical public request digest.
 import * as NodeCrypto from "node:crypto";
 import { expect, it } from "@effect/vitest";
-import { EnvironmentId, ThreadId, ProviderInstanceId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ThreadId,
+  ProviderInstanceId,
+  t3PlacementInventoryJson,
+} from "@t3tools/contracts";
 import * as Wire from "@t3tools/contracts/jones/workstreamOperations";
 import * as Access from "@t3tools/contracts/jones/workstreamsHomeAccess";
+import type { NativeReference, Workstream } from "@t3tools/contracts";
+import * as Native from "@t3tools/contracts/jones/workstreamsNativePlacement";
+import type { WorkstreamsNativeHomeRead } from "@t3tools/contracts/jones/workstreamsNativeRead";
 import * as Effect from "effect/Effect";
+import * as TestClock from "effect/testing/TestClock";
+import * as Authority from "../../../../environment/NativeStoreAuthority.ts";
+import type { ReadResult } from "../read/routes.ts";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
@@ -65,6 +76,98 @@ const pending = (input = request): Wire.WorkstreamOperationResult =>
       input.kind === "create_workstream" ? "create_effect_unknown" : "membership_effect_unknown",
     poll_after_ms: 30_000,
   });
+const readContext = { owner_id: home.owner_id, server_generation: 1, registry_version: 9 };
+const sourceTrust = {
+  environmentId: "member:test",
+  authorityNamespace: "authority:local",
+  storeGeneration: 1,
+};
+const primaryPlacement = (): Native.WorkstreamsNativeThreadPlacement => ({
+  membership_id: "membership:one",
+  workstream_id: "workstream:one",
+  native_reference_id: "reference:one",
+  kind: "primary",
+  source_instance_id: "member:test",
+  native_thread_id: "thread:test",
+  attestation_version: 1,
+  attested_at: at,
+  expires_at: "2026-01-01T00:05:00.000Z",
+  evidence_sha256: "a".repeat(64),
+  source_binding_version: 1,
+  authority_namespace: sourceTrust.authorityNamespace,
+  store_generation: sourceTrust.storeGeneration,
+  attestation_source: "native",
+  evidence_contract: "workstreams-t3-provider/2.0.0",
+});
+const reference = (): NativeReference => ({
+  native_reference_id: "reference:one",
+  owner_id: home.owner_id,
+  identity: {
+    provider: "t3",
+    source_instance_id: "member:test",
+    resource_kind: "thread",
+    id_kind: "internal",
+    native_id: "thread:test",
+    account_provenance: { kind: "not_account_scoped" },
+  },
+  pr_locator: null,
+  registration: {
+    state: "attested",
+    attestation_version: 1,
+    attested_at: at,
+    expires_at: "2026-01-01T00:05:00.000Z",
+    evidence: {
+      provider: "t3",
+      source_instance_id: "member:test",
+      authority_namespace: sourceTrust.authorityNamespace,
+      native_id: "thread:test",
+      store_generation: 1,
+      evidence_sha256: "a".repeat(64),
+    },
+  },
+  created_at: at,
+  created_by: { principal_id: "principal:test" },
+  created_registry_version: 1,
+});
+const workstream: Workstream = {
+  workstream_id: "workstream:one",
+  owner_id: home.owner_id,
+  name: "Current home name",
+  lifecycle: "active",
+  progress: { state: "unknown" },
+  delivery: "unknown",
+  freshness: "current",
+  sort_order: 0,
+  version: 1,
+  created_at: at,
+  updated_at: at,
+  created_by: { principal_id: "principal:test" },
+  updated_by: { principal_id: "principal:test" },
+};
+const readResult = (route: ReadResult["route"], value: unknown): ReadResult => ({
+  route,
+  authorization_revision: 4,
+  envelope: {
+    contract: "workstreams-read/1.0.0",
+    registry: {
+      registry_instance_id: home.registry_instance_id,
+      owner_id: home.owner_id,
+      canonical_origin: home.canonical_origin,
+      server_generation: 1,
+      registry_version: 9,
+    },
+    provenance: {
+      authority: "native-home",
+      home_environment_id: home.home_environment_id,
+      served_by_environment_id: home.home_environment_id,
+      source: "live",
+      observed_at: at,
+      stale: false,
+    },
+    coverage: { registry: "complete", sources: [] },
+  },
+  value,
+});
 const fixture = () => {
   const state = {
     accesses: 0,
@@ -76,10 +179,72 @@ const fixture = () => {
     result: pending(),
     error: null as RegistryError | null,
     alter: (value: Access.WorkstreamsHomeAccessResult, _call: number) => value,
+    readQueries: [] as WorkstreamsNativeHomeRead[],
+    placementItems: [] as Native.WorkstreamsNativeThreadPlacement[],
+    referenceItems: [] as NativeReference[],
+    trust: { readiness: "ready", trustedEnvironments: [] } as ReturnType<
+      Authority.NativeStoreAuthority["Service"]["trustProvider"]["readTrustSnapshot"]
+    >,
+    coverage: [] as ReadResult["envelope"]["coverage"]["sources"],
+    alterRead: (value: ReadResult, _call: number): ReadResult => value,
+    afterAccess: (_call: number): Effect.Effect<void> => Effect.void,
   };
   // Application resources are explicit synthetic ports; combined H/M proves actual auth, storage and transport.
   const ports = Layer.mock(App.MemberApplication)({
-    access: () => Effect.sync(() => state.alter(observation(), ++state.accesses)),
+    access: () =>
+      Effect.gen(function* () {
+        const call = ++state.accesses;
+        yield* state.afterAccess(call);
+        return state.alter(observation(), call);
+      }),
+    read: (query) =>
+      Effect.gen(function* () {
+        state.readQueries.push(query);
+        let result: ReadResult;
+        if (query.route === "placements")
+          result = {
+            ...readResult("placements", {
+              inventory_sha256: NodeCrypto.createHash("sha256")
+                .update(t3PlacementInventoryJson(query.params.identities))
+                .digest("hex"),
+              context: {
+                ...readContext,
+                principal_id: "principal:test",
+                authorization_revision: 4,
+              },
+              provenance: {
+                authority: "native-home",
+                registry_instance_id: home.registry_instance_id,
+                home_environment_id: home.home_environment_id,
+                home_generation: 1,
+                served_by_environment_id: home.home_environment_id,
+                observed_at: at,
+              },
+              items: state.placementItems,
+              next_cursor: null,
+            }),
+            placement_contract: "workstreams-t3-placement/2.0.0",
+          };
+        else if (query.route === "workstream")
+          result = readResult("workstream", { context: readContext, workstream });
+        else if (query.route === "references")
+          result = readResult("references", {
+            context: readContext,
+            items: state.referenceItems,
+            next_cursor: null,
+          });
+        else return yield* new RegistryError({ code: "invalid_request" });
+        return state.alterRead(
+          {
+            ...result,
+            envelope: {
+              ...result.envelope,
+              coverage: { registry: "complete", sources: state.coverage },
+            },
+          },
+          state.readQueries.length,
+        );
+      }),
     submitOperation: (input) =>
       Effect.suspend(() => {
         state.submissions.push(input);
@@ -98,6 +263,11 @@ const fixture = () => {
   });
   const layer = Member.layer.pipe(
     Layer.provide(ports),
+    Layer.provide(
+      Layer.mock(Authority.NativeStoreAuthority)({
+        trustProvider: { readTrustSnapshot: () => state.trust },
+      }),
+    ),
     Layer.provide(
       Layer.succeed(Environment.ServerEnvironmentIdentity, {
         getEnvironmentId: Effect.succeed(EnvironmentId.make("member:test")),
@@ -304,6 +474,7 @@ it.effect(
       { request, result: pending() },
     ];
     return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(at));
       const service = yield* Public.WorkstreamOperations;
       expect(
         yield* service.read({
@@ -417,3 +588,298 @@ it.effect.each(["native-client", "own-agent"] as const)(
     }).pipe(Effect.provide(f.layer), Effect.provideService(Mcp.McpInvocationContext, invocation));
   },
 );
+
+const verifiedFixture = () => {
+  const f = fixture();
+  f.state.trust = { readiness: "ready", trustedEnvironments: [sourceTrust] };
+  f.state.coverage = [
+    {
+      source_instance_id: "member:test",
+      mapping: "mapped",
+      attestation: "current",
+      observed_at: at,
+    },
+  ];
+  f.state.placementItems = [primaryPlacement()];
+  f.state.referenceItems = [reference()];
+  return f;
+};
+const threadRead = { thread: { environment_id: "member:test", thread_id: "thread:test" } };
+it.effect(
+  "thread assignment comes from fresh native placement and home detail, independently of retained outcomes",
+  () => {
+    const f = verifiedFixture();
+    f.state.value = null;
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(at));
+      const service = yield* Public.WorkstreamOperations;
+      expect(yield* service.read(threadRead)).toEqual({
+        assignment: { kind: "primary", workstream_id: "workstream:one", name: "Current home name" },
+        open_operation: null,
+      });
+      expect(f.state.readQueries.map((q) => q.route)).toEqual(["placements", "workstream"]);
+      expect(f.state.submissions).toEqual([]);
+      expect(f.state.reads).toEqual([]);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect(
+  "empty placements require a current independently trusted exact reference before reporting unassigned",
+  () => {
+    const f = verifiedFixture();
+    f.state.placementItems = [];
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(at));
+      const service = yield* Public.WorkstreamOperations;
+      expect(yield* service.read(threadRead)).toEqual({
+        assignment: { kind: "unassigned" },
+        open_operation: null,
+      });
+      f.state.referenceItems = [];
+      expect(yield* service.read(threadRead)).toEqual({
+        assignment: { kind: "unverified" },
+        open_operation: null,
+      });
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+
+it.effect.each([
+  "no-trust",
+  "not-ready",
+  "source-unknown",
+  "source-expired",
+  "source-unmapped",
+  "source-future",
+  "namespace",
+  "generation",
+] as const)("thread assignment remains unverified with %s evidence", (fault) => {
+  const f = verifiedFixture();
+  if (fault === "no-trust") f.state.trust = { readiness: "ready", trustedEnvironments: [] };
+  if (fault === "not-ready")
+    f.state.trust = { readiness: "trust-provider-required", trustedEnvironments: [] };
+  if (fault === "source-unknown")
+    f.state.coverage = [
+      {
+        source_instance_id: "member:test",
+        mapping: "mapped",
+        attestation: "unknown",
+        observed_at: null,
+      },
+    ];
+  if (fault === "source-expired")
+    f.state.coverage = [
+      {
+        source_instance_id: "member:test",
+        mapping: "mapped",
+        attestation: "expired",
+        observed_at: null,
+      },
+    ];
+  if (fault === "source-unmapped")
+    f.state.coverage = [
+      {
+        source_instance_id: "member:test",
+        mapping: "unmapped",
+        attestation: "unknown",
+        observed_at: null,
+      },
+    ];
+  if (fault === "source-future")
+    f.state.coverage = [
+      {
+        source_instance_id: "member:test",
+        mapping: "mapped",
+        attestation: "current",
+        observed_at: "2026-01-01T00:00:00.000001Z",
+      },
+    ];
+  if (fault === "namespace")
+    f.state.placementItems = [
+      { ...primaryPlacement(), authority_namespace: "authority:replacement" },
+    ];
+  if (fault === "generation")
+    f.state.placementItems = [{ ...primaryPlacement(), store_generation: 2 }];
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at));
+    expect(yield* (yield* Public.WorkstreamOperations).read(threadRead)).toEqual({
+      assignment: { kind: "unverified" },
+      open_operation: null,
+    });
+    expect(f.state.readQueries.map((q) => q.route)).toEqual(["placements"]);
+    expect(f.state.submissions).toEqual([]);
+  }).pipe(Effect.provide(f.layer));
+});
+it.effect.each([
+  "expired",
+  "future",
+  "namespace",
+  "generation",
+  "foreign-id",
+  "quarantined",
+] as const)("empty placement cannot promote %s reference into unassigned", (fault) => {
+  const f = verifiedFixture();
+  f.state.placementItems = [];
+  const r = reference();
+  if (fault === "expired")
+    f.state.referenceItems = [{ ...r, registration: { ...r.registration, expires_at: at } }];
+  if (fault === "future")
+    f.state.referenceItems = [
+      { ...r, registration: { ...r.registration, attested_at: "2026-01-01T00:00:00.000001Z" } },
+    ];
+  if (fault === "namespace" || fault === "generation")
+    f.state.referenceItems = [
+      {
+        ...r,
+        registration: {
+          ...r.registration,
+          evidence: {
+            ...r.registration.evidence!,
+            ...(fault === "namespace"
+              ? { authority_namespace: "authority:foreign" }
+              : { store_generation: 2 }),
+          },
+        },
+      },
+    ];
+  if (fault === "foreign-id")
+    f.state.referenceItems = [{ ...r, identity: { ...r.identity, native_id: "thread:other" } }];
+  if (fault === "quarantined")
+    f.state.referenceItems = [
+      {
+        ...r,
+        registration: {
+          state: "quarantined",
+          attestation_version: 0,
+          attested_at: null,
+          expires_at: null,
+          evidence: null,
+        },
+      },
+    ];
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at));
+    expect(yield* (yield* Public.WorkstreamOperations).read(threadRead)).toEqual({
+      assignment: { kind: "unverified" },
+      open_operation: null,
+    });
+  }).pipe(Effect.provide(f.layer));
+});
+it.effect(
+  "unassigned lookup completes coherent reference paging instead of interpreting its first empty page as absence",
+  () => {
+    const f = verifiedFixture();
+    f.state.placementItems = [];
+    f.state.alterRead = (value) => {
+      if (value.route !== "references") return value;
+      const query = f.state.readQueries.at(-1),
+        continued = query?.route === "references" && query.params.cursor !== undefined;
+      return {
+        ...value,
+        value: {
+          context: readContext,
+          items: continued ? [reference()] : [],
+          next_cursor: continued ? null : "next_reference",
+        },
+      };
+    };
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(at));
+      expect(yield* (yield* Public.WorkstreamOperations).read(threadRead)).toEqual({
+        assignment: { kind: "unassigned" },
+        open_operation: null,
+      });
+      expect(f.state.readQueries).toHaveLength(3);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect.each(["home", "detail-id", "grant", "cursor-cycle", "reference-snapshot"] as const)(
+  "assignment read fails closed on %s substitution",
+  (fault) => {
+    const f = verifiedFixture();
+    if (fault === "grant")
+      f.state.alter = (value, call) =>
+        call === 4 ? { ...value, authorization_revision: 5 } : value;
+    if (fault === "home")
+      f.state.alterRead = (value) => ({
+        ...value,
+        envelope: {
+          ...value.envelope,
+          registry: { ...value.envelope.registry, canonical_origin: "https://foreign.invalid" },
+        },
+      });
+    if (fault === "detail-id")
+      f.state.alterRead = (value) =>
+        value.route !== "workstream"
+          ? value
+          : {
+              ...value,
+              value: {
+                context: readContext,
+                workstream: { ...workstream, workstream_id: "workstream:other" },
+              },
+            };
+    if (fault === "cursor-cycle" || fault === "reference-snapshot") {
+      f.state.placementItems = [];
+      f.state.alterRead = (value, call) =>
+        value.route !== "references"
+          ? value
+          : {
+              ...value,
+              envelope: {
+                ...value.envelope,
+                provenance: {
+                  ...value.envelope.provenance,
+                  observed_at:
+                    fault === "reference-snapshot" && call > 2 ? "2026-01-01T00:00:00.000001Z" : at,
+                },
+              },
+              value: { context: readContext, items: [], next_cursor: "same_cursor" },
+            };
+    }
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse("2026-01-01T00:00:01.000Z"));
+      expect(yield* (yield* Public.WorkstreamOperations).read(threadRead)).toEqual({
+        assignment: { kind: "unavailable", reason: "offline" },
+        open_operation: null,
+      });
+      expect(f.state.submissions).toEqual([]);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect.each(["expires", "trust-change"] as const)(
+  "assignment is withheld when %s occurs during final authorization",
+  (fault) => {
+    const f = verifiedFixture();
+    const entries = [{ ...sourceTrust }];
+    f.state.trust = { readiness: "ready", trustedEnvironments: entries };
+    f.state.afterAccess = (call) =>
+      call !== 4
+        ? Effect.void
+        : fault === "expires"
+          ? TestClock.setTime(Date.parse("2026-01-01T00:05:00.000Z"))
+          : Effect.sync(() => {
+              // Mutate the same array to ensure the captured trust comparison cannot alias live provider data.
+              entries.splice(0);
+            });
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(Date.parse(at));
+      expect(yield* (yield* Public.WorkstreamOperations).read(threadRead)).toEqual({
+        assignment: { kind: "unverified" },
+        open_operation: null,
+      });
+    }).pipe(Effect.provide(f.layer));
+  },
+);
+it.effect("foreign environment assignment reads never select a home route or source", () => {
+  const f = verifiedFixture();
+  return Effect.gen(function* () {
+    yield* TestClock.setTime(Date.parse(at));
+    expect(
+      yield* (yield* Public.WorkstreamOperations).read({
+        thread: { environment_id: "foreign:test", thread_id: "thread:test" },
+      }),
+    ).toEqual({ assignment: { kind: "unavailable", reason: "offline" }, open_operation: null });
+    expect(f.state.readQueries).toEqual([]);
+  }).pipe(Effect.provide(f.layer));
+});

@@ -370,3 +370,52 @@ it.effect("completes an empty requested inventory with the same current authorit
     expect(f.calls).toHaveLength(1);
   }).pipe(Effect.provide(f.layer));
 });
+
+it.effect(
+  "internal observation retains validated source coverage without extending the public placement codec",
+  () => {
+    const f = fixture({
+      reply: () => {
+        const r = result(page());
+        return {
+          ...r,
+          envelope: {
+            ...r.envelope,
+            coverage: {
+              registry: "complete",
+              sources: [
+                {
+                  source_instance_id: "source:test",
+                  mapping: "mapped",
+                  attestation: "current",
+                  observed_at: now,
+                },
+              ],
+            },
+          },
+        };
+      },
+    });
+    return Effect.gen(function* () {
+      yield* atNow;
+      const service = yield* Placements.MemberPlacements;
+      const observed = yield* service.observe({ identities }, "workstreams-t3-placement/2.0.0");
+      expect(observed.envelope.coverage.sources).toEqual([
+        {
+          source_instance_id: "source:test",
+          mapping: "mapped",
+          attestation: "current",
+          observed_at: now,
+        },
+      ]);
+      expect(yield* service.load({ identities }, "workstreams-t3-placement/2.0.0")).toEqual(
+        observed.result,
+      );
+      expect(Object.keys(observed.result).toSorted()).toEqual([
+        "page",
+        "readiness",
+        "trustedEnvironments",
+      ]);
+    }).pipe(Effect.provide(f.layer));
+  },
+);
