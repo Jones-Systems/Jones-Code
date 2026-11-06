@@ -122,6 +122,17 @@ route; the frozen v1 Gateway cannot erase native proof fields to accept it. Link
 metadata requests remain refused. Scheduled MCP calls retain their authenticated agent origin; a queue origin
 requires separate trusted queue-request evidence and is not accepted from a body.
 
+The six public Workstreams MCP tools accept the standard optional
+`environmentId`: omit it for the current server or name an explicitly linked
+server. The existing MCP router checks the original caller and sends one call with
+its narrowed limits. The selected server still owns thread qualification and
+native admission; a body's thread environment never selects a route. A denied or
+unavailable peer never falls back locally. Retain the same operation ID and
+request at the original selected destination after an unknown result.
+Linked calls do not gain native authority from routing; unsupported peer admission
+continues to refuse. Scheduled provider runs use the same authenticated agent
+origin and caller limits; a tool body cannot select trusted queue origin.
+
 Authenticated clients can explicitly query the selected home or member at
 `POST /api/workstreams/native/v1/read` using the existing closed
 `workstreams-native-home-read-result/1.0.0` request. It returns the route-specific
