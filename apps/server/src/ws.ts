@@ -5,6 +5,7 @@ import * as DependencyChanges from "./jones/threadResultDependencies/DependencyC
 import { makeDependencyStore } from "./jones/threadResultDependencies/DependencyStore.ts";
 import { makeJonesTablePresence } from "./jones/persistence/JonesTablePresence.ts";
 import { refreshItems as dependencyRefreshItems } from "./jones/orchestration/shellThreadRefresh.ts";
+import { createShellDeliveryGuard } from "./jones/orchestration/shellDelivery.ts";
 import { withOwnerSelectionIngress } from "./jones/threadConfiguration/ownerIngress.ts";
 import * as LinkedThreads from "./jones/linkedThreads/LinkedThreads.ts";
 import * as ThreadReferenceExcerpts from "./jones/orchestration/threadReferenceExcerpt.ts";
@@ -1050,6 +1051,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     const threadManagement = yield* ThreadManagementService.ThreadManagementService;
     const shellMaterialization = yield* ShellMaterialization.ShellMaterialization;
     const shellReader = yield* shellMaterialization.forSubscription;
+    const shellDelivery = createShellDeliveryGuard();
     const applicationEvents = yield* OrchestrationEventStore.OrchestrationEventStore;
     const projects = yield* ProjectStore.ProjectStoreV2;
     const projectService = yield* ProjectService.ProjectService;
@@ -1143,8 +1145,11 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
             if ("aggregateKind" in stored) {
               return yield* projectItem(stored);
             }
-            const shell = yield* shellReader.get(stored.event.threadId, stored.sequence);
-            return shellStreamItemFromThreadShell({ stored, shell });
+            const result = yield* shellReader.getVersioned(stored.event.threadId, stored.sequence);
+            return shellDelivery.record(
+              shellStreamItemFromThreadShell({ stored, shell: result.shell }),
+              result.version ?? stored.sequence,
+            );
           }),
         { concurrency: 8 },
       );
@@ -1313,6 +1318,7 @@ export const subscribeOrchestrationV2Shell = Effect.fn("ws.orchestrationV2.subsc
     );
 
     return stream.pipe(
+      Stream.filter(shellDelivery.accepts),
       dedupeShellEnrichment,
       Stream.mapError(
         (cause) =>
