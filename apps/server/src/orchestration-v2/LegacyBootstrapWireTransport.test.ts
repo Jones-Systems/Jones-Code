@@ -1072,33 +1072,35 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     const nativeGit = Effect.fn("LegacyBootstrapWireFixture.nativeGit")(function* (
                       args: ReadonlyArray<string>,
                     ) {
-                      const result = yield* nativeRunner.run({
-                        command: "git",
-                        args: [
-                          "-c",
-                          "core.hooksPath=/dev/null",
-                          "-c",
-                          "commit.gpgSign=false",
-                          ...args,
-                        ],
-                        cwd,
-                        env: {
-                          HOME: cwd,
-                          GIT_DIR: undefined,
-                          GIT_WORK_TREE: undefined,
-                          GIT_INDEX_FILE: undefined,
-                          GIT_OBJECT_DIRECTORY: undefined,
-                          GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
-                          GIT_CONFIG_GLOBAL: "/dev/null",
-                          GIT_CONFIG_NOSYSTEM: "1",
-                          GIT_CONFIG_COUNT: "0",
-                          GIT_TERMINAL_PROMPT: "0",
-                          GIT_AUTHOR_NAME: "Fixture",
-                          GIT_AUTHOR_EMAIL: "fixture@example.invalid",
-                          GIT_COMMITTER_NAME: "Fixture",
-                          GIT_COMMITTER_EMAIL: "fixture@example.invalid",
-                        },
-                      }).pipe(Effect.orDie);
+                      const result = yield* nativeRunner
+                        .run({
+                          command: "git",
+                          args: [
+                            "-c",
+                            "core.hooksPath=/dev/null",
+                            "-c",
+                            "commit.gpgSign=false",
+                            ...args,
+                          ],
+                          cwd,
+                          env: {
+                            HOME: cwd,
+                            GIT_DIR: undefined,
+                            GIT_WORK_TREE: undefined,
+                            GIT_INDEX_FILE: undefined,
+                            GIT_OBJECT_DIRECTORY: undefined,
+                            GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+                            GIT_CONFIG_GLOBAL: "/dev/null",
+                            GIT_CONFIG_NOSYSTEM: "1",
+                            GIT_CONFIG_COUNT: "0",
+                            GIT_TERMINAL_PROMPT: "0",
+                            GIT_AUTHOR_NAME: "Fixture",
+                            GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+                            GIT_COMMITTER_NAME: "Fixture",
+                            GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+                          },
+                        })
+                        .pipe(Effect.orDie);
                       expect(result.code).toBe(0);
                       return result.stdout.trim();
                     });
