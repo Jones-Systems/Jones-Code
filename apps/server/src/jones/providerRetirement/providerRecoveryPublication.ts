@@ -134,6 +134,8 @@ export function makeProviderRecoveryPublication(ports: {
           observed: unobservedRuntimeIdentity(),
         },
       };
+      const canonicalizeThread = Schema.decodeEffect(OrchestrationV2ProviderThread);
+      const canonicalBoundaryThread = yield* canonicalizeThread(boundaryThread);
       const boundary = {
         id: boundaryId,
         type: "provider-thread.updated" as const,
@@ -194,15 +196,20 @@ export function makeProviderRecoveryPublication(ports: {
         return current;
       });
       const sameBoundary = (candidate: OrchestrationV2ProviderThread) =>
-        candidate.runtimeIdentity?.runtimeGeneration === input.runtimeGeneration &&
-        sameRequested(candidate.runtimeIdentity.requested, input.requested) &&
-        sameObserved(
-          candidate.runtimeIdentity.observed,
-          boundaryThread.runtimeIdentity!.observed,
-        ) &&
-        equivalentThread(
-          { ...candidate, runtimeIdentity: boundaryThread.runtimeIdentity },
-          boundaryThread,
+        canonicalizeThread(candidate).pipe(
+          Effect.map(
+            (canonical) =>
+              canonical.runtimeIdentity?.runtimeGeneration === input.runtimeGeneration &&
+              sameRequested(canonical.runtimeIdentity.requested, input.requested) &&
+              sameObserved(
+                canonical.runtimeIdentity.observed,
+                canonicalBoundaryThread.runtimeIdentity!.observed,
+              ) &&
+              equivalentThread(
+                { ...canonical, runtimeIdentity: canonicalBoundaryThread.runtimeIdentity },
+                canonicalBoundaryThread,
+              ),
+          ),
         );
       let inFlight:
         | Deferred.Deferred<Exit.Exit<OrchestrationV2ProviderThread, ProviderRuntimeBindingError>>
@@ -224,7 +231,7 @@ export function makeProviderRecoveryPublication(ports: {
               return yield* failure("The native binding boundary did not commit.");
           } else if (
             committedBoundary.type !== "provider-thread.updated" ||
-            !sameBoundary(committedBoundary.payload)
+            !(yield* sameBoundary(committedBoundary.payload))
           ) {
             return yield* failure(
               "The retained boundary event does not match its original publication.",

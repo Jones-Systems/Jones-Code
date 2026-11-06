@@ -816,9 +816,10 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
         Effect.gen(function* () {
           admission = yield* ControlAdmission.ControlAdmission;
           const allocator = yield* IdAllocator.IdAllocatorV2;
+          const settings = yield* Schema.decodeEffect(CodexSettings)({ homePath: home });
           const adapter = yield* Codex.makeCodexAdapterV2({
             instanceId,
-            settings: Schema.decodeSync(CodexSettings)({ homePath: home }),
+            settings,
             environment: { CODEX_HOME: home },
             crypto,
             fileSystem: fs,

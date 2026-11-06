@@ -3054,7 +3054,7 @@ export const layerWithOptions = (
                 (attempt) =>
                   attempt.id === run.activeAttemptId &&
                   attempt.runId === run.id &&
-                  attempt.status === "starting" &&
+                  attempt.status === "pending" &&
                   attempt.providerThreadId === providerThread.id &&
                   attempt.providerInstanceId === run.providerInstanceId,
               ) ||

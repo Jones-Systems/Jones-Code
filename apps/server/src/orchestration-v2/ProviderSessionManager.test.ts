@@ -33,6 +33,7 @@ import {
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
+  ProviderThreadId,
   ProviderTurnId,
   ProviderSessionId,
   ThreadId,
@@ -7439,6 +7440,7 @@ it.effect.each([
   "changed-run",
   "changed-attempt",
   "changed-attempt-status",
+  "changed-attempt-running",
   "changed-target",
   "changed-model",
   "changed-session",
@@ -7503,7 +7505,7 @@ it.effect.each([
                 providerTurnId: null,
                 providerSettlement: null,
                 reason: "initial",
-                status: "starting",
+                status: "pending",
                 startedAt: null,
                 completedAt: null,
               },
@@ -7578,7 +7580,7 @@ it.effect.each([
               ],
             })
             .pipe(Effect.asVoid);
-        if (mode === "changed-attempt-status")
+        if (mode === "changed-attempt-status" || mode === "changed-attempt-running")
           mutate = fixture.sink
             .write({
               events: [
@@ -7598,9 +7600,9 @@ it.effect.each([
                     providerTurnId: null,
                     providerSettlement: null,
                     reason: "initial",
-                    status: "failed",
-                    startedAt: null,
-                    completedAt: fixture.now,
+                    status: mode === "changed-attempt-running" ? "running" : "failed",
+                    startedAt: mode === "changed-attempt-running" ? fixture.now : null,
+                    completedAt: mode === "changed-attempt-running" ? null : fixture.now,
                   },
                 },
               ],

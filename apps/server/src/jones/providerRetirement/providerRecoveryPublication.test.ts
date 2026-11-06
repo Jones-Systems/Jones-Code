@@ -129,12 +129,10 @@ it.effect(
             if (guardCalls === 1) {
               yield* Deferred.succeed(guardEntered, undefined);
               yield* Deferred.await(guardRelease);
-              return yield* Effect.fail(
-                new ProviderRuntimeBindingError({
-                  driver,
-                  detail: "guard observation interrupted",
-                }),
-              );
+              return yield* new ProviderRuntimeBindingError({
+                driver,
+                detail: "guard observation interrupted",
+              });
             }
           }),
         physical: {
@@ -161,6 +159,20 @@ it.effect(
       assert.isTrue(Exit.isFailure(yield* Fiber.join(first)));
       assert.isTrue(Exit.isFailure(yield* Fiber.join(joined)));
       assert.equal(guardCalls, 1);
+      const originalBoundary = stored[0]!;
+      if (originalBoundary.event.type !== "provider-thread.updated")
+        return yield* Effect.die("The original binding boundary is missing.");
+      stored[0] = {
+        ...originalBoundary,
+        event: {
+          ...originalBoundary.event,
+          payload: { ...originalBoundary.event.payload, status: "error" },
+        },
+      };
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(publication.complete)));
+      assert.equal(guardCalls, 1);
+      assert.equal(physicalCalls, 0);
+      stored[0] = originalBoundary;
       assert.isTrue(Exit.isFailure(yield* Effect.exit(publication.complete)));
       yield* publication.complete;
       assert.equal(allocated, 2);

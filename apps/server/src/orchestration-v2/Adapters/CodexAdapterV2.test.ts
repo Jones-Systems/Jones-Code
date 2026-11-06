@@ -14040,7 +14040,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
                       });
                     if (rejectPublication && phase === "prepare-cancellation") {
                       yield* Deferred.succeed(prepareEntered, undefined);
-                      yield* Effect.never;
+                      return yield* Effect.never;
                     }
                   }
                   const binding = ProviderAdapter.runtimeBinding(

@@ -378,7 +378,7 @@ export const layer: Layer.Layer<
             currentRun.providerThreadId !== capturedProvider.id ||
             currentRun.providerInstanceId !== capturedRun.providerInstanceId ||
             !modelSelectionsEqual(currentRun.modelSelection, capturedRun.modelSelection) ||
-            currentAttempt?.status !== "starting" ||
+            currentAttempt?.status !== "pending" ||
             currentAttempt.runId !== runId ||
             currentAttempt.providerThreadId !== capturedProvider.id ||
             currentAttempt.providerInstanceId !== capturedRun.providerInstanceId ||
