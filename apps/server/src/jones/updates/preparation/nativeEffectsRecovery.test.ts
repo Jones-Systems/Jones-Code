@@ -423,7 +423,9 @@ it.each(["proof", "release temporary"] as const)(
       await expect(f.apply(proof)).rejects.toThrow("simulated file sync failure");
       expect(failedSyncs).toBe(2);
       expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
-      expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe("cleanup-unconfirmed");
+      expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe(
+        "cleanup-unconfirmed",
+      );
       expect(checkpoints).not.toContain("release-prepared");
       expect(checkpoints).not.toContain("release-durable");
 
