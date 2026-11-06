@@ -112,12 +112,10 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
           });
           if (operation === "start") yield* Deferred.succeed(initialStart, undefined);
           else connectCount += 1;
-          return yield* Effect.fail(
-            new OpenCodeRuntime.OpenCodeRuntimeError({
-              operation,
-              detail: "reached a 1.x server path",
-            }),
-          );
+          return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
+            operation,
+            detail: "reached a 1.x server path",
+          });
         });
       const caseRuntime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
         ...openCode2Runtime,
