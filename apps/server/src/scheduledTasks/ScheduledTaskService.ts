@@ -2177,10 +2177,14 @@ export const layer = Layer.effect(
 
     const dispatchPending = Effect.fn("ScheduledTaskService.dispatchPendingWebhooks")(function* () {
       const now = DateTime.toEpochMillis(yield* localNow);
+      // CASE keeps malformed JSON away from json_extract so the existing decoder
+      // can record failed delivery, release replay admission and remove the row.
       yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}
-        AND NOT EXISTS (SELECT 1 FROM jones_workspace_retirement_state r
+        AND CASE WHEN json_valid(task_json) THEN NOT EXISTS (
+          SELECT 1 FROM jones_workspace_retirement_state r
           WHERE r.state='retiring' AND json_extract(task_json,'$.workspaceStrategy.type')='existing_worktree'
-          AND r.worktree=json_extract(task_json,'$.workspaceStrategy.worktreePath'))`;
+          AND r.worktree=json_extract(task_json,'$.workspaceStrategy.worktreePath'))
+        ELSE 1 END`;
       const tasks = yield* sql<{ task_id: ScheduledTaskId }>`
         SELECT DISTINCT task_id FROM scheduled_task_webhook_pending WHERE state IN ('dispatching', 'running', 'completed', 'failed')
       `.pipe(NodeSqliteClient.readOnly);
