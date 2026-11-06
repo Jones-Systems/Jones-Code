@@ -214,7 +214,7 @@ const workstreamOperationsLayerLive = WorkstreamOperationsLive.layer.pipe(
 );
 
 // Resolve explicit native selection before constructing any Control Plane service.
-const workstreamStartupLayer = NativeStartup.layer.pipe(
+export const workstreamStartupLayer = NativeStartup.layer.pipe(
   Layer.provide(nativeMemberPreparationLayer),
   Layer.provide(nativePersistenceLayer),
 );

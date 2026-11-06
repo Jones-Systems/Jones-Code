@@ -63,6 +63,7 @@ import * as Ws from "./ws.ts";
 import * as ShellMaterialization from "./jones/orchestration/shellMaterialization.ts";
 import {
   workstreamSelectedServicesLayer,
+  workstreamStartupLayer,
   workstreamHttpApiLayer,
   workstreamNativeAuthorityLayerLive,
   workstreamResponseHeadersLayer,
@@ -554,9 +555,15 @@ const layerNativeSourceLookup = Layer.unwrap(
       : Layer.empty,
   ),
 ).pipe(
-  Layer.provideMerge(
-    NativeSourceStartup.layer.pipe(
-      Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
+  // Selection is memoized across the graph: the first consumer must qualify members too.
+  Layer.provideMerge(workstreamStartupLayer),
+  Layer.provideMerge(NativeSourceIntegration.nativePersistenceLayer),
+  Layer.provide(WorkstreamCurrentAuthority.layer),
+  Layer.provide(workstreamNativeAuthorityLayerLive),
+  Layer.provide(
+    PeerLinks.layer.pipe(
+      Layer.provide(layerServerEnvironment),
+      Layer.provide(ServerSecretStore.layer),
     ),
   ),
 );
