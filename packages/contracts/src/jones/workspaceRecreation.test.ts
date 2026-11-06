@@ -12,9 +12,10 @@ it("preserves explicit receipt-bound detached requests through message-context r
   };
   const codec = Schema.fromJsonString(OrchestrationMessageContext);
   expect(Schema.decodeSync(codec)(Schema.encodeSync(codec)(context))).toEqual(context);
-  expect(
-    Schema.decodeSync(OrchestrationMessageContext)({ version: 1, records: [] }),
-  ).toEqual({ version: 1, records: [] });
+  expect(Schema.decodeSync(OrchestrationMessageContext)({ version: 1, records: [] })).toEqual({
+    version: 1,
+    records: [],
+  });
   for (const request of [
     { receiptId: "", mode: "detached" },
     { receiptId: "receipt", mode: "reset" },

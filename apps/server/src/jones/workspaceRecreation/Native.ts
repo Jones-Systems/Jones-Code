@@ -389,9 +389,7 @@ const journalPath = (source: RecreationSource) =>
 async function createdReadback(cwd: string, result: RecreationResult) {
   const reg = (await registrations(cwd)).find((r) => r.path === result.path);
   if (reg && reg.head === result.head && reg.branch === result.branch) {
-    const admin = (await git(result.path, ["rev-parse", "--absolute-git-dir"]))
-      .toString()
-      .trim();
+    const admin = (await git(result.path, ["rev-parse", "--absolute-git-dir"])).toString().trim();
     if (canonical(await readBreadcrumb(admin)) === canonical(result)) return result;
   }
   return null;
@@ -423,11 +421,7 @@ export async function knownRecreation(cwd: string, path: string): Promise<Recrea
       `prior recreation requires readback: ${journal}`,
       "Reconcile this original recreation journal before provider use; do not repeat creation.",
     );
-  if (
-    source.binding.path !== path ||
-    source.binding.git_common_dir !== common ||
-    !oid(source.head)
-  )
+  if (source.binding.path !== path || source.binding.git_common_dir !== common || !oid(source.head))
     throw hold();
   const prior = JSON.parse((await readBounded(journal, 65536)).toString());
   if (canonical(prior.source) !== canonical(source)) throw hold();

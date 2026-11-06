@@ -397,15 +397,19 @@ it.each([
         .replace("/tmp/provider-turn-start-project", f.repo);
     const worktreePath = remap(input.worktreePath);
     const realPaths = Object.fromEntries(
-      Object.entries(input.realPaths ?? {
-        [managedWorktreesDir]: managedWorktreesDir,
-        [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
-      }).map(([from, to]) => [remap(from), remap(to)]),
+      Object.entries(
+        input.realPaths ?? {
+          [managedWorktreesDir]: managedWorktreesDir,
+          [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
+        },
+      ).map(([from, to]) => [remap(from), remap(to)]),
     );
     let prior: string | undefined;
     if (input.recreated) {
       await Effect.runPromise(
-        f.fs.makeDirectory(worktreePath.slice(0, worktreePath.lastIndexOf("/")), { recursive: true }),
+        f.fs.makeDirectory(worktreePath.slice(0, worktreePath.lastIndexOf("/")), {
+          recursive: true,
+        }),
       );
       await nativeGit(f.repo, ["worktree", "move", f.checkout, worktreePath]);
       prior = checkoutIncarnation(await checkoutBinding(worktreePath));
@@ -427,7 +431,9 @@ it.each([
         "refs/heads/feature/restore",
       );
       expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
-        expect.objectContaining({ checkoutRecreation: { worktreePath, branch: "feature/restore" } }),
+        expect.objectContaining({
+          checkoutRecreation: { worktreePath, branch: "feature/restore" },
+        }),
       );
     }
   });

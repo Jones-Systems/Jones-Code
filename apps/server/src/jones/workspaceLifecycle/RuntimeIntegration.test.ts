@@ -275,33 +275,31 @@ it.effect(
     ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
 );
 
-it.effect(
-  "configured managed detached recreation retains its real native breadcrumb path",
-  () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const f = yield* fixture;
-        const fs = yield* FileSystem.FileSystem;
-        const cwd = f.settings.projects[0]!.projectRoot;
-        yield* fs.remove(f.linked, { recursive: true });
-        const source = yield* Effect.promise(() => missingSource(cwd, f.linked));
-        const result = yield* Effect.promise(() =>
-          recreate({
-            cwd,
-            source,
-            owner: "detached-boundary",
-            alternatePath: `${f.linked}-new`,
-            detached: true,
-          }),
-        );
-        expect(result.branch).toBeNull();
-        expect(result.path).toBe(f.linked);
-        yield* f.sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.branch',NULL)`;
-        yield* beforeStart.pipe(Effect.provide(f.configured()));
-        expect(f.calls).toEqual([]);
-        expect(yield* fs.exists(f.linked)).toBe(true);
-      }),
-    ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
+it.effect("configured managed detached recreation retains its real native breadcrumb path", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const f = yield* fixture;
+      const fs = yield* FileSystem.FileSystem;
+      const cwd = f.settings.projects[0]!.projectRoot;
+      yield* fs.remove(f.linked, { recursive: true });
+      const source = yield* Effect.promise(() => missingSource(cwd, f.linked));
+      const result = yield* Effect.promise(() =>
+        recreate({
+          cwd,
+          source,
+          owner: "detached-boundary",
+          alternatePath: `${f.linked}-new`,
+          detached: true,
+        }),
+      );
+      expect(result.branch).toBeNull();
+      expect(result.path).toBe(f.linked);
+      yield* f.sql`UPDATE orchestration_v2_projection_threads SET payload_json=json_set(payload_json,'$.branch',NULL)`;
+      yield* beforeStart.pipe(Effect.provide(f.configured()));
+      expect(f.calls).toEqual([]);
+      expect(yield* fs.exists(f.linked)).toBe(true);
+    }),
+  ).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
 );
 
 it.effect(
