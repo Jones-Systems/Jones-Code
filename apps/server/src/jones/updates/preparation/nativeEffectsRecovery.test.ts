@@ -1,0 +1,242 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import { expect, it } from "vite-plus/test";
+import { jonesCandidateHandle, type JonesStagedArtifact } from "@t3tools/shared/jones/jonesActions";
+import { withQualifiedRuntimeLock } from "../../cloud/qualifiedRuntime.ts";
+import { preparationLifecycle } from "./lifecycle.ts";
+import { PREPARATION_LOCK, preparationJobLock } from "./protocol.ts";
+import {
+  recoverNativeEffects,
+  type NativeEffectsRecoveryDependencies,
+  type NativeEffectsRecoveryRequest,
+} from "./nativeEffectsRecovery.ts";
+
+const jobId = "99999999-9999-4999-8999-999999999999";
+const worker = { pid: 54321, processGroup: 54321 };
+const hash = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
+
+async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
+  const created = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-native-recovery-"));
+  try { await run(await setup(await NodeFSP.realpath(created))); }
+  finally { await NodeFSP.rm(created, { recursive: true, force: true }); }
+}
+
+async function setup(base: string) {
+  const runtime = NodePath.join(base, "runtime");
+  const root = NodePath.join(runtime, "jones-preparation");
+  const jobDir = NodePath.join(root, "jobs", jobId);
+  const lifecycleDir = NodePath.join(root, "lifecycle");
+  const cache = NodePath.join(runtime, "jones-actions");
+  const candidate: JonesStagedArtifact["candidate"] = {
+    schema: 1, repository: "Jones-Systems/Jones-Code", source: "1".repeat(40),
+    tree: "2".repeat(40), installedSource: "317c4df82c77d06922a6723e318e09b0de20ff99",
+    workflow: ".github/workflows/artifact-desktop-mac.yml", workflowId: 1,
+    runId: 2, runAttempt: 1, ciRunId: 3, artifactId: 4, artifactName: "desktop-mac-arm64",
+    artifactDigest: hash("archive"), artifactBytes: 7, expiresAt: "2027-01-01T00:00:00Z",
+    version: "0.1.2-preview.20261102.1", platform: "darwin", architecture: "arm64",
+  };
+  const handle = jonesCandidateHandle(candidate);
+  const stage = NodePath.join(cache, "attempts", "stage-fixture", handle);
+  const mountOwner = NodePath.join(runtime, ".jones-dmg-mount-fixture");
+  const mount = NodePath.join(mountOwner, "volume");
+  for (const path of [jobDir, lifecycleDir, stage, NodePath.join(cache, "completed"), mount])
+    await NodeFSP.mkdir(path, { recursive: true, mode: 0o700 });
+  const lifecycle = NodePath.join(lifecycleDir, `${jobId}.json`);
+  const effects = NodePath.join(lifecycleDir, `${jobId}.effects.json`);
+  const payload = NodePath.join(stage, "candidate.dmg");
+  const receipt = {
+    schema: 1, repository: candidate.repository, source: candidate.source, tree: candidate.tree,
+    workflow: candidate.workflow, event: "push", ref: "refs/heads/main", runId: "2", runAttempt: "1",
+    version: candidate.version, platform: "darwin", architecture: "arm64",
+    artifact: "candidate.dmg", sha256: hash("payload"),
+  } as const;
+  const artifact: JonesStagedArtifact = {
+    schema: 1, source: "jones-actions", channel: "jones-main", stagedHandle: handle,
+    candidate, receipt, payloadPath: payload,
+  };
+  const write = async (path: string, value: unknown) => {
+    const bytes = `${JSON.stringify(value)}\n`;
+    await NodeFSP.writeFile(path, bytes, { mode: 0o600 });
+    return hash(bytes);
+  };
+  const expected = {
+    request: await write(NodePath.join(jobDir, "request.json"), {
+      protocol: 1, jobId, baseDir: base, deadlineMs: 1000, processGroup: true,
+      job: { kind: "stage", candidate, cacheRoot: cache, dbPath: NodePath.join(base, "state.sqlite"),
+        activeVersion: candidate.version, host: { platform: "darwin", architecture: "arm64" } },
+    }),
+    result: await write(NodePath.join(jobDir, "result.json"), {
+      protocol: 1, jobId, ok: false,
+      error: { name: "QualifiedRuntimeBlockedError", reason: "busy", message: "Native mount held." },
+    }),
+    lifecycle: await write(lifecycle, { schema: 1, jobId, kind: "stage", state: "started", worker }),
+    effects: await write(effects, { schema: 1, jobId, pid: worker.pid, phase: "native-effects" }),
+    index: await write(NodePath.join(cache, "completed", `${handle}.json`), {
+      schema: 1, handle, directory: stage,
+    }),
+    receipt: await write(NodePath.join(stage, "jones-actions-stage.json"), artifact),
+    payload: receipt.sha256, archive: candidate.artifactDigest,
+  };
+  await NodeFSP.writeFile(payload, "payload", { mode: 0o600 });
+  await NodeFSP.writeFile(NodePath.join(stage, "github-artifact.zip"), "archive", { mode: 0o600 });
+  const other = NodePath.join(base, "other.dmg");
+  await NodeFSP.writeFile(other, "other", { mode: 0o600 });
+  let passes = 0;
+  const dependencies: { -readonly [K in keyof NativeEffectsRecoveryDependencies]: NativeEffectsRecoveryDependencies[K] } = {
+    platform: "darwin", architecture: "arm64", absent: () => true,
+    validateArtifact: async () => artifact,
+    plist: async (command, args) => {
+      if (command.endsWith("diskutil")) return {
+        WholeDisk: true, DeviceNode: args[2], TotalSize: 9000, Size: 9000, IOKitSize: 9000,
+      };
+      if (args[0] === "imageinfo") return {
+        Format: "UDZO", Properties: { Encrypted: false, Partitioned: false },
+        Segments: [payload], "Size Information": { "Total Bytes": 1000 },
+      };
+      passes++;
+      return { images: [{ "image-path": other, "system-entities": [
+        { "dev-entry": "/dev/disk8" }, { "dev-entry": "/dev/disk9s1", "mount-point": "/Volumes/other" },
+      ] }] };
+    },
+  };
+  const input: NativeEffectsRecoveryRequest = {
+    schema: 1, baseDir: base, jobId, worker, mountPath: mount, expected,
+  };
+  const inspect = () => recoverNativeEffects(input, "inspect", undefined, dependencies);
+  const apply = (proof: string) => recoverNativeEffects(input, "apply", proof, dependencies);
+  return { base, input, dependencies, inspect, apply, lifecycle, effects, payload, cache, handle,
+    passes: () => passes, write };
+}
+
+it("leaves the inspected lifecycle intact and releases only after durable proof, preserving native effects and legacy identity", async () =>
+  fixture(async (f) => {
+    expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe("cleanup-unconfirmed");
+    await NodeFSP.link(NodePath.join(f.cache, "completed", `${f.handle}.json`), NodePath.join(f.base, "index-link"));
+    const inspected = await f.inspect();
+    expect(inspected.state).toBe("eligible");
+    expect(f.passes()).toBe(2);
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+    const proof = String(inspected.proofSha256);
+    expect((await f.apply(proof)).state).toBe("released");
+    expect(await preparationLifecycle(f.base, jobId).release(() => false)).toBe("released");
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8"))).toEqual({
+      schema: 1, jobId, kind: "stage", state: "released", worker,
+    });
+    expect(JSON.parse(await NodeFSP.readFile(f.effects, "utf8")).phase).toBe("native-effects");
+    expect((await f.apply(proof)).state).toBe("released");
+    expect(await NodeFSP.readFile(f.payload, "utf8")).toBe("payload");
+  }));
+
+it.each(["proof-durable", "release-prepared", "release-durable"] as const)("retries a crash at %s with the same exact proof", async (phase) =>
+  fixture(async (f) => {
+    const proof = String((await f.inspect()).proofSha256);
+    f.dependencies.checkpoint = async (at) => { if (at === phase) throw new Error("simulated crash"); };
+    await expect(f.apply(proof)).rejects.toThrow("simulated crash");
+    delete f.dependencies.checkpoint;
+    expect((await f.apply(proof)).state).toBe("released");
+  }));
+
+it.each([PREPARATION_LOCK, preparationJobLock(jobId)])("refuses a competing %s lock", async (name) =>
+  fixture(async (f) => {
+    await withQualifiedRuntimeLock(f.base, name, async () => {
+      await expect(f.inspect()).rejects.toThrow();
+    });
+  }));
+
+it.each([worker.pid, -worker.processGroup])("holds a live or reused identity %s", async (live) =>
+  fixture(async (f) => {
+    f.dependencies.absent = (pid) => pid !== live;
+    await expect(f.inspect()).rejects.toThrow();
+  }));
+
+it("rechecks liveness and all captured bytes after proof persistence", async () =>
+  fixture(async (f) => {
+    const proof = String((await f.inspect()).proofSha256);
+    f.dependencies.checkpoint = async () => { f.dependencies.absent = () => false; };
+    await expect(f.apply(proof)).rejects.toThrow();
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+    f.dependencies.absent = () => true;
+    f.dependencies.checkpoint = async () => { await NodeFSP.appendFile(f.effects, " "); };
+    await expect(f.apply(proof)).rejects.toThrow();
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+  }));
+
+it.each(["equal", "conflict", "partial", "changing", "error", "candidate-path", "candidate-mount", "missing-capacity", "partitioned", "multi-segment"])(
+  "holds %s inventories without changing lifecycle", async (kind) => fixture(async (f) => {
+    const original = f.dependencies.plist!;
+    let pass = 0;
+    f.dependencies.plist = async (command, args) => {
+      if (kind === "error") throw new Error("command failed");
+      const value = await original(command, args) as Record<string, unknown>;
+      if (command.endsWith("diskutil")) {
+        if (kind === "equal") return { ...value, TotalSize: 1000, Size: 1000, IOKitSize: 1000 };
+        if (kind === "conflict") return { ...value, IOKitSize: 9001 };
+        if (kind === "missing-capacity") return { ...value, WholeDisk: undefined };
+        return value;
+      }
+      if (args[0] !== "info") {
+        if (kind === "partitioned") return { ...value, Properties: { Encrypted: false, Partitioned: true } };
+        if (kind === "multi-segment") return { ...value, Segments: [f.payload, f.payload] };
+        return value;
+      }
+      pass++;
+      if (kind === "partial") return { images: [{ "image-path": f.payload }] };
+      if (kind === "changing" && pass === 2) return { images: [] };
+      if (kind === "candidate-path") return { images: [{ "image-path": f.payload, "system-entities": [] }] };
+      if (kind === "candidate-mount") return { images: [{
+        "image-path": NodePath.join(f.base, "other.dmg"),
+        "system-entities": [{ "dev-entry": "/dev/disk8", "mount-point": f.input.mountPath }],
+      }] };
+      return value;
+    };
+    await expect(f.inspect()).rejects.toThrow();
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+  }),
+);
+
+it("rejects changed artifact bytes even when native geometry remains disjoint", async () =>
+  fixture(async (f) => {
+    const original = f.dependencies.validateArtifact!;
+    let validations = 0;
+    f.dependencies.validateArtifact = async (...args) => {
+      if (++validations === 2) await NodeFSP.appendFile(f.payload, "changed");
+      return original(...args);
+    };
+    await expect(f.inspect()).rejects.toThrow();
+  }));
+
+it("requires the exact inspect proof and rejects request CAS mismatch", async () =>
+  fixture(async (f) => {
+    await expect(f.apply("0".repeat(64))).rejects.toThrow();
+    await expect(recoverNativeEffects({ ...f.input, expected: { ...f.input.expected, request: "0".repeat(64) } },
+      "inspect", undefined, f.dependencies)).rejects.toThrow();
+  }));
+
+it.each(["producer", "shadow"])("holds a stage request outside the verified %s contract", async (kind) =>
+  fixture(async (f) => {
+    const path = NodePath.join(f.base, "runtime", "jones-preparation", "jobs", jobId, "request.json");
+    const request = JSON.parse(await NodeFSP.readFile(path, "utf8"));
+    if (kind === "producer") request.job.candidate.installedSource = "0".repeat(40);
+    else request.job.shadow = true;
+    const requestHash = await f.write(path, request);
+    await expect(recoverNativeEffects({ ...f.input, expected: { ...f.input.expected, request: requestHash } },
+      "inspect", undefined, f.dependencies)).rejects.toThrow();
+  }));
+
+it("retains lifecycle when full artifact qualification refuses", async () =>
+  fixture(async (f) => {
+    f.dependencies.validateArtifact = async () => { throw new Error("invalid archive digest"); };
+    await expect(f.inspect()).rejects.toThrow("invalid archive digest");
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+  }));
+
+it("holds a symlinked effects record even when the target has the expected bytes", async () =>
+  fixture(async (f) => {
+    const original = `${f.effects}.original`;
+    await NodeFSP.rename(f.effects, original);
+    await NodeFSP.symlink(original, f.effects);
+    await expect(f.inspect()).rejects.toThrow();
+  }));

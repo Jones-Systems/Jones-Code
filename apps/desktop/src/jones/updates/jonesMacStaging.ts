@@ -300,10 +300,25 @@ async function validateMacApp(
   };
 }
 
-/** An unindexed attempt may still have a mount or writer. Preserve it and stop allocating. */
+/** Only completed receipt-only remnants may remain unindexed without holding new staging. */
 async function requireNoIncompleteMacAttempts(root: string): Promise<void> {
   try {
     const rootInfo = await NodeFSP.lstat(root);
+    if (
+      !rootInfo.isDirectory() ||
+      rootInfo.uid !== process.getuid?.() ||
+      (await NodeFSP.realpath(root)) !== root
+    )
+      throw new Error("Unknown Mac staging root ownership.");
+    const requireAbsent = async (path: string) => {
+      try {
+        await NodeFSP.lstat(path);
+      } catch (cause) {
+        if ((cause as NodeJS.ErrnoException).code === "ENOENT") return;
+        throw cause;
+      }
+      throw new Error("A conflicting Mac stage holds the receipt-only remnant.");
+    };
     const requireReceipt = async (directory: string, handle: string) => {
       const file = NodePath.join(directory, "mac-app-receipt.json");
       const info = await NodeFSP.lstat(file);
@@ -373,12 +388,49 @@ async function requireNoIncompleteMacAttempts(root: string): Promise<void> {
         if (
           children.length !== 2 ||
           !children.includes("completion.json") ||
-          handle === undefined ||
-          (await findJonesCompletedStage(root, handle, "mac-app-receipt.json")) !==
-            NodePath.join(attempt, handle)
+          handle === undefined
         )
           throw new Error("Unindexed Mac stage attempt.");
-        await requireReceipt(NodePath.join(attempt, handle), handle);
+        const directory = NodePath.join(attempt, handle);
+        const completed = await findJonesCompletedStage(root, handle, "mac-app-receipt.json");
+        if (completed !== directory) {
+          if (completed !== undefined) throw new Error("Conflicting Mac stage attempt.");
+          await requireAbsent(NodePath.join(root, "completed", `${handle}.json`));
+          await requireAbsent(NodePath.join(root, handle));
+          const completionPath = NodePath.join(attempt, "completion.json");
+          const completionInfo = await NodeFSP.lstat(completionPath);
+          if (
+            !completionInfo.isFile() ||
+            completionInfo.size > 4096 ||
+            completionInfo.dev !== rootInfo.dev ||
+            completionInfo.uid !== rootInfo.uid
+          )
+            throw new Error("Unknown Mac attempt completion evidence.");
+          const completion: unknown = JSON.parse(await NodeFSP.readFile(completionPath, "utf8"));
+          if (
+            completion === null ||
+            typeof completion !== "object" ||
+            !("schema" in completion) ||
+            completion.schema !== 1 ||
+            !("handle" in completion) ||
+            completion.handle !== handle ||
+            !("directory" in completion) ||
+            completion.directory !== directory
+          )
+            throw new Error("Mac completion evidence does not bind its attempt.");
+          const payloadInfo = await NodeFSP.lstat(directory);
+          if (
+            !payloadInfo.isDirectory() ||
+            payloadInfo.dev !== rootInfo.dev ||
+            payloadInfo.uid !== rootInfo.uid ||
+            (await NodeFSP.realpath(directory)) !== directory
+          )
+            throw new Error("Unknown Mac receipt-only payload directory.");
+          const payload = await NodeFSP.readdir(directory);
+          if (payload.length !== 1 || payload[0] !== "mac-app-receipt.json")
+            throw new Error("The unindexed Mac attempt is not a receipt-only remnant.");
+        }
+        await requireReceipt(directory, handle);
       }
     }
   } catch (cause) {
@@ -460,6 +512,7 @@ export async function stageJonesMacApp(
   artifact: JonesStagedArtifact,
   root: string,
   platform: NodeJS.Platform,
+  admit?: () => Promise<void>,
 ): Promise<StagedMacApp> {
   if (platform !== "darwin" || artifact.candidate.platform !== "darwin")
     throw new Error("Mac staging requires macOS.");
@@ -488,6 +541,7 @@ export async function stageJonesMacApp(
   );
   if (completed !== undefined) return readCompleted(completed);
   await requireNoIncompleteMacAttempts(canonicalRoot);
+  await admit?.();
   const attempt = await createJonesStageAttempt(canonicalRoot, artifact.stagedHandle);
   const identity = await NodeFSP.lstat(attempt.attemptRoot);
   const directory = attempt.directory;

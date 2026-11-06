@@ -110,7 +110,9 @@
     "apps/server/src/jones/updates/trialGate.testFixtures.ts",
     "apps/server/src/jones/cloud/qualifiedLauncher.testFixtures.ts",
     "apps/server/src/jones/updates/recoverQualifiedStage.ts",
-    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts"
+    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -458,6 +460,10 @@
     {
       "from": "apps/server/src/cli/servicePreflight.ts",
       "to": "apps/server/src/jones/cloud/qualifiedRuntime.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts"
     }
   ]
 }
