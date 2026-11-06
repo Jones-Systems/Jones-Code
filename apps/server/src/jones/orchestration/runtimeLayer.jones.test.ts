@@ -28,12 +28,14 @@ import * as Fiber from "effect/Fiber";
 import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as ConversationReselection from "../runtime/ProviderConversationReselection.ts";
 import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
+import * as Tracer from "effect/Tracer";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as ServerConfig from "../../config.ts";
@@ -1305,6 +1307,122 @@ it.layer(TestLayer)("OrchestrationV2 runtime layer", (it) => {
         0,
       );
     }),
+  );
+
+  it.effect.each(["absent", "pending", "header-error", "records-error"] as const)(
+    "reads self-settlement history only for retained intent: %s",
+    (mode) =>
+      Effect.gen(function* () {
+        const prefix = `self-settlement-reads-${mode}`;
+        const { orchestrator, sink, threadId, run, request } =
+          yield* selfSettlementFixture(prefix);
+        if (mode === "pending" || mode === "records-error")
+          yield* orchestrator.requestSelfSettlement(request);
+        const store = yield* ProjectionStore.ProjectionStoreV2;
+        const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+        const consumed = yield* Deferred.make<Exit.Exit<unknown, unknown>>();
+        const promoted = yield* Deferred.make<void>();
+        const readError = new ProjectionStore.ProjectionStoreReadError({ threadId });
+        let consuming = false;
+        let historyReads = 0;
+        let dutyReads = 0;
+        const tracer = Tracer.make({
+          span: (options) => {
+            const span = new Tracer.NativeSpan(options);
+            if (span.name === "DependencyStore.duties" && consuming) dutyReads++;
+            if (span.name === "Orchestrator.consumeSelfSettlement") {
+              consuming = true;
+              const end = span.end.bind(span);
+              span.end = (time, exit) => {
+                end(time, exit);
+                consuming = false;
+                Deferred.doneUnsafe(consumed, Effect.succeed(exit));
+              };
+            }
+            return span;
+          },
+        });
+        const getThread = store.getThread;
+        const getThreadRecords = store.getThreadRecords;
+        const canStartQueuedRun = store.canStartQueuedRun;
+        const withLock = executor.withLock;
+        const headerSpy = vi.spyOn(store, "getThread").mockImplementation((id) =>
+          id === threadId && mode === "header-error"
+            ? Effect.fail(readError)
+            : getThread(id),
+        );
+        const recordsSpy = vi.spyOn(store, "getThreadRecords").mockImplementation(
+          (id, fields, filter) => {
+            if (
+              id === threadId &&
+              fields.join(",") === "runs,messages,runtimeRequests,attempts"
+            ) {
+              historyReads++;
+              if (mode === "records-error") return Effect.fail(readError);
+            }
+            return getThreadRecords(id, fields, filter);
+          },
+        );
+        const promotionSpy = vi.spyOn(store, "canStartQueuedRun").mockImplementation((id) =>
+          canStartQueuedRun(id).pipe(
+            Effect.tap(() =>
+              id === threadId ? Deferred.succeed(promoted, undefined) : Effect.void,
+            ),
+          ),
+        );
+        const observedLock: ThreadCommandExecutor.ThreadCommandExecutor["Service"]["withLock"] = (
+          id,
+          effect,
+        ) => withLock(id, id === threadId ? effect.pipe(Effect.withTracer(tracer)) : effect);
+        const lockSpy = vi.spyOn(executor, "withLock").mockImplementation(observedLock);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            headerSpy.mockRestore();
+            recordsSpy.mockRestore();
+            promotionSpy.mockRestore();
+            lockSpy.mockRestore();
+          }),
+        );
+        const now = yield* DateTime.now;
+        yield* sink.write({
+          events: [
+            {
+              id: EventId.make(`${prefix}-completed`),
+              type: "run.updated",
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload: { ...run, status: "completed", completedAt: now },
+            },
+          ],
+        });
+        const result = yield* Deferred.await(consumed);
+        if (mode === "header-error" || mode === "records-error") {
+          assert.isTrue(Exit.isFailure(result));
+          if (Exit.isFailure(result)) {
+            const failure = Cause.squash(result.cause);
+            assert.instanceOf(failure, Orchestrator.OrchestratorProjectionError);
+            assert.strictEqual((failure as Orchestrator.OrchestratorProjectionError).cause, readError);
+          }
+          assert.equal(historyReads, mode === "records-error" ? 1 : 0);
+          assert.equal(dutyReads, 0);
+          return;
+        }
+        assert.isTrue(Exit.isSuccess(result));
+        yield* Deferred.await(promoted);
+        const thread = yield* store.getThread(threadId);
+        if (mode === "absent") {
+          assert.equal(historyReads, 0);
+          assert.equal(dutyReads, 0);
+          assert.isUndefined(thread.selfSettlement);
+          assert.isNull(thread.settledOverride);
+        } else {
+          assert.equal(historyReads, 1);
+          assert.isAbove(dutyReads, 0);
+          assert.isNull(thread.selfSettlement);
+          assert.equal(thread.settledOverride, "settled");
+        }
+      }),
   );
 
   it.effect(

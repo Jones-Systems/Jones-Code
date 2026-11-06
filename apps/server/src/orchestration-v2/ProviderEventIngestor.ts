@@ -657,9 +657,6 @@ export const layer: Layer.Layer<
                 }),
               ];
             case "node.updated":
-              // Adapters send an unchanged node again with each text delta. Compare with the
-              // stored node, not the last one sent, because the server also writes nodes.
-              if (yield* projections.isNodeStored(input.event.node)) return [];
               return [
                 yield* makeDomainEvent(input, {
                   type: "node.updated",
@@ -887,6 +884,7 @@ export const layer: Layer.Layer<
               const ownerResult = yield* eventSink
                 .writeIfProviderThreadOwner({
                   guardPendingUserInputCancellations: true,
+                  skipUnchangedProviderNodes: input.event.type === "node.updated",
                   ...runtimeGuard,
                   ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                   ...input.writeIfProviderThreadOwner,
@@ -899,6 +897,7 @@ export const layer: Layer.Layer<
               return yield* eventSink
                 .write({
                   guardPendingUserInputCancellations: true,
+                  skipUnchangedProviderNodes: input.event.type === "node.updated",
                   ...runtimeGuard,
                   ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                   events,
@@ -912,6 +911,7 @@ export const layer: Layer.Layer<
             const result = yield* eventSink
               .writeIfRunCurrent({
                 guardPendingUserInputCancellations: true,
+                skipUnchangedProviderNodes: input.event.type === "node.updated",
                 ...runtimeGuard,
                 ...(input.commandId === undefined ? {} : { commandId: input.commandId }),
                 threadId: input.threadId,
