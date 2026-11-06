@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Exact native Git recreation and its disposable conformance fixture own and await each subprocess.
-import * as FSP from "node:fs/promises";
-import * as Path from "node:path";
-import * as OS from "node:os";
-import * as Crypto from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
+import * as NodeCrypto from "node:crypto";
 import { canonical, exists, git, readBounded, sha256 } from "../workspaceRetirement/Filesystem.ts";
 import type { Binding } from "../workspaceRetirement/OutputAttestation.ts";
 
@@ -62,6 +62,12 @@ export interface RecreationResult {
   readonly breadcrumb: string;
   readonly predecessor: string;
   readonly journal: string;
+  readonly physical?: RecreationPhysicalIdentity;
+}
+interface RecreationPhysicalIdentity {
+  readonly checkout: { readonly path: string; readonly dev: string; readonly ino: string };
+  readonly admin: { readonly path: string; readonly dev: string; readonly ino: string };
+  readonly common: { readonly path: string; readonly dev: string; readonly ino: string };
 }
 interface Registration {
   path: string;
@@ -106,14 +112,14 @@ async function branchCommit(cwd: string, ref: string) {
   return head;
 }
 async function durableFile(path: string, value: unknown, exclusive = false, literal = false) {
-  const file = await FSP.open(path, exclusive ? "wx" : "w", 0o600);
+  const file = await NodeFSP.open(path, exclusive ? "wx" : "w", 0o600);
   try {
     await file.writeFile(literal ? String(value) : canonical(value) + "\n");
     await file.sync();
   } finally {
     await file.close();
   }
-  const directory = await FSP.open(Path.dirname(path), "r");
+  const directory = await NodeFSP.open(NodePath.dirname(path), "r");
   try {
     await directory.sync();
   } finally {
@@ -132,11 +138,11 @@ export async function missingSource(cwd: string, path: string): Promise<Recreati
     );
   if (await exists(path)) throw hold("checkout is present");
   const entry = (await registrations(cwd)).find((r) => r.path === path);
-  const common = await FSP.realpath(
+  const common = await NodeFSP.realpath(
     (await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).toString().trim(),
   );
   if (!entry) {
-    const pointer = Path.join(
+    const pointer = NodePath.join(
       common,
       "workspace-lifecycle",
       "recreations",
@@ -155,20 +161,20 @@ export async function missingSource(cwd: string, path: string): Promise<Recreati
     }
     throw hold("neither terminal receipt nor exact stale registration is available");
   }
-  for (const name of await FSP.readdir(Path.join(common, "worktrees"))) {
-    const admin = Path.join(common, "worktrees", name);
+  for (const name of await NodeFSP.readdir(NodePath.join(common, "worktrees"))) {
+    const admin = NodePath.join(common, "worktrees", name);
     if (
-      (await readBounded(Path.join(admin, "gitdir"), 65536)).toString().trim() !==
-      Path.join(path, ".git")
+      (await readBounded(NodePath.join(admin, "gitdir"), 65536)).toString().trim() !==
+      NodePath.join(path, ".git")
     )
       continue;
-    const stat = await FSP.lstat(admin);
-    const log = (await readBounded(Path.join(admin, "logs/HEAD"), 4 * 1024 * 1024)).toString();
+    const stat = await NodeFSP.lstat(admin);
+    const log = (await readBounded(NodePath.join(admin, "logs/HEAD"), 4 * 1024 * 1024)).toString();
     const head = log.trim().split("\n").at(-1)?.split(" ")[1];
     if (!head || !oid(head))
       throw hold("deleted checkout HEAD has no retained native reflog observation");
     const capturedConfig: Record<string, string> = {};
-    const config = Path.join(admin, "config.worktree");
+    const config = NodePath.join(admin, "config.worktree");
     if (await exists(config))
       for (const pair of (await git(cwd, ["config", "--null", "--file", config, "--list"]))
         .toString()
@@ -183,7 +189,7 @@ export async function missingSource(cwd: string, path: string): Promise<Recreati
           throw hold("deleted checkout worktree configuration cannot be safely reapplied");
         capturedConfig[key!] = value.join("\n");
       }
-    const patterns = Path.join(admin, "info/sparse-checkout");
+    const patterns = NodePath.join(admin, "info/sparse-checkout");
     const sparsePatterns = (await exists(patterns))
       ? (await readBounded(patterns, 1024 * 1024)).toString()
       : undefined;
@@ -214,15 +220,15 @@ export async function missingSource(cwd: string, path: string): Promise<Recreati
 // Probe this Git executable's exact unforced missing-path operation, never the owner's repository.
 let conformance: Promise<boolean> | undefined;
 async function probeMissingRemoval() {
-  const root = await FSP.realpath(
-    await FSP.mkdtemp(Path.join(OS.tmpdir(), "jones-recreation-conformance-")),
+  const root = await NodeFSP.realpath(
+    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-recreation-conformance-")),
   );
-  const identity = await FSP.lstat(root);
+  const identity = await NodeFSP.lstat(root);
   try {
-    const repo = Path.join(root, "repo"),
-      first = Path.join(root, "first"),
-      other = Path.join(root, "other");
-    await FSP.mkdir(repo);
+    const repo = NodePath.join(root, "repo"),
+      first = NodePath.join(root, "first"),
+      other = NodePath.join(root, "other");
+    await NodeFSP.mkdir(repo);
     await git(repo, ["init", "--quiet"]);
     await git(repo, [
       "-c",
@@ -236,8 +242,8 @@ async function probeMissingRemoval() {
     ]);
     await git(repo, ["worktree", "add", "--detach", first, "HEAD"]);
     await git(repo, ["worktree", "add", "--detach", other, "HEAD"]);
-    await FSP.rm(first, { recursive: true });
-    await FSP.rm(other, { recursive: true });
+    await NodeFSP.rm(first, { recursive: true });
+    await NodeFSP.rm(other, { recursive: true });
     const before = await registrations(repo);
     await git(repo, ["worktree", "remove", "--", first]);
     const after = await registrations(repo);
@@ -245,10 +251,10 @@ async function probeMissingRemoval() {
   } catch {
     return false;
   } finally {
-    const current = await FSP.lstat(root);
+    const current = await NodeFSP.lstat(root);
     if (!current.isDirectory() || current.dev !== identity.dev || current.ino !== identity.ino)
       throw new Error(`Conformance scratch identity changed: ${root}`);
-    await FSP.rm(root, { recursive: true, force: true });
+    await NodeFSP.rm(root, { recursive: true, force: true });
     if (await exists(root)) throw new Error(`Conformance scratch cleanup unavailable: ${root}`);
   }
 }
@@ -271,20 +277,20 @@ async function removeStale(input: RecreationInput) {
   if (await exists(target)) throw hold("the registered path is occupied");
   if (entry.locked) throw hold("the exact registration is locked");
   const admin = source.binding.git_dir;
-  if (Path.dirname(admin) !== Path.join(source.binding.git_common_dir, "worktrees"))
+  if (NodePath.dirname(admin) !== NodePath.join(source.binding.git_common_dir, "worktrees"))
     throw hold("admin identity unavailable");
-  const stat = await FSP.lstat(admin);
+  const stat = await NodeFSP.lstat(admin);
   if (
     !stat.isDirectory() ||
     stat.dev !== source.binding.git_dir_dev ||
     stat.ino !== source.binding.git_dir_ino
   )
     throw hold("admin identity changed");
-  if (await exists(Path.join(admin, "modules")))
+  if (await exists(NodePath.join(admin, "modules")))
     throw hold("submodule admin data requires its native owner");
   if (
-    (await readBounded(Path.join(admin, "gitdir"), 65536)).toString().trim() !==
-    Path.join(target, ".git")
+    (await readBounded(NodePath.join(admin, "gitdir"), 65536)).toString().trim() !==
+    NodePath.join(target, ".git")
   )
     throw hold("registration does not name the exact missing path");
   const logs = new Map<string, Buffer>();
@@ -292,12 +298,12 @@ async function removeStale(input: RecreationInput) {
     logEntries = 0;
   async function collectLogs(directory: string) {
     if (!(await exists(directory))) return;
-    if (!(await FSP.lstat(directory)).isDirectory())
+    if (!(await NodeFSP.lstat(directory)).isDirectory())
       throw hold("reflog directory identity unavailable");
-    for (const name of await FSP.readdir(directory)) {
+    for (const name of await NodeFSP.readdir(directory)) {
       if (++logEntries > 10000) throw hold("reflog entry bound exceeded");
-      const path = Path.join(directory, name),
-        stat = await FSP.lstat(path);
+      const path = NodePath.join(directory, name),
+        stat = await NodeFSP.lstat(path);
       if (stat.isDirectory()) await collectLogs(path);
       else if (stat.isFile()) {
         const log = await readBounded(path, 4 * 1024 * 1024 - logBytes);
@@ -306,7 +312,7 @@ async function removeStale(input: RecreationInput) {
       } else throw hold("reflog contains unsupported entry");
     }
   }
-  await collectLogs(Path.join(admin, "logs"));
+  await collectLogs(NodePath.join(admin, "logs"));
   const tips = new Set([source.head, entry.head]);
   for (const log of logs.values())
     for (const line of log.toString().split("\n").filter(Boolean)) {
@@ -325,12 +331,12 @@ async function removeStale(input: RecreationInput) {
   }
   if (!(await (conformance ??= probeMissingRemoval())))
     throw hold("this Git has no proved exact missing-path removal support");
-  const now = await FSP.lstat(admin);
+  const now = await NodeFSP.lstat(admin);
   const originalLogs = new Map(logs);
   logs.clear();
   logBytes = 0;
   logEntries = 0;
-  await collectLogs(Path.join(admin, "logs"));
+  await collectLogs(NodePath.join(admin, "logs"));
   if (
     (await exists(target)) ||
     now.dev !== stat.dev ||
@@ -363,7 +369,7 @@ async function removeStale(input: RecreationInput) {
 }
 
 export async function readBreadcrumb(gitDirectory: string): Promise<RecreationResult | null> {
-  const path = Path.join(gitDirectory, "workspace-recreation.json");
+  const path = NodePath.join(gitDirectory, "workspace-recreation.json");
   if (!(await exists(path))) return null;
   const value = JSON.parse((await readBounded(path, 65536)).toString()) as RecreationResult;
   if (
@@ -379,32 +385,76 @@ export async function readBreadcrumb(gitDirectory: string): Promise<RecreationRe
 }
 
 const journalPath = (source: RecreationSource) =>
-  Path.join(
+  NodePath.join(
     source.binding.git_common_dir,
     "workspace-lifecycle",
     "recreations",
     sha256(source.id) + ".json",
   );
 
-async function createdReadback(cwd: string, result: RecreationResult) {
+async function physicalIdentity(path: string): Promise<RecreationPhysicalIdentity> {
+  const directory = async (target: string) => {
+    const stat = await NodeFSP.lstat(target, { bigint: true });
+    if (!stat.isDirectory() || (await NodeFSP.realpath(target)) !== target)
+      throw new Error("Recreation directory identity unavailable");
+    return { path: target, dev: stat.dev.toString(), ino: stat.ino.toString() };
+  };
+  const admin = await NodeFSP.realpath(
+    (await git(path, ["rev-parse", "--absolute-git-dir"])).toString().trim(),
+  );
+  const common = await NodeFSP.realpath(
+    (await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
+      .toString()
+      .trim(),
+  );
+  return {
+    checkout: await directory(path),
+    admin: await directory(admin),
+    common: await directory(common),
+  };
+}
+
+async function createdReadback(
+  cwd: string,
+  result: RecreationResult,
+  acknowledgedContinuation = false,
+) {
   const reg = (await registrations(cwd)).find((r) => r.path === result.path);
-  if (reg && reg.head === result.head && reg.branch === result.branch) {
-    const admin = (await git(result.path, ["rev-parse", "--absolute-git-dir"])).toString().trim();
-    if (canonical(await readBreadcrumb(admin)) === canonical(result)) return result;
+  if (!reg || reg.branch !== result.branch) return null;
+  if (reg.head !== result.head) {
+    if (
+      !acknowledgedContinuation ||
+      result.physical === undefined ||
+      !(await generationInvalidated(result)) ||
+      !oid(reg.head) ||
+      (await commit(cwd, reg.head)) !== reg.head
+    )
+      return null;
+    try {
+      await git(cwd, ["merge-base", "--is-ancestor", result.head, reg.head]);
+    } catch (cause) {
+      if (cause instanceof Error && "code" in cause && cause.code === 1) return null;
+      throw cause;
+    }
   }
-  return null;
+  const physical = await physicalIdentity(result.path);
+  if (result.physical !== undefined && canonical(physical) !== canonical(result.physical))
+    return null;
+  if (canonical(await readBreadcrumb(physical.admin.path)) !== canonical(result)) return null;
+  if (canonical(await physicalIdentity(result.path)) !== canonical(physical)) return null;
+  return result;
 }
 
 // A present directory is not completion evidence for an earlier native add/population attempt.
 export async function knownRecreation(cwd: string, path: string): Promise<RecreationResult | null> {
-  const repository = (await exists(Path.join(cwd, ".git"))) ? cwd : path;
-  if (!(await exists(Path.join(repository, ".git")))) return null;
-  const common = await FSP.realpath(
+  const repository = (await exists(NodePath.join(cwd, ".git"))) ? cwd : path;
+  if (!(await exists(NodePath.join(repository, ".git")))) return null;
+  const common = await NodeFSP.realpath(
     (await git(repository, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
       .toString()
       .trim(),
   );
-  const pointer = Path.join(
+  const pointer = NodePath.join(
     common,
     "workspace-lifecycle",
     "recreations",
@@ -433,7 +483,7 @@ export async function knownRecreation(cwd: string, path: string): Promise<Recrea
     prior.result.predecessor === source.incarnation &&
     prior.result.head === source.head
   ) {
-    const result = await createdReadback(repository, prior.result);
+    const result = await createdReadback(repository, prior.result, true);
     if (result !== null) return result;
   }
   throw hold();
@@ -446,7 +496,7 @@ export async function plannedPath(
   const journalExists = await exists(journal);
   if (journalExists) {
     const prior = JSON.parse((await readBounded(journal, 65536)).toString());
-    if (typeof prior.result?.path !== "string" || !Path.isAbsolute(prior.result.path))
+    if (typeof prior.result?.path !== "string" || !NodePath.isAbsolute(prior.result.path))
       throw new Error("Invalid recreation journal path");
     if (prior.state !== "held") return prior.result.path;
   }
@@ -487,19 +537,19 @@ async function recreateNative(input: RecreationInput): Promise<RecreationResult>
     );
   if (
     !oid(source.head) ||
-    !Path.isAbsolute(saved) ||
-    Path.normalize(saved) !== saved ||
-    !Path.isAbsolute(input.alternatePath) ||
-    Path.normalize(input.alternatePath) !== input.alternatePath ||
-    (await FSP.realpath(
+    !NodePath.isAbsolute(saved) ||
+    NodePath.normalize(saved) !== saved ||
+    !NodePath.isAbsolute(input.alternatePath) ||
+    NodePath.normalize(input.alternatePath) !== input.alternatePath ||
+    (await NodeFSP.realpath(
       (await git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
         .toString()
         .trim(),
     )) !== source.binding.git_common_dir
   )
     throw hold("unknown", "receipt common-store identity unavailable");
-  const directory = Path.join(source.binding.git_common_dir, "workspace-lifecycle", "recreations");
-  await FSP.mkdir(directory, { recursive: true });
+  const directory = NodePath.join(source.binding.git_common_dir, "workspace-lifecycle", "recreations");
+  await NodeFSP.mkdir(directory, { recursive: true });
   const journal = journalPath(source);
   const journalExists = await exists(journal);
   if (journalExists) {
@@ -536,12 +586,12 @@ async function recreateNative(input: RecreationInput): Promise<RecreationResult>
     path,
     branch,
     head: source.head,
-    breadcrumb: Crypto.randomUUID(),
+    breadcrumb: NodeCrypto.randomUUID(),
     predecessor: source.incarnation,
     journal,
   };
   await durableFile(journal, { state: "intent", source, owner, result }, !journalExists);
-  await durableFile(Path.join(directory, `target-${sha256(saved)}.json`), source);
+  await durableFile(NodePath.join(directory, `target-${sha256(saved)}.json`), source);
   try {
     if (!(await exists(saved))) await removeStale(input);
     if (branch !== null && (await registrations(cwd)).some((r) => r.branch === branch))
@@ -572,11 +622,11 @@ async function recreateNative(input: RecreationInput): Promise<RecreationResult>
     if ((await git(path, ["rev-parse", "HEAD"])).toString().trim() !== source.head)
       throw hold("unknown", "new checkout HEAD changed during creation");
     for (const [key, value] of Object.entries(config))
-      await git(path, ["config", "--file", Path.join(admin, "config.worktree"), key, value]);
+      await git(path, ["config", "--file", NodePath.join(admin, "config.worktree"), key, value]);
     if (source.sparsePatterns !== undefined) {
-      await FSP.mkdir(Path.join(admin, "info"), { recursive: true });
+      await NodeFSP.mkdir(NodePath.join(admin, "info"), { recursive: true });
       await durableFile(
-        Path.join(admin, "info/sparse-checkout"),
+        NodePath.join(admin, "info/sparse-checkout"),
         source.sparsePatterns,
         false,
         true,
@@ -586,9 +636,10 @@ async function recreateNative(input: RecreationInput): Promise<RecreationResult>
     const reg = (await registrations(cwd)).find((r) => r.path === path);
     if (!reg || reg.head !== source.head || reg.branch !== branch)
       throw hold("unknown", "new checkout registration changed");
-    await durableFile(Path.join(admin, "workspace-recreation.json"), result, true);
-    await durableFile(journal, { state: "created", source, owner, result });
-    return result;
+    const completed = { ...result, physical: await physicalIdentity(path) };
+    await durableFile(NodePath.join(admin, "workspace-recreation.json"), completed, true);
+    await durableFile(journal, { state: "created", source, owner, result: completed });
+    return completed;
   } catch (cause) {
     // These pre-add holds created no checkout. Preserved refs and exact stale removal remain recorded by this source journal.
     if (
@@ -603,12 +654,12 @@ async function recreateNative(input: RecreationInput): Promise<RecreationResult>
 }
 
 export async function recreate(input: RecreationInput): Promise<RecreationResult> {
-  let lock: Awaited<ReturnType<typeof FSP.open>> | undefined;
+  let lock: Awaited<ReturnType<typeof NodeFSP.open>> | undefined;
   let lockPath: string | undefined;
   let failure: unknown;
   try {
     if (!input.nativeGuarded && !input.detached && input.source.branch !== null) {
-      const common = await FSP.realpath(
+      const common = await NodeFSP.realpath(
         (await git(input.cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
           .toString()
           .trim(),
@@ -619,10 +670,10 @@ export async function recreate(input: RecreationInput): Promise<RecreationResult
       )
         throw new Error("Receipt branch/common-store identity unavailable");
       await git(input.cwd, ["check-ref-format", input.source.branch]);
-      lockPath = Path.join(common, input.source.branch + ".lock");
-      await FSP.mkdir(Path.dirname(lockPath), { recursive: true });
+      lockPath = NodePath.join(common, input.source.branch + ".lock");
+      await NodeFSP.mkdir(NodePath.dirname(lockPath), { recursive: true });
       // Hold Git's create-only ref lock through HEAD validation and add. Never rename it onto the branch.
-      lock = await FSP.open(lockPath, "wx", 0o600);
+      lock = await NodeFSP.open(lockPath, "wx", 0o600);
     }
     return await recreateNative(input);
   } catch (cause) {
@@ -640,10 +691,10 @@ export async function recreate(input: RecreationInput): Promise<RecreationResult
     if (lock !== undefined && lockPath !== undefined) {
       try {
         const original = await lock.stat(),
-          current = await FSP.lstat(lockPath);
+          current = await NodeFSP.lstat(lockPath);
         if (current.dev !== original.dev || current.ino !== original.ino || !current.isFile())
           throw new Error("Recreation branch lock owner changed");
-        await FSP.unlink(lockPath);
+        await NodeFSP.unlink(lockPath);
       } catch (cleanup) {
         throw new AggregateError(
           failure === undefined ? [cleanup] : [failure, cleanup],

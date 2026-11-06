@@ -26,6 +26,8 @@ import * as Stream from "effect/Stream";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as Config from "../../config.ts";
 import * as Environment from "../../environment/ServerEnvironment.ts";
+import * as GitManager from "../../git/GitManager.ts";
+import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as McpTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as Outbox from "../../orchestration-v2/EffectOutbox.ts";
@@ -366,6 +368,12 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(configured),
     Layer.provide(platform),
   );
+  const workflows = GitWorkflow.layer.pipe(
+    Layer.provide(Layer.mock(GitManager.GitManager)({ createWorktree: observedGit.createWorktree })),
+    Layer.provide(vcs),
+    Layer.provide(Layer.succeed(Git.GitVcsDriver, observedGit)),
+    Layer.provide(platform),
+  );
   const checkpoints = Layer.effect(
     CheckpointStore.CheckpointStore,
     Effect.gen(function* () {
@@ -390,6 +398,7 @@ export const fixture = Effect.gen(function* () {
     Layer.provideMerge(LifecycleRuntime.layer),
     Layer.provideMerge(database),
     Layer.provide(checkpoints),
+    Layer.provideMerge(workflows),
     Layer.provide(configured),
     Layer.provide(Settings.layerTest()),
     Layer.provide(
@@ -398,7 +407,7 @@ export const fixture = Effect.gen(function* () {
       }),
     ),
     Layer.provide(Layer.succeed(Runner.ProcessRunner, runner)),
-    Layer.provide(Layer.succeed(Git.GitVcsDriver, observedGit)),
+    Layer.provideMerge(Layer.succeed(Git.GitVcsDriver, observedGit)),
     Layer.provide(
       Layer.succeed(Registry.ProviderInstanceRegistry, {
         getCatalogSource: (id) => (id === selection.instanceId ? instance : undefined),

@@ -233,7 +233,7 @@ const make = Effect.gen(function* () {
         ? null
         : yield* Effect.tryPromise({
             try: () => readBreadcrumb(target.gitDirectory!),
-            catch: (cause) => cause,
+            catch: (cause) => new LifecycleError({ reason: "unavailable", cause }),
           });
       const physical = {
         directory: target.directoryIdentity,

@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Reads bounded native recreation breadcrumbs and chooses a fresh sibling managed path.
-import * as Path from "node:path";
-import * as Crypto from "node:crypto";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -27,7 +27,7 @@ import {
 class TurnClaims extends Context.Service<
   TurnClaims,
   { readonly hold: (path: string) => Effect.Effect<void, RetirementError> }
->()("jones/workspaceRecreation/TurnClaims") {}
+>()("t3/jones/workspaceRecreation/Runtime/TurnClaims") {}
 
 const observe = <A>(target: string, owner: string, action: () => Promise<A>) =>
   Effect.tryPromise({
@@ -184,9 +184,9 @@ export const prepareTurn = Effect.fn("CheckoutRecreation.prepareTurn")(function*
       ),
     );
   const claims = yield* TurnClaims;
-  const alternate = Path.join(
-    Path.dirname(input.worktree),
-    `${Path.basename(input.worktree)}-recreated-${Crypto.randomUUID()}`,
+  const alternate = NodePath.join(
+    NodePath.dirname(input.worktree),
+    `${NodePath.basename(input.worktree)}-recreated-${NodeCrypto.randomUUID()}`,
   );
   const selectedSource = source;
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);

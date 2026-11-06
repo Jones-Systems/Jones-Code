@@ -225,7 +225,7 @@ const make = Effect.gen(function* () {
         : input.reason;
     const recreated = yield* Effect.tryPromise({
       try: () => readBreadcrumb(target.gitDirectory!),
-      catch: (cause) => cause,
+      catch: error,
     });
     const id = incarnation(environment, source, recreated?.breadcrumb ?? null);
     const predecessors = yield* store.lookup({ threadId: input.threadId });
@@ -350,7 +350,7 @@ const make = Effect.gen(function* () {
           ? null
           : yield* Effect.tryPromise({
               try: () => readBreadcrumb(source.target.gitDirectory!),
-              catch: (cause) => cause,
+              catch: error,
             });
       if (
         incarnation(environment, source, recreated?.breadcrumb ?? null) !== fact.incarnation_id ||

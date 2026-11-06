@@ -562,7 +562,7 @@ it.effect(
             ).toEqual([]);
             sourceInvalidated = true;
             f.calls.push("source-invalidated");
-          });
+          }).pipe(Effect.orDie);
           f.state.beforeProviderUse = Effect.sync(() => {
             expect(sourceInvalidated).toBe(true);
             expect(f.state.view().binding!.incarnation_id).not.toBe(prior.incarnation_id);
