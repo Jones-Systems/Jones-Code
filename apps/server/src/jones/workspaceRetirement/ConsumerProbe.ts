@@ -1,8 +1,9 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Bounded same-user native probes; argv is transient and never returned.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import { execFile } from "node:child_process";
-import { inside, readBounded } from "./Filesystem.ts";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as DateTime from "effect/DateTime";
+import { inside, nativePlatform, readBounded } from "./Filesystem.ts";
 
 const CONSUMER_LIMITS = [
   "other-user/root processes",
@@ -25,7 +26,11 @@ export interface ConsumerEvidence {
   obligations: Probe;
   process: Probe;
 }
-export function consumerDecision(target: string, evidence: ConsumerEvidence, now = Date.now()) {
+export function consumerDecision(
+  target: string,
+  evidence: ConsumerEvidence,
+  now = DateTime.toEpochMillis(DateTime.nowUnsafe()),
+) {
   const holds: string[] = [],
     unknown: string[] = [],
     coverage: Record<
@@ -45,7 +50,7 @@ export function consumerDecision(target: string, evidence: ConsumerEvidence, now
             ? "incomplete_" + name + "_coverage"
             : null,
     };
-    if (probe.paths.some((p) => inside(p, target)))
+    if (probe.paths.some((p: string) => inside(p, target)))
       holds.push(name === "obligations" ? "obligation" : "active_consumer");
     if (probe.status !== "complete" || !Number.isFinite(ageMs) || ageMs < 0 || ageMs > 120000)
       unknown.push("consumer_evidence_unavailable");
@@ -59,7 +64,7 @@ export function consumerDecision(target: string, evidence: ConsumerEvidence, now
 }
 function command(file: string, args: string[], timeout = 1500): Promise<string> {
   return new Promise((resolve, reject) =>
-    execFile(
+    NodeChildProcess.execFile(
       file,
       args,
       { timeout, maxBuffer: 2 * 1024 * 1024, encoding: "utf8" },
@@ -73,13 +78,13 @@ function argvUses(bytes: string, target: string) {
     .some(
       (arg) =>
         arg === target ||
-        arg.startsWith(target + Path.sep) ||
-        arg.includes("=" + target + Path.sep) ||
+        arg.startsWith(target + NodePath.sep) ||
+        arg.includes("=" + target + NodePath.sep) ||
         arg.endsWith("=" + target),
     );
 }
 async function procText(path: string, limit: number) {
-  const file = await FS.open(path, "r");
+  const file = await NodeFSP.open(path, "r");
   try {
     const bytes = Buffer.alloc(limit + 1);
     let offset = 0;
@@ -104,18 +109,19 @@ export interface ProcessProbeIO {
 }
 const nativeIO: ProcessProbeIO = {
   command,
-  list: (path) => FS.readdir(path),
+  list: (path) => NodeFSP.readdir(path),
   uid: () => process.getuid?.(),
-  statUid: async (path) => (await FS.stat(path)).uid,
-  readlink: (path) => FS.readlink(path),
+  statUid: async (path) => (await NodeFSP.stat(path)).uid,
+  readlink: (path) => NodeFSP.readlink(path),
   read: procText,
 };
 export async function processProbe(
   target: string,
-  platform: NodeJS.Platform = process.platform,
+  platform: NodeJS.Platform = nativePlatform,
   io: ProcessProbeIO = nativeIO,
 ): Promise<Probe> {
-  const observedAt = Date.now(),
+  const started = performance.now();
+  const observedAt = DateTime.toEpochMillis(DateTime.nowUnsafe()),
     paths = new Set<string>();
   let complete = true;
   try {
@@ -123,7 +129,7 @@ export async function processProbe(
       const pids = (await io.list("/proc")).filter((p) => /^\d+$/.test(p));
       if (pids.length > 4096) throw new Error("bound");
       for (const pid of pids) {
-        if (Date.now() - observedAt > 5000) {
+        if (performance.now() - started > 5000) {
           complete = false;
           break;
         }
@@ -170,7 +176,7 @@ export async function processProbe(
         .map((r) => r[0]!);
       if (pids.length > 4096) throw new Error("bound");
       for (let i = 0; i < pids.length; i += 64) {
-        if (Date.now() - observedAt > 5000) {
+        if (performance.now() - started > 5000) {
           complete = false;
           break;
         }
@@ -214,7 +220,7 @@ export async function processProbe(
   }
 }
 export async function serviceProbe(target: string, files: readonly string[]): Promise<Probe> {
-  const observedAt = Date.now();
+  const observedAt = DateTime.toEpochMillis(DateTime.nowUnsafe());
   const paths: string[] = [];
   try {
     if (files.length > 2000) throw new Error("bound");

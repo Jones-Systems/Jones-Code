@@ -493,7 +493,7 @@ it.effect("producer facts use the existing incarnation and refuse a different wo
         ),
       ).toHaveLength(1);
     }).pipe(Effect.provide(f.layer));
-  }).pipe(Effect.provide(memory), Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(Layer.merge(memory, NodeServices.layer))),
 );
 
 it.effect("automatic capture skips an unbounded sink without starting or accumulating work", () =>

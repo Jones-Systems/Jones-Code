@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Producer-owned durable finalization records; this is not an assessment or retirement ledger.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import { randomBytes } from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
 import { attest, binding, type Attestation, type Binding } from "./OutputAttestation.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { canonical, exists, inside, openAbsolute, readBounded } from "./Filesystem.ts";
@@ -29,24 +29,24 @@ export interface ProductionSession {
 async function save(session: ProductionSession) {
   if (canonical(await binding(session.record.worktree)) !== canonical(session.record.binding))
     throw new Error("identity_mismatch");
-  const directory = await openAbsolute(Path.dirname(session.path), true);
-  const temporary = Path.join(
-    Path.dirname(session.path),
-    "." + session.record.id + "-" + randomBytes(8).toString("hex"),
+  const directory = await openAbsolute(NodePath.dirname(session.path), true);
+  const temporary = NodePath.join(
+    NodePath.dirname(session.path),
+    "." + session.record.id + "-" + NodeCrypto.randomBytes(8).toString("hex"),
   );
   try {
-    const file = await FS.open(temporary, "wx", 0o600);
+    const file = await NodeFSP.open(temporary, "wx", 0o600);
     try {
       await file.writeFile(canonical(session.record) + "\n");
       await file.sync();
     } finally {
       await file.close();
     }
-    await FS.rename(temporary, session.path);
+    await NodeFSP.rename(temporary, session.path);
     await directory.sync();
   } finally {
     await directory.close();
-    await FS.rm(temporary, { force: true });
+    await NodeFSP.rm(temporary, { force: true });
   }
 }
 export async function beginProduction(
@@ -58,14 +58,16 @@ export async function beginProduction(
   if (
     !/^[a-z0-9][a-z0-9._-]{0,23}$/.test(producer) ||
     roots.some(
-      (root) => !inside(Path.resolve(root), bound.path) || Path.resolve(root) === bound.path,
+      (root) =>
+        !inside(NodePath.resolve(root), bound.path) || NodePath.resolve(root) === bound.path,
     )
   )
     throw new Error("invalid_producer");
-  const directory = Path.join(bound.git_dir, "workspace-output-obligations");
-  const id = producer + "-" + randomBytes(16).toString("hex");
+  const directory = NodePath.join(bound.git_dir, "workspace-output-obligations");
+  const id = producer + "-" + NodeCrypto.randomBytes(16).toString("hex");
+  const DateTime = await import("effect/DateTime");
   const session: ProductionSession = {
-    path: Path.join(directory, id + ".json"),
+    path: NodePath.join(directory, id + ".json"),
     record: {
       schema: "workspace-output-obligation/v1",
       id,
@@ -73,17 +75,17 @@ export async function beginProduction(
       owner: producer,
       worktree: bound.path,
       binding: bound,
-      started_at: new Date().toISOString(),
+      started_at: DateTime.formatIso(DateTime.nowUnsafe()),
       status: "active",
       outcome: "unresolved",
       proofStatus: "deferred",
-      roots: roots.map((root) => Path.resolve(root)),
+      roots: roots.map((root) => NodePath.resolve(root)),
       sidecars: [],
       reasons: ["producer_active"],
     },
   };
   await participantGuard(bound, async () => {
-    await FS.mkdir(directory, { mode: 0o700 }).catch((cause) => {
+    await NodeFSP.mkdir(directory, { mode: 0o700 }).catch((cause) => {
       if (cause.code !== "EEXIST") throw cause;
     });
     await save(session);
@@ -123,10 +125,11 @@ export async function finishProduction(
     }
   }
   if (!session.record.roots.length) reasons.push("producer_outputs_unknown");
+  const DateTime = await import("effect/DateTime");
   session.record = {
     ...session.record,
     status,
-    finished_at: new Date().toISOString(),
+    finished_at: DateTime.formatIso(DateTime.nowUnsafe()),
     sidecars,
     proofStatus:
       options.verifyContent && remaining
@@ -146,18 +149,18 @@ export async function finishProduction(
 }
 export async function outputObligations(worktree: string) {
   const bound = await binding(worktree),
-    directory = Path.join(bound.git_dir, "workspace-output-obligations");
+    directory = NodePath.join(bound.git_dir, "workspace-output-obligations");
   if (!(await exists(directory))) return [];
   const dir = await openAbsolute(directory, true);
   await dir.close();
-  const names = await FS.readdir(directory);
+  const names = await NodeFSP.readdir(directory);
   if (names.length > 10000) throw new Error("bound_exceeded");
   const results: Production[] = [];
   for (const name of names) {
     if (!/^[a-z0-9][a-z0-9._-]{0,23}-[a-f0-9]{32}\.json$/.test(name))
       throw new Error("observation_failed");
     const record: Production = JSON.parse(
-      (await readBounded(Path.join(directory, name), 65536)).toString(),
+      (await readBounded(NodePath.join(directory, name), 65536)).toString(),
     );
     if (
       record.schema !== "workspace-output-obligation/v1" ||

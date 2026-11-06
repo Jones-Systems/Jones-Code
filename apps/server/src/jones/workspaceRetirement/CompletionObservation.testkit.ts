@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Bounded child fixtures prove deadline/reaping and no default content walk.
-import assert from "node:assert/strict";
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import * as NodeAssert from "node:assert/strict";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 import { fixture } from "./Conformance.testkit.ts";
 import {
   completionObservation,
@@ -17,15 +17,15 @@ export const completionCases: Record<string, () => Promise<void>> = {
   "default completion records outcomes and lineage without walking large output descriptors":
     async () =>
       fixture(async ({ base, worktree, input }) => {
-        const invalidRoot = Path.join(base, "not-a-directory");
-        await FS.writeFile(invalidRoot, "large-tree descriptor; not traversable");
+        const invalidRoot = NodePath.join(base, "not-a-directory");
+        await NodeFSP.writeFile(invalidRoot, "large-tree descriptor; not traversable");
         for (const status of ["succeeded", "failed", "cancelled"] as const) {
           const observation = completionObservation({
             producer: "fixture",
             owner: "thread",
             worktree,
             status,
-            roots: [Path.join(invalidRoot, "500000-entries")],
+            roots: [NodePath.join(invalidRoot, "500000-entries")],
             lineage: {
               threadId: "thread",
               taskId: "task",
@@ -33,13 +33,13 @@ export const completionCases: Record<string, () => Promise<void>> = {
             },
           });
           const result = recordCompletion(observation);
-          assert.equal(result.status, "recorded", result.reason ?? undefined);
-          const stored = JSON.parse(await FS.readFile(result.reference!, "utf8"));
-          assert.equal(stored.status, status);
-          assert.equal(stored.proofStatus, "deferred");
-          assert.equal(stored.lineage.threadId, "thread");
-          assert.equal(stored.lineage.taskId, "task");
-          assert.equal(stored.lineage.branch, "refs/heads/task");
+          NodeAssert.equal(result.status, "recorded", result.reason ?? undefined);
+          const stored = JSON.parse(await NodeFSP.readFile(result.reference!, "utf8"));
+          NodeAssert.equal(stored.status, status);
+          NodeAssert.equal(stored.proofStatus, "deferred");
+          NodeAssert.equal(stored.lineage.threadId, "thread");
+          NodeAssert.equal(stored.lineage.taskId, "task");
+          NodeAssert.equal(stored.lineage.branch, "refs/heads/task");
           for (const prohibited of [
             "manifest",
             "content_manifest_sha256",
@@ -47,22 +47,24 @@ export const completionCases: Record<string, () => Promise<void>> = {
             "logical_bytes",
             "reconstructible",
           ])
-            assert.equal(prohibited in stored, false);
-          assert.equal(stored.schema, "workspace-output-observation/v1");
+            NodeAssert.equal(prohibited in stored, false);
+          NodeAssert.equal(stored.schema, "workspace-output-observation/v1");
         }
-        assert.deepEqual(await outputObligations(worktree), []);
-        assert.equal(
-          await FS.stat(Path.join(input.expected.git_dir, "workspace-outputs")).catch(() => null),
+        NodeAssert.deepEqual(await outputObligations(worktree), []);
+        NodeAssert.equal(
+          await NodeFSP.stat(NodePath.join(input.expected.git_dir, "workspace-outputs")).catch(
+            () => null,
+          ),
           null,
         );
-        await FS.mkdir(Path.join(worktree, "build"));
-        await FS.writeFile(Path.join(worktree, "build/note"), "unique note");
+        await NodeFSP.mkdir(NodePath.join(worktree, "build"));
+        await NodeFSP.writeFile(NodePath.join(worktree, "build/note"), "unique note");
         const qualified = await qualify(input),
           detail = qualified.details?.find((d) => d.reason === "unattested_ignored");
-        assert.equal(detail?.root, Path.join(worktree, "build"));
-        assert.ok(detail?.missingFact);
-        assert.ok(detail?.lineage.some((row) => row.threadId === "thread" && row.pr));
-        assert.ok(detail?.nextAction.includes("must not manufacture"));
+        NodeAssert.equal(detail?.root, NodePath.join(worktree, "build"));
+        NodeAssert.ok(detail?.missingFact);
+        NodeAssert.ok(detail?.lineage.some((row) => row.threadId === "thread" && row.pr));
+        NodeAssert.ok(detail?.nextAction.includes("must not manufacture"));
       }),
   "oversize capture starts no worker and stalled capture has no live work after its deadline":
     async () =>
@@ -75,27 +77,27 @@ export const completionCases: Record<string, () => Promise<void>> = {
           roots: [],
           lineage: {},
         });
-        const marker = Path.join(base, "must-not-run");
+        const marker = NodePath.join(base, "must-not-run");
         const oversize = recordCompletion(
           { ...observation, lineage: { oversize: "a".repeat(65536) } },
           `import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(marker)},'bad');`,
         );
-        assert.equal(oversize.reason, "metadata_bound");
-        assert.equal(await FS.stat(marker).catch(() => null), null);
-        const pidFile = Path.join(base, "worker.pid");
+        NodeAssert.equal(oversize.reason, "metadata_bound");
+        NodeAssert.equal(await NodeFSP.stat(marker).catch(() => null), null);
+        const pidFile = NodePath.join(base, "worker.pid");
         const started = performance.now();
         const stalled = recordCompletion(
           observation,
           `import{writeFileSync}from'node:fs';writeFileSync(${JSON.stringify(pidFile)},String(process.pid));while(true){}`,
         );
-        assert.equal(stalled.reason, "metadata_deadline");
-        assert.ok(
+        NodeAssert.equal(stalled.reason, "metadata_deadline");
+        NodeAssert.ok(
           performance.now() - started < 1500,
           "deadline plus OS process close must remain bounded",
         );
-        const pid = Number(await FS.readFile(pidFile, "utf8"));
-        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
-        assert.deepEqual(await outputObligations(worktree), []);
+        const pid = Number(await NodeFSP.readFile(pidFile, "utf8"));
+        NodeAssert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+        NodeAssert.deepEqual(await outputObligations(worktree), []);
       }),
   "unavailable and reserved sinks never invent allocation duties": async () =>
     fixture(async ({ worktree, input }) => {
@@ -107,13 +109,13 @@ export const completionCases: Record<string, () => Promise<void>> = {
         roots: [],
         lineage: {},
       });
-      assert.equal(recordCompletion(observation, "process.exitCode=1;").status, "unavailable");
+      NodeAssert.equal(recordCompletion(observation, "process.exitCode=1;").status, "unavailable");
       await participantGuard(input.expected, async () => {});
-      const store = Path.join(
+      const store = NodePath.join(
         input.expected.git_common_dir,
         "workspace-lifecycle/reservations.sqlite3",
       );
-      const db = new DatabaseSync(store);
+      const db = new NodeSqlite.DatabaseSync(store);
       try {
         db.exec("BEGIN IMMEDIATE");
         db.prepare("INSERT INTO reservations VALUES(?,?,?)").run(
@@ -125,16 +127,18 @@ export const completionCases: Record<string, () => Promise<void>> = {
       } finally {
         db.close();
       }
-      assert.equal(recordCompletion(observation).status, "unavailable");
-      assert.deepEqual(await outputObligations(worktree), []);
-      assert.equal(
-        await FS.stat(Path.join(input.expected.git_dir, "workspace-completions")).catch(() => null),
+      NodeAssert.equal(recordCompletion(observation).status, "unavailable");
+      NodeAssert.deepEqual(await outputObligations(worktree), []);
+      NodeAssert.equal(
+        await NodeFSP.stat(NodePath.join(input.expected.git_dir, "workspace-completions")).catch(
+          () => null,
+        ),
         null,
       );
     }),
   "lineage capture selects explicit known identifiers without copying other environment data":
     async () => {
-      assert.deepEqual(
+      NodeAssert.deepEqual(
         availableLineage({
           T3CODE_THREAD_ID: "thread",
           T3CODE_TASK_ID: "task",

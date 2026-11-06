@@ -1,18 +1,22 @@
-import { expect, it } from "vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { fixture } from "./Conformance.testkit.ts";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { acquireFixture } from "./Conformance.testkit.ts";
 import * as ProjectProduction from "./ProjectProduction.ts";
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
 import { outputObligations } from "./ProducerFinalizer.ts";
 import { binding } from "./OutputAttestation.ts";
 
-for (const status of ["succeeded", "failed", "cancelled"] as const)
-  it(
-    "generic project script finalizes " + status + " once without requiring optional provenance",
-    async () => {
-      await fixture(async ({ worktree }) => {
-        await Effect.runPromise(
+it.effect.each(["succeeded", "failed", "cancelled"] as const)(
+  "generic project script finalizes %s once without requiring optional provenance",
+  (status) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      yield* Effect.acquireUseRelease(
+        Effect.promise(acquireFixture),
+        ({ worktree }) =>
           Effect.gen(function* () {
             const finish = yield* ProjectProduction.begin({
               threadId: "fixture",
@@ -21,30 +25,28 @@ for (const status of ["succeeded", "failed", "cancelled"] as const)
             });
             yield* finish(status);
             yield* finish("cancelled");
+            const obligations = yield* Effect.promise(() => outputObligations(worktree));
+            expect(obligations).toHaveLength(0);
+            const bound = yield* Effect.promise(() => binding(worktree));
+            const directory = path.join(bound.git_dir, "workspace-completions");
+            const names = yield* fs.readDirectory(directory);
+            expect(names).toHaveLength(1);
+            const record = JSON.parse(yield* fs.readFileString(path.join(directory, names[0]!)));
+            expect(record.status).toBe(status);
+            expect(record.proofStatus).toBe("deferred");
+            expect(record.lineage.threadId).toBe("fixture");
           }),
-        );
-        const obligations = await outputObligations(worktree);
-        expect(obligations).toHaveLength(0);
-        const bound = await binding(worktree);
-        const directory = Path.join(bound.git_dir, "workspace-completions");
-        const names = await FS.readdir(directory);
-        expect(names).toHaveLength(1);
-        const record = JSON.parse(await FS.readFile(Path.join(directory, names[0]!), "utf8"));
-        expect(record.status).toBe(status);
-        expect(record.proofStatus).toBe("deferred");
-        expect(record.lineage.threadId).toBe("fixture");
-      });
-    },
-  );
-it("optional production recording never prevents a project script from running", async () => {
-  await Effect.runPromise(
-    Effect.gen(function* () {
-      const finish = yield* ProjectProduction.begin({
-        threadId: "fixture",
-        worktreePath: "/does-not-exist/jones-synthetic",
-        trigger: "setup",
-      });
-      yield* finish("succeeded");
-    }),
-  );
-});
+        ({ base }) => fs.remove(base, { recursive: true, force: true }),
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
+);
+it.effect("optional production recording never prevents a project script from running", () =>
+  Effect.gen(function* () {
+    const finish = yield* ProjectProduction.begin({
+      threadId: "fixture",
+      worktreePath: "/does-not-exist/jones-synthetic",
+      trigger: "setup",
+    });
+    yield* finish("succeeded");
+  }),
+);
