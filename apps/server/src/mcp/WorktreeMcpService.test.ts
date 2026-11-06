@@ -701,9 +701,11 @@ it.effect("native status survives optional provenance storage failure", () => {
     expect(result.worktreePath).toBe("/worktrees/existing");
     expect(result.branch).toBe("work");
     expect(result.provenance).toBeUndefined();
-  }).pipe(Effect.provideService(WorkspaceProvenance.Provenance, {
-    capture: () => Effect.fail(new LifecycleError({ reason: "storage" })),
-    lookup: () => Effect.fail(new LifecycleError({ reason: "storage" })),
-    record: () => Effect.void,
-  }));
+  }).pipe(
+    Effect.provideService(WorkspaceProvenance.Provenance, {
+      capture: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+      lookup: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+      record: () => Effect.void,
+    }),
+  );
 });

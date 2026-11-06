@@ -178,7 +178,12 @@ it.effect(
             worktreePath: moved,
             expectedWorktreePath: linked,
           });
-          yield* p.capture({ threadId, reason: "reference", createdBy: "system", requireExistingPhysical: true });
+          yield* p.capture({
+            threadId,
+            reason: "reference",
+            createdBy: "system",
+            requireExistingPhysical: true,
+          });
           const relocated = (yield* p.lookup({ path: moved }))[0]!.provenance;
           expect(relocated.predecessor).toBe(initial.incarnation_id);
           expect(relocated.birth).toEqual(initial.birth);

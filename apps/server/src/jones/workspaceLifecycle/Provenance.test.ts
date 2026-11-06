@@ -489,22 +489,27 @@ it.effect("automatic capture skips an unbounded sink without starting or accumul
   }),
 );
 
-it.effect("optional lookup failure is unavailable, while an observed empty lookup stays empty", () =>
-  Effect.gen(function* () {
-    const service = Provenance.Provenance.of({
-      capture: () => Effect.fail(new LifecycleError({ reason: "storage" })),
-      lookup: () => Effect.fail(new LifecycleError({ reason: "storage" })),
-      record: () => Effect.void,
-    });
-    const lookup = yield* Provenance.optionalLookup.pipe(
-      Effect.provideService(Provenance.Provenance, service),
-    );
-    expect(yield* lookup({ path: "/missing-sidecar" })).toBeUndefined();
-    const empty = yield* Provenance.optionalLookup.pipe(
-      Effect.provideService(Provenance.Provenance, { ...service, lookup: () => Effect.succeed([]) }),
-    );
-    expect(yield* empty({ path: "/ordinary" })).toEqual([]);
-  }),
+it.effect(
+  "optional lookup failure is unavailable, while an observed empty lookup stays empty",
+  () =>
+    Effect.gen(function* () {
+      const service = Provenance.Provenance.of({
+        capture: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+        lookup: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+        record: () => Effect.void,
+      });
+      const lookup = yield* Provenance.optionalLookup.pipe(
+        Effect.provideService(Provenance.Provenance, service),
+      );
+      expect(yield* lookup({ path: "/missing-sidecar" })).toBeUndefined();
+      const empty = yield* Provenance.optionalLookup.pipe(
+        Effect.provideService(Provenance.Provenance, {
+          ...service,
+          lookup: () => Effect.succeed([]),
+        }),
+      );
+      expect(yield* empty({ path: "/ordinary" })).toEqual([]);
+    }),
 );
 
 it.effect("oversized stored lineage is unavailable instead of a partial empty observation", () =>
@@ -512,8 +517,21 @@ it.effect("oversized stored lineage is unavailable instead of a partial empty ob
     const f = yield* fixture;
     yield* Effect.gen(function* () {
       const p = yield* Provenance.Provenance;
-      const record = yield* p.capture({ threadId: "thread", reason: "launch", createdBy: "system" });
-      yield* f.sql`INSERT INTO jones_workspace_provenance_facts VALUES ('oversized',${record.incarnation_id},${"x".repeat(65537)})`;
+      const record = yield* p.capture({
+        threadId: "thread",
+        reason: "launch",
+        createdBy: "system",
+      });
+      const oversizedFact = canonical({
+        id: "oversized",
+        incarnation_id: record.incarnation_id,
+        thread_id: "thread",
+        kind: "pr_link",
+        recorded_at: at,
+        reference: "x".repeat(65537),
+      });
+      expect(new TextEncoder().encode(oversizedFact).byteLength).toBeGreaterThan(65536);
+      yield* f.sql`INSERT INTO jones_workspace_provenance_facts VALUES ('oversized',${record.incarnation_id},${oversizedFact})`;
       const lookup = yield* Provenance.optionalLookup;
       expect(yield* lookup({ threadId: "thread" })).toBeUndefined();
     }).pipe(Effect.provide(f.layer));

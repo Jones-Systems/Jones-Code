@@ -197,7 +197,9 @@ const makeProvenanceStore = Effect.gen(function* () {
   }) {
     if (input.path === undefined && input.threadId === undefined)
       return yield* new LifecycleError({ reason: "identity" });
-    const rows = yield* sql<{ provenance_json: string }>`SELECT DISTINCT CASE WHEN length(CAST(p.provenance_json AS BLOB)) <= 65536
+    const rows = yield* sql<{
+      provenance_json: string;
+    }>`SELECT DISTINCT CASE WHEN length(CAST(p.provenance_json AS BLOB)) <= 65536
       THEN p.provenance_json ELSE '' END AS provenance_json
       FROM jones_workspace_provenance p
       LEFT JOIN jones_workspace_provenance_threads t ON t.incarnation_id=p.incarnation_id
@@ -221,7 +223,9 @@ const makeProvenanceStore = Effect.gen(function* () {
         if (relations.length > 64 || facts.length > 64)
           return yield* new LifecycleError({ reason: "unavailable" });
         for (const relation of relations)
-          remainingBytes -= new TextEncoder().encode(relation.thread_id + relation.task_id).byteLength;
+          remainingBytes -= new TextEncoder().encode(
+            relation.thread_id + relation.task_id,
+          ).byteLength;
         for (const fact of facts)
           remainingBytes -= new TextEncoder().encode(fact.fact_json).byteLength;
         if (remainingBytes < 0) return yield* new LifecycleError({ reason: "unavailable" });
