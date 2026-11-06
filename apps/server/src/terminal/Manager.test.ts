@@ -1,3 +1,8 @@
+import { TerminalCwdObservation } from "../jones/workspaceRetirement/TerminalCwdObservation.ts";
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
+import {unresolvedOwner} from "../jones/workspaceRetirement/NativeDutyOwner.ts";
+import {runMigrations} from "../persistence/Migrations.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as NativeSetup from "./NativeSetupControl.ts";
 import {
   LegacyOwnedTerminalControl,
@@ -482,6 +487,63 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect.each(["success","nonzero","close","interruption","lost-response","oversized","unavailable"] as const)(
+    "project-script observation uses the actual Manager write and native lifecycle (%s)",
+    mode=>Effect.gen(function*(){
+      yield* runMigrations();
+      const {manager,ptyAdapter,baseDir}=yield* createManager(5,{shellResolver:()=>"/bin/sh"});
+      const fs=yield* FileSystem.FileSystem;
+      const runner=yield* ProcessRunner.ProcessRunner;
+      const repo=`${baseDir}/project`;
+      yield* fs.makeDirectory(repo);
+      const initialized=yield* runner.run({command:"git",args:["init","-b","fixture-script"],cwd:repo});
+      assert.equal(initialized.code,0);
+      yield* manager.open(openInput({cwd:repo,worktreePath:repo}));
+      const process=ptyAdapter.processes[0]!;
+      const input={threadId:"thread-1",terminalId:DEFAULT_TERMINAL_ID,data:mode==="oversized" ? "x".repeat(65535)+"\r" : " echo fixture\r",observation:{invocationId:"4a792973-8d01-4eb5-a710-e34c74f57c6b",projectId:"project",scriptId:"build"}};
+      if(mode==="unavailable") input.observation.projectId="x".repeat(257);
+      if(mode==="lost-response") {
+        const nativeWrite = process.write.bind(process);
+        process.write = data => {nativeWrite(data);throw Error("accepted bytes; native response lost");};
+      }
+      if (mode === "interruption") {
+        const accepted = yield* Deferred.make<void>();
+        const writer = yield* manager.write(input).pipe(Effect.andThen(Deferred.succeed(accepted,undefined)), Effect.andThen(Effect.never), Effect.forkChild);
+        yield* Deferred.await(accepted);
+        yield* Fiber.interrupt(writer);
+      }
+      const result=yield* manager.write(input).pipe(Effect.result);
+      if(mode==="lost-response") {
+        assert.equal(result._tag,"Failure");
+        assert.equal((yield* manager.write(input).pipe(Effect.result))._tag,"Failure");
+        assert.lengthOf(process.writes,1);
+      } else {
+        assert.equal(result._tag,"Success");assert.lengthOf(process.writes,1);
+        if(mode==="oversized" || mode==="unavailable") assert.equal(process.writes[0],input.data);
+        else {
+          const marker=/__T3_SETUP_DONE__([_a-f0-9]+):/.exec(process.writes[0]!);
+          assert.ok(marker);
+          if(mode==="interruption") {
+            assert.lengthOf(process.writes,1);
+            process.emitExit({exitCode:130});
+          }
+          else if(mode==="close") yield* manager.close({threadId:input.threadId,terminalId:input.terminalId});
+          else {
+            process.emitData(`${marker[0]}${mode==="nonzero" ? 7 : 0}\n`);
+            yield* manager.write(input);
+            assert.lengthOf(process.writes,1);
+          }
+        }
+      }
+      const sql=yield* SqlClient.SqlClient;
+      const claims=yield* sql<{incarnation_id:string|null}>`SELECT incarnation_id FROM jones_workspace_duty_claims WHERE worktree=${repo}`;
+      assert.ok(claims[0]?.incarnation_id);
+    }).pipe(
+      Effect.provide(SqlitePersistence.layerMemory),
+      Effect.provideService(WorkspaceDuty.NativeOwnerCapture,{capture:async()=>unresolvedOwner("controlled-fake-PTY; no shared-host PID lookup")}),
+      Effect.provideService(TerminalCwdObservation,{observe:async (_pid,physical)=>physical?.status === "bound" ? physical.binding.path : null}),
+    ),
+  );
   const nativeSetupControl = (cwd: string): NativeSetup.NativeSetupControl => ({
     claimId: "native-fixture-claim",
     effectId: "native-fixture-setup",

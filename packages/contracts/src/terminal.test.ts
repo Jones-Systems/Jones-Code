@@ -5,6 +5,7 @@ import {
   DEFAULT_TERMINAL_ID,
   TerminalError,
   TerminalOpenInput,
+  TerminalWriteInput,
   TerminalProviderEnvironmentError,
 } from "./terminal.ts";
 import { ProviderInstanceId } from "./providerInstance.ts";
@@ -47,5 +48,26 @@ describe("TerminalOpenInput", () => {
       env: { "bad-key": "1", GOOD_KEY: "2" },
     });
     expect(parsed.env).toEqual({ GOOD_KEY: "2" });
+  });
+});
+
+describe("optional project-script write observation", () => {
+  const ordinary = { threadId: "thread", terminalId: "terminal", data: " build\r" };
+  const observation = {
+    invocationId: "4a792973-8d01-4eb5-a710-e34c74f57c6b",
+    projectId: "project", scriptId: "build",
+  };
+  it("keeps legacy writes identical and decodes the bounded additive descriptor", () => {
+    expect(decodeSync(TerminalWriteInput, ordinary)).toEqual(ordinary);
+    expect(decodeSync(TerminalWriteInput, { ...ordinary, observation })).toEqual({ ...ordinary, observation });
+    expect(decodeSync(TerminalWriteInput, { ...ordinary, observation: { ...observation, worktreePath: "/caller-cannot-bind-physical-target" } })).toEqual({ ...ordinary, observation });
+  });
+  it("rejects oversized or malformed descriptors without weakening existing write bounds", () => {
+    for (const value of [
+      { ...observation, invocationId: "not-a-uuid" },
+      { ...observation, projectId: "x".repeat(257) },
+      { ...observation, scriptId: "x".repeat(257) },
+    ]) expect(() => decodeSync(TerminalWriteInput, { ...ordinary, observation: value })).toThrow();
+    expect(() => decodeSync(TerminalWriteInput, { ...ordinary, data: "x".repeat(65537) })).toThrow();
   });
 });

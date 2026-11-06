@@ -1,3 +1,5 @@
+import {assertScheduledTarget} from "../jones/workspaceRetirement/ScheduledTaskAdmission.ts";
+import {RetirementError} from "../jones/workspaceRetirement/Receipts.ts";
 import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
 import {
   CommandId,
@@ -542,7 +544,9 @@ export const layer = Layer.effect(
         readonly secretChanged: boolean;
       },
     ) =>
-      sql<{ task_id: string }>`
+      sql.withTransaction(Effect.gen(function* () {
+        if(task.enabled) yield* assertScheduledTarget(sql,task);
+        return yield* sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
           task_id,
           title,
@@ -620,7 +624,7 @@ export const layer = Layer.effect(
         RETURNING task_id
       `.pipe(
         Effect.mapError((cause) =>
-          taskError("Could not save schedule task.", { taskId: task.id, cause }),
+          isScheduledTaskError(cause) ? cause : taskError("Could not save schedule task.", { taskId: task.id, cause }),
         ),
         Effect.flatMap((rows) =>
           rows.length > 0
@@ -628,6 +632,7 @@ export const layer = Layer.effect(
             : taskError("Schedule task not found.", { taskId: task.id }),
         ),
       );
+      })).pipe(Effect.mapError(cause => isScheduledTaskError(cause) ? cause : taskError("Could not save schedule task.", {taskId: task.id, cause})));
 
     const deleteRow = (id: ScheduledTaskId) =>
       sql
@@ -643,7 +648,9 @@ export const layer = Layer.effect(
         );
 
     const markRunning = (id: ScheduledTaskId, startedAtIso: string, webhookDeliveryId?: string) =>
-      sql<{ task_id: string }>`
+      sql.withTransaction(Effect.gen(function* () {
+        yield* assertScheduledTarget(sql,yield* loadTask(id));
+        return yield* sql<{ task_id: string }>`
         UPDATE scheduled_tasks
         SET updated_at = ${startedAtIso},
             last_run_at = ${startedAtIso},
@@ -660,6 +667,7 @@ export const layer = Layer.effect(
           rows.length > 0 ? Effect.void : taskError("Schedule task not found.", { taskId: id }),
         ),
       );
+      })).pipe(Effect.mapError(cause => isScheduledTaskError(cause) ? cause : taskError("Could not mark schedule task as running.", {taskId: id, cause})));
 
     const markCompleted = (input: {
       readonly id: ScheduledTaskId;
@@ -811,21 +819,12 @@ export const layer = Layer.effect(
           };
         }
 
-        if (webhook === undefined) yield* markRunning(active.id, startedAtIso);
-        else
-          yield* sql
-            .withTransaction(
-              Effect.gen(function* () {
-                yield* markRunning(active.id, startedAtIso, webhook.deliveryId);
-                // Recovery must distinguish this delivery from other windows waiting on the same task.
-                yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
-              }),
-            )
-            .pipe(
-              Effect.mapError((cause) =>
-                taskError("Could not start webhook run.", { taskId: task.id, cause }),
-              ),
-            );
+        yield* sql.withTransaction(Effect.gen(function* () {
+          yield* assertScheduledTarget(sql,active);
+          yield* markRunning(active.id,startedAtIso,webhook?.deliveryId);
+          if(webhook!==undefined)
+            yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'running' WHERE delivery_id = ${webhook.deliveryId}`;
+        })).pipe(Effect.mapError(cause=>isScheduledTaskError(cause) ? cause : taskError("Could not start scheduled run.",{taskId:task.id,cause})));
 
         yield* notifyChanged;
 
@@ -1207,7 +1206,9 @@ export const layer = Layer.effect(
       const next = nextRunAt({ enabled: input.enabled, schedule: existing.schedule }, now);
       // RETURNING so a task deleted between the load and this UPDATE is a
       // visible not-found error, not a false success.
-      const updated = yield* sql<{ task_id: string }>`
+      const updated = yield* sql.withTransaction(Effect.gen(function* () {
+        if(input.enabled) yield* assertScheduledTarget(sql,yield* loadTask(input.id));
+        return yield* sql<{ task_id: string }>`
           UPDATE scheduled_tasks
           SET enabled = ${input.enabled ? 1 : 0},
               next_run_at = ${next},
@@ -1219,6 +1220,7 @@ export const layer = Layer.effect(
           taskError("Could not update schedule task.", { taskId: input.id, cause }),
         ),
       );
+      })).pipe(Effect.mapError(cause => isScheduledTaskError(cause) ? cause : taskError("Could not update schedule task.", {taskId: input.id, cause})));
       if (updated.length === 0) {
         return yield* taskError("Schedule task not found.", { taskId: input.id });
       }
@@ -1783,7 +1785,7 @@ export const layer = Layer.effect(
       return yield* Effect.uninterruptible(
         Effect.gen(function* () {
           if (request.relayDeliveryId !== undefined) {
-            const claimed = yield* sql<{ relay_delivery_id: string }>`
+            const claimed = yield* sql.withTransaction(assertScheduledTarget(sql,task).pipe(Effect.andThen(sql<{ relay_delivery_id: string }>`
                 INSERT INTO scheduled_task_webhook_relay_deliveries
                   (relay_delivery_id, task_id, seen_at)
                 VALUES (${request.relayDeliveryId}, ${task.id}, ${iso(now)})
@@ -1793,7 +1795,7 @@ export const layer = Layer.effect(
               Effect.mapError((cause) =>
                 taskError("Could not record webhook delivery.", { taskId: task.id, cause }),
               ),
-            );
+            )))).pipe(Effect.mapError(cause => isScheduledTaskError(cause) ? cause : taskError("Could not record webhook delivery.", {taskId: task.id, cause})));
             if (claimed.length === 0) {
               yield* observe("duplicate");
               return { _tag: "accepted" as const, deliveryId, outcome: "duplicate" as const };
@@ -1926,7 +1928,7 @@ export const layer = Layer.effect(
             Effect.mapError((cause) => (cause === "queue_full" ? cause : dedupeError(cause))),
           );
           const admit = <A, E>(effect: Effect.Effect<A, E>) =>
-            sql.withTransaction(effect).pipe(
+            sql.withTransaction(assertScheduledTarget(sql,task).pipe(Effect.andThen(effect))).pipe(
               Effect.catch((cause) =>
                 cause === "first_rejected" || cause === "rejected" || cause === "queue_full"
                   ? Effect.succeed({
@@ -2082,10 +2084,11 @@ export const layer = Layer.effect(
           });
           return { _tag: "accepted" as const, deliveryId, outcome: "accepted" as const };
         }).pipe(
-          sql.withTransaction,
+          effect=>sql.withTransaction(assertScheduledTarget(sql,task).pipe(Effect.andThen(effect))),
           Effect.onError(() => acceptedRun?.release ?? Effect.void),
           Effect.matchEffect({
             onFailure: (cause) =>
+              isScheduledTaskError(cause) && cause.cause instanceof RetirementError ? Effect.fail(cause) :
               Effect.logWarning("Could not record webhook delivery; asking for a retry").pipe(
                 Effect.annotateLogs({ taskId: task.id }),
                 Effect.andThen(Effect.logDebug("Webhook delivery record failure", { cause })),
@@ -2110,7 +2113,10 @@ export const layer = Layer.effect(
 
     const dispatchPending = Effect.fn("ScheduledTaskService.dispatchPendingWebhooks")(function* () {
       const now = DateTime.toEpochMillis(yield* localNow);
-      yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}`;
+      yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}
+        AND NOT EXISTS (SELECT 1 FROM jones_workspace_retirement_state r
+          WHERE json_extract(task_json,'$.workspaceStrategy.type')='existing_worktree'
+          AND r.worktree=json_extract(task_json,'$.workspaceStrategy.worktreePath'))`;
       const tasks = yield* sql<{ task_id: ScheduledTaskId }>`
         SELECT DISTINCT task_id FROM scheduled_task_webhook_pending WHERE state IN ('dispatching', 'running', 'completed', 'failed')
       `.pipe(NodeSqliteClient.readOnly);

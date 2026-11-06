@@ -330,12 +330,26 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
         before,
         yield* inspectTarget(target),
       );
-    const operation = yield* retirement.remove(start,
-      revalidateStart(start,startOrdinal).pipe(Effect.mapError(cause=>new RetirementError({target:target.path,reason:"recorded_start_revalidation_failed",cause}))),
-    ).pipe(
-      Effect.map(result => ({kind:"executed" as const,...result})),
-      Effect.mapError(cause=>new DeletionWorktreeRemovalPreconditionError({reason:cause.reason,cause})),
-    );
+    const operation = yield* retirement
+      .remove(
+        start,
+        revalidateStart(start, startOrdinal).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RetirementError({
+                target: target.path,
+                reason: "recorded_start_revalidation_failed",
+                cause,
+              }),
+          ),
+        ),
+      )
+      .pipe(
+        Effect.map((result) => ({ kind: "executed" as const, ...result })),
+        Effect.mapError(
+          (cause) => new DeletionWorktreeRemovalPreconditionError({ reason: cause.reason, cause }),
+        ),
+      );
     return yield* observation(start, startOrdinal, operation, before, yield* inspectTarget(target));
   });
   const observeStarted: DeletionWorktreeRemovalProducer["observeStarted"] = Effect.fn(

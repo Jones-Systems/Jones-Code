@@ -11,9 +11,9 @@ it.effect("138 adds only Jones retirement tables and preserves upstream rows and
   yield* runJonesMigrations(jonesMigrationEntries.filter(([id])=>id<138));
   const before=yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'jones_%' AND name NOT LIKE 'sqlite_%' ORDER BY type,name`;
   const ledger=yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-  assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries),[[138,"WorkspaceRetirement"]]);
+  assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id])=>id<=138)),[[138,"WorkspaceRetirement"]]);
   assert.deepEqual(yield* sql`SELECT type,name,tbl_name,sql FROM sqlite_master WHERE name NOT LIKE 'jones_%' AND name NOT LIKE 'sqlite_%' ORDER BY type,name`,before);
   assert.deepEqual(yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,ledger);
   assert.deepEqual(yield* sql`SELECT * FROM pragma_foreign_key_list('jones_workspace_duty_claims')`,[]);
-  assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries),[]);
+  assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id])=>id<=138)),[]);
 }).pipe(Effect.provide(NodeSqliteClient.layer({filename:":memory:"}))));

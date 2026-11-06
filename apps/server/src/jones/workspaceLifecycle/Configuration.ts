@@ -17,7 +17,14 @@ export const Configuration = Schema.Struct({
     ),
   ),
   retirementConsumerEvidence: Schema.optionalKey(Binding.fields.worktree),
-  outputs: Schema.optionalKey(Schema.Struct({executable:Binding.fields.worktree,arguments:Schema.Array(Schema.String),database:Binding.fields.worktree,cwd:Binding.fields.worktree})),
+  outputs: Schema.optionalKey(
+    Schema.Struct({
+      executable: Binding.fields.worktree,
+      arguments: Schema.Array(Schema.String),
+      database: Binding.fields.worktree,
+      cwd: Binding.fields.worktree,
+    }),
+  ),
   registry: Schema.Struct({
     executable: Binding.fields.worktree,
     arguments: Schema.Array(

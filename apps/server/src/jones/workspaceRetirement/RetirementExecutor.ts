@@ -21,6 +21,8 @@ export interface RetirementRequest {
   // Read-only revalidation, including durable settlement completion and checkpoint state.
   revalidate: Effect.Effect<void, RetirementError>;
   finalizeOutputs: (receipt:RetirementReceipt)=>Effect.Effect<void, RetirementError>;
+  // The owning server's native Git adapter may supply the exact unforced command.
+  remove?: Effect.Effect<void, RetirementError>;
 }
 const io = <A>(target:string, action:()=>Promise<A>) => Effect.tryPromise({try:action,catch:cause=>new RetirementError({target,reason:"observation_failed",cause})});
 export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (request:RetirementRequest) {
@@ -91,7 +93,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (request
         return yield* new RetirementError({reason:"remaining_fact_changed",target:request.worktree});
       // The common-store row and Jones retiring state still exclude every participant here.
       effected=true;
-      const removed=yield* restore(io(request.worktree,()=>git(request.projectRoot,["worktree","remove","--",bound.path]))).pipe(Effect.result);
+      const removed=yield* restore(request.remove ?? io(request.worktree,()=>git(request.projectRoot,["worktree","remove","--",bound.path]))).pipe(Effect.result);
       const readback=yield* io(request.worktree,()=>removalReadback(request.projectRoot,receipt));
       if(readback!=="retired") {
         receipt.state=readback==="present" && removed._tag==="Failure" && !receipt.disposed.length && !receipt.preservationRefs.length ? "not_retired" : "partial";
@@ -125,7 +127,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (request
     );
   })));
 });
-export async function removalReadback(projectRoot:string, receipt:RetirementReceipt):Promise<"retired"|"present"|"unknown"> {
+async function removalReadback(projectRoot:string, receipt:RetirementReceipt):Promise<"retired"|"present"|"unknown"> {
   try {
     const listed=(await git(projectRoot,["worktree","list","--porcelain","-z"])).toString().split("\0");
     const present=await exists(receipt.binding.path), registered=listed.includes("worktree "+receipt.binding.path);

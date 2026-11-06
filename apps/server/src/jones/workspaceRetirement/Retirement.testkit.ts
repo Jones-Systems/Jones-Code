@@ -12,11 +12,18 @@ import { acquireReservation, holderIdentity, releaseReservation, type Reservatio
 import { incarnation } from "./OutputAttestation.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { enumerateDisposal, disposePath } from "./Disposal.ts";
+import { dutyIdentity } from "./DutyIdentity.ts";
+import { captureNativeOwner, observeNativeOwner, type NativeOwnerIO } from "./NativeDutyOwner.ts";
+import { nativePid } from "./Reservation.ts";
+import { nativeServices, type ServiceIO } from "./NativeConsumers.ts";
+import { events } from "./EventIntegration.ts";
+import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { settlementAdmission } from "./SettlementAdmission.ts";
 
 async function fixtureSql(path:string, after?:(query:string,values:unknown[])=>Promise<void>) {
   const db=new NodeSqlite.DatabaseSync(path);
-  for(const name of ["136_JonesWorkspaceProvenance.ts","138_JonesWorkspaceRetirement.ts"]) {
+  for(const name of ["136_JonesWorkspaceProvenance.ts","138_JonesWorkspaceRetirement.ts","140_JonesWorkspaceDutyIdentity.ts"]) {
     const source=await NodeFSP.readFile(new URL("../persistence/Migrations/"+name,import.meta.url),"utf8");
     for(const statement of source.matchAll(/yield\* sql`([^`]+)`/g)) db.exec(statement[1]!);
   }
@@ -30,6 +37,63 @@ async function fixtureSql(path:string, after?:(query:string,values:unknown[])=>P
   return {sql,db,close:()=>db.close()};
 }
 export const retirementCases:Record<string,()=>Promise<void>>={
+  "loaded native service observations use bounded manager projections and retain unknown coverage":async()=>{
+    const calls:string[][]=[];
+    const linux:ServiceIO={uid:()=>501,command:async(_file,args)=>{
+      calls.push(args);
+      return args.includes("list-units") ? "fixture.service loaded inactive dead Fixture\n" : "Id=fixture.service\nLoadState=loaded\nWorkingDirectory=/fixture/checkout\nExecStart={ path=/outside/tool ; argv[]=/outside/tool ; }\n";
+    }};
+    const result=await nativeServices("/fixture/checkout","linux",linux);
+    NodeAssert.equal(result.status,"complete");NodeAssert.deepEqual(result.paths,["/fixture/checkout"]);
+    NodeAssert.equal(calls.some(args=>args.some(a=>a.includes("Environment"))),false);
+    const darwin:ServiceIO={uid:()=>501,command:async(_file,args)=>args[1]?.split("/").length===2 ? "domain = {\n\tservices = {\n\t\t0 0 fixture.service\n\t}\n}\n" : "fixture = {\n program = /outside/tool\n working directory = /fixture/checkout\n environment = {\n SECRET = never-returned\n }\n}\n"};
+    const projected=await nativeServices("/fixture/checkout","darwin",darwin);
+    NodeAssert.equal(projected.status,"complete");NodeAssert.deepEqual(projected.paths,["/fixture/checkout"]);
+    NodeAssert.equal(JSON.stringify(projected).includes("never-returned"),false);
+    const unavailable=await nativeServices("/fixture/checkout","darwin",{...darwin,command:async()=>{throw Error("controlled manager unavailable");}});
+    NodeAssert.equal(unavailable.status,"unavailable");NodeAssert.equal(unavailable.paths.length,0);
+  },
+  "event admission uses batch birth binding without eager projection lookups and releases actual terminal runs":()=>fixture(async({base,worktree})=>{
+    const f=await fixtureSql(NodePath.join(base,"events.sqlite3"));
+    f.db.exec("CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY,payload_json TEXT)");
+    const occurredAt=DateTime.nowUnsafe();
+    const birth={type:"thread.created",id:"birth",threadId:"thread",occurredAt,payload:{id:"thread",worktreePath:worktree}};
+    const queued={type:"run.created",id:"queued",threadId:"thread",occurredAt,payload:{id:"run"}};
+    try {
+      await Effect.runPromise(f.sql.withTransaction(events(f.sql,[birth,queued] as unknown as OrchestrationV2DomainEvent[])));
+      NodeAssert.equal(f.db.prepare("SELECT incarnation_id FROM jones_workspace_duty_claims WHERE claim_id='queued-turn:run'").get()?.incarnation_id!==null,true);
+      f.db.prepare("INSERT INTO orchestration_v2_projection_threads VALUES(?,?)").run("thread",JSON.stringify({worktreePath:worktree}));
+      const terminal={...queued,type:"run.updated",payload:{id:"run",status:"completed"}};
+      await Effect.runPromise(f.sql.withTransaction(events(f.sql,[terminal] as unknown as OrchestrationV2DomainEvent[])));
+      NodeAssert.equal(typeof f.db.prepare("SELECT released_at FROM jones_workspace_duty_claims WHERE claim_id='queued-turn:run'").get()?.released_at,"string");
+      f.db.prepare("INSERT INTO jones_workspace_retirement_state VALUES(?,?,'retiring',?)").run(worktree,"physical","receipt");
+      await NodeAssert.rejects(Effect.runPromise(f.sql.withTransaction(events(f.sql,[{...birth,id:"new-birth"}] as unknown as OrchestrationV2DomainEvent[]))),/retiring/);
+    } finally {f.close();}
+  }),
+  "real claim binding survives absent or malformed optional provenance and rejects replaced paths":()=>fixture(async({worktree,input,base})=>{
+    const first=await dutyIdentity(worktree);NodeAssert.equal(first.status,"bound");
+    await NodeFSP.writeFile(NodePath.join(input.expected.git_dir,"workspace-provenance.json"),"not optional JSON");
+    NodeAssert.deepEqual(await dutyIdentity(worktree),first);
+    await NodeFSP.rename(worktree,NodePath.join(base,"old-checkout"));await NodeFSP.mkdir(worktree);
+    NodeAssert.notDeepEqual(await dutyIdentity(worktree),first);
+    await NodeFSP.rmdir(worktree);await NodeFSP.symlink(NodePath.join(base,"old-checkout"),worktree);
+    NodeAssert.equal((await dutyIdentity(worktree)).status,"unbound");
+  }),
+  "native owner reconciliation retains children after launcher/server exit and never clears unknown":async()=>{
+    const host={host:"fixture",boot_id:"boot",pid:nativePid,process_start:"server-start"};
+    let listing=`${nativePid} server-session server-start\n12345 child-session child-start\n`;
+    const io:NativeOwnerIO={host:async()=>host,processes:async()=>listing,linuxIdentity:async()=>({bootId:"boot",startTime:"100"})};
+    const owner=await captureNativeOwner(12345,undefined,io);NodeAssert.equal(owner.type,"native-session");
+    listing="12346 child-session descendant-start\n";
+    NodeAssert.equal(await observeNativeOwner(owner,io),"present");
+    NodeAssert.equal(await observeNativeOwner(owner,{...io,processes:async()=>{throw Error("unavailable");}}),"unknown");
+    listing="12346 unrelated-session reused-pid\n";
+    NodeAssert.equal(await observeNativeOwner(owner,io),"verified_absent");
+    NodeAssert.equal(await observeNativeOwner(owner,{...io,host:async()=>({...host,host:"other-host"})}),"unknown");
+    NodeAssert.equal(await observeNativeOwner(owner,{...io,host:async()=>({...host,boot_id:"new-boot"})}),"verified_absent");
+    listing=`${nativePid} shared server-start\n12345 shared child-start\n`;
+    NodeAssert.equal((await captureNativeOwner(12345,undefined,io)).type,"unresolved");
+  },
   "durable settlement refuses unfinished scripts at ten minutes and missing final checkpoints":async()=>{
     NodeAssert.equal(settlementAdmission({script:"running",startedAt:0,now:600000,checkpoint:"ready",enabled:true}).reason,"settle_script_unfinished");
     NodeAssert.equal(settlementAdmission({script:"completed",startedAt:0,now:0,checkpoint:"pending",enabled:true}).reason,"final_checkpoint_unfinished");
@@ -54,6 +118,10 @@ export const retirementCases:Record<string,()=>Promise<void>>={
         const store=yield* Receipts;
         yield* store.claim({id:"session",worktree,kind:"session",owner:"fixture",holder:'{"native":"fixture"}'});
         NodeAssert.equal((yield* store.claims(worktree)).length,1);
+        NodeAssert.equal(typeof f.db.prepare("SELECT incarnation_id FROM jones_workspace_duty_claims WHERE claim_id='session'").get()?.incarnation_id,"string");
+        const facts=f.db.prepare("SELECT identity_json,native_owner_json FROM jones_workspace_duty_identity WHERE claim_id='session'").get()!;
+        NodeAssert.equal(JSON.parse(String(facts.identity_json)).status,"bound");
+        NodeAssert.equal(JSON.parse(String(facts.native_owner_json)).type,"unresolved");
         const rejected=yield* store.reconcileClaim("session",'{"native":"fixture"}',false).pipe(Effect.result);
         NodeAssert.equal(rejected._tag,"Failure");
         yield* store.reconcileClaim("session",'{"native":"different"}',true);

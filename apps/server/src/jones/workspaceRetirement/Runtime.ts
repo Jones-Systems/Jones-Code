@@ -1,7 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Read-only target observations; all effects flow through the common executor.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
-import * as NodeOS from "node:os";
 import * as EffectPath from "effect/Path";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as Provenance from "../workspaceLifecycle/Provenance.ts";
@@ -15,11 +14,13 @@ import * as Projections from "../../orchestration-v2/ProjectionStore.ts";
 import * as Registry from "../workspaceLifecycle/RegistryCli.ts";
 import { Configuration } from "../workspaceLifecycle/Configuration.ts";
 import * as Schema from "effect/Schema";
-import { canonical, exists, git, inside, readBounded } from "./Filesystem.ts";
+import { exists, git, inside, readBounded } from "./Filesystem.ts";
 import { binding } from "./OutputAttestation.ts";
 import { Receipts, layer, RetirementError, type RetirementReceipt } from "./Receipts.ts";
 import { qualify, type QualificationInput } from "./Qualification.ts";
-import { processProbe, type Probe } from "./ConsumerProbe.ts";
+import type { Probe } from "./ConsumerProbe.ts";
+import { NativeObservations } from "./NativeObservations.ts";
+import * as GitDriver from "../../vcs/GitVcsDriver.ts";
 import { settlementAdmission } from "./SettlementAdmission.ts";
 import { retire } from "./RetirementExecutor.ts";
 
@@ -37,10 +38,13 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
   const store=yield* Receipts.pipe(Effect.provide(layer));
   const projections=yield* Projections.ProjectionStoreV2;
   const config=yield* Config.ServerConfig;
+  const nativeObservations=yield* NativeObservations;
+  const gitDriver=yield* Effect.serviceOption(GitDriver.GitVcsDriver);
   const selected=config.workspaceLifecycle===undefined ? null : yield* Schema.decodeUnknownEffect(Configuration)(config.workspaceLifecycle).pipe(Effect.mapError(cause=>new RetirementError({target:request.worktree,reason:"configuration_unavailable",cause})));
   const runner = yield* Effect.serviceOption(ProcessRunner.ProcessRunner);
   const effectPath = yield* Effect.serviceOption(EffectPath.Path);
-  const registry=selected===null || Option.isNone(runner) || Option.isNone(effectPath) ? null : yield* Registry.LifecycleRegistry.pipe(
+  const suppliedRegistry=yield* Effect.serviceOption(Registry.LifecycleRegistry);
+  const registry=Option.isSome(suppliedRegistry) ? suppliedRegistry.value : selected===null || Option.isNone(runner) || Option.isNone(effectPath) ? null : yield* Registry.LifecycleRegistry.pipe(
     Effect.provide(Registry.layer(selected.registry,selected.outputs)),
     Effect.provideService(ProcessRunner.ProcessRunner,runner.value),
     Effect.provideService(EffectPath.Path,effectPath.value),
@@ -80,13 +84,8 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
     const roots=yield* sql<{workspace_root:string}>`SELECT workspace_root FROM projection_projects WHERE deleted_at IS NULL`;
     const native=yield* sql<{payload_json:string}>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath')=${request.worktree} AND deleted_at IS NULL`;
     const active=native.some(r=>{const t=JSON.parse(r.payload_json);return t.status==="running" || t.status==="waiting" || (t.latestRunId!==null && t.latestRunCompletedAt===null);});
-    let services=unavailable("fresh native service evidence missing"), workloads=unavailable("fresh native workload evidence missing");
-    if(selected?.retirementConsumerEvidence) {
-      const evidence=yield* io(request.worktree,async()=>JSON.parse((await readBounded(selected.retirementConsumerEvidence!,65536)).toString()) as {schema:string;binding:unknown;observed_at:string;services:Probe;workloads:Probe});
-      if(evidence.schema==="workspace-native-evidence/v1" && canonical(evidence.binding)===canonical(bound) && DateTime.toEpochMillis(DateTime.nowUnsafe())-Date.parse(evidence.observed_at)>=0 && DateTime.toEpochMillis(DateTime.nowUnsafe())-Date.parse(evidence.observed_at)<=120000) {
-        services=evidence.services;workloads=evidence.workloads;
-      }
-    }
+    const services=yield* io(request.worktree,()=>nativeObservations.services(request.worktree));
+    const workloads=yield* nativeObservations.workloads(sql,request.worktree);
     let registryProbe=unavailable("build-output registry is not configured"), obligations=unavailable("lifecycle registry is not configured");
     if(registry) {
       const current=yield* registry.show(request.worktree);
@@ -115,7 +114,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       }
     });
     const nativeGuard=yield* sql<{worktree_path:string}>`SELECT worktree_path FROM native_creation_intents WHERE worktree_path=${request.worktree} UNION SELECT worktree_path FROM jones_native_workspace_admissions WHERE worktree_path=${request.worktree}`;
-    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:[NodeOS.tmpdir(),"/tmp","/private/tmp","/var/tmp","/private/var/tmp"],nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>processProbe(request.worktree))}} satisfies QualificationInput;
+    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:nativeObservations.temporaryRoots,nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>nativeObservations.processes(request.worktree))}} satisfies QualificationInput;
   }).pipe(mapError);
   // Automatic assessment may only replace an obligation-free current-incarnation record, and always precedes acquisition.
   const assess=Effect.gen(function* () {
@@ -169,7 +168,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       );
     }
     yield* assess;
-    return yield* retire({cause:request.cause,worktree:request.worktree,projectRoot:request.projectRoot,maxLevel:request.rules.worktreeSettledScope,admit:request.admit,observe,revalidate:scriptGate.pipe(Effect.andThen(request.revalidate)),finalizeOutputs:receipt=>{
+    return yield* retire({cause:request.cause,worktree:request.worktree,projectRoot:request.projectRoot,maxLevel:request.rules.worktreeSettledScope,admit:request.admit,observe,revalidate:scriptGate.pipe(Effect.andThen(request.revalidate)),...(Option.isSome(gitDriver) ? {remove:gitDriver.value.execute({operation:"WorkspaceRetirement.remove",cwd:request.projectRoot,args:["worktree","remove","--",request.worktree],allowNonZeroExit:true}).pipe(Effect.flatMap(result=>result.exitCode===0 ? Effect.void : Effect.fail(new RetirementError({target:request.worktree,reason:"git_removal_refused"}))),mapError)} : {}),finalizeOutputs:receipt=>{
       const internal=outputs.filter(r=>inside(r.path,request.worktree) && r.state==="active" && r.class!=="evidence");
       return registry?.forgetOutputs ? registry.forgetOutputs(internal).pipe(mapError) : internal.length ? Effect.fail(new RetirementError({target:receipt.binding.path,reason:"output_finalization_unavailable"})) : Effect.void;
     }}).pipe(Effect.provideService(Receipts,store));

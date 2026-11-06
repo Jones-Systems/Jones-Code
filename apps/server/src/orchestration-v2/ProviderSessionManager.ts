@@ -609,8 +609,12 @@ export const layerWithOptions = (
                 committedThread ?? boundaryThread,
                 binding.runtimeGeneration,
               );
-              if (physicalBinding !== undefined)
+              if (physicalBinding !== undefined) {
                 yield* physicalEvidence.bind(physicalBinding, binding.physicalProcess);
+                yield* workspaceDuty.bindSession(providerSessionId,physicalBinding.providerThreadId,binding.runtimeGeneration).pipe(
+                  Effect.catch(cause=>Effect.logDebug("Native session duty binding unavailable",{cause})),
+                );
+              }
               return committedThread ?? boundaryThread;
             }).pipe(Effect.mapError(protocolError)),
           ),
@@ -1388,13 +1392,18 @@ export const layerWithOptions = (
               Effect.tap(() => retirements.completeScope(scope)),
               // Scope finalizers can run in parallel or fail. Release only after the
               // complete native scope close succeeds; a timed-out close retains duty.
-              Effect.tap(() => Effect.gen(function* () {
-                const closed = scope === sessionScopes ? [...workspaceDuties.keys()] : [scope];
-                for (const ownedScope of closed) {
-                  const release = workspaceDuties.get(ownedScope);
-                  if (release) { yield* release.pipe(Effect.orDie); workspaceDuties.delete(ownedScope); }
-                }
-              })),
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  const closed = scope === sessionScopes ? [...workspaceDuties.keys()] : [scope];
+                  for (const ownedScope of closed) {
+                    const release = workspaceDuties.get(ownedScope);
+                    if (release) {
+                      yield* release.pipe(Effect.orDie);
+                      workspaceDuties.delete(ownedScope);
+                    }
+                  }
+                }),
+              ),
               Effect.exit,
               Effect.flatMap((exit) => Deferred.succeed(completion, exit)),
               Effect.forkDetach({ startImmediately: true }),
@@ -3623,9 +3632,18 @@ export const layerWithOptions = (
                 }
               });
               const sessionScope = yield* Scope.fork(sessionScopes);
-              const releaseWorkspaceDuty = yield* workspaceDuty.hold(cwd, "session", input.providerSessionId).pipe(
-                Effect.mapError(cause => new ProviderSessionOpenError({instanceId:input.modelSelection.instanceId,providerSessionId:input.providerSessionId,cause})),
-              );
+              const releaseWorkspaceDuty = yield* workspaceDuty
+                .hold(cwd, "session", input.providerSessionId)
+                .pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ProviderSessionOpenError({
+                        instanceId: input.modelSelection.instanceId,
+                        providerSessionId: input.providerSessionId,
+                        cause,
+                      }),
+                  ),
+                );
               workspaceDuties.set(sessionScope, releaseWorkspaceDuty);
               yield* agentScope.clear(input.threadId);
               const runtime = yield* adapter

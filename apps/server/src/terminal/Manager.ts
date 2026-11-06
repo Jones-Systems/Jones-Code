@@ -1,3 +1,6 @@
+import { TerminalCwdObservation } from "../jones/workspaceRetirement/TerminalCwdObservation.ts";
+import {makeProjectScriptObserver} from "../jones/workspaceRetirement/ProjectScriptObservation.ts";
+import type {DutyIdentity} from "../jones/workspaceRetirement/DutyIdentity.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as NativeSetup from "./NativeSetupControl.ts";
 import {
@@ -366,6 +369,7 @@ export interface TerminalStartInput extends TerminalOpenInput {
 }
 
 interface TerminalSessionState {
+  workspaceDutyIdentity?: DutyIdentity | undefined;
   shellName?: string | null;
   idlePrompt?: ShellIdlePrompt;
   idleExpiryEnabled?: boolean;
@@ -1619,6 +1623,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const workspaceDuty = yield* WorkspaceDuty.hooks;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
+  const scriptObserver = makeProjectScriptObserver({diagnostic:reason=>{runFork(Effect.logDebug("Project script observation",{reason}));}});
 
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
@@ -2587,6 +2592,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             ).pipe(Effect.onError(() => releaseWorkspaceDuty.pipe(Effect.orDie)));
             // This independent subscription survives close/kill escalation; only a verified exit releases the claim.
             spawnResult.process.onExit(() => { runFork(releaseWorkspaceDuty.pipe(Effect.orDie)); });
+            yield* workspaceDuty.bindNative(releaseWorkspaceDuty,spawnResult.process.pid).pipe(
+              Effect.catch(cause=>Effect.logDebug("Native terminal duty binding unavailable",{cause})),
+            );
+            session.workspaceDutyIdentity = workspaceDuty.identity(releaseWorkspaceDuty);
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
 
@@ -2784,6 +2793,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const closedEventSequence = Option.isSome(session) ? session.value.eventSequence + 1 : 0;
 
     if (Option.isSome(session)) {
+      if(session.value.process) scriptObserver.close(session.value.process);
       yield* stopProcess(session.value);
       yield* unregisterTerminal({ threadId, terminalId });
       yield* persistHistory(threadId, terminalId, session.value.history);
@@ -3664,10 +3674,16 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         terminalId,
       });
     }
+    const cwdObservation = yield* TerminalCwdObservation;
+    const observedCwd = input.observation === undefined ? null : yield* Effect.tryPromise({try: () => cwdObservation.observe(process.pid,session.workspaceDutyIdentity), catch: () => null}).pipe(Effect.catch(() => Effect.succeed(null)));
     session.idlePrompt?.input();
     session.inputCount += 1;
     yield* Effect.try({
-      try: () => process.write(input.data),
+      try: () => scriptObserver.write(input,{
+        process,threadId:session.threadId,terminalId:session.terminalId,
+        launchCwd:session.cwd,observedCwd,shell:session.shellName,physical:session.workspaceDutyIdentity,
+        isCurrent:()=>session.process===process && session.status==="running",
+      },data=>process.write(data)),
       catch: (cause) =>
         new TerminalWriteError({
           threadId: input.threadId,

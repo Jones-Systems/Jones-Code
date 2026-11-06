@@ -8,6 +8,8 @@ import {
   ScheduledTaskWebhookDeliveryId,
   SecretRequestError,
 } from "@t3tools/contracts";
+import { nativeWorkloads } from "../jones/workspaceRetirement/NativeConsumers.ts";
+import { RetirementError } from "../jones/workspaceRetirement/Receipts.ts";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -1906,3 +1908,42 @@ it.effect("filters run before replay and coalescing without claiming ignored del
     { workers },
   );
 });
+
+
+it.effect("atomically refuses bound saves, enables and webhook claims after FC5 while retaining disable and unrelated writes", () =>
+  withService(({service, sql}) => Effect.gen(function* () {
+    const target = "/fixtures/retirement/existing-checkout";
+    const binding = {type: "existing_worktree", worktreePath: target};
+    const {task} = yield* service.upsert(yield* webhookTaskInput({workspaceStrategy: binding}));
+    const disabled = yield* service.upsert(yield* webhookTaskInput({id: "scheduled-task:disabled", enabled: false, workspaceStrategy: binding}));
+    // A writer committed before acquisition is visible in the final workload probe.
+    assert.deepEqual((yield* nativeWorkloads(sql,target)).paths, [target]);
+    yield* sql`INSERT INTO jones_workspace_retirement_state VALUES(${target},'fixture-incarnation','retiring','fixture-receipt')`;
+    const snapshot = () => Effect.all([
+      sql`SELECT * FROM scheduled_tasks ORDER BY task_id`,
+      sql`SELECT * FROM scheduled_task_webhook_pending ORDER BY delivery_id`,
+      sql`SELECT * FROM scheduled_task_webhook_relay_deliveries ORDER BY relay_delivery_id`,
+      sql`SELECT * FROM scheduled_task_webhook_deliveries ORDER BY delivery_id`,
+    ]);
+    const before = yield* snapshot();
+    for (const operation of [
+      service.upsert(yield* webhookTaskInput({workspaceStrategy: binding, title: "blocked edit"})),
+      service.setEnabled({id: disabled.task.id, enabled: true}),
+      service.triggerWebhook(requestFor(task, {relayDeliveryId: "post-fc5-relay"})),
+      service.triggerWebhook(requestFor(task)),
+    ]) {
+      const result = yield* Effect.result(operation);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") {
+        assert.equal(result.failure._tag, "ScheduledTaskError");
+        assert.isTrue(result.failure.cause instanceof RetirementError);
+      }
+      assert.deepEqual(yield* snapshot(), before);
+    }
+    const stopped = yield* service.setEnabled({id: task.id, enabled: false});
+    assert.isFalse(stopped.task.enabled);
+    const unrelated = yield* service.upsert(yield* webhookTaskInput({id: "scheduled-task:unrelated"}));
+    assert.isTrue(unrelated.task.enabled);
+    yield* service.delete({id: task.id});
+  }), {workers: new Map()}),
+);

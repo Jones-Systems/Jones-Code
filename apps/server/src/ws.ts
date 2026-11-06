@@ -2822,7 +2822,10 @@ export const layerWsRpc = (
             const keybindingsConfig = yield* keybindings.removeKeybindingRule(rule);
             return { keybindings: keybindingsConfig, issues: [] };
           }),
-        [WS_METHODS.serverRunStorageCleanup]: (input) => input.retirement === undefined ? storageCleanup.runNow : storageCleanup.retirement(input.retirement),
+        [WS_METHODS.serverRunStorageCleanup]: (input) =>
+          input.retirement === undefined
+            ? storageCleanup.runNow
+            : storageCleanup.retirement(input.retirement),
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
         [WS_METHODS.peerLinksList]: (_input) =>

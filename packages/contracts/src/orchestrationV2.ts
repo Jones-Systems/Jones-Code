@@ -2124,7 +2124,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])),
   retirement: Schema.optionalKey(WorkspaceRetirementOutcome),
-  retirementObservation: Schema.optionalKey(Schema.Literals(["recorded","none","unavailable"])),
+  retirementObservation: Schema.optionalKey(Schema.Literals(["recorded", "none", "unavailable"])),
   settledAt: Schema.NullOr(Schema.DateTimeUtc),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),

@@ -10,16 +10,37 @@ export const WorkspaceRetirementAction = Schema.Struct({
 });
 export type WorkspaceRetirementAction = typeof WorkspaceRetirementAction.Type;
 export const WorkspaceRetirementOutcome = Schema.Struct({
-  state: Schema.Literals(["proposed", "held", "intent", "retired", "not_retired", "partial", "unknown"]),
+  state: Schema.Literals([
+    "proposed",
+    "held",
+    "intent",
+    "retired",
+    "not_retired",
+    "partial",
+    "unknown",
+  ]),
   reasonCodes: Schema.Array(Schema.String),
   receiptId: Schema.NullOr(Schema.String),
   fingerprint: Schema.NullOr(Schema.String),
   paths: Schema.Array(Schema.String),
-  details: Schema.Array(Schema.Struct({
-    reason: Schema.String, target: Schema.String, root: Schema.String,
-    fact: Schema.String, missingFact: Schema.NullOr(Schema.String),
-    lineage: Schema.Array(Schema.Record(Schema.String,Schema.String)), nextAction: Schema.String,
-  })),
-  outputObligations: Schema.Array(Schema.Struct({id:Schema.String,path:Schema.String,owner:Schema.String,state:Schema.String})),
+  details: Schema.Array(
+    Schema.Struct({
+      reason: Schema.String,
+      target: Schema.String,
+      root: Schema.String,
+      fact: Schema.String,
+      missingFact: Schema.NullOr(Schema.String),
+      lineage: Schema.Array(Schema.Record(Schema.String, Schema.String)),
+      nextAction: Schema.String,
+    }),
+  ),
+  outputObligations: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      path: Schema.String,
+      owner: Schema.String,
+      state: Schema.String,
+    }),
+  ),
 });
 export type WorkspaceRetirementOutcome = typeof WorkspaceRetirementOutcome.Type;

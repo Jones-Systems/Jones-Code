@@ -337,6 +337,7 @@ it.effect(
         [136, "WorkspaceProvenance"],
       [137, "NativeCreationLeaseRenewal"],
       [138, "WorkspaceRetirement"],
+      [140, "WorkspaceDutyIdentity"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

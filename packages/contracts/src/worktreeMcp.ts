@@ -113,7 +113,7 @@ export type WorktreeProvenanceEntry = typeof WorktreeProvenanceEntry.Type;
 
 export const WorktreeMcpStatusResult = Schema.Struct({
   retirement: Schema.optionalKey(WorkspaceRetirementOutcome),
-  retirementObservation: Schema.optionalKey(Schema.Literals(["recorded","none","unavailable"])),
+  retirementObservation: Schema.optionalKey(Schema.Literals(["recorded", "none", "unavailable"])),
   provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
   attached: Schema.Boolean,
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),

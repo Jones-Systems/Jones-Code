@@ -793,7 +793,7 @@ const WsServerCommitDesktopUpdateRpc = Rpc.make(WS_METHODS.serverCommitDesktopUp
 });
 
 const WsServerRunStorageCleanupRpc = Rpc.make(WS_METHODS.serverRunStorageCleanup, {
-  payload: Schema.Struct({retirement:Schema.optionalKey(WorkspaceRetirementAction)}),
+  payload: Schema.Struct({ retirement: Schema.optionalKey(WorkspaceRetirementAction) }),
   success: StorageCleanupReport,
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });

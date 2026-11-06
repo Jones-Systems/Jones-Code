@@ -38,6 +38,7 @@ it.effect("115 adds the pending webhook run table to a ledger already recorded t
       [136, "WorkspaceProvenance"],
       [137, "NativeCreationLeaseRenewal"],
       [138, "WorkspaceRetirement"],
+      [140, "WorkspaceDutyIdentity"],
     ]);
     assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
     assert.deepStrictEqual(

@@ -10,6 +10,7 @@ import * as Lifecycle from "./WorkspaceLifecycle.ts";
 import * as Registry from "./RegistryCli.ts";
 import * as Store from "./TransitionStore.ts";
 import migration from "../persistence/Migrations/123_JonesWorkspaceLifecycle.ts";
+import retirementMigration from "../persistence/Migrations/138_JonesWorkspaceRetirement.ts";
 
 const input: Lifecycle.NativeTransition = {
   transitionId: "original-effect",
@@ -22,6 +23,7 @@ const seed = Effect.gen(function* () {
   yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY)`;
   yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('thread')`;
   yield* migration;
+  yield* retirementMigration;
 });
 const original: Lifecycle.NativeSource = {
   binding: {

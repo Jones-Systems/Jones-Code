@@ -215,7 +215,9 @@ export function storageCleanupPullRequestMerged(
 export class StorageCleanup extends Context.Service<
   StorageCleanup,
   {
-    readonly retirement: (input:WorkspaceRetirementAction)=>Effect.Effect<StorageCleanupReport,ServerSettingsError>;
+    readonly retirement: (
+      input: WorkspaceRetirementAction,
+    ) => Effect.Effect<StorageCleanupReport, ServerSettingsError>;
     readonly runNow: Effect.Effect<StorageCleanupReport, ServerSettingsError>;
     readonly latestReport: Effect.Effect<StorageCleanupReport | null>;
     readonly reports: Stream.Stream<StorageCleanupReport | null>;
@@ -683,7 +685,12 @@ const make = Effect.gen(function* () {
         files: null,
       };
       let retirementOutcome: WorkspaceRetirementOutcome | undefined;
-      const keep = (reason: string) => entries.push({ ...entry, ...(retirementOutcome ? {retirement:retirementOutcome} : {}), reason: sentence(reason) });
+      const keep = (reason: string) =>
+        entries.push({
+          ...entry,
+          ...(retirementOutcome ? { retirement: retirementOutcome } : {}),
+          reason: sentence(reason),
+        });
       yield* Effect.gen(function* () {
         if (deleted && sink.readDeletionWorktreeRemovalStartForTarget !== undefined) {
           const original = yield* sink.readDeletionWorktreeRemovalStartForTarget(thread.id, {
@@ -908,8 +915,7 @@ const make = Effect.gen(function* () {
           yield* settingsService.getSettings,
           thread.projectId,
         );
-        if (!Equal.equals(current,settings))
-          return keep("settings changed since check");
+        if (!Equal.equals(current, settings)) return keep("settings changed since check");
         if (deleted) {
           if (sink.startDeletionWorktreeRemoval === undefined) return;
           const currentRules = settingsService.getSettings.pipe(
@@ -945,27 +951,89 @@ const make = Effect.gen(function* () {
           if (yield* fs.exists(worktreePath)) return keep("qualified deletion removal is pending");
         } else {
           const result = yield* RetirementRuntime.evaluate({
-            cause: settled ? "settlement" : "sweep", worktree: worktreePath,
-            projectRoot: project.workspaceRoot, threadId: thread.id, rules: settings, execute: true,
-            admit: withOperation({id:`cleanup:${thread.id}`,kind:"preservation",threadId:thread.id,worktree:worktreePath,boundaries:["cleanup"],inherit:false,
-              check: Effect.gen(function* () {if((yield* blockedSinceCheck())!==null) return yield* new LifecycleError({reason:"stale"});})},
-              beforeCleanup({threadId:thread.id,boundary:"cleanup",id:`cleanup:${thread.id}`})).pipe(Effect.mapError(cause=>new RetirementError({target:worktreePath,reason:"workspace_preservation_hold",cause}))),
+            cause: settled ? "settlement" : "sweep",
+            worktree: worktreePath,
+            projectRoot: project.workspaceRoot,
+            threadId: thread.id,
+            rules: settings,
+            execute: true,
+            admit: withOperation(
+              {
+                id: `cleanup:${thread.id}`,
+                kind: "preservation",
+                threadId: thread.id,
+                worktree: worktreePath,
+                boundaries: ["cleanup"],
+                inherit: false,
+                check: Effect.gen(function* () {
+                  if ((yield* blockedSinceCheck()) !== null)
+                    return yield* new LifecycleError({ reason: "stale" });
+                }),
+              },
+              beforeCleanup({
+                threadId: thread.id,
+                boundary: "cleanup",
+                id: `cleanup:${thread.id}`,
+              }),
+            ).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new RetirementError({
+                    target: worktreePath,
+                    reason: "workspace_preservation_hold",
+                    cause,
+                  }),
+              ),
+            ),
             revalidate: Effect.gen(function* () {
-              const blocked=yield* blockedSinceCheck();
-              if(blocked!==null) return yield* new RetirementError({target:worktreePath,reason:blocked});
-              const current=resolveWorktreeCleanup(yield* settingsService.getSettings,thread.projectId);
-              if(!Equal.equals(current,settings)) return yield* new RetirementError({target:worktreePath,reason:"settings_changed"});
-            }).pipe(Effect.mapError(cause=>cause instanceof RetirementError ? cause : new RetirementError({target:worktreePath,reason:"observation_failed",cause}))),
+              const blocked = yield* blockedSinceCheck();
+              if (blocked !== null)
+                return yield* new RetirementError({ target: worktreePath, reason: blocked });
+              const current = resolveWorktreeCleanup(
+                yield* settingsService.getSettings,
+                thread.projectId,
+              );
+              if (!Equal.equals(current, settings))
+                return yield* new RetirementError({
+                  target: worktreePath,
+                  reason: "settings_changed",
+                });
+            }).pipe(
+              Effect.mapError((cause) =>
+                cause instanceof RetirementError
+                  ? cause
+                  : new RetirementError({
+                      target: worktreePath,
+                      reason: "observation_failed",
+                      cause,
+                    }),
+              ),
+            ),
           });
-          retirementOutcome=result.outcome;
-          if(result.state==="partial" || result.state==="unknown") {
-            entries.push({...entry,retirement:retirementOutcome,outcome:"failed",
-              reason:sentence(result.reasons.join(", ") || "retirement effects require reconciliation"),bytes:null,files:null});
+          retirementOutcome = result.outcome;
+          if (result.state === "partial" || result.state === "unknown") {
+            entries.push({
+              ...entry,
+              retirement: retirementOutcome,
+              outcome: "failed",
+              reason: sentence(
+                result.reasons.join(", ") || "retirement effects require reconciliation",
+              ),
+              bytes: null,
+              files: null,
+            });
             return;
           }
-          if(result.state!=="retired") return keep(result.reasons.join(", ") || "retirement proposed");
+          if (result.state !== "retired")
+            return keep(result.reasons.join(", ") || "retirement proposed");
         }
-        entries.push({ ...entry, ...(retirementOutcome ? {retirement:retirementOutcome} : {}), outcome: "removed", reason: sentence(removalReason), bytes });
+        entries.push({
+          ...entry,
+          ...(retirementOutcome ? { retirement: retirementOutcome } : {}),
+          outcome: "removed",
+          reason: sentence(removalReason),
+          bytes,
+        });
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
@@ -1214,7 +1282,8 @@ const make = Effect.gen(function* () {
   });
   yield* start();
   return StorageCleanup.of({
-    retirement: input=>retirementAction(input).pipe(Effect.tap(report=>SubscriptionRef.set(reportRef,report))),
+    retirement: (input) =>
+      retirementAction(input).pipe(Effect.tap((report) => SubscriptionRef.set(reportRef, report))),
     runNow,
     latestReport: SubscriptionRef.get(reportRef),
     reports: SubscriptionRef.changes(reportRef),

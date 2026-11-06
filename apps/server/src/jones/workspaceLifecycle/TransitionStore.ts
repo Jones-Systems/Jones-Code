@@ -51,8 +51,13 @@ const make = Effect.gen(function* () {
   const assertThread = Effect.fn("WorkspaceLifecycleTransitionStore.assertThread")(function* (
     transition: Transition,
   ) {
-    const retiring = yield* sql`SELECT 1 FROM jones_workspace_retirement_state WHERE worktree=${transition.binding.worktree} AND state='retiring'`;
-    if (retiring.length) return yield* new RetirementError({reason:"retiring",target:transition.binding.worktree});
+    const retiring =
+      yield* sql`SELECT 1 FROM jones_workspace_retirement_state WHERE worktree=${transition.binding.worktree} AND state='retiring'`;
+    if (retiring.length)
+      return yield* new RetirementError({
+        reason: "retiring",
+        target: transition.binding.worktree,
+      });
     const rows =
       yield* sql`SELECT thread_id FROM orchestration_v2_projection_threads WHERE thread_id=${transition.binding.thread_id}`;
     if (rows.length !== 1) return yield* new LifecycleError({ reason: "identity" });

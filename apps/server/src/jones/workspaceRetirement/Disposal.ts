@@ -7,7 +7,7 @@ import type { Binding } from "./OutputAttestation.ts";
 import { classifyIgnored } from "./IgnoredClassifier.ts";
 import type { JournalEntry } from "./Receipts.ts";
 
-export async function pathIdentity(path:string) {
+async function pathIdentity(path:string) {
   const s=await NodeFSP.lstat(path,{bigint:true});
   return canonical({dev:String(s.dev),ino:String(s.ino),mode:String(s.mode),size:String(s.size),mtime_ns:String(s.mtimeNs),ctime_ns:String(s.ctimeNs)});
 }

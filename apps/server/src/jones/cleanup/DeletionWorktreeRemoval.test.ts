@@ -74,7 +74,29 @@ const fixture = (
   });
   const layer = Removal.producerLayer.pipe(
     Layer.provide(Layer.succeed(Removal.DeletionWorktreeGit, git)),
-    Layer.provide(Layer.succeed(RetirementGate.RemovalGate,{remove:(captured,revalidate)=>revalidate.pipe(Effect.andThen(git.execute({operation:"fixture.retirement",cwd:captured.target.projectRoot,args:["worktree","remove","--",captured.target.path],allowNonZeroExit:true})),Effect.map(result=>({exitCode:result.exitCode,completion:result.stdoutTruncated || result.stderrTruncated ? "unknown" as const : "exited" as const})),Effect.orDie)})),
+    Layer.provide(
+      Layer.succeed(RetirementGate.RemovalGate, {
+        remove: (captured, revalidate) =>
+          revalidate.pipe(
+            Effect.andThen(
+              git.execute({
+                operation: "fixture.retirement",
+                cwd: captured.target.projectRoot,
+                args: ["worktree", "remove", "--", captured.target.path],
+                allowNonZeroExit: true,
+              }),
+            ),
+            Effect.map((result) => ({
+              exitCode: result.exitCode,
+              completion:
+                result.stdoutTruncated || result.stderrTruncated
+                  ? ("unknown" as const)
+                  : ("exited" as const),
+            })),
+            Effect.orDie,
+          ),
+      }),
+    ),
     Layer.provide(Layer.succeed(Removal.DeletionWorktreeFilesystem, fs)),
   );
   return { calls, layer, removals: () => calls.filter((call) => call.args[1] === "remove") };

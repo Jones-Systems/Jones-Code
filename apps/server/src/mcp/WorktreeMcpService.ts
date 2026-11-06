@@ -340,7 +340,9 @@ const make = Effect.gen(function* () {
                   ),
           );
 
-        const continuation = yield* WorkspaceDuty.withDuty(worktreePath,"handoff",scope.thread.threadId,recheckAndBind.pipe(
+        const duty = yield* WorkspaceDuty.hooks;
+        const releaseDuty = yield* duty.hold(worktreePath,"handoff",scope.thread.threadId).pipe(asOperationFailed("Workspace handoff duty refused"));
+        const continuation = yield* recheckAndBind.pipe(
           Effect.andThen(
             captureProvenance({
               threadId: scope.thread.threadId,
@@ -351,7 +353,8 @@ const make = Effect.gen(function* () {
             }),
           ),
           Effect.andThen(queueContinuation),
-        )).pipe(asOperationFailed("Workspace handoff duty refused"));
+          Effect.ensuring(releaseDuty.pipe(Effect.orDie)),
+        );
 
         yield* vcsStatusBroadcaster
           .refreshStatus(worktreePath)

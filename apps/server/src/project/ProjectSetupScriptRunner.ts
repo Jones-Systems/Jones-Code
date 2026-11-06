@@ -1,3 +1,4 @@
+import {completionSentinel,completionSentinelPattern,stripTerminalControl,wrapCommandForCompletion,type CompletionShell} from "../jones/workspaceRetirement/ScriptCompletionProtocol.ts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
@@ -207,26 +208,8 @@ export class ProjectSetupScriptRunner extends Context.Service<
 
 /** @public */
 // Random per-run tokens prevent script output from spoofing completion.
-const COMPLETION_SENTINEL_PREFIX = "__T3_SETUP_DONE__";
 const OUTPUT_LINE_MAX_LENGTH = 400;
 const PARTIAL_LINE_MAX_LENGTH = 4_096;
-
-function completionSentinel(token: string): string {
-  return `${COMPLETION_SENTINEL_PREFIX}_${token}:`;
-}
-
-function completionSentinelPattern(token: string): RegExp {
-  return new RegExp(`${COMPLETION_SENTINEL_PREFIX}_${token}:(-?\\d+)`);
-}
-
-function stripTerminalControl(text: string): string {
-  return text
-    .replace(
-      /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][A-Za-z0-9]|\x1b[=>]/g,
-      "",
-    )
-    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
-}
 
 // Line editors (zsh, fish, bash 5.1+) enable bracketed paste when they start reading a command.
 const BRACKETED_PASTE_ON = "\x1b[?2004h";
@@ -240,7 +223,6 @@ function lineEditorReading(text: string, previous: boolean): boolean {
   return on === off ? previous : on > off;
 }
 
-type CompletionShell = "posix" | "fish" | "powershell";
 
 function resolveCompletionShell(
   platform: NodeJS.Platform,
@@ -252,23 +234,6 @@ function resolveCompletionShell(
   if (name === "fish") return "fish";
   if (name === "pwsh" || name === "powershell") return "powershell";
   return "posix";
-}
-
-// A block with its own closing line protects the sentinel from trailing comments, heredocs and scripts reading stdin.
-function wrapCommandForCompletion(
-  command: string,
-  shell: CompletionShell,
-  sentinel: string,
-): string {
-  const body = command.replace(/\r?\n/g, "\r");
-  switch (shell) {
-    case "powershell":
-      return `$global:LASTEXITCODE = $null; & {\r${body}\r}; if ($null -ne $LASTEXITCODE) { $__t3c = $LASTEXITCODE } elseif ($?) { $__t3c = 0 } else { $__t3c = 1 }; Write-Host "${sentinel}$__t3c"`;
-    case "fish":
-      return `begin\r${body}\rend; printf '\\n${sentinel}%s\\n' $status`;
-    case "posix":
-      return `( ${body}\r); printf '\\n${sentinel}%s\\n' "$?"`;
-  }
 }
 
 /** @public */
@@ -608,7 +573,7 @@ export const make = Effect.gen(function* () {
     };
     const observeRequested =
       input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
-    const observe = input.observeCompletion ?? (legacy !== undefined || native !== undefined ? {} : undefined);
+    const observe = input.observeCompletion ?? {};
     const completionToken =
       captured?.completionToken ??
       (observe ? (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "") : null);
@@ -755,7 +720,7 @@ export const make = Effect.gen(function* () {
           })
         : undefined;
     // Ordinary setup keeps native completion semantics; its terminal holds the real duty.
-    const releaseWorkspaceDuty = observed === undefined ? Effect.void : yield* workspaceDuty.hold(
+    const releaseWorkspaceDuty = !observeRequested ? Effect.void : yield* workspaceDuty.hold(
       input.worktreePath, trigger === "settle" ? "settle-script" : "setup", input.threadId,
     ).pipe(Effect.mapError((cause) => new ProjectSetupScriptOperationError({
       ...errorContext, operation: "openTerminal", cause,

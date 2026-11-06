@@ -1624,9 +1624,22 @@ const make = Effect.gen(function* () {
     getThreadRecords: (threadId, fields, filter) =>
       ensureProjectionTranscript(threadId).pipe(
         Effect.andThen(orchestrator.getThreadRecords(threadId, fields, filter)),
-        Effect.flatMap(records=>Effect.gen(function* () {const lookup=yield* RetirementOutcome.lookup;return {...records,thread:{...records.thread,...(yield* lookup(threadId))}};})),
+        Effect.flatMap((records) =>
+          Effect.gen(function* () {
+            const lookup = yield* RetirementOutcome.lookup;
+            return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+          }),
+        ),
       ),
-    getThreadProjection: threadId=>getThreadProjection(threadId).pipe(Effect.flatMap(records=>Effect.gen(function* () {const lookup=yield* RetirementOutcome.lookup;return {...records,thread:{...records.thread,...(yield* lookup(threadId))}};}))),
+    getThreadProjection: (threadId) =>
+      getThreadProjection(threadId).pipe(
+        Effect.flatMap((records) =>
+          Effect.gen(function* () {
+            const lookup = yield* RetirementOutcome.lookup;
+            return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+          }),
+        ),
+      ),
     getCheckpointContext,
     getThreadSnapshot,
     getThreadTranscript,

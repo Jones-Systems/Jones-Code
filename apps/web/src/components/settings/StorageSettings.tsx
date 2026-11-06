@@ -357,6 +357,8 @@ function CleanupSection() {
         const result=await run({environmentId:environment.environmentId,input:{retirement:{action:"propose"}}});
         if(result._tag==="Failure" && !isAtomCommandInterrupted(result)) toastManager.add({type:"error",title:`Could not propose retirements on ${environment.label}`,description:String(squashAtomCommandFailure(result))});
       }
+    } catch (error) {
+      toastManager.add({type:"error",title:"Could not propose checkout retirements",description:error instanceof Error ? error.message : String(error)});
     } finally {setPending(false);}
   };
   const retireTarget = async (environmentId:typeof supportedIds[number],entry:StorageCleanupReport["entries"][number]) => {
@@ -370,6 +372,8 @@ Live consumers, tracked edits, nested repositories and other protections still h
     try {
       const result=await run({environmentId,input:{retirement:{action:"retire",threadId:entry.threadId,worktreePath:entry.path,expectedFingerprint:entry.retirement.fingerprint,coveredPaths}}});
       if(result._tag==="Failure" && !isAtomCommandInterrupted(result)) toastManager.add({type:"error",title:"Checkout retirement failed",description:String(squashAtomCommandFailure(result))});
+    } catch (error) {
+      toastManager.add({type:"error",title:"Checkout retirement failed",description:error instanceof Error ? error.message : String(error)});
     } finally {setPending(false);}
   };
   const deleteNow = async () => {

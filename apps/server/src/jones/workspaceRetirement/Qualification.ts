@@ -94,6 +94,14 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       ...(result.lineageObservation?.lineage ?? []),
     ];
     result.details = result.reasons.flatMap((reason) => {
+      if(reason==="consumer_evidence_unavailable") {
+        return Object.entries(result.consumers?.coverage ?? {}).filter(([,probe])=>probe.reason!==null).map(([name,probe])=>({
+          reason,target:input.worktree,root:input.worktree,category:"unavailable_observation" as const,
+          fact:`${name}: ${probe.reason}. ${probe.limits.join("; ")}`,
+          missingFact:`fresh_complete_${name}_observation`,lineage,
+          nextAction:`Obtain only this target's ${name} readback from its named native owner; ${probe.limits.join("; ")}`,
+        }));
+      }
       const roots =
         result.ignored?.filter((item) => item.reason === reason).map((item) => item.path) ?? [];
       return (roots.length ? roots : [input.worktree]).map((root) => {
@@ -149,13 +157,21 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       });
     });
     result.observationMs = performance.now() - started;
-    result.fingerprint = sha256(canonical({
-      binding: result.binding, head: result.head, branch: result.branch,
-      containingRefs: result.containingRefs, preservationTips: result.preservationTips,
-      untrackedPaths: result.untrackedPaths, ignored: result.ignored,
-      capturedConfig: result.capturedConfig, sparsePatterns: result.sparsePatterns,
-      reasons: result.reasons, level: result.level,
-    }));
+    result.fingerprint = sha256(
+      canonical({
+        binding: result.binding,
+        head: result.head,
+        branch: result.branch,
+        containingRefs: result.containingRefs,
+        preservationTips: result.preservationTips,
+        untrackedPaths: result.untrackedPaths,
+        ignored: result.ignored,
+        capturedConfig: result.capturedConfig,
+        sparsePatterns: result.sparsePatterns,
+        reasons: result.reasons,
+        level: result.level,
+      }),
+    );
     return result;
   };
   try {

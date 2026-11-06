@@ -69,9 +69,13 @@ export async function participantGuard<T>(
   timeoutMs = 5000,
 ): Promise<T> {
   if (!(await exists(bound.git_common_dir))) return action();
-  return reservationTransaction(bound, async (db) => {
-    if (db.prepare("SELECT 1 FROM reservations WHERE admin_id=?").get(bound.admin_id))
-      throw new Error("retiring");
-    return action();
-  }, timeoutMs);
+  return reservationTransaction(
+    bound,
+    async (db) => {
+      if (db.prepare("SELECT 1 FROM reservations WHERE admin_id=?").get(bound.admin_id))
+        throw new Error("retiring");
+      return action();
+    },
+    timeoutMs,
+  );
 }

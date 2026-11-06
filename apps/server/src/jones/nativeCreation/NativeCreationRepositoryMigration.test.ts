@@ -81,6 +81,7 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 136, name: "WorkspaceProvenance" },
         { migration_id: 137, name: "NativeCreationLeaseRenewal" },
         { migration_id: 138, name: "WorkspaceRetirement" },
+        { migration_id: 140, name: "WorkspaceDutyIdentity" },
       ],
     );
     assert.deepEqual(
@@ -306,6 +307,7 @@ it.effect(
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
         [137, "NativeCreationLeaseRenewal"],
         [138, "WorkspaceRetirement"],
+      [140, "WorkspaceDutyIdentity"],
       ]);
       assert.deepStrictEqual(yield* f.readLeases, before);
       const expiry = yield* f.outbox.renew({ claim: f.claim, leaseDurationMs: 30_000 });

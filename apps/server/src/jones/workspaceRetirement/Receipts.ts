@@ -7,6 +7,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { Binding } from "./OutputAttestation.ts";
 import type { QualificationResult } from "./Qualification.ts";
 import type { SettlementScriptState } from "./SettlementAdmission.ts";
+import { dutyIdentity, type DutyIdentity } from "./DutyIdentity.ts";
+import { inProcessOwner, unresolvedOwner, type NativeDutyOwner } from "./NativeDutyOwner.ts";
 
 export class RetirementError extends Schema.TaggedError<RetirementError>()("RetirementError", {
   reason: Schema.String, target: Schema.String, cause: Schema.optional(Schema.Defect()),
@@ -34,8 +36,9 @@ const mapError = (target: string) => Effect.mapError((cause: unknown) => Schema.
 export class Receipts extends Context.Service<Receipts, {
   readonly writable: (worktree: string) => Effect.Effect<void, RetirementError>;
   readonly claims: (worktree: string) => Effect.Effect<readonly { claim_id: string; kind: string; owner: string }[], RetirementError>;
-  readonly claim: (input: { id: string; worktree: string; kind: string; owner: string; holder: string }) => Effect.Effect<void, RetirementError>;
+  readonly claim: (input: { id: string; worktree: string; kind: string; owner: string; holder: string }) => Effect.Effect<DutyIdentity, RetirementError>;
   readonly releaseClaim: (id: string) => Effect.Effect<void, RetirementError>;
+  readonly bindNativeOwner: (id:string,holder:string,owner:NativeDutyOwner)=>Effect.Effect<void,RetirementError>;
   readonly reconcileClaim: (id: string, holder: string, verifiedAbsent: boolean) => Effect.Effect<void, RetirementError>;
   readonly settlement: (thread: string, worktree: string, settledAt: string) => Effect.Effect<SettlementIntent | null, RetirementError>;
   readonly startScript: (event: string) => Effect.Effect<boolean, RetirementError>;
@@ -60,17 +63,25 @@ const make = Effect.gen(function* () {
   return Receipts.of({
     writable, claims,
     claim: Effect.fn("WorkspaceRetirement.claim")(function* (input) {
+      const identity=yield* Effect.promise(()=>dutyIdentity(input.worktree));
+      const nativeOwner=["session","terminal"].includes(input.kind)
+        ? unresolvedOwner(`${input.kind}_native_launch_capture_pending`)
+        : yield* Effect.promise(()=>inProcessOwner(input.id));
       yield* sql.withTransaction(Effect.gen(function* () {
         yield* writable(input.worktree);
-        const prior = yield* sql<{ worktree: string; holder_json: string; released_at: string | null }>`SELECT worktree,holder_json,released_at FROM jones_workspace_duty_claims WHERE claim_id=${input.id}`;
+        const prior = yield* sql<{ worktree: string; holder_json: string; released_at: string | null; incarnation_id:string|null }>`SELECT worktree,holder_json,released_at,incarnation_id FROM jones_workspace_duty_claims WHERE claim_id=${input.id}`;
         if (prior[0]) {
-          if (prior[0].worktree !== input.worktree || prior[0].holder_json !== input.holder || prior[0].released_at !== null)
+          if (prior[0].worktree !== input.worktree || prior[0].holder_json !== input.holder || prior[0].released_at !== null || prior[0].incarnation_id!==(identity.status==='bound' ? identity.incarnation : null))
             return yield* new RetirementError({ reason: "claim_identity_changed", target: input.worktree });
           return;
         }
-        const known = yield* sql<{ incarnation_id: string }>`SELECT incarnation_id FROM jones_workspace_provenance WHERE worktree=${input.worktree} ORDER BY rowid DESC LIMIT 1`;
-        yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${input.id},${input.worktree},${known[0]?.incarnation_id ?? null},${input.kind},${input.owner},${input.holder},${DateTime.formatIso(DateTime.nowUnsafe())},NULL)`;
+        yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${input.id},${input.worktree},${identity.status==='bound' ? identity.incarnation : null},${input.kind},${input.owner},${input.holder},${DateTime.formatIso(DateTime.nowUnsafe())},NULL)`;
+        yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${input.id},${JSON.stringify(identity)},${JSON.stringify(nativeOwner)})`;
       }));
+      return identity;
+    }, mapError("workspace")),
+    bindNativeOwner: Effect.fn("WorkspaceRetirement.bindNativeOwner")(function* (id,holder,owner) {
+      yield* sql`UPDATE jones_workspace_duty_identity SET native_owner_json=${JSON.stringify(owner)} WHERE claim_id=${id} AND EXISTS (SELECT 1 FROM jones_workspace_duty_claims c WHERE c.claim_id=${id} AND c.holder_json=${holder} AND c.released_at IS NULL)`;
     }, mapError("workspace")),
     releaseClaim: Effect.fn("WorkspaceRetirement.releaseClaim")(function* (id) {
       yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${id} AND released_at IS NULL`;
