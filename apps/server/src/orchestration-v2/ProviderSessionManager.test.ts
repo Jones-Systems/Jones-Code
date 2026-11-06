@@ -387,6 +387,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
     readonly reconcileBindingPublication?: ProviderAdapterV2SessionRuntime["reconcileBindingPublication"];
+    readonly resumeThread?: ProviderAdapterV2SessionRuntime["resumeThread"];
     readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
     readonly retireThreadForTransfer?: ProviderAdapterV2SessionRuntime["retireThreadForTransfer"];
     readonly hangSessionScopeClose?: boolean;
@@ -508,7 +509,11 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
             Ref.update(state, (current) => ({
               ...current,
               resumeCount: current.resumeCount + 1,
-            })).pipe(Effect.as(threadInput.providerThread)),
+            })).pipe(
+              Effect.andThen(
+                options.resumeThread?.(threadInput) ?? Effect.succeed(threadInput.providerThread),
+              ),
+            ),
           ...(options.compactForContextHandoff === undefined
             ? {}
             : { compactForContextHandoff: options.compactForContextHandoff }),
@@ -566,6 +571,7 @@ function layerTest(input: {
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
   readonly reconcileBindingPublication?: ProviderAdapterV2SessionRuntime["reconcileBindingPublication"];
+  readonly resumeThread?: ProviderAdapterV2SessionRuntime["resumeThread"];
   readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
   readonly retireThreadForTransfer?: ProviderAdapterV2SessionRuntime["retireThreadForTransfer"];
   readonly hangSessionScopeClose?: boolean;
@@ -617,6 +623,7 @@ function layerTest(input: {
       ...(input.reconcileBindingPublication === undefined
         ? {}
         : { reconcileBindingPublication: input.reconcileBindingPublication }),
+      ...(input.resumeThread === undefined ? {} : { resumeThread: input.resumeThread }),
       ...(input.captureRuntimeStop === undefined
         ? {}
         : { captureRuntimeStop: input.captureRuntimeStop }),
@@ -7423,6 +7430,153 @@ it.effect("a foreign committed generation refuses retained publication recovery"
           idleTimeoutMs: 60_000,
           publicationFault: fault,
           beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+        }),
+      ),
+    );
+  }),
+);
+
+it.effect.each([
+  "same-policy",
+  "changed-policy",
+  "changed-model",
+  "mutated-original-policy",
+] as const)("recovered publication retains only the original completed load: %s", (mode) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const controller = yield* Ref.make<ProviderRuntimeLifecycle | undefined>(undefined);
+    const fault = yield* Ref.make<PublicationFault | undefined>(undefined);
+    let publication: ProviderAdapter.CapturedRuntimeBindingPublication | undefined;
+    let generation: string | undefined;
+    const originalPolicy = {
+      ...runtimePolicy,
+      cwd: "/original-policy",
+      approvalPolicy: { mode: "original-policy" },
+    };
+    yield* Effect.gen(function* () {
+      const fixture = yield* openTransferFixture(`recovered-load:${mode}`);
+      generation = yield* (yield* Ref.get(controller))!.reserve(fixture.threadId);
+      yield* Ref.set(fault, "before-boundary");
+      const originalLoad = yield* fixture.runtime
+        .resumeThread({
+          threadId: fixture.threadId,
+          providerThread: fixture.providerThread,
+          modelSelection,
+          runtimePolicy: originalPolicy,
+        })
+        .pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(originalLoad));
+      assert.isDefined(publication);
+      assert.equal((yield* Ref.get(state)).resumeCount, 1);
+      if (mode === "mutated-original-policy")
+        originalPolicy.approvalPolicy.mode = "changed-policy";
+      const nextPolicy =
+        mode === "changed-policy"
+          ? { ...originalPolicy, cwd: "/changed-policy" }
+          : originalPolicy;
+      const nextSelection =
+        mode === "changed-model" ? { ...modelSelection, model: "gpt-5.5" } : modelSelection;
+      const runId = RunId.make(`recovered-load-run:${mode}`);
+      const attemptId = RunAttemptId.make(`recovered-load-attempt:${mode}`);
+      const rootNodeId = NodeId.make(`recovered-load-node:${mode}`);
+      const run: OrchestrationV2Run = {
+        id: runId,
+        threadId: fixture.threadId,
+        ordinal: 2,
+        providerInstanceId: nextSelection.instanceId,
+        modelSelection: nextSelection,
+        providerThreadId: fixture.providerThread.id,
+        userMessageId: MessageId.make(`recovered-load-message:${mode}`),
+        rootNodeId,
+        activeAttemptId: attemptId,
+        status: "starting",
+        requestedAt: fixture.now,
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
+      yield* fixture.sink.write({
+        events: [
+          {
+            id: EventId.make(`${mode}:recovered-load-run`),
+            type: "run.updated",
+            threadId: fixture.threadId,
+            runId,
+            occurredAt: fixture.now,
+            payload: run,
+          },
+          {
+            id: EventId.make(`${mode}:recovered-load-attempt`),
+            type: "run-attempt.updated",
+            threadId: fixture.threadId,
+            runId,
+            occurredAt: fixture.now,
+            payload: {
+              id: attemptId,
+              runId,
+              attemptOrdinal: 1,
+              rootNodeId,
+              providerInstanceId: nextSelection.instanceId,
+              providerThreadId: fixture.providerThread.id,
+              providerTurnId: null,
+              providerSettlement: null,
+              reason: "initial",
+              status: "pending",
+              startedAt: null,
+              completedAt: null,
+            },
+          },
+        ],
+      });
+      const recovered = yield* fixture.manager.reconcileThreadBindingPublication!({
+        run,
+        providerThread: fixture.providerThread,
+      });
+      assert.isNotNull(recovered);
+      assert.equal(recovered!.runtimeIdentity?.runtimeGeneration, generation);
+      const resumed = yield* fixture.runtime.resumeThread({
+        threadId: fixture.threadId,
+        providerThread: recovered!,
+        modelSelection: nextSelection,
+        runtimePolicy: nextPolicy,
+      });
+      assert.equal(resumed.id, fixture.providerThread.id);
+      const expectedResumes = mode === "same-policy" ? 1 : 2;
+      assert.equal((yield* Ref.get(state)).resumeCount, expectedResumes);
+      yield* fixture.runtime.resumeThread({
+        threadId: fixture.threadId,
+        providerThread: resumed,
+        modelSelection: nextSelection,
+        runtimePolicy: nextPolicy,
+      });
+      assert.equal((yield* Ref.get(state)).resumeCount, expectedResumes);
+      assert.equal((yield* Ref.get(state)).openCount, 1);
+    }).pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 60_000,
+          publicationFault: fault,
+          beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle),
+          resumeThread: (input) =>
+            Effect.gen(function* () {
+              if (publication !== undefined) return input.providerThread;
+              publication = yield* (yield* Ref.get(controller))!.prepareBindingPublication!({
+                providerThread: input.providerThread,
+                runtimeGeneration: generation!,
+                requested: requestedRuntimeIdentity(input.modelSelection!, CODEX_DRIVER),
+                observed: unobservedRuntimeIdentity(),
+              });
+              return yield* publication.complete;
+            }),
+          reconcileBindingPublication: (input) =>
+            Effect.gen(function* () {
+              yield* input.revalidate;
+              const bound = yield* publication!.complete;
+              yield* input.revalidate;
+              return bound;
+            }),
         }),
       ),
     );

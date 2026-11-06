@@ -383,6 +383,14 @@ function providerThreadLoadKey(input: {
   });
 }
 
+const threadLoadKeySnapshot = Schema.fromJsonString(
+  Schema.Struct({
+    providerThread: Schema.String,
+    modelSelection: Schema.Unknown,
+    runtimePolicy: Schema.Unknown,
+  }),
+);
+
 export const layerWithOptions = (
   options: ProviderSessionManagerV2LayerOptions = {},
 ): Layer.Layer<
@@ -417,10 +425,25 @@ export const layerWithOptions = (
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const physicalEvidence = yield* PhysicalRuntimeEvidence.make;
       const agentScope = yield* AgentScope;
+      type OriginalThreadLoad = {
+        readonly target: Pick<
+          OrchestrationV2ProviderThread,
+          "id" | "appThreadId" | "providerSessionId" | "providerInstanceId" | "driver"
+        > & {
+          readonly nativeThreadId: string | null;
+        };
+        readonly loadKey: string;
+        binding: ProviderRuntimeBinding | undefined;
+      };
+      const originalThreadLoads = new WeakMap<
+        ProviderAdapterV2SessionRuntime,
+        Map<ThreadId, OriginalThreadLoad>
+      >();
       const makeRuntimeLifecycle = (
         providerSessionId: ProviderSessionId,
         instanceId: ProviderInstanceId,
         driver: ProviderAdapterV2SessionRuntime["driver"],
+        owner: { runtime: ProviderAdapterV2SessionRuntime | undefined },
         nativeCreationGuard?: NativeProvider.NativeProviderExecutionGuard,
       ): ProviderRuntimeLifecycle => {
         const reservations = new Map<
@@ -470,6 +493,21 @@ export const layerWithOptions = (
               : NativeProvider.bindNativeProviderGuard(nativeCreationGuard, binding).pipe(
                   Effect.mapError(protocolError),
                 ),
+        });
+        const captureOriginalLoadBinding = Effect.fn(
+          "ProviderSessionManager.captureOriginalLoadBinding",
+        )(function* (value: Parameters<ProviderRuntimeLifecycle["bind"]>[0]) {
+          const runtime = owner.runtime;
+          const threadId = value.providerThread.appThreadId;
+          if (
+            runtime === undefined ||
+            (yield* Ref.get(sessions)).get(sessionKey(providerSessionId))?.runtime !== runtime ||
+            threadId === null
+          )
+            return;
+          const original = originalThreadLoads.get(runtime)?.get(threadId);
+          if (original?.target.id === value.providerThread.id && original.binding === undefined)
+            original.binding = runtimeBinding(value.providerThread, value.runtimeGeneration);
         });
         return {
           reserve: Effect.fn("ProviderSessionManager.reserve")((threadId) =>
@@ -539,12 +577,19 @@ export const layerWithOptions = (
               }
             }).pipe(Effect.mapError(protocolError)),
           ),
-          prepareBindingPublication: publication.prepare,
-          bind: publication.bind,
+          prepareBindingPublication: (value) =>
+            captureOriginalLoadBinding(value).pipe(Effect.andThen(publication.prepare(value))),
+          bind: (value) =>
+            captureOriginalLoadBinding(value).pipe(Effect.andThen(publication.bind(value))),
           abandon: Effect.fn("ProviderSessionManager.abandon")((generation) =>
             Effect.gen(function* () {
               const reservation = reservations.get(generation);
               reservations.delete(generation);
+              const runtime = owner.runtime;
+              const loads = runtime === undefined ? undefined : originalThreadLoads.get(runtime);
+              if (loads !== undefined)
+                for (const [threadId, original] of loads)
+                  if (original.binding?.runtimeGeneration === generation) loads.delete(threadId);
               yield* physicalEvidence.abandon(generation);
               if (reservation === undefined) return;
               for (const [id, threadId] of reservation.bindings) {
@@ -576,6 +621,14 @@ export const layerWithOptions = (
           ),
           invalidate: Effect.fn("ProviderSessionManager.invalidate")((binding) =>
             Effect.gen(function* () {
+              const runtime = owner.runtime;
+              const loads = runtime === undefined ? undefined : originalThreadLoads.get(runtime);
+              const original = loads?.get(binding.threadId);
+              if (
+                original?.binding !== undefined &&
+                equivalentBinding(original.binding, binding)
+              )
+                loads?.delete(binding.threadId);
               yield* physicalEvidence.invalidate(binding);
               const current = yield* readThread(binding.threadId, binding.providerThreadId);
               if (
@@ -1286,6 +1339,7 @@ export const layerWithOptions = (
               });
               const updated = new Map(current);
               updated.delete(key);
+              originalThreadLoads.delete(existing.runtime);
               if (input.drainSubscribers === true) drainingRuntimes.add(existing.runtime);
               return ["removed", updated] as const;
             }),
@@ -1794,6 +1848,7 @@ export const layerWithOptions = (
           attachedThreadIds.delete(input.threadId);
           const loadedProviderThreadKeyByThread = new Map(entry.loadedProviderThreadKeyByThread);
           loadedProviderThreadKeyByThread.delete(input.threadId);
+          originalThreadLoads.get(input.runtime)?.delete(input.threadId);
           const updated = new Map(current);
           updated.set(key, {
             ...entry,
@@ -2114,6 +2169,7 @@ export const layerWithOptions = (
                   latest.loadedProviderThreadKeyByThread,
                 );
                 loadedProviderThreadKeyByThread.delete(input.threadId);
+                originalThreadLoads.get(entry.runtime)?.delete(input.threadId);
                 const idleThreadUnloads = new Map(latest.idleThreadUnloads);
                 idleThreadUnloads.delete(input.threadId);
                 const updated = new Map(current);
@@ -2340,6 +2396,76 @@ export const layerWithOptions = (
               modelFamily: normalizeModelMetricLabel(model),
             },
           });
+        const loadAndMark = Effect.fn("ProviderSessionManager.loadAndMark")(
+          function* (
+            value: {
+              readonly threadId: ThreadId;
+              readonly target: OrchestrationV2ProviderThread | undefined;
+              readonly modelSelection: ModelSelection | undefined;
+              readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined;
+            },
+            load: Effect.Effect<
+              OrchestrationV2ProviderThread,
+              ProviderAdapter.ProviderAdapterV2Error
+            >,
+          ) {
+            const loads =
+              originalThreadLoads.get(runtime) ?? new Map<ThreadId, OriginalThreadLoad>();
+            originalThreadLoads.set(runtime, loads);
+            const original: OriginalThreadLoad | undefined =
+              loads.get(value.threadId) ??
+              (value.target === undefined
+                ? undefined
+                : {
+                    target: {
+                      id: value.target.id,
+                      appThreadId: value.target.appThreadId,
+                      driver: value.target.driver,
+                      providerSessionId: value.target.providerSessionId,
+                      providerInstanceId: value.target.providerInstanceId,
+                      nativeThreadId: value.target.nativeThreadRef?.nativeId ?? null,
+                    },
+                    loadKey: providerThreadLoadKey({
+                      providerThread: value.target,
+                      ...(value.modelSelection === undefined
+                        ? {}
+                        : { modelSelection: value.modelSelection }),
+                      ...(value.runtimePolicy === undefined
+                        ? {}
+                        : { runtimePolicy: value.runtimePolicy }),
+                    }),
+                    binding: undefined,
+                  });
+            if (original !== undefined) loads.set(value.threadId, original);
+            const forget = Effect.sync(() => {
+              if (loads.get(value.threadId) === original) loads.delete(value.threadId);
+            });
+            return yield* load.pipe(
+              Effect.tap((providerThread) =>
+                markProviderThreadLoaded({
+                  providerSessionId,
+                  threadId: value.threadId,
+                  providerThreadKey: providerThreadLoadKey({
+                    providerThread,
+                    ...(value.modelSelection === undefined
+                      ? {}
+                      : { modelSelection: value.modelSelection }),
+                    ...(value.runtimePolicy === undefined
+                      ? {}
+                      : { runtimePolicy: value.runtimePolicy }),
+                  }),
+                }),
+              ),
+              Effect.tap(() => forget),
+              Effect.tapError((cause) =>
+                original?.binding !== undefined ||
+                ProviderAdapter.hasUnknownRuntimeBinding(cause)
+                  ? Effect.void
+                  : forget,
+              ),
+            );
+          },
+        );
         return {
           ...runtime,
           subscribeEvents,
@@ -2367,17 +2493,16 @@ export const layerWithOptions = (
                   ),
                 ),
               ),
-              Effect.andThen(runtime.ensureThread(input)),
-              Effect.tap((providerThread) =>
-                markProviderThreadLoaded({
-                  providerSessionId,
-                  threadId: input.threadId,
-                  providerThreadKey: providerThreadLoadKey({
-                    providerThread,
+              Effect.andThen(
+                loadAndMark(
+                  {
+                    threadId: input.threadId,
+                    target: input.existingProviderThread,
                     modelSelection: input.modelSelection,
                     runtimePolicy: input.runtimePolicy,
-                  }),
-                }),
+                  },
+                  runtime.ensureThread(input),
+                ),
               ),
               (effect) => withRuntimeInvocation(input.threadId, effect),
             ),
@@ -2423,24 +2548,19 @@ export const layerWithOptions = (
                       }),
                   ),
                   Effect.andThen(
-                    loaded ? Effect.succeed(input.providerThread) : runtime.resumeThread(input),
+                    loaded
+                      ? Effect.succeed(input.providerThread)
+                      : loadAndMark(
+                          {
+                            threadId,
+                            target: input.providerThread,
+                            modelSelection: input.modelSelection,
+                            runtimePolicy: input.runtimePolicy,
+                          },
+                          runtime.resumeThread(input),
+                        ),
                   ),
                 ),
-              ),
-              Effect.tap((providerThread) =>
-                markProviderThreadLoaded({
-                  providerSessionId,
-                  threadId,
-                  providerThreadKey: providerThreadLoadKey({
-                    providerThread,
-                    ...(input.modelSelection === undefined
-                      ? {}
-                      : { modelSelection: input.modelSelection }),
-                    ...(input.runtimePolicy === undefined
-                      ? {}
-                      : { runtimePolicy: input.runtimePolicy }),
-                  }),
-                }),
               ),
               (effect) => withRuntimeInvocation(threadId, effect),
             );
@@ -3111,6 +3231,55 @@ export const layerWithOptions = (
             return yield* refused(
               "Recovered publication does not match the current exact binding.",
             );
+          const loads = originalThreadLoads.get(entry.runtime);
+          const original = loads?.get(run.threadId);
+          if (original !== undefined) {
+            if (
+              original.target.id !== current.id ||
+              original.target.appThreadId !== run.threadId ||
+              original.target.driver !== current.driver ||
+              original.target.providerSessionId !== providerSessionId ||
+              original.target.providerInstanceId !== current.providerInstanceId ||
+              (original.target.nativeThreadId !== null &&
+                original.target.nativeThreadId !== current.nativeThreadRef?.nativeId) ||
+              original.binding === undefined ||
+              !equivalentBinding(original.binding, currentBinding)
+            )
+              return yield* refused("The original load metadata belongs to another binding.");
+            const snapshot = yield* Schema.decodeEffect(threadLoadKeySnapshot)(
+              original.loadKey,
+            ).pipe(Effect.mapError(refused));
+            const loadedKey = yield* Schema.encodeEffect(threadLoadKeySnapshot)({
+              ...snapshot,
+              providerThread: providerThreadRuntimeKey(current),
+            }).pipe(Effect.mapError(refused));
+            yield* revalidate;
+            const installed = yield* Ref.modify(sessions, (entries) => {
+              const latest = entries.get(sessionKey(providerSessionId));
+              if (
+                latest?.runtime !== entry.runtime ||
+                !latest.attachedThreadIds.has(run.threadId) ||
+                loads?.get(run.threadId) !== original
+              )
+                return [false, entries] as const;
+              const loadedProviderThreadKeyByThread = new Map(
+                latest.loadedProviderThreadKeyByThread,
+              );
+              loadedProviderThreadKeyByThread.set(run.threadId, loadedKey);
+              return [
+                true,
+                new Map(entries).set(sessionKey(providerSessionId), {
+                  ...latest,
+                  loadedProviderThreadKeyByThread,
+                }),
+              ] as const;
+            });
+            if (!installed)
+              return yield* refused(
+                "The runtime changed before the recovered load could be recorded.",
+              );
+            loads?.delete(run.threadId);
+          }
           return current;
         },
         (effect, input) =>
@@ -3362,6 +3531,7 @@ export const layerWithOptions = (
                 return [undefined, current] as const;
               const attachedThreadIds = new Set(latest.attachedThreadIds);
               attachedThreadIds.delete(input.threadId);
+              originalThreadLoads.get(entry.runtime)?.delete(input.threadId);
               const record = retirements.retain({
                 source: latest.runtime,
                 scope: latest.scope,
@@ -3738,6 +3908,9 @@ export const layerWithOptions = (
               });
               const sessionScope = yield* Scope.fork(sessionScopes);
               yield* agentScope.clear(input.threadId);
+              const runtimeOwner: { runtime: ProviderAdapterV2SessionRuntime | undefined } = {
+                runtime: undefined,
+              };
               const runtime = yield* adapter
                 .openSession({
                   threadId: input.threadId,
@@ -3749,6 +3922,7 @@ export const layerWithOptions = (
                     input.providerSessionId,
                     input.modelSelection.instanceId,
                     adapter.driver,
+                    runtimeOwner,
                     input.nativeCreationGuard,
                   ),
                   modelSelection: input.modelSelection,
@@ -3820,6 +3994,7 @@ export const layerWithOptions = (
                     attributes: { provider: adapter.driver, operation: "open" },
                   }),
                 );
+              runtimeOwner.runtime = runtime;
               const eventSubscribers = yield* Ref.make<
                 ReadonlyMap<number, ProviderSessionEventSubscriber>
               >(new Map());
@@ -4078,6 +4253,7 @@ export const layerWithOptions = (
               }
               const attachedThreadIds = new Set(entry.attachedThreadIds);
               attachedThreadIds.delete(input.threadId);
+              originalThreadLoads.get(entry.runtime)?.delete(input.threadId);
               const loadedProviderThreadKeyByThread = new Map(
                 entry.loadedProviderThreadKeyByThread,
               );

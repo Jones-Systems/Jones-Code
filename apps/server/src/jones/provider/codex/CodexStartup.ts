@@ -82,23 +82,21 @@ export function makeCodexStartup(
     if (attempt.producer !== undefined) uncertain.get(attempt.producer)?.delete(attempt);
     if (attempt.hold !== undefined) holdOwners.delete(attempt.hold);
   };
-  const holdAttempt = (attempt: StartupAttempt) =>
-    Effect.gen(function* () {
-      if (!attempt.mayHaveIssued || attempt.producer === undefined) return;
-      const attempts = uncertain.get(attempt.producer) ?? new Set<StartupAttempt>();
-      attempts.add(attempt);
-      uncertain.set(attempt.producer, attempts);
-      if (admission !== undefined && attempt.target !== undefined && attempt.hold === undefined) {
-        attempt.hold = yield* admission.holdStartup(attempt.target);
-        holdOwners.set(attempt.hold, attempt);
-      }
-    });
-  const abandon = (attempt: StartupAttempt) =>
-    Effect.gen(function* () {
-      if (attempt.complete) return;
-      attempt.abandoned = true;
-      yield* holdAttempt(attempt);
-    });
+  const holdAttempt = Effect.fn("CodexStartup.holdAttempt")(function* (attempt: StartupAttempt) {
+    if (!attempt.mayHaveIssued || attempt.producer === undefined) return;
+    const attempts = uncertain.get(attempt.producer) ?? new Set<StartupAttempt>();
+    attempts.add(attempt);
+    uncertain.set(attempt.producer, attempts);
+    if (admission !== undefined && attempt.target !== undefined && attempt.hold === undefined) {
+      attempt.hold = yield* admission.holdStartup(attempt.target);
+      holdOwners.set(attempt.hold, attempt);
+    }
+  });
+  const abandon = Effect.fn("CodexStartup.abandon")(function* (attempt: StartupAttempt) {
+    if (attempt.complete) return;
+    attempt.abandoned = true;
+    yield* holdAttempt(attempt);
+  });
   const unknown = (cause?: unknown) =>
     new ProviderRuntimeBindingError({
       driver: ProviderDriverKind.make("codex"),

@@ -368,14 +368,16 @@ const make = Effect.gen(function* () {
             const pending = Deferred.makeUnsafe<void, StopStore.RuntimeStopError>();
             workers.set(commandId, pending);
             let invocationStarted = false;
-            const retryObservation = <A, E>(observation: Effect.Effect<A, E>) =>
-              Effect.gen(function* () {
+            const retryObservation = Effect.fn("CurrentRuntimeStop.retryObservation")(
+              function* <A, E>(observation: Effect.Effect<A, E>) {
                 const attempt = yield* observation.pipe(Effect.forkChild);
                 const result = yield* Fiber.await(attempt);
                 if (Exit.isFailure(result))
                   return yield* error("runtime_stop_observation_pending", result.cause);
                 return result.value;
-              }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second") }));
+              },
+              Effect.retry({ schedule: Schedule.spaced("1 second") }),
+            );
             // The service scope owns this worker; a caller's deadline or cancellation only stops its wait.
             yield* Effect.gen(function* () {
               const started = yield* eventSink.startRuntimeStop!(

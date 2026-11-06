@@ -123,6 +123,7 @@ import type {
 } from "@t3tools/contracts";
 import * as CodexClient from "effect-codex-app-server/client";
 import * as CodexErrors from "effect-codex-app-server/errors";
+import type * as CodexRpc from "effect-codex-app-server/rpc";
 import * as CodexSchema from "effect-codex-app-server/schema";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
@@ -2063,43 +2064,42 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           registrations.push(install);
           return install(currentProducer);
         };
-        const requestAdmission = (
+        const requestAdmission = Effect.fn("CodexAdapterV2.requestAdmission")(function* (
           method: unknown,
           params: unknown,
           targetProducer?: CodexRuntimeProducer,
-        ) =>
-          Effect.gen(function* () {
-            if (!ControlAdmission.isCodexMutation(method, params)) return;
-            const producer = targetProducer ?? (yield* CodexProducerContext) ?? currentProducer;
-            const nativeId =
-              typeof params === "object" &&
-              params !== null &&
-              "threadId" in params &&
-              typeof params.threadId === "string"
-                ? params.threadId
-                : null;
-            const bound = nativeId === null ? undefined : producer.bindings.get(nativeId);
-            const operationTarget = yield* CodexAdmissionTargetContext;
-            yield* controlAdmission
-              .assertOpen(
-                admissionTarget(
-                  bound?.appThreadId ??
-                    operationTarget?.threadId ??
-                    (nativeId === null ? input.threadId : null),
-                  nativeId,
-                  producer,
+        ) {
+          if (!ControlAdmission.isCodexMutation(method, params)) return;
+          const producer = targetProducer ?? (yield* CodexProducerContext) ?? currentProducer;
+          const nativeId =
+            typeof params === "object" &&
+            params !== null &&
+            "threadId" in params &&
+            typeof params.threadId === "string"
+              ? params.threadId
+              : null;
+          const bound = nativeId === null ? undefined : producer.bindings.get(nativeId);
+          const operationTarget = yield* CodexAdmissionTargetContext;
+          yield* controlAdmission
+            .assertOpen(
+              admissionTarget(
+                bound?.appThreadId ??
+                  operationTarget?.threadId ??
+                  (nativeId === null ? input.threadId : null),
+                nativeId,
+                producer,
+              ),
+            )
+            .pipe(
+              Effect.mapError((cause) =>
+                CodexErrors.CodexAppServerRequestError.internalError(
+                  "Native mutation is held pending conversation reconciliation.",
+                  undefined,
+                  { cause },
                 ),
-              )
-              .pipe(
-                Effect.mapError((cause) =>
-                  CodexErrors.CodexAppServerRequestError.internalError(
-                    "Native mutation is held pending conversation reconciliation.",
-                    undefined,
-                    { cause },
-                  ),
-                ),
-              );
-          });
+              ),
+            );
+        });
         const client = new Proxy(currentProducer.client, {
           get(_target, property) {
             if (property === "raw")
@@ -2107,15 +2107,16 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                 get(_raw, key) {
                   const raw = currentProducer.client.raw;
                   if (key === "request") {
-                    const request: CodexRuntimeProducer["client"]["raw"]["request"] = (
-                      method,
-                      params,
-                    ) =>
-                      Effect.gen(function* () {
-                        const producer = (yield* CodexProducerContext) ?? currentProducer;
-                        yield* requestAdmission(method, params, producer);
-                        return yield* producer.client.raw.request(method, params);
-                      });
+                    const request: CodexRuntimeProducer["client"]["raw"]["request"] = Effect.fn(
+                      "CodexAdapterV2.rawRequest",
+                    )(function* (
+                      method: string,
+                      params?: unknown,
+                    ): Effect.fn.Return<unknown, CodexErrors.CodexAppServerError> {
+                      const producer = (yield* CodexProducerContext) ?? currentProducer;
+                      yield* requestAdmission(method, params, producer);
+                      return yield* producer.client.raw.request(method, params);
+                    });
                     return request;
                   }
                   const member = Reflect.get(raw, key);
@@ -2128,12 +2129,19 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
             if (property === "handleServerRequest") return handleServerRequest;
             const actual = currentProducer.client;
             if (property === "request") {
-              const request: CodexRuntimeProducer["client"]["request"] = (method, params) =>
-                Effect.gen(function* () {
-                  const producer = (yield* CodexProducerContext) ?? currentProducer;
-                  yield* requestAdmission(method, params, producer);
-                  return yield* producer.client.request(method, params);
-                });
+              const request: CodexRuntimeProducer["client"]["request"] = Effect.fn(
+                "CodexAdapterV2.request",
+              )(function* <M extends CodexRpc.ClientRequestMethod>(
+                method: M,
+                params: CodexRpc.ClientRequestParamsByMethod[M],
+              ): Effect.fn.Return<
+                CodexRpc.ClientRequestResponsesByMethod[M],
+                CodexErrors.CodexAppServerError
+              > {
+                const producer = (yield* CodexProducerContext) ?? currentProducer;
+                yield* requestAdmission(method, params, producer);
+                return yield* producer.client.request(method, params);
+              });
               return request;
             }
             const member = Reflect.get(actual, property);

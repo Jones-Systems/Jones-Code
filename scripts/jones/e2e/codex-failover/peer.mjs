@@ -370,7 +370,7 @@ const handle = ({ id, method, params = {} }) => {
       return write({
         id,
         error: {
-          code: -32000,
+          code: -32600,
           message: "Thread already has an active writer in another Codex process",
         },
       });
