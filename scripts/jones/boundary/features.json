@@ -4,6 +4,20 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "workspace-retirement-qualification",
+      "tests": [
+        "apps/server/src/jones/workspaceRetirement/Conformance.test.ts",
+        "apps/server/src/jones/workspaceRetirement/Behavior.test.ts",
+        "apps/server/src/jones/workspaceRetirement/CompletionObservation.test.ts",
+        "apps/server/src/jones/workspaceRetirement/ProjectProduction.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",
+        "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "scripts/jones/worktree-setup/setup.node-test.mjs",
+        "scripts/jones/worktree-setup/entrypoint.node-test.mjs"
+      ],
+      "scope": "C1 read-only qualification, protection-first ignored classification, explicit bounded C2 content proof and participant guard; pinned A1 WSQ/DV corpus executes real disposable Git recipes. Automatic project/setup completion is metadata-only, proof deferred, one 64 KiB/100 ms killed-and-reaped sink attempt, with no manufactured allocation obligation. Accepted shared ProjectSetupScriptRunner edit observes actual terminal outcomes without changing ordinary idle-close behavior; source implementation stays in Jones modules. Darwin descriptor proof uses optional system Python; Linux uses native Node descriptors. Native process adapters expose partial/unavailable coverage; no retirement execution, release, installation or runtime adoption."
+    },
+    {
       "id": "packaged-desktop-recovery-harness",
       "tests": [
         "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
