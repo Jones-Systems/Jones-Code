@@ -748,11 +748,9 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
       const originalPrompt = "original prompt must never be replayed";
       const newPrompt = "new owner prompt after local recovery";
       const originalRunId = `run:thread:${threadId}:ordinal:1`;
-      const originalProviderThreadId =
-        `provider-thread:provider:codex:native-thread:${encodeURIComponent(`pending:${originalRunId}`)}`;
+      const originalProviderThreadId = `provider-thread:provider:codex:native-thread:${encodeURIComponent(`pending:${originalRunId}`)}`;
       const originalMessageItemId = "turn-item:message:publication-new-send%3Afailed-original";
-      const originalErrorItemId =
-        `turn-item:run:${encodeURIComponent(originalRunId)}:signal:provider-thread-load-failure`;
+      const originalErrorItemId = `turn-item:run:${encodeURIComponent(originalRunId)}:signal:provider-thread-load-failure`;
       const historicalItems = [
         {
           type: "message",
