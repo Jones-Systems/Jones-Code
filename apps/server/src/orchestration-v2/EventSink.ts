@@ -13,7 +13,7 @@ import type {
   WakeCommit,
 } from "../jones/threadResultDependencies/DependencyCommit.ts";
 import { makeOwnerSelectionStore } from "../jones/threadConfiguration/ownerSelectionStore.ts";
-import type { ModelSelection } from "@t3tools/contracts";
+import type { ProviderRuntimeBinding, ModelSelection } from "@t3tools/contracts";
 import type { ThreadTitleCommitContext } from "../jones/threadTitle/commitContext.ts";
 import type { CodexFailoverCommitContext } from "../jones/codexFailover/CodexFailover.ts";
 import * as CodexFailoverStore from "../jones/codexFailover/CodexFailoverStore.ts";
@@ -67,6 +67,7 @@ import {
   type OrchestrationV2StoredEvent as PublicStoredEvent,
   CommandId,
   type OrchestrationV2ProviderThread,
+  OrchestrationV2ProviderRef,
   type ProviderRuntimeEvidenceCapture,
   type RequestedRuntimeIdentity,
   type OrchestrationV2PrivateEvent,
@@ -223,6 +224,12 @@ export interface EventSinkV2Shape {
   readonly qualifyDeletionWorktreeRemovalObservation?: (
     observation: DeletionWorktreeRemovalObservationV1,
   ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly readStoppedRuntime?: (
+    provider: OrchestrationV2ProviderThread,
+  ) => Effect.Effect<ProviderRuntimeBinding | null, EventSinkV2Error>;
+  readonly hasStoppedRuntime?: (
+    binding: ProviderRuntimeBinding,
+  ) => Effect.Effect<boolean, EventSinkV2Error>;
   readonly readRuntimeStop?: (commandId: CommandId) => Effect.Effect<
     {
       readonly identity: RuntimeStop.RuntimeStopIdentity;
@@ -276,6 +283,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     /** Return no events if another thread owns this native session at commit time. */
     readonly unlessNativeThreadOwned?: Pick<
@@ -294,6 +310,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     /**
      * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
@@ -318,6 +343,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
@@ -344,6 +378,15 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
+      readonly expectedProviderThreadIdentity?: Pick<
+        OrchestrationV2ProviderThread,
+        | "id"
+        | "appThreadId"
+        | "driver"
+        | "providerInstanceId"
+        | "providerSessionId"
+        | "nativeThreadRef"
+      >;
     };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
@@ -732,6 +775,25 @@ const layerBase: Layer.Layer<
         ]);
         const current =
           records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
+        const expectedIdentity = input.runtimeIdentityBoundary.expectedProviderThreadIdentity;
+        if (
+          expectedIdentity !== undefined &&
+          (expectedIdentity.id !== update.payload.id ||
+            expectedIdentity.appThreadId !== update.threadId ||
+            current === null ||
+            current.id !== expectedIdentity.id ||
+            current.appThreadId !== expectedIdentity.appThreadId ||
+            current.driver !== expectedIdentity.driver ||
+            current.providerInstanceId !== expectedIdentity.providerInstanceId ||
+            current.providerSessionId !== expectedIdentity.providerSessionId ||
+            (current.nativeThreadRef === null || expectedIdentity.nativeThreadRef === null
+              ? current.nativeThreadRef !== expectedIdentity.nativeThreadRef
+              : !Schema.toEquivalence(OrchestrationV2ProviderRef)(
+                  current.nativeThreadRef,
+                  expectedIdentity.nativeThreadRef,
+                )))
+        )
+          return null;
         if (
           (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
             (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
@@ -2232,6 +2294,10 @@ const layerBase: Layer.Layer<
         deletionAdmission
           .qualify(observation)
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      readStoppedRuntime: (provider) =>
+        runtimeStops.readStoppedRuntime(provider).pipe(Effect.mapError(stopError)),
+      hasStoppedRuntime: (binding) =>
+        runtimeStops.hasStoppedRuntime(binding).pipe(Effect.mapError(stopError)),
       readRuntimeStop: (commandId) =>
         runtimeStops.readState(commandId).pipe(Effect.mapError(stopError)),
       startRuntimeStop: (commandId, target, revalidate) =>

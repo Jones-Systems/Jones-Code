@@ -48,6 +48,11 @@ export class Provenance extends Context.Service<
       fact: ProvenanceFact,
     ) => Effect.Effect<void, LifecycleError>;
     readonly lookup: Store.ProvenanceStore["Service"]["lookup"];
+    readonly production?: (
+      threadId: string,
+      reference: string,
+      worktreePath: string,
+    ) => Effect.Effect<void, LifecycleError>;
   }
 >()("t3/jones/workspaceLifecycle/Provenance") {}
 
@@ -313,6 +318,28 @@ const make = Effect.gen(function* () {
   return Provenance.of({
     capture,
     lookup: store.lookup,
+    production: Effect.fn("Provenance.production")(function* (
+      threadId: string,
+      reference: string,
+      worktreePath: string,
+    ) {
+      const record = yield* capture({
+        threadId,
+        reason: "reference",
+        createdBy: "jones-producer",
+        requireExistingPhysical: true,
+      });
+      if (record.target.cwd !== worktreePath)
+        return yield* new LifecycleError({ reason: "identity" });
+      yield* store.fact({
+        id: `production:${digest({ incarnation: record.incarnation_id, reference })}`,
+        incarnation_id: record.incarnation_id,
+        thread_id: threadId,
+        kind: "production",
+        recorded_at: yield* DateTime.now.pipe(Effect.map(DateTime.formatIso)),
+        reference,
+      });
+    }, Effect.mapError(error)),
     record: Effect.fn("Provenance.record")(function* (source, fact) {
       if (
         incarnation(environment, source) !== fact.incarnation_id ||

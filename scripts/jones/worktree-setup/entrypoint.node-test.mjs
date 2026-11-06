@@ -31,6 +31,15 @@ NodeTest.test(
           NodePath.join(worktree, "scripts/jones/worktree-setup/setup.ts"),
         );
       }
+      const namespace = "apps/server/src/jones/workspaceRetirement";
+      NodeFS.mkdirSync(NodePath.join(worktree, namespace), { recursive: true });
+      for (const name of NodeFS.readdirSync(NodePath.join(repository, namespace))) {
+        if (name.endsWith(".ts") && !name.includes(".test"))
+          NodeFS.copyFileSync(
+            NodePath.join(repository, namespace, name),
+            NodePath.join(worktree, namespace, name),
+          );
+      }
       const result = NodeChildProcess.spawnSync(
         process.execPath,
         [NodePath.join(worktree, "scripts/setup-worktree.ts")],

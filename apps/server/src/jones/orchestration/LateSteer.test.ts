@@ -20,6 +20,7 @@ import {
 
 const binding: ControlAdmission.ControlDispatchBinding = {
   instanceId: "codex-a",
+  threadId: "app-thread-a",
   providerSessionId: "session-a",
   providerThreadId: "provider-thread-a",
   providerTurnId: "provider-turn-a",
@@ -38,6 +39,7 @@ describe("bounded native steering", () => {
       const sent = yield* Deferred.make<void>();
       const caller = yield* boundedSteer({
         instanceId: binding.instanceId,
+        target: ControlAdmission.targetFromDispatch(binding),
         prepare: Deferred.await(goal).pipe(
           Effect.as({
             binding: { ...binding, nativeTurnId: "goal-successor" },
@@ -55,10 +57,10 @@ describe("bounded native steering", () => {
       assert.equal(exit._tag, "Failure");
       if (exit._tag === "Failure")
         assert.equal(findSteerFailure(exit.cause)?._tag, "SteerOutcomeUnknown");
-      yield* admission.assertOpen(binding.instanceId).pipe(Effect.flip);
+      yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding)).pipe(Effect.flip);
       yield* Deferred.succeed(response, { turnId: "goal-successor" });
       yield* TestClock.adjust(0);
-      yield* admission.assertOpen(binding.instanceId);
+      yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding));
     }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
 
@@ -67,11 +69,12 @@ describe("bounded native steering", () => {
       const admission = yield* ControlAdmission.ControlAdmission;
       const caller = yield* boundedSteer({
         instanceId: binding.instanceId,
+        target: ControlAdmission.targetFromDispatch(binding),
         prepare: Effect.never,
       }).pipe(Effect.flip, Effect.forkScoped);
       yield* TestClock.adjust(CODEX_STEER_TIMEOUT_MS);
       assert.equal((yield* Fiber.join(caller))._tag, "SteerNotDispatched");
-      yield* admission.assertOpen(binding.instanceId);
+      yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding));
       assert.deepEqual(yield* admission.snapshot(binding.instanceId), []);
     }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
@@ -88,6 +91,7 @@ describe("bounded native steering", () => {
         let sends = 0;
         const caller = yield* boundedSteer({
           instanceId: binding.instanceId,
+          target: ControlAdmission.targetFromDispatch(binding),
           prepare: Effect.succeed({
             binding,
             producerScope,
@@ -103,12 +107,12 @@ describe("bounded native steering", () => {
         yield* Deferred.await(sent);
         if (ending === "deadline") yield* TestClock.adjust(CODEX_STEER_TIMEOUT_MS);
         else yield* Fiber.interrupt(caller);
-        yield* admission.assertOpen(binding.instanceId).pipe(Effect.flip);
+        yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding)).pipe(Effect.flip);
         assert.equal(sends, 1);
         yield* Deferred.succeed(response, { turnId: binding.nativeTurnId });
         yield* Deferred.await(observed);
         yield* TestClock.adjust(0);
-        yield* admission.assertOpen(binding.instanceId);
+        yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding));
         assert.equal(sends, 1);
       }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
@@ -119,6 +123,7 @@ describe("bounded native steering", () => {
       const producerScope = yield* Scope.Scope;
       const error = yield* boundedSteer({
         instanceId: binding.instanceId,
+        target: ControlAdmission.targetFromDispatch(binding),
         prepare: Effect.succeed({
           binding,
           producerScope,
@@ -126,7 +131,7 @@ describe("bounded native steering", () => {
         }),
       }).pipe(Effect.flip);
       assert.equal(error._tag, "SteerOutcomeUnknown");
-      yield* admission.assertOpen(binding.instanceId).pipe(Effect.flip);
+      yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding)).pipe(Effect.flip);
     }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
 
@@ -144,10 +149,15 @@ describe("bounded native steering", () => {
         });
         yield* boundedSteer({
           instanceId: binding.instanceId,
+          target: ControlAdmission.targetFromDispatch(binding),
           prepare: Effect.succeed({ binding, producerScope, send: Effect.fail(error) }),
         }).pipe(Effect.flip);
-        if (kind === "validation") yield* admission.assertOpen(binding.instanceId);
-        else yield* admission.assertOpen(binding.instanceId).pipe(Effect.flip);
+        if (kind === "validation")
+          yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding));
+        else
+          yield* admission
+            .assertOpen(ControlAdmission.targetFromDispatch(binding))
+            .pipe(Effect.flip);
       }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
 
@@ -159,6 +169,7 @@ describe("bounded native steering", () => {
       const other = yield* admission.begin({ ...binding, nativeTurnId: "other" });
       const error = yield* boundedSteer({
         instanceId: binding.instanceId,
+        target: ControlAdmission.targetFromDispatch(binding),
         prepare: admission.markUnknown(other).pipe(
           Effect.as({
             binding,
@@ -173,6 +184,7 @@ describe("bounded native steering", () => {
       assert.equal(error._tag, "ControlAdmissionHeld");
       const second = yield* boundedSteer({
         instanceId: binding.instanceId,
+        target: ControlAdmission.targetFromDispatch(binding),
         prepare: Effect.never,
       }).pipe(Effect.flip);
       assert.equal(second._tag, "ControlAdmissionHeld");

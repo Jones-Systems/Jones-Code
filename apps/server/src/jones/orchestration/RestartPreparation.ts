@@ -9,6 +9,7 @@ import {
 import { runtimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
 import type {
   CapturedRuntimeStop,
+  CapturedRuntimeRetirement,
   ProviderAdapterV2Error,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Cause from "effect/Cause";
@@ -21,6 +22,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EventStore from "../../orchestration-v2/EventStore.ts";
@@ -48,10 +50,12 @@ export class RestartPreparationError extends Schema.TaggedError<RestartPreparati
 
 export class RestartThreadHeld extends Schema.TaggedError<RestartThreadHeld>()(
   "RestartThreadHeld",
-  { threadId: ThreadId },
+  { threadId: ThreadId, stage: Schema.Literals(["interrupt", "detach"]) },
 ) {
   override get message() {
-    return "The previous provider runtime has an unresolved restart. Stop that exact runtime before starting more work.";
+    return this.stage === "interrupt"
+      ? "The previous provider turn has an unresolved restart interrupt. Wait for its terminal evidence or stop that exact runtime before starting more work."
+      : "The previous provider runtime has an unresolved restart retirement. Wait for its exact retirement or stop that runtime before starting more work.";
   }
 }
 const isRestartPreparationError = Schema.is(RestartPreparationError);
@@ -167,6 +171,9 @@ export class RestartPreparation extends Context.Service<
         CapturedRuntimeStop | null,
         ProviderAdapterV2Error | ProviderSessionManagerV2Error
       >;
+      readonly captureRetirement?: (
+        binding: ProviderRuntimeBinding,
+      ) => Effect.Effect<CapturedRuntimeRetirement | null, ProviderSessionManagerV2Error>;
     }) => Effect.Effect<
       void,
       | RestartPreparationError
@@ -193,12 +200,14 @@ const make = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const sink = yield* EventSink.EventSinkV2;
   const events = yield* EventStore.EventStoreV2;
+  const scope = yield* Effect.scope;
   const holds = new Map<
     string,
     {
       target: OldTarget;
       binding: ProviderRuntimeBinding | undefined;
       capture: CapturedRuntimeStop | null;
+      retirement: CapturedRuntimeRetirement | null;
       stage: "interrupt" | "detach";
     }
   >();
@@ -222,7 +231,7 @@ const make = Effect.gen(function* () {
           continue;
         }
       }
-      return yield* new RestartThreadHeld({ threadId });
+      return yield* new RestartThreadHeld({ threadId, stage: hold.stage });
     }
   });
   return RestartPreparation.of({
@@ -234,7 +243,9 @@ const make = Effect.gen(function* () {
         (hold) => hold.target.threadId === threadId,
       );
       const capture = targets.length === 1 ? targets[0]!.capture : null;
-      return capture !== null && (yield* capture.isCurrent) ? capture : null;
+      if (capture === null) return null;
+      if (capture.retirement !== undefined && (yield* capture.retirement.started)) return capture;
+      return (yield* capture.isCurrent) ? capture : null;
     }),
     resolveAfterTeardown: Effect.fn("RestartPreparation.resolveAfterTeardown")((binding) =>
       Effect.sync(() => {
@@ -255,6 +266,7 @@ const make = Effect.gen(function* () {
       detach,
       start,
       captureStop,
+      captureRetirement,
     }: Parameters<RestartPreparation["Service"]["run"]>[0]) {
       const { request, threadId } = effect;
       const committed = yield* events
@@ -342,12 +354,35 @@ const make = Effect.gen(function* () {
         )
           ? candidate
           : null;
+      const readRetirement =
+        captureRetirement === undefined || binding === undefined
+          ? Effect.succeed(null)
+          : captureRetirement(binding).pipe(
+              Effect.map((retirement) =>
+                retirement !== null &&
+                Object.entries(binding).every(
+                  ([key, value]) =>
+                    retirement.binding[key as keyof ProviderRuntimeBinding] === value,
+                )
+                  ? retirement
+                  : null,
+              ),
+              Effect.catchCause((cause) =>
+                Cause.hasInterruptsOnly(cause)
+                  ? Effect.failCause(
+                      Cause.fromReasons<never>(cause.reasons.filter(Cause.isInterruptReason)),
+                    )
+                  : Effect.succeed(null),
+              ),
+            );
+      let retirement: CapturedRuntimeRetirement | null = null;
       let stage: "interrupt" | "detach" | "admission" = "admission";
       const preparation = Effect.gen(function* () {
         yield* assertThreadOpen(threadId);
         stage = "interrupt";
         yield* interrupt;
         stage = "detach";
+        retirement = yield* readRetirement;
         yield* detach;
       });
       const result = yield* Effect.uninterruptibleMask((restore) =>
@@ -355,8 +390,40 @@ const make = Effect.gen(function* () {
           const result = yield* Effect.exit(restore(preparation));
           if (Exit.isSuccess(result)) return result;
           // Hold before publishing failure: queued work may react to that commit.
-          if (stage !== "admission")
-            holds.set(effect.id, { target: { threadId, ...request }, binding, capture, stage });
+          if (stage !== "admission") {
+            if (stage === "detach" && retirement === null)
+              retirement = yield* readRetirement.pipe(
+                Effect.catchCause(() => Effect.succeed(null)),
+              );
+            const hold = { target: { threadId, ...request }, binding, capture, retirement, stage };
+            holds.set(effect.id, hold);
+            if (stage === "detach" && retirement !== null) {
+              // Keep the original observer after detach returns; missing manager state is never retirement proof.
+              const originalRetirement = retirement;
+              yield* Effect.gen(function* () {
+                const observation = yield* originalRetirement.awaitRetired.pipe(Effect.forkChild);
+                const result = yield* Fiber.await(observation);
+                return Exit.isFailure(result) ? yield* Effect.fail(result.cause) : result.value;
+              }).pipe(
+                Effect.retry({ schedule: Schedule.spaced("1 second") }),
+                Effect.tap((receipt) =>
+                  Effect.sync(() => {
+                    if (
+                      holds.get(effect.id) === hold &&
+                      binding !== undefined &&
+                      Object.entries(binding).every(
+                        ([key, value]) =>
+                          receipt.binding[key as keyof ProviderRuntimeBinding] === value,
+                      )
+                    )
+                      holds.delete(effect.id);
+                  }),
+                ),
+                Effect.ignoreCause,
+                Effect.forkIn(scope, { uninterruptible: false }),
+              );
+            }
+          }
           const now = yield* DateTime.now;
           const eventBase = {
             threadId,

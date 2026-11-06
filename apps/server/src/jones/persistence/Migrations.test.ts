@@ -462,6 +462,10 @@ it.effect(
           ...released135Identities.map(([id, name]) => [id, name]),
           [136, "WorkspaceProvenance"],
           [137, "NativeCreationLeaseRenewal"],
+          [138, "NativeExecutionProcessCustody"],
+          [139, "OrdinaryCheckoutProcessCustody"],
+          [140, "AuthSessionClientMetadata"],
+          [141, "WorkspaceRuntimeUses"],
         ],
       );
       assert.deepStrictEqual(

@@ -117,12 +117,15 @@ it.effect.each(["codex", "opencode"] as const)(
         Layer.mergeAll(
           layer,
           Layer.mock(Sessions.ProviderSessionManagerV2)({
+            reconcileThreadBindingPublication: () => Effect.succeed(null),
             awaitThreadRetirement: () => Effect.void,
             hasRetiredWriter: () => Effect.succeed(false),
             detach: () =>
               Effect.die("An unchanged shared conversation must not retire its writer."),
           }),
           Layer.mock(Sink.EventSinkV2)({
+            readStoppedRuntime: () => Effect.succeed(null),
+            hasStoppedRuntime: () => Effect.succeed(false),
             writeIfRunCurrent: () => Effect.die("Reuse must not persist a replacement binding."),
           }),
         ),

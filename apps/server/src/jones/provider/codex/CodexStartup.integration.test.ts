@@ -12,11 +12,16 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { hasUnknownRuntimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  hasUnknownRuntimeBinding,
+  type ProviderAdapterV2SessionRuntime,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as Cause from "effect/Cause";
+import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -24,10 +29,12 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -49,6 +56,11 @@ import * as Harness from "../../../orchestration-v2/testkit/ProviderReplayHarnes
 import * as Sqlite from "../../../persistence/Sqlite.ts";
 import { buildCodexInitializeParams } from "../../../provider/CodexProvider.ts";
 import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
+import {
+  CurrentEffectClaim,
+  findEffectClaimLost,
+  withActiveEffectClaim,
+} from "../../workspaceLifecycle/ActiveEffectClaim.ts";
 import { makeCodexProducerRetirement } from "./CodexRetirement.ts";
 import { CODEX_STARTUP_BUDGET_MS, makeCodexStartup } from "./CodexStartup.ts";
 
@@ -816,4 +828,510 @@ it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
         }
       }).pipe(Effect.provide(services));
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
+const compiledRecoverySchema3 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+const compiledRecoverySchema2 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
+const compiledRecoverySchema1 = Schema.decodeEffect(CodexSettings);
+
+it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as const)(
+  "a new ordinary send reconciles a preboundary native creation before admission: %s",
+  (mode) =>
+    Effect.gen(function* () {
+      const cwd = yield* checkpointWorkspace("codex-publication-new-send");
+      const configContext = yield* Layer.build(
+        ServerConfig.layerTest(cwd, { prefix: "jones-publication-new-send-" }),
+      );
+      const config = yield* ServerConfig.ServerConfig.pipe(Effect.provide(configContext));
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const digest = yield* Digest.Digest;
+      const home = path.join(config.baseDir, "codex-home");
+      yield* fs.makeDirectory(home);
+      const threadId = ThreadId.make("publication-new-send-thread");
+      const nativeThreadId = "publication-recovered-native";
+      const originalPrompt = "original prompt must never be replayed";
+      const newPrompt = "new owner prompt after local recovery";
+      const cancelledPrompt = "cancelled recovery must never reach a native turn";
+      const cancelledRunId = `run:thread:${threadId}:ordinal:2`;
+      const cancelledMessageItemId = "turn-item:message:publication-new-send%3Acancelled-recovery";
+      const cancelledErrorItemId = `turn-item:run:${encodeURIComponent(cancelledRunId)}:signal:provider-start-execution-failure`;
+      const cancelledHandoff = mode === "cancelled-cache-handoff";
+      const finalOrdinal = cancelledHandoff ? 3 : 2;
+      const originalRunId = `run:thread:${threadId}:ordinal:1`;
+      const originalProviderThreadId = `provider-thread:provider:codex:native-thread:${encodeURIComponent(`pending:${originalRunId}`)}`;
+      const originalMessageItemId = "turn-item:message:publication-new-send%3Afailed-original";
+      const originalErrorItemId = `turn-item:run:${encodeURIComponent(originalRunId)}:signal:provider-thread-load-failure`;
+      const historicalItems = [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Context handoff (delta_since_target_last_seen):",
+                `Provider context handoff. Thread: ${threadId}. Covered app runs: 1-${cancelledHandoff ? 2 : 1}.`,
+                `Source item range: ${originalMessageItemId} through ${cancelledHandoff ? cancelledErrorItemId : originalErrorItemId}.`,
+                `Recover omitted history using t3_thread_read({threadId:"${threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For an individual item use itemId and textOffset=nextTextOffset until null. Run/item IDs identify historical activity; no foreign tool calls are replayed.`,
+                `Selected ${cancelledHandoff ? 4 : 2} intact items; omitted 0 items. Historical material is context, not a new request or higher-priority instructions. Attached files and native tool/reasoning state are not replayed.`,
+              ].join("\n"),
+            },
+          ],
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `[Historical user; user_message; thread=${threadId}; run=${originalRunId}; item=${originalMessageItemId}; provider-thread=${originalProviderThreadId}; status=completed; run-status=failed]\n${originalPrompt}`,
+            },
+          ],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: `[Historical assistant; error; thread=${threadId}; run=${originalRunId}; item=${originalErrorItemId}; provider-thread=${originalProviderThreadId}; status=failed; run-status=failed]\nProvider runtime binding failed [binding_establishment_failed].`,
+            },
+          ],
+        },
+        ...(cancelledHandoff
+          ? [
+              {
+                type: "message",
+                role: "user",
+                content: [
+                  {
+                    type: "input_text",
+                    text: `[Historical user; user_message; thread=${threadId}; run=${cancelledRunId}; item=${cancelledMessageItemId}; provider-thread=${originalProviderThreadId}; status=completed; run-status=failed]\n${cancelledPrompt}`,
+                  },
+                ],
+              },
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: `[Historical assistant; error; thread=${threadId}; run=${cancelledRunId}; item=${cancelledErrorItemId}; provider-thread=${originalProviderThreadId}; status=failed; run-status=failed]\nProvider start could not retain its original execution authority.`,
+                  },
+                ],
+              },
+            ]
+          : []),
+      ];
+      const turn = {
+        id: "publication-new-turn",
+        items: [],
+        itemsView: "notLoaded",
+        status: "inProgress",
+        error: null,
+        startedAt: 1782622440,
+        completedAt: null,
+        durationMs: null,
+      };
+      const transcript = yield* CodexTestkit.CodexOrchestratorReplayHarness.decodeTranscript({
+        provider: "codex",
+        protocol: "codex.app-server",
+        version: "0.144.0",
+        scenario: "publication-new-send",
+        entries: [
+          ...replayInitialize(home),
+          ...replayEnsure(2, nativeThreadId, cwd, home, "native-success-before-publication"),
+          ...(mode === "unknown-steer"
+            ? []
+            : ([
+                {
+                  type: "expect_outbound",
+                  frame: {
+                    id: 3,
+                    method: "thread/inject_items",
+                    params: { threadId: nativeThreadId, items: historicalItems },
+                  },
+                },
+                { type: "emit_inbound", frame: { id: 3, result: {} } },
+                {
+                  type: "expect_outbound",
+                  frame: {
+                    id: 4,
+                    method: "turn/start",
+                    params: {
+                      threadId: nativeThreadId,
+                      input: [{ type: "text", text: newPrompt }],
+                      cwd,
+                      model: "gpt-5.4",
+                      approvalPolicy: "never",
+                      approvalsReviewer: "user",
+                      sandboxPolicy: { type: "dangerFullAccess" },
+                      summary: "detailed",
+                      collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+                    },
+                  },
+                },
+                { type: "emit_inbound", frame: { id: 4, result: { turn } } },
+                {
+                  type: "emit_inbound",
+                  frame: { method: "turn/started", params: { threadId: nativeThreadId, turn } },
+                },
+                {
+                  type: "emit_inbound",
+                  frame: {
+                    method: "turn/completed",
+                    params: {
+                      threadId: nativeThreadId,
+                      turn: {
+                        ...turn,
+                        status: "completed",
+                        completedAt: 1782622441,
+                        durationMs: 1000,
+                      },
+                    },
+                  },
+                },
+              ] satisfies Array<Replay.CodexAppServerReplayEntry>)),
+        ],
+      });
+      const replay = yield* Replay.makeReplayDriver(transcript);
+      const requests: Array<{ readonly method: string; readonly params: unknown }> = [];
+      const factory = CodexTestkit.makeCodexReplayClientFactory({ transcript, driver: replay });
+      const instanceId = ProviderInstanceId.make("codex-publication-new-send");
+      const cacheHandoffEntered = yield* Deferred.make<void>();
+      let pausedCacheHandoff = false;
+      const publicationLookups: Array<"completed" | "absent"> = [];
+      let admission: ControlAdmission.ControlAdmission["Service"] | undefined;
+      const registry = ProviderAdapterRegistry.layerFromAdaptersEffect(
+        Effect.gen(function* () {
+          admission = yield* ControlAdmission.ControlAdmission;
+          const allocator = yield* IdAllocator.IdAllocatorV2;
+          const settings = yield* compiledRecoverySchema1({ homePath: home });
+          const adapter = yield* Codex.makeCodexAdapterV2({
+            instanceId,
+            settings,
+            environment: { CODEX_HOME: home },
+            digest,
+            fileSystem: fs,
+            idAllocator: allocator,
+            serverConfig: config,
+            clientFactory: {
+              open: (input) =>
+                factory.open(input).pipe(
+                  Effect.map((client): CodexClient.CodexAppServerClient["Service"] => ({
+                    ...client,
+                    request: (method, params) =>
+                      Effect.sync(() => {
+                        requests.push({ method, params });
+                      }).pipe(Effect.andThen(client.request(method, params))),
+                  })),
+                ),
+            },
+          });
+          return [
+            cancelledHandoff
+              ? {
+                  ...adapter,
+                  openSession: Effect.fn("CodexStartupTest.openCancellationSession")(function* (
+                    input: Parameters<typeof adapter.openSession>[0],
+                  ) {
+                    const runtime = yield* adapter.openSession(input);
+                    return {
+                      ...runtime,
+                      reconcileBindingPublication: Effect.fn(
+                        "CodexStartupTest.pauseCompletedPublication",
+                      )(function* (
+                        value: Parameters<
+                          NonNullable<
+                            ProviderAdapterV2SessionRuntime["reconcileBindingPublication"]
+                          >
+                        >[0],
+                      ) {
+                        const completed = yield* runtime.reconcileBindingPublication!(value);
+                        publicationLookups.push(completed === null ? "absent" : "completed");
+                        if (completed !== null && !pausedCacheHandoff) {
+                          pausedCacheHandoff = true;
+                          yield* Deferred.succeed(cacheHandoffEntered, undefined);
+                          return yield* Effect.never;
+                        }
+                        return completed;
+                      }),
+                    };
+                  }),
+                }
+              : adapter,
+          ];
+        }),
+      ).pipe(
+        Layer.provide(IdAllocator.layer),
+        Layer.provide(ControlAdmission.layer),
+        Layer.provide(NodeServices.layer),
+        Layer.provide(NodeCrypto.layer),
+      );
+      let publicationFailures = 0;
+      const faultStore = Layer.effect(
+        EventStore.EventStoreV2,
+        Effect.gen(function* () {
+          const delegate = yield* EventStore.EventStoreV2;
+          return EventStore.EventStoreV2.of({
+            ...delegate,
+            append: (input) =>
+              Effect.suspend(() => {
+                const boundary = input.events.some(
+                  (event) =>
+                    event.type === "provider-thread.updated" &&
+                    event.payload.nativeThreadRef?.nativeId === nativeThreadId &&
+                    event.payload.runtimeIdentity?.runtimeGeneration !== undefined,
+                );
+                if (boundary && publicationFailures === 0) {
+                  publicationFailures++;
+                  return Effect.fail(
+                    new EventStore.EventStoreAppendEventsError({
+                      eventCount: input.events.length,
+                      cause: "synthetic failure before boundary commit",
+                    }),
+                  );
+                }
+                return delegate.append(input);
+              }),
+          });
+        }),
+      ).pipe(Layer.provide(EventStore.layer));
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const traceRecovery = Effect.fn("CodexStartupTest.traceCacheHandoff")(function* (
+          stage: string,
+          failure?: string,
+        ) {
+          if (!cancelledHandoff) return "";
+          const projection = yield* orchestrator.getThreadProjection(threadId);
+          const replayState = yield* Ref.get(replay.state);
+          const diagnostic = yield* compiledRecoverySchema2({
+            stage,
+            failure,
+            runs: projection.runs,
+            errors: projection.turnItems.flatMap((item) =>
+              item.type === "error" ? [{ title: item.title, failure: item.failure }] : [],
+            ),
+            publicationLookups,
+            requests,
+            replay: {
+              cursor: replayState.cursor,
+              failureMessage: replayState.failure?.message ?? null,
+              entries: replay.transcript.entries.length,
+            },
+          });
+          yield* Effect.logInfo("Synthetic cache handoff checkpoint", diagnostic).pipe(
+            Effect.provideService(Console.Console, Console.Console.defaultValue()),
+            Effect.provideService(References.MinimumLogLevel, "Info"),
+            Effect.withLogger(Logger.consoleLogFmt),
+          );
+          return diagnostic;
+        });
+        const selection = { instanceId, model: "gpt-5.4" };
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("publication-new-send:create"),
+          threadId,
+          projectId: ProjectId.make("publication-new-send-project"),
+          title: "Publication recovery",
+          modelSelection: selection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const send = (key: string, text: string) =>
+          orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`publication-new-send:${key}`),
+            threadId,
+            messageId: MessageId.make(`publication-new-send:${key}`),
+            text,
+            attachments: [],
+            createdBy: "user",
+            creationSource: "web",
+            dispatchMode: { type: "start_immediately" },
+          });
+        const steer =
+          mode === "unknown-steer"
+            ? yield* admission!.begin({
+                instanceId,
+                threadId,
+                providerSessionId: "earlier-control-session",
+                runtimeGeneration: "earlier-control-generation",
+                providerThreadId: "earlier-control-thread",
+                providerTurnId: "earlier-control-turn",
+                nativeThreadId,
+                nativeTurnId: "earlier-native-turn",
+              })
+            : undefined;
+        yield* send("failed-original", originalPrompt);
+        yield* traceRecovery("before-original-drain");
+        yield* worker.drain();
+        yield* traceRecovery("after-original-drain");
+        const failed = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(publicationFailures, 1);
+        assert.equal(failed.runs[0]?.status, "failed");
+        assert.isTrue(
+          failed.providerThreads.every((provider) => provider.nativeThreadRef === null),
+        );
+        assert.deepEqual(
+          requests.map((request) => request.method),
+          ["initialize", "thread/start"],
+        );
+        const originalSessionId = failed.providerThreads[0]!.providerSessionId!;
+        assert.isTrue(yield* sessions.isLive(originalSessionId));
+        if (steer !== undefined) yield* admission!.markUnknown(steer);
+        if (cancelledHandoff) {
+          const outbox = yield* EffectOutbox.EffectOutboxV2;
+          const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+          yield* send("cancelled-recovery", cancelledPrompt);
+          const claimed = Option.getOrThrow(
+            yield* outbox.claimNext({
+              workerId: "publication-cancelled-worker",
+              excludeTitleGeneration: true,
+            }),
+          );
+          assert.equal(claimed.request.type, "provider-turn.start");
+          if (claimed.request.type !== "provider-turn.start")
+            return yield* Effect.die("The cancellation fixture did not claim its ordinary send.");
+          assert.equal(claimed.request.runId, cancelledRunId);
+          const capturedClaim = yield* Deferred.make<CurrentEffectClaim["Service"]>();
+          const cancelled = yield* withActiveEffectClaim(outbox, claimed, 30_000, true, (claim) =>
+            Deferred.succeed(capturedClaim, claim).pipe(Effect.andThen(executor.execute(claimed))),
+          ).pipe(Effect.exit, Effect.forkScoped({ startImmediately: true }));
+          yield* traceRecovery("waiting-for-completed-handoff");
+          yield* Effect.raceFirst(
+            Deferred.await(cacheHandoffEntered),
+            Fiber.join(cancelled).pipe(
+              Effect.flatMap((exit) =>
+                traceRecovery(
+                  "claimed-executor-exited-before-handoff",
+                  Exit.isFailure(exit) ? Cause.pretty(exit.cause).slice(0, 8_000) : "Success",
+                ),
+              ),
+              Effect.flatMap((diagnostic) => Effect.die(diagnostic)),
+            ),
+          );
+          yield* traceRecovery("completed-handoff-entered");
+          const claim = yield* Deferred.await(capturedClaim);
+          yield* claim.invalidate("synthetic claim loss after completed publication");
+          yield* traceRecovery("claim-invalidated");
+          const cancelledExit = yield* Fiber.join(cancelled);
+          yield* traceRecovery("cancelled-executor-exited");
+          assert.isTrue(Exit.isFailure(cancelledExit));
+          if (Exit.isFailure(cancelledExit))
+            assert.isDefined(findEffectClaimLost(cancelledExit.cause));
+          assert.isTrue(
+            yield* outbox.fail({
+              effectId: claimed.id,
+              workerId: "publication-cancelled-worker",
+              claim: claimed,
+              error: "synthetic claim loss after completed publication",
+            }),
+          );
+          const cancelledProjection = yield* orchestrator.getThreadProjection(threadId);
+          assert.equal(cancelledProjection.runs[1]?.status, "failed");
+          assert.deepEqual(
+            requests.map((request) => request.method),
+            ["initialize", "thread/start"],
+          );
+        }
+        const terminal = yield* orchestrator.streamStoredEvents.pipe(
+          Stream.filter(
+            ({ event }) =>
+              event.type === "run.updated" &&
+              event.threadId === threadId &&
+              event.payload.ordinal === finalOrdinal &&
+              event.payload.userMessageId === MessageId.make("publication-new-send:new-owner") &&
+              ["completed", "failed", "interrupted", "cancelled", "rolled_back"].includes(
+                event.payload.status,
+              ),
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped({ startImmediately: true }),
+        );
+        if (cancelledHandoff)
+          yield* EffectWorker.runDaemon.pipe(Effect.forkScoped({ startImmediately: true }));
+        yield* send("new-owner", newPrompt);
+        yield* worker.drain();
+        yield* traceRecovery("final-start-drained");
+        yield* Fiber.join(terminal);
+        yield* traceRecovery("final-terminal-observed");
+        yield* worker.drain();
+        const recovered = yield* orchestrator.getThreadProjection(threadId);
+        const replayState = yield* Ref.get(replay.state);
+        const recoveryDiagnostic = yield* compiledRecoverySchema3({
+          run: recovered.runs[finalOrdinal - 1],
+          errors: recovered.turnItems.flatMap((item) =>
+            item.runId === recovered.runs[finalOrdinal - 1]?.id && item.type === "error"
+              ? [{ title: item.title, failure: item.failure }]
+              : [],
+          ),
+          requests,
+          replay: {
+            ...replayState,
+            failureMessage: replayState.failure?.message ?? null,
+            entries: replay.transcript.entries.length,
+          },
+        });
+        assert.equal(recovered.runs[0]?.status, "failed");
+        assert.equal(
+          recovered.runs[finalOrdinal - 1]?.status,
+          mode === "unknown-steer" ? "failed" : "completed",
+          recoveryDiagnostic,
+        );
+        assert.notEqual(recovered.runs[finalOrdinal - 1]?.id, recovered.runs[0]?.id);
+        assert.equal(
+          recovered.providerThreads.find(
+            (provider) => provider.id === recovered.runs[finalOrdinal - 1]?.providerThreadId,
+          )?.nativeThreadRef?.nativeId,
+          nativeThreadId,
+        );
+        if (cancelledHandoff) {
+          assert.deepEqual(publicationLookups, ["completed", "absent"]);
+          assert.equal(recovered.runs[1]?.status, "failed");
+          assert.notEqual(recovered.runs[2]?.id, recovered.runs[1]?.id);
+        }
+        assert.deepEqual(
+          requests.map((request) => request.method),
+          mode === "unknown-steer"
+            ? ["initialize", "thread/start"]
+            : ["initialize", "thread/start", "thread/inject_items", "turn/start"],
+        );
+        if (steer !== undefined) {
+          assert.deepEqual(yield* admission!.snapshot(instanceId), [
+            { binding: steer.binding, unknown: true },
+          ]);
+          assert.isTrue(
+            recovered.turnItems.some(
+              (item) => item.type === "error" && item.title === "Provider work is held",
+            ),
+          );
+        }
+        assert.isNull(replayState.failure);
+        assert.equal(replayState.cursor, replay.transcript.entries.length);
+      }).pipe(
+        Effect.provide(
+          Harness.layerWithRegistryAndServices(
+            { name: "publication-new-send", runtimePolicyOverride: { cwd } },
+            registry,
+            {
+              serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, config),
+              eventStoreLayer: faultStore,
+              ...(cancelledHandoff ? { runEffectWorker: false } : {}),
+            },
+          ),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(Layer.merge(NodeServices.layer, NodeCrypto.layer))),
 );

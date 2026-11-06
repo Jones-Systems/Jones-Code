@@ -15,6 +15,7 @@ import {
   EnvironmentAuthenticatedPrincipal,
   type StopCurrentThreadRuntimeInput,
   type ProviderRuntimeBinding,
+  type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -23,6 +24,7 @@ import * as Deferred from "effect/Deferred";
 import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { ProviderAdapterCloseSessionError } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as SqlitePersistence from "../../persistence/Sqlite.ts";
@@ -38,7 +40,7 @@ const stores = Layer.mergeAll(EventStore.layer, ProjectionStore.layer, AuthSessi
 );
 const eventLayer = EventSink.layer.pipe(Layer.provideMerge(stores));
 const testLayer = RestartPreparation.layer.pipe(Layer.provideMerge(eventLayer));
-const fixture = Effect.fnUntraced(function* () {
+const fixture = Effect.fnUntraced(function* (retained = false) {
   const sink = yield* EventSink.EventSinkV2;
   const sessions = yield* AuthSessions.AuthSessionRepository;
   const threadId = ThreadId.make("thread:runtime-stop");
@@ -52,6 +54,45 @@ const fixture = Effect.fnUntraced(function* () {
     driver: ProviderDriverKind.make("codex"),
     nativeThreadId: "native:stop",
     runtimeGeneration: "physical-generation:stop",
+  };
+  const provider: OrchestrationV2ProviderThread = {
+    id: binding.providerThreadId,
+    appThreadId: binding.threadId,
+    providerSessionId: binding.providerSessionId,
+    providerInstanceId: binding.providerInstanceId,
+    driver: binding.driver,
+    ownerNodeId: null,
+    nativeThreadRef: {
+      driver: binding.driver,
+      nativeId: binding.nativeThreadId,
+      strength: "strong",
+    },
+    nativeConversationHeadRef: null,
+    status: "not_loaded",
+    firstRunOrdinal: null,
+    lastRunOrdinal: null,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: now,
+    updatedAt: now,
+    pendingBackgroundTasks: [],
+    contextUsage: null,
+    nativeMetadata: null,
+    goal: null,
+    runtimeIdentity: {
+      requested: {
+        providerInstanceId: binding.providerInstanceId,
+        providerDriver: binding.driver,
+        model: "synthetic",
+        serviceTier: null,
+      },
+      observed: {
+        backend: { status: "unknown" },
+        account: { status: "unknown" },
+        model: { status: "unknown" },
+        serviceTier: { status: "unknown" },
+      },
+    },
   };
   yield* sink.write({
     events: [
@@ -143,6 +184,12 @@ const fixture = Effect.fnUntraced(function* () {
     wait: false,
     held: false,
     reconciled: [] as ProviderRuntimeBinding[],
+    retirementStarted: false,
+    observationFailures: 0,
+    interruptObservation: false,
+    observations: 0,
+    retirementBinding: binding,
+    cleanupCalls: 0,
   };
   const started = yield* Deferred.make<void>();
   const completion = yield* Deferred.make<void>();
@@ -152,11 +199,38 @@ const fixture = Effect.fnUntraced(function* () {
     isCurrent: Effect.sync(() => state.current),
     stop: Effect.gen(function* () {
       state.invocations++;
+      state.retirementStarted = true;
       yield* Deferred.succeed(started, undefined);
       if (state.wait) yield* Deferred.await(completion);
       if (state.unknown)
         return yield* new StopStore.RuntimeStopError({ reason: "synthetic_lost_stop" });
     }),
+    ...(retained
+      ? {
+          retirement: {
+            binding,
+            started: Effect.sync(() => state.retirementStarted),
+            awaitRetired: Effect.gen(function* () {
+              state.observations++;
+              if (state.interruptObservation) {
+                state.interruptObservation = false;
+                return yield* Effect.interrupt;
+              }
+              if (state.observationFailures > 0) {
+                state.observationFailures--;
+                return yield* new ProviderAdapterCloseSessionError({
+                  driver: binding.driver,
+                  providerSessionId: binding.providerSessionId,
+                  cause: "synthetic_observation_interruption",
+                });
+              }
+              yield* Deferred.await(completion);
+              state.cleanupCalls++;
+              return { binding: state.retirementBinding, evidence: "producer_exited" as const };
+            }),
+          },
+        }
+      : {}),
   };
   const manager = Layer.succeed(ProviderSessions.ProviderSessionManagerV2, {
     isMcpCallerAttached: () => Effect.succeed(false),
@@ -223,7 +297,37 @@ const fixture = Effect.fnUntraced(function* () {
     threadId,
     target: { binding, evidenceRevision: 1 },
   };
-  return { sink, sessions, principal, state, input, runId, service, started, completion };
+  return { sink, sessions, principal, state, input, runId, service, started, completion, provider };
+});
+const compiledLatestSchema6 = Schema.encodeEffect(
+  Schema.fromJsonString(StopStore.RuntimeStopIdentity),
+);
+
+const recordStoppedFixture = Effect.fnUntraced(function* (input: {
+  readonly commandId: CommandId;
+  readonly binding: ProviderRuntimeBinding;
+  readonly actor: StopStore.RuntimeStopIdentity["actor"];
+  readonly result: "accepted" | "started" | "unknown" | "stopped";
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const request = {
+    commandId: input.commandId,
+    threadId: input.binding.threadId,
+    target: { binding: input.binding, evidenceRevision: 1 },
+  };
+  const identityJson = yield* compiledLatestSchema6({
+    request,
+    actor: input.actor,
+    actorDigest: "synthetic-readback",
+    affectedRunIds: [],
+  });
+  yield* sql`INSERT INTO orchestration_command_receipts(command_id,aggregate_kind,aggregate_id,command_type,accepted_at,result_sequence,status,error) VALUES (${input.commandId},'thread',${input.binding.threadId},'provider-session.detach','2026-10-07T12:00:00Z',1,'accepted',NULL)`;
+  yield* sql`INSERT INTO jones_runtime_stop_intents VALUES (${input.commandId},${input.binding.threadId},${identityJson})`;
+  const methods = StopStore.makeRuntimeStopMethods(sql);
+  if (input.result !== "accepted")
+    yield* methods.start(input.commandId, request.target, Effect.void);
+  if (input.result === "unknown" || input.result === "stopped")
+    yield* methods.complete(input.commandId, input.result);
 });
 it.effect(
   "missing physical capture rejects with no command receipt, fence or provider effect",
@@ -595,5 +699,285 @@ it.effect.each([false, true])(
         assert.deepEqual(f.state.reconciled, unknown ? [] : [f.input.target.binding]);
         assert.equal(f.state.invocations, 1);
       }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect(
+  "a slow retained Stop outlives its deadline, joins duplicates and completes after exact cleanup",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      f.state.wait = true;
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const first = yield* owner.execute(f.input.commandId).pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(f.started);
+        yield* TestClock.adjust(RuntimeStop.RUNTIME_STOP_WAIT_TIMEOUT_MS);
+        assert.equal((yield* Fiber.join(first))._tag, "Failure");
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(yield* sql`SELECT phase,result FROM jones_runtime_stop_observations`, [
+          { phase: "started", result: "unknown" },
+        ]);
+        f.state.current = false;
+        f.state.available = false;
+        const duplicate = yield* owner.execute(f.input.commandId).pipe(Effect.forkChild);
+        const observation = yield* owner
+          .observe(f.input)
+          .pipe(
+            Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal),
+            Effect.forkChild,
+          );
+        yield* Fiber.interrupt(duplicate);
+        assert.equal(f.state.invocations, 1);
+        assert.deepEqual(f.state.reconciled, []);
+        yield* Deferred.succeed(f.completion, undefined);
+        assert.equal((yield* Fiber.join(observation))?.status, "stopped");
+        yield* owner.execute(f.input.commandId);
+        assert.equal(f.state.invocations, 1);
+        assert.equal(f.state.cleanupCalls, 1);
+        assert.deepEqual(f.state.reconciled, [f.input.target.binding]);
+        assert.isTrue(
+          yield* StopStore.makeRuntimeStopMethods(sql).hasStoppedRuntime(f.input.target.binding),
+        );
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect.each(["failure", "interruption"] as const)(
+  "canceling a Stop waiter and an observation %s never stop the successor",
+  (observation) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      f.state.observationFailures = observation === "failure" ? 1 : 0;
+      f.state.interruptObservation = observation === "interruption";
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const waiter = yield* owner.execute(f.input.commandId).pipe(Effect.forkChild);
+        yield* Deferred.await(f.started);
+        yield* Fiber.interrupt(waiter);
+        f.state.current = false;
+        assert.equal((yield* f.sink.readRuntimeStop!(f.input.commandId))?.status, "unknown");
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(
+          yield* sql`SELECT phase FROM jones_runtime_stop_observations WHERE phase='completed'`,
+          [],
+        );
+        yield* Deferred.succeed(f.completion, undefined);
+        yield* TestClock.adjust("1 second");
+        yield* owner.execute(f.input.commandId);
+        assert.equal(f.state.invocations, 1);
+        assert.equal(f.state.observations, 2);
+        assert.equal(f.state.cleanupCalls, 1);
+        assert.equal((yield* f.sink.readRuntimeStop!(f.input.commandId))?.status, "stopped");
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect.each(["runtimeGeneration", "providerSessionId", "nativeThreadId"] as const)(
+  "a retained retirement receipt for the wrong %s cannot complete or release a hold",
+  (key) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      f.state.retirementBinding = {
+        ...f.input.target.binding,
+        [key]: "replacement",
+      } as ProviderRuntimeBinding;
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const waiter = yield* owner
+          .execute(f.input.commandId)
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(f.started);
+        f.state.current = false;
+        yield* Deferred.succeed(f.completion, undefined);
+        assert.equal((yield* Fiber.join(waiter))._tag, "Failure");
+        assert.equal((yield* owner.execute(f.input.commandId).pipe(Effect.result))._tag, "Failure");
+        assert.equal(f.state.invocations, 1);
+        assert.deepEqual(f.state.reconciled, []);
+        const sql = yield* SqlClient.SqlClient;
+        assert.deepEqual(yield* sql`SELECT phase,result FROM jones_runtime_stop_observations`, [
+          { phase: "started", result: "unknown" },
+        ]);
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect.each([false, true])(
+  "a lost retained capture stays unknown without a second physical Stop (completed=%s)",
+  (completed) =>
+    Effect.gen(function* () {
+      const f = yield* fixture(true);
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+      }).pipe(Effect.provide(f.service));
+      const sql = yield* SqlClient.SqlClient;
+      const methods = StopStore.makeRuntimeStopMethods(sql);
+      yield* methods.start(f.input.commandId, f.input.target, Effect.void);
+      if (completed) yield* methods.complete(f.input.commandId, "unknown");
+      f.state.current = false;
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        assert.equal((yield* owner.execute(f.input.commandId).pipe(Effect.result))._tag, "Failure");
+        assert.equal(
+          (yield* owner
+            .observe(f.input)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal)))?.status,
+          "unknown",
+        );
+        assert.equal(f.state.invocations, 0);
+      }).pipe(Effect.provide(f.service));
+      if (completed)
+        assert.equal(
+          (yield* methods.complete(f.input.commandId, "stopped").pipe(Effect.result))._tag,
+          "Failure",
+        );
+      assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect(
+  "completed stopped readback requires every captured binding field and an affirmative terminal receipt",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* Effect.gen(function* () {
+        const owner = yield* RuntimeStop.CurrentRuntimeStop;
+        yield* owner
+          .stop(f.input)
+          .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, f.principal));
+        const sql = yield* SqlClient.SqlClient;
+        const methods = StopStore.makeRuntimeStopMethods(sql);
+        assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
+        yield* methods.start(f.input.commandId, f.input.target, Effect.void);
+        assert.isFalse(yield* methods.hasStoppedRuntime(f.input.target.binding));
+        yield* methods.complete(f.input.commandId, "stopped");
+        assert.isTrue(yield* methods.hasStoppedRuntime(f.input.target.binding));
+        for (const key of Object.keys(f.input.target.binding) as Array<
+          keyof ProviderRuntimeBinding
+        >)
+          assert.isFalse(
+            yield* methods.hasStoppedRuntime({
+              ...f.input.target.binding,
+              [key]: `${f.input.target.binding[key]}:wrong`,
+            } as ProviderRuntimeBinding),
+          );
+      }).pipe(Effect.provide(f.service));
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect.each(["accepted", "started", "unknown", "stopped"] as const)(
+  "generation-less runtime readback requires completed/stopped proof (receipt=%s)",
+  (result) =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const binding = f.input.target.binding;
+      yield* recordStoppedFixture({
+        commandId: f.input.commandId,
+        binding,
+        actor: f.principal,
+        result,
+      });
+      const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
+      assert.deepEqual(
+        yield* methods.readStoppedRuntime(f.provider),
+        result === "stopped" ? binding : null,
+      );
+      assert.equal(yield* methods.hasStoppedRuntime(binding), result === "stopped");
+      assert.equal(
+        yield* methods.readStoppedRuntime({
+          ...f.provider,
+          runtimeIdentity: {
+            ...f.provider.runtimeIdentity!,
+            runtimeGeneration: "a-current-successor",
+          },
+        }),
+        null,
+      );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect(
+  "generation-less readback compares every remaining identity field and rejects incomplete identity",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      yield* recordStoppedFixture({
+        commandId: f.input.commandId,
+        binding: f.input.target.binding,
+        actor: f.principal,
+        result: "stopped",
+      });
+      const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
+      const otherDriver = ProviderDriverKind.make("synthetic-other");
+      const different: ReadonlyArray<OrchestrationV2ProviderThread> = [
+        { ...f.provider, appThreadId: ThreadId.make("thread:other") },
+        { ...f.provider, id: ProviderThreadId.make("provider-thread:other") },
+        { ...f.provider, providerSessionId: ProviderSessionId.make("session:other") },
+        { ...f.provider, providerInstanceId: ProviderInstanceId.make("instance-other") },
+        {
+          ...f.provider,
+          nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "native:other" },
+        },
+        {
+          ...f.provider,
+          driver: otherDriver,
+          nativeThreadRef: { ...f.provider.nativeThreadRef!, driver: otherDriver },
+        },
+      ];
+      for (const provider of different)
+        assert.equal(yield* methods.readStoppedRuntime(provider), null);
+      const incomplete: ReadonlyArray<OrchestrationV2ProviderThread> = [
+        { ...f.provider, appThreadId: null },
+        { ...f.provider, providerSessionId: null },
+        { ...f.provider, nativeThreadRef: null },
+        { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "" } },
+        { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, driver: otherDriver } },
+      ];
+      for (const provider of incomplete)
+        assert.equal(
+          (yield* methods.readStoppedRuntime(provider).pipe(Effect.result))._tag,
+          "Failure",
+        );
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+);
+
+it.effect(
+  "duplicate stopped commands count as one binding and two distinct generations are ambiguous",
+  () =>
+    Effect.gen(function* () {
+      const f = yield* fixture();
+      const methods = StopStore.makeRuntimeStopMethods(yield* SqlClient.SqlClient);
+      assert.equal(yield* methods.readStoppedRuntime(f.provider), null);
+      for (const suffix of ["original", "duplicate-a", "duplicate-b"]) {
+        yield* recordStoppedFixture({
+          commandId: CommandId.make(`command:stopped:${suffix}`),
+          binding: f.input.target.binding,
+          actor: f.principal,
+          result: "stopped",
+        });
+      }
+      assert.deepEqual(yield* methods.readStoppedRuntime(f.provider), f.input.target.binding);
+      yield* recordStoppedFixture({
+        commandId: CommandId.make("command:stopped:other-generation"),
+        binding: { ...f.input.target.binding, runtimeGeneration: "another-stopped-generation" },
+        actor: f.principal,
+        result: "stopped",
+      });
+      const ambiguous = yield* methods.readStoppedRuntime(f.provider).pipe(Effect.result);
+      assert.equal(ambiguous._tag, "Failure");
+      if (ambiguous._tag === "Failure")
+        assert.equal(ambiguous.failure.reason, "runtime_stop_readback_ambiguous");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
 );

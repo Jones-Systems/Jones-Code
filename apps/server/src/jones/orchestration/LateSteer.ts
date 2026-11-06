@@ -85,6 +85,7 @@ const isNonApplyingRejection = (error: CodexErrors.CodexAppServerError) =>
 
 export const boundedSteer = Effect.fn("LateSteer.boundedSteer")(function* <E, R>(input: {
   readonly instanceId: string;
+  readonly target: ControlAdmission.ControlAdmissionTarget;
   readonly prepare: Effect.Effect<
     {
       readonly binding: ControlAdmission.ControlDispatchBinding;
@@ -105,8 +106,9 @@ export const boundedSteer = Effect.fn("LateSteer.boundedSteer")(function* <E, R>
       ...(cause === undefined ? {} : { cause }),
     });
   return yield* Effect.gen(function* () {
-    yield* admission.assertOpen(input.instanceId);
+    yield* admission.assertOpen(input.target);
     const prepared = yield* input.prepare;
+    yield* admission.assertOpen(ControlAdmission.targetFromDispatch(prepared.binding));
     // Begin and fork cannot be interrupted between recording ownership and sending.
     const pending = yield* Effect.uninterruptibleMask(() =>
       Effect.gen(function* () {

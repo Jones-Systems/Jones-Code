@@ -1,5 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
+  AuthSessionId,
+  EnvironmentAuthenticatedPrincipal,
   CommandId,
   EventId,
   MessageId,
@@ -17,6 +19,9 @@ import {
   type RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as RuntimeStop from "../jones/runtime/RuntimeStop.ts";
+import * as AuthSessions from "../persistence/AuthSessions.ts";
+import * as Deferred from "effect/Deferred";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -89,6 +94,7 @@ function makeRestartAdapter(
   state: Ref.Ref<RestartAdapterState>,
   sessionCapabilities: OrchestrationV2ProviderCapabilities = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
+  stopState?: { invocations: number },
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
   return {
     instanceId: providerInstanceId,
@@ -188,6 +194,12 @@ function makeRestartAdapter(
           sessionInput.runtimeLifecycle === undefined
             ? `synthetic:${sessionInput.providerSessionId}`
             : yield* sessionInput.runtimeLifecycle.reserve(sessionInput.threadId);
+        const retired = yield* Deferred.make<void>();
+        let stopStarted = false;
+        if (stopState !== undefined && sessionInput.runtimeLifecycle !== undefined)
+          yield* Effect.addFinalizer(() =>
+            sessionInput.runtimeLifecycle!.abandon(runtimeGeneration).pipe(Effect.ignore),
+          );
         if (sessionInput.runtimeLifecycle !== undefined)
           yield* sessionInput.runtimeLifecycle.admit({
             runtimeGeneration,
@@ -243,6 +255,41 @@ function makeRestartAdapter(
                 updatedAt: createdAt,
               } satisfies OrchestrationV2ProviderThread);
             }),
+          ...(stopState === undefined
+            ? {}
+            : {
+                captureRuntimeStop: (providerThread: OrchestrationV2ProviderThread) =>
+                  Effect.sync(() => {
+                    const binding = ProviderAdapter.runtimeBinding(
+                      providerThread,
+                      runtimeGeneration,
+                    );
+                    if (
+                      binding === undefined ||
+                      providerThread.runtimeIdentity?.runtimeGeneration !== runtimeGeneration
+                    )
+                      return null;
+                    return {
+                      binding,
+                      evidenceRevision: providerThread.runtimeIdentity.evidenceRevision ?? 0,
+                      isCurrent: Effect.sync(() => !stopStarted),
+                      stop: Effect.gen(function* () {
+                        if (!stopStarted) {
+                          stopStarted = true;
+                          stopState.invocations++;
+                          yield* Deferred.succeed(retired, undefined);
+                        }
+                      }),
+                      retirement: {
+                        binding,
+                        started: Effect.sync(() => stopStarted),
+                        awaitRetired: Deferred.await(retired).pipe(
+                          Effect.as({ binding, evidence: "producer_exited" as const }),
+                        ),
+                      },
+                    };
+                  }),
+              }),
           retireThreadForTransfer: Effect.fn("SelectionRestartTest.retireThreadForTransfer")(
             function* ({ providerThread, allowProducerRetirement }) {
               const binding = ProviderAdapter.runtimeBinding(providerThread, runtimeGeneration);
@@ -340,6 +387,148 @@ function makeRestartAdapter(
       }),
   };
 }
+
+it.live(
+  "a new chat joins an existing pooled session before sending and preserves its sibling",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = "pooled-new-chat-publication-lookup";
+        const cwd = yield* checkpointWorkspace(name);
+        const state = yield* Ref.make<RestartAdapterState>({
+          activeTurn: null,
+          opened: [],
+          started: [],
+          closedSessionCount: 0,
+          failedReplacementOpen: false,
+        });
+        const base = makeRestartAdapter(state, pooledCapabilities);
+        let recoveryLookups = 0;
+        const prompts: Array<{ readonly threadId: ThreadId; readonly text: string }> = [];
+        const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
+          ...base,
+          openSession: (input) =>
+            base.openSession(input).pipe(
+              Effect.map((runtime) => ({
+                ...runtime,
+                reconcileBindingPublication: () =>
+                  Effect.sync(() => {
+                    recoveryLookups++;
+                    return null;
+                  }),
+                startTurn: (turn) =>
+                  Effect.sync(() => {
+                    prompts.push({ threadId: turn.threadId, text: turn.message.text });
+                  }).pipe(Effect.andThen(runtime.startTurn(turn))),
+              })),
+            ),
+        };
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const firstThreadId = ThreadId.make(`${name}:first`);
+          const secondThreadId = ThreadId.make(`${name}:second`);
+          const selection = { ...initialSelection, model: "complete" };
+          const create = (threadId: ThreadId) =>
+            orchestrator.dispatch({
+              type: "thread.create",
+              commandId: CommandId.make(`${threadId}:create`),
+              threadId,
+              projectId: ProjectId.make(`project:${name}`),
+              title: threadId,
+              modelSelection: selection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              branch: null,
+              worktreePath: cwd,
+              createdBy: "user",
+              creationSource: "web",
+            });
+          const send = Effect.fn("PooledNewChatTest.send")(function* (
+            threadId: ThreadId,
+            step: string,
+          ) {
+            const completed = yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter(
+                (event) =>
+                  event.threadId === threadId &&
+                  event.type === "run.updated" &&
+                  event.payload.status === "completed",
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`${threadId}:${step}`),
+              threadId,
+              messageId: MessageId.make(`${threadId}:${step}`),
+              text: step,
+              attachments: [],
+              createdBy: "user",
+              creationSource: "web",
+              dispatchMode: { type: "start_immediately" },
+            });
+            yield* Fiber.join(completed);
+            yield* worker.drain();
+            return yield* orchestrator.getThreadProjection(threadId);
+          });
+          yield* create(firstThreadId);
+          const first = yield* send(firstThreadId, "first prompt");
+          yield* create(secondThreadId);
+          const second = yield* send(secondThreadId, "new chat prompt");
+          assert.equal(recoveryLookups, 0);
+          assert.equal(first.runs[0]?.status, "completed");
+          assert.equal(second.runs[0]?.status, "completed");
+          const firstProvider = first.providerThreads.find(
+            (provider) => provider.id === first.runs[0]?.providerThreadId,
+          )!;
+          const secondProvider = second.providerThreads.find(
+            (provider) => provider.id === second.runs[0]?.providerThreadId,
+          )!;
+          assert.equal(firstProvider.providerSessionId, secondProvider.providerSessionId);
+          assert.notEqual(
+            firstProvider.nativeThreadRef?.nativeId,
+            secondProvider.nativeThreadRef?.nativeId,
+          );
+          const sibling = yield* orchestrator.getThreadProjection(firstThreadId);
+          assert.deepEqual(sibling.runs, first.runs);
+          assert.deepEqual(sibling.attempts, first.attempts);
+          assert.deepEqual(sibling.providerTurns, first.providerTurns);
+          assert.equal((yield* Ref.get(state)).opened.length, 1);
+          assert.equal((yield* Ref.get(state)).started.length, 2);
+          const continued = yield* send(firstThreadId, "sibling follow-up");
+          assert.equal(recoveryLookups, 1);
+          assert.deepEqual(
+            continued.runs.map((run) => run.status),
+            ["completed", "completed"],
+          );
+          assert.deepEqual(
+            continued.providerThreads.find((provider) => provider.id === firstProvider.id)
+              ?.nativeThreadRef,
+            firstProvider.nativeThreadRef,
+          );
+          const captured = yield* Ref.get(state);
+          assert.equal(captured.opened.length, 1);
+          assert.equal(captured.started.length, 3);
+          assert.equal(captured.closedSessionCount, 0);
+          assert.deepEqual(prompts, [
+            { threadId: firstThreadId, text: "first prompt" },
+            { threadId: secondThreadId, text: "new chat prompt" },
+            { threadId: firstThreadId, text: "sibling follow-up" },
+          ]);
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistry(
+              { name },
+              ProviderAdapterRegistry.layerSingle(adapter),
+            ),
+          ),
+        );
+      }),
+    ),
+);
 
 it.live("retries a failed selection restart session open before completing", () =>
   Effect.scoped(
@@ -1069,4 +1258,142 @@ it.live.each([
       }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, layerRegistry)));
     }),
   ),
+);
+
+it.live(
+  "completed Stop followed by an ordinary send acquires a fresh session without a replacement fixture",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const name = "ordinary-send-after-stop";
+        const cwd = yield* checkpointWorkspace(name);
+        const threadId = ThreadId.make(`thread:${name}`);
+        const state = yield* Ref.make<RestartAdapterState>({
+          activeTurn: null,
+          opened: [],
+          started: [],
+          closedSessionCount: 0,
+          failedReplacementOpen: false,
+        });
+        const stopState = { invocations: 0 };
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+          const stop = yield* RuntimeStop.CurrentRuntimeStop;
+          const actors = yield* AuthSessions.AuthSessionRepository;
+          const sink = yield* EventSink.EventSinkV2;
+          yield* orchestrator.dispatch({
+            type: "thread.create",
+            createdBy: "user",
+            creationSource: "web",
+            commandId: CommandId.make(`${name}:create`),
+            threadId,
+            projectId: ProjectId.make(`project:${name}`),
+            title: name,
+            modelSelection: seedSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: cwd,
+          });
+          const send = (label: string) =>
+            Effect.gen(function* () {
+              const completed = yield* orchestrator.streamDomainEvents.pipe(
+                Stream.filter(
+                  (event) => event.type === "run.updated" && event.payload.status === "completed",
+                ),
+                Stream.take(1),
+                Stream.runDrain,
+                Effect.forkScoped,
+              );
+              yield* orchestrator.dispatch({
+                type: "message.dispatch",
+                createdBy: "user",
+                creationSource: "web",
+                commandId: CommandId.make(`${name}:${label}`),
+                threadId,
+                messageId: MessageId.make(`${name}:${label}`),
+                text: label,
+                attachments: [],
+                modelSelection: seedSelection,
+                dispatchMode: { type: "start_immediately" },
+              });
+              yield* Fiber.join(completed);
+              yield* worker.drain();
+              return yield* orchestrator.getThreadProjection(threadId);
+            });
+          const before = yield* send("before-stop");
+          const original = before.providerThreads.find(
+            (thread) => thread.id === before.thread.activeProviderThreadId,
+          )!;
+          const principal = {
+            sessionId: AuthSessionId.make(`${name}:actor`),
+            subject: "Synthetic recovery actor",
+            method: "browser-session-cookie" as const,
+            scopes: new Set<"orchestration:operate" | "orchestration:read">([
+              "orchestration:operate",
+              "orchestration:read",
+            ]),
+          };
+          const now = yield* DateTime.now;
+          yield* actors.create({
+            sessionId: principal.sessionId,
+            subject: principal.subject,
+            method: principal.method,
+            scopes: ["orchestration:operate", "orchestration:read"],
+            client: {
+              label: null,
+              ipAddress: null,
+              userAgent: null,
+              deviceType: "bot",
+              os: null,
+              browser: null,
+            },
+            issuedAt: now,
+            expiresAt: DateTime.add(now, { hours: 1 }),
+          });
+          const target = yield* stop
+            .readTarget(threadId)
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+          assert.equal(target.status, "available");
+          if (target.status !== "available") return yield* Effect.die("Missing exact Stop capture");
+          const commandId = CommandId.make(`${name}:stop`);
+          yield* stop
+            .stop({ commandId, threadId, target: target.target })
+            .pipe(Effect.provideService(EnvironmentAuthenticatedPrincipal, principal));
+          yield* stop.execute(commandId);
+          yield* worker.drain();
+          assert.isTrue(yield* sink.hasStoppedRuntime!(target.target.binding));
+          assert.equal(stopState.invocations, 1);
+          const stopped = yield* orchestrator.getThreadProjection(threadId);
+          assert.isUndefined(
+            stopped.providerThreads.find((thread) => thread.id === original.id)?.runtimeIdentity
+              ?.runtimeGeneration,
+          );
+          const after = yield* send("after-stop");
+          const current = after.providerThreads.find(
+            (thread) => thread.id === after.thread.activeProviderThreadId,
+          )!;
+          assert.notEqual(current.providerSessionId, original.providerSessionId);
+          assert.notEqual(
+            current.runtimeIdentity?.runtimeGeneration,
+            target.target.binding.runtimeGeneration,
+          );
+          assert.deepEqual(current.nativeThreadRef, original.nativeThreadRef);
+          assert.deepEqual(after.thread.modelSelection, before.thread.modelSelection);
+          assert.equal(after.runs.filter((run) => run.status === "completed").length, 2);
+          assert.equal((yield* Ref.get(state)).opened.length, 2);
+          assert.equal(stopState.invocations, 1);
+        }).pipe(
+          Effect.provide(
+            ProviderReplayHarness.layerWithRegistryAndServices(
+              { name },
+              ProviderAdapterRegistry.layerSingle(
+                makeRestartAdapter(state, pooledCapabilities, providerInstanceId, stopState),
+              ),
+            ),
+          ),
+        );
+      }),
+    ),
 );

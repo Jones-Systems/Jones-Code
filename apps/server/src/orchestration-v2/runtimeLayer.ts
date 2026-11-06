@@ -108,6 +108,9 @@ const layerStores = Layer.mergeAll(
 );
 
 export const layerEventSink = EventSink.layerFromStores.pipe(Layer.provide(layerStores));
+const layerEventSinkProvided = layerEventSink;
+const layerProviderAdapterRegistryProvided =
+  ProviderAdapterRegistry.layerFromProviderInstanceRegistry;
 const layerRestartPreparationProvided = RestartPreparation.layer.pipe(
   Layer.provide(Layer.merge(layerStores, layerEventSink)),
 );
@@ -162,8 +165,9 @@ const layerProviderSessionManagerProvided = ProviderSessionManager.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
       layerCommandOutputHubProvided,
-      ProviderAdapterRegistry.layerFromProviderInstanceRegistry,
-      layerEventSink,
+      layerProviderAdapterRegistryProvided,
+      layerEventSinkProvided,
+      layerEventStoreProvided,
       IdAllocator.layer,
       layerProviderEventIngestorProvided,
       ProjectionStore.layer,

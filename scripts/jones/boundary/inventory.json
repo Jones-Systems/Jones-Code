@@ -2736,7 +2736,30 @@
     "apps/server/src/jones/orchestration/pendingControlItems.ts": "jones-owned",
     "apps/server/src/jones/orchestration/pendingControlItems.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/pending-control-items.json": "jones-owned",
-    "packages/client-runtime/src/jones/pendingControlItems.test.ts": "jones-owned"
+    "packages/client-runtime/src/jones/pendingControlItems.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Behavior.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Behavior.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Behavior.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/CompletionObservation.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Conformance.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Conformance.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Conformance.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ConsumerProbe.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/DarwinFilesystem.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Filesystem.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/IgnoredClassifier.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/OutputAttestation.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ParticipantGuard.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProducerFinalizer.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProjectProduction.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/Qualification.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/conformance/v1/cases.json": "jones-owned",
+    "apps/server/src/jones/workspaceRetirement/conformance/v1/source.json": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-retirement-qualification.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3712,6 +3735,10 @@
     {
       "from": "apps/server/src/peer/PeerLinkRequests.test.ts",
       "to": "apps/server/src/jones/peerPersistence/table.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts"
     }
   ]
 }

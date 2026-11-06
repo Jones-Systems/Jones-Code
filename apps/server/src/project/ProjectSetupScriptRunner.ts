@@ -31,6 +31,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectService from "./ProjectService.ts";
+import * as ProjectProduction from "../jones/workspaceRetirement/ProjectProduction.ts";
 
 export interface ProjectSetupScriptRunnerResultNoScript {
   readonly status: "no-script";
@@ -603,8 +604,9 @@ export const make = Effect.gen(function* () {
       // Before client attachment, truecolor probes wait for terminal replies nobody can send.
       COLORTERM: "",
     };
-    const observe =
-      input.observeCompletion ?? (legacy === undefined && native === undefined ? undefined : {});
+    const observeRequested =
+      input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
+    const observe = input.observeCompletion ?? {};
     const completionToken =
       captured?.completionToken ?? (observe ? (yield* random.uuidV4()).replaceAll("-", "") : null);
     let selectedCompletionShell: CompletionShell = "posix";
@@ -742,6 +744,14 @@ export const make = Effect.gen(function* () {
             onOutputLine: observe.onOutputLine,
           })
         : undefined;
+    const finishProduction = yield* ProjectProduction.begin({
+      threadId: input.threadId,
+      worktreePath: input.worktreePath,
+      trigger,
+      projectId: project.id,
+    });
+    const lifetime = preparationLifetime ?? serviceScope;
+    yield* Scope.addFinalizer(lifetime, finishProduction("cancelled"));
     // Subscribe before opening; owned hooks may resolve a shell different from the host default.
     const readiness = yield* watchShellReadiness({
       threadId: input.threadId,
@@ -763,6 +773,11 @@ export const make = Effect.gen(function* () {
           observed?.unsubscribe();
           readiness?.unsubscribe();
         }),
+      ),
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit)
+          ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed")
+          : Effect.void,
       ),
     );
     let terminalExitedBeforeShellLookup = false;
@@ -836,7 +851,6 @@ export const make = Effect.gen(function* () {
         }),
       ),
     );
-    const lifetime = preparationLifetime ?? serviceScope;
     if (owned) yield* Scope.addFinalizer(lifetime, cleanupObservation);
     const written = yield* Deferred.make<void, ProjectSetupScriptRunnerError>();
     // Return once the terminal exists; each observer awaits this same single write.
@@ -871,6 +885,11 @@ export const make = Effect.gen(function* () {
       Effect.onExit((exit) =>
         (Exit.isFailure(exit) ? cleanupObservation : Effect.void).pipe(
           Effect.andThen(Deferred.done(written, exit)),
+          Effect.andThen(
+            Exit.isFailure(exit)
+              ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed")
+              : Effect.void,
+          ),
         ),
       ),
       Effect.catchCause((cause) =>
@@ -894,6 +913,11 @@ export const make = Effect.gen(function* () {
 
     const observedCompletion = observed?.completion.pipe(
       Effect.tap((result) =>
+        finishProduction(
+          result.exitCode === null ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed",
+        ),
+      ),
+      Effect.tap((result) =>
         native !== undefined
           ? native.afterCompletion(result).pipe(
               Effect.mapError(
@@ -906,7 +930,7 @@ export const make = Effect.gen(function* () {
               ),
             )
           : legacy === undefined
-            ? result.exitCode === 0
+            ? observeRequested && result.exitCode === 0
               ? terminalManager.closeIdle({ threadId: input.threadId, terminalId })
               : Effect.void
             : legacy.afterCompletion(result).pipe(
@@ -925,14 +949,19 @@ export const make = Effect.gen(function* () {
     const completion =
       observedCompletion === undefined
         ? undefined
-        : owned
-          ? yield* Effect.cached(
-              writeCompletion.pipe(
-                Effect.andThen(observedCompletion),
-                Effect.onInterrupt(() => cancelPendingWrite),
-              ),
-            )
-          : observedCompletion;
+        : yield* Effect.cached(
+            owned
+              ? writeCompletion.pipe(
+                  Effect.andThen(observedCompletion),
+                  Effect.onInterrupt(() => cancelPendingWrite),
+                )
+              : observedCompletion,
+          );
+    if (!owned && completion)
+      yield* completion.pipe(
+        Effect.catchCause(() => Effect.void),
+        Effect.forkIn(lifetime),
+      );
 
     return {
       status: "started",

@@ -196,6 +196,7 @@ function runsOffNativeBranch(input: {
 }
 
 export interface ProviderEventIngestInput {
+  readonly runtimeIdentityEventId?: import("@t3tools/contracts").EventId;
   readonly providerSessionId: ProviderSessionId;
   readonly providerInstanceId: ProviderInstanceId;
   readonly commandId?: CommandId;
@@ -276,10 +277,13 @@ export const layer: Layer.Layer<
         },
       ) {
         const threadId = payloadInput.threadId ?? input.threadId;
-        const eventId = yield* idAllocator.allocate.event({
-          threadId,
-          providerSessionId: input.providerSessionId,
-        });
+        const eventId = yield* input.event.type === "runtime_identity.observed" &&
+        input.runtimeIdentityEventId !== undefined
+          ? Effect.succeed(input.runtimeIdentityEventId)
+          : idAllocator.allocate.event({
+              threadId,
+              providerSessionId: input.providerSessionId,
+            });
         const occurredAt = payloadInput.occurredAt ?? (yield* DateTime.now);
         return yield* decodeDomainEvent(
           compactUndefined({
@@ -464,6 +468,16 @@ export const layer: Layer.Layer<
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(
         function* (input) {
+          if (
+            input.runtimeIdentityEventId !== undefined &&
+            input.event.type !== "runtime_identity.observed"
+          )
+            return yield* new ProviderEventNormalizeError({
+              providerSessionId: input.providerSessionId,
+              threadId: input.threadId,
+              providerEvent: input.event,
+              cause: "A retained identity event ID requires runtime_identity.observed.",
+            });
           switch (input.event.type) {
             case "runtime_identity.observed": {
               const { binding, requested, observed } = input.event;

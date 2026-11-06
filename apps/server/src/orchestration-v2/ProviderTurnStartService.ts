@@ -98,6 +98,7 @@ import {
 
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
+import * as ProviderUsageAnalytics from "../telemetry/ProviderUsageAnalytics.ts";
 import {
   ContextHandoffBackgroundWorkError,
   knownProviderFailureMessage,
@@ -243,6 +244,7 @@ export const layer: Layer.Layer<
       TaskContinuationStore.TaskContinuationStore,
     );
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+    const turnAnalytics = yield* ProviderUsageAnalytics.ProviderTurnAnalytics;
     const plannedContinuity = yield* Effect.serviceOption(
       PlannedUpdateContinuity.PlannedUpdateContinuity,
     );
@@ -498,13 +500,21 @@ export const layer: Layer.Layer<
             } satisfies OrchestrationV2DomainEvent;
           }),
         );
-        yield* eventSink.writeIfRunCurrent({
+        const written = yield* eventSink.writeIfRunCurrent({
           threadId: run.threadId,
           runId: run.id,
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
           events,
         });
+        // Preserve the original analytics receipt only after this exact captured attempt commits.
+        if (written.committed)
+          yield* turnAnalytics.runSettled({
+            runId: run.id,
+            status,
+            completedAt: now,
+            childrenRunning: false,
+          });
       });
     const captureStartFailure = Effect.fn("ProviderTurnStartService.captureStartFailure")(
       function* (input: { readonly threadId: ThreadId; readonly runId: RunId }) {
@@ -575,7 +585,80 @@ export const layer: Layer.Layer<
         yield* eventSink
           .assertRuntimeStopStartAllowed({ threadId: input.threadId, runId })
           .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
-      const projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+      let projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+      const capturedRun = projection.runs.find((candidate) => candidate.id === runId);
+      if (capturedRun === undefined)
+        return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
+      if (capturedRun.status !== "starting") return;
+      const capturedProvider = projection.providerThreads.find(
+        (candidate) => candidate.id === capturedRun.providerThreadId,
+      );
+      const capturedRoot = projection.nodes.find(
+        (candidate) => candidate.id === capturedRun.rootNodeId,
+      );
+      if (
+        capturedProvider === undefined ||
+        capturedProvider.providerSessionId === null ||
+        capturedRoot === undefined ||
+        !projection.attempts.some((candidate) => candidate.id === capturedRun.activeAttemptId) ||
+        !projection.messages.some((candidate) => candidate.id === capturedRun.userMessageId) ||
+        !projection.checkpointScopes.some(
+          (candidate) => candidate.id === capturedRoot.checkpointScopeId,
+        )
+      )
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: `Run ${runId} is missing its execution projection state.`,
+        });
+      if (eventSink.assertImportedHistoryStartAllowed !== undefined)
+        yield* eventSink.assertImportedHistoryStartAllowed({
+          threadId: input.threadId,
+          runId,
+          providerThreadId: capturedProvider.id,
+        });
+      const restartAdmission = yield* Effect.result(
+        restartPreparation.assertThreadOpen(input.threadId),
+      );
+      if (
+        restartAdmission._tag === "Success" &&
+        providerSessions.reconcileThreadBindingPublication !== undefined
+      ) {
+        const recovered = yield* guardClaim(
+          providerSessions.reconcileThreadBindingPublication({
+            run: capturedRun,
+            providerThread: capturedProvider,
+          }),
+        ).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+        if (recovered !== null) {
+          projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+          const currentRun = projection.runs.find((candidate) => candidate.id === runId);
+          const currentProvider = projection.providerThreads.find(
+            (candidate) => candidate.id === capturedProvider.id,
+          );
+          const currentAttempt = projection.attempts.find(
+            (candidate) => candidate.id === capturedRun.activeAttemptId,
+          );
+          if (
+            currentRun?.status !== "starting" ||
+            currentRun.activeAttemptId !== capturedRun.activeAttemptId ||
+            currentRun.providerThreadId !== capturedProvider.id ||
+            currentRun.providerInstanceId !== capturedRun.providerInstanceId ||
+            !modelSelectionsEqual(currentRun.modelSelection, capturedRun.modelSelection) ||
+            currentAttempt?.status !== "pending" ||
+            currentAttempt.runId !== runId ||
+            currentAttempt.providerThreadId !== capturedProvider.id ||
+            currentAttempt.providerInstanceId !== capturedRun.providerInstanceId ||
+            currentProvider?.providerSessionId !== recovered.providerSessionId ||
+            currentProvider.nativeThreadRef?.nativeId !== recovered.nativeThreadRef?.nativeId ||
+            currentProvider.runtimeIdentity?.runtimeGeneration !==
+              recovered.runtimeIdentity?.runtimeGeneration
+          )
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause: "The new run or recovered binding changed during local reconciliation.",
+            });
+        }
+      }
       const run = projection.runs.find((candidate) => candidate.id === runId);
       if (run === undefined) {
         return yield* new ProviderTurnStartError({ runId, cause: `Run ${runId} was not found.` });
@@ -588,16 +671,6 @@ export const layer: Layer.Layer<
       let providerThread = projection.providerThreads.find(
         (candidate) => candidate.id === run.providerThreadId,
       );
-      if (
-        providerThread !== undefined &&
-        eventSink.assertImportedHistoryStartAllowed !== undefined
-      ) {
-        yield* eventSink.assertImportedHistoryStartAllowed({
-          threadId: input.threadId,
-          runId,
-          providerThreadId: providerThread.id,
-        });
-      }
       const message = projection.messages.find((candidate) => candidate.id === run.userMessageId);
       const checkpointScope = projection.checkpointScopes.find(
         (candidate) => candidate.id === rootNode?.checkpointScopeId,
@@ -733,6 +806,33 @@ export const layer: Layer.Layer<
           if (terminalStartFailure(failed.error)) return yield* Effect.fail(failed.error);
         },
       );
+      if (restartAdmission._tag === "Failure") {
+        const held =
+          restartAdmission.failure._tag === "RestartThreadHeld"
+            ? restartAdmission.failure
+            : undefined;
+        yield* settleRunBeforeStart({
+          signal:
+            held === undefined
+              ? "provider-restart-admission-failure"
+              : `provider-restart-${held.stage}-held`,
+          status: "failed",
+          now: yield* DateTime.now,
+          providerInstanceId: run.providerInstanceId,
+          itemProviderThreadId: providerThread.id,
+          item: {
+            type: "error",
+            title: "Provider restart is held",
+            failure: {
+              class: "provider_error",
+              message: held?.message ?? "Provider restart preparation could not be verified.",
+              code: null,
+              retryable: false,
+            },
+          },
+        });
+        return yield* new ProviderTurnStartError({ runId, cause: restartAdmission.failure });
+      }
       // Consult durable delivery history before opening a provider, including
       // fences whose current continuity record has already been retired.
       const environmentId = yield* environment.getEnvironmentId;
@@ -809,9 +909,20 @@ export const layer: Layer.Layer<
       const requiredNativeSession = continuation.success;
       const guarded = requiredNativeSession !== undefined;
       const admission = yield* Effect.result(
-        restartPreparation
-          .assertThreadOpen(input.threadId)
-          .pipe(Effect.andThen(controlAdmission.assertOpen(run.providerInstanceId))),
+        controlAdmission.assertOpen({
+          instanceId: run.providerInstanceId,
+          threadId: input.threadId,
+          nativeThreadId: providerThread.nativeThreadRef?.nativeId ?? null,
+          producer:
+            providerThread.providerSessionId === null ||
+            providerThread.runtimeIdentity?.runtimeGeneration === undefined
+              ? null
+              : {
+                  instanceId: providerThread.providerInstanceId,
+                  providerSessionId: providerThread.providerSessionId,
+                  runtimeGeneration: providerThread.runtimeIdentity.runtimeGeneration,
+                },
+        }),
       );
       if (admission._tag === "Failure") {
         yield* settleRunBeforeStart({
@@ -826,7 +937,7 @@ export const layer: Layer.Layer<
             failure: {
               class: "provider_error",
               message:
-                "Earlier provider control has an unresolved outcome. This turn was not started. Stop the exact runtime or wait for its control result before trying again.",
+                "Earlier provider control has an unresolved outcome for this conversation. This turn was not started. Stop the exact runtime or wait for its control result before trying again.",
               code: null,
               retryable: false,
             },
@@ -1229,13 +1340,13 @@ export const layer: Layer.Layer<
           "cause" in failure &&
           isProviderAdapterOpenSessionError(failure.cause) &&
           failure.cause.requiresSignIn === true;
-        if (input.willRetry === true && !requiresSignIn) return yield* failure;
         if (
           input.willRetry === true &&
-          findSteerFailure(sessionResult.failure) === undefined &&
-          !terminalStartFailure(sessionResult.failure)
+          !requiresSignIn &&
+          findSteerFailure(failure) === undefined &&
+          !terminalStartFailure(failure)
         )
-          return yield* sessionResult.failure;
+          return yield* failure;
         yield* settleStartFailure({
           signal: "provider-session-open-failure",
           title: "Provider session failed to open",

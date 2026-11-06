@@ -539,6 +539,8 @@ export const layerExecutor: Layer.Layer<
             return restartPreparation
               .run({
                 effect: { ...effect, request },
+                captureRetirement: (binding) =>
+                  providerSessions.captureThreadRetirement?.(binding) ?? Effect.succeed(null),
                 captureStop: (providerThread) =>
                   providerSessions
                     .get(request.providerSessionId)

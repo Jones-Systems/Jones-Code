@@ -32,7 +32,8 @@ it.effect("fresh migration installs store-qualified views and preserves the rele
     }>`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=136 ORDER BY migration_id`;
     assert.deepStrictEqual(ledger, [
       { migration_id: 136, name: "WorkspaceProvenance" },
-      { migration_id: 139, name: "NativeExecutionProcessCustody" },
+      { migration_id: 137, name: "NativeCreationLeaseRenewal" },
+      { migration_id: 138, name: "NativeExecutionProcessCustody" },
       { migration_id: 139, name: "OrdinaryCheckoutProcessCustody" },
       { migration_id: 140, name: "AuthSessionClientMetadata" },
       { migration_id: 141, name: "WorkspaceRuntimeUses" },

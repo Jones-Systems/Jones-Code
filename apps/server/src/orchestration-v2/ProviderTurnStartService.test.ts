@@ -71,6 +71,7 @@ import * as RuntimePolicy from "./RuntimePolicy.ts";
 import * as WorkspaceLifecycle from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
 import { LifecycleError } from "../jones/workspaceLifecycle/Protocol.ts";
 import {
+  CurrentEffectClaim,
   EffectClaimLost,
   findEffectClaimLost,
 } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
@@ -187,6 +188,8 @@ function startWithMissingWorktree(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
+          readStoppedRuntime: () => Effect.succeed(null),
+          hasStoppedRuntime: () => Effect.succeed(false),
           assertRuntimeStopStartAllowed: () => Effect.void,
           assertImportedHistoryStartAllowed: () => Effect.void,
         }),
@@ -242,6 +245,7 @@ function startWithMissingWorktree(
           },
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          reconcileThreadBindingPublication: () => Effect.succeed(null),
           awaitThreadRetirement: () => Effect.void,
           hasRetiredWriter: () => Effect.succeed(false),
         }),
@@ -895,6 +899,7 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const events: Array<OrchestrationV2DomainEvent> = [];
+  const reconcilePublication = vi.fn(() => null);
   const interruptRun = () => {
     projection = {
       ...projection,
@@ -1222,6 +1227,8 @@ function makeLocalCommandHarness(input: {
               }
               return [];
             }),
+          readStoppedRuntime: () => Effect.succeed(null),
+          hasStoppedRuntime: () => Effect.succeed(false),
           assertRuntimeStopStartAllowed: () => Effect.void,
           assertImportedHistoryStartAllowed: () => Effect.void,
         }),
@@ -1266,6 +1273,7 @@ function makeLocalCommandHarness(input: {
                 ),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          reconcileThreadBindingPublication: () => Effect.sync(reconcilePublication),
           awaitThreadRetirement: () => Effect.void,
           hasRetiredWriter: () => Effect.succeed(false),
           open,
@@ -1322,6 +1330,7 @@ function makeLocalCommandHarness(input: {
     },
     resolveRuntimePolicy,
     createWorktree,
+    reconcilePublication,
     open,
     fallbackEnsure: resumeFallbackSession.ensureThread,
     ensureThread,
@@ -1963,6 +1972,34 @@ effectIt.effect("terminalizes a starting run when its provider session cannot op
         },
       },
     ]);
+  }),
+);
+
+effectIt.effect("claim loss refuses local publication lookup before any provider work", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue once" });
+    const loss = new EffectClaimLost({ effectId: "effect:before-local-publication" });
+    const settleCapturedFailure = yield* harness.captureStartFailure;
+    const failed = yield* harness.startWithRetry.pipe(
+      Effect.provide(
+        Layer.mock(CurrentEffectClaim)({ nativeCustody: true, check: Effect.fail(loss) }),
+      ),
+      Effect.tapError(settleCapturedFailure),
+      Effect.result,
+    );
+    expect(failed._tag).toBe("Failure");
+    if (failed._tag === "Failure") expect(findEffectClaimLost(failed.failure)).toBeDefined();
+    expect(harness.reconcilePublication).not.toHaveBeenCalled();
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)?.status).toBe("failed");
+    expect(harness.projection().attempts[0]?.status).toBe("failed");
+    expect(harness.projection().nodes[0]?.status).toBe("failed");
+    expect(
+      harness.events.filter(
+        (event) => event.type === "run.updated" && event.payload.status === "failed",
+      ),
+    ).toHaveLength(1);
   }),
 );
 
