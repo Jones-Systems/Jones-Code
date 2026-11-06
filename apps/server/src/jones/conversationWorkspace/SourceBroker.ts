@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Bounded, killed-and-reaped Git object reader; no checkout or shell is used.
 import * as NodeChildProcess from "node:child_process";
-import * as NodeTimers from "node:timers";
 import * as NodePath from "node:path";
 
 export interface SourceSnapshot {
@@ -9,8 +8,8 @@ export interface SourceSnapshot {
   readonly baseRef: string;
 }
 export type SourceRequest =
-  | { readonly operation: "read" | "list"; readonly path?: string }
-  | { readonly operation: "search"; readonly query: string; readonly path?: string }
+  | { readonly operation: "read" | "list"; readonly path?: string | undefined }
+  | { readonly operation: "search"; readonly query: string; readonly path?: string | undefined }
   | { readonly operation: "log" | "show" }
   | { readonly operation: "diff"; readonly from: string };
 export const SOURCE_LIMITS = { bytes: 256 * 1024, timeoutMs: 3000, entries: 2000 } as const;
@@ -58,6 +57,11 @@ export function objectGit(
           GIT_CONFIG_GLOBAL: "/dev/null",
         },
         stdio: ["ignore", "pipe", "pipe"],
+        // The closed Git commands below disable external helpers and network
+        // operations. This deadline owns the immediate child; close observes its
+        // reaping. It does not establish a descendant/process-group guarantee.
+        timeout: options.timeoutMs ?? SOURCE_LIMITS.timeoutMs,
+        killSignal: "SIGKILL",
       },
     );
     const chunks: Buffer[] = [];
@@ -67,10 +71,6 @@ export function objectGit(
       failure ??= new SourceReadError(reason);
       child.kill("SIGKILL");
     };
-    const timer = NodeTimers.setTimeout(
-      () => stop("limit"),
-      options.timeoutMs ?? SOURCE_LIMITS.timeoutMs,
-    );
     child.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > (options.bytes ?? SOURCE_LIMITS.bytes)) stop("limit");
@@ -81,11 +81,10 @@ export function objectGit(
       if (size > (options.bytes ?? SOURCE_LIMITS.bytes)) stop("limit");
     });
     child.on("error", () => {
-      NodeTimers.clearTimeout(timer);
       reject(new SourceReadError("git_failed"));
     });
-    child.on("close", (code) => {
-      NodeTimers.clearTimeout(timer);
+    child.on("close", (code, signal) => {
+      if (child.killed && signal === "SIGKILL") failure ??= new SourceReadError("limit");
       if (failure) reject(failure);
       else if (code !== 0 && !(args[0] === "grep" && code === 1))
         reject(new SourceReadError("git_failed"));

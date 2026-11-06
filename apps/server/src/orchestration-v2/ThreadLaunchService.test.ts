@@ -345,6 +345,7 @@ function makeHarness(options: HarnessOptions = {}) {
     Layer.provide(options.conversationLayer ?? Layer.empty),
     Layer.provide(
       Layer.mock(ProviderInstances.ProviderInstanceRegistry)({
+        getCatalogSource: () => undefined,
         getInstance: () =>
           Effect.succeed({ driverKind: options.conversationDriver ?? "codex" } as never),
       }),
@@ -5223,6 +5224,7 @@ it.effect.each(["message", "empty", "eager", "explicit", "unsupported"] as const
       let fallback = 0;
       const bindings = new Map<string, ConversationPolicy.Binding>();
       const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+        ownsPath: (path) => path === cwd,
         allocate: (input) =>
           Effect.sync(() => {
             allocated++;

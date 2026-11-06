@@ -430,7 +430,9 @@ it.effect("upstream migration 63 preserves Jones rows and durable settlement pro
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA foreign_keys = ON`;
     yield* runMigrations({ toMigrationInclusive: 62 });
-    yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137));
+    // This exercises current-service upstream isolation: install the complete
+    // Jones manifest before snapshotting its schema, rows and settlement ledger.
+    yield* runJonesMigrations(jonesMigrationEntries);
     yield* seedReferencedRows;
     const proof = JSON.stringify({
       receipt: {

@@ -111,17 +111,15 @@ const assertCheckoutAttached = (caller: Caller) =>
     if (caller.scope.thread === undefined) return;
     const policy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
     if (Option.isSome(policy))
-      yield* policy.value
-        .assertAttached(caller.scope.thread.threadId)
-        .pipe(
-          Effect.mapError(
-            () =>
-              new OrchestratorMcpFailure({
-                code: "attach_required",
-                message: "attach_required: call t3_worktree_handoff before T3 MCP writes.",
-              }),
-          ),
-        );
+      yield* policy.value.assertAttached(caller.scope.thread.threadId).pipe(
+        Effect.mapError(
+          () =>
+            new OrchestratorMcpFailure({
+              code: "attach_required",
+              message: "attach_required: call t3_worktree_handoff before T3 MCP writes.",
+            }),
+        ),
+      );
   });
 
 const writingCaller = refuseReadOnlyClient.pipe(

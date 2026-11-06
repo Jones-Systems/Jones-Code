@@ -22,18 +22,16 @@ const source = (request: SourceRequest) =>
         message: "Source tools require this conversation's worktree capability.",
       });
     const policy = yield* ConversationPolicy.ConversationPolicy;
-    return yield* policy
-      .source(scope.thread.threadId, request)
-      .pipe(
-        Effect.mapError(
-          () =>
-            new OrchestratorMcpFailure({
-              code: "invalid_request",
-              message:
-                "Source request failed or exceeded its bounds; use this turn's recorded commit and a smaller request.",
-            }),
-        ),
-      );
+    return yield* policy.source(scope.thread.threadId, request).pipe(
+      Effect.mapError(
+        () =>
+          new OrchestratorMcpFailure({
+            code: "invalid_request",
+            message:
+              "Source request failed or exceeded its bounds; use this turn's recorded commit and a smaller request.",
+          }),
+      ),
+    );
   });
 const handlers = {
   t3_source_read: McpToolAccess.readsAsCaller((input) => source({ operation: "read", ...input })),

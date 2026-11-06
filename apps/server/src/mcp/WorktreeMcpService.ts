@@ -5,10 +5,10 @@ import { createHash } from "node:crypto";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import {
   CommandId,
-  type ChatAttachment,
+  ChatAttachment,
   MessageId,
   ProjectId,
-  type ThreadId,
+  ThreadId,
   WorktreeMcpFailure,
   type WorktreeMcpContinuationStatus,
   type WorktreeMcpHandoffInput,
@@ -22,6 +22,7 @@ import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
@@ -70,6 +71,20 @@ const asOperationFailed = (prefix: string) =>
   Effect.mapError((error: unknown) =>
     failure("operation_failed", `${prefix}: ${errorMessage(error)}`),
   );
+
+const encodeHandoffRequest = Schema.encodeEffect(
+  Schema.fromJsonString(
+    Schema.Struct({
+      callerThreadId: Schema.String,
+      branch: Schema.String,
+      baseRef: Schema.NullOr(Schema.String),
+      startFromOrigin: Schema.NullOr(Schema.Boolean),
+      runSetupScript: Schema.Boolean,
+      continuationPrompt: Schema.NullOr(Schema.String),
+      continuationAttachments: Schema.Array(ChatAttachment),
+    }),
+  ),
+);
 
 export const make = Effect.gen(function* () {
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
@@ -437,7 +452,7 @@ export const make = Effect.gen(function* () {
       .lookup(threadId)
       .pipe(asOperationFailed("Unable to read conversation binding"));
     const journalOwner = binding?.ownerThreadId ?? threadId;
-    const request = JSON.stringify({
+    const request = yield* encodeHandoffRequest({
       callerThreadId: threadId,
       branch: input.branch,
       baseRef: input.baseRef ?? null,
@@ -445,7 +460,7 @@ export const make = Effect.gen(function* () {
       runSetupScript: input.runSetupScript ?? true,
       continuationPrompt: input.continuationPrompt ?? null,
       continuationAttachments,
-    });
+    }).pipe(asOperationFailed("Unable to encode handoff request"));
     const requestId =
       input.clientRequestId ?? `legacy:${createHash("sha256").update(request).digest("hex")}`;
     // The journal is read before the already-attached check so exact retries
@@ -889,7 +904,18 @@ export const make = Effect.gen(function* () {
     );
   });
   if (Option.isSome(conversationPolicy))
-    yield* conversationPolicy.value.registerTurnAttachment(attachForTurn);
+    yield* conversationPolicy.value.registerTurnAttachment((threadId, runId, text, attachments) =>
+      attachForTurn(threadId, runId, text, attachments).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ConversationPolicy.ConversationWorkspaceError({
+              threadId,
+              reason: "handoff_unknown",
+              cause,
+            }),
+        ),
+      ),
+    );
   return WorktreeMcpService.of({ handoff, status, attachForTerminal, attachForTurn });
 });
 

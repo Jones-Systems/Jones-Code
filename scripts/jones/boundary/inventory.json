@@ -7,6 +7,9 @@
   },
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "paths": {
+    "packages/shared/src/projectSettings.ts": "accepted-shared",
+    "packages/shared/src/projectSettings.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/BranchToolbarEnvModeSelector.tsx": "hook",
     "apps/server/src/jones/workspaceRetirement/Behavior.node-test.mjs": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/Behavior.test.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/Behavior.testkit.ts": "jones-owned",

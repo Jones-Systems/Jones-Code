@@ -321,7 +321,7 @@ it.effect(
           status: "ready",
           migrationPlan: { pendingUpstream: [], pendingJones: [137] },
         });
-        yield* run(runMigrations());
+        yield* run(runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)));
         const after = capture();
         expect(after.starts).toEqual(before.starts);
         expect(after.upstream).toEqual(before.upstream);
@@ -354,7 +354,7 @@ it.effect(
           status: "blocked",
           reason: "Candidate older than this database (Jones migration 137).",
         });
-        yield* run(runMigrations());
+        yield* run(runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)));
         expect(capture()).toEqual(after);
       } finally {
         NodeFS.rmSync(root, { recursive: true, force: true });

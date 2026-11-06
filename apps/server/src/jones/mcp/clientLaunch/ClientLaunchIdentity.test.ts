@@ -42,3 +42,30 @@ it("isolates namespaces without exposing them and excludes resolved defaults", (
     clientLaunchDigest({ clientRequestId: "a", title: "hi" }, project),
   );
 });
+
+it("distinguishes auto source choices in client launch request identity", () => {
+  const projectId = ProjectId.make("project");
+  const request = { clientRequestId: "auto", title: "Inspect source" };
+  const auto = clientLaunchDigest({ ...request, workspaceStrategy: { type: "auto" } }, projectId);
+  expect(auto).toBe(
+    clientLaunchDigest(
+      { ...request, workspaceStrategy: { type: "auto", branch: undefined, baseRef: undefined } },
+      projectId,
+    ),
+  );
+  expect(auto).not.toBe(
+    clientLaunchDigest({ ...request, workspaceStrategy: { type: "root" } }, projectId),
+  );
+  expect(auto).not.toBe(
+    clientLaunchDigest({ ...request, workspaceStrategy: { type: "worktree" } }, projectId),
+  );
+  expect(auto).not.toBe(
+    clientLaunchDigest({ ...request, workspaceStrategy: { type: "auto", baseRef: "main" } }, projectId),
+  );
+  expect(auto).not.toBe(
+    clientLaunchDigest(
+      { ...request, workspaceStrategy: { type: "auto", branch: "work/source" } },
+      projectId,
+    ),
+  );
+});

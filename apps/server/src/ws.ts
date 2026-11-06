@@ -1454,7 +1454,7 @@ export const layerWsRpc = (
       const terminalManager = yield* TerminalManager.TerminalManager;
       const conversationHandoffs = yield* WorktreeMcpService.make;
       const attachTerminalInput = <
-        Input extends { readonly threadId: string; readonly cwd?: string },
+        Input extends { readonly threadId: string; readonly cwd?: string | undefined },
       >(
         input: Input,
       ) =>

@@ -51,7 +51,6 @@ export async function createConversationDirectory(
     (await NodeFs.realpath(root)) !== root
   )
     throw new Error("Invalid conversation root");
-  // @effect-diagnostics-next-line cryptoRandomUUID:off -- Node-only exclusive directory allocation; the persisted filesystem identity is the binding.
   const directory = NodePath.join(root, NodeCrypto.randomUUID());
   await NodeFs.mkdir(directory, { mode: 0o700 });
   const stat = await NodeFs.lstat(directory, { bigint: true });

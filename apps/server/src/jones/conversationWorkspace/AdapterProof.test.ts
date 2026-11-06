@@ -15,7 +15,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import { vi } from "vite-plus/test";
@@ -127,9 +126,7 @@ it.effect.each([
         }),
         Layer.mock(Projects.ProjectService)({
           getById: () =>
-            Effect.succeed(
-              Option.some({ id: projectId, workspaceRoot: repo, scripts: [] } as never),
-            ),
+            Effect.succeedSome({ id: projectId, workspaceRoot: repo, scripts: [] } as never),
         }),
         Layer.mock(GitWorkflow.GitWorkflowService)({
           createWorktree: (input) =>
@@ -229,6 +226,8 @@ it.effect.each([
         const scope: Invocation.McpThreadInvocationScope = {
           environmentId: EnvironmentId.make("environment:c9"),
           requestNamespace: "c9",
+          issuedAt: Date.UTC(2026, 0, 1),
+          client: undefined,
           capabilities: new Set(["worktree"]),
           thread: {
             threadId,

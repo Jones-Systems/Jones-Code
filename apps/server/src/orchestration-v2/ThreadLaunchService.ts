@@ -111,7 +111,11 @@ import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimi
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
-  | { readonly type: "auto"; readonly branch?: string; readonly baseRef?: string }
+  | {
+      readonly type: "auto";
+      readonly branch?: string | undefined;
+      readonly baseRef?: string | undefined;
+    }
   | { readonly type: "root"; readonly branch?: string | undefined }
   | {
       readonly type: "existing_worktree";
@@ -2609,9 +2613,11 @@ const make = Effect.gen(function* () {
         let selectedStrategy = input.workspaceStrategy;
         let conversationLaunch = false;
         let fallbackDriver: string | undefined;
-        if (selectedStrategy.type === "auto") {
+        if (selectedStrategy.type === "auto" && "workspaceRoot" in project) {
           const allocationSettings = resolveProjectSettings(
-            yield* serverSettings.getSettings,
+            yield* serverSettings.getSettings.pipe(
+              Effect.mapError(mapError(input, "resolve-project", candidateThreadId)),
+            ),
             input.projectId,
             project,
           ).settings;
@@ -2728,7 +2734,7 @@ const make = Effect.gen(function* () {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
         }
         if (Option.isSome(conversations)) {
-          if (conversationLaunch) {
+          if (conversationLaunch && "workspaceRoot" in project) {
             yield* conversations.value
               .allocate({
                 threadId,

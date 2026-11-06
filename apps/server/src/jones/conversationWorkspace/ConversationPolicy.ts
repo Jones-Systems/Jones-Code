@@ -74,14 +74,14 @@ const SnapshotRecord = Schema.Struct({
   baseRef: Schema.String,
 });
 const HandoffRecordSchema = Schema.Struct({
-  revision: Schema.Int,
-  members: Schema.Array(Schema.String),
   threadId: Schema.String,
   requestId: Schema.String,
   request: Schema.String,
   commit: Schema.String,
   baseRef: Schema.String,
   startedFromOrigin: Schema.Boolean,
+  members: Schema.Array(Schema.String),
+  revision: Schema.Int,
   phase: Schema.Literals([
     "reserved",
     "checkout_issued",
@@ -99,6 +99,9 @@ const HandoffRecordSchema = Schema.Struct({
 const decodeBinding = Schema.decodeEffect(Schema.fromJsonString(BindingRecord));
 const decodeSnapshot = Schema.decodeEffect(Schema.fromJsonString(SnapshotRecord));
 const decodeHandoff = Schema.decodeEffect(Schema.fromJsonString(HandoffRecordSchema));
+const encodeBinding = Schema.encodeEffect(Schema.fromJsonString(BindingRecord));
+const encodeSnapshot = Schema.encodeEffect(Schema.fromJsonString(SnapshotRecord));
+const encodeHandoff = Schema.encodeEffect(Schema.fromJsonString(HandoffRecordSchema));
 export class ConversationWorkspaceError extends Schema.TaggedError<ConversationWorkspaceError>()(
   "ConversationWorkspaceError",
   {
@@ -138,7 +141,7 @@ type TurnAttachment = (
   runId: string,
   text: string,
   attachments: ReadonlyArray<ChatAttachment>,
-) => Effect.Effect<void, unknown>;
+) => Effect.Effect<void, ConversationWorkspaceError>;
 
 export class ConversationPolicy extends Context.Service<
   ConversationPolicy,
@@ -214,7 +217,7 @@ export class ConversationPolicy extends Context.Service<
       patch: Partial<Pick<HandoffRecord, "phase" | "path" | "setup" | "result">>,
     ) => Effect.Effect<HandoffRecord, ConversationWorkspaceError>;
   }
->()("jones/conversationWorkspace/ConversationPolicy") {}
+>()("t3/jones/conversationWorkspace/ConversationPolicy") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -259,7 +262,7 @@ const make = Effect.gen(function* () {
           threadId: binding.threadId,
           reason: "storage",
         });
-      yield* sql`INSERT INTO jones_conversation_bindings(thread_id,binding) VALUES(${binding.threadId},${JSON.stringify(binding)}) ON CONFLICT(thread_id) DO UPDATE SET binding=excluded.binding`;
+      yield* sql`INSERT INTO jones_conversation_bindings(thread_id,binding) VALUES(${binding.threadId},${yield* encodeBinding(binding)}) ON CONFLICT(thread_id) DO UPDATE SET binding=excluded.binding`;
     },
     (effect, binding) => effect.pipe(sql.withTransaction, wrap(binding.threadId)),
   );
@@ -311,6 +314,14 @@ const make = Effect.gen(function* () {
                   owner: input.threadId,
                 })
               : Effect.void,
+          ),
+          Effect.catch((cause) =>
+            Effect.logError("conversation_directory_cleanup_unknown", {
+              threadId: input.threadId,
+              path: directory.path,
+              owner: input.threadId,
+              cause,
+            }),
           ),
         ),
       ),
@@ -371,7 +382,7 @@ const make = Effect.gen(function* () {
             )
           : yield* decodeSnapshot(previous[0].snapshot);
       yield* Effect.gen(function* () {
-        yield* sql`INSERT OR IGNORE INTO jones_conversation_turns(run_id,thread_id,snapshot) VALUES(${runId},${threadId},${JSON.stringify(snapshot)})`;
+        yield* sql`INSERT OR IGNORE INTO jones_conversation_turns(run_id,thread_id,snapshot) VALUES(${runId},${threadId},${yield* encodeSnapshot(snapshot)})`;
         yield* sql`UPDATE jones_conversation_bindings SET active_run_id=${runId} WHERE thread_id=${threadId}`;
       }).pipe(sql.withTransaction);
       const instructions: string[] = [];
@@ -499,7 +510,7 @@ const make = Effect.gen(function* () {
         setup: null,
         result: null,
       };
-      yield* sql`INSERT INTO jones_conversation_handoffs(thread_id,record) VALUES(${input.threadId},${JSON.stringify(record)})`;
+      yield* sql`INSERT INTO jones_conversation_handoffs(thread_id,record) VALUES(${input.threadId},${yield* encodeHandoff(record)})`;
       return record;
     },
     (effect, input) => effect.pipe(sql.withTransaction, wrap(input.threadId)),
@@ -511,7 +522,7 @@ const make = Effect.gen(function* () {
     ) {
       const next = { ...record, ...patch, revision: record.revision + 1 };
       const rows =
-        yield* sql`UPDATE jones_conversation_handoffs SET record=${JSON.stringify(next)} WHERE thread_id=${record.threadId} AND json_extract(record, '$.revision')=${record.revision} RETURNING thread_id`;
+        yield* sql`UPDATE jones_conversation_handoffs SET record=${yield* encodeHandoff(next)} WHERE thread_id=${record.threadId} AND json_extract(record, '$.revision')=${record.revision} RETURNING thread_id`;
       if (rows.length !== 1)
         return yield* new ConversationWorkspaceError({
           threadId: record.threadId,

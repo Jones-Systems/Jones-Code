@@ -27,6 +27,7 @@ const upstreamTables = [
   "orchestration_v2_effect_outbox",
 ] as const;
 const through136 = jonesMigrationEntries.filter(([id]) => id <= 136);
+const through137 = jonesMigrationEntries.filter(([id]) => id <= 137);
 
 const installReleased136 = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -133,7 +134,7 @@ it.effect("137 changes only the released update trigger and its normal ledger en
       ).length,
       12,
     );
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+    assert.deepStrictEqual(yield* runJonesMigrations(through137), [
       [137, "NativeCreationLeaseRenewal"],
     ]);
     const after = yield* snapshot;
@@ -156,7 +157,7 @@ it.effect("137 changes only the released update trigger and its normal ledger en
       releasedTriggerSql,
     );
     assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+    assert.deepStrictEqual(yield* runJonesMigrations(through137), []);
     assert.deepStrictEqual(yield* snapshot, after);
   }).pipe(Effect.provide(memory)),
 );
@@ -167,7 +168,7 @@ it.effect(
     Effect.gen(function* () {
       yield* installReleased136;
       yield* seedStart("active", "2026-12-31T23:59:59.998Z", 41);
-      yield* runJonesMigrations(jonesMigrationEntries);
+      yield* runJonesMigrations(through137);
       const sql = yield* SqlClient.SqlClient;
       let before = yield* readRows(starts);
       for (const expiry of [
@@ -197,7 +198,7 @@ it.effect(
 it.effect("every rejected timestamp leaves the exact start row and storage types unchanged", () =>
   Effect.gen(function* () {
     yield* retainedFacts;
-    yield* runJonesMigrations(jonesMigrationEntries);
+    yield* runJonesMigrations(through137);
     const sql = yield* SqlClient.SqlClient;
     const before = yield* readRows(starts);
     for (const [label, value] of [
@@ -271,7 +272,7 @@ it.effect(
         CAST('2028-03-01T00:00:00.000Z' AS BLOB), reference_json, fact_json
       FROM jones_native_creation_execution_starts WHERE effect_id = 'old-0'`;
       const before = yield* readRows(starts);
-      yield* runJonesMigrations(jonesMigrationEntries);
+      yield* runJonesMigrations(through137);
       assert.deepStrictEqual(yield* readRows(starts), before);
       const ids = yield* sql<{
         readonly effect_id: string;
@@ -294,7 +295,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* retainedFacts;
-      yield* runJonesMigrations(jonesMigrationEntries);
+      yield* runJonesMigrations(through137);
       const sql = yield* SqlClient.SqlClient;
       const before = yield* snapshot;
       for (const mutation of [
@@ -325,7 +326,7 @@ it.effect("the other eleven permanent-fact guards retain their SQL and rejection
     yield* retainedFacts;
     const sql = yield* SqlClient.SqlClient;
     const before = yield* snapshot;
-    yield* runJonesMigrations(jonesMigrationEntries);
+    yield* runJonesMigrations(through137);
     const after = yield* snapshot;
     assert.deepStrictEqual(
       after.schema.filter(({ name }) => name !== changedTrigger),
@@ -385,11 +386,11 @@ it.effect(
       assert.isTrue(Exit.isFailure(result));
       assert.isTrue(replacementObserved);
       assert.deepStrictEqual(yield* snapshot, before);
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+      assert.deepStrictEqual(yield* runJonesMigrations(through137), [
         [137, "NativeCreationLeaseRenewal"],
       ]);
       const after = yield* snapshot;
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      assert.deepStrictEqual(yield* runJonesMigrations(through137), []);
       assert.deepStrictEqual(yield* snapshot, after);
     }).pipe(Effect.provide(memory)),
 );
@@ -411,7 +412,7 @@ it.effect.each(["missing", "unexpected body", "unexpected table"] as const)(
         BEGIN SELECT RAISE(ABORT, 'native execution facts are immutable'); END`;
       }
       const before = yield* snapshot;
-      const result = yield* Effect.exit(runJonesMigrations(jonesMigrationEntries));
+      const result = yield* Effect.exit(runJonesMigrations(through137));
       assert.isTrue(Exit.isFailure(result));
       if (Exit.isFailure(result))
         assert.include(
