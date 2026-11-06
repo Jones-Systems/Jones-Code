@@ -85,6 +85,8 @@ const decodePnpmModulesManifest = Schema.decodeUnknownEffect(
 );
 
 const DAY_MS = 86_400_000;
+// Preserve the recent-settlement/activity guard; durable completion is checked separately.
+const SETTLE_SCRIPT_GRACE_MS = 60_000;
 // Worktree creation can precede its thread row, including review-guide checkouts.
 const ORPHAN_WORKTREE_GRACE_MS = 60 * 60 * 1_000;
 
@@ -735,6 +737,8 @@ const make = Effect.gen(function* () {
           return keep("repository or branch changed");
         const changes = yield* localChangesReason(worktreePath, settings);
         if (changes !== null) return keep(changes);
+        if (group.some(member => member.settledAt !== null && now - Math.max(DateTime.toEpochMillis(member.updatedAt),activityAt) < SETTLE_SCRIPT_GRACE_MS))
+          return keep("settled moments ago");
         const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
         const old =
           !deleted &&
@@ -1011,13 +1015,13 @@ const make = Effect.gen(function* () {
             ),
           });
           retirementOutcome = result.outcome;
-          if (result.state === "partial" || result.state === "unknown") {
+          if (result.state === "partial" || result.state === "unknown" || (result.state === "not_retired" && result.reasons.includes("git_removal_refused"))) {
             entries.push({
               ...entry,
               retirement: retirementOutcome,
               outcome: "failed",
               reason: sentence(
-                result.reasons.join(", ") || "retirement effects require reconciliation",
+                "removalDiagnostic" in result && typeof result.removalDiagnostic === "string" ? result.removalDiagnostic : result.reasons.join(", ") || "retirement effects require reconciliation",
               ),
               bytes: null,
               files: null,

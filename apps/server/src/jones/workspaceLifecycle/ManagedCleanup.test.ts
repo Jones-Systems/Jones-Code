@@ -191,7 +191,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
               Removal.layer.pipe(
                 Layer.provide(
                   Removal.producerLayer.pipe(
-                    Layer.provide(RetirementGate.layer),
+                    Layer.provide(RetirementGate.layer.pipe(Layer.provide(f.configured),Layer.provide(Settings.layerTest()))),
                     Layer.provide(
                       Layer.succeed(Removal.DeletionWorktreeGit, { execute: f.git.execute }),
                     ),

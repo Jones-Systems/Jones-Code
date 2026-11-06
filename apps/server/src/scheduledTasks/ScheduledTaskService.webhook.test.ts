@@ -1928,6 +1928,7 @@ it.effect("atomically refuses bound saves, enables and webhook claims after FC5 
     const before = yield* snapshot();
     for (const operation of [
       service.upsert(yield* webhookTaskInput({workspaceStrategy: binding, title: "blocked edit"})),
+      service.upsert(yield* webhookTaskInput({workspaceStrategy: {type:"root"}, title: "blocked binding replacement"})),
       service.setEnabled({id: disabled.task.id, enabled: true}),
       service.triggerWebhook(requestFor(task, {relayDeliveryId: "post-fc5-relay"})),
       service.triggerWebhook(requestFor(task)),
@@ -1945,5 +1946,8 @@ it.effect("atomically refuses bound saves, enables and webhook claims after FC5 
     const unrelated = yield* service.upsert(yield* webhookTaskInput({id: "scheduled-task:unrelated"}));
     assert.isTrue(unrelated.task.enabled);
     yield* service.delete({id: task.id});
+    // A terminal receipt is historical evidence, not a permanent path-health gate.
+    yield* sql`UPDATE jones_workspace_retirement_state SET state='retired' WHERE worktree=${target}`;
+    assert.isTrue((yield* service.setEnabled({id: disabled.task.id, enabled: true})).task.enabled);
   }), {workers: new Map()}),
 );

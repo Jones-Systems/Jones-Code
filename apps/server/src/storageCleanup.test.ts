@@ -274,10 +274,12 @@ const cleanupFixture = (
     let storedWorktreePaths: string[] = [worktree];
     let projectRoots = [repo];
     let editBeforeRemoval = false;
+    let lockBeforeRemoval = false;
     let openSessionCwd: string | null = null;
     let sessionLive = true;
     let fullStatusCalls = 0;
     let worktreeRemovalCalls = 0;
+    const removalArgs: string[][] = [];
     const deletionRefusals: string[] = [];
     let qualifiedDeletions = 0;
     let snapshotReads = 0;
@@ -409,7 +411,9 @@ const cleanupFixture = (
         ...git,
         execute: (input) =>
           Effect.gen(function* () {
-            if (input.args[0] === "worktree" && input.args[1] === "remove") worktreeRemovalCalls++;
+            if (input.args[0] === "worktree" && input.args[1] === "remove") {worktreeRemovalCalls++;removalArgs.push([...input.args]);}
+            if (lockBeforeRemoval && input.args[0] === "worktree" && input.args[1] === "remove")
+              yield* git.execute({operation:"cleanup-test-late-lock",cwd:repo,args:["worktree","lock",worktree]});
             // Before Git's own clean check: inside `git worktree remove`, or on
             // Windows the same status check the removal makes before deleting.
             if (
@@ -547,6 +551,8 @@ const cleanupFixture = (
       setOpenSessionCwd: (cwd: string | null) => {
         openSessionCwd = cwd;
       },
+      lockAtRemoval: () => {lockBeforeRemoval = true;},
+      removalArgs: () => removalArgs,
       fullStatusCalls: () => fullStatusCalls,
       deletionEvidence: () => ({ worktreeRemovalCalls, deletionRefusals, qualifiedDeletions }),
       snapshotReads: () => snapshotReads,
@@ -618,10 +624,10 @@ const submoduleCleanupFixture = () =>
     return { ...fixture, submodule, child, recordSubmodules };
   });
 
-it.live("removes clean submodules recursively, including deinitialized repositories", () =>
+it.live("holds populated and deinitialized nested submodules without removing their metadata or bytes", () =>
   runCleanupTest(
     Effect.gen(function* () {
-      const { service, fs, repo, worktree, submodule, command, recordSubmodules } =
+      const { service, fs, repo, worktree, submodule, child, command, recordSubmodules, removalArgs } =
         yield* submoduleCleanupFixture();
       yield* command(submodule, [
         "-c",
@@ -634,15 +640,34 @@ it.live("removes clean submodules recursively, including deinitialized repositor
       yield* recordSubmodules();
       yield* command(submodule, ["submodule", "deinit", "stored"]);
       const admin = (yield* command(worktree, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+      const moduleAdmin = (yield* command(submodule,["rev-parse","--absolute-git-dir"])).stdout.trim();
+      const childAdmin = (yield* command(child,["rev-parse","--absolute-git-dir"])).stdout.trim();
+      const original = yield* fs.readFileString(`${child}/tracked.txt`);
+      const head = (yield* command(child,["rev-parse","HEAD"])).stdout.trim();
       const report = yield* service.runNow;
       expect(report.entries.find((entry) => entry.path === worktree)).toMatchObject({
-        outcome: "removed",
+        outcome: "kept", reason: expect.stringContaining("populated_submodules"),
       });
-      expect(report.counts).toEqual({ removed: 1, kept: 0, failed: 0 });
-      expect(yield* fs.exists(worktree)).toBe(false);
-      expect(yield* fs.exists(admin)).toBe(false);
+      expect(report.counts).toEqual({ removed: 0, kept: 1, failed: 0 });
+      for (const retained of [worktree,admin,moduleAdmin,childAdmin,`${moduleAdmin}/modules/stored`])
+        expect(yield* fs.exists(retained)).toBe(true);
+      expect(yield* fs.readFileString(`${child}/tracked.txt`)).toBe(original);
+      expect((yield* command(child,["rev-parse","HEAD"])).stdout.trim()).toBe(head);
+      expect(removalArgs()).toEqual([]);
     }),
   ),
+);
+
+it.live("retires an eligible ordinary linked checkout with unforced removal and absent root/admin", () =>
+  runCleanupTest(Effect.gen(function* () {
+    const f = yield* cleanupFixture();
+    const admin = (yield* f.command(f.worktree,["rev-parse","--absolute-git-dir"])).stdout.trim();
+    const report = yield* f.service.runNow;
+    expect(report.entries.find(entry=>entry.path===f.worktree)?.outcome).toBe("removed");
+    expect(yield* f.fs.exists(f.worktree)).toBe(false);
+    expect(yield* f.fs.exists(admin)).toBe(false);
+    expect(f.removalArgs()).toEqual([["worktree","remove","--",f.worktree]]);
+  })),
 );
 
 it.live("keeps nested submodule files protected by the current keep rule", () =>
@@ -1944,9 +1969,11 @@ describe("storage cleanup reports and local file policies", () => {
   it.live("reports git failures without aborting the remaining categories", () =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, worktree, command, enableFiles } = yield* cleanupFixture();
+        const { service, lockAtRemoval, enableFiles } = yield* cleanupFixture();
         enableFiles();
-        yield* command(worktree, ["worktree", "lock", worktree]);
+        // Lock only at the actual native removal seam: initial C1 qualification
+        // remains eligible, and the native failure/report continuation is exercised.
+        lockAtRemoval();
         const report = yield* service.runNow;
         expect(report.entries[0]).toMatchObject({ outcome: "failed" });
         expect(report.entries[0]?.reason).toContain("git worktree remove: fatal:");

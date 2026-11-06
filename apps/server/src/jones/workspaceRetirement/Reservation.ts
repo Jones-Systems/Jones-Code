@@ -1,4 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- C4 common-store protocol is shared with V3, independent of Jones' database.
+import * as NodeProcess from "node:process";
 import * as NodeOS from "node:os";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeChildProcess from "node:child_process";
@@ -22,7 +23,7 @@ const command = (file: string, args: string[]) =>
     NodeChildProcess.execFile(
       file,
       args,
-      { timeout: 2000, maxBuffer: 4096, encoding: "utf8" },
+      { timeout: 2000, maxBuffer: 4096, encoding: "utf8", env: {...NodeProcess.env,LC_ALL:"C"} },
       (error, out) => (error ? reject(error) : resolve(out.trim())),
     ),
   );

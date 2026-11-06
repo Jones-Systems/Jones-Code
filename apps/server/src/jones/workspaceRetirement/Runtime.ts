@@ -81,6 +81,19 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
   let ownerPaths:readonly string[]=[];
   const observe=Effect.gen(function* () {
     const claims=yield* store.claims(request.worktree);
+    const dutyDetails = claims.map(claim => {
+      let missingFact: string | null = null;
+      try {
+        const physical = claim.identity_json === null ? null : JSON.parse(claim.identity_json);
+        const owner = claim.native_owner_json === null ? null : JSON.parse(claim.native_owner_json);
+        missingFact = physical?.status !== "bound" ? physical?.reason ?? "native_worktree_identity_unavailable" : owner?.type === "unresolved" ? owner.reason : owner?.type === "in-process" ? "native_child_or_scope_drain_not_recorded" : owner?.type === "native-session" ? "native_session_drain_not_recorded" : "native_owner_observation_unavailable";
+      } catch {missingFact = "durable_duty_identity_unverifiable";}
+      return {reason:"active_consumer",target:request.worktree,root:request.worktree,category:"active_use" as const,
+        fact:`${claim.kind} duty ${claim.claim_id} remains owned by ${claim.owner}${missingFact ? `; ${missingFact}` : ""}.`,missingFact,
+        lineage:[{...(request.threadId ? {threadId:request.threadId} : {}),producer:claim.kind,claimId:claim.claim_id,owner:claim.owner,
+          incarnation:claim.incarnation_id ?? "unbound_native_identity",...(claim.kind === "turn" ? {runId:claim.owner} : claim.kind === "queued-turn" ? {runId:claim.claim_id.slice("queued-turn:".length)} : {})}],
+        nextAction:`Observe only ${claim.owner}'s actual ${claim.kind} holder and target incarnation, or use its existing completion/drain acknowledgement; then reevaluate this checkout.`};
+    });
     const roots=yield* sql<{workspace_root:string}>`SELECT workspace_root FROM projection_projects WHERE deleted_at IS NULL`;
     const native=yield* sql<{payload_json:string}>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath')=${request.worktree} AND deleted_at IS NULL`;
     const active=native.some(r=>{const t=JSON.parse(r.payload_json);return t.status==="running" || t.status==="waiting" || (t.latestRunId!==null && t.latestRunCompletedAt===null);});
@@ -114,7 +127,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       }
     });
     const nativeGuard=yield* sql<{worktree_path:string}>`SELECT worktree_path FROM native_creation_intents WHERE worktree_path=${request.worktree} UNION SELECT worktree_path FROM jones_native_workspace_admissions WHERE worktree_path=${request.worktree}`;
-    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:nativeObservations.temporaryRoots,nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>nativeObservations.processes(request.worktree))}} satisfies QualificationInput;
+    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:nativeObservations.temporaryRoots,nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},dutyDetails,consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>nativeObservations.processes(request.worktree))}} satisfies QualificationInput;
   }).pipe(mapError);
   // Automatic assessment may only replace an obligation-free current-incarnation record, and always precedes acquisition.
   const assess=Effect.gen(function* () {
@@ -168,13 +181,13 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       );
     }
     yield* assess;
-    return yield* retire({cause:request.cause,worktree:request.worktree,projectRoot:request.projectRoot,maxLevel:request.rules.worktreeSettledScope,admit:request.admit,observe,revalidate:scriptGate.pipe(Effect.andThen(request.revalidate)),...(Option.isSome(gitDriver) ? {remove:gitDriver.value.execute({operation:"WorkspaceRetirement.remove",cwd:request.projectRoot,args:["worktree","remove","--",request.worktree],allowNonZeroExit:true}).pipe(Effect.flatMap(result=>result.exitCode===0 ? Effect.void : Effect.fail(new RetirementError({target:request.worktree,reason:"git_removal_refused"}))),mapError)} : {}),finalizeOutputs:receipt=>{
+    return yield* retire({cause:request.cause,worktree:request.worktree,projectRoot:request.projectRoot,maxLevel:request.rules.worktreeSettledScope,admit:request.admit,observe,revalidate:scriptGate.pipe(Effect.andThen(request.revalidate)),...(Option.isSome(gitDriver) ? {remove:gitDriver.value.execute({operation:"WorkspaceRetirement.remove",cwd:request.projectRoot,args:["worktree","remove","--",request.worktree],allowNonZeroExit:true}).pipe(Effect.flatMap(result=>result.exitCode===0 ? Effect.void : Effect.fail(new RetirementError({target:request.worktree,reason:"git_removal_refused",cause:`git worktree remove: ${result.stderr.trim().split(/\r?\n/)[0] ?? "native removal refused"}`}))),mapError)} : {}),finalizeOutputs:receipt=>{
       const internal=outputs.filter(r=>inside(r.path,request.worktree) && r.state==="active" && r.class!=="evidence");
       return registry?.forgetOutputs ? registry.forgetOutputs(internal).pipe(mapError) : internal.length ? Effect.fail(new RetirementError({target:receipt.binding.path,reason:"output_finalization_unavailable"})) : Effect.void;
     }}).pipe(Effect.provideService(Receipts,store));
   }).pipe(mapError,Effect.catch(error=>Effect.succeed({state:"held" as const,reasons:[error.reason],target:error.target,outputs})));
   const qualification="qualification" in result ? result.qualification : null;
-  const outcome:WorkspaceRetirementOutcome={state:result.state,reasonCodes:result.reasons,receiptId:"id" in result ? result.id : null,fingerprint:qualification?.fingerprint ?? null,paths:qualification ? [...new Set([...(qualification.ignored ?? []).flatMap(r=>[r.path,...(r.paths ?? [])]),...(qualification.untrackedPaths ?? []).map(p=>NodePath.resolve(request.worktree,p))])] : [],details:qualification?.details ?? result.reasons.map(reason=>({reason,target:request.worktree,root:request.worktree,fact:reason==="settle_script_unfinished" ? "Durable settle-script completion has not been recorded." : reason==="final_checkpoint_unfinished" ? "The latest run has no ready final checkpoint." : reason,missingFact:reason,lineage:request.threadId ? [{threadId:request.threadId}] : [],nextAction:reason==="settle_script_unfinished" ? "Resolve the settle script's actual holder and record its completion before reevaluating this checkout." : "Resolve this named target fact, then request a fresh proposal."})),outputObligations:outputs.map(r=>({id:r.id,path:r.path,owner:r.owner,state:r.state}))};
+  const outcome:WorkspaceRetirementOutcome={state:result.state,reasonCodes:result.reasons,receiptId:"id" in result ? result.id : null,fingerprint:qualification?.fingerprint ?? null,paths:qualification ? [...new Set([...(qualification.ignored ?? []).flatMap(r=>[r.path,...(r.paths ?? [])]),...(qualification.untrackedPaths ?? []).map(p=>NodePath.resolve(request.worktree,p))])] : [],details:[...(qualification?.details ?? []),...result.reasons.filter(reason=>!(qualification?.details ?? []).some(detail=>detail.reason===reason)).map(reason=>({reason,target:request.worktree,root:request.worktree,fact:"removalDiagnostic" in result && typeof result.removalDiagnostic === "string" && reason === "git_removal_refused" ? result.removalDiagnostic : reason==="settle_script_unfinished" ? "Durable settle-script completion has not been recorded." : reason==="final_checkpoint_unfinished" ? "The latest run has no ready final checkpoint." : reason,missingFact:reason,lineage:request.threadId ? [{threadId:request.threadId}] : [],nextAction:reason==="settle_script_unfinished" ? "Resolve the settle script's actual holder and record its completion before reevaluating this checkout." : "Resolve this named target fact, then request a fresh proposal."}))],outputObligations:outputs.map(r=>({id:r.id,path:r.path,owner:r.owner,state:r.state}))};
   if(request.threadId) {
     const t=yield* projections.getThread(ThreadId.make(request.threadId));
     if(t.settledAt) {

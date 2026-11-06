@@ -94,6 +94,10 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (request
       // The common-store row and Jones retiring state still exclude every participant here.
       effected=true;
       const removed=yield* restore(request.remove ?? io(request.worktree,()=>git(request.projectRoot,["worktree","remove","--",bound.path]))).pipe(Effect.result);
+      if (removed._tag === "Failure") {
+        const native = removed.failure.cause;
+        receipt.removalDiagnostic = (typeof native === "string" ? native : native instanceof Error ? native.message : removed.failure.message).split(/\r?\n/)[0]!.slice(0,2048);
+      }
       const readback=yield* io(request.worktree,()=>removalReadback(request.projectRoot,receipt));
       if(readback!=="retired") {
         receipt.state=readback==="present" && removed._tag==="Failure" && !receipt.disposed.length && !receipt.preservationRefs.length ? "not_retired" : "partial";

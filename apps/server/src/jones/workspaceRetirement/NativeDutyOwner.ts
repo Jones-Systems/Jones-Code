@@ -1,10 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Owner absence uses native process identity/session metadata, never PID existence alone or process arguments.
+import * as NodeProcess from "node:process";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import { holderIdentity, nativePid } from "./Reservation.ts";
 import { nativePlatform } from "./Filesystem.ts";
 
-type Host = Awaited<ReturnType<typeof holderIdentity>>;
+type Host = Awaited<ReturnType<typeof holderIdentity>> & {process_namespace:string};
 export type NativeDutyOwner =
   | {schema:"workspace-duty-owner/v1";type:"in-process";host:Host;nonce:string}
   | {schema:"workspace-duty-owner/v1";type:"native-session";host:Host;pid:number;start:string;session:string}
@@ -15,8 +16,8 @@ export interface NativeOwnerIO {
   linuxIdentity:(pid:number)=>Promise<{bootId:string;startTime:string}>;
 }
 const nativeIO:NativeOwnerIO={
-  host:holderIdentity,
-  processes:()=>new Promise((resolve,reject)=>NodeChildProcess.execFile("/bin/ps",["-axo","pid=,sess=,lstart="],{timeout:1500,maxBuffer:2*1024*1024,encoding:"utf8"},(error,out)=>error ? reject(error) : resolve(out))),
+  host:async()=>({...await holderIdentity(),process_namespace:nativePlatform === "linux" ? await NodeFSP.readlink("/proc/self/ns/pid") : nativePlatform === "darwin" ? "darwin-host" : ""}),
+  processes:()=>new Promise((resolve,reject)=>NodeChildProcess.execFile("/bin/ps",["-axo","pid=,sess=,lstart="],{timeout:1500,maxBuffer:2*1024*1024,encoding:"utf8",env:{...NodeProcess.env,LC_ALL:"C"}},(error,out)=>error ? reject(error) : resolve(out))),
   linuxIdentity:async pid=>{
     const bootId=(await NodeFSP.readFile("/proc/sys/kernel/random/boot_id","utf8")).trim();
     const stat=await NodeFSP.readFile(`/proc/${pid}/stat`,"utf8");
@@ -34,7 +35,7 @@ function processes(value:string) {
 }
 export const unresolvedOwner=(reason:string):NativeDutyOwner=>({schema:"workspace-duty-owner/v1",type:"unresolved",reason,nextAction:"Use the named native session/terminal owner to observe its process incarnation and isolated session, or record actual completion/drain. Server PID absence does not resolve this child duty."});
 export async function inProcessOwner(nonce:string):Promise<NativeDutyOwner> {
-  try {return {schema:"workspace-duty-owner/v1",type:"in-process",host:await holderIdentity(),nonce};}
+  try {return {schema:"workspace-duty-owner/v1",type:"in-process",host:await nativeIO.host(),nonce};}
   catch {return unresolvedOwner("server_process_incarnation_unavailable");}
 }
 export async function captureNativeOwner(pid:number,expected?:{bootId:string;startTime:string},io:NativeOwnerIO=nativeIO):Promise<NativeDutyOwner> {
@@ -58,11 +59,15 @@ export async function observeNativeOwner(owner:NativeDutyOwner,io:NativeOwnerIO=
     if(![owner.host.host,owner.host.boot_id,owner.host.process_start].every(v=>typeof v==="string" && v.length>0) || !Number.isSafeInteger(owner.host.pid) || owner.host.pid<=0) return "unknown";
     if(owner.type==="native-session" && (!owner.session || !owner.start || !Number.isSafeInteger(owner.pid) || owner.pid<=0)) return "unknown";
     const host=await io.host();
-    if(host.host!==owner.host.host) return "unknown";
+    if (![host.host,host.boot_id,host.process_start,host.process_namespace].every(value => typeof value === "string" && value.length > 0)) return "unknown";
+    if(host.host!==owner.host.host || !owner.host.process_namespace || host.process_namespace!==owner.host.process_namespace) return "unknown";
     // A verified different boot on the same host excludes all prior-boot children.
     if(host.boot_id!==owner.host.boot_id) return "verified_absent";
     const rows=processes(await io.processes());
-    if(owner.type==="in-process") return rows.some(p=>p.pid===owner.host.pid && p.start===owner.host.process_start) ? "present" : "verified_absent";
+    // An in-process job may be awaiting a spawned Git/setup child. Its server's
+    // disappearance cannot establish child drain. Actual completion releases it;
+    // only a verified new boot establishes restart absence without that owner API.
+    if(owner.type==="in-process") return rows.some(p=>p.pid===owner.host.pid && p.start===owner.host.process_start) ? "present" : "unknown";
     // The terminal/provider's entire observed native session must be gone. A dead
     // launcher with children in that session remains present after server restart.
     if(rows.some(p=>p.session===owner.session)) return "present";

@@ -4,8 +4,7 @@
   "jonesOwnedPaths": [
     "apps/server/src/jones/persistence/Migrations/138_JonesWorkspaceRetirement.test.ts",
     "apps/server/src/jones/persistence/Migrations/138_JonesWorkspaceRetirement.ts",
-    "apps/server/src/jones/persistence/Migrations/140_JonesWorkspaceDutyIdentity.test.ts",
-    "apps/server/src/jones/persistence/Migrations/140_JonesWorkspaceDutyIdentity.ts",
+    "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.test.ts",
     "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.ts",
     "apps/server/src/jones/workspaceRetirement/CrossRuntime.source-test.mjs",
     "apps/server/src/jones/workspaceRetirement/Disposal.ts",
@@ -143,6 +142,38 @@
     {
       "from": "apps/server/src/scheduledTasks/ScheduledTaskService.ts",
       "to": "apps/server/src/jones/workspaceRetirement/Receipts.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/NativeConsumers.ts"
+    },
+    {
+      "from": "apps/server/src/scheduledTasks/ScheduledTaskService.webhook.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Receipts.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/NativeObservations.ts"
+    },
+    {
+      "from": "apps/server/src/storageCleanup.test.ts",
+      "to": "apps/server/src/jones/workspaceLifecycle/RegistryCli.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/TerminalCwdObservation.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Duty.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/NativeDutyOwner.ts"
     }
   ]
 }

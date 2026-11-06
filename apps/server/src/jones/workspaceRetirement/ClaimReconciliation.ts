@@ -21,13 +21,13 @@ export const reconcile = Effect.fn("WorkspaceRetirement.reconcileClaims")(functi
       // The durable run owner, rather than a vanished server, owns queued intent.
       const runs=yield* sql<{status:string;completed_at:string|null}>`SELECT status,completed_at FROM orchestration_v2_projection_runs WHERE run_id=${claim.claim_id.slice("queued-turn:".length)} AND thread_id=${claim.owner}`;
       if(runs[0]?.completed_at && ["completed","failed","interrupted","cancelled","rolled_back"].includes(runs[0].status)) {
-        yield* store.reconcileClaim(claim.claim_id,claim.holder_json,true);released++;
+        if (yield* store.reconcileClaim(claim.claim_id,claim.holder_json,true)) released++;
       }
       continue;
     }
     const observed=yield* owner.observe(claim);
     if(observed.status!=="verified_absent" || observed.holder!==claim.holder_json) continue;
-    yield* store.reconcileClaim(claim.claim_id,claim.holder_json,true);released++;
+    if (yield* store.reconcileClaim(claim.claim_id,claim.holder_json,true)) released++;
   }
   return {retained:claims.length-released,released,status:"observed" as const};
 });

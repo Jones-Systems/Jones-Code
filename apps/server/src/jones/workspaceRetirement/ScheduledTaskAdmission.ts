@@ -11,10 +11,10 @@ export const assertScheduledTarget = (
 ) => Effect.gen(function* () {
   if (task.workspaceStrategy.type !== "existing_worktree") return;
   const target = task.workspaceStrategy.worktreePath;
-  const rows = yield* sql<{ state: string }>`SELECT state FROM jones_workspace_retirement_state WHERE worktree=${target}`;
+  const rows = yield* sql<{ state: string }>`SELECT state FROM jones_workspace_retirement_state WHERE worktree=${target} AND state='retiring'`;
   if (rows[0]) return yield* new ScheduledTaskError({
     taskId: task.id,
-    message: "The scheduled task's checkout is retiring or retired.",
+    message: "The scheduled task's checkout is retiring.",
     cause: new RetirementError({ target, reason: rows[0].state }),
   });
 });

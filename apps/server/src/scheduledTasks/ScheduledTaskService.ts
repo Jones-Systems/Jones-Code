@@ -545,7 +545,11 @@ export const layer = Layer.effect(
       },
     ) =>
       sql.withTransaction(Effect.gen(function* () {
-        if(task.enabled) yield* assertScheduledTarget(sql,task);
+        if(task.enabled) {
+          yield* assertScheduledTarget(sql,task);
+          const current = yield* findTask(task.id);
+          if (current?.enabled) yield* assertScheduledTarget(sql,current);
+        }
         return yield* sql<{ task_id: string }>`
         INSERT INTO scheduled_tasks (
           task_id,
@@ -2115,7 +2119,7 @@ export const layer = Layer.effect(
       const now = DateTime.toEpochMillis(yield* localNow);
       yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}
         AND NOT EXISTS (SELECT 1 FROM jones_workspace_retirement_state r
-          WHERE json_extract(task_json,'$.workspaceStrategy.type')='existing_worktree'
+          WHERE r.state='retiring' AND json_extract(task_json,'$.workspaceStrategy.type')='existing_worktree'
           AND r.worktree=json_extract(task_json,'$.workspaceStrategy.worktreePath'))`;
       const tasks = yield* sql<{ task_id: ScheduledTaskId }>`
         SELECT DISTINCT task_id FROM scheduled_task_webhook_pending WHERE state IN ('dispatching', 'running', 'completed', 'failed')

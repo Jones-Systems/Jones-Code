@@ -27,6 +27,7 @@ export interface QualificationInput {
   preservations?: readonly Preservation[];
   registeredStores?: readonly { path: string; common: string }[];
   lineage?: Readonly<Record<string, string>>;
+  dutyDetails?: readonly ReasonDetail[];
 }
 export interface ReasonDetail {
   reason: string;
@@ -94,6 +95,7 @@ export async function qualify(input: QualificationInput): Promise<QualificationR
       ...(result.lineageObservation?.lineage ?? []),
     ];
     result.details = result.reasons.flatMap((reason) => {
+      if (reason === "active_consumer" && input.dutyDetails?.length) return [...input.dutyDetails];
       if(reason==="consumer_evidence_unavailable") {
         return Object.entries(result.consumers?.coverage ?? {}).filter(([,probe])=>probe.reason!==null).map(([name,probe])=>({
           reason,target:input.worktree,root:input.worktree,category:"unavailable_observation" as const,

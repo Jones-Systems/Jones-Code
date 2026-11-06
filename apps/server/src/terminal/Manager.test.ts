@@ -525,7 +525,7 @@ it.layer(
           assert.ok(marker);
           if(mode==="interruption") {
             assert.lengthOf(process.writes,1);
-            process.emitExit({exitCode:130});
+            process.emitExit({exitCode:130,signal:null});
           }
           else if(mode==="close") yield* manager.close({threadId:input.threadId,terminalId:input.terminalId});
           else {

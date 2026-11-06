@@ -21,6 +21,7 @@ export interface RetirementReceipt {
   binding: Binding; incarnation: string; qualification: QualificationResult;
   coverage: unknown; preservationRefs: { ref: string; head: string }[];
   journal: string; disposed: string[]; reasons: string[]; limits: readonly string[];
+  removalDiagnostic?: string;
   bytes: { logical: number | null; allocated: number | null; statvfs_delta: number | null };
 }
 export interface SettlementIntent {
@@ -35,11 +36,11 @@ export interface JournalEntry {
 const mapError = (target: string) => Effect.mapError((cause: unknown) => Schema.is(RetirementError)(cause) ? cause : new RetirementError({ reason: "storage_unavailable", target, cause }));
 export class Receipts extends Context.Service<Receipts, {
   readonly writable: (worktree: string) => Effect.Effect<void, RetirementError>;
-  readonly claims: (worktree: string) => Effect.Effect<readonly { claim_id: string; kind: string; owner: string }[], RetirementError>;
+  readonly claims: (worktree: string) => Effect.Effect<readonly { claim_id: string; kind: string; owner: string; incarnation_id: string | null; identity_json: string | null; native_owner_json: string | null }[], RetirementError>;
   readonly claim: (input: { id: string; worktree: string; kind: string; owner: string; holder: string }) => Effect.Effect<DutyIdentity, RetirementError>;
   readonly releaseClaim: (id: string) => Effect.Effect<void, RetirementError>;
   readonly bindNativeOwner: (id:string,holder:string,owner:NativeDutyOwner)=>Effect.Effect<void,RetirementError>;
-  readonly reconcileClaim: (id: string, holder: string, verifiedAbsent: boolean) => Effect.Effect<void, RetirementError>;
+  readonly reconcileClaim: (id: string, holder: string, verifiedAbsent: boolean) => Effect.Effect<boolean, RetirementError>;
   readonly settlement: (thread: string, worktree: string, settledAt: string) => Effect.Effect<SettlementIntent | null, RetirementError>;
   readonly startScript: (event: string) => Effect.Effect<boolean, RetirementError>;
   readonly finishScript: (event: string, state: Exclude<SettlementScriptState, "pending" | "running">, exit: number | null) => Effect.Effect<void, RetirementError>;
@@ -54,11 +55,11 @@ export class Receipts extends Context.Service<Receipts, {
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const writable = Effect.fn("WorkspaceRetirement.writable")(function* (worktree: string) {
-    const rows = yield* sql<{state:string}>`SELECT state FROM jones_workspace_retirement_state WHERE worktree=${worktree}`;
+    const rows = yield* sql<{state:string}>`SELECT state FROM jones_workspace_retirement_state WHERE worktree=${worktree} AND state='retiring'`;
     if (rows[0]) return yield* new RetirementError({ reason: rows[0].state, target: worktree });
   }, mapError("workspace"));
   const claims = Effect.fn("WorkspaceRetirement.claims")(function* (worktree: string) {
-    return yield* sql<{ claim_id: string; kind: string; owner: string }>`SELECT claim_id,kind,owner FROM jones_workspace_duty_claims WHERE worktree=${worktree} AND released_at IS NULL`;
+    return yield* sql<{ claim_id: string; kind: string; owner: string; incarnation_id: string | null; identity_json: string | null; native_owner_json: string | null }>`SELECT c.claim_id,c.kind,c.owner,c.incarnation_id,i.identity_json,i.native_owner_json FROM jones_workspace_duty_claims c LEFT JOIN jones_workspace_duty_identity i ON i.claim_id=c.claim_id WHERE c.worktree=${worktree} AND c.released_at IS NULL`;
   }, mapError("workspace"));
   return Receipts.of({
     writable, claims,
@@ -88,7 +89,8 @@ const make = Effect.gen(function* () {
     }, mapError("workspace")),
     reconcileClaim: Effect.fn("WorkspaceRetirement.reconcileClaim")(function* (id, holder, verifiedAbsent) {
       if (!verifiedAbsent) return yield* new RetirementError({ reason: "claim_holder_absence_unverified", target: id });
-      yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${id} AND holder_json=${holder} AND released_at IS NULL`;
+      const released = yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${id} AND holder_json=${holder} AND released_at IS NULL RETURNING claim_id`;
+      return released.length === 1;
     }, mapError("workspace")),
     settlement: Effect.fn("WorkspaceRetirement.settlement")(function* (thread, worktree, settledAt) {
       const rows = yield* sql<SettlementIntent>`SELECT * FROM jones_workspace_retirement_intents WHERE thread_id=${thread} AND worktree=${worktree} AND settled_at=${settledAt} ORDER BY rowid DESC LIMIT 1`;
@@ -114,7 +116,11 @@ const make = Effect.gen(function* () {
       yield* sql.withTransaction(Effect.gen(function* () {
         yield* writable(receipt.binding.path);
         if ((yield* claims(receipt.binding.path)).length) return yield* new RetirementError({ reason: "live_duty", target: receipt.binding.path });
-        yield* sql`INSERT INTO jones_workspace_retirement_state VALUES (${receipt.binding.path},${receipt.incarnation},'retiring',${receipt.id})`;
+        const previous = yield* sql<{incarnation_id:string;state:string}>`SELECT incarnation_id,state FROM jones_workspace_retirement_state WHERE worktree=${receipt.binding.path}`;
+        if (previous[0]?.incarnation_id === receipt.incarnation)
+          return yield* new RetirementError({reason:"retired_incarnation_reused",target:receipt.binding.path});
+        yield* sql`INSERT INTO jones_workspace_retirement_state VALUES (${receipt.binding.path},${receipt.incarnation},'retiring',${receipt.id})
+          ON CONFLICT(worktree) DO UPDATE SET incarnation_id=excluded.incarnation_id,state='retiring',receipt_id=excluded.receipt_id WHERE jones_workspace_retirement_state.state='retired'`;
         yield* sql`INSERT INTO jones_workspace_retirement_receipts VALUES (${receipt.id},${receipt.incarnation},${receipt.binding.path},'intent',${JSON.stringify(receipt)})`;
       }));
     }, mapError("workspace")),

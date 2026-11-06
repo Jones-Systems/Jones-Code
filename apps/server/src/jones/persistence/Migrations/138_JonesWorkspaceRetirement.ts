@@ -31,4 +31,9 @@ export default Effect.gen(function* () {
     state TEXT NOT NULL CHECK(state IN ('planned','invoking','completed','removed_with_checkout')),
     PRIMARY KEY(receipt_id,ordinal)
   )`;
+  yield* sql`CREATE TABLE jones_workspace_duty_identity (
+    claim_id TEXT PRIMARY KEY NOT NULL,
+    identity_json TEXT NOT NULL CHECK(json_valid(identity_json)),
+    native_owner_json TEXT CHECK(native_owner_json IS NULL OR json_valid(native_owner_json))
+  )`;
 });

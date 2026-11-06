@@ -1,3 +1,4 @@
+import type { PtyExitEvent } from "@t3tools/shared/PtyAdapter";
 // @effect-diagnostics nodeBuiltinImport:off -- Controlled native-terminal seams execute the real optional observer; no live terminals or private state.
 import * as assert from "node:assert/strict";
 import * as childProcess from "node:child_process";
@@ -9,12 +10,12 @@ import type { DutyIdentity } from "./DutyIdentity.ts";
 const nonce = "a".repeat(32);
 function fixture() {
   const dataListeners = new Set<(data: string) => void>();
-  const exitListeners = new Set<() => void>();
+  const exitListeners = new Set<(event: PtyExitEvent) => void>();
   const writes: string[] = [], captures: CompletionObservation[] = [], diagnostics: string[] = [];
   const process = {
     pid: 12345,
     onData: (listener: (data: string) => void) => { dataListeners.add(listener); return () => { dataListeners.delete(listener); }; },
-    onExit: (listener: () => void) => { exitListeners.add(listener); return () => { exitListeners.delete(listener); }; },
+    onExit: (listener: (event: PtyExitEvent) => void) => { exitListeners.add(listener); return () => { exitListeners.delete(listener); }; },
   };
   const physical: DutyIdentity = {status:"bound",incarnation:"controlled-native-incarnation",binding:{path:"/fixture/worktree",dev:"1",ino:"2",gitDirectory:"/fixture/repo/.git/worktrees/worktree",gitDevice:"1",gitInode:"3",commonDirectory:"/fixture/repo/.git"}};
   let current = true;
@@ -23,7 +24,7 @@ function fixture() {
   const input = {threadId:"thread",terminalId:"terminal",data:" echo fixture\r",observation:{invocationId:"4a792973-8d01-4eb5-a710-e34c74f57c6b",projectId:"requested-project",scriptId:"requested-script"}};
   const submit = (data:string) => {writes.push(data);};
   const emit = (data:string) => {for(const listener of dataListeners) listener(data);};
-  const exit = () => {for(const listener of exitListeners) listener();};
+  const exit = () => {for(const listener of exitListeners) listener({exitCode:0,signal:null});};
   return {observer,terminal,input,submit,writes,captures,diagnostics,emit,exit,dataListeners,exitListeners,setCurrent:(value:boolean)=>{current=value;}};
 }
 export const scriptObservationCases: Record<string,()=>Promise<void>> = {
@@ -68,10 +69,11 @@ export const scriptObservationCases: Record<string,()=>Promise<void>> = {
     }
   },
   "prewrite observer failure and wrapper bounds preserve exactly one original native write":async()=>{
-    for(const mode of ["unsupported","unbound","oversized","subscribe-failed"]){
+    for(const mode of ["unsupported","unbound","cwd-unavailable","oversized","subscribe-failed"]){
       const f=fixture();
       if(mode==="unsupported") f.terminal.shell="unknown-shell";
       if(mode==="unbound") f.terminal.physical={status:"unbound",reason:"native_worktree_identity_unavailable",nextAction:"controlled native readback"};
+      if(mode==="cwd-unavailable") f.terminal.observedCwd=null;
       if(mode==="oversized") f.input.data="x".repeat(65535)+"\r";
       if(mode==="subscribe-failed") f.terminal.process.onExit=()=>{throw Error("observation unavailable");};
       f.observer.write(f.input,f.terminal,f.submit);

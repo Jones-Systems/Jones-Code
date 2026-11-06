@@ -9,7 +9,7 @@ import { fixture, command } from "./Conformance.testkit.ts";
 import { Receipts, layer, RetirementError } from "./Receipts.ts";
 import { retire } from "./RetirementExecutor.ts";
 import { acquireReservation, holderIdentity, releaseReservation, type ReservationRecord } from "./Reservation.ts";
-import { incarnation } from "./OutputAttestation.ts";
+import { binding, incarnation } from "./OutputAttestation.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { enumerateDisposal, disposePath } from "./Disposal.ts";
 import { dutyIdentity } from "./DutyIdentity.ts";
@@ -21,9 +21,9 @@ import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { settlementAdmission } from "./SettlementAdmission.ts";
 
-async function fixtureSql(path:string, after?:(query:string,values:unknown[])=>Promise<void>) {
+async function fixtureSql(path:string, after?:(query:string,values:unknown[])=>Promise<void>, migrate = true) {
   const db=new NodeSqlite.DatabaseSync(path);
-  for(const name of ["136_JonesWorkspaceProvenance.ts","138_JonesWorkspaceRetirement.ts","140_JonesWorkspaceDutyIdentity.ts"]) {
+  for(const name of migrate ? ["136_JonesWorkspaceProvenance.ts","138_JonesWorkspaceRetirement.ts"] : []) {
     const source=await NodeFSP.readFile(new URL("../persistence/Migrations/"+name,import.meta.url),"utf8");
     for(const statement of source.matchAll(/yield\* sql`([^`]+)`/g)) db.exec(statement[1]!);
   }
@@ -37,6 +37,18 @@ async function fixtureSql(path:string, after?:(query:string,values:unknown[])=>P
   return {sql,db,close:()=>db.close()};
 }
 export const retirementCases:Record<string,()=>Promise<void>>={
+  "production138 DDL is atomic in actual SQLite and retries without inventing duty identity":()=>fixture(async({base})=>{
+    const f=await fixtureSql(NodePath.join(base,"migration.sqlite3"),undefined,false);
+    const migration=(await import("../persistence/Migrations/138_JonesWorkspaceRetirement.ts")).default;
+    const run=(fail:boolean)=>Effect.runPromise(f.sql.withTransaction(migration.pipe(Effect.andThen(fail ? Effect.fail(Error("controlled migration failure")) : Effect.void))).pipe(Effect.provideService(SqlClient.SqlClient,f.sql)));
+    try {
+      await NodeAssert.rejects(run(true),/controlled migration failure/);
+      NodeAssert.deepEqual(f.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE 'jones_%'").all(),[]);
+      await run(false);
+      NodeAssert.deepEqual(f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(r=>r.name),["jones_workspace_disposal_journal","jones_workspace_duty_claims","jones_workspace_duty_identity","jones_workspace_retirement_intents","jones_workspace_retirement_receipts","jones_workspace_retirement_state"]);
+      NodeAssert.deepEqual(f.db.prepare("SELECT * FROM jones_workspace_duty_identity").all(),[]);
+    } finally {f.close();}
+  }),
   "loaded native service observations use bounded manager projections and retain unknown coverage":async()=>{
     const calls:string[][]=[];
     const linux:ServiceIO={uid:()=>501,command:async(_file,args)=>{
@@ -80,17 +92,20 @@ export const retirementCases:Record<string,()=>Promise<void>>={
     NodeAssert.equal((await dutyIdentity(worktree)).status,"unbound");
   }),
   "native owner reconciliation retains children after launcher/server exit and never clears unknown":async()=>{
-    const host={host:"fixture",boot_id:"boot",pid:nativePid,process_start:"server-start"};
+    const host={host:"fixture",boot_id:"boot",process_namespace:"fixture-pid-namespace",pid:nativePid,process_start:"server-start"};
     let listing=`${nativePid} server-session server-start\n12345 child-session child-start\n`;
     const io:NativeOwnerIO={host:async()=>host,processes:async()=>listing,linuxIdentity:async()=>({bootId:"boot",startTime:"100"})};
     const owner=await captureNativeOwner(12345,undefined,io);NodeAssert.equal(owner.type,"native-session");
     listing="12346 child-session descendant-start\n";
     NodeAssert.equal(await observeNativeOwner(owner,io),"present");
     NodeAssert.equal(await observeNativeOwner(owner,{...io,processes:async()=>{throw Error("unavailable");}}),"unknown");
+    NodeAssert.equal(await observeNativeOwner({schema:"workspace-duty-owner/v1",type:"in-process",host,nonce:"handoff"},io),"unknown");
+    NodeAssert.equal(await observeNativeOwner(owner,{...io,host:async()=>({...host,process_namespace:"different-namespace"})}),"unknown");
     listing="12346 unrelated-session reused-pid\n";
     NodeAssert.equal(await observeNativeOwner(owner,io),"verified_absent");
     NodeAssert.equal(await observeNativeOwner(owner,{...io,host:async()=>({...host,host:"other-host"})}),"unknown");
     NodeAssert.equal(await observeNativeOwner(owner,{...io,host:async()=>({...host,boot_id:"new-boot"})}),"verified_absent");
+    NodeAssert.equal(await observeNativeOwner(owner,{...io,host:async()=>({...host,boot_id:""})}),"unknown");
     listing=`${nativePid} shared server-start\n12345 shared child-start\n`;
     NodeAssert.equal((await captureNativeOwner(12345,undefined,io)).type,"unresolved");
   },
@@ -139,6 +154,42 @@ export const retirementCases:Record<string,()=>Promise<void>>={
       NodeAssert.equal(f.db.prepare("SELECT state FROM jones_workspace_retirement_receipts").get()?.state,"retired");
       NodeAssert.equal((await command(repo,["show-ref","--verify","refs/heads/task"])).length>0,true);
       NodeAssert.equal(f.db.prepare("SELECT state FROM jones_workspace_retirement_state").get()?.state,"retired");
+    } finally {f.close();}
+  }),
+  "a verified later physical checkout may work and retire without rewriting an older terminal receipt":()=>fixture(async({base,repo,worktree,input})=>{
+    const f=await fixtureSql(NodePath.join(base,"recreated.sqlite3"));
+    const request={cause:"sweep" as const,projectRoot:repo,worktree,maxLevel:"branch-retained" as const,admit:Effect.void,observe:Effect.succeed(input),revalidate:Effect.void,finalizeOutputs:()=>Effect.void};
+    const run=<A,E>(effect:Effect.Effect<A,E,Receipts>)=>Effect.runPromise(effect.pipe(Effect.provide(layer),Effect.provideService(SqlClient.SqlClient,f.sql)));
+    try {
+      NodeAssert.equal((await run(retire(request))).state,"retired");
+      const old=String(f.db.prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts").get()!.receipt_json);
+      await command(repo,["worktree","add",worktree,"task"]);
+      input.expected=await binding(worktree);
+      await run(Effect.gen(function*(){
+        const store=yield* Receipts;
+        const identity=yield* store.claim({id:"new-native-duty",worktree,kind:"terminal",owner:"new-owner",holder:"{}"});
+        NodeAssert.equal(identity.status,"bound");
+        yield* store.releaseClaim("new-native-duty");
+      }));
+      NodeAssert.equal((await run(retire(request))).state,"retired");
+      NodeAssert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jones_workspace_retirement_receipts").get()?.n,2);
+      NodeAssert.equal(String(f.db.prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts ORDER BY rowid LIMIT 1").get()!.receipt_json),old);
+    } finally {f.close();}
+  }),
+  "native unforced removal refusal retains actual diagnostics and durable terminal readback":()=>fixture(async({base,repo,worktree,input})=>{
+    const f=await fixtureSql(NodePath.join(base,"native-refusal.sqlite3"));
+    const remove=Effect.tryPromise({try:async()=>{
+      await command(repo,["worktree","lock",worktree]);
+      await command(repo,["worktree","remove","--",worktree]);
+    },catch:cause=>new RetirementError({target:worktree,reason:"git_removal_refused",cause:cause instanceof Error ? cause.message : String(cause)})});
+    try {
+      const result=await Effect.runPromise(retire({cause:"sweep",projectRoot:repo,worktree,maxLevel:"branch-retained",admit:Effect.void,observe:Effect.succeed(input),revalidate:Effect.void,finalizeOutputs:()=>Effect.void,remove}).pipe(Effect.provide(layer),Effect.provideService(SqlClient.SqlClient,f.sql)));
+      NodeAssert.equal(result.state,"not_retired");
+      NodeAssert.deepEqual(result.reasons,["git_removal_refused"]);
+      const receipt=JSON.parse(String(f.db.prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts").get()!.receipt_json));
+      NodeAssert.match(receipt.removalDiagnostic,/worktree.*remove/);
+      NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(),true);
+      NodeAssert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM jones_workspace_retirement_state").get()?.n,0);
     } finally {f.close();}
   }),
   "tracked changes journal precedes no-follow symlink disposal and keeps the external target":()=>fixture(async({base,repo,worktree,input})=>{
