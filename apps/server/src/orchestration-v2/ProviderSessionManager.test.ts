@@ -7252,7 +7252,7 @@ it.effect.each(["conversation", "absent", "mismatched", "unrelated", "attached",
     const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
       ownsPath: () => true,
       lookup: () => Effect.sync(() => { reads++; return kind === "absent" ? null : binding; }),
-      acceptsCwd: (id, requested) => Effect.sync(() => { reads++; assignmentChecks++; return id === binding.threadId && binding.state === "conversation" && requested === binding.path && (kind !== "attachment-drift" || assignmentChecks === 1); }),
+      acceptsCwd: (id, requested) => Effect.sync(() => { reads++; assignmentChecks++; return kind !== "absent" && id === binding.threadId && binding.state === "conversation" && requested === binding.path && (kind !== "attachment-drift" || assignmentChecks === 1); }),
     });
     yield* Effect.gen(function* () {
       const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;

@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic Git repositories and exact fixture teardown; no provider executable or installed state.
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-import { homedir } from "node:os";
-import { execFileSync } from "node:child_process";
+import * as NodeFs from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeOs from "node:os";
+import * as NodeChildProcess from "node:child_process";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
@@ -33,7 +33,7 @@ import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import Migration from "../persistence/Migrations/138_JonesConversationWorkspace.ts";
 import * as Policy from "./ConversationPolicy.ts";
 
-const git = (cwd: string, ...args: string[]) => execFileSync("git", ["-c", "init.defaultBranch=main", "-c", "user.name=C9 Fixture", "-c", "user.email=c9@example.invalid", ...args], { cwd, encoding: "utf8", timeout: 3000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
+const git = (cwd: string, ...args: string[]) => NodeChildProcess.execFileSync("git", ["-c", "init.defaultBranch=main", "-c", "user.name=C9 Fixture", "-c", "user.email=c9@example.invalid", ...args], { cwd, encoding: "utf8", timeout: 3000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
 
 it.effect.each([
   { driver: "codex", scenario: "handoff" },
@@ -45,11 +45,11 @@ it.effect.each([
   { driver: "codex", scenario: "shared" },
 ] as const)("$driver adapter runtime: $scenario", ({ driver, scenario }) => Effect.scoped(Effect.gen(function* () {
   const root = yield* Effect.acquireRelease(Effect.promise(async () => {
-    const cache = path.join(homedir(), "Library", "Caches"); await fs.mkdir(cache, { recursive: true });
-    return fs.mkdtemp(path.join(cache, "jones-c9-adapter-"));
-  }), (root) => Effect.promise(() => fs.rm(root, { recursive: true, force: true })));
-  const repo = path.join(root, "repo"); const state = path.join(root, "state"); let checkout = path.join(root, "checkout");
-  yield* Effect.promise(async () => { await fs.mkdir(repo); await fs.mkdir(state); git(repo, "init", "--template="); await fs.writeFile(path.join(repo, "AGENTS.md"), "Read the recorded source.\n"); git(repo, "add", "."); git(repo, "commit", "-qm", "source"); });
+    const cache = NodePath.join(NodeOs.homedir(), "Library", "Caches"); await NodeFs.mkdir(cache, { recursive: true });
+    return NodeFs.mkdtemp(NodePath.join(cache, "jones-c9-adapter-"));
+  }), (root) => Effect.promise(() => NodeFs.rm(root, { recursive: true, force: true })));
+  const repo = NodePath.join(root, "repo"); const state = NodePath.join(root, "state"); let checkout = NodePath.join(root, "checkout");
+  yield* Effect.promise(async () => { await NodeFs.mkdir(repo); await NodeFs.mkdir(state); git(repo, "init", "--template="); await NodeFs.writeFile(NodePath.join(repo, "AGENTS.md"), "Read the recorded source.\n"); git(repo, "add", "."); git(repo, "commit", "-qm", "source"); });
   const threadId = ThreadId.make(`thread:adapter:${driver}`); const projectId = ProjectId.make("project:c9");
   const thread = { id: threadId, projectId, worktreePath: null as string | null, branch: null as string | null, deletedAt: null, archivedAt: null };
   const members = new Map([[threadId, thread]]);
@@ -106,7 +106,7 @@ it.effect.each([
     const source = yield* toolkit.handle("t3_source_read", { path: "AGENTS.md" }).pipe(Stream.unwrap, Stream.runCollect, Effect.provideService(Invocation.McpInvocationContext, scope));
     assert.include(JSON.stringify(source), "Read the recorded source."); assert.include(JSON.stringify(source), turn!.binding.commit);
     const input = { clientRequestId: "proof:attach", branch: "work/c9-proof", continuationPrompt: "Continue the original conversation in the checkout." };
-    if (scenario === "nonempty") yield* Effect.promise(() => fs.writeFile(path.join(binding.path, "owner-note"), "retain"));
+    if (scenario === "nonempty") yield* Effect.promise(() => NodeFs.writeFile(NodePath.join(binding.path, "owner-note"), "retain"));
     if (scenario === "checkout-interruption") {
       assert.equal((yield* worktree.handoff(scope, input).pipe(Effect.result))._tag, "Failure");
       assert.equal((yield* policy.readHandoff(threadId))?.phase, "checkout_issued");
@@ -130,9 +130,9 @@ it.effect.each([
     assert.equal(result.continuation.status, "scheduled"); assert.equal(result.startedFromOrigin, false);
     assert.equal(git(checkout, "rev-parse", "HEAD"), turn!.binding.commit);
     if (scenario === "nonempty") {
-      assert.equal(yield* Effect.promise(() => fs.readFile(path.join(binding.path, "owner-note"), "utf8")), "retain");
+      assert.equal(yield* Effect.promise(() => NodeFs.readFile(NodePath.join(binding.path, "owner-note"), "utf8")), "retain");
       assert.lengthOf(yield* sql`SELECT 1 FROM jones_conversation_obligations WHERE path=${binding.path} AND thread_id=${threadId}`, 1);
-    } else assert.equal(yield* Effect.promise(() => fs.stat(binding.path).catch(() => null)), null);
+    } else assert.equal(yield* Effect.promise(() => NodeFs.stat(binding.path).catch(() => null)), null);
     if (scenario === "shared") {
       assert.equal(members.get(childId)!.worktreePath, checkout);
       const lateId = ThreadId.make("thread:shared:late:c9");

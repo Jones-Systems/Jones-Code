@@ -234,7 +234,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       settingKeys={["worktreeAllocation"]}
       mixed={mixedAllocation}
       title="Worktree allocation"
-      description="On write starts a conversation and attaches a worktree before mutation. Explicit workspace choices still apply."
+      description="On write starts with source tools. Attach a worktree for source changes or terminals. Explicit workspace choices still apply."
       control={
         <Select value={mixedAllocation ? null : settings.worktreeAllocation} onValueChange={(value) => {
           if (value === "on-write" || value === "eager") updateSettings({ worktreeAllocation: value });

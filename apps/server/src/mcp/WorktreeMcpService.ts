@@ -593,6 +593,7 @@ export const make = Effect.gen(function* () {
     }
     yield* durableHandoff(threadId, { branch: `work/conversation-${createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`, clientRequestId: `adapter-fallback:${runId}`, continuationPrompt: text || "Continue the previous request in the attached checkout.", runSetupScript: true }, Effect.void, attachments);
   });
+  if (Option.isSome(conversationPolicy)) yield* conversationPolicy.value.registerTurnAttachment(attachForTurn);
   return WorktreeMcpService.of({ handoff, status, attachForTerminal, attachForTurn });
 });
 

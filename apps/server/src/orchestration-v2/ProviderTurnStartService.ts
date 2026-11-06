@@ -1,4 +1,3 @@
-import * as WorktreeMcpService from "../mcp/WorktreeMcpService.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
@@ -218,7 +217,6 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
-    const conversationHandoffs = yield* Effect.serviceOption(WorktreeMcpService.WorktreeMcpService);
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const currentSettings = yield* ServerSettings.ServerSettingsService;
     const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -948,10 +946,10 @@ export const layer: Layer.Layer<
       if (Option.isSome(conversations) && projection.thread.lineage.parentThreadId !== null && run.workspacePreparation === undefined && projection.thread.worktreePath === null) {
         yield* conversations.value.inherit(projection.thread.id, projection.thread.lineage.parentThreadId).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
       }
-      if (Option.isSome(conversations) && Option.isSome(conversationHandoffs) && projection.thread.worktreePath === null) {
+      if (Option.isSome(conversations) && projection.thread.worktreePath === null) {
         const shared = yield* conversations.value.lookup(projection.thread.id).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
         if (shared?.state === "attached" && shared.ownerThreadId !== projection.thread.id) {
-          yield* conversationHandoffs.value.attachForTurn(projection.thread.id, run.id, message?.text ?? "", message?.attachments ?? []).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          yield* conversations.value.attachForTurn(projection.thread.id, run.id, message?.text ?? "", message?.attachments ?? []).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
           return;
         }
       }
@@ -961,9 +959,9 @@ export const layer: Layer.Layer<
       if (conversationTurn !== null) {
         const instance = yield* instanceRegistry.getInstance(run.modelSelection.instanceId);
         if (instance?.driverKind !== "codex" && instance?.driverKind !== "claudeAgent") {
-          if (Option.isNone(conversations) || Option.isNone(conversationHandoffs)) return yield* new ProviderTurnStartError({ runId, cause: "Eager adapter fallback is unavailable; no unproved adapter may use a conversation directory." });
+          if (Option.isNone(conversations)) return yield* new ProviderTurnStartError({ runId, cause: "Eager adapter fallback is unavailable; no unproved adapter may use a conversation directory." });
           yield* conversations.value.fallback(projection.thread.id, instance?.driverKind ?? "unavailable", "eager: resumed adapter has no conversation proof").pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
-          yield* conversationHandoffs.value.attachForTurn(projection.thread.id, run.id, message?.text ?? "", message?.attachments ?? []).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          yield* conversations.value.attachForTurn(projection.thread.id, run.id, message?.text ?? "", message?.attachments ?? []).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
           return;
         }
       }

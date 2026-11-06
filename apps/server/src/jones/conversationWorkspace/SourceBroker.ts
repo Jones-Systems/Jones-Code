@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Bounded, killed-and-reaped Git object reader; no checkout or shell is used.
-import { spawn } from "node:child_process";
-import { setTimeout, clearTimeout } from "node:timers";
-import * as path from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeTimers from "node:timers";
+import * as NodePath from "node:path";
 
 export interface SourceSnapshot {
   readonly commonDirectory: string;
@@ -28,7 +28,7 @@ export class SourceReadError extends Error {
 export function objectGit(args: readonly string[], options: { commonDirectory?: string; cwd?: string; bytes?: number; timeoutMs?: number } = {}): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")));
-    const child = spawn("git", ["--no-pager", ...(options.commonDirectory ? [`--git-dir=${options.commonDirectory}`] : []), "--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], {
+    const child = NodeChildProcess.spawn("git", ["--no-pager", ...(options.commonDirectory ? [`--git-dir=${options.commonDirectory}`] : []), "--no-replace-objects", "-c", "core.fsmonitor=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false", ...args], {
       ...(options.cwd ? { cwd: options.cwd } : {}),
       env: { ...env, GIT_OPTIONAL_LOCKS: "0", GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" },
       stdio: ["ignore", "pipe", "pipe"],
@@ -37,16 +37,16 @@ export function objectGit(args: readonly string[], options: { commonDirectory?: 
     let size = 0;
     let failure: SourceReadError | undefined;
     const stop = (reason: SourceReadError["reason"]) => { failure ??= new SourceReadError(reason); child.kill("SIGKILL"); };
-    const timer = setTimeout(() => stop("limit"), options.timeoutMs ?? SOURCE_LIMITS.timeoutMs);
+    const timer = NodeTimers.setTimeout(() => stop("limit"), options.timeoutMs ?? SOURCE_LIMITS.timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > (options.bytes ?? SOURCE_LIMITS.bytes)) stop("limit");
       else chunks.push(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => { size += chunk.length; if (size > (options.bytes ?? SOURCE_LIMITS.bytes)) stop("limit"); });
-    child.on("error", () => { clearTimeout(timer); reject(new SourceReadError("git_failed")); });
+    child.on("error", () => { NodeTimers.clearTimeout(timer); reject(new SourceReadError("git_failed")); });
     child.on("close", (code) => {
-      clearTimeout(timer);
+      NodeTimers.clearTimeout(timer);
       if (failure) reject(failure);
       else if (code !== 0 && !(args[0] === "grep" && code === 1)) reject(new SourceReadError("git_failed"));
       else resolve(Buffer.concat(chunks).toString("utf8"));
@@ -59,7 +59,7 @@ const sourcePath = (value = "") => {
   return value;
 };
 export async function resolveSource(projectRoot: string, baseRef?: string): Promise<SourceSnapshot> {
-  const commonDirectory = path.resolve(projectRoot, (await objectGit(["rev-parse", "--git-common-dir"], { cwd: projectRoot })).trim());
+  const commonDirectory = NodePath.resolve(projectRoot, (await objectGit(["rev-parse", "--git-common-dir"], { cwd: projectRoot })).trim());
   let selected = baseRef;
   if (selected === undefined) {
     selected = (await objectGit(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], { commonDirectory }).catch(() => "")).trim() || (await objectGit(["symbolic-ref", "--quiet", "HEAD"], { commonDirectory })).trim();
@@ -70,7 +70,7 @@ export async function resolveSource(projectRoot: string, baseRef?: string): Prom
   return { commonDirectory, commit, baseRef: selected };
 }
 export async function readSource(snapshot: SourceSnapshot, request: SourceRequest): Promise<string> {
-  if (!commitPattern.test(snapshot.commit) || !path.isAbsolute(snapshot.commonDirectory)) throw new SourceReadError("invalid_request");
+  if (!commitPattern.test(snapshot.commit) || !NodePath.isAbsolute(snapshot.commonDirectory)) throw new SourceReadError("invalid_request");
   const commit = snapshot.commit;
   let args: string[];
   switch (request.operation) {

@@ -1,4 +1,4 @@
-import { WorktreeMcpHandoffResult, WorktreeMcpSetupScriptStatus } from "@t3tools/contracts";
+import { type ChatAttachment, type ThreadId, WorktreeMcpHandoffResult, WorktreeMcpSetupScriptStatus } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
 import * as Crypto from "effect/Crypto";
 import * as Path from "effect/Path";
@@ -60,7 +60,11 @@ const io = <A>(threadId: string, reason: ConversationWorkspaceError["reason"], r
 
 export const ParentConversation = Context.Reference<string | undefined>("jones/conversationWorkspace/ParentConversation", { defaultValue: () => undefined });
 
+type TurnAttachment = (threadId: ThreadId, runId: string, text: string, attachments: ReadonlyArray<ChatAttachment>) => Effect.Effect<void, unknown>;
+
 export class ConversationPolicy extends Context.Service<ConversationPolicy, {
+  readonly registerTurnAttachment: (attach: TurnAttachment) => Effect.Effect<void>;
+  readonly attachForTurn: (threadId: ThreadId, runId: string, text: string, attachments: ReadonlyArray<ChatAttachment>) => Effect.Effect<void, ConversationWorkspaceError>;
   readonly lookup: (threadId: string) => Effect.Effect<Binding | null, ConversationWorkspaceError>;
   readonly allocate: (input: { threadId: string; projectId: string; projectRoot: string; baseRef?: string; excluded?: readonly string[] }) => Effect.Effect<Binding, ConversationWorkspaceError>;
   readonly fallback: (threadId: string, driver: string, reason: string) => Effect.Effect<void, ConversationWorkspaceError>;
@@ -84,6 +88,10 @@ const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
   const crypto = yield* Crypto.Crypto;
   const paths = yield* Path.Path;
+  // Registration breaks the construction cycle: ThreadManagement owns the
+  // orchestrator which constructs ProviderTurnStart before WorktreeMcpService.
+  // No attachment can run until the outer production service layer is ready.
+  let turnAttachment: TurnAttachment | undefined;
   const directoryLocks = yield* KeyedLock.make<string>();
   const wrap = (threadId: string) => Effect.mapError((cause: unknown) => Schema.is(ConversationWorkspaceError)(cause) ? cause : new ConversationWorkspaceError({ threadId, reason: "storage", cause }));
   const lookup = Effect.fn("ConversationPolicy.lookup")(function* (threadId: string) {
@@ -212,7 +220,12 @@ const make = Effect.gen(function* () {
     const binding = yield* lookup(threadId);
     if (binding !== null) yield* save({ ...binding, state: "attached" });
   });
-  return ConversationPolicy.of({ ownsPath: (cwd) => ownsConversationPath(config.stateDir, cwd), lookup, sharing, allocate: (input) => directoryLocks.withLock(input.threadId, allocate(input).pipe(Effect.uninterruptible, wrap(input.threadId))), inherit, startTurn: (threadId, runId) => directoryLocks.withLock(threadId, startTurn(threadId, runId)), snapshot, readHandoff, source, acceptsCwd, markAttached, dispose, assertAttached, reserveHandoff, updateHandoff,
+  return ConversationPolicy.of({
+    registerTurnAttachment: (attach) => Effect.sync(() => { turnAttachment = attach; }),
+    attachForTurn: (threadId, runId, text, attachments) => Effect.suspend(() => turnAttachment === undefined
+      ? Effect.fail(new ConversationWorkspaceError({ threadId, reason: "attach_required" }))
+      : turnAttachment(threadId, runId, text, attachments).pipe(wrap(threadId))),
+    ownsPath: (cwd) => ownsConversationPath(config.stateDir, cwd), lookup, sharing, allocate: (input) => directoryLocks.withLock(input.threadId, allocate(input).pipe(Effect.uninterruptible, wrap(input.threadId))), inherit, startTurn: (threadId, runId) => directoryLocks.withLock(threadId, startTurn(threadId, runId)), snapshot, readHandoff, source, acceptsCwd, markAttached, dispose, assertAttached, reserveHandoff, updateHandoff,
     fallback: Effect.fn("ConversationPolicy.fallback")((threadId: string, driver: string, reason: string) => sql`INSERT OR IGNORE INTO jones_conversation_fallbacks(thread_id,driver,reason) VALUES(${threadId},${driver},${reason})`.pipe(Effect.asVoid, wrap(threadId))),
   });
 });

@@ -1,6 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Synthetic provider transport, no provider process or user configuration.
 import { ClaudeSettings, CodexSettings, MessageId, NodeId, ProjectId, ProviderSessionId, RunAttemptId, RunId, type ModelSelection, type OrchestrationV2ProviderThread, type ThreadId } from "@t3tools/contracts";
-import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
@@ -64,13 +63,13 @@ export const makeAdapterRuntimeProbe = Effect.fn("C9.makeAdapterRuntimeProbe")(f
     instanceId: modelSelection.instanceId, settings: { ...codexSettings, homePath: config.stateDir }, environment: {}, crypto, fileSystem, idAllocator, serverConfig: config,
     clientFactory: { open: () => Effect.succeed(codexClient) },
   }) : yield* Claude.makeClaudeAdapterV2({
-    instanceId: modelSelection.instanceId, settings: { ...claudeSettings, homePath: config.stateDir }, environment: {}, attachmentsDir: config.attachmentsDir, crypto, fileSystem, path: paths, idAllocator,
+    instanceId: modelSelection.instanceId, settings: { ...claudeSettings, homePath: config.stateDir }, environment: { CLAUDE_CONFIG_DIR: config.stateDir }, attachmentsDir: config.attachmentsDir, crypto, fileSystem, path: paths, idAllocator,
     queryRunner: {
       allocateSessionId: Effect.succeed("native-c9"),
       open: (input) => Effect.sync(() => {
         observed.push({ method: "query/open", cwd: input.options.cwd ?? null, mcp: input.options.mcpServers?.["t3-code"] !== undefined, resume: Boolean(input.options.resume) });
         const closed = Deferred.makeUnsafe<void>();
-        return { messages: Stream.fromEffect(Deferred.await(closed)).pipe(Stream.drain), close: Deferred.succeed(closed, undefined).pipe(Effect.asVoid), offer: () => Effect.void, setModel: () => Effect.void, applyFlagSettings: () => Effect.void, setPermissionMode: () => Effect.void, backgroundTasks: () => Effect.succeed(false), stopTask: () => Effect.void, termination: Effect.void, interrupt: Effect.void };
+        return { messages: Stream.fromEffect(Deferred.await(closed)).pipe(Stream.drain), close: Deferred.succeed(closed, undefined).pipe(Effect.asVoid), offer: (_message, onQueued) => Effect.sync(() => { onQueued?.(); }), setModel: () => Effect.void, applyFlagSettings: () => Effect.void, setPermissionMode: () => Effect.void, backgroundTasks: () => Effect.succeed(false), stopTask: () => Effect.void, termination: Effect.void, interrupt: Effect.void };
       }),
       forkSession: unused, subagentLaunchToolUseId: () => Effect.succeed(null), assertComplete: Effect.void,
     },
