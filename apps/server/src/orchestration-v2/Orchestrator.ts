@@ -15483,6 +15483,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     threadId: ThreadId,
     runId: RunId,
   ) {
+    const thread = yield* projectionStore
+      .getThread(threadId)
+      .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
+    if (thread.selfSettlement == null) return;
     const projection = yield* projectionStore
       .getThreadRecords(threadId, ["runs", "messages", "runtimeRequests", "attempts"])
       .pipe(Effect.mapError((cause) => new OrchestratorProjectionError({ threadId, cause })));
