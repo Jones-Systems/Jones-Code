@@ -68,6 +68,7 @@ it.effect(
             const index = effects.findIndex((row) => row.id === effect.id);
             const binding = {
               instanceId: index === 4 ? "healthy" : "held",
+              threadId: effect.threadId,
               providerSessionId: `session:${index}`,
               providerThreadId: `provider-thread:${index}`,
               providerTurnId: `provider-turn:${index}`,
@@ -77,6 +78,7 @@ it.effect(
             };
             yield* boundedSteer({
               instanceId: binding.instanceId,
+              target: ControlAdmission.targetFromDispatch(binding),
               prepare: Effect.succeed({
                 binding,
                 producerScope,
@@ -146,7 +148,14 @@ it.effect(
       yield* Deferred.succeed(late[0]!, { turnId: "native-turn:0" });
       yield* TestClock.adjust(0);
       assert.lengthOf(yield* admission.snapshot("held"), 3);
-      yield* admission.assertOpen("held").pipe(Effect.flip);
+      yield* admission
+        .assertOpen({
+          instanceId: "held",
+          threadId: effects[1]!.threadId,
+          nativeThreadId: "native-thread:1",
+          producer: null,
+        })
+        .pipe(Effect.flip);
       yield* TestClock.adjust(CODEX_STEER_TIMEOUT_MS * 2);
       assert.deepEqual(Array.from(dispatches.values()), [1, 1, 1, 1, 1]);
       yield* Fiber.interrupt(daemon);
@@ -178,9 +187,20 @@ it.effect("lease loss prevents a stale worker from emitting a delivery explanati
       execute: () =>
         boundedSteer({
           instanceId: "lost",
+          target: {
+            instanceId: "lost",
+            threadId: effect.threadId,
+            nativeThreadId: "native-thread:loss",
+            producer: {
+              instanceId: "lost",
+              providerSessionId: "session:loss",
+              runtimeGeneration: "generation:loss",
+            },
+          },
           prepare: Effect.succeed({
             binding: {
               instanceId: "lost",
+              threadId: effect.threadId,
               providerSessionId: "session:loss",
               providerThreadId: "provider-thread:loss",
               providerTurnId: "provider-turn:loss",

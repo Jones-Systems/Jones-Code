@@ -9,6 +9,8 @@ import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
 import { TestClock } from "effect/testing";
 
+import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
+
 import { CODEX_STARTUP_BUDGET_MS, makeCodexStartup } from "./CodexStartup.ts";
 import { makeCodexProducerRetirement } from "./CodexRetirement.ts";
 
@@ -57,13 +59,62 @@ describe("Codex startup caller budget", () => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect.each(["ensure", "fork"] as const)(
+    "refuses a %s permit handoff at its deadline before issuing a native request",
+    (operation) =>
+      Effect.gen(function* () {
+        const startup = makeCodexStartup();
+        const producer = yield* makeProducer();
+        const permit = yield* Semaphore.make(1);
+        const held = yield* Deferred.make<void>();
+        const owner = yield* startup
+          .run(
+            "resume",
+            permit.withPermits(1)(
+              startup.withinPermit(
+                Deferred.succeed(held, undefined).pipe(Effect.andThen(Effect.never)),
+              ),
+            ),
+          )
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(held);
+        let dispatches = 0;
+        const request = startup.observe(
+          producer,
+          Effect.sync(() => ++dispatches),
+        );
+        const waiter = yield* startup
+          .run(operation, permit.withPermits(1)(startup.withinPermit(request)))
+          .pipe(Effect.result, Effect.forkChild);
+        yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS);
+        yield* Fiber.join(owner);
+        const expired = yield* Fiber.join(waiter);
+        assert.equal(expired._tag, "Failure");
+        if (expired._tag === "Failure")
+          assert.isFalse(ProviderAdapter.hasUnknownRuntimeBinding(expired.failure));
+        assert.equal(dispatches, 0);
+        assert.isFalse(startup.isUncertain(producer));
+        assert.equal(yield* startup.run(operation, startup.withinPermit(request)), 1);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("keeps an explicit fork rejection known without poisoning its producer", () =>
     Effect.gen(function* () {
       const startup = makeCodexStartup();
       const producer = yield* makeProducer();
-      const rejection = CodexErrors.CodexAppServerRequestError.invalidRequest("fork refused");
+      const rejection = new CodexErrors.CodexAppServerRequestError({
+        code: -32600,
+        errorMessage: "fork refused",
+        operation: "receive-response",
+        method: "thread/fork",
+      });
       const result = yield* startup
-        .run("fork", startup.withinPermit(startup.observe(producer, Effect.fail(rejection))))
+        .run(
+          "fork",
+          startup.withinPermit(
+            startup.observe(producer, Effect.fail(rejection), "binding", "thread/fork"),
+          ),
+        )
         .pipe(Effect.result);
       assert.equal(result._tag, "Failure");
       if (result._tag === "Failure") {
@@ -79,7 +130,12 @@ describe("Codex startup caller budget", () => {
       const startup = makeCodexStartup();
       const producer = yield* makeProducer();
       let bindings = 0;
-      const rejection = CodexErrors.CodexAppServerRequestError.invalidRequest("follow-up refused");
+      const rejection = new CodexErrors.CodexAppServerRequestError({
+        code: -32600,
+        errorMessage: "follow-up refused",
+        operation: "receive-response",
+        method: "thread/read",
+      });
       const result = yield* startup
         .run(
           "fork",
@@ -87,7 +143,9 @@ describe("Codex startup caller budget", () => {
             startup
               .observe(producer, Effect.succeed("fork-native-id"))
               .pipe(
-                Effect.andThen(startup.observe(producer, Effect.fail(rejection), "reply")),
+                Effect.andThen(
+                  startup.observe(producer, Effect.fail(rejection), "reply", "thread/read"),
+                ),
                 Effect.andThen(startup.completeWith(() => ++bindings)),
               ),
           ),
@@ -254,7 +312,16 @@ describe("Codex startup caller budget", () => {
           startup.withinPermit(
             startup.observe(
               producer,
-              Effect.fail(CodexErrors.CodexAppServerRequestError.internalError("not ready")),
+              Effect.fail(
+                new CodexErrors.CodexAppServerRequestError({
+                  code: -32602,
+                  errorMessage: "not ready",
+                  method: "initialize",
+                  operation: "receive-response",
+                }),
+              ),
+              "reply",
+              "initialize",
             ),
           ),
         )
@@ -304,5 +371,167 @@ describe("Codex startup caller budget", () => {
       yield* Deferred.succeed(finishTurn, undefined);
       yield* Fiber.join(caller);
     }).pipe(Effect.scoped),
+  );
+  it.effect.each([
+    "rejection",
+    "decode",
+    "server",
+    "wrong-method",
+    "missing-method",
+    "transport",
+  ] as const)(
+    "distinguishes exact non-applying rejection from uncertain native failure (%s)",
+    (kind) =>
+      Effect.gen(function* () {
+        const admission = yield* ControlAdmission.ControlAdmission;
+        const producer = yield* makeProducer();
+        const startup = makeCodexStartup(50, admission);
+        const target: ControlAdmission.ControlAdmissionTarget = {
+          instanceId: "codex-a",
+          threadId: "logical-a",
+          nativeThreadId: "native-a",
+          producer: {
+            instanceId: "codex-a",
+            providerSessionId: "session-a",
+            runtimeGeneration: producer.generation,
+          },
+        };
+        const failure =
+          kind === "transport"
+            ? new CodexErrors.CodexAppServerTransportError({
+                operation: "read-input-stream",
+                cause: "synthetic transport loss",
+              })
+            : new CodexErrors.CodexAppServerRequestError({
+                code: kind === "server" ? -32603 : -32602,
+                errorMessage: "synthetic",
+                operation: kind === "decode" ? "decode-payload" : "receive-response",
+                ...(kind === "missing-method"
+                  ? {}
+                  : { method: kind === "wrong-method" ? "thread/start" : "thread/resume" }),
+              });
+        let sends = 0;
+        yield* startup
+          .run(
+            "resume",
+            startup.withinPermit(
+              startup.observe(
+                producer,
+                Effect.sync(() => sends++).pipe(Effect.andThen(Effect.fail(failure))),
+                "binding",
+                "thread/resume",
+              ),
+            ),
+            target,
+          )
+          .pipe(Effect.result);
+        if (kind === "rejection") {
+          yield* admission.assertOpen(target);
+          assert.isFalse(startup.isUncertain(producer));
+        } else {
+          yield* admission.assertOpen(target).pipe(Effect.flip);
+          yield* admission
+            .assertOpen({
+              ...target,
+              instanceId: "other-account",
+              threadId: "other-alias",
+              producer: null,
+            })
+            .pipe(Effect.flip);
+          assert.isTrue(startup.isUncertain(producer));
+        }
+        // This is the same producer and account, with a different native conversation.
+        const sibling = { ...target, threadId: "logical-b", nativeThreadId: "native-b" };
+        yield* startup.run(
+          "resume",
+          startup.withinPermit(
+            startup.observe(
+              producer,
+              Effect.sync(() => sends++),
+              "reply",
+              "initialize",
+            ),
+          ),
+          sibling,
+        );
+        assert.equal(sends, 2);
+      }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
+  );
+
+  it.effect.each(["ensure", "fork"] as const)(
+    "retains an unknown %s creation's logical owner across new producers and narrows a late validated reply without publishing",
+    (operation) =>
+      Effect.gen(function* () {
+        const admission = yield* ControlAdmission.ControlAdmission;
+        const producer = yield* makeProducer();
+        const replacement = yield* makeProducer("replacement");
+        const startup = makeCodexStartup(10, admission);
+        const sent = yield* Deferred.make<void>();
+        const reply = yield* Deferred.make<{ thread: { id: string } }>();
+        const target: ControlAdmission.ControlAdmissionTarget = {
+          instanceId: "codex-a",
+          threadId: "logical-a",
+          nativeThreadId: null,
+          producer: {
+            instanceId: "codex-a",
+            providerSessionId: "session-a",
+            runtimeGeneration: producer.generation,
+          },
+        };
+        let sends = 0;
+        let publications = 0;
+        const caller = yield* startup
+          .run(
+            operation,
+            startup.withinPermit(
+              startup
+                .observe(
+                  producer,
+                  Effect.sync(() => sends++).pipe(
+                    Effect.andThen(Deferred.succeed(sent, undefined)),
+                    Effect.andThen(Deferred.await(reply)),
+                  ),
+                  "binding",
+                  operation === "fork" ? "thread/fork" : "thread/start",
+                )
+                .pipe(Effect.tap(() => Effect.sync(() => publications++))),
+            ),
+            target,
+          )
+          .pipe(Effect.result, Effect.forkChild);
+        yield* Deferred.await(sent);
+        yield* TestClock.adjust(10);
+        yield* Fiber.join(caller);
+        const throughNewProducer = {
+          ...target,
+          producer: { ...target.producer!, runtimeGeneration: replacement.generation },
+        };
+        yield* admission.assertOpen(throughNewProducer).pipe(Effect.flip);
+        yield* admission
+          .assertOpen({ ...target, threadId: "logical-b", nativeThreadId: "native-b" })
+          .pipe(Effect.flip);
+        yield* admission.assertOpen({
+          ...throughNewProducer,
+          threadId: "logical-b",
+          nativeThreadId: "native-b",
+        });
+        yield* Deferred.succeed(reply, { thread: { id: "native-a" } });
+        yield* TestClock.adjust(0);
+        yield* admission.assertOpen({
+          ...target,
+          threadId: "logical-b",
+          nativeThreadId: "native-b",
+        });
+        yield* admission.assertOpen(throughNewProducer).pipe(Effect.flip);
+        yield* admission
+          .assertOpen({
+            ...throughNewProducer,
+            threadId: "other-alias",
+            nativeThreadId: "native-a",
+          })
+          .pipe(Effect.flip);
+        assert.equal(sends, 1);
+        assert.equal(publications, 0);
+      }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
 });
