@@ -98,10 +98,11 @@ it.effect(
         yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
         [
           { migration_id: 138, name: "WorkspaceRetirement" },
-          { migration_id: 139, name: "NativeExecutionProcessCustody" },
-          { migration_id: 140, name: "OrdinaryCheckoutProcessCustody" },
-          { migration_id: 141, name: "AuthSessionClientMetadata" },
-          { migration_id: 142, name: "WorkspaceRuntimeUses" },
+          { migration_id: 139, name: "ConversationWorkspace" },
+          { migration_id: 140, name: "NativeExecutionProcessCustody" },
+          { migration_id: 141, name: "OrdinaryCheckoutProcessCustody" },
+          { migration_id: 142, name: "AuthSessionClientMetadata" },
+          { migration_id: 143, name: "WorkspaceRuntimeUses" },
         ],
       );
       for (const table of tables)

@@ -81,10 +81,11 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 136, name: "WorkspaceProvenance" },
         { migration_id: 137, name: "NativeCreationLeaseRenewal" },
         { migration_id: 138, name: "WorkspaceRetirement" },
-        { migration_id: 139, name: "NativeExecutionProcessCustody" },
-        { migration_id: 140, name: "OrdinaryCheckoutProcessCustody" },
-        { migration_id: 141, name: "AuthSessionClientMetadata" },
-        { migration_id: 142, name: "WorkspaceRuntimeUses" },
+        { migration_id: 139, name: "ConversationWorkspace" },
+        { migration_id: 140, name: "NativeExecutionProcessCustody" },
+        { migration_id: 141, name: "OrdinaryCheckoutProcessCustody" },
+        { migration_id: 142, name: "AuthSessionClientMetadata" },
+        { migration_id: 143, name: "WorkspaceRuntimeUses" },
       ],
     );
     assert.deepEqual(
@@ -228,10 +229,11 @@ const nativeUpgradeFixture = Effect.gen(function* () {
   assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
     [137, "NativeCreationLeaseRenewal"],
     [138, "WorkspaceRetirement"],
-    [139, "NativeExecutionProcessCustody"],
-    [140, "OrdinaryCheckoutProcessCustody"],
-    [141, "AuthSessionClientMetadata"],
-    [142, "WorkspaceRuntimeUses"],
+    [139, "ConversationWorkspace"],
+    [140, "NativeExecutionProcessCustody"],
+    [141, "OrdinaryCheckoutProcessCustody"],
+    [142, "AuthSessionClientMetadata"],
+    [143, "WorkspaceRuntimeUses"],
   ]);
   assert.deepStrictEqual(
     yield* sql`SELECT * FROM jones_native_creation_execution_starts`,
@@ -408,6 +410,7 @@ it.effect(
           (row) => row.status === "succeeded" && row.attemptCount === 1,
         ),
       );
+      const settled = yield* f.readLeases;
       assert.isFalse(
         yield* f.outbox.succeed({ effectId: f.claim.id, workerId: "lease-worker", claim: f.claim }),
       );
@@ -416,5 +419,6 @@ it.effect(
         [],
       );
       assert.deepStrictEqual(yield* f.sql`PRAGMA foreign_key_check`, []);
+      assert.deepStrictEqual(yield* f.readLeases, settled);
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(upgradeRepository)))),
 );

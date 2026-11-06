@@ -270,6 +270,7 @@ it.effect.each([
           launch: (input) => {
             launchCalls++;
             assert.equal(input.modelSelection.instanceId, instanceId);
+            assert.equal(input.workspaceStrategy.type, "auto");
             return scenario === "launch-failure"
               ? Effect.fail(
                   new ThreadLaunch.ThreadLaunchError({

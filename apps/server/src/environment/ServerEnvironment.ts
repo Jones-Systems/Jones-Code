@@ -259,6 +259,7 @@ export const make = Effect.gen(function* () {
       sideChats: true,
       inlineMessageContext: true,
       requiredWorktreeBootstrap: true,
+      conversationWorkspace: true,
       threadSettlement: true,
       threadAutoSettlement: true,
       storageCleanup: true,

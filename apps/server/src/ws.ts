@@ -1,3 +1,5 @@
+import * as WorktreeMcpService from "./mcp/WorktreeMcpService.ts";
+import { TerminalCwdStatError } from "@t3tools/contracts";
 import { readRemoteTaskOwnerIds } from "./jones/remoteDelegation/ShellRetention.ts";
 import * as DependencyChanges from "./jones/threadResultDependencies/DependencyChanges.ts";
 import { makeDependencyStore } from "./jones/threadResultDependencies/DependencyStore.ts";
@@ -1507,6 +1509,16 @@ export const layerWsRpc = (
       const vcsProvisioning = yield* VcsProvisioningService.VcsProvisioningService;
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
+      const conversationHandoffs = yield* WorktreeMcpService.make;
+      const attachTerminalInput = <
+        Input extends { readonly threadId: string; readonly cwd?: string | undefined },
+      >(
+        input: Input,
+      ) =>
+        conversationHandoffs.attachForTerminal(ThreadId.make(input.threadId)).pipe(
+          Effect.map((cwd) => (cwd === null ? input : { ...input, cwd, worktreePath: cwd })),
+          Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd ?? "", cause })),
+        );
       const previewManager = yield* PreviewManager.PreviewManager;
       const previewOpenBinding = yield* resolveOpenBinding();
       const portDiscovery = yield* PortScanner.PortDiscovery;
@@ -3338,9 +3350,18 @@ export const layerWsRpc = (
         [WS_METHODS.reviewGetBranchCommits]: (input) => review.getBranchCommits(input),
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
-        [WS_METHODS.terminalOpen]: (input) => terminalManager.open(input),
+        [WS_METHODS.terminalOpen]: (input) =>
+          attachTerminalInput(input).pipe(
+            Effect.flatMap((resolved) => terminalManager.open(resolved)),
+          ),
         [WS_METHODS.terminalAttach]: (input, metadata) =>
-          terminalManager.attachOutputStream(input, terminalViewerId(metadata)),
+          Stream.unwrap(
+            attachTerminalInput(input).pipe(
+              Effect.map((resolved) =>
+                terminalManager.attachOutputStream(resolved, terminalViewerId(metadata)),
+              ),
+            ),
+          ),
         [WS_METHODS.terminalWrite]: (input) => terminalManager.write(input),
         [WS_METHODS.terminalResize]: (input, metadata) =>
           terminalManager.resize(input, terminalViewerId(metadata)),

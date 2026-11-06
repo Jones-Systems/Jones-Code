@@ -1,3 +1,7 @@
+import {
+  readRuntimeUseSessionTarget,
+  revalidateRuntimeUseConversation,
+} from "./RuntimeUseConversation.ts";
 import { OrchestrationV2ProviderSessionJson } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -92,9 +96,16 @@ export const captureRuntimeUseSession = Effect.fn("RuntimeUseSession.capture")(f
       return yield* fail("runtime_use_session_changed");
     // Activity/status may change during an admitted operation; original identity
     // and physical scope may not. Required session fields are decoded in full.
+    const target = yield* readRuntimeUseSessionTarget({
+      threadId: input.threadId,
+      projectId: thread.projectId,
+      worktreePath: thread.worktreePath,
+      projectRoot: row.workspace_root,
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     return {
       thread,
       projectRoot: row.workspace_root,
+      target,
       session: {
         id: session.id,
         createdAt: DateTime.formatIso(session.createdAt),
@@ -106,9 +117,14 @@ export const captureRuntimeUseSession = Effect.fn("RuntimeUseSession.capture")(f
   });
   yield* checkOwner;
   const snapshot = yield* read();
-  const workspace = yield* captureRuntimeUseWorkspace(
-    snapshot.thread.worktreePath ?? snapshot.projectRoot,
-  );
+  const physical = yield* captureRuntimeUseWorkspace(snapshot.target.path);
+  const workspace = {
+    ...physical,
+    revalidate: physical.revalidate.pipe(
+      Effect.andThen(revalidateRuntimeUseConversation(snapshot.target.conversation)),
+    ),
+  };
+  yield* workspace.revalidate;
   const validate = Effect.gen(function* () {
     if (canonical(yield* read()) !== canonical(snapshot))
       return yield* fail("runtime_use_scope_or_session_replaced");

@@ -105,6 +105,8 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
   const mixedPermissions = useScopedSettingsMixed(["defaultRuntimeMode"]);
   const PermissionIcon = runtimeModeConfig[settings.defaultRuntimeMode].icon;
   const mixedWorkspace = useScopedSettingsMixed(["defaultThreadEnvMode"]);
+  const mixedAllocation = useScopedSettingsMixed(["worktreeAllocation"]);
+  const mixedSubmodules = useScopedSettingsMixed(["worktreeSubmodules"]);
   const mixedAutoPull = useScopedSettingsMixed(["defaultAutoPull"]);
   const mixedAgentCredits = useScopedSettingsMixed(["removeAgentCreditsOnMerge"]);
   const mixedMergeMethod = useScopedSettingsMixed(["pullRequestMergeMethod"]);
@@ -323,6 +325,37 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
       }
     />
   ) : null;
+  const allocationRow =
+    representative?.serverConfig?.environment.capabilities.conversationWorkspace === true ? (
+      <SettingsRow
+        serverScoped
+        settingKeys={["worktreeAllocation"]}
+        mixed={mixedAllocation}
+        title="Worktree allocation"
+        description="On write starts with source tools. Attach a worktree for source changes or terminals. Explicit workspace choices still apply."
+        control={
+          <Select
+            items={[
+              { value: "on-write", label: "On write" },
+              { value: "eager", label: "At launch" },
+            ]}
+            value={mixedAllocation ? null : settings.worktreeAllocation}
+            onValueChange={(value) => {
+              if (value === "on-write" || value === "eager")
+                updateSettings({ worktreeAllocation: value });
+            }}
+          >
+            <SelectTrigger size="sm" aria-label="Worktree allocation">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectPopup align="end" alignItemWithTrigger={false}>
+              <SelectItem value="on-write">On write</SelectItem>
+              <SelectItem value="eager">At launch</SelectItem>
+            </SelectPopup>
+          </Select>
+        }
+      />
+    ) : null;
 
   return (
     <SettingsSection
@@ -334,6 +367,7 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
           {modelRow}
           {fallbackRow}
           {workspaceRow}
+          {allocationRow}
         </>
       ) : category === "general" ? (
         <>
@@ -412,6 +446,53 @@ export function ProjectDefaultsSettings({ category }: { category: ProjectSetting
             }
           />
           {workspaceRow}
+          {allocationRow}
+          <SettingsRow
+            serverScoped
+            settingKeys={["worktreeSubmodules"]}
+            mixed={mixedSubmodules}
+            {...searchableSetting("worktree-submodules")}
+            description={
+              isProjectScope
+                ? "How new worktrees in this project populate git submodules."
+                : "How new worktrees populate git submodules. Projects and their t3.json can override it."
+            }
+            resetAction={
+              !isProjectScope && settings.worktreeSubmodules !== null ? (
+                <SettingResetButton
+                  label="worktree submodules"
+                  onClick={() => updateSettings({ worktreeSubmodules: null })}
+                />
+              ) : null
+            }
+            control={
+              <Select
+                value={mixedSubmodules ? null : (effective?.worktreeSubmodules ?? null)}
+                onValueChange={(value) => {
+                  if (isWorktreeSubmodules(value)) updateSettings({ worktreeSubmodules: value });
+                }}
+              >
+                <SelectTrigger size="sm" aria-label="Worktree submodules">
+                  <SelectValue>
+                    {(value: string | null) =>
+                      isWorktreeSubmodules(value)
+                        ? WORKTREE_SUBMODULES_LABELS[value]
+                        : unavailable
+                          ? "Unavailable"
+                          : "Mixed"
+                    }
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectPopup align="end" alignItemWithTrigger={false}>
+                  {WORKTREE_SUBMODULES_OPTIONS.map((option) => (
+                    <SelectItem key={option} value={option}>
+                      {WORKTREE_SUBMODULES_LABELS[option]}
+                    </SelectItem>
+                  ))}
+                </SelectPopup>
+              </Select>
+            }
+          />
         </>
       ) : (
         <>

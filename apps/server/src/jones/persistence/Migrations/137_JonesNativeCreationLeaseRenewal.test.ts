@@ -26,8 +26,8 @@ const upstreamTables = [
   "orchestration_events",
   "orchestration_v2_effect_outbox",
 ] as const;
-const through137 = jonesMigrationEntries.filter(([id]) => id <= 137);
 const through136 = jonesMigrationEntries.filter(([id]) => id <= 136);
+const through137 = jonesMigrationEntries.filter(([id]) => id <= 137);
 
 const installReleased136 = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

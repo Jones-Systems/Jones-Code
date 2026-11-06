@@ -1,3 +1,5 @@
+import * as WorktreeMcpService from "../mcp/WorktreeMcpService.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as TitleStore from "../jones/threadTitle/store.ts";
 import * as GuestShareService from "../guest/GuestShareService.ts";
@@ -526,4 +528,16 @@ export const layerProduction = Layer.mergeAll(
   Layer.provideMerge(layerEventInfrastructure),
   Layer.provideMerge(WorkspaceLifecycleRuntime.layer),
   Layer.provideMerge(WorkspaceProvenance.layerLive),
+  Layer.provideMerge(
+    WorktreeMcpService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          layerThreadManagementProvided,
+          layerProjectService,
+          layerProjectSetupScriptRunner,
+        ),
+      ),
+    ),
+  ),
+  Layer.provideMerge(ConversationPolicy.layer),
 );

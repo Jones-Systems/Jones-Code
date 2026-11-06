@@ -676,8 +676,8 @@
     "apps/server/src/jones/persistence/Migrations/134_JonesGoalContinuity.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/142_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/142_JonesWorkspaceRuntimeUses.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/143_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/143_JonesWorkspaceRuntimeUses.ts": "jones-owned",
     "apps/server/src/jones/persistence/UpstreamIsolation.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/ThreadMetadataMcpService.test.ts": "jones-owned",
@@ -2802,7 +2802,11 @@
     "packages/contracts/src/terminal.test.ts": "accepted-shared",
     "packages/contracts/src/terminal.ts": "accepted-shared",
     "packages/shared/src/serverSettings.ts": "accepted-shared",
-    "apps/server/src/jones/workspaceRetirement/DurableCodecs.ts": "jones-owned"
+    "apps/server/src/jones/workspaceRetirement/DurableCodecs.ts": "jones-owned",
+    "apps/web/src/components/BranchToolbarEnvModeSelector.tsx": "hook",
+    "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/server/src/jones/cleanup/RuntimeUseConversation.ts": "jones-owned",
+    "apps/server/src/provider/agentContextBudget.json": "accepted-shared"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3782,6 +3786,10 @@
     {
       "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
       "to": "apps/server/src/jones/workspaceRetirement/ProjectProduction.ts"
+    },
+    {
+      "from": "apps/server/src/provider/AgentContextBudget.test.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
     }
   ]
 }

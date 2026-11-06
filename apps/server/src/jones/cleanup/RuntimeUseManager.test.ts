@@ -1,4 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Task-isolated native owner, directory and shared-database fixtures; no provider turns.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeOS from "node:os";
+import * as ConversationPolicy from "../conversationWorkspace/ConversationPolicy.ts";
+import * as ServerConfig from "../../config.ts";
 import * as NodePath from "node:path";
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
@@ -109,17 +113,48 @@ const fixture = <A, E>(
   }) => Effect.Effect<A, E, SqlClient.SqlClient | EffectOutbox.EffectOutboxV2>,
   openSucceeds = false,
   rootWorkspace = false,
+  conversationWorkspace = false,
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
+      const parent = NodePath.join(NodeOS.homedir(), "Library", "Caches");
+      if (conversationWorkspace) yield* fs.makeDirectory(parent, { recursive: true });
       const root = yield* fs.realPath(
-        yield* fs.makeTempDirectoryScoped({ prefix: "runtime-use-manager-" }),
+        yield* fs.makeTempDirectoryScoped({
+          prefix: "runtime-use-manager-",
+          ...(conversationWorkspace ? { directory: parent } : {}),
+        }),
       );
       const stateDir = NodePath.join(root, "userdata");
-      const workspace = NodePath.join(root, "workspace");
+      let workspace = NodePath.join(root, "workspace");
+      const projectWorkspace = workspace;
       yield* fs.makeDirectory(stateDir);
       yield* fs.makeDirectory(workspace);
+      if (conversationWorkspace)
+        yield* Effect.sync(() => {
+          const runGit = (...args: string[]) =>
+            NodeChildProcess.execFileSync(
+              "git",
+              [
+                "-c",
+                "init.defaultBranch=main",
+                "-c",
+                "user.name=Runtime Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                ...args,
+              ],
+              {
+                cwd: projectWorkspace,
+                encoding: "utf8",
+                timeout: 3000,
+                env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+              },
+            );
+          runGit("init", "--template=");
+          runGit("commit", "--allow-empty", "-qm", "synthetic source");
+        });
       const dbPath = NodePath.join(stateDir, "statev2.sqlite");
       return yield* Effect.gen(function* () {
         const owner = yield* Ownership.acquireServerOwnership(
@@ -293,7 +328,16 @@ const fixture = <A, E>(
             ProviderAdapterRegistry.layerSingle(makeAdapter(sql)),
           ),
         ).pipe(Layer.provideMerge(persistence));
+        const conversations = conversationWorkspace
+          ? ConversationPolicy.layer.pipe(
+              Layer.provideMerge(persistence),
+              Layer.provide(
+                ServerConfig.layerTest(root, stateDir).pipe(Layer.provide(platform), Layer.orDie),
+              ),
+            )
+          : Layer.empty;
         const dependencies = Layer.mergeAll(
+          conversations,
           sink,
           EffectOutbox.layer.pipe(Layer.provideMerge(persistence)),
           IdAllocator.layer.pipe(Layer.provideMerge(persistence)),
@@ -344,7 +388,7 @@ const fixture = <A, E>(
               payload: {
                 projectId,
                 title: "Synthetic runtime use",
-                workspaceRoot: workspace,
+                workspaceRoot: projectWorkspace,
                 defaultModelSelection: null,
                 scripts: [],
                 createdAt: iso,
@@ -369,7 +413,7 @@ const fixture = <A, E>(
                   modelSelection,
                   runtimeMode: "full-access",
                   interactionMode: "default",
-                  worktreePath: rootWorkspace ? null : workspace,
+                  worktreePath: rootWorkspace || conversationWorkspace ? null : workspace,
                   branch: null,
                   activeProviderThreadId: null,
                   lineage: {
@@ -389,6 +433,15 @@ const fixture = <A, E>(
               },
             ],
           });
+          if (conversationWorkspace) {
+            const policy = yield* ConversationPolicy.ConversationPolicy;
+            workspace = (yield* policy.allocate({
+              threadId,
+              projectId,
+              projectRoot: projectWorkspace,
+              baseRef: "main",
+            })).path;
+          }
           return yield* test({
             attachmentPublicationRace: Effect.fn("RuntimeUseManager.testAttachmentPublication")(
               function* (drift: "target" | "claim" | "none" | "owner" | "directory") {
@@ -668,6 +721,35 @@ const fixture = <A, E>(
   );
 
 describe("actual raw manager durable pre-effect open", () => {
+  it.effect(
+    "a real conversation binding journals its own directory under the actual owner and rejects later project drift",
+    () =>
+      fixture(
+        (input) =>
+          Effect.gen(function* () {
+            yield* input.open;
+            assert.strictEqual(input.calls(), 1);
+            const uses = yield* (yield* makeRuntimeUseStore).pending();
+            assert.strictEqual(uses.length, 1);
+            assert.strictEqual(uses[0]!.canonicalPath, input.workspace);
+            const captured = yield* input.captureSessionUse;
+            assert.strictEqual(captured.workspace.canonicalPath, input.workspace);
+            assert.strictEqual(captured.snapshot.target.conversation?.threadId, threadId);
+            yield* captured.workspace.revalidate;
+            const sql = yield* SqlClient.SqlClient;
+            yield* sql.withTransaction(captured.validate);
+            yield* sql`UPDATE jones_conversation_bindings SET binding=json_set(binding,'$.projectId','foreign-project')
+        WHERE thread_id=${threadId}`;
+            yield* refused(sql.withTransaction(captured.validate));
+            yield* refused(input.reopenAt(input.workspace));
+            assert.strictEqual(input.calls(), 1);
+          }),
+        true,
+        false,
+        true,
+      ),
+  );
+
   it.effect(
     "optional native mutations preserve valid dispatch and reject foreign or stale bound conversations",
     () =>

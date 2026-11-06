@@ -570,6 +570,10 @@ describe("ClaudeAdapterV2 MCP query overrides", () => {
     });
     assert.isFalse(overrides.allowedTools?.includes(ClaudeAdapterV2.CLAUDE_T3_MCP_TOOL_WILDCARD));
     assert.isTrue(overrides.allowedTools?.includes("mcp__t3-code__t3_document_sections"));
+    for (const tool of ["history", "list", "read", "search"]) {
+      assert.isTrue(overrides.allowedTools?.includes(`mcp__t3-code__t3_source_${tool}`));
+    }
+    assert.isFalse(overrides.allowedTools?.includes("mcp__t3-code__t3_worktree_handoff"));
     assert.isFalse(overrides.allowedTools?.includes("mcp__t3-code__t3_thread_continuity"));
   });
 

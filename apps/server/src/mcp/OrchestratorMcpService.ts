@@ -1,6 +1,7 @@
 import { composeAgentMessage } from "../jones/mcp/agentMessageHeader.ts";
 import * as DelegatedTaskWorkspace from "../jones/mcp/delegatedTaskWorkspace/DelegatedTaskWorkspace.ts";
 import { refuseUnsolicitedSupervision } from "../jones/mcp/delegatedTaskSupervision/DelegatedTaskSupervision.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
@@ -1965,9 +1966,8 @@ const make = Effect.gen(function* () {
     if (boundToThread) return { type: "root" as const };
     const { workspaceRoot } = yield* requireProject(projectId);
     return {
-      type: "worktree" as const,
+      type: "auto" as const,
       baseRef: yield* resolveScheduledTaskBaseRef(workspaceRoot),
-      startFromOrigin: true,
     };
   });
 
@@ -2538,16 +2538,41 @@ const make = Effect.gen(function* () {
           });
         if (input.isolation === "worktree") {
           const project = yield* requireProject(parent.thread.projectId);
-          const base = yield* gitDriver
-            .resolveCommit({
-              cwd: parent.thread.worktreePath ?? project.workspaceRoot,
-              revision: "HEAD",
-            })
-            .pipe(
-              Effect.mapError(() =>
-                failure("invalid_request", "Unable to resolve the parent checkout commit."),
-              ),
-            );
+          const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+          const conversation = Option.isSome(conversations)
+            ? yield* conversations.value
+                .lookup(parent.thread.id)
+                .pipe(
+                  Effect.mapError(() =>
+                    failure("invalid_request", "Unable to read the parent conversation binding."),
+                  ),
+                )
+            : null;
+          const recorded =
+            conversation !== null &&
+            conversation.state !== "attached" &&
+            Option.isSome(conversations)
+              ? yield* conversations.value
+                  .snapshot(parent.thread.id)
+                  .pipe(
+                    Effect.mapError(() =>
+                      failure("invalid_request", "Unable to read the parent source commit."),
+                    ),
+                  )
+              : null;
+          const base =
+            recorded === null
+              ? yield* gitDriver
+                  .resolveCommit({
+                    cwd: parent.thread.worktreePath ?? project.workspaceRoot,
+                    revision: "HEAD",
+                  })
+                  .pipe(
+                    Effect.mapError(() =>
+                      failure("invalid_request", "Unable to resolve the parent checkout commit."),
+                    ),
+                  )
+              : { commitSha: recorded.commit };
           // Launch preparation creates the worktree from the project root, so a
           // parent checkout in another repository (such as a Git folder inside
           // Scratch) would hand it a commit it cannot find.

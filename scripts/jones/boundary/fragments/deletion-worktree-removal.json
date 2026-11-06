@@ -22,6 +22,7 @@
     "apps/server/src/jones/cleanup/RuntimeUseWorkspace.ts",
     "apps/server/src/jones/cleanup/RuntimeUseClaim.ts",
     "apps/server/src/jones/cleanup/RuntimeUseClaim.test.ts",
+    "apps/server/src/jones/cleanup/RuntimeUseConversation.ts",
     "apps/server/src/jones/cleanup/RuntimeUseOpenGuard.ts",
     "apps/server/src/jones/cleanup/RuntimeUseManager.test.ts",
     "apps/server/src/jones/cleanup/RuntimeUseLifetime.ts",

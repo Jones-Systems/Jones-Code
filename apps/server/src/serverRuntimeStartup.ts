@@ -325,7 +325,7 @@ const resolveAutoBootstrapWelcomeTargets = Effect.gen(function* () {
           interactionMode: DEFAULT_PROVIDER_INTERACTION_MODE,
           runtimeMode: resolveProjectSettings(settings, project.id, project).settings
             .defaultRuntimeMode,
-          workspaceStrategy: { type: "root" },
+          workspaceStrategy: { type: "auto" },
           createdBy: "system",
           creationSource: "server",
         })

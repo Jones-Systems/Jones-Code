@@ -1,3 +1,4 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ContinuityAdmissionTestkit from "../jones/goals/continuity/admission.testkit.ts";
 import * as ControlAdmission from "../jones/orchestration/ControlAdmission.ts";
@@ -40,6 +41,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
@@ -353,6 +355,8 @@ it.each([
 });
 
 function makeLocalCommandHarness(input: {
+  readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
+  readonly conversationDriver?: string;
   readonly continuityRequirement?: ContinuityRequirement;
   readonly text: string;
   readonly driver?: "codex" | "claudeAgent";
@@ -444,7 +448,7 @@ function makeLocalCommandHarness(input: {
   };
   const providerThread: OrchestrationV2ThreadProjection["providerThreads"][number] = {
     id: providerThreadId,
-    driver: ProviderDriverKind.make(input.driver ?? "codex"),
+    driver: ProviderDriverKind.make(input.conversationDriver ?? input.driver ?? "codex"),
     providerInstanceId: newInstanceId,
     providerSessionId,
     appThreadId: threadId,
@@ -498,7 +502,7 @@ function makeLocalCommandHarness(input: {
     run.modelSelection.instanceId,
     ProviderInstanceId.make("codex-work"),
   ])) {
-    const driverKind = ProviderDriverKind.make("codex");
+    const driverKind = ProviderDriverKind.make(input.conversationDriver ?? "codex");
     providerInstances.set(instanceId, {
       instanceId,
       driverKind,
@@ -1181,6 +1185,7 @@ function makeLocalCommandHarness(input: {
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
+    Layer.provide(input.conversationLayer ?? Layer.empty),
     Layer.provide(ContinuityAdmissionTestkit.layerWithRequirement(input.continuityRequirement)),
     Layer.provide(ControlAdmission.layer),
     Layer.provide(
@@ -2815,3 +2820,109 @@ it("recreation skips provenance and preserves the native recovery failure", asyn
   });
   expect(harness.startRootRun).not.toHaveBeenCalled();
 });
+
+effectIt.effect.each([
+  { sink: "failure", attachFails: false },
+  { sink: "stalled", attachFails: false },
+  { sink: "stalled", attachFails: true },
+] as const)(
+  "resumed eager start skips $sink observation and preserves attachment failure=$attachFails",
+  ({ sink, attachFails }) =>
+    Effect.gen(function* () {
+      let sinkStarts = 0;
+      let attachments = 0;
+      const diagnostics: Array<unknown> = [];
+      const logger = Logger.make(({ message }) => {
+        diagnostics.push(message);
+      });
+      const binding: ConversationPolicy.Binding = {
+        threadId: "thread-native-account-command",
+        projectId: "project-native-account-command",
+        ownerThreadId: "thread-native-account-command",
+        path: "/conversation",
+        device: "fixture",
+        inode: "fixture",
+        commonDirectory: "/objects",
+        commit: "a".repeat(40),
+        baseRef: "main",
+        state: "conversation",
+      };
+      const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+        ownsPath: (path) => path === binding.path,
+        lookup: () => Effect.succeed(null),
+        startTurn: () => Effect.succeed({ binding, context: "Recorded source context" }),
+        fallback: () =>
+          Effect.sync(() => {
+            sinkStarts++;
+          }).pipe(
+            Effect.andThen(
+              sink === "stalled"
+                ? Effect.never
+                : Effect.fail(
+                    new ConversationPolicy.ConversationWorkspaceError({
+                      threadId: binding.threadId,
+                      reason: "storage",
+                    }),
+                  ),
+            ),
+          ),
+        attachForTurn: (threadId, runId, text, messageAttachments) =>
+          Effect.sync(() => {
+            expect(threadId).toBe(binding.threadId);
+            expect(runId).toBe("run-native-account-command");
+            expect(text).toBe("Continue the original request");
+            expect(messageAttachments).toEqual([]);
+            attachments++;
+          }).pipe(
+            Effect.andThen(
+              attachFails
+                ? Effect.fail(
+                    new ConversationPolicy.ConversationWorkspaceError({
+                      threadId: binding.threadId,
+                      reason: "handoff_unknown",
+                    }),
+                  )
+                : Effect.void,
+            ),
+          ),
+      });
+      const harness = makeLocalCommandHarness({
+        text: "Continue the original request",
+        conversationLayer,
+        conversationDriver: "cursor",
+      });
+      const projection = harness.projection();
+      harness.setProjection({
+        ...projection,
+        thread: {
+          ...projection.thread,
+          lineage: {
+            parentThreadId: null,
+            relationshipToParent: null,
+            rootThreadId: projection.thread.id,
+          },
+        },
+      });
+      const result = yield* harness.start.pipe(
+        Effect.result,
+        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+      );
+      expect(result._tag).toBe(attachFails ? "Failure" : "Success");
+      expect(sinkStarts).toBe(0);
+      expect(diagnostics).toContainEqual([
+        "Conversation workspace uses eager allocation",
+        {
+          threadId: projection.thread.id,
+          runId: projection.runs[0]!.id,
+          driver: "cursor",
+          reason: "eager: resumed adapter has no conversation proof",
+          observation: "omitted",
+          observationReason: "unbounded_sink",
+        },
+      ]);
+      expect(attachments).toBe(1);
+      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.open).not.toHaveBeenCalled();
+      expect(harness.startRootRun).not.toHaveBeenCalled();
+    }),
+);

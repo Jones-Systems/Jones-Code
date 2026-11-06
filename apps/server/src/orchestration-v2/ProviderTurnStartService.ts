@@ -1,4 +1,5 @@
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
@@ -251,6 +252,7 @@ export const layer: Layer.Layer<
     );
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const currentSettings = yield* ServerSettings.ServerSettingsService;
     const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -1181,6 +1183,64 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
+      if (
+        Option.isSome(conversations) &&
+        projection.thread.lineage.parentThreadId !== null &&
+        run.workspacePreparation === undefined &&
+        projection.thread.worktreePath === null
+      ) {
+        yield* conversations.value
+          .inherit(projection.thread.id, projection.thread.lineage.parentThreadId)
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      }
+      if (Option.isSome(conversations) && projection.thread.worktreePath === null) {
+        const shared = yield* conversations.value
+          .lookup(projection.thread.id)
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+        if (shared?.state === "attached" && shared.ownerThreadId !== projection.thread.id) {
+          yield* conversations.value
+            .attachForTurn(
+              projection.thread.id,
+              run.id,
+              message?.text ?? "",
+              message?.attachments ?? [],
+            )
+            .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          return;
+        }
+      }
+      const conversationTurn =
+        Option.isSome(conversations) && projection.thread.worktreePath === null
+          ? yield* conversations.value
+              .startTurn(projection.thread.id, run.id)
+              .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })))
+          : null;
+      if (conversationTurn !== null) {
+        const instance = yield* instanceRegistry.getInstance(run.modelSelection.instanceId);
+        if (instance?.driverKind !== "codex" && instance?.driverKind !== "claudeAgent") {
+          if (Option.isNone(conversations))
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause:
+                "Eager adapter fallback is unavailable; no unproved adapter may use a conversation directory.",
+            });
+          yield* ConversationPolicy.observeEagerFallback({
+            threadId: projection.thread.id,
+            runId,
+            driver: instance?.driverKind ?? "unavailable",
+            reason: "eager: resumed adapter has no conversation proof",
+          });
+          yield* conversations.value
+            .attachForTurn(
+              projection.thread.id,
+              run.id,
+              message?.text ?? "",
+              message?.attachments ?? [],
+            )
+            .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          return;
+        }
+      }
       // A side chat shares its parent's worktree; the turn that gets its context asks before acting.
       const resolvedPolicy = yield* runtimePolicy
         .resolve({
@@ -1204,7 +1264,10 @@ export const layer: Layer.Layer<
         });
         return;
       }
-      const resolvedRuntimePolicy = resolvedPolicy.success;
+      const resolvedRuntimePolicy =
+        conversationTurn === null
+          ? resolvedPolicy.success
+          : { ...resolvedPolicy.success, cwd: conversationTurn.binding.path };
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
@@ -1389,12 +1452,14 @@ export const layer: Layer.Layer<
       });
       let effectiveHandoffs = handoffs;
       let resumeFellBack = false;
-      const userText = workModeProviderPrompt(
-        projectComposerContextForProvider({
-          text: message.text,
-          records: message.context?.records ?? [],
-        }),
-      );
+      const userText =
+        (conversationTurn === null ? "" : `${conversationTurn.context}\n\n`) +
+        workModeProviderPrompt(
+          projectComposerContextForProvider({
+            text: message.text,
+            records: message.context?.records ?? [],
+          }),
+        );
       // Codex and Claude parse /goal from the prompt, so it goes verbatim and history waits a turn.
       const goalDriver = session.driver === "codex" || session.driver === "claudeAgent";
       const goalCommand = goalDriver && parseGoalCommand(message) !== null;

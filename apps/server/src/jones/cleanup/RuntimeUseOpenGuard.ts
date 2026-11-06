@@ -1,3 +1,7 @@
+import {
+  readRuntimeUseTarget,
+  revalidateRuntimeUseConversation,
+} from "./RuntimeUseConversation.ts";
 import { withRuntimeUseAttachmentPublication } from "./RuntimeUseAttachment.ts";
 import * as Context from "effect/Context";
 import {
@@ -86,6 +90,7 @@ const responseBody = (input: {
 type ScopeSnapshot = {
   readonly thread: typeof scopeSchema.Type;
   readonly projectRoot: string;
+  readonly target: Effect.Success<ReturnType<typeof readRuntimeUseTarget>>;
 };
 class RuntimeUseWorkspaceContext extends Context.Service<
   RuntimeUseWorkspaceContext,
@@ -139,11 +144,17 @@ export const make = Effect.gen(function* () {
       thread.id !== input.threadId ||
       thread.id !== row.thread_id ||
       thread.projectId !== row.project_id ||
-      thread.deletedAt !== null ||
-      (input.cwd !== null && (thread.worktreePath ?? row.workspace_root) !== input.cwd)
+      thread.deletedAt !== null
     )
       return yield* new RuntimeUseError({ reason: "runtime_use_scope_changed" });
-    return { thread, projectRoot: row.workspace_root } satisfies ScopeSnapshot;
+    const target = yield* readRuntimeUseTarget({
+      threadId: input.threadId,
+      projectId: thread.projectId,
+      worktreePath: thread.worktreePath,
+      projectRoot: row.workspace_root,
+      cwd: input.cwd,
+    }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    return { thread, projectRoot: row.workspace_root, target } satisfies ScopeSnapshot;
   }, Effect.mapError(runtimeUseError));
 
   const withWorkspace = Effect.fn("RuntimeUseOpenGuard.withWorkspace")(function* <A, E, R>(
@@ -159,10 +170,9 @@ export const make = Effect.gen(function* () {
       Effect.mapError(runtimeUseError),
     );
     const snapshot = yield* readScope(sql, input);
-    const workspace = yield* captureRuntimeUseWorkspace(
-      snapshot.thread.worktreePath ?? snapshot.projectRoot,
-    );
+    const workspace = yield* captureRuntimeUseWorkspace(snapshot.target.path);
     const revalidateWorkspace = workspace.revalidate.pipe(
+      Effect.andThen(revalidateRuntimeUseConversation(snapshot.target.conversation)),
       Effect.andThen(
         input.cwd === null ? assertRuntimeUseDefaultWorkspace(workspace) : Effect.void,
       ),

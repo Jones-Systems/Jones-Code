@@ -1,5 +1,7 @@
+import * as ConversationPolicy from "../../../jones/conversationWorkspace/ConversationPolicy.ts";
+import type { SourceRequest } from "../../../jones/conversationWorkspace/SourceBroker.ts";
 import * as WorkspaceProvenance from "../../../jones/workspaceLifecycle/Provenance.ts";
-import { OrchestratorMcpFailure } from "@t3tools/contracts";
+import { OrchestratorMcpFailure, WorktreeMcpFailure } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as GitWorkflow from "../../../git/GitWorkflowService.ts";
 import * as Project from "../../../project/ProjectService.ts";
@@ -11,7 +13,43 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as WorktreeMcpService from "../../WorktreeMcpService.ts";
 import { WorktreeToolkit } from "./tools.ts";
 
+const source = Effect.fn("WorktreeHandlers.source")(function* (request: SourceRequest) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  if (scope.thread === undefined || !scope.capabilities.has("worktree"))
+    return yield* new OrchestratorMcpFailure({
+      code: "capability_denied",
+      message: "Source tools require this conversation's worktree capability.",
+    });
+  const policy = yield* ConversationPolicy.ConversationPolicy;
+  return yield* policy.source(scope.thread.threadId, request).pipe(
+    Effect.mapError(
+      () =>
+        new OrchestratorMcpFailure({
+          code: "invalid_request",
+          message:
+            "Source request failed or exceeded its bounds; use this turn's recorded commit and a smaller request.",
+        }),
+    ),
+  );
+});
 const handlers = {
+  t3_source_read: McpToolAccess.readsAsCaller((input) => source({ operation: "read", ...input })),
+  t3_source_list: McpToolAccess.readsAsCaller((input) => source({ operation: "list", ...input })),
+  t3_source_search: McpToolAccess.readsAsCaller((input) =>
+    source({ operation: "search", ...input }),
+  ),
+  t3_source_history: McpToolAccess.readsAsCaller((input) =>
+    input.operation === "diff"
+      ? input.from === undefined
+        ? Effect.fail(
+            new OrchestratorMcpFailure({
+              code: "invalid_request",
+              message: "Diff requires an exact from commit.",
+            }),
+          )
+        : source({ operation: "diff", from: input.from })
+      : source({ operation: input.operation }),
+  ),
   t3_worktree_list: McpToolAccess.reads((input) =>
     Effect.gen(function* () {
       const context = yield* McpInvocationContext.McpInvocationContext;
@@ -47,11 +85,20 @@ const handlers = {
       };
     }),
   ),
-  t3_worktree_handoff: McpToolAccess.actsAsCaller((input) =>
+  t3_worktree_handoff: McpToolAccess.actsAsCallerWithReceipt((input, beforeWrite) =>
     Effect.gen(function* () {
       const scope = yield* McpInvocationContext.McpInvocationContext;
       const service = yield* WorktreeMcpService.WorktreeMcpService;
-      return yield* service.handoff(scope, input);
+      return yield* service.handoff(
+        scope,
+        input,
+        beforeWrite.pipe(
+          Effect.mapError(
+            (cause) =>
+              new WorktreeMcpFailure({ code: "capability_denied", message: cause.message }),
+          ),
+        ),
+      );
     }),
   ),
   t3_worktree_status: McpToolAccess.readsAsCaller(() =>

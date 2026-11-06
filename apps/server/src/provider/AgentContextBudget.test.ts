@@ -1,3 +1,4 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as WorkstreamOperations from "../jones/workstreams/operations/service.ts";
 import * as WorkstreamGateway from "../workstreams/WorkstreamGateway.ts";
@@ -87,6 +88,10 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ScheduledTaskService)({}),
   Layer.mock(SecretRequests)({}),
   ServerConfig.layerTest(process.cwd(), { prefix: "t3-agent-context-budget-" }),
+  Layer.mock(ConversationPolicy.ConversationPolicy)({
+    ownsPath: () => false,
+    registerTurnAttachment: () => Effect.void,
+  }),
   Layer.mock(ServerEnvironment)({}),
   Layer.mock(ServerSecretStore)({}),
   Layer.mock(ServerSettingsService)({}),

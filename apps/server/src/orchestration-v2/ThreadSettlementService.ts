@@ -3,6 +3,7 @@ import * as RetirementRuntime from "../jones/workspaceRetirement/Runtime.ts";
 import * as RetirementConfig from "../config.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Scope from "effect/Scope";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import * as Option from "effect/Option";
@@ -638,6 +639,15 @@ export const make = Effect.gen(function* () {
       const settled = yield* projections.getThread(threadId);
       if (settled.settledOverride !== "settled") return;
       yield* terminals.closeIdle({ threadId });
+      const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+      const afterClose = yield* projections.getThread(threadId);
+      if (
+        afterClose.settledOverride !== "settled" ||
+        toMillis(afterClose.settledAt) !== toMillis(settled.settledAt) ||
+        toMillis(afterClose.updatedAt) !== toMillis(settled.updatedAt)
+      )
+        return;
+      if (Option.isSome(conversations)) yield* conversations.value.dispose(threadId, false);
       const worktreePath = settled.worktreePath;
       if (worktreePath === null || !(yield* fileSystem.exists(worktreePath))) return;
       // Recheck after closing and worktree I/O; re-engaged threads must not be cleaned up.

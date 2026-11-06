@@ -3393,9 +3393,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           Effect.provide(service(masterRepository, saved)),
         );
         yield* mcp.scheduleTask(client, { projectId, prompt: "Check the build", schedule });
-        assert.deepEqual(yield* Ref.get(saved), [
-          { type: "worktree", baseRef: "origin/master", startFromOrigin: true },
-        ]);
+        assert.deepEqual(yield* Ref.get(saved), [{ type: "auto", baseRef: "origin/master" }]);
       }),
     );
 
@@ -3409,9 +3407,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           scheduledTaskId: existing.id,
           bindToCurrentThread: false,
         });
-        assert.deepEqual(yield* Ref.get(saved), [
-          { type: "worktree", baseRef: "origin/master", startFromOrigin: true },
-        ]);
+        assert.deepEqual(yield* Ref.get(saved), [{ type: "auto", baseRef: "origin/master" }]);
       }),
     );
 
@@ -3510,9 +3506,7 @@ describe("OrchestratorMcpService provider resolution", () => {
           ),
         );
         yield* mcp.scheduleTask(client, { projectId, prompt: "Check the build", schedule });
-        assert.deepEqual(yield* Ref.get(saved), [
-          { type: "worktree", baseRef, startFromOrigin: true },
-        ]);
+        assert.deepEqual(yield* Ref.get(saved), [{ type: "auto", baseRef }]);
       }),
     );
   });

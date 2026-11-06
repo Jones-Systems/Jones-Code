@@ -5,6 +5,7 @@ import {
   wrapCommandForCompletion,
   type CompletionShell,
 } from "../jones/workspaceRetirement/ScriptCompletionProtocol.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
 import type { TerminalError, TerminalSessionSnapshot } from "@t3tools/contracts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
@@ -410,6 +411,18 @@ export const make = Effect.gen(function* () {
       ...(input.projectId === undefined ? {} : { projectId: input.projectId }),
       ...(input.projectCwd === undefined ? {} : { projectCwd: input.projectCwd }),
     };
+    const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+    if (Option.isSome(conversations))
+      yield* conversations.value.assertAttached(input.threadId, input.worktreePath).pipe(
+        Effect.mapError(
+          (cause) =>
+            new ProjectSetupScriptOperationError({
+              ...errorContext,
+              operation: "readThread",
+              cause,
+            }),
+        ),
+      );
     // A thread whose origin cannot be read might be a link's: run nothing.
     const thread = yield* threads.getThreadShell(ThreadId.make(input.threadId)).pipe(
       Effect.mapError(

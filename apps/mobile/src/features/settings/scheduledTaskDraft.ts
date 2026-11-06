@@ -196,7 +196,7 @@ export function scheduleFromDraft(draft: ScheduleDraft): ScheduledTaskUpsertSche
   };
 }
 
-type Workspace = "worktree" | "root" | "existing_worktree";
+type Workspace = "auto" | "worktree" | "root" | "existing_worktree";
 export type ScheduledTaskDraft = {
   readonly task: ScheduledTask | null;
   readonly title: string;
@@ -261,8 +261,8 @@ export function createDraft(
     modelSelection,
     modelSelectionIsExplicit: false,
     schedule: DEFAULT_SCHEDULE,
-    workspace: "worktree",
-    baseRef: "main",
+    workspace: "auto",
+    baseRef: "",
     checkoutPath: "",
     enabled: true,
     startFromOrigin: true,
@@ -281,7 +281,9 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     schedule: scheduleDraftForTask(task),
     workspace: task.workspaceStrategy.type,
     baseRef:
-      task.workspaceStrategy.type === "worktree" ? (task.workspaceStrategy.baseRef ?? "") : "main",
+      task.workspaceStrategy.type === "worktree" || task.workspaceStrategy.type === "auto"
+        ? (task.workspaceStrategy.baseRef ?? "")
+        : "main",
     checkoutPath:
       task.workspaceStrategy.type === "existing_worktree"
         ? task.workspaceStrategy.worktreePath
@@ -312,15 +314,23 @@ export function scheduledTaskUpsertInputFromDraft(
     enabled: draft.enabled,
     threadId: draft.task?.threadId ?? null,
     workspaceStrategy:
-      draft.workspace === "root"
-        ? { type: "root" }
-        : draft.workspace === "existing_worktree"
-          ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
-          : {
-              type: "worktree",
-              ...(baseRef === "" ? {} : { baseRef }),
-              startFromOrigin: draft.startFromOrigin,
-            },
+      draft.workspace === "auto"
+        ? {
+            type: "auto",
+            ...(baseRef === "" ? {} : { baseRef }),
+            ...(draft.task?.workspaceStrategy.type === "auto" && draft.task.workspaceStrategy.branch
+              ? { branch: draft.task.workspaceStrategy.branch }
+              : {}),
+          }
+        : draft.workspace === "root"
+          ? { type: "root" }
+          : draft.workspace === "existing_worktree"
+            ? { type: "existing_worktree", worktreePath: draft.checkoutPath.trim() }
+            : {
+                type: "worktree",
+                ...(baseRef === "" ? {} : { baseRef }),
+                startFromOrigin: draft.startFromOrigin,
+              },
     runtimeMode: draft.runtimeMode,
     interactionMode: draft.task?.interactionMode ?? "default",
     creationSource: draft.task?.creationSource ?? "mobile",

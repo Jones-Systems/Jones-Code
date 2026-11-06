@@ -197,10 +197,11 @@ describe("receiving V2 synthetic fixtures", () => {
           { id: 136, name: "WorkspaceProvenance" },
           { id: 137, name: "NativeCreationLeaseRenewal" },
           { id: 138, name: "WorkspaceRetirement" },
-          { id: 139, name: "NativeExecutionProcessCustody" },
-          { id: 140, name: "OrdinaryCheckoutProcessCustody" },
-          { id: 141, name: "AuthSessionClientMetadata" },
-          { id: 142, name: "WorkspaceRuntimeUses" },
+          { id: 139, name: "ConversationWorkspace" },
+          { id: 140, name: "NativeExecutionProcessCustody" },
+          { id: 141, name: "OrdinaryCheckoutProcessCustody" },
+          { id: 142, name: "AuthSessionClientMetadata" },
+          { id: 143, name: "WorkspaceRuntimeUses" },
         ]);
         NodeAssert.equal(result.capture?.integrity.ok, true);
         NodeAssert.equal(result.capture?.foreignKeys.violations, 0);

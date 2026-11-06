@@ -54,7 +54,7 @@ export function validateScheduledTasksSearch(raw: Record<string, unknown>) {
 }
 
 export type ScheduleMode = "fixed" | "once" | "interval" | "webhook";
-export type WorkspaceMode = "root" | "worktree" | "existing_worktree";
+export type WorkspaceMode = "auto" | "root" | "worktree" | "existing_worktree";
 
 export interface DraftState {
   readonly editingId: string | null;
@@ -73,6 +73,7 @@ export interface DraftState {
   readonly threadId: string;
   readonly workspaceMode: WorkspaceMode;
   readonly baseRef: string;
+  readonly autoBranch?: string;
   readonly startFromOrigin: boolean;
   readonly existingWorktreePath: string;
   readonly modelKey: string;
@@ -256,8 +257,13 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     projectId: task.projectId,
     threadId: task.threadId ?? "",
     workspaceMode: task.workspaceStrategy.type,
+    ...(task.workspaceStrategy.type === "auto" && task.workspaceStrategy.branch !== undefined
+      ? { autoBranch: task.workspaceStrategy.branch }
+      : {}),
     baseRef:
-      task.workspaceStrategy.type === "worktree" ? (task.workspaceStrategy.baseRef ?? "") : "main",
+      task.workspaceStrategy.type === "worktree" || task.workspaceStrategy.type === "auto"
+        ? (task.workspaceStrategy.baseRef ?? "")
+        : "main",
     startFromOrigin:
       task.workspaceStrategy.type === "worktree"
         ? (task.workspaceStrategy.startFromOrigin ?? false)
@@ -303,6 +309,30 @@ export function worktreeStrategyFromDraft(
     ...(baseRef ? { baseRef } : {}),
     startFromOrigin: draft.startFromOrigin,
   };
+}
+
+export function workspaceStrategyFromDraft(
+  draft: Pick<
+    DraftState,
+    "workspaceMode" | "baseRef" | "autoBranch" | "startFromOrigin" | "existingWorktreePath"
+  >,
+): OrchestrationV2ThreadLaunchWorkspaceStrategy {
+  switch (draft.workspaceMode) {
+    case "auto": {
+      const baseRef = draft.baseRef.trim();
+      return {
+        type: "auto",
+        ...(baseRef ? { baseRef } : {}),
+        ...(draft.autoBranch === undefined ? {} : { branch: draft.autoBranch }),
+      };
+    }
+    case "root":
+      return { type: "root" };
+    case "existing_worktree":
+      return { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() };
+    case "worktree":
+      return worktreeStrategyFromDraft(draft);
+  }
 }
 
 export function scheduledTaskDefaultModel(
