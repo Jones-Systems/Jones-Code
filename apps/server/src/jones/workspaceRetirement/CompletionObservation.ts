@@ -4,17 +4,23 @@ import * as Path from "node:path";
 import { RESERVATION_DDL } from "./ParticipantGuard.ts";
 import type { Binding } from "./OutputAttestation.ts";
 
-export const CAPTURE_LIMITS = { bytes:64*1024, milliseconds:100 } as const;
+const CAPTURE_LIMITS = { bytes: 64 * 1024, milliseconds: 100 } as const;
 export interface CompletionObservation {
-  schema:"workspace-output-observation/v1";
-  producer:string; owner:string; worktree:string;
-  status:"succeeded"|"failed"|"cancelled";
-  proofStatus:"deferred";
-  roots:readonly string[];
-  lineage:Readonly<Record<string,string>>;
-  omittedEnrichment:readonly string[];
+  schema: "workspace-output-observation/v1";
+  producer: string;
+  owner: string;
+  worktree: string;
+  status: "succeeded" | "failed" | "cancelled";
+  proofStatus: "deferred";
+  roots: readonly string[];
+  lineage: Readonly<Record<string, string>>;
+  omittedEnrichment: readonly string[];
 }
-export interface CaptureResult { status:"recorded"|"unavailable"; reason:string|null; reference?:string }
+export interface CaptureResult {
+  status: "recorded" | "unavailable";
+  reason: string | null;
+  reference?: string;
+}
 
 // This child owns the entire attempt, including SQLite and file descriptors.
 // spawnSync's deadline kills and reaps it: there is no timed-out Promise that
@@ -85,52 +91,135 @@ try {
 finally {if(db) db.close();}
 `;
 
-export function completionObservation(input:Omit<CompletionObservation,"schema"|"proofStatus"|"omittedEnrichment"> & {omittedEnrichment?:readonly string[]}):CompletionObservation {
-  return {schema:"workspace-output-observation/v1",...input,proofStatus:"deferred",omittedEnrichment:input.omittedEnrichment ?? []};
+export function completionObservation(
+  input: Omit<CompletionObservation, "schema" | "proofStatus" | "omittedEnrichment"> & {
+    omittedEnrichment?: readonly string[];
+  },
+): CompletionObservation {
+  return {
+    schema: "workspace-output-observation/v1",
+    ...input,
+    proofStatus: "deferred",
+    omittedEnrichment: input.omittedEnrichment ?? [],
+  };
 }
-export function recordCompletion(observation:CompletionObservation, workerProgram=PROGRAM):CaptureResult {
-  const bytes=JSON.stringify(observation);
-  if(Buffer.byteLength(bytes)>CAPTURE_LIMITS.bytes) return {status:"unavailable",reason:"metadata_bound"};
-  if(!Path.isAbsolute(observation.worktree)) return {status:"unavailable",reason:"git_admin_unavailable"};
-  const result=spawnSync(process.execPath,["--input-type=module","-e",workerProgram],{
-    input:bytes,encoding:"utf8",timeout:CAPTURE_LIMITS.milliseconds,killSignal:"SIGKILL",maxBuffer:CAPTURE_LIMITS.bytes,
-    env:{PATH:process.env.PATH,NODE_NO_WARNINGS:"1"},
+export function recordCompletion(
+  observation: CompletionObservation,
+  workerProgram = PROGRAM,
+): CaptureResult {
+  const bytes = JSON.stringify(observation);
+  if (Buffer.byteLength(bytes) > CAPTURE_LIMITS.bytes)
+    return { status: "unavailable", reason: "metadata_bound" };
+  if (!Path.isAbsolute(observation.worktree))
+    return { status: "unavailable", reason: "git_admin_unavailable" };
+  const result = spawnSync(process.execPath, ["--input-type=module", "-e", workerProgram], {
+    input: bytes,
+    encoding: "utf8",
+    timeout: CAPTURE_LIMITS.milliseconds,
+    killSignal: "SIGKILL",
+    maxBuffer: CAPTURE_LIMITS.bytes,
+    env: { PATH: process.env.PATH, NODE_NO_WARNINGS: "1" },
   });
-  if(result.status!==0 || result.error) return {status:"unavailable",reason:result.error && "code" in result.error && result.error.code==="ETIMEDOUT" ? "metadata_deadline" : "metadata_sink_unavailable"};
-  try {const value=JSON.parse(result.stdout);return typeof value.reference==="string" ? {status:"recorded",reason:null,reference:value.reference} : {status:"unavailable",reason:"metadata_sink_unavailable"};}
-  catch {return {status:"unavailable",reason:"metadata_sink_unavailable"};}
+  if (result.status !== 0 || result.error)
+    return {
+      status: "unavailable",
+      reason:
+        result.error && "code" in result.error && result.error.code === "ETIMEDOUT"
+          ? "metadata_deadline"
+          : "metadata_sink_unavailable",
+    };
+  try {
+    const value = JSON.parse(result.stdout);
+    return typeof value.reference === "string"
+      ? { status: "recorded", reason: null, reference: value.reference }
+      : { status: "unavailable", reason: "metadata_sink_unavailable" };
+  } catch {
+    return { status: "unavailable", reason: "metadata_sink_unavailable" };
+  }
 }
 
-export function availableLineage(env:NodeJS.ProcessEnv):Record<string,string> {
-  const result:Record<string,string>={};
-  for(const [field,key] of Object.entries({threadId:"T3CODE_THREAD_ID",taskId:"T3CODE_TASK_ID",runId:"T3CODE_RUN_ID",environmentId:"T3CODE_ENVIRONMENT_ID",projectId:"T3CODE_PROJECT_ID",incarnationId:"T3CODE_WORKSPACE_INCARNATION_ID",branch:"T3CODE_BRANCH",head:"T3CODE_HEAD",baseRef:"T3CODE_BASE_REF",baseHead:"T3CODE_BASE_HEAD",predecessor:"T3CODE_PREDECESSOR",pr:"T3CODE_PULL_REQUEST_URL",nativeEventId:"T3CODE_NATIVE_EVENT_ID"})) {
-    const value=env[key];if(value) result[field]=value;
+export function availableLineage(env: NodeJS.ProcessEnv): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [field, key] of Object.entries({
+    threadId: "T3CODE_THREAD_ID",
+    taskId: "T3CODE_TASK_ID",
+    runId: "T3CODE_RUN_ID",
+    environmentId: "T3CODE_ENVIRONMENT_ID",
+    projectId: "T3CODE_PROJECT_ID",
+    incarnationId: "T3CODE_WORKSPACE_INCARNATION_ID",
+    branch: "T3CODE_BRANCH",
+    head: "T3CODE_HEAD",
+    baseRef: "T3CODE_BASE_REF",
+    baseHead: "T3CODE_BASE_HEAD",
+    predecessor: "T3CODE_PREDECESSOR",
+    pr: "T3CODE_PULL_REQUEST_URL",
+    nativeEventId: "T3CODE_NATIVE_EVENT_ID",
+  })) {
+    const value = env[key];
+    if (value) result[field] = value;
   }
   return result;
 }
 
 // Optional presentation enrichment only. No missing/malformed observation becomes
 // an allocation, claim, proof, or work gate. Reads are target-local and bounded.
-export async function completionLineage(admin:string,bound?:Binding):Promise<{status:"available"|"partial"|"unavailable";lineage:Record<string,string>[]}> {
+export async function completionLineage(
+  admin: string,
+  bound?: Binding,
+): Promise<{ status: "available" | "partial" | "unavailable"; lineage: Record<string, string>[] }> {
   const { readdir } = await import("node:fs/promises");
   const { readBounded } = await import("./Filesystem.ts");
   try {
-    const directory=Path.join(admin,"workspace-completions");
-    const names=await readdir(directory);
-    let budget=CAPTURE_LIMITS.bytes,partial=names.length>20;
-    const lineage:Record<string,string>[]=[];
-    for(const name of names.slice(0,20)) {
-      if(!/^[a-f0-9]{32}\.json$/.test(name)) {partial=true;continue;}
+    const directory = Path.join(admin, "workspace-completions");
+    const names = await readdir(directory);
+    let budget = CAPTURE_LIMITS.bytes,
+      partial = names.length > 20;
+    const lineage: Record<string, string>[] = [];
+    for (const name of names.slice(0, 20)) {
+      if (!/^[a-f0-9]{32}\.json$/.test(name)) {
+        partial = true;
+        continue;
+      }
       try {
-        const bytes=await readBounded(Path.join(directory,name),budget);budget-=bytes.length;
-        const value=JSON.parse(bytes.toString());
-        if(value.schema!=="workspace-output-observation/v1" || value.proofStatus!=="deferred" || typeof value.lineage!=="object" || value.lineage===null) {partial=true;continue;}
-        const fields=Object.fromEntries(Object.entries(value.lineage).filter((entry):entry is [string,string]=>typeof entry[1]==="string"));
-        if(fields.gitDirectory!==admin || (bound && (fields.rootDevice!==String(bound.dev) || fields.rootInode!==String(bound.ino)))) {partial=true;continue;}
-        lineage.push({...fields,producer:typeof value.producer==="string" ? value.producer : "unknown"});
-      } catch {partial=true;}
-      if(budget<=0) {partial=true;break;}
+        const bytes = await readBounded(Path.join(directory, name), budget);
+        budget -= bytes.length;
+        const value = JSON.parse(bytes.toString());
+        if (
+          value.schema !== "workspace-output-observation/v1" ||
+          value.proofStatus !== "deferred" ||
+          typeof value.lineage !== "object" ||
+          value.lineage === null
+        ) {
+          partial = true;
+          continue;
+        }
+        const fields = Object.fromEntries(
+          Object.entries(value.lineage).filter(
+            (entry): entry is [string, string] => typeof entry[1] === "string",
+          ),
+        );
+        if (
+          fields.gitDirectory !== admin ||
+          (bound &&
+            (fields.rootDevice !== String(bound.dev) || fields.rootInode !== String(bound.ino)))
+        ) {
+          partial = true;
+          continue;
+        }
+        lineage.push({
+          ...fields,
+          producer: typeof value.producer === "string" ? value.producer : "unknown",
+        });
+      } catch {
+        partial = true;
+      }
+      if (budget <= 0) {
+        partial = true;
+        break;
+      }
     }
-    return {status:partial ? "partial" : "available",lineage};
-  } catch {return {status:"unavailable",lineage:[]};}
+    return { status: partial ? "partial" : "available", lineage };
+  } catch {
+    return { status: "unavailable", lineage: [] };
+  }
 }

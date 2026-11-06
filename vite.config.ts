@@ -167,6 +167,7 @@ export default defineConfig({
       "packages/contracts/contracts/workstreams-registration-context/v3/**",
       "packages/contracts/contracts/workstreams-t3-provider/v1/schemas/provider.schema.json",
       "packages/contracts/contracts/workstreams-t3-provider/v2/**",
+      "apps/server/src/jones/workspaceRetirement/conformance/v1/cases.json",
       ".repos/**",
       "infra/task-cache/vendor/**",
       // Macroscope requires one glob per line; Markdown formatting corrupts it.
