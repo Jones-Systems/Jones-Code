@@ -1125,12 +1125,16 @@ it.effect(
       ]);
       host.emit({ type: "update-accepted", updateId: input.operationId });
       expect(yield* Fiber.join(request)).toBe(input.operationId);
-      // Success releases the scope: an ordinary legacy request retains its wire shape.
-      const legacy = yield* Effect.forkChild(client.requestUpdate(input), {
+      // The policy scope closes, while this accepted instance stays fenced until exit.
+      yield* client.withStateRecoveryPolicy!(input.operationId, "clone-or-copy", Effect.void);
+      const legacyHost = new FakeLauncherProcess({ ...context, stateRecoveryPolicyProtocol: 1 });
+      const legacyClient = yield* makeClient(legacyHost, "1.0.0");
+      const legacy = yield* Effect.forkChild(legacyClient.requestUpdate(input), {
         startImmediately: true,
       });
-      expect(host.sent.at(-1)).toEqual({ type: "request-update", ...input });
-      host.emit({ type: "update-accepted", updateId: input.operationId });
+      yield* Effect.promise(() => legacyHost.sentSignal.promise);
+      expect(legacyHost.sent.at(-1)).toEqual({ type: "request-update", ...input });
+      legacyHost.emit({ type: "update-accepted", updateId: input.operationId });
       yield* Fiber.join(legacy);
       yield* client.withStateRecoveryPolicy!(
         input.operationId,
