@@ -277,7 +277,7 @@ async function fixture(
         return artifact;
       },
     },
-    stageApp: async (artifact, stageRoot) => {
+    stageApp: async (artifact, stageRoot, _platform, admit) => {
       const appPath = NodePath.join(
         stageRoot,
         ...(attemptLayout ? ["attempts", "stage-native"] : []),
@@ -286,6 +286,7 @@ async function fixture(
       );
       const executablePath = NodePath.join(appPath, "Contents", "MacOS", "Jones");
       const asarPath = NodePath.join(appPath, "Contents", "Resources", "app.asar");
+      await admit?.();
       await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true });
       await NodeFSP.mkdir(NodePath.dirname(asarPath));
       await NodeFSP.writeFile(executablePath, "staged-native-executable");
@@ -525,9 +526,9 @@ describe("Jones desktop updates", () => {
       const controller = new JonesDesktopUpdateController({
         ...f.options,
         executablePath: executable,
-        stageApp: async (artifact, stageRoot, platform) => {
+        stageApp: async (artifact, stageRoot, platform, admit) => {
           const staged = {
-            ...(await f.options.stageApp!(artifact, stageRoot, platform)),
+            ...(await f.options.stageApp!(artifact, stageRoot, platform, admit)),
             startupGateProtocol: 1 as const,
           };
           await NodeFSP.writeFile(
