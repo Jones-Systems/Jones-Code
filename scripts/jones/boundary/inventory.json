@@ -841,6 +841,7 @@
     "apps/web/src/components/pullRequest/PullRequestCiStatusPopover.tsx": "jones-owned",
     "apps/web/src/components/settings/DeviceHostEditor.tsx": "accepted-shared",
     "apps/web/src/components/settings/EnvironmentRow.tsx": "accepted-shared",
+    "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx": "jones-tests-in-upstream",
     "apps/web/src/components/settings/ScheduledTasksSettings.tsx": "accepted-shared",
     "apps/web/src/components/settings/SettingsPanels.tsx": "accepted-shared",
     "apps/web/src/components/settings/SettingsScopeSentence.tsx": "accepted-shared",

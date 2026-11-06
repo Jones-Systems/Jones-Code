@@ -862,13 +862,20 @@ function TaskForm({
           <SelectRow
             label="Run in"
             value={
-              draft.workspace === "worktree"
-                ? "New worktree"
-                : draft.workspace === "root"
-                  ? "Project checkout"
-                  : "Specific checkout"
+              draft.workspace === "auto"
+                ? "Project allocation setting"
+                : draft.workspace === "worktree"
+                  ? "New worktree"
+                  : draft.workspace === "root"
+                    ? "Project checkout"
+                    : "Specific checkout"
             }
             actions={[
+              {
+                id: "auto",
+                title: "Use project allocation setting",
+                state: draft.workspace === "auto" ? "on" : undefined,
+              },
               {
                 id: "worktree",
                 title: "New worktree",
@@ -886,7 +893,7 @@ function TaskForm({
               },
             ]}
             onSelect={(id) => {
-              if (id === "worktree" || id === "root" || id === "existing_worktree")
+              if (id === "auto" || id === "worktree" || id === "root" || id === "existing_worktree")
                 setDraft({ ...draft, workspace: id });
             }}
           />

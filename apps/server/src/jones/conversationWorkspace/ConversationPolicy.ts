@@ -592,3 +592,19 @@ const make = Effect.gen(function* () {
   });
 });
 export const layer = Layer.effect(ConversationPolicy, make);
+
+// General SqlClient persistence has no proved cancellable 100ms boundary. Keep
+// the explicit fallback API above, but do not start it on ordinary launch/start
+// paths or leave a write running after a timeout. This bounded diagnostic records
+// the eager decision and explicitly omits its optional durable enrichment.
+export const observeEagerFallback = Effect.fn("ConversationPolicy.observeEagerFallback")(
+  (input: { threadId: string; runId?: string; driver: string; reason: string }) =>
+    Effect.logWarning("Conversation workspace uses eager allocation", {
+      threadId: input.threadId.slice(0, 1024),
+      ...(input.runId === undefined ? {} : { runId: input.runId.slice(0, 1024) }),
+      driver: input.driver.slice(0, 128),
+      reason: input.reason.slice(0, 256),
+      observation: "omitted",
+      observationReason: "unbounded_sink",
+    }).pipe(Effect.ignoreCause),
+);

@@ -3002,7 +3002,11 @@
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/web/src/hooks/useHandleNewThread.test.ts",
         "apps/server/src/jones/mcp/clientLaunch/ClientLaunchIdentity.test.ts",
-        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts"
+        "apps/server/src/jones/platformCompatibility/mcp/toolkits/worktree/registration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/mobile/src/features/settings/scheduledTaskDraft.test.ts",
+        "apps/web/src/components/settings/scheduledTasksSettings.logic.test.ts",
+        "apps/web/src/components/settings/ScheduledTasksSettings.browser.test.tsx"
       ],
       "scope": "C9 broker-only conversation allocation with per-turn Git object snapshots, exact empty-directory identity and lifecycle, durable compare-and-swap handoff, shared delegation, terminal/setup admission and additive project allocation settings. Synthetic Codex and Claude transport fixtures exercise shipped adapter seams; configured passing evidence is required before counting adapter coverage. Shared provider/session/checkpoint/MCP/UI hooks retain their existing owners; no OS barrier, runtime adoption or provider automatic instructions claim."
     }

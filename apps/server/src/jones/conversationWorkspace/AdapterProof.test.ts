@@ -65,6 +65,8 @@ const git = (cwd: string, ...args: string[]) =>
 it.effect.each([
   { driver: "codex", scenario: "handoff" },
   { driver: "claudeAgent", scenario: "handoff" },
+  { driver: "codex", scenario: "registered-callback" },
+  { driver: "claudeAgent", scenario: "registered-callback" },
   { driver: "codex", scenario: "checkout-interruption" },
   { driver: "claudeAgent", scenario: "setup-unknown" },
   { driver: "codex", scenario: "terminal" },
@@ -186,9 +188,25 @@ it.effect.each([
         Layer.orDie,
       );
       const policyLayer = Policy.layer.pipe(Layer.provideMerge(database), Layer.provide(config));
+      let policyBeforeWorktree: Policy.ConversationPolicy["Service"] | undefined;
+      // The orchestrator/turn-start side receives Policy before the outer MCP
+      // layer exists. Worktree construction must register on that same instance.
+      const beforeWorktree = Layer.effectDiscard(
+        Effect.gen(function* () {
+          const policy = yield* Policy.ConversationPolicy;
+          policyBeforeWorktree = policy;
+          const refusal = yield* policy
+            .attachForTurn(threadId, "run:before-registration", "Continue", [])
+            .pipe(Effect.flip);
+          assert.equal(refusal.reason, "attach_required");
+          assert.equal(created, 0);
+          assert.equal(setupCount, 0);
+        }),
+      ).pipe(Layer.provide(policyLayer));
       const worktreeLayer = Worktree.layer.pipe(
         Layer.provide(external),
         Layer.provide(policyLayer),
+        Layer.provide(beforeWorktree),
       );
       const services = Layer.mergeAll(
         external,
@@ -207,6 +225,7 @@ it.effect.each([
         yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${threadId},${JSON.stringify({ id: threadId, projectId })},NULL)`;
         const policy = yield* Policy.ConversationPolicy;
         const worktree = yield* Worktree.WorktreeMcpService;
+        assert.equal(policy, policyBeforeWorktree);
         const binding = yield* policy.allocate({
           threadId,
           projectId,
@@ -292,15 +311,29 @@ it.effect.each([
           assert.isFalse(yield* policy.acceptsCwd(threadId, binding.path));
           return;
         }
-        const result = yield* worktree.handoff(scope, input);
-        assert.deepEqual(
-          yield* worktree.handoff(
-            scope,
-            input,
-            Effect.die("Replay must not reacquire live execution"),
-          ),
-          result,
-        );
+        const result = yield* Effect.gen(function* () {
+          if (scenario !== "registered-callback") return yield* worktree.handoff(scope, input);
+          yield* policy.attachForTurn(threadId, "run:registered", input.continuationPrompt, []);
+          const journal = yield* policy.readHandoff(threadId);
+          assert.equal(journal?.phase, "done");
+          assert.equal(journal?.requestId, "adapter-fallback:run:registered");
+          assert.equal(journal?.commit, turn!.binding.commit);
+          assert.isNotNull(journal?.result);
+          // Re-enter the registered boundary after attachment: the durable receipt
+          // must replay without issuing checkout/setup/continuation again.
+          yield* policy.attachForTurn(threadId, "run:registered", input.continuationPrompt, []);
+          assert.deepEqual(yield* policy.readHandoff(threadId), journal);
+          return journal!.result!;
+        });
+        if (scenario !== "registered-callback")
+          assert.deepEqual(
+            yield* worktree.handoff(
+              scope,
+              input,
+              Effect.die("Replay must not reacquire live execution"),
+            ),
+            result,
+          );
         assert.equal(created, 1);
         assert.equal(setupCount, 1);
         assert.equal(sent.size, 1);
@@ -331,7 +364,7 @@ it.effect.each([
           yield* policy.inherit(lateId, threadId);
           assert.equal(yield* worktree.attachForTerminal(lateId), checkout);
           assert.equal(members.get(lateId)!.worktreePath, checkout);
-          yield* worktree.attachForTurn(lateId, "run:late", "Continue shared request", []);
+          yield* policy.attachForTurn(lateId, "run:late", "Continue shared request", []);
           assert.equal(created, 1);
           assert.equal(setupCount, 1);
           assert.equal(sent.size, 2);

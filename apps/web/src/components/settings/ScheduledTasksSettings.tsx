@@ -86,7 +86,7 @@ import {
   scheduleFromDraft,
   scheduledTaskDefaultModel,
   taskToDraft,
-  worktreeStrategyFromDraft,
+  workspaceStrategyFromDraft,
   type DraftState,
   type ScheduleMode,
   type WorkspaceMode,
@@ -126,6 +126,7 @@ const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as cons
 const WEEKDAY_SHORT = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
 
 const WORKSPACE_MODE_LABELS: Record<WorkspaceMode, string> = {
+  auto: "Use project allocation setting",
   worktree: "Create a new worktree",
   root: "Use the project checkout",
   existing_worktree: "Use a specific checkout",
@@ -142,8 +143,8 @@ const EMPTY_DRAFT: DraftState = {
   weekdays: new Set([1, 2, 3, 4, 5]),
   projectId: "",
   threadId: "",
-  workspaceMode: "worktree",
-  baseRef: "main",
+  workspaceMode: "auto",
+  baseRef: "",
   startFromOrigin: true,
   existingWorktreePath: "",
   modelKey: "",
@@ -1245,11 +1246,7 @@ function ScheduledTaskEditorForm({
         ? draft.baseModelSelection
         : selection;
     const workspaceStrategy: OrchestrationV2ThreadLaunchWorkspaceStrategy =
-      draft.workspaceMode === "root"
-        ? { type: "root" }
-        : draft.workspaceMode === "existing_worktree"
-          ? { type: "existing_worktree", worktreePath: draft.existingWorktreePath.trim() }
-          : worktreeStrategyFromDraft(draft);
+      workspaceStrategyFromDraft(draft);
     const input: ScheduledTaskUpsertInput = {
       ...(draft.editingId ? { id: draft.editingId as ScheduledTaskId, requireExisting: true } : {}),
       title: draft.title.trim(),
@@ -1419,6 +1416,7 @@ function ScheduledTaskEditorForm({
                   <SelectValue>{WORKSPACE_MODE_LABELS[draft.workspaceMode]}</SelectValue>
                 </SelectTrigger>
                 <SelectPopup>
+                  <SelectItem value="auto">Use project allocation setting</SelectItem>
                   <SelectItem value="worktree">Create a new worktree</SelectItem>
                   <SelectItem value="root">Use the project checkout</SelectItem>
                   <SelectItem value="existing_worktree">Use a specific checkout</SelectItem>

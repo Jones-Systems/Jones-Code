@@ -38,7 +38,11 @@ const task: ScheduledTask = {
   runCount: 0,
 };
 
-const state = vi.hoisted(() => ({ connected: true, tasksLoaded: true }));
+const inheritedTask: ScheduledTask = {
+  ...task,
+  workspaceStrategy: { type: "auto", baseRef: "release" },
+};
+const state = vi.hoisted(() => ({ connected: true, tasksLoaded: true, inherited: false }));
 
 function environment() {
   return {
@@ -85,7 +89,10 @@ vi.mock(import("../../state/server"), async (original) => {
 vi.mock(import("../../state/query"), async (original) => ({
   ...(await original()),
   useEnvironmentQuery: ((request: unknown) => ({
-    data: request === null ? null : { tasks: state.tasksLoaded ? [task] : [] },
+    data:
+      request === null
+        ? null
+        : { tasks: state.tasksLoaded ? [state.inherited ? inheritedTask : task] : [] },
     error: null,
     isPending: false,
     refresh: vi.fn(),
@@ -108,6 +115,7 @@ describe("ScheduledTasksSettings", () => {
   it("keeps a linked task's unsaved edits across a disconnect and reconnect", async () => {
     state.connected = true;
     state.tasksLoaded = true;
+    state.inherited = false;
     await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
     const name = page.getByRole("dialog").getByRole("textbox", { name: "Name" });
     await expect.element(name).toHaveValue("Review issues");
@@ -126,6 +134,7 @@ describe("ScheduledTasksSettings", () => {
   it("keeps an editor the user opened when the linked task loads later", async () => {
     state.connected = true;
     state.tasksLoaded = false;
+    state.inherited = false;
     await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
     await userEvent.click(page.getByRole("button", { name: "New task" }));
     const dialog = page.getByRole("dialog");
@@ -138,4 +147,31 @@ describe("ScheduledTasksSettings", () => {
     await expect.element(dialog.getByRole("heading", { name: "New task" })).toBeInTheDocument();
     await expect.element(name).toHaveValue("My draft");
   });
+});
+
+it("new tasks inherit project allocation and retain explicit checkout choices", async () => {
+  state.connected = true;
+  state.tasksLoaded = true;
+  state.inherited = false;
+  await using screen = await render(<ScheduledTasksSettings />);
+  await userEvent.click(page.getByRole("button", { name: "New task" }));
+  const workspace = page.getByRole("dialog").getByRole("combobox", { name: "Workspace" });
+  await expect.element(workspace).toHaveTextContent("Use project allocation setting");
+  await userEvent.click(workspace);
+  await userEvent.click(page.getByRole("option", { name: "Create a new worktree" }));
+  await expect.element(workspace).toHaveTextContent("Create a new worktree");
+  await userEvent.click(workspace);
+  await userEvent.click(page.getByRole("option", { name: "Use project allocation setting" }));
+  await expect.element(workspace).toHaveTextContent("Use project allocation setting");
+});
+
+it("reopens persisted auto without converting it to an explicit worktree", async () => {
+  state.connected = true;
+  state.tasksLoaded = true;
+  state.inherited = true;
+  await using screen = await render(<ScheduledTasksSettings taskId={task.id} />);
+  await expect
+    .element(page.getByRole("dialog").getByRole("combobox", { name: "Workspace" }))
+    .toHaveTextContent("Use project allocation setting");
+  state.inherited = false;
 });

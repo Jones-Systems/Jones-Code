@@ -1085,13 +1085,12 @@ export const layer: Layer.Layer<
               cause:
                 "Eager adapter fallback is unavailable; no unproved adapter may use a conversation directory.",
             });
-          yield* conversations.value
-            .fallback(
-              projection.thread.id,
-              instance?.driverKind ?? "unavailable",
-              "eager: resumed adapter has no conversation proof",
-            )
-            .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          yield* ConversationPolicy.observeEagerFallback({
+            threadId: projection.thread.id,
+            runId,
+            driver: instance?.driverKind ?? "unavailable",
+            reason: "eager: resumed adapter has no conversation proof",
+          });
           yield* conversations.value
             .attachForTurn(
               projection.thread.id,

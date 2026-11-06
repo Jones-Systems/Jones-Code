@@ -60,7 +60,10 @@ it("distinguishes auto source choices in client launch request identity", () => 
     clientLaunchDigest({ ...request, workspaceStrategy: { type: "worktree" } }, projectId),
   );
   expect(auto).not.toBe(
-    clientLaunchDigest({ ...request, workspaceStrategy: { type: "auto", baseRef: "main" } }, projectId),
+    clientLaunchDigest(
+      { ...request, workspaceStrategy: { type: "auto", baseRef: "main" } },
+      projectId,
+    ),
   );
   expect(auto).not.toBe(
     clientLaunchDigest(

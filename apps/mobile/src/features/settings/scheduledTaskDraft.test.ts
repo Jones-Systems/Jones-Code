@@ -364,3 +364,39 @@ describe("scheduled-task form save and reopen", () => {
     expect(reopened.modelSelection).toEqual(legacyTask.modelSelection);
   });
 });
+
+describe("scheduled fresh project allocation inheritance", () => {
+  it("authors new fresh tasks with auto and preserves it on save/reopen", () => {
+    const draft = {
+      ...createDraft(legacyTask.projectId, legacyTask.modelSelection),
+      title: "Fresh",
+      prompt: "Inspect source",
+    };
+    const input = scheduledTaskUpsertInputFromDraft(draft);
+    expect(input?.threadId).toBeNull();
+    expect(input?.workspaceStrategy).toEqual({ type: "auto" });
+    const reopened = editDraft({ ...legacyTask, workspaceStrategy: { type: "auto" } });
+    expect(reopened.workspace).toBe("auto");
+    expect(scheduledTaskUpsertInputFromDraft(reopened)?.workspaceStrategy).toEqual({
+      type: "auto",
+    });
+    expect(
+      hasScheduledTaskDraftChanges(
+        reopened,
+        editDraft({ ...legacyTask, workspaceStrategy: { type: "auto" } }),
+      ),
+    ).toBe(false);
+  });
+
+  it.each<ScheduledTask["workspaceStrategy"]>([
+    { type: "auto", baseRef: "release", branch: "work/automation" },
+    { type: "worktree", baseRef: "release", startFromOrigin: true },
+    { type: "existing_worktree", worktreePath: "/checkouts/explicit" },
+    { type: "root" },
+  ])("preserves the stored $type allocation choice", (workspaceStrategy) => {
+    const draft = editDraft({ ...legacyTask, workspaceStrategy });
+    const saved = scheduledTaskUpsertInputFromDraft(draft);
+    expect(saved?.workspaceStrategy).toEqual(workspaceStrategy);
+    expect(saved?.requireExisting).toBe(true);
+  });
+});

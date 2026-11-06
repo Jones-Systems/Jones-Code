@@ -2746,9 +2746,11 @@ const make = Effect.gen(function* () {
               })
               .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
           } else if (fallbackDriver !== undefined) {
-            yield* conversations.value
-              .fallback(threadId, fallbackDriver, "eager: setting or adapter proof unavailable")
-              .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+            yield* ConversationPolicy.observeEagerFallback({
+              threadId,
+              driver: fallbackDriver,
+              reason: "eager: setting or adapter proof unavailable",
+            });
           }
         }
         const idleRecord =
