@@ -2549,7 +2549,8 @@
     "apps/server/src/jones/orchestration/pendingControlItems.ts": "jones-owned",
     "apps/server/src/jones/orchestration/pendingControlItems.test.ts": "jones-owned",
     "scripts/jones/boundary/fragments/pending-control-items.json": "jones-owned",
-    "packages/contracts/src/worktreeMcp.ts": "accepted-shared"
+    "packages/contracts/src/worktreeMcp.ts": "accepted-shared",
+    "packages/client-runtime/src/jones/pendingControlItems.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

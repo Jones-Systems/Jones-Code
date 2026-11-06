@@ -1,5 +1,8 @@
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
-import { pendingControlRequests } from "../jones/orchestration/pendingControlItems.ts";
+import {
+  encodePendingControlRequests,
+  pendingControlRequests,
+} from "../jones/orchestration/pendingControlItems.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { byThread as dependencyRosterByThread } from "../jones/threadResultDependencies/Projection.ts";
 import { pendingGuestMessageCount } from "@t3tools/contracts";
@@ -6452,12 +6455,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             });
             // Add current control bodies only after visible history and fork positions are fixed.
             const requests = pendingControlRequests(projection);
+            const requestJson = yield* encodePendingControlRequests(requests);
             const controlRows =
               requests.length === 0
                 ? []
                 : yield* sql<PayloadRow>`
               SELECT item.payload_json
-              FROM json_each(${JSON.stringify(requests)}) AS request
+              FROM json_each(${requestJson}) AS request
               CROSS JOIN orchestration_v2_projection_turn_items AS item
                 ON item.node_id = json_extract(request.value, '$.nodeId')
               WHERE item.thread_id = ${threadId}

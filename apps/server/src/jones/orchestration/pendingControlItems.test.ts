@@ -12,13 +12,13 @@ import {
   type OrchestrationV2DomainEvent,
   type OrchestrationV2RuntimeRequest,
   type OrchestrationV2TurnItem,
+  type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import {
   boundedSnapshotProjection,
   omitLocalVisibleTurnItems,
 } from "@t3tools/shared/orchestrationV2BoundedSnapshot";
 import { dedupeSnapshotBodies } from "@t3tools/shared/orchestrationV2DedupedBodies";
-import { derivePendingThreadRequests } from "../../../../../packages/client-runtime/src/state/threadRequests.ts";
 import {
   v2Now,
   v2Projection,
@@ -104,6 +104,12 @@ function control(key: string, ordinal: number, mode: "live" | "message" | "appro
           ],
         };
   return { request, item };
+}
+
+function controlBodies(projection: Pick<OrchestrationV2ThreadProjection, "turnItems">) {
+  return projection.turnItems.filter(
+    (item) => item.type === "user_input_request" || item.type === "approval_request",
+  );
 }
 
 const controls = [
@@ -257,24 +263,10 @@ it.layer(layer)("pending control bodies", (it) => {
           new Set(bounded.projection.turnItems.map((item) => item.id)).size,
           bounded.projection.turnItems.length,
         );
-        const pending = derivePendingThreadRequests(bounded.projection);
-        // Requests keep the store's created-at/id order, independently of body retention order.
+        const retained = controlBodies(bounded.projection);
         assert.deepEqual(
-          pending.userInputs.map((request) => [
-            request.requestId,
-            request.responseCapability,
-            request.dismissible,
-          ]),
-          [
-            ["async", "message", true],
-            ["native", "live", false],
-          ],
-        );
-        assert.strictEqual(pending.userInputs[0]?.questions[0]?.question, "Answer async?");
-        assert.strictEqual(pending.approvals[0]?.detail, "Run the focused check?");
-        assert.deepEqual(
-          pending.approvals[0]?.options,
-          controls[2]!.item.type === "approval_request" ? controls[2]!.item.options : [],
+          retained,
+          controls.map(({ item }) => ({ ...item, runId })),
         );
         const byteBounded = buildBoundedThreadProjection({
           projection: initial.projection,
@@ -282,14 +274,14 @@ it.layer(layer)("pending control bodies", (it) => {
           policy: { maxItems: 100, maxEncodedBytes: 2_048 },
         });
         assert.lengthOf(byteBounded.projection.visibleTurnItems, 1);
-        assert.deepEqual(derivePendingThreadRequests(byteBounded.projection), pending);
+        assert.deepEqual(controlBodies(byteBounded.projection), retained);
         // Both HTTP and WS use this bounded codec and restore path after opt-in compaction.
         for (const compact of [false, true]) {
           const projection = compact
             ? omitLocalVisibleTurnItems(dedupeSnapshotBodies(bounded.projection))
             : bounded.projection;
           assert.isNotNull(projection);
-          const encoded = Schema.encodeSync(snapshotCodec)({
+          const encoded = yield* Schema.encodeEffect(snapshotCodec)({
             ...bounded,
             projection: projection!,
             snapshotSequence: initial.snapshotSequence,
@@ -298,9 +290,9 @@ it.layer(layer)("pending control bodies", (it) => {
               : {}),
           });
           const restored = boundedSnapshotProjection(
-            Schema.decodeUnknownSync(snapshotCodec)(encoded),
+            yield* Schema.decodeEffect(snapshotCodec)(encoded),
           );
-          assert.deepEqual(derivePendingThreadRequests(restored), pending);
+          assert.deepEqual(controlBodies(restored), retained);
           assert.deepEqual(
             restored.turnItems.map(({ id }) => id),
             bounded.projection.turnItems.map(({ id }) => id),
@@ -329,10 +321,7 @@ it.layer(layer)("pending control bodies", (it) => {
           fork.projection.visibleTurnItems.map(({ item }) => item.id),
           [...tools.slice(-2).map(({ id }) => id), TurnItemId.make(`turn-item:fork:${forkId}`)],
         );
-        assert.deepEqual(derivePendingThreadRequests(fork.projection), {
-          userInputs: [],
-          approvals: [],
-        });
+        assert.deepEqual(controlBodies(fork.projection), []);
         assert.isFalse(
           fork.projection.turnItems.some((item) =>
             controls.some(({ item: controlItem }) => controlItem.id === item.id),
@@ -356,12 +345,9 @@ it.layer(layer)("pending control bodies", (it) => {
           if (index === 0) {
             const partlyResolved = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 2 });
             assert.deepEqual(
-              derivePendingThreadRequests(partlyResolved.projection).userInputs.map(
-                ({ requestId }) => requestId,
-              ),
-              ["async"],
+              controlBodies(partlyResolved.projection).map(({ requestId }) => requestId),
+              ["async", "approval"],
             );
-            assert.lengthOf(derivePendingThreadRequests(partlyResolved.projection).approvals, 1);
           }
         }
         const ended = yield* store.getThreadSnapshotWindow(threadId, { rowLimit: 2 });
@@ -370,8 +356,7 @@ it.layer(layer)("pending control bodies", (it) => {
           snapshotSequence: ended.snapshotSequence,
           policy,
         });
-        assert.deepEqual(derivePendingThreadRequests(reloaded.projection).userInputs, []);
-        assert.lengthOf(derivePendingThreadRequests(reloaded.projection).approvals, 1);
+        assert.deepEqual(controlBodies(reloaded.projection), [{ ...controls[2]!.item, runId }]);
         assert.isFalse(
           reloaded.projection.turnItems.some(
             (item) => item.id === controls[0]!.item.id || item.id === controls[1]!.item.id,

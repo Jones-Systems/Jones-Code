@@ -10,9 +10,10 @@
         "apps/server/src/orchestration-v2/ShellStream.test.ts",
         "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
         "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts",
-        "packages/client-runtime/src/state/threadRequests.test.ts"
+        "packages/client-runtime/src/state/threadRequests.test.ts",
+        "packages/client-runtime/src/jones/pendingControlItems.test.ts"
       ],
-      "scope": "Current pending user-input and approval bodies survive SQL snapshot and final wire windows without consuming visible history. Runtime status owns retention, including completed async items; indexed node lookup is scoped by current thread, request and item type. ProjectionStore and threadHistoryPaging retain accepted-shared ownership for the small query/merge hooks. The accepted-shared ShellStream predicate admits only secret_request child item updates; its existing upstream-harness tests receive payload fixtures without removing suppression assertions. Jones-owned tests reuse real in-memory SQLite, request derivation and bounded codecs, and cover terminal removal, ownership negatives, deduplication, cursor/watermark stability and secret new/save/decline/cancel invalidation. No schema, migration, badge policy or installed-runtime change."
+      "scope": "Current pending user-input and approval bodies survive SQL snapshot and final wire windows without consuming visible history. Runtime status owns retention, including completed async items; indexed node lookup is scoped by current thread, request and item type. ProjectionStore and threadHistoryPaging retain accepted-shared ownership for the small query/merge hooks. The accepted-shared ShellStream predicate admits only secret_request child item updates; its existing upstream-harness tests receive payload fixtures without removing suppression assertions. Jones-owned server tests verify real in-memory SQLite and bounded codecs; the client-owned regression verifies request derivation after wire restoration, and cover terminal removal, ownership negatives, deduplication, cursor/watermark stability and secret new/save/decline/cancel invalidation. No schema, migration, badge policy or installed-runtime change."
     },
     {
       "id": "packaged-desktop-recovery-harness",
