@@ -24,7 +24,11 @@ JSON.stringify({
   sessionAvailable: session !== null,
   onConsole: session ? booleanOrNull(session.kCGSSessionOnConsoleKey) : null,
   loginDone: session ? booleanOrNull(session.kCGSessionLoginDoneKey) : null,
-  screenLocked: session ? booleanOrNull(session.CGSSessionScreenIsLocked) : null,
+  // An unlocked CGSession omits the lock key; a present malformed value remains unknown.
+  screenLocked: session
+    ? Object.prototype.hasOwnProperty.call(session, "CGSSessionScreenIsLocked")
+      ? booleanOrNull(session.CGSSessionScreenIsLocked) : false
+    : null,
   sessionUid: session && typeof session.kCGSSessionUserIDKey === "number"
     ? session.kCGSSessionUserIDKey : null
 });

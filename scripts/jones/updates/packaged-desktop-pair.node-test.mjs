@@ -4,6 +4,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
+import * as NodeVM from "node:vm";
 import {
   bindPackagedDesktopPair,
   validatePackagedDesktopGuiSession,
@@ -650,6 +651,50 @@ NodeTest.test(
         () => validatePackagedDesktopGuiSession({ ...ready, ...change }, { uid: 501 }),
         message,
       );
+    }
+  },
+);
+
+NodeTest.test(
+  "GUI projection admits the unlocked native dictionary and preserves refusals",
+  async () => {
+    const source = await NodeFSP.readFile(
+      new URL("./packaged-desktop-pair.mjs", import.meta.url),
+      "utf8",
+    );
+    const match = source.match(/const packagedDesktopSessionScript = String\.raw`([\s\S]*?)`;/u);
+    NodeAssert.ok(match);
+    const session = {
+      kCGSSessionUserIDKey: 501,
+      kCGSSessionOnConsoleKey: true,
+      kCGSessionLoginDoneKey: true,
+    };
+    for (const [native, expected, refusal] of [
+      [session, false, null],
+      [{ ...session, CGSSessionScreenIsLocked: false }, false, null],
+      [{ ...session, CGSSessionScreenIsLocked: true }, true, /screen is locked/],
+      [{ ...session, CGSSessionScreenIsLocked: null }, null, /state is unknown/],
+      [{ ...session, CGSSessionScreenIsLocked: undefined }, null, /state is unknown/],
+      [{ ...session, CGSSessionScreenIsLocked: "false" }, null, /state is unknown/],
+      [null, null, /unavailable/],
+      [{ ...session, kCGSSessionUserIDKey: 502 }, false, /another user/],
+      [{ ...session, kCGSSessionOnConsoleKey: false }, false, /not on console/],
+      [{ ...session, kCGSessionLoginDoneKey: false }, false, /login is incomplete/],
+    ]) {
+      const receipt = JSON.parse(
+        NodeVM.runInNewContext(
+          match[1],
+          {
+            ObjC: { import() {}, deepUnwrap: (value) => value, castRefToObject: (value) => value },
+            $: { CGSessionCopyCurrentDictionary: () => native },
+          },
+          { timeout: 1000 },
+        ),
+      );
+      NodeAssert.equal(receipt.screenLocked, expected);
+      if (refusal)
+        NodeAssert.throws(() => validatePackagedDesktopGuiSession(receipt, { uid: 501 }), refusal);
+      else NodeAssert.deepEqual(validatePackagedDesktopGuiSession(receipt, { uid: 501 }), receipt);
     }
   },
 );
