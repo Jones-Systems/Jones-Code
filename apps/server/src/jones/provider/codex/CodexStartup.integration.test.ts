@@ -3,6 +3,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CodexSettings,
   CommandId,
+  EventId,
   MessageId,
   ProjectId,
   ProviderInstanceId,
@@ -15,6 +16,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
 import * as Crypto from "effect/Crypto";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -226,14 +228,20 @@ function replayEnsure(
   cwd: string,
   home: string,
   label: string,
+  forkSource?: string,
 ): Array<Replay.CodexAppServerReplayEntry> {
   return [
     {
       type: "expect_outbound",
       frame: {
         id,
-        method: "thread/start",
-        params: { cwd, model: "gpt-5.4", config: Codex.CODEX_THREAD_CONFIG },
+        method: forkSource === undefined ? "thread/start" : "thread/fork",
+        params: {
+          ...(forkSource === undefined ? {} : { threadId: forkSource }),
+          cwd,
+          model: "gpt-5.4",
+          config: Codex.CODEX_THREAD_CONFIG,
+        },
       },
     },
     {
@@ -245,7 +253,7 @@ function replayEnsure(
           thread: {
             id: nativeThreadId,
             sessionId: nativeThreadId,
-            forkedFromId: null,
+            forkedFromId: forkSource ?? null,
             preview: "",
             ephemeral: false,
             modelProvider: "openai",
@@ -278,10 +286,12 @@ function replayEnsure(
   ];
 }
 
-it.effect(
-  "real startup failure settles one durable run and daemon effect while independent Codex work progresses",
-  () =>
+it.effect.each(["ensure", "fork", "fork-rejected"] as const)(
+  "real %s startup failure settles one durable run and daemon effect while independent Codex work progresses",
+  (operation) =>
     Effect.gen(function* () {
+      const fork = operation !== "ensure";
+      const explicitRejection = operation === "fork-rejected";
       const cwd = yield* checkpointWorkspace("codex-startup-composition");
       const configContext = yield* Layer.build(
         ServerConfig.layerTest(cwd, { prefix: "jones-codex-startup-composition-" }),
@@ -326,7 +336,21 @@ it.effect(
         entries: [
           ...replayInitialize(home),
           ...replayEnsure(2, boundNativeId, cwd, home, "bound-control"),
-          ...replayEnsure(3, lateNativeId, cwd, home, "withheld-startup"),
+          ...replayEnsure(
+            3,
+            lateNativeId,
+            cwd,
+            home,
+            "withheld-startup",
+            fork ? boundNativeId : undefined,
+          ).map((entry) =>
+            explicitRejection && entry.type === "emit_inbound"
+              ? {
+                  ...entry,
+                  frame: { id: 3, error: { code: -32600, message: "Synthetic fork rejection" } },
+                }
+              : entry,
+          ),
           {
             type: "expect_outbound",
             frame: { id: 4, method: "thread/unsubscribe", params: { threadId: boundNativeId } },
@@ -452,8 +476,9 @@ it.effect(
                         request: (method, params) =>
                           Effect.sync(() => requests.push(method)).pipe(
                             Effect.andThen(client.request(method, params)),
-                            Effect.tap(() =>
-                              method === "thread/start" && requests.length === 3
+                            Effect.onExit(() =>
+                              method === (fork ? "thread/fork" : "thread/start") &&
+                              requests.length === 3
                                 ? Deferred.succeed(observed, undefined)
                                 : Effect.void,
                             ),
@@ -520,6 +545,7 @@ it.effect(
           [failedThreadId, silentInstance],
           [healthyThreadId, healthyInstance],
         ] as const) {
+          if (fork && threadId === failedThreadId) continue;
           yield* orchestrator.dispatch({
             type: "thread.create",
             commandId: CommandId.make(`${threadId}:create`),
@@ -549,6 +575,55 @@ it.effect(
           runtimePolicy: policy,
         });
         assert.equal(bound.nativeThreadRef?.nativeId, boundNativeId);
+        if (fork) {
+          const now = yield* DateTime.now;
+          const sourceRunId = RunId.make("startup-composition-source-run");
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make("startup-composition-source-thread"),
+                type: "provider-thread.updated",
+                threadId: boundThreadId,
+                occurredAt: now,
+                payload: bound,
+              },
+              {
+                id: EventId.make("startup-composition-source-run"),
+                type: "run.created",
+                threadId: boundThreadId,
+                runId: sourceRunId,
+                occurredAt: now,
+                payload: {
+                  id: sourceRunId,
+                  threadId: boundThreadId,
+                  ordinal: 1,
+                  providerInstanceId: silentInstance,
+                  modelSelection: selection,
+                  providerThreadId: bound.id,
+                  userMessageId: MessageId.make("startup-composition-source-message"),
+                  rootNodeId: null,
+                  activeAttemptId: null,
+                  status: "completed",
+                  queuePosition: null,
+                  requestedAt: now,
+                  startedAt: now,
+                  completedAt: now,
+                  checkpointId: null,
+                  contextHandoffId: null,
+                },
+              },
+            ],
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.fork",
+            commandId: CommandId.make("startup-composition:fork"),
+            sourceThreadId: boundThreadId,
+            targetThreadId: failedThreadId,
+            sourcePoint: { type: "run", runId: sourceRunId },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
         const command = {
           type: "message.dispatch",
           commandId: CommandId.make("startup-composition:message"),
@@ -602,10 +677,18 @@ it.effect(
           Stream.runDrain,
           Effect.forkScoped({ startImmediately: true }),
         );
+        if (explicitRejection) {
+          yield* Deferred.succeed(release, undefined);
+          yield* Deferred.await(observed);
+        }
         yield* TestClock.adjust(CODEX_STARTUP_BUDGET_MS);
         yield* Fiber.join(failedRun);
         yield* Fiber.join(failedAttempt);
         yield* outbox.awaitCompletion([claimed.id]);
+        const released = Option.getOrThrow(yield* outbox.get(claimed.id));
+        assert.equal(released.status, "succeeded");
+        assert.equal(released.attemptCount, 1);
+        assert.isNull(released.leaseOwner);
         const failed = yield* orchestrator.getThreadProjection(failedThreadId);
         assert.equal(failed.runs[0]?.id, run.id);
         assert.equal(failed.runs[0]?.status, "failed");
@@ -654,20 +737,22 @@ it.effect(
         assert.equal(healthy.attempts[0]?.status, "running");
         assert.equal(healthy.providerThreads[0]?.nativeThreadRef?.nativeId, healthyNativeId);
         assert.lengthOf(healthy.providerTurns, 1);
-        assert.isFalse(yield* Deferred.isDone(observed));
+        assert.equal(yield* Deferred.isDone(observed), explicitRejection);
         assert.equal(opens, 1);
         assert.equal(closes, 0);
 
         yield* Deferred.succeed(release, undefined);
         yield* Deferred.await(observed);
-        const refused = yield* session
-          .ensureThread({
-            threadId: failedThreadId,
-            modelSelection: selection,
-            runtimePolicy: policy,
-          })
-          .pipe(Effect.flip);
-        assert.isTrue(hasUnknownRuntimeBinding(refused));
+        if (!explicitRejection) {
+          const refused = yield* session
+            .ensureThread({
+              threadId: failedThreadId,
+              modelSelection: selection,
+              runtimePolicy: policy,
+            })
+            .pipe(Effect.flip);
+          assert.isTrue(hasUnknownRuntimeBinding(refused));
+        }
         assert.isDefined(session.unloadThread);
         yield* session.unloadThread!({ providerThread: bound });
         assert.isFalse(yield* Deferred.isDone(observedClosure));
@@ -715,7 +800,7 @@ it.effect(
         assert.deepEqual(requests, [
           "initialize",
           "thread/start",
-          "thread/start",
+          fork ? "thread/fork" : "thread/start",
           "thread/unsubscribe",
         ]);
         assert.equal(opens, 1);

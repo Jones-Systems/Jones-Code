@@ -31,7 +31,9 @@ export function PendingSendStatus(props: {
         className={`size-1.5 shrink-0 rounded-full ${entry.delivery === "failed" ? "bg-destructive" : entry.delivery === "uncertain" ? "bg-warning" : "bg-info"}`}
       />
       <span role="status">{label}</span>
-      {entry.delivery === "uncertain" ? <span>Kept in this window</span> : null}
+      {entry.delivery === "uncertain" ? (
+        <span>{entry.durable ? "Saved on this device" : "Kept in this window"}</span>
+      ) : null}
       {entry.retry && entry.delivery !== "sending" ? (
         <button
           type="button"
@@ -45,7 +47,7 @@ export function PendingSendStatus(props: {
           Retry
         </button>
       ) : null}
-      {entry.delivery !== "sending" ? (
+      {entry.delivery !== "sending" && (!entry.durable || entry.delivery === "failed") ? (
         <button
           type="button"
           aria-label="Dismiss unsent message"

@@ -71,27 +71,26 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          NATIVE_LABELLED: ${{ contains(github.event.pull_request.labels.*.name, 'native-e2e') }}
         run: |
+          set -euo pipefail
           if [ "$EVENT_NAME" != pull_request ]; then
             echo 'changed=true' >> "$GITHUB_OUTPUT"
           else
-            changed_paths=$(git diff --name-only "$BASE_SHA...$HEAD_SHA" -- \
-              .github/workflows/jones-native-workflows.yml \
-              'apps/desktop/**' 'apps/web/src/components/Sidebar*' \
-              'apps/web/src/components/sidebar/**' 'apps/web/src/jones/workstreams/**' \
-              'apps/web/src/state/**' 'apps/web/src/lib/api*' \
-              'apps/server/src/jones/workstreams/**' 'apps/server/src/orchestration-v2/**' \
-              'apps/server/src/auth/**' 'apps/server/src/ws*' \
-              'apps/server/src/persistence/**' 'scripts/jones/e2e/**' \
-              'packages/client-runtime/**' 'packages/contracts/**' 'packages/shared/**' \
-              'scripts/lib/**' 'native/browser-secret/**' \
-              'apps/server/package.json' 'apps/server/vite.config.ts' \
-              'apps/web/package.json' 'apps/web/vite.config.ts' \
-              package.json pnpm-lock.yaml pnpm-workspace.yaml vite.config.ts patches)
-            if [ -n "$changed_paths" ]; then
-              echo 'changed=true' >> "$GITHUB_OUTPUT"
+            # This job has Git objects only. Load the sole allowlist from the
+            # exact anonymous candidate, without assuming a workspace checkout.
+            selector_root=$(mktemp -d "$RUNNER_TEMP/native-workflow-paths.XXXXXX")
+            selector="$selector_root/selector.cjs"
+            trap 'rm -f -- "$selector"; rmdir -- "$selector_root"' EXIT
+            if [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+                test "$(git rev-parse "$HEAD_SHA^{commit}")" = "$HEAD_SHA" &&
+                test "$(git cat-file -t "$HEAD_SHA:scripts/jones/ci/native-workflow-paths.cjs")" = blob &&
+                git show "$HEAD_SHA:scripts/jones/ci/native-workflow-paths.cjs" > "$selector"; then
+              if ! node "$selector"; then
+                echo 'changed=true' >> "$GITHUB_OUTPUT"
+              fi
             else
-              echo 'changed=false' >> "$GITHUB_OUTPUT"
+              echo 'changed=true' >> "$GITHUB_OUTPUT"
             fi
           fi
 
@@ -111,6 +110,7 @@ jobs:
       JCUE_HARNESS_OID: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - name: Allocate job-owned evidence and state
+        id: allocation
         run: |
           task_root=$(mktemp -d "$RUNNER_TEMP/jones-native.XXXXXX")
           mkdir -m 700 "$task_root/evidence" "$task_root/state"
@@ -121,6 +121,7 @@ jobs:
           date +%s > "$task_root/evidence/steps-started-epoch.txt"
 
       - name: Checkout exact candidate anonymously
+        id: candidate
         env:
           CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           REPOSITORY: ${{ github.repository }}
@@ -165,6 +166,7 @@ jobs:
           { git rev-parse HEAD; git ls-files --stage | awk '$1 == "160000"'; } > "$JCUE_OUTPUT/checkout-readback.txt"
 
       - name: Setup pinned Vite+ and dependencies
+        id: dependencies
         uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15 # v1
         with:
           version: 1.3.0
@@ -175,6 +177,7 @@ jobs:
             args: ['--frozen-lockfile']
 
       - name: Bind driver pins to the candidate manifests
+        id: pins
         run: |
           node --input-type=module <<'NODE'
           import assert from 'node:assert/strict';
@@ -190,6 +193,7 @@ jobs:
           vp run --filter @t3tools/desktop ensure:electron
 
       - name: Install native prerequisites on the ephemeral runner
+        id: prerequisites
         run: |
           sudo -n apt-get update
           sudo -n apt-get install -y --no-install-recommends \
@@ -225,11 +229,13 @@ jobs:
           key: jones-native-electron-ubuntu-24.04-x64-${{ env.JCUE_ELECTRON_VERSION }}-${{ hashFiles('pnpm-lock.yaml', 'apps/desktop/scripts/ui-evidence/runtime.mjs') }}
 
       - name: Prepare pinned sandbox runtime
+        id: runtime
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: node apps/desktop/scripts/ui-evidence.mjs setup --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/runtime-setup.json"
 
       - name: Probe rootless namespaces before any runner-only adjustment
+        id: namespaces
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: |
@@ -255,11 +261,13 @@ jobs:
           fi
 
       - name: Check the focused harness source group
+        id: harness
         run: |
           vp run test:ui-evidence
           node --test --test-concurrency=1 scripts/jones/e2e/acp-stub/agent.node-test.mjs
 
       - name: Build once and bind the operator receipt
+        id: build
         run: |
           unset T3CODE_DESKTOP_DEV T3CODE_PACK_EXE T3CODE_PACK_EXE_TARGET VITE_HTTP_URL VITE_WS_URL
           node --input-type=module <<'NODE'
@@ -299,11 +307,13 @@ jobs:
           NODE
 
       - name: Require complete native doctor
+        id: doctor
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: node apps/desktop/scripts/ui-evidence.mjs doctor --source "$GITHUB_WORKSPACE" > "$JCUE_OUTPUT/doctor.json"
 
       - name: Derive only the no-action negative control
+        id: negatives
         shell: python
         run: |
           import difflib, hashlib, json, os, pathlib
@@ -321,39 +331,35 @@ jobs:
               'negative': hashlib.sha256(negative).hexdigest()}, indent=2))
 
       - name: Run JE-01R and its unchanged-oracle negative once each
+        id: sidebar
+        if: >-
+          !cancelled() &&
+          steps.allocation.outcome == 'success' &&
+          steps.candidate.outcome == 'success' &&
+          steps.dependencies.outcome == 'success' &&
+          steps.pins.outcome == 'success' &&
+          steps.prerequisites.outcome == 'success' &&
+          steps.runtime.outcome == 'success' &&
+          steps.namespaces.outcome == 'success' &&
+          steps.harness.outcome == 'success' &&
+          steps.build.outcome == 'success' &&
+          steps.doctor.outcome == 'success' &&
+          steps.negatives.outcome == 'success'
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: |
+          first_code=0
           for variant in positive negative; do
             export JCUE_VARIANT="$variant"
-            python3 - <<'PY'
-          import json, os, pathlib, time
-          def cpu():
-              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
-              return sum(values), values[3] + values[4]
-          total0, idle0 = cpu()
-          time.sleep(1)
-          total1, idle1 = cpu()
-          assert total1 > total0, 'CPU sample unavailable'
-          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
-          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
-          available = int(memory['MemAvailable'].split()[0])
-          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
-          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
-          (output / (os.environ['JCUE_VARIANT'] + '-admission.json')).write_text(json.dumps(sample, indent=2))
-          assert used < 85 and available > 0, 'Native run not admitted; no retry'
-          PY
-            scenario="$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/sidebar-pin-restart.mjs"
-            if [ "$variant" = negative ]; then scenario="$JCUE_OUTPUT/negative.mjs"; fi
-            native_code=0
-            node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
-              --scenario "$scenario" --build-receipt "$JCUE_OUTPUT/build/receipt.json" \
-              --out "$JCUE_OUTPUT/$variant" > "$JCUE_OUTPUT/$variant-result.json" || native_code=$?
-            export JCUE_NATIVE_CODE="$native_code"
-            printf '%s\n' "$native_code" > "$JCUE_OUTPUT/$variant-exit-code.txt"
-            # Preserve the first positive failure; never run another behavior attempt.
-            if [ "$variant" = positive ] && [ "$native_code" != 0 ]; then exit "$native_code"; fi
-            node --input-type=module <<'NODE'
+            attempt_code=0
+            node scripts/jones/ci/native-workflow-evidence.mjs run "$variant" || attempt_code=$?
+            if [ "$attempt_code" != 0 ]; then
+              if [ "$first_code" = 0 ]; then first_code="$attempt_code"; fi
+              break
+            fi
+            export JCUE_NATIVE_CODE="$(cat "$JCUE_OUTPUT/$variant-exit-code.txt")"
+            oracle_code=0
+            node --input-type=module <<'NODE' || oracle_code=$?
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import { validateManifest } from './apps/desktop/scripts/ui-evidence/manifest.mjs';
@@ -409,37 +415,40 @@ jobs:
             assert.equal(manifest.fixture.variant, 'no-action-negative');
           }
           NODE
+            node scripts/jones/ci/native-workflow-evidence.mjs finish "$variant" "$oracle_code"
+            if [ "$oracle_code" != 0 ] && [ "$first_code" = 0 ]; then first_code="$oracle_code"; fi
           done
+          node scripts/jones/ci/native-workflow-evidence.mjs gate sidebar
+          exit "$first_code"
 
       - name: Verify Electron A and ordinarily paired read-only Node B
+        id: observer
+        if: >-
+          !cancelled() &&
+          steps.allocation.outcome == 'success' &&
+          steps.candidate.outcome == 'success' &&
+          steps.dependencies.outcome == 'success' &&
+          steps.pins.outcome == 'success' &&
+          steps.prerequisites.outcome == 'success' &&
+          steps.runtime.outcome == 'success' &&
+          steps.namespaces.outcome == 'success' &&
+          steps.harness.outcome == 'success' &&
+          steps.build.outcome == 'success' &&
+          steps.doctor.outcome == 'success' &&
+          steps.negatives.outcome == 'success' &&
+          steps.sidebar.outputs.safe == 'true'
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib, time
-          def cpu():
-              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
-              return sum(values), values[3] + values[4]
-          total0, idle0 = cpu()
-          time.sleep(1)
-          total1, idle1 = cpu()
-          assert total1 > total0, 'CPU sample unavailable'
-          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
-          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
-          available = int(memory['MemAvailable'].split()[0])
-          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
-          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
-          (output / 'two-clients-admission.json').write_text(json.dumps(sample, indent=2))
-          assert used < 85 and available > 0, 'Native run not admitted; no retry'
-          PY
-          native_code=0
-          node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
-            --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/two-clients-one-server.mjs" \
-            --build-receipt "$JCUE_OUTPUT/build/receipt.json" --out "$JCUE_OUTPUT/two-clients" \
-            > "$JCUE_OUTPUT/two-clients-result.json" || native_code=$?
-          printf '%s\n' "$native_code" > "$JCUE_OUTPUT/two-clients-exit-code.txt"
-          if [ "$native_code" != 0 ]; then exit "$native_code"; fi
-          node --input-type=module <<'NODE'
+          attempt_code=0
+          node scripts/jones/ci/native-workflow-evidence.mjs run "two-clients" || attempt_code=$?
+          if [ "$attempt_code" != 0 ]; then
+            node scripts/jones/ci/native-workflow-evidence.mjs gate observer
+            exit "$attempt_code"
+          fi
+          export JCUE_NATIVE_CODE="$(cat "$JCUE_OUTPUT/two-clients-exit-code.txt")"
+          oracle_code=0
+          node --input-type=module <<'NODE' || oracle_code=$?
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import crypto from 'node:crypto';
@@ -484,36 +493,38 @@ jobs:
             assert.equal(generation.exit.signal, null);
           }
           NODE
+          node scripts/jones/ci/native-workflow-evidence.mjs finish "two-clients" "$oracle_code"
+          node scripts/jones/ci/native-workflow-evidence.mjs gate observer
+          exit "$oracle_code"
 
       - name: Verify native thread self-configuration and follow-up continuity
+        id: self_configure
+        if: >-
+          !cancelled() &&
+          steps.allocation.outcome == 'success' &&
+          steps.candidate.outcome == 'success' &&
+          steps.dependencies.outcome == 'success' &&
+          steps.pins.outcome == 'success' &&
+          steps.prerequisites.outcome == 'success' &&
+          steps.runtime.outcome == 'success' &&
+          steps.namespaces.outcome == 'success' &&
+          steps.harness.outcome == 'success' &&
+          steps.build.outcome == 'success' &&
+          steps.doctor.outcome == 'success' &&
+          steps.negatives.outcome == 'success' &&
+          steps.observer.outputs.safe == 'true'
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: |
-          python3 - <<'PY'
-          import json, os, pathlib, time
-          def cpu():
-              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
-              return sum(values), values[3] + values[4]
-          total0, idle0 = cpu()
-          time.sleep(1)
-          total1, idle1 = cpu()
-          assert total1 > total0, 'CPU sample unavailable'
-          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
-          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
-          available = int(memory['MemAvailable'].split()[0])
-          sample = {'cpuUsedPercent': used, 'logicalCores': os.cpu_count(), 'availableKiB': available}
-          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
-          (output / 'self-configure-admission.json').write_text(json.dumps(sample, indent=2))
-          assert used < 85 and available > 0, 'Native run not admitted; no retry'
-          PY
-          native_code=0
-          node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
-            --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/thread-self-configure.mjs" \
-            --build-receipt "$JCUE_OUTPUT/build/receipt.json" --out "$JCUE_OUTPUT/self-configure" \
-            > "$JCUE_OUTPUT/self-configure-result.json" || native_code=$?
-          printf '%s\n' "$native_code" > "$JCUE_OUTPUT/self-configure-exit-code.txt"
-          if [ "$native_code" != 0 ]; then exit "$native_code"; fi
-          node --input-type=module <<'NODE'
+          attempt_code=0
+          node scripts/jones/ci/native-workflow-evidence.mjs run "self-configure" || attempt_code=$?
+          if [ "$attempt_code" != 0 ]; then
+            node scripts/jones/ci/native-workflow-evidence.mjs gate self_configure
+            exit "$attempt_code"
+          fi
+          export JCUE_NATIVE_CODE="$(cat "$JCUE_OUTPUT/self-configure-exit-code.txt")"
+          oracle_code=0
+          node --input-type=module <<'NODE' || oracle_code=$?
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import crypto from 'node:crypto';
@@ -558,43 +569,41 @@ jobs:
             assert.equal(generation.exit.signal, null);
           }
           NODE
+          node scripts/jones/ci/native-workflow-evidence.mjs finish "self-configure" "$oracle_code"
+          node scripts/jones/ci/native-workflow-evidence.mjs gate self_configure
+          exit "$oracle_code"
 
       - name: Run JE-06 and its unchanged-oracle no-edit negative once each
+        id: queue
+        if: >-
+          !cancelled() &&
+          steps.allocation.outcome == 'success' &&
+          steps.candidate.outcome == 'success' &&
+          steps.dependencies.outcome == 'success' &&
+          steps.pins.outcome == 'success' &&
+          steps.prerequisites.outcome == 'success' &&
+          steps.runtime.outcome == 'success' &&
+          steps.namespaces.outcome == 'success' &&
+          steps.harness.outcome == 'success' &&
+          steps.build.outcome == 'success' &&
+          steps.doctor.outcome == 'success' &&
+          steps.negatives.outcome == 'success' &&
+          steps.self_configure.outputs.safe == 'true'
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         run: |
+          first_code=0
           for queue_case in workflow no-edit-negative; do
             export JCUE_QUEUE_CASE="$queue_case"
-            python3 - <<'PY'
-          import json, os, pathlib, time
-          def cpu():
-              values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
-              return sum(values), values[3] + values[4]
-          total0, idle0 = cpu()
-          time.sleep(1)
-          total1, idle1 = cpu()
-          assert total1 > total0, 'CPU sample unavailable'
-          used = 100 * (1 - (idle1 - idle0) / (total1 - total0))
-          memory = dict(line.split(':', 1) for line in pathlib.Path('/proc/meminfo').read_text().splitlines())
-          available = int(memory['MemAvailable'].split()[0])
-          cores = os.cpu_count()
-          sample = {'cpuUsedPercent': used, 'logicalCores': cores,
-                    'oneCorePercent': 100 / cores if cores else None, 'availableKiB': available}
-          output = pathlib.Path(os.environ['JCUE_OUTPUT'])
-          (output / ('queue-' + os.environ['JCUE_QUEUE_CASE'] + '-admission.json')).write_text(json.dumps(sample, indent=2))
-          assert cores and used < 85 and available > 0, 'Native run not admitted; no retry'
-          PY
-            native_code=0
-            node apps/desktop/scripts/ui-evidence.mjs run --source "$GITHUB_WORKSPACE" \
-              --scenario "$GITHUB_WORKSPACE/apps/desktop/scripts/ui-evidence/scenarios/queue-edit-cancel.mjs" \
-              --queue-case "$queue_case" --build-receipt "$JCUE_OUTPUT/build/receipt.json" \
-              --out "$JCUE_OUTPUT/queue-$queue_case" \
-              > "$JCUE_OUTPUT/queue-$queue_case-result.json" || native_code=$?
-            export JCUE_NATIVE_CODE="$native_code"
-            printf '%s\n' "$native_code" > "$JCUE_OUTPUT/queue-$queue_case-exit-code.txt"
-            # Preserve the first positive failure; never run another behavior attempt.
-            if [ "$queue_case" = workflow ] && [ "$native_code" != 0 ]; then exit "$native_code"; fi
-            node --input-type=module <<'NODE'
+            attempt_code=0
+            node scripts/jones/ci/native-workflow-evidence.mjs run "queue-$queue_case" || attempt_code=$?
+            if [ "$attempt_code" != 0 ]; then
+              if [ "$first_code" = 0 ]; then first_code="$attempt_code"; fi
+              break
+            fi
+            export JCUE_NATIVE_CODE="$(cat "$JCUE_OUTPUT/queue-$queue_case-exit-code.txt")"
+            oracle_code=0
+            node --input-type=module <<'NODE' || oracle_code=$?
           import assert from 'node:assert/strict';
           import fs from 'node:fs';
           import crypto from 'node:crypto';
@@ -695,14 +704,34 @@ jobs:
             assert.equal(manifest.scenario.steps[4].status, 'failed');
           }
           NODE
+            node scripts/jones/ci/native-workflow-evidence.mjs finish "queue-$queue_case" "$oracle_code"
+            if [ "$oracle_code" != 0 ] && [ "$first_code" = 0 ]; then first_code="$oracle_code"; fi
           done
+          node scripts/jones/ci/native-workflow-evidence.mjs gate queue
+          exit "$first_code"
 
       - name: Run JE-03 with private Secret Service and a whole-run deadline
+        id: servers
+        if: >-
+          !cancelled() &&
+          steps.allocation.outcome == 'success' &&
+          steps.candidate.outcome == 'success' &&
+          steps.dependencies.outcome == 'success' &&
+          steps.pins.outcome == 'success' &&
+          steps.prerequisites.outcome == 'success' &&
+          steps.runtime.outcome == 'success' &&
+          steps.namespaces.outcome == 'success' &&
+          steps.harness.outcome == 'success' &&
+          steps.build.outcome == 'success' &&
+          steps.doctor.outcome == 'success' &&
+          steps.negatives.outcome == 'success' &&
+          steps.queue.outputs.safe == 'true'
         env:
           XDG_CACHE_HOME: ${{ env.JCUE_RUNTIME_CACHE }}
         shell: python
         run: |
           import hashlib, json, os, pathlib, re, shutil, signal, subprocess, sys, time
+          subprocess.run(['node', 'scripts/jones/ci/native-workflow-evidence.mjs', 'ready', 'two-servers'], check=True)
           output = pathlib.Path(os.environ['JCUE_OUTPUT'])
           def cpu():
               values = list(map(int, pathlib.Path('/proc/stat').read_text().splitlines()[0].split()[1:9]))
@@ -754,6 +783,8 @@ jobs:
                   save_report()
                   os._exit(124)
           def cancelled(signum, _frame):
+              report['cancelled'] = signal.Signals(signum).name
+              signal_owned(signum)
               raise RuntimeError(f'Controller cancelled: {signal.Signals(signum).name}')
           signal.signal(signal.SIGALRM, deadline)
           signal.setitimer(signal.ITIMER_REAL, max(0.001, 390 - (time.monotonic() - started)))
@@ -885,6 +916,11 @@ jobs:
                           child.wait(timeout=5)
                   report['childReaped'] = child is not None and child.returncode is not None
                   report['groupAbsent'] = identity is not None and not group_exists(identity['pgid'])
+                  if report['childReaped']:
+                      report.setdefault('exitCode', child.returncode)
+                      exit_file = output / 'two-servers-exit-code.txt'
+                      if not exit_file.exists():
+                          exit_file.write_text(str(child.returncode) + '\n')
                   if not report['childReaped'] or not report['groupAbsent']:
                       report['status'] = 'unknown'
               except BaseException as error:
@@ -893,7 +929,12 @@ jobs:
               signal.setitimer(signal.ITIMER_REAL, 0)
           assert report['status'] == 'passed', report.get('error', 'Cleanup unproved')
 
+      - name: Validate the JE-03 first-attempt boundary and preserve its oracle outcome
+        if: always() && steps.servers.outcome != 'skipped' && env.JCUE_TASK_ROOT != ''
+        run: node scripts/jones/ci/native-workflow-evidence.mjs external two-servers
+
       - name: Verify cleanup of this job's registered runs
+        id: cleanup
         if: always() && env.JCUE_TASK_ROOT != ''
         run: |
           node --input-type=module <<'NODE'
@@ -933,6 +974,12 @@ jobs:
           if (failed) process.exitCode = 1;
           NODE
 
+      - name: Aggregate every required first attempt without clearing earlier failures
+        if: always() && env.JCUE_TASK_ROOT != ''
+        env:
+          JCUE_CANCELLED: ${{ cancelled() }}
+        run: node scripts/jones/ci/native-workflow-evidence.mjs aggregate
+
       - name: Record measured runner-step time
         if: always() && env.JCUE_TASK_ROOT != ''
         shell: python
@@ -959,7 +1006,7 @@ jobs:
           retention-days: 7
 
       - name: Remove only this job's scratch after evidence upload
-        if: always() && env.JCUE_TASK_ROOT != '' && steps.evidence.outcome == 'success'
+        if: always() && env.JCUE_TASK_ROOT != '' && steps.evidence.outcome == 'success' && steps.cleanup.outcome == 'success'
         shell: python
         run: |
           import json, os, pathlib, shutil
