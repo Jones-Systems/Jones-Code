@@ -101,7 +101,7 @@ const stopGateway = async gateway => {
     if (captured?.owner !== gateway.owner || captured?.generation !== gateway.generation) throw Error('Unconfirmed direct gateway script.');
   }
   const inspect = () => {
-    const result = run('ps', ['-p', String(gateway.pid), '-o', 'stat=', '-o', 'command=']);
+    const result = run('ps', ['-ww', '-p', String(gateway.pid), '-o', 'stat=', '-o', 'command=']);
     if (result.error || (result.status !== 0 && result.status !== 1)) throw Error('Cannot inspect direct gateway PID.');
     const output = (result.stdout || '').trim();
     if (!output) return false;
@@ -109,7 +109,15 @@ const stopGateway = async gateway => {
     if (!state) throw Error('Cannot parse direct gateway PID identity.');
     if (state[1].startsWith('Z')) return false;
     const command = state[2];
-    if (!source || !command.endsWith(' ' + gateway.entryPath)) throw Error('Direct gateway PID identity changed.');
+    if (!source || !command.endsWith(' ' + gateway.entryPath)) {
+      // ps can read stat before exit and command after it. Confirm this exact PID is gone
+      // before retiring its record; a still-live mismatch never authorizes a signal.
+      const current = run('ps', ['-p', String(gateway.pid), '-o', 'stat=']);
+      if (current.error || (current.status !== 0 && current.status !== 1)) throw Error('Cannot inspect direct gateway PID.');
+      const currentState = (current.stdout || '').trim();
+      if (!currentState || /^Z\S*$/.test(currentState)) return false;
+      throw Error('Direct gateway PID identity changed.');
+    }
     return true;
   };
   if (inspect()) {

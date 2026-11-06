@@ -13,6 +13,7 @@
     "apps/server/src/jones/device/directAccess.ts",
     "apps/server/src/jones/device/directDeviceGateway.test.ts",
     "apps/server/src/jones/device/directDeviceGateway.ts",
+    "apps/server/src/jones/device/directGatewayRetirement.test.ts",
     "apps/server/src/jones/device/directLifecycle.ts",
     "apps/server/src/jones/device/directMediaPolicy.ts",
     "apps/web/src/jones/device/device.test.tsx",
