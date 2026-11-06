@@ -94,7 +94,8 @@ const validTarget = (target: ControlAdmissionTarget) => {
     (producer.instanceId !== target.instanceId ||
       producer.providerSessionId.trim().length === 0 ||
       producer.runtimeGeneration.trim().length === 0)
-  ) return false;
+  )
+    return false;
   return target.threadId !== null || target.nativeThreadId !== null || producer !== null;
 };
 const conflicts = (held: ControlAdmissionTarget, target: ControlAdmissionTarget) =>
@@ -107,7 +108,9 @@ const conflicts = (held: ControlAdmissionTarget, target: ControlAdmissionTarget)
 export class ControlAdmission extends Context.Service<
   ControlAdmission,
   {
-    readonly assertOpen: (target: ControlAdmissionTarget) => Effect.Effect<void, ControlAdmissionHeld>;
+    readonly assertOpen: (
+      target: ControlAdmissionTarget,
+    ) => Effect.Effect<void, ControlAdmissionHeld>;
     readonly begin: (
       binding: ControlDispatchBinding,
     ) => Effect.Effect<ControlDispatch, ControlAdmissionHeld>;
@@ -130,12 +133,12 @@ export class ControlAdmission extends Context.Service<
     ) => Effect.Effect<void, ControlAdmissionHeld>;
     // Only verified physical exit of this full producer key retires its uncertainty.
     readonly retireGeneration: (producer: ControlProducerKey) => Effect.Effect<void>;
-    readonly snapshot: (
-      instanceId: string,
-    ) => Effect.Effect<ReadonlyArray<{
-      readonly binding: ControlDispatchBinding;
-      readonly unknown: boolean;
-    }>>;
+    readonly snapshot: (instanceId: string) => Effect.Effect<
+      ReadonlyArray<{
+        readonly binding: ControlDispatchBinding;
+        readonly unknown: boolean;
+      }>
+    >;
   }
 >()("t3/jones/orchestration/ControlAdmission") {}
 
@@ -151,7 +154,7 @@ export const layer = Layer.sync(ControlAdmission, () => {
   const fail = (instanceId: string) => Effect.fail(new ControlAdmissionHeld({ instanceId }));
   return ControlAdmission.of({
     assertOpen: (target) =>
-      Effect.suspend(() => blocked(target) ? fail(target.instanceId) : Effect.void),
+      Effect.suspend(() => (blocked(target) ? fail(target.instanceId) : Effect.void)),
     begin: (binding) =>
       Effect.suspend(() => {
         if (blocked(targetFromDispatch(binding))) return fail(binding.instanceId);
@@ -183,7 +186,8 @@ export const layer = Layer.sync(ControlAdmission, () => {
         if (
           !validTarget(target) ||
           (target.nativeThreadId === null && (target.threadId === null || target.producer === null))
-        ) throw new Error("Startup uncertainty requires its logical thread and exact producer.");
+        )
+          throw new Error("Startup uncertainty requires its logical thread and exact producer.");
         startups.set(hold, {
           ...target,
           producer: target.producer === null ? null : { ...target.producer },
@@ -232,10 +236,12 @@ export const layer = Layer.sync(ControlAdmission, () => {
         }
       }),
     snapshot: (instanceId) =>
-      Effect.sync(() => Array.from(dispatches).flatMap(([dispatch, unknown]) =>
-        dispatch.binding.instanceId === instanceId
-          ? [{ binding: { ...dispatch.binding }, unknown }]
-          : [],
-      )),
+      Effect.sync(() =>
+        Array.from(dispatches).flatMap(([dispatch, unknown]) =>
+          dispatch.binding.instanceId === instanceId
+            ? [{ binding: { ...dispatch.binding }, unknown }]
+            : [],
+        ),
+      ),
   });
 });

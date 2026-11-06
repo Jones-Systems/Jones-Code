@@ -2,7 +2,12 @@ import {
   type RecordedEvent as OrchestrationV2RecordedEvent,
   type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
 } from "./RecordedTypes.ts";
-import { type ApplicationProjectEvent, CommandId, type EventId, ThreadId } from "@t3tools/contracts";
+import {
+  type ApplicationProjectEvent,
+  CommandId,
+  type EventId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";

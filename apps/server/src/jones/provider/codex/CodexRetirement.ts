@@ -88,17 +88,30 @@ export const makeCodexProducerRetirement = Effect.fn("makeCodexProducerRetiremen
   let completing = false;
   let completionAttempted = false;
   let completed = false;
-  const observeProcessExit = Effect.uninterruptible(Effect.gen(function* () {
-    if (observing || verified || readProcessExit === undefined) return;
-    if (attempted) exited = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
-    attempted = true;
-    observing = true;
-    const observation = exited;
-    yield* Deferred.complete(observation, readProcessExit.pipe(
-      Effect.tap(() => Effect.sync(() => { verified = true; })),
-      Effect.onExit(() => Effect.sync(() => { observing = false; })),
-    )).pipe(Effect.forkDetach({ startImmediately: true }));
-  }));
+  const observeProcessExit = Effect.uninterruptible(
+    Effect.gen(function* () {
+      if (observing || verified || readProcessExit === undefined) return;
+      if (attempted) exited = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
+      attempted = true;
+      observing = true;
+      const observation = exited;
+      yield* Deferred.complete(
+        observation,
+        readProcessExit.pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              verified = true;
+            }),
+          ),
+          Effect.onExit(() =>
+            Effect.sync(() => {
+              observing = false;
+            }),
+          ),
+        ),
+      ).pipe(Effect.forkDetach({ startImmediately: true }));
+    }),
+  );
   const awaitProcessExit = Effect.gen(function* () {
     yield* observeProcessExit;
     yield* Deferred.await(exited);
@@ -114,39 +127,48 @@ export const makeCodexProducerRetirement = Effect.fn("makeCodexProducerRetiremen
     get processExit() {
       return readProcessExit === undefined ? undefined : awaitProcessExit;
     },
-    close: Effect.uninterruptibleMask((restore) => Effect.gen(function* () {
-      yield* observeProcessExit;
-      if (!closing) {
-        closing = true;
-        yield* Deferred.complete(closed, closeScope).pipe(
-          Effect.forkDetach({ startImmediately: true }),
-        );
-      }
-      if (!completing && !completed) {
-        if (completionAttempted)
-          completion = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
-        completionAttempted = true;
-        completing = true;
-        const owned = completion;
-        yield* Deferred.complete(owned, Effect.gen(function* () {
-          yield* Deferred.await(closed);
-          if (readProcessExit !== undefined) {
-            yield* awaitProcessExit;
-            if (!releasing) {
-              releasing = true;
-              yield* Deferred.complete(released, afterExit).pipe(
-                Effect.forkDetach({ startImmediately: true }),
-              );
-            }
-            yield* Deferred.await(released);
-          }
-          completed = true;
-        }).pipe(Effect.onExit(() => Effect.sync(() => { completing = false; })))).pipe(
-          Effect.forkDetach({ startImmediately: true }),
-        );
-      }
-      yield* restore(Deferred.await(completion));
-    })),
+    close: Effect.uninterruptibleMask((restore) =>
+      Effect.gen(function* () {
+        yield* observeProcessExit;
+        if (!closing) {
+          closing = true;
+          yield* Deferred.complete(closed, closeScope).pipe(
+            Effect.forkDetach({ startImmediately: true }),
+          );
+        }
+        if (!completing && !completed) {
+          if (completionAttempted)
+            completion = yield* Deferred.make<void, CodexErrors.CodexAppServerError>();
+          completionAttempted = true;
+          completing = true;
+          const owned = completion;
+          yield* Deferred.complete(
+            owned,
+            Effect.gen(function* () {
+              yield* Deferred.await(closed);
+              if (readProcessExit !== undefined) {
+                yield* awaitProcessExit;
+                if (!releasing) {
+                  releasing = true;
+                  yield* Deferred.complete(released, afterExit).pipe(
+                    Effect.forkDetach({ startImmediately: true }),
+                  );
+                }
+                yield* Deferred.await(released);
+              }
+              completed = true;
+            }).pipe(
+              Effect.onExit(() =>
+                Effect.sync(() => {
+                  completing = false;
+                }),
+              ),
+            ),
+          ).pipe(Effect.forkDetach({ startImmediately: true }));
+        }
+        yield* restore(Deferred.await(completion));
+      }),
+    ),
   };
 });
 
@@ -196,18 +218,22 @@ export function makeCodexThreadRetirements<Producer extends object>() {
       const request: ThreadRetirement = {
         binding: input.binding,
         closed,
-        wait: input.processExit === undefined
-          ? Deferred.await(done)
-          : Effect.race(
-              Deferred.await(done),
-              input.processExit.pipe(
-                Effect.flatMap(() => {
-                  const receipt: CodexRetirementReceipt = { binding: input.binding, evidence: "producer_exited" };
-                  return Deferred.succeed(done, receipt).pipe(Effect.as(receipt));
-                }),
-                Effect.catch(() => Deferred.await(done)),
+        wait:
+          input.processExit === undefined
+            ? Deferred.await(done)
+            : Effect.race(
+                Deferred.await(done),
+                input.processExit.pipe(
+                  Effect.flatMap(() => {
+                    const receipt: CodexRetirementReceipt = {
+                      binding: input.binding,
+                      evidence: "producer_exited",
+                    };
+                    return Deferred.succeed(done, receipt).pipe(Effect.as(receipt));
+                  }),
+                  Effect.catch(() => Deferred.await(done)),
+                ),
               ),
-            ),
       };
       const threads = producers.get(input.producer) ?? new Map<string, ThreadRetirement>();
       threads.set(input.binding.nativeThreadId, request);

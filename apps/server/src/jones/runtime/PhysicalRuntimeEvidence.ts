@@ -79,11 +79,7 @@ export const make = Effect.gen(function* () {
       lease: PhysicalProcessLease | undefined,
     ) {
       const previous = leases.get(binding.providerThreadId);
-      if (
-        previous &&
-        previous.lease === lease &&
-        equivalentBinding(previous.binding, binding)
-      )
+      if (previous && previous.lease === lease && equivalentBinding(previous.binding, binding))
         return;
       leases.delete(binding.providerThreadId);
       const entry =

@@ -12,7 +12,11 @@ import { PhysicalProcessObservation } from "@t3tools/contracts";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as NativeProvider from "../jones/nativeCreation/NativeCreationProviderGuard.ts";
 import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "../jones/cloud/shutdownBudget.ts";
-import type { CapturedRuntimeRetirement, RuntimeRetirementReceipt, CapturedRuntimeStop } from "@t3tools/provider-core/server/ProviderAdapter";
+import type {
+  CapturedRuntimeRetirement,
+  RuntimeRetirementReceipt,
+  CapturedRuntimeStop,
+} from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as RuntimeAttachment from "../jones/runtime/CurrentThreadRuntimeAttachment.ts";
 import type * as RuntimeObservation from "../jones/provider/observations/ProviderThreadRuntimeObservation.ts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -3093,32 +3097,43 @@ export const layerWithOptions = (
           if (retirement !== undefined && !equivalentBinding(retirement.binding, captured.binding))
             return null;
           return {
-            ...captured, isCurrent,
-            ...(retirement === undefined ? {} : {
-              retirement: {
-                ...retirement,
-                awaitRetired: retirement.awaitRetired.pipe(Effect.flatMap((receipt) =>
-                  Effect.gen(function* () {
-                    if (!equivalentBinding(receipt.binding, captured.binding))
-                      return yield* new ProviderRuntimeBindingError({
-                        driver: captured.binding.driver,
-                        detail: "Runtime retirement did not match its captured source.",
-                      });
-                    yield* releaseEntry({
-                      providerSessionId: captured.binding.providerSessionId,
-                      onlyIfRuntime: entry.runtime,
-                      reason: "manual_shutdown",
-                      detachedThreadId: threadId,
-                    }).pipe(Effect.mapError((cause) => new ProviderRuntimeBindingError({
-                      driver: captured.binding.driver,
-                      detail: "The retired runtime's manager cleanup did not complete.", cause,
-                    })));
-                    yield* physicalEvidence.invalidate(captured.binding);
-                    return receipt;
-                  }),
-                )),
-              },
-            }),
+            ...captured,
+            isCurrent,
+            ...(retirement === undefined
+              ? {}
+              : {
+                  retirement: {
+                    ...retirement,
+                    awaitRetired: retirement.awaitRetired.pipe(
+                      Effect.flatMap((receipt) =>
+                        Effect.gen(function* () {
+                          if (!equivalentBinding(receipt.binding, captured.binding))
+                            return yield* new ProviderRuntimeBindingError({
+                              driver: captured.binding.driver,
+                              detail: "Runtime retirement did not match its captured source.",
+                            });
+                          yield* releaseEntry({
+                            providerSessionId: captured.binding.providerSessionId,
+                            onlyIfRuntime: entry.runtime,
+                            reason: "manual_shutdown",
+                            detachedThreadId: threadId,
+                          }).pipe(
+                            Effect.mapError(
+                              (cause) =>
+                                new ProviderRuntimeBindingError({
+                                  driver: captured.binding.driver,
+                                  detail: "The retired runtime's manager cleanup did not complete.",
+                                  cause,
+                                }),
+                            ),
+                          );
+                          yield* physicalEvidence.invalidate(captured.binding);
+                          return receipt;
+                        }),
+                      ),
+                    ),
+                  },
+                }),
           };
         },
         (effect, threadId) =>
@@ -3355,12 +3370,17 @@ export const layerWithOptions = (
             cleaned = true;
           }).pipe(
             cleanupPermit.withPermits(1),
-            Effect.mapError((cause) => new ProviderRuntimeBindingError({
-              driver: entry.runtime.driver,
-              detail: "The captured writer retired, but its manager cleanup is incomplete.", cause,
-            })),
+            Effect.mapError(
+              (cause) =>
+                new ProviderRuntimeBindingError({
+                  driver: entry.runtime.driver,
+                  detail: "The captured writer retired, but its manager cleanup is incomplete.",
+                  cause,
+                }),
+            ),
           );
-          for (const binding of record.bindings) recoveryRetirements.retain(binding, finishRetirement);
+          for (const binding of record.bindings)
+            recoveryRetirements.retain(binding, finishRetirement);
           yield* Effect.uninterruptible(
             Effect.gen(function* () {
               if (transferWorkers.has(record)) return;

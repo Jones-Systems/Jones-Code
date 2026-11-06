@@ -1885,7 +1885,11 @@ describe("CodexAdapterV2 session initialize", () => {
           "a late startup ACK must not bind the abandoned thread",
         );
         if (method !== "initialize") {
-          const refused = yield* session.ensureThread(method === "thread/resume" ? "existing-bound-thread" : "abandoned-startup-thread").pipe(Effect.flip);
+          const refused = yield* session
+            .ensureThread(
+              method === "thread/resume" ? "existing-bound-thread" : "abandoned-startup-thread",
+            )
+            .pipe(Effect.flip);
           assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(refused));
         }
         assert.equal(session.initializeRequests(), 1);
@@ -2004,8 +2008,11 @@ describe("CodexAdapterV2 session initialize", () => {
   );
 });
 
-const codexControlTarget = (thread: OrchestrationV2ProviderThread): ControlAdmission.ControlAdmissionTarget => ({
-  instanceId: String(thread.providerInstanceId), threadId: thread.appThreadId,
+const codexControlTarget = (
+  thread: OrchestrationV2ProviderThread,
+): ControlAdmission.ControlAdmissionTarget => ({
+  instanceId: String(thread.providerInstanceId),
+  threadId: thread.appThreadId,
   nativeThreadId: thread.nativeThreadRef?.nativeId ?? null,
   producer: thread.runtimeIdentity?.runtimeGeneration === undefined || thread.providerSessionId === null ? null : {
     instanceId: String(thread.providerInstanceId), providerSessionId: thread.providerSessionId,
@@ -7107,29 +7114,39 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         let closes = 0;
         const factory: CodexAdapterV2.CodexAppServerClientFactoryShape = {
           open: (input) =>
-            replay.open({
-              ...input,
-              captureProcessExit: () => {
-                if (proof === "missing") return;
-                input.captureProcessExit?.(
-                  verifyCodexProcessExit({
-                    exitCode:
-                      proof === "pending"
-                        ? Deferred.await(exitReleased).pipe(
-                            Effect.as(ChildProcessSpawner.ExitCode(0)),
-                          )
-                        : Effect.fail(
-                            PlatformError.systemError({
-                              _tag: "Unknown",
-                              module: "ChildProcess",
-                              method: "exitCode",
-                            }),
-                          ),
-                    isRunning: Deferred.isDone(exitReleased).pipe(Effect.map((done) => !done)),
-                  }),
-                );
-              },
-            }).pipe(Effect.tap(() => Effect.addFinalizer(() => Effect.sync(() => { closes++; })))),
+            replay
+              .open({
+                ...input,
+                captureProcessExit: () => {
+                  if (proof === "missing") return;
+                  input.captureProcessExit?.(
+                    verifyCodexProcessExit({
+                      exitCode:
+                        proof === "pending"
+                          ? Deferred.await(exitReleased).pipe(
+                              Effect.as(ChildProcessSpawner.ExitCode(0)),
+                            )
+                          : Effect.fail(
+                              PlatformError.systemError({
+                                _tag: "Unknown",
+                                module: "ChildProcess",
+                                method: "exitCode",
+                              }),
+                            ),
+                      isRunning: Deferred.isDone(exitReleased).pipe(Effect.map((done) => !done)),
+                    }),
+                  );
+                },
+              })
+              .pipe(
+                Effect.tap(() =>
+                  Effect.addFinalizer(() =>
+                    Effect.sync(() => {
+                      closes++;
+                    }),
+                  ),
+                ),
+              ),
         };
         const harness = yield* makeCodexReplayHarness(transcript, undefined, undefined, undefined, {
           replayClientFactory: factory,
@@ -7184,8 +7201,13 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         if (proof === "pending") {
           assert.isFalse(yield* captured!.isCurrent);
           assert.isTrue(yield* captured!.retirement!.started);
-          assert.equal(yield* harness.runtime.captureRuntimeStop!(harness.providerThread), captured);
-          const cancelledObserver = yield* captured!.retirement!.awaitRetired.pipe(Effect.forkScoped);
+          assert.equal(
+            yield* harness.runtime.captureRuntimeStop!(harness.providerThread),
+            captured,
+          );
+          const cancelledObserver = yield* captured!.retirement!.awaitRetired.pipe(
+            Effect.forkScoped,
+          );
           yield* Fiber.interrupt(cancelledObserver);
           const lateObserver = yield* captured!.retirement!.awaitRetired.pipe(Effect.forkScoped);
           assert.isUndefined(lateObserver.pollUnsafe());
@@ -7193,11 +7215,19 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           const receipt = yield* Fiber.join(lateObserver);
           assert.deepEqual(receipt, { binding: captured!.binding, evidence: "producer_exited" });
           yield* captured!.stop;
-          assert.equal(closes, 1, "late observation and repeated Stop join the original close worker");
+          assert.equal(
+            closes,
+            1,
+            "late observation and repeated Stop join the original close worker",
+          );
           yield* harness.controlAdmission.assertOpen(codexControlTarget(harness.providerThread));
         } else yield* Deferred.succeed(exitReleased, undefined);
         const cleanup = yield* Scope.close(sessionScope, Exit.void).pipe(Effect.exit);
-        assert.equal(cleanup._tag, "Success", "late exact exit can recover an earlier observation failure");
+        assert.equal(
+          cleanup._tag,
+          "Success",
+          "late exact exit can recover an earlier observation failure",
+        );
       }).pipe(
         Effect.scoped,
         Effect.provide(
@@ -14320,79 +14350,103 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
   );
 
-  it.effect("preserves explicit retry after a pre-dispatch admission refusal reached through startTurn", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const timeline: Array<string> = [];
-        const target = ThreadId.make("start-turn-admission-rejected");
-        let refuse = true;
-        const harness = yield* makeCodexReplayHarness(
-          makeCodexReplayTranscript({
-            scenario: "start-turn-admission-rejection",
-            entries: [
-              ...codexReplayPreamble({ nativeThreadId: "native-start-turn-admission-opener", nativeTurnId: "unused", prompt: "unused" }).slice(0, 5),
-              { type: "expect_outbound", frame: { id: 3, method: "thread/resume", params: {
-                threadId: "native-start-turn-admission-target", excludeTurns: true, config: CodexAdapterV2.CODEX_THREAD_CONFIG,
-              } } },
-              { type: "emit_inbound", frame: { id: 3, result: codexReplayThreadResult({
-                nativeThreadId: "native-start-turn-admission-target", forkedFromId: null,
-              }) } },
-            ],
-          }),
-          undefined,
-          (method) =>
-            Effect.sync(() => {
-              timeline.push(method);
+  it.effect(
+    "preserves explicit retry after a pre-dispatch admission refusal reached through startTurn",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const timeline: Array<string> = [];
+          const target = ThreadId.make("start-turn-admission-rejected");
+          let refuse = true;
+          const harness = yield* makeCodexReplayHarness(
+            makeCodexReplayTranscript({
+              scenario: "start-turn-admission-rejection",
+              entries: [
+                ...codexReplayPreamble({
+                  nativeThreadId: "native-start-turn-admission-opener",
+                  nativeTurnId: "unused",
+                  prompt: "unused",
+                }).slice(0, 5),
+                {
+                  type: "expect_outbound",
+                  frame: {
+                    id: 3,
+                    method: "thread/resume",
+                    params: {
+                      threadId: "native-start-turn-admission-target",
+                      excludeTurns: true,
+                      config: CodexAdapterV2.CODEX_THREAD_CONFIG,
+                    },
+                  },
+                },
+                {
+                  type: "emit_inbound",
+                  frame: {
+                    id: 3,
+                    result: codexReplayThreadResult({
+                      nativeThreadId: "native-start-turn-admission-target",
+                      forkedFromId: null,
+                    }),
+                  },
+                },
+              ],
             }),
-          undefined,
-          {
-            runtimeLifecycle: recordingRuntimeLifecycle(
-              timeline,
-              (phase, threadId) => refuse && phase === "admit" && threadId === target,
-            ),
-            onRawRequest: (method) =>
+            undefined,
+            (method) =>
               Effect.sync(() => {
                 timeline.push(method);
               }),
-          },
-        );
-        const generation = harness.providerThread.runtimeIdentity!.runtimeGeneration;
-        const row: OrchestrationV2ProviderThread = {
-          ...harness.providerThread,
-          id: ProviderThreadId.make("provider-thread-start-turn-admission-rejected"),
-          appThreadId: target,
-          nativeThreadRef: {
-            driver: CodexAdapterV2.CODEX_DRIVER_KIND,
-            nativeId: "native-start-turn-admission-target",
-            strength: "strong",
-          },
-        };
-        const now = yield* DateTime.now;
-        timeline.length = 0;
-        const input = makeCodexTestTurnInput({
-          threadId: target,
-          providerThread: row,
-          now,
-          attemptId: RunAttemptId.make("attempt-start-turn-admission-rejection"),
-          text: "Must not send a native request",
-        });
-        const first = yield* harness.runtime.startTurn(input).pipe(Effect.flip);
-        assert.equal(first._tag, "ProviderAdapterTurnStartError");
-        assert.nestedPropertyVal(first, "cause._tag", "ProviderAdapterResumeThreadError");
-        assert.nestedPropertyVal(first, "cause.cause._tag", "ProviderRuntimeBindingError");
-        refuse = false;
-        const retried = yield* harness.runtime.resumeThread({ providerThread: row });
-        assert.equal(retried.nativeThreadRef?.nativeId, "native-start-turn-admission-target");
-        assert.deepEqual(timeline, [
-          `admit:${target}@${generation}`, `admit:${target}@${generation}`,
-          "thread/resume", `bind:${target}@${generation}`,
-        ]);
-      }),
-    ).pipe(
-      Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+            undefined,
+            {
+              runtimeLifecycle: recordingRuntimeLifecycle(
+                timeline,
+                (phase, threadId) => refuse && phase === "admit" && threadId === target,
+              ),
+              onRawRequest: (method) =>
+                Effect.sync(() => {
+                  timeline.push(method);
+                }),
+            },
+          );
+          const generation = harness.providerThread.runtimeIdentity!.runtimeGeneration;
+          const row: OrchestrationV2ProviderThread = {
+            ...harness.providerThread,
+            id: ProviderThreadId.make("provider-thread-start-turn-admission-rejected"),
+            appThreadId: target,
+            nativeThreadRef: {
+              driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+              nativeId: "native-start-turn-admission-target",
+              strength: "strong",
+            },
+          };
+          const now = yield* DateTime.now;
+          timeline.length = 0;
+          const input = makeCodexTestTurnInput({
+            threadId: target,
+            providerThread: row,
+            now,
+            attemptId: RunAttemptId.make("attempt-start-turn-admission-rejection"),
+            text: "Must not send a native request",
+          });
+          const first = yield* harness.runtime.startTurn(input).pipe(Effect.flip);
+          assert.equal(first._tag, "ProviderAdapterTurnStartError");
+          assert.nestedPropertyVal(first, "cause._tag", "ProviderAdapterResumeThreadError");
+          assert.nestedPropertyVal(first, "cause.cause._tag", "ProviderRuntimeBindingError");
+          refuse = false;
+          const retried = yield* harness.runtime.resumeThread({ providerThread: row });
+          assert.equal(retried.nativeThreadRef?.nativeId, "native-start-turn-admission-target");
+          assert.deepEqual(timeline, [
+            `admit:${target}@${generation}`,
+            `admit:${target}@${generation}`,
+            "thread/resume",
+            `bind:${target}@${generation}`,
+          ]);
+        }),
+      ).pipe(
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
       ),
-    ),
   );
 
   it.effect.each([true, false])("admits an unbound rollback target with loaded=%s", (loaded) =>
