@@ -16,6 +16,87 @@ const now = "2026-10-27T05:00:00Z",
 const env = EnvironmentId.make("laptop"),
   planId = "11111111-1111-4111-8111-111111111111";
 
+it("offers a fresh reviewed retry for settled install failures without releasing native holds", () => {
+  const plan = startPlan({
+    planId,
+    now,
+    origin: "update-button",
+    laptopEnvironmentId: env,
+    select: [],
+    target: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: source,
+      sourceTree: tree,
+      version: "new",
+    },
+    from: { version: "old" },
+  });
+  const state: JonesInstallPlanState = {
+    schema: 1,
+    current: plan,
+    last: null,
+    laptop: { observedAt: now, activationBlocked: false },
+    view: { complete: false },
+  };
+  const staged: JonesUpdateState = {
+    source: "jones-actions",
+    channel: "jones-main",
+    phase: "staged",
+    stagedHandle: "stage",
+    capability: { check: true, download: true, install: true },
+    provenance: {
+      repository: "Jones-Systems/Jones-Code",
+      sourceSha: source,
+      sourceTree: tree,
+      workflow: "fixture",
+      runId: 1,
+      runAttempt: 1,
+      artifactId: 1,
+      artifactDigest: "c".repeat(64),
+      platform: "darwin",
+      architecture: "arm64",
+    },
+  };
+  for (const status of ["failed", "refused", "interrupted", "held", "running"] as const) {
+    const current = {
+      ...plan,
+      laptop: {
+        ...plan.laptop,
+        operations: [
+          {
+            operationId: planId,
+            step: "install" as const,
+            requestedAt: now,
+            result: { status, at: now },
+          },
+        ],
+      },
+    };
+    const native = { ...state, current };
+    const present = (
+      value = staged,
+      evidence = native.laptop,
+      freshness: "fresh" | "stale" = "fresh",
+    ) =>
+      installPlanPresentation(
+        { ...native, laptop: evidence },
+        { now: Date.parse(now), laptop: { state: value, freshness } },
+      ).laptop!;
+    expect(present().actions.install).toBe(!["held", "running"].includes(status));
+    if (status === "failed" || status === "interrupted")
+      expect(present().text).toBe("Install didn't finish");
+    expect(present(staged, native.laptop, "stale").actions.install).toBe(false);
+    expect(present(staged, { ...native.laptop, activationBlocked: true }).actions.install).toBe(
+      false,
+    );
+    for (const provenance of [
+      { ...staged.provenance!, sourceTree: "d".repeat(40) },
+      { ...staged.provenance!, sourceSha: "d".repeat(40) },
+    ])
+      expect(present({ ...staged, provenance }).actions.install).toBe(false);
+  }
+});
+
 it.each(["refused", "failed"] as const)(
   "offers an explicit Retry download for a %s receipt only with fresh permission",
   (phase) => {
