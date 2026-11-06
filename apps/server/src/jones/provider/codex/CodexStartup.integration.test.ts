@@ -1252,6 +1252,8 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
                 Effect.forkScoped({ startImmediately: true }),
               )
             : undefined;
+        if (cancelledHandoff)
+          yield* EffectWorker.runDaemon.pipe(Effect.forkScoped({ startImmediately: true }));
         yield* send("new-owner", newPrompt);
         yield* worker.drain();
         yield* traceRecovery("final-start-drained");
