@@ -1,3 +1,4 @@
+import * as CheckoutRecreation from "../workspaceRecreation/Runtime.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -87,6 +88,7 @@ export const beforeUse = Effect.fn("WorkspaceLifecycle.beforeNativeUse")(functio
   readonly boundary: NativeTransition["boundary"];
   readonly fallback?: { readonly id: string; readonly request: unknown };
 }) {
+  if (yield* CheckoutRecreation.recreatedDetached(input.threadId)) return;
   const inherited = yield* Effect.serviceOption(OriginalNativeTransition);
   const original =
     Option.getOrUndefined(inherited) ??
@@ -196,8 +198,9 @@ const beforeCommand = Effect.fn("WorkspaceLifecycle.beforeCommand")(function* (
   const transitions = [];
   for (const transition of commandTransitions(command, events))
     if (
-      (yield* managedThread(transition.threadId)) ||
-      (yield* originalIsManaged(transition.transitionId))
+      !(yield* CheckoutRecreation.deferRestore(transition.threadId)) &&
+      ((yield* managedThread(transition.threadId)) ||
+        (yield* originalIsManaged(transition.transitionId)))
     )
       transitions.push(transition);
   if (transitions.length === 0) return;
@@ -230,8 +233,9 @@ export const validateCommand = Effect.fn("WorkspaceLifecycle.validateCommand")(f
   const transitions = [];
   for (const transition of commandTransitions(command, events))
     if (
-      (yield* managedThread(transition.threadId)) ||
-      (yield* originalIsManaged(transition.transitionId))
+      !(yield* CheckoutRecreation.deferRestore(transition.threadId)) &&
+      ((yield* managedThread(transition.threadId)) ||
+        (yield* originalIsManaged(transition.transitionId)))
     )
       transitions.push(transition);
   if (transitions.length === 0) return;

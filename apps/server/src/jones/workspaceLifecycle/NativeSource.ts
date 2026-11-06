@@ -1,4 +1,5 @@
 import { EventId, ThreadId } from "@t3tools/contracts";
+import { readBreadcrumb } from "../workspaceRecreation/Native.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -228,10 +229,17 @@ const make = Effect.gen(function* () {
         target.cwd !== target.checkoutKey
       )
         return yield* new LifecycleError({ reason: "identity" });
+      const recreation = missing
+        ? null
+        : yield* Effect.tryPromise({
+            try: () => readBreadcrumb(target.gitDirectory!),
+            catch: (cause) => cause,
+          });
       const physical = {
         directory: target.directoryIdentity,
         gitCommon: target.gitCommonIdentity,
         gitDirectory: target.gitDirectoryIdentity,
+        ...(recreation === null ? {} : { recreation: recreation.breadcrumb }),
       };
       const owner = yield* nativeOwner.value.verify(input, target, birth);
       if (

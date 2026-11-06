@@ -2636,7 +2636,18 @@
     "packages/contracts/src/terminal.test.ts": "accepted-shared",
     "packages/contracts/src/terminal.ts": "accepted-shared",
     "packages/shared/src/serverSettings.ts": "accepted-shared",
-    "apps/server/src/jones/workspaceRetirement/DurableCodecs.ts": "jones-owned"
+    "apps/server/src/jones/workspaceRetirement/DurableCodecs.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Runtime.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Runtime.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workspaceRecreation.ts": "jones-owned",
+    "packages/contracts/src/jones/workspaceRecreation.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-recreation.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1,0 +1,40 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "workspace-recreation",
+  "jonesOwnedPaths": [
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts",
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.ts",
+    "apps/server/src/jones/workspaceRecreation/Native.node-test.mjs",
+    "apps/server/src/jones/workspaceRecreation/Native.test.ts",
+    "apps/server/src/jones/workspaceRecreation/Native.testkit.ts",
+    "apps/server/src/jones/workspaceRecreation/Native.ts",
+    "apps/server/src/jones/workspaceRecreation/Runtime.test.ts",
+    "apps/server/src/jones/workspaceRecreation/Runtime.ts",
+    "packages/contracts/src/jones/workspaceRecreation.test.ts",
+    "packages/contracts/src/jones/workspaceRecreation.ts"
+  ],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/Runtime.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/EventSink.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/BindingCommit.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriver.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/Native.ts"
+    },
+    {
+      "from": "apps/server/src/vcs/GitVcsDriverCore.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/Native.ts"
+    },
+    {
+      "from": "packages/contracts/src/composerContext.ts",
+      "to": "packages/contracts/src/jones/workspaceRecreation.ts"
+    }
+  ]
+}
