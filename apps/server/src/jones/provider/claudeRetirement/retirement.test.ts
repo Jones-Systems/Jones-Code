@@ -4,9 +4,20 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { ProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
 import { makeClaudeQueryRetirement } from "./retirement.ts";
+
+class SyntheticCancelFailure extends Schema.TaggedError<SyntheticCancelFailure>()(
+  "SyntheticCancelFailure",
+  { message: Schema.String },
+) {}
+
+class SyntheticCloseFailure extends Schema.TaggedError<SyntheticCloseFailure>()(
+  "SyntheticCloseFailure",
+  { message: Schema.String },
+) {}
 
 const failure = (cause?: unknown) =>
   new ProviderControlOutcomeUnknown({
@@ -39,7 +50,7 @@ it.effect.each(["rejection", "silence"] as const)(
         }).pipe(
           Effect.andThen(
             mode === "rejection"
-              ? Effect.fail(new Error("cancel failed"))
+              ? Effect.fail(new SyntheticCancelFailure({ message: "cancel failed" }))
               : Deferred.await(cancelGate),
           ),
         ),
@@ -187,7 +198,7 @@ it.effect.each(["rejection", "uninterruptible silence"] as const)(
         close: Deferred.succeed(closeStarted, undefined).pipe(
           Effect.andThen(
             mode === "rejection"
-              ? Effect.fail(new Error("close failed"))
+              ? Effect.fail(new SyntheticCloseFailure({ message: "close failed" }))
               : Effect.uninterruptible(Deferred.await(closeGate)),
           ),
         ),
@@ -217,7 +228,10 @@ it.effect.each(["success", "rejection"] as const)(
       let retired = false;
       const retirement = makeClaudeQueryRetirement({
         deadline: startedAt + 10_000,
-        cancel: mode === "success" ? Effect.void : Effect.fail(new Error("cancel rejected")),
+        cancel:
+          mode === "success"
+            ? Effect.void
+            : Effect.fail(new SyntheticCancelFailure({ message: "cancel rejected" })),
         close: Effect.void,
         termination: Effect.void,
         drain: Effect.void,

@@ -14,6 +14,7 @@ import {
   ThreadId,
   type OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
+import type * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";
 import * as Deferred from "effect/Deferred";
@@ -138,7 +139,7 @@ it.effect.each(deliveries)(
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("claude-automatic-delivery");
-        const sdkMessages = yield* Queue.unbounded<SDKMessage>();
+        const sdkMessages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
         const syntheticTermination = yield* Deferred.make<void>();
         const offers: SDKUserMessage[] = [];
         const nativeQueue: SDKUserMessage[] = [];

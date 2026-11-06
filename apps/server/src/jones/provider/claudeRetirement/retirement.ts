@@ -11,13 +11,18 @@ export interface ClaudeQueryRetirement {
 }
 
 // One record belongs to one captured query. Raw SDK observers outlive a released caller.
-export function makeClaudeQueryRetirement(input: {
+export function makeClaudeQueryRetirement<
+  CancelError = never,
+  CloseError = never,
+  TerminationError = never,
+  RetireError = never,
+>(input: {
   readonly deadline: number;
-  readonly cancel?: Effect.Effect<void, unknown>;
-  readonly close: Effect.Effect<void, unknown>;
-  readonly termination: Effect.Effect<void, unknown>;
+  readonly cancel?: Effect.Effect<void, CancelError>;
+  readonly close: Effect.Effect<void, CloseError>;
+  readonly termination: Effect.Effect<void, TerminationError>;
   readonly drain: Effect.Effect<void>;
-  readonly retire: Effect.Effect<void, unknown>;
+  readonly retire: Effect.Effect<void, RetireError>;
   readonly failure: (cause?: unknown) => ProviderControlOutcomeUnknown;
   readonly fence: () => void;
 }): ClaudeQueryRetirement {

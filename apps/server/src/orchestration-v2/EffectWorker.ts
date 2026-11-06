@@ -152,19 +152,19 @@ export const layerExecutor: Layer.Layer<
         threadId: effect.threadId,
         runId: effect.request.runId,
       });
-      return yield* operation.pipe(
-        Effect.onError((cause) =>
-          Effect.gen(function* () {
-            if (
-              effect.nativeCreationExecutionReference !== undefined ||
-              findEffectClaimLost(cause) !== undefined ||
-              findProviderControlOutcomeUnknown(cause) !== undefined ||
-              (Option.isSome(claim) && (yield* claim.value.hasLost))
-            )
-              yield* recordFailure(cause);
-          }),
-        ),
-      );
+      return yield* Effect.onExit(operation, (exit) => {
+        if (Exit.isSuccess(exit)) return Effect.void;
+        const cause = exit.cause;
+        return Effect.gen(function* () {
+          if (
+            effect.nativeCreationExecutionReference !== undefined ||
+            findEffectClaimLost(cause) !== undefined ||
+            findProviderControlOutcomeUnknown(cause) !== undefined ||
+            (Option.isSome(claim) && (yield* claim.value.hasLost))
+          )
+            yield* recordFailure(cause);
+        });
+      });
     });
     return OrchestrationEffectExecutorV2.of({
       recordNonRetryableFailure: restartPreparation.recordSteerFailure,

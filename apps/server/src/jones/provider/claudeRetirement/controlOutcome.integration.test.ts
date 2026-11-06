@@ -269,30 +269,68 @@ it.effect.each(["rejected", "silent"] as const)(
           "persisted native result and native exit are independent",
         );
 
+        const nextMessageId = MessageId.make(`${name}:second`);
         const failedAdmission = yield* watch(
           (event) =>
             event.type === "run.updated" &&
-            event.payload.id !== run.id &&
+            event.payload.userMessageId === nextMessageId &&
             event.payload.status === "failed",
         );
         const nextCommand = CommandId.make(`${name}:fenced-start`);
-        yield* orchestrator.dispatch({
+        const admission = yield* orchestrator.dispatch({
           type: "message.dispatch",
           commandId: nextCommand,
           threadId,
-          messageId: MessageId.make(`${name}:second`),
+          messageId: nextMessageId,
           text: "This prompt must remain fenced.",
           attachments: [],
           dispatchMode: { type: "start_immediately" },
           createdBy: "user",
           creationSource: "web",
         });
-        yield* Fiber.join(failedAdmission);
-        const admissionEffects = (yield* outbox.listByCommandId(nextCommand)).filter(
+        const createdAdmission = admission.storedEvents.find(
+          (stored) =>
+            stored.event.type === "run.created" &&
+            stored.event.payload.userMessageId === nextMessageId,
+        );
+        assert.ok(createdAdmission?.event.type === "run.created");
+        const admissionRun = createdAdmission.event.payload;
+        assert.notEqual(admissionRun.id, run.id);
+        assert.ok(admissionRun.activeAttemptId);
+        const failedReceipt = Option.getOrThrow(yield* Fiber.join(failedAdmission));
+        assert.ok(failedReceipt.event.type === "run.updated");
+        assert.equal(failedReceipt.event.runId, admissionRun.id);
+        assert.equal(failedReceipt.event.payload.id, admissionRun.id);
+        assert.equal(failedReceipt.event.payload.activeAttemptId, admissionRun.activeAttemptId);
+        const startEffects = (yield* outbox.listByThreadId(threadId)).filter(
           (effect) => effect.request.type === "provider-turn.start",
         );
+        assert.lengthOf(startEffects, 2);
+        const admissionEffects = startEffects.filter(
+          (effect) =>
+            effect.request.type === "provider-turn.start" &&
+            effect.request.runId === admissionRun.id,
+        );
         assert.lengthOf(admissionEffects, 1);
+        assert.equal(
+          admissionEffects[0]!.commandId,
+          admissionRun.status === "queued"
+            ? CommandId.make(`command:system:start-queued:${admissionRun.id}`)
+            : nextCommand,
+        );
         yield* outbox.awaitCompletion(admissionEffects.map((effect) => effect.id));
+        const settledAdmission = Option.getOrThrow(yield* outbox.get(admissionEffects[0]!.id));
+        assert.equal(settledAdmission.status, "succeeded");
+        assert.equal(settledAdmission.attemptCount, 1);
+        assert.isNull(settledAdmission.leaseOwner);
+        const admissionAttempt = (yield* orchestrator.getThreadProjection(threadId)).attempts.find(
+          (candidate) => candidate.id === admissionRun.activeAttemptId,
+        );
+        assert.ok(admissionAttempt);
+        assert.equal(admissionAttempt.runId, admissionRun.id);
+        assert.equal(admissionAttempt.status, "failed");
+        assert.isNull(admissionAttempt.providerSettlement);
+        assert.isFalse(yield* Deferred.isDone(nativeExit));
         yield* Deferred.succeed(nativeExit, undefined);
         yield* Deferred.succeed(releaseCancel, undefined);
         yield* replay.assertComplete;

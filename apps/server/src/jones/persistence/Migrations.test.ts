@@ -459,7 +459,7 @@ it.effect(
       assert.deepStrictEqual(
         (yield* readLedger).map(({ migration_id, name }) => [migration_id, name]),
         [
-          ...released135Identities,
+          ...released135Identities.map(([id, name]) => [id, name]),
           [136, "WorkspaceProvenance"],
           [137, "NativeCreationLeaseRenewal"],
         ],

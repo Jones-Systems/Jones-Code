@@ -2825,11 +2825,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
       });
       const threadId = ThreadId.make("thread-claude-wake");
-      const runtimeScope =
-        options?.expectUncertainCleanup === true ? yield* Scope.make() : yield* Effect.scope;
-      if (options?.expectUncertainCleanup === true) {
+      const uncertainCleanupScope =
+        options?.expectUncertainCleanup === true ? yield* Scope.make() : undefined;
+      const runtimeScope = uncertainCleanupScope ?? (yield* Effect.scope);
+      if (uncertainCleanupScope !== undefined) {
         yield* Effect.addFinalizer(() =>
-          Scope.close(runtimeScope, Exit.void).pipe(
+          Scope.close(uncertainCleanupScope, Exit.void).pipe(
             Effect.exit,
             Effect.flatMap((exit) =>
               Effect.sync(() => {
