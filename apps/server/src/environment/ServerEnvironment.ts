@@ -25,6 +25,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import * as NativeDescriptor from "../jones/workstreams/native/runtime/descriptor.ts";
 import packageJson from "../../package.json" with { type: "json" };
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import { resolveServerInstallation } from "../cli/invocation.ts";
@@ -318,6 +319,7 @@ export const make = Effect.gen(function* () {
         ...descriptor,
         capabilities: { ...descriptor.capabilities, agentActivityPublishing },
       })),
+      Effect.flatMap(NativeDescriptor.annotateDescriptor),
     ),
   });
 });

@@ -2231,7 +2231,8 @@
     "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.tsx": "jones-owned",
     "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx": "jones-owned",
     "apps/mobile/src/lib/attachmentDownload.ts": "accepted-shared",
-    "apps/mobile/src/lib/attachmentDownload.test.ts": "accepted-shared"
+    "apps/mobile/src/lib/attachmentDownload.test.ts": "accepted-shared",
+    "apps/server/src/jones/workstreams/native/runtime/descriptor.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -2993,6 +2994,18 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/workstreams/native/forwarding/retainedSourceEffectPort.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/descriptor.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.test.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/descriptor.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.test.ts",
+      "to": "packages/contracts/src/jones/workstreamsNative.ts"
     }
   ]
 }

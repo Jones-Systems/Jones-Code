@@ -37,6 +37,7 @@ import * as Runtime from "../../runtimeIntegration/native.ts";
 import * as Placements from "../registry/placements.ts";
 import * as Authority from "../../../../environment/NativeStoreAuthority.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
+import * as NativeDescriptor from "./descriptor.ts";
 import * as ProjectionStore from "../../../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadManagement from "../../../../orchestration-v2/ThreadManagementService.ts";
 import { liveThreadShell } from "../../../../mcp/McpToolAccess.testkit.ts";
@@ -329,6 +330,13 @@ it.effect(
     return Effect.gen(function* () {
       const prepared = yield* seed(f);
       yield* Effect.gen(function* () {
+        expect(yield* (yield* NativeDescriptor.NativeDescriptor).read).toEqual({
+          contract: "workstreams-native/1.0.0",
+          mode: "native-home",
+          registry,
+          reads: ["workstreams-read/1.0.0"],
+          placement_proofs: ["workstreams-t3-placement/1.0.0", "workstreams-t3-placement/2.0.0"],
+        });
         const gateway = yield* Gateway.WorkstreamGateway,
           operations = yield* Operations.WorkstreamOperations;
         expect(

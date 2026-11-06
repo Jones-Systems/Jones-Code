@@ -1,3 +1,4 @@
+import * as NativeDescriptor from "./descriptor.ts";
 import * as HomeExportProtocol from "../forwarding/homeExportProtocol.ts";
 import * as MemberSelection from "./memberStartup.ts";
 import * as MemberPreparation from "./memberPreparation.ts";
@@ -179,19 +180,44 @@ export const select = Effect.fn("NativeStartup.select")(function* (input: {
   };
 });
 
-/** The frozen capability requires J5 reads. Omit it until those routes are mounted. */
+/** The frozen capability requires both native read routes and a qualified selection. */
 export function capability(
   selection: Selection,
   mounted: { readonly readProjection: boolean; readonly placementsV2: boolean },
+  homeLink: "ok" | "missing" | "expired" | "unknown" = "unknown",
 ): WorkstreamsNativeCapability | undefined {
-  if (
-    selection.mode !== "native-home" ||
-    !selection.home ||
-    !mounted.readProjection ||
-    !mounted.placementsV2
-  )
+  if (selection.problem !== null || !mounted.readProjection || !mounted.placementsV2)
     return undefined;
-  return nativeCapability({ mode: "native-home", registry: selection.home }, mounted);
+  if (selection.mode === "native-home" && selection.home) {
+    const {
+      registry_instance_id,
+      owner_id,
+      canonical_origin,
+      home_environment_id,
+      server_generation,
+    } = selection.home;
+    return nativeCapability(
+      {
+        mode: "native-home",
+        registry: {
+          registry_instance_id,
+          owner_id,
+          canonical_origin,
+          home_environment_id,
+          server_generation,
+        },
+      },
+      mounted,
+    );
+  }
+  if (
+    selection.mode === "native-member" &&
+    selection.sourceSessionId !== null &&
+    selection.config?.mode === "native-member" &&
+    selection.config.registry !== null
+  )
+    return nativeCapability(selection.config, mounted, homeLink);
+  return undefined;
 }
 
 export const layer = Layer.effect(
@@ -462,7 +488,7 @@ export const homeServicesLayer = (
           ),
     ),
   );
-  return Layer.mergeAll(
+  const services = Layer.mergeAll(
     peerReads,
     NativeEntry.gatewayLayer,
     NativeEntry.registrationLayer,
@@ -477,6 +503,15 @@ export const homeServicesLayer = (
     Layer.provide(Layer.succeed(Startup, selection)),
     Layer.provide(rollupPorts),
   );
+  return Layer.effect(
+    NativeDescriptor.NativeDescriptor,
+    Effect.gen(function* () {
+      yield* NativeReadRoutes.AuthorizedReads;
+      return {
+        read: Effect.succeed(capability(selection, { readProjection: true, placementsV2: true })),
+      };
+    }),
+  ).pipe(Layer.provideMerge(services));
 };
 
 /** Explicitly disabled/fenced native configuration gets no Control Plane transport or requests. */

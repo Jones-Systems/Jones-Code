@@ -130,11 +130,14 @@ home observation and require current permission on every request. Placement v2
 requires the explicit `placement_contract` field. Missing native support refuses
 without a legacy fallback. Responses are private and not cacheable by HTTP caches.
 
-The current optional native capability remains withheld pending complete client
-read/export integration. The placement header can still negotiate the mounted
-v2 route explicitly. Rollups are
-not advertised. Setup uses the existing closed status shape without CP enrollment
-instructions. Recovery must be composed with the owning Effect worker and current
+A selected home or member publishes the optional native capability after its
+authorized read and placement-v2 services are composed. Configuration alone does
+not advertise support. A member's home-link status reflects fresh local link and
+bound-enrollment validation; missing, expired or unknown links block native client
+reads. An available link does not prove peer reachability or current home
+permission. Every request still requires current admission. Rollups are not
+advertised. Setup uses the existing closed status shape without CP enrollment
+instructions. Recovery requires the owning Effect worker and current
 retained-caller admission; constructing a service is not recovery authorization.
 
 Use isolated synthetic state for qualification. Verify both command entry paths,
@@ -151,7 +154,8 @@ format as `application/x-ndjson`. Retain the original UTF-8 bytes through EOF:
 only the final complete trailer and its matching digest establish a completed
 export. Revocation, drift, interruption or cancellation leaves the stream incomplete.
 A mode without a qualified selected exporter refuses with `workstreams_native_unavailable`; it never falls back to a local
-registry or legacy export. This transport does not advertise native capability.
+registry or legacy export. Capability publication belongs to the selected runtime;
+composing an exporter alone does not advertise support.
 
 Use `t3 workstream export --home /absolute/existing/server-home` for a selected
 local home or member, optionally with `--page-size 1..100`. It requires the already running
@@ -170,5 +174,4 @@ read permission before and after the transfer, validates the original complete
 JSONL and digest, and releases those exact bytes as one bounded result. It holds
 no disk cache and creates no local registry or home grant. Missing tool support,
 changed permission, incomplete bytes or home drift refuse without output or a
-legacy fallback. The fixed result is bounded to 16 MiB plus the completion trailer;
-capability advertisement remains withheld.
+legacy fallback. The fixed result is bounded to 16 MiB plus the completion trailer.

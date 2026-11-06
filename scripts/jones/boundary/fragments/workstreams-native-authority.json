@@ -28,7 +28,11 @@
     "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.tsx",
     "apps/mobile/src/jones/workstreams/MobileWorkstreamExport.test.tsx"
   ],
-  "hookPaths": ["apps/server/src/httpCors.ts", "apps/server/src/serverOwnership.ts"],
+  "hookPaths": [
+    "apps/server/src/httpCors.ts",
+    "apps/server/src/serverOwnership.ts",
+    "apps/server/src/environment/ServerEnvironment.test.ts"
+  ],
   "tombstones": [],
   "allowedImports": [
     {
@@ -94,6 +98,18 @@
     {
       "from": "apps/server/src/mcp/McpHttpServer.ts",
       "to": "apps/server/src/jones/workstreams/native/forwarding/homeExportProtocol.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/descriptor.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.test.ts",
+      "to": "apps/server/src/jones/workstreams/native/runtime/descriptor.ts"
+    },
+    {
+      "from": "apps/server/src/environment/ServerEnvironment.test.ts",
+      "to": "packages/contracts/src/jones/workstreamsNative.ts"
     }
   ]
 }

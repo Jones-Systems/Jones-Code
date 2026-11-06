@@ -338,10 +338,17 @@ it.effect(
           ]);
           expect(writer).not.toHaveBeenCalled();
           expect(cp).not.toHaveBeenCalled();
-          // Qualification cannot advertise or mount member runtime through the held startup path.
+          // Selection alone grants neither mounted routes nor a usable current home link.
+          expect(
+            Startup.capability(selection, { readProjection: false, placementsV2: true }),
+          ).toBeUndefined();
           expect(
             Startup.capability(selection, { readProjection: true, placementsV2: true }),
-          ).toBeUndefined();
+          ).toMatchObject({
+            mode: "native-member",
+            home_link: "unknown",
+            registry: f.config.registry,
+          });
         } finally {
           writer.mockRestore();
           cp.mockRestore();

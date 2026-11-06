@@ -91,6 +91,7 @@ import * as MemberApp from "../runtime/memberApplication.ts";
 import * as PublicOperations from "../../operations/service.ts";
 import * as OperationWire from "@t3tools/contracts/jones/workstreamOperations";
 import * as MemberServices from "../runtime/memberServices.ts";
+import * as NativeDescriptor from "../runtime/descriptor.ts";
 import * as MemberRecovery from "../runtime/memberRecovery.ts";
 import * as ReadRoutes from "../read/routes.ts";
 import * as ReadProjection from "../read/projection.ts";
@@ -214,6 +215,8 @@ const fixture = Effect.gen(function* () {
     Effect.Success<ReturnType<Auth.EnvironmentAuth["Service"]["issueMcpClientSession"]>>
   >();
   const controls = {
+    linkStatus: "present" as "present" | "missing" | "expired",
+    changedGeneration: false,
     beforeSecret: (_env: string, _name: string): Effect.Effect<void> => Effect.void,
   };
   const makeEnvironment = (
@@ -412,23 +415,33 @@ const fixture = Effect.gen(function* () {
   const mount = (local: typeof h, remote: typeof h) =>
     Effect.gen(function* () {
       let generation = "link:" + local.env + "->" + remote.env;
+      const storedLink = () => ({
+        environmentId: EnvironmentId.make(remote.env),
+        label: "ignored",
+        urls: ["https://peer.invalid"],
+        access: "full-access" as const,
+        linkedAt: DateTime.makeUnsafe(Test.now),
+        expiresAt: DateTime.makeUnsafe(
+          controls.linkStatus === "expired" ? Test.now : "2026-01-31T00:00:00.000Z",
+        ),
+        lastReachedAt: null,
+        lastError: null,
+      });
       const links = Layer.mock(PeerLinks.PeerLinks)({
-        currentGeneration: () => Effect.sync(() => Option.some(generation)),
+        get: () =>
+          Effect.sync(() =>
+            controls.linkStatus === "missing" ? Option.none() : Option.some(storedLink()),
+          ),
+        currentGeneration: () =>
+          Effect.sync(() =>
+            Option.some(controls.changedGeneration ? generation + ":replaced" : generation),
+          ),
         resolve: () =>
           Effect.succeed({
             url: "https://" + remote.env.split(":")[0] + ".invalid",
             token: remote.issued.token,
             generation,
-            link: {
-              environmentId: EnvironmentId.make(remote.env),
-              label: "ignored",
-              urls: ["https://peer.invalid"],
-              access: "full-access",
-              linkedAt: DateTime.makeUnsafe(Test.now),
-              expiresAt: DateTime.makeUnsafe("2026-01-31T00:00:00.000Z"),
-              lastReachedAt: null,
-              lastError: null,
-            },
+            link: storedLink(),
           }),
         recordOutcome: () => Effect.void,
       });
@@ -1417,6 +1430,32 @@ it.effect(
           true,
         );
         expect(Option.isNone(Context.getOption(selectedServices, NativeHome))).toBe(true);
+        const descriptor = Context.get(selectedServices, NativeDescriptor.NativeDescriptor);
+        const readDescriptor = descriptor.read.pipe(Effect.provide(resources));
+        const descriptorCalls = f.calls.length;
+        const descriptorChanges = yield* selectedSql<{ n: number }>`SELECT total_changes() AS n`;
+        yield* selectedSql`PRAGMA query_only = ON`;
+        expect(yield* readDescriptor).toMatchObject({
+          mode: "native-member",
+          registry: { ...home, canonical_origin: "https://native.workstreams.invalid" },
+          home_link: "ok",
+          placement_proofs: ["workstreams-t3-placement/1.0.0", "workstreams-t3-placement/2.0.0"],
+        });
+        f.controls.linkStatus = "missing";
+        expect(yield* readDescriptor).toMatchObject({ home_link: "missing" });
+        f.controls.linkStatus = "expired";
+        expect(yield* readDescriptor).toMatchObject({ home_link: "expired" });
+        f.controls.linkStatus = "present";
+        f.controls.changedGeneration = true;
+        expect(yield* readDescriptor).toMatchObject({ home_link: "unknown" });
+        f.controls.changedGeneration = false;
+        expect(yield* readDescriptor).toMatchObject({ home_link: "ok" });
+        expect(yield* selectedSql`SELECT total_changes() AS n`).toEqual(descriptorChanges);
+        expect(yield* selectedSql`PRAGMA query_only`).toEqual([{ query_only: 1 }]);
+        expect(yield* selectedSql`SELECT * FROM jones_workstreams_registries`).toEqual([]);
+        expect(yield* selectedSql`SELECT * FROM jones_workstreams_grants`).toEqual([]);
+        expect(f.calls).toHaveLength(descriptorCalls);
+        yield* selectedSql`PRAGMA query_only = OFF`;
         const sourceTools = yield* NativeForwards.sourceToolkit.pipe(
           Effect.provide(
             Access.HandlersLayer.layer(NativeForwards.sourceHandlers).pipe(

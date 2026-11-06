@@ -19,6 +19,10 @@ import { EnvironmentId } from "@t3tools/contracts";
 import * as ServerConfig from "../../../../config.ts";
 import * as Environment from "../../../../environment/ServerEnvironment.ts";
 import { decodeNativeConfig } from "../mode/config.ts";
+import { WorkstreamsNativeCapability } from "@t3tools/contracts/jones/workstreamsNative";
+import * as Schema from "effect/Schema";
+
+const decodeCapability = Schema.decodeUnknownSync(WorkstreamsNativeCapability);
 
 const registry = {
   ...Fixture.scope,
@@ -308,4 +312,66 @@ it.effect(
       ]);
     });
   },
+);
+
+it.effect("advertises only fully composed qualified home or member selections", () =>
+  Effect.sync(() => {
+    const mounted = { readProjection: true, placementsV2: true };
+    const member: Startup.Selection = {
+      mode: "native-member",
+      config: decodeNativeConfig(JSON.stringify({ mode: "native-member", registry })),
+      home: null,
+      sourceSessionId: "session:member-descriptor",
+      problem: null,
+    };
+    for (const homeLink of ["ok", "missing", "expired", "unknown"] as const) {
+      expect(Startup.capability(member, mounted, homeLink)).toMatchObject({
+        mode: "native-member",
+        registry,
+        home_link: homeLink,
+        reads: ["workstreams-read/1.0.0"],
+        placement_proofs: ["workstreams-t3-placement/1.0.0", "workstreams-t3-placement/2.0.0"],
+      });
+    }
+    const incomplete: readonly Startup.Selection[] = [
+      { ...member, sourceSessionId: null },
+      { ...member, config: null },
+      {
+        ...member,
+        config: decodeNativeConfig(JSON.stringify({ mode: "disabled", registry: null })),
+      },
+      { ...member, problem: new Startup.StartupError({ code: "authority_fenced" }) },
+      { ...member, mode: "transition-fenced" },
+      { ...member, mode: "disabled" },
+      { ...member, mode: "legacy" },
+    ];
+    for (const selection of incomplete)
+      expect(Startup.capability(selection, mounted)).toBeUndefined();
+    expect(
+      Startup.capability(member, { readProjection: false, placementsV2: true }),
+    ).toBeUndefined();
+    expect(
+      Startup.capability(member, { readProjection: true, placementsV2: false }),
+    ).toBeUndefined();
+    const home: Startup.Selection = {
+      ...member,
+      mode: "native-home",
+      home: { ...registry, served_by_environment_id: registry.home_environment_id },
+    };
+    const homeCapability = Startup.capability(home, mounted);
+    expect(homeCapability).toEqual({
+      contract: "workstreams-native/1.0.0",
+      mode: "native-home",
+      registry,
+      reads: ["workstreams-read/1.0.0"],
+      placement_proofs: ["workstreams-t3-placement/1.0.0", "workstreams-t3-placement/2.0.0"],
+    });
+    expect(decodeCapability(homeCapability)).toEqual(homeCapability);
+    expect(
+      Startup.capability(
+        { ...home, problem: new Startup.StartupError({ code: "authority_fenced" }) },
+        mounted,
+      ),
+    ).toBeUndefined();
+  }),
 );

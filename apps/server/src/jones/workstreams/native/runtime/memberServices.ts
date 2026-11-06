@@ -1,3 +1,10 @@
+import { EnvironmentId } from "@t3tools/contracts";
+import { decodeWorkstreamsHomeBindBody } from "@t3tools/contracts/jones/workstreamsHomeBind";
+import * as DateTime from "effect/DateTime";
+import * as Option from "effect/Option";
+import * as PeerLinks from "../../../../peer/PeerLinks.ts";
+import * as NativeDescriptor from "./descriptor.ts";
+import * as MemberPreparation from "./memberPreparation.ts";
 import * as ReadExport from "../read/export.ts";
 import * as Stream from "effect/Stream";
 import * as Effect from "effect/Effect";
@@ -34,7 +41,7 @@ export const layer = (
         Layer.provideMerge(Integration.nativePersistenceLayer),
         Layer.provide(Layer.succeed(Startup.Startup, selection)),
       );
-      return Layer.mergeAll(
+      const services = Layer.mergeAll(
         // Public adapters retain application resources only; every call qualifies its original caller.
         Layer.merge(
           Startup.unavailableServicesLayer(selection),
@@ -86,5 +93,49 @@ export const layer = (
           })),
         ),
       ).pipe(Layer.provideMerge(application));
+      return Layer.effect(
+        NativeDescriptor.NativeDescriptor,
+        Effect.gen(function* () {
+          yield* Reads.AuthorizedReads;
+          const preparation = yield* MemberPreparation.MemberPreparation;
+          const links = yield* PeerLinks.PeerLinks;
+          const registry = selection.config?.registry;
+          return {
+            read: Effect.gen(function* () {
+              if (!registry) return undefined;
+              const status = yield* Effect.gen(function* () {
+                const link = yield* links.get(EnvironmentId.make(registry.home_environment_id));
+                if (Option.isNone(link)) return "missing" as const;
+                if (DateTime.isLessThanOrEqualTo(link.value.expiresAt, yield* DateTime.now))
+                  return "expired" as const;
+                // This is local association/link readiness, not a current receiving-home grant.
+                return yield* preparation.withPrepared((members) =>
+                  members.getValidatedBySessionId(selection.sourceSessionId).pipe(
+                    Effect.map((bound) => {
+                      if (Option.isNone(bound)) return "unknown" as const;
+                      const body = decodeWorkstreamsHomeBindBody(
+                        bound.value.intent.bind_request_body,
+                      );
+                      const home = body.expected_home;
+                      return home.registry_instance_id === registry.registry_instance_id &&
+                        home.owner_id === registry.owner_id &&
+                        home.home_environment_id === registry.home_environment_id &&
+                        home.server_generation === registry.server_generation &&
+                        body.expected_canonical_origin === registry.canonical_origin
+                        ? ("ok" as const)
+                        : ("unknown" as const);
+                    }),
+                  ),
+                );
+              }).pipe(Effect.catch(() => Effect.succeed("unknown" as const)));
+              return Startup.capability(
+                selection,
+                { readProjection: true, placementsV2: true },
+                status,
+              );
+            }),
+          };
+        }),
+      ).pipe(Layer.provideMerge(services));
     }),
   );

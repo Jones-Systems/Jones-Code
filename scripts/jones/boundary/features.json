@@ -2466,9 +2466,11 @@
       "tests": [
         "apps/server/src/jones/workstreams/native/runtime/startup.test.ts",
         "apps/server/src/jones/workstreams/native/runtime/memberStartup.test.ts",
-        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts"
+        "apps/server/src/jones/workstreams/native/conformance/peerSetupIntegration.test.ts",
+        "apps/server/src/jones/workstreams/native/runtime/entry.test.ts",
+        "apps/server/src/environment/ServerEnvironment.test.ts"
       ],
-      "scope": "Explicit member selection consumes the genuine invocation-scoped member preparation and selected original SQL/keys. Qualified members mount application-owned locks/resources, request-authenticated native reads and fixed source readmission/effect producers. Unsupported public legacy adapters still refuse; no home registry/grant copy or global caller is introduced."
+      "scope": "Explicit member selection consumes the genuine invocation-scoped member preparation and selected original SQL/keys. Qualified members mount application-owned locks/resources, request-authenticated native reads and fixed source readmission/effect producers. Unsupported public legacy adapters still refuse; no home registry/grant copy or global caller is introduced. Native protocol metadata is published only after selected authorized reads are constructed; member link readiness is revalidated locally per descriptor without conferring home permission."
     },
     {
       "id": "workstreams-native-member-recovery",
