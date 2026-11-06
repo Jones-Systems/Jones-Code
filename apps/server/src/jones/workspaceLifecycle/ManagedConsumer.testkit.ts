@@ -26,6 +26,7 @@ import * as Stream from "effect/Stream";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as Config from "../../config.ts";
 import * as Environment from "../../environment/ServerEnvironment.ts";
+import * as GitManager from "../../git/GitManager.ts";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
 import * as McpTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
@@ -97,6 +98,23 @@ export const fixture = Effect.gen(function* () {
   yield* runGit(["commit", "--allow-empty", "-m", "synthetic"]);
   yield* runGit(["worktree", "add", "-b", "work", linked]);
   const calls: string[] = [];
+  const recreateCheckout = git.recreateCheckout;
+  if (recreateCheckout === undefined)
+    return yield* Effect.die("Managed consumer fixture requires the real recreation adapter");
+  const observedGit = Git.GitVcsDriver.of({
+    ...git,
+    recreateCheckout: (input) =>
+      Effect.sync(() => {
+        calls.push("git-create");
+      }).pipe(
+        Effect.andThen(recreateCheckout(input)),
+        Effect.tap(() =>
+          Effect.sync(() => {
+            calls.push("git-created");
+          }),
+        ),
+      ),
+  });
   let view: InventoryEntry = {
     worktree: linked,
     generation: null,
@@ -342,12 +360,20 @@ export const fixture = Effect.gen(function* () {
       }),
     ),
     Layer.provide(Layer.succeed(Runner.ProcessRunner, runner)),
-    Layer.provide(Layer.succeed(Git.GitVcsDriver, git)),
+    Layer.provide(Layer.succeed(Git.GitVcsDriver, observedGit)),
     Layer.provide(platform),
   );
   const vcs = VcsRegistry.layer.pipe(
     Layer.provide(VcsProcess.layer),
     Layer.provide(configured),
+    Layer.provide(platform),
+  );
+  const workflows = GitWorkflow.layer.pipe(
+    Layer.provide(
+      Layer.mock(GitManager.GitManager)({ createWorktree: observedGit.createWorktree }),
+    ),
+    Layer.provide(vcs),
+    Layer.provide(Layer.succeed(Git.GitVcsDriver, observedGit)),
     Layer.provide(platform),
   );
   const checkpoints = Layer.effect(
@@ -374,6 +400,7 @@ export const fixture = Effect.gen(function* () {
     Layer.provideMerge(LifecycleRuntime.layer),
     Layer.provideMerge(database),
     Layer.provide(checkpoints),
+    Layer.provideMerge(workflows),
     Layer.provide(configured),
     Layer.provide(Settings.layerTest()),
     Layer.provide(
@@ -382,7 +409,7 @@ export const fixture = Effect.gen(function* () {
       }),
     ),
     Layer.provide(Layer.succeed(Runner.ProcessRunner, runner)),
-    Layer.provide(Layer.succeed(Git.GitVcsDriver, git)),
+    Layer.provideMerge(Layer.succeed(Git.GitVcsDriver, observedGit)),
     Layer.provide(
       Layer.succeed(Registry.ProviderInstanceRegistry, {
         getCatalogSource: (id) => (id === selection.instanceId ? instance : undefined),
@@ -391,22 +418,6 @@ export const fixture = Effect.gen(function* () {
         listUnavailable: Effect.succeed([]),
         streamChanges: Stream.empty,
         subscribeChanges: Effect.never,
-      }),
-    ),
-    Layer.provide(
-      Layer.mock(GitWorkflow.GitWorkflowService)({
-        pruneWorktrees: () =>
-          Effect.sync(() => {
-            calls.push("git-prune");
-          }).pipe(Effect.andThen(runGit(["worktree", "prune"])), Effect.asVoid, Effect.orDie),
-        createWorktree: (input) =>
-          Effect.sync(() => {
-            calls.push("git-create");
-          }).pipe(
-            Effect.andThen(runGit(["worktree", "add", input.path!, input.refName])),
-            Effect.as({ worktree: { path: linked, branch: "work" } } as never),
-            Effect.orDie,
-          ),
       }),
     ),
     Layer.provide(

@@ -2850,7 +2850,18 @@
     "apps/server/src/serverRuntimeState.ts": "hook",
     "apps/server/src/jones/workstreams/operations/cliSession.ts": "jones-owned",
     "apps/server/src/jones/workstreams/operations/cliSession.test.ts": "jones-owned",
-    "apps/server/src/jones/device/directGatewayRetirement.test.ts": "jones-owned"
+    "apps/server/src/jones/device/directGatewayRetirement.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.testkit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Runtime.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Native.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/BindingCommit.ts": "jones-owned",
+    "apps/server/src/jones/workspaceRecreation/Runtime.test.ts": "jones-owned",
+    "packages/contracts/src/jones/workspaceRecreation.ts": "jones-owned",
+    "packages/contracts/src/jones/workspaceRecreation.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/workspace-recreation.json": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

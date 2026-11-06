@@ -15,6 +15,7 @@
     "../apps/server/src/jones/workspaceRetirement/Filesystem.ts",
     "../apps/server/src/jones/workspaceRetirement/DarwinFilesystem.ts",
     "../apps/server/src/jones/workspaceRetirement/OutputAttestation.ts",
+    "../apps/server/src/jones/workspaceRecreation/Native.ts",
     "../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts",
     "../apps/desktop/src/jones/updates/jonesPairedStateSource.ts",
     "../apps/desktop/src/jones/updates/jonesSigningSource.ts",
