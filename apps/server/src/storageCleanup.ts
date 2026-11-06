@@ -958,6 +958,11 @@ const make = Effect.gen(function* () {
             }).pipe(Effect.mapError(cause=>cause instanceof RetirementError ? cause : new RetirementError({target:worktreePath,reason:"observation_failed",cause}))),
           });
           retirementOutcome=result.outcome;
+          if(result.state==="partial" || result.state==="unknown") {
+            entries.push({...entry,retirement:retirementOutcome,outcome:"failed",
+              reason:sentence(result.reasons.join(", ") || "retirement effects require reconciliation"),bytes:null,files:null});
+            return;
+          }
           if(result.state!=="retired") return keep(result.reasons.join(", ") || "retirement proposed");
         }
         entries.push({ ...entry, ...(retirementOutcome ? {retirement:retirementOutcome} : {}), outcome: "removed", reason: sentence(removalReason), bytes });

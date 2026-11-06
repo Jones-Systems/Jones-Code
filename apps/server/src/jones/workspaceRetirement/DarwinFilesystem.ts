@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Node exposes no openat on Darwin. This optional adapter uses the system interpreter, never a shell or installed dependency.
-import { execFile } from "node:child_process";
+import * as NodeChildProcess from "node:child_process";
 
 // Keep the complete protection/hash/recheck operation in one descriptor-owning
 // process. A missing interpreter is unavailable evidence, never a fallback proof.
@@ -127,7 +127,7 @@ export function darwinFilesystem(request: {
   limit?: number;
 }): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    execFile(
+    NodeChildProcess.execFile(
       "/usr/bin/python3",
       ["-B", "-c", PROGRAM, JSON.stringify(request)],
       {

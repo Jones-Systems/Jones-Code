@@ -1,6 +1,7 @@
+import { nativePid } from "./Reservation.ts";
 import { reconcile } from "./ClaimReconciliation.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- A run-local nonce distinguishes server holders; restart alone never proves a consumer absent.
-import { randomUUID } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -13,9 +14,9 @@ export const hooks = Effect.gen(function* () {
   return {
     hold: Effect.fn("WorkspaceRetirement.holdDuty")(function* (worktree:string|null, kind:string, owner:string) {
       if(worktree===null || store===null) return Effect.void;
-      const id=randomUUID();
+      const id=NodeCrypto.randomUUID();
       for(let attempt=0;attempt<=20;attempt++) {
-        const result=yield* store.claim({id,worktree,kind,owner,holder:JSON.stringify({serverPid:process.pid,nonce:id,kind,owner})}).pipe(Effect.result);
+        const result=yield* store.claim({id,worktree,kind,owner,holder:JSON.stringify({serverPid:nativePid,nonce:id,kind,owner})}).pipe(Effect.result);
         if(result._tag==="Success") return store.releaseClaim(id);
         if(result.failure.reason!=="retiring" || attempt===20) return yield* Effect.fail(result.failure);
         yield* Effect.sleep("250 millis");

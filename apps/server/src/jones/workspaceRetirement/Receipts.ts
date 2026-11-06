@@ -1,3 +1,4 @@
+import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -68,15 +69,15 @@ const make = Effect.gen(function* () {
           return;
         }
         const known = yield* sql<{ incarnation_id: string }>`SELECT incarnation_id FROM jones_workspace_provenance WHERE worktree=${input.worktree} ORDER BY rowid DESC LIMIT 1`;
-        yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${input.id},${input.worktree},${known[0]?.incarnation_id ?? null},${input.kind},${input.owner},${input.holder},${new Date().toISOString()},NULL)`;
+        yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${input.id},${input.worktree},${known[0]?.incarnation_id ?? null},${input.kind},${input.owner},${input.holder},${DateTime.formatIso(DateTime.nowUnsafe())},NULL)`;
       }));
     }, mapError("workspace")),
     releaseClaim: Effect.fn("WorkspaceRetirement.releaseClaim")(function* (id) {
-      yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${new Date().toISOString()} WHERE claim_id=${id} AND released_at IS NULL`;
+      yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${id} AND released_at IS NULL`;
     }, mapError("workspace")),
     reconcileClaim: Effect.fn("WorkspaceRetirement.reconcileClaim")(function* (id, holder, verifiedAbsent) {
       if (!verifiedAbsent) return yield* new RetirementError({ reason: "claim_holder_absence_unverified", target: id });
-      yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${new Date().toISOString()} WHERE claim_id=${id} AND holder_json=${holder} AND released_at IS NULL`;
+      yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${id} AND holder_json=${holder} AND released_at IS NULL`;
     }, mapError("workspace")),
     settlement: Effect.fn("WorkspaceRetirement.settlement")(function* (thread, worktree, settledAt) {
       const rows = yield* sql<SettlementIntent>`SELECT * FROM jones_workspace_retirement_intents WHERE thread_id=${thread} AND worktree=${worktree} AND settled_at=${settledAt} ORDER BY rowid DESC LIMIT 1`;
@@ -88,12 +89,12 @@ const make = Effect.gen(function* () {
         if (!rows[0]) return yield* new RetirementError({ reason: "settlement_intent_missing", target: event });
         if (rows[0].script_state !== "pending") return false;
         yield* writable(rows[0].worktree);
-        yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='running',script_started_at=${new Date().toISOString()} WHERE event_id=${event}`;
+        yield* sql`UPDATE jones_workspace_retirement_intents SET script_state='running',script_started_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event}`;
         return true;
       }));
     }, mapError("workspace")),
     finishScript: Effect.fn("WorkspaceRetirement.finishScript")(function* (event, state, exit) {
-      yield* sql`UPDATE jones_workspace_retirement_intents SET script_state=${state},script_exit_code=${exit},script_completed_at=${new Date().toISOString()} WHERE event_id=${event} AND script_state='running'`;
+      yield* sql`UPDATE jones_workspace_retirement_intents SET script_state=${state},script_exit_code=${exit},script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event} AND script_state='running'`;
     }, mapError("workspace")),
     outcome: Effect.fn("WorkspaceRetirement.outcome")(function* (event, result) {
       yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${JSON.stringify(result)} WHERE event_id=${event}`;

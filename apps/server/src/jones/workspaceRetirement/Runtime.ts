@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Read-only target observations; all effects flow through the common executor.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import * as OS from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
 import * as EffectPath from "effect/Path";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as Provenance from "../workspaceLifecycle/Provenance.ts";
@@ -23,8 +23,8 @@ import { processProbe, type Probe } from "./ConsumerProbe.ts";
 import { settlementAdmission } from "./SettlementAdmission.ts";
 import { retire } from "./RetirementExecutor.ts";
 
-const unavailable = (limit:string):Probe=>({observedAt:Date.now(),status:"unavailable",paths:[],limits:[limit]});
-const observed = (paths:readonly string[]):Probe=>({observedAt:Date.now(),status:"complete",paths,limits:[]});
+const unavailable = (limit:string):Probe=>({observedAt:DateTime.toEpochMillis(DateTime.nowUnsafe()),status:"unavailable",paths:[],limits:[limit]});
+const observed = (paths:readonly string[]):Probe=>({observedAt:DateTime.toEpochMillis(DateTime.nowUnsafe()),status:"complete",paths,limits:[]});
 const io = <A>(target:string, action:()=>Promise<A>) => Effect.tryPromise({try:action,catch:cause=>new RetirementError({target,reason:"observation_failed",cause})});
 export interface RuntimeRequest {
   worktree:string; projectRoot:string; threadId:string|null; rules:WorktreeCleanupRules;
@@ -46,7 +46,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
     Effect.provideService(EffectPath.Path,effectPath.value),
   );
   const bound=yield* io(request.worktree,()=>binding(request.worktree));
-  const projectCommon=yield* io(request.worktree,async()=>FS.realpath((await git(request.projectRoot,["rev-parse","--path-format=absolute","--git-common-dir"])).toString().trim()));
+  const projectCommon=yield* io(request.worktree,async()=>NodeFSP.realpath((await git(request.projectRoot,["rev-parse","--path-format=absolute","--git-common-dir"])).toString().trim()));
   if(projectCommon!==bound.git_common_dir) return yield* new RetirementError({target:request.worktree,reason:"repository_identity_changed"});
   let firstGeneration:string|null|undefined;
   let outputs:readonly Registry.OutputRecord[]=[];
@@ -55,7 +55,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
     const pending=yield* sql<{script_state:string;script_started_at:string|null;settled_at:string}>`SELECT i.script_state,i.script_started_at,i.settled_at FROM jones_workspace_retirement_intents i WHERE i.worktree=${request.worktree} AND i.rowid IN (SELECT MAX(rowid) FROM jones_workspace_retirement_intents WHERE worktree=${request.worktree} GROUP BY thread_id) AND i.script_state!='completed'`;
     if(pending.length) {
       const timedOut = pending.some(i=>settlementAdmission({script:i.script_state as "pending"|"running"|"failed"|"cancelled",
-        startedAt:Date.parse(i.script_started_at ?? i.settled_at),now:Date.now(),checkpoint:"pending",enabled:true}).reason==="settle_script_unfinished");
+        startedAt:Date.parse(i.script_started_at ?? i.settled_at),now:DateTime.toEpochMillis(DateTime.nowUnsafe()),checkpoint:"pending",enabled:true}).reason==="settle_script_unfinished");
       return yield* new RetirementError({target:request.worktree,reason:timedOut ? "settle_script_unfinished" : "settle_script_pending"});
     }
     const threads=yield* sql<{thread_id:string}>`SELECT thread_id FROM orchestration_v2_projection_threads WHERE json_extract(payload_json,'$.worktreePath')=${request.worktree} LIMIT 201`;
@@ -70,7 +70,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       if(thread.settledAt===null) continue;
       const intent=yield* store.settlement(row.thread_id,request.worktree,DateTime.formatIso(thread.settledAt));
       if(intent===null) return yield* new RetirementError({target:request.worktree,reason:"settlement_intent_missing"});
-      const admission=settlementAdmission({script:intent.script_state,startedAt:Date.parse(intent.script_started_at ?? intent.settled_at),now:Date.now(),checkpoint:"ready",enabled:request.rules.worktreeSettledAfterDays!==null});
+      const admission=settlementAdmission({script:intent.script_state,startedAt:Date.parse(intent.script_started_at ?? intent.settled_at),now:DateTime.toEpochMillis(DateTime.nowUnsafe()),checkpoint:"ready",enabled:request.rules.worktreeSettledAfterDays!==null});
       if(admission.decision==="hold") return yield* new RetirementError({target:request.worktree,reason:admission.reason});
     }
   }).pipe(mapError);
@@ -83,7 +83,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
     let services=unavailable("fresh native service evidence missing"), workloads=unavailable("fresh native workload evidence missing");
     if(selected?.retirementConsumerEvidence) {
       const evidence=yield* io(request.worktree,async()=>JSON.parse((await readBounded(selected.retirementConsumerEvidence!,65536)).toString()) as {schema:string;binding:unknown;observed_at:string;services:Probe;workloads:Probe});
-      if(evidence.schema==="workspace-native-evidence/v1" && canonical(evidence.binding)===canonical(bound) && Date.now()-Date.parse(evidence.observed_at)>=0 && Date.now()-Date.parse(evidence.observed_at)<=120000) {
+      if(evidence.schema==="workspace-native-evidence/v1" && canonical(evidence.binding)===canonical(bound) && DateTime.toEpochMillis(DateTime.nowUnsafe())-Date.parse(evidence.observed_at)>=0 && DateTime.toEpochMillis(DateTime.nowUnsafe())-Date.parse(evidence.observed_at)<=120000) {
         services=evidence.services;workloads=evidence.workloads;
       }
     }
@@ -103,19 +103,19 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
     }
     const untracked=(yield* io(request.worktree,()=>git(request.worktree,["ls-files","--others","--exclude-standard","-z"]))).toString().split("\0").filter(Boolean);
     const ignored=(yield* io(request.worktree,()=>git(request.worktree,["ls-files","--others","--ignored","--exclude-standard","--directory","-z"]))).toString().split("\0").filter(Boolean);
-    const exactRoots=[...new Set([...ownerPaths,...(request.rules.worktreeKeepWhen==="tracked-changes" && untracked.length<=10000 ? [...untracked,...ignored].map(p=>Path.resolve(request.worktree,p.replace(/\/$/,""))) : [])])];
+    const exactRoots=[...new Set([...ownerPaths,...(request.rules.worktreeKeepWhen==="tracked-changes" && untracked.length<=10000 ? [...untracked,...ignored].map(p=>NodePath.resolve(request.worktree,p.replace(/\/$/,""))) : [])])];
     const attestations:Record<string,string>={};
     yield* io(request.worktree,async()=>{
-      const directory=Path.join(bound.git_dir,"workspace-outputs");
+      const directory=NodePath.join(bound.git_dir,"workspace-outputs");
       if(!await exists(directory)) return;
-      const names=await FS.readdir(directory);if(names.length>10000) throw new Error("bound_exceeded");
+      const names=await NodeFSP.readdir(directory);if(names.length>10000) throw new Error("bound_exceeded");
       for(const name of names.filter(n=>n.endsWith(".json")).sort()) {
-        const path=Path.join(directory,name), sidecar=JSON.parse((await readBounded(path,65536)).toString());
+        const path=NodePath.join(directory,name), sidecar=JSON.parse((await readBounded(path,65536)).toString());
         if(sidecar.schema==="output-attestation/v1") for(const root of sidecar.roots ?? []) if(typeof root.path==="string") attestations[root.path] ??= path;
       }
     });
     const nativeGuard=yield* sql<{worktree_path:string}>`SELECT worktree_path FROM native_creation_intents WHERE worktree_path=${request.worktree} UNION SELECT worktree_path FROM jones_native_workspace_admissions WHERE worktree_path=${request.worktree}`;
-    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:[OS.tmpdir(),"/tmp","/private/tmp","/var/tmp","/private/var/tmp"],nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>processProbe(request.worktree))}} satisfies QualificationInput;
+    return {worktree:request.worktree,expected:bound,projectRoots:roots.map(r=>r.workspace_root),durableRepositories:[projectCommon],temporaryRoots:[NodeOS.tmpdir(),"/tmp","/private/tmp","/var/tmp","/private/var/tmp"],nativeRecreation:nativeGuard.length ? "unsupported" : "supported",coverage:{keepMode:request.rules.worktreeKeepWhen,classes:request.rules.worktreeCoveredDiscard,exactRoots,sensitivePaths:ownerPaths},attestations,lineage:request.threadId ? {threadId:request.threadId} : {},consumers:{native:observed(claims.length || active ? [request.worktree] : []),services,workloads,registry:registryProbe,obligations,process:yield* io(request.worktree,()=>processProbe(request.worktree))}} satisfies QualificationInput;
   }).pipe(mapError);
   // Automatic assessment may only replace an obligation-free current-incarnation record, and always precedes acquisition.
   const assess=Effect.gen(function* () {
@@ -137,7 +137,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       const baseInput=yield* observe;
       const base=yield* io(request.worktree,()=>qualify(baseInput));
       if(base.fingerprint!==request.ownerCoverage.fingerprint) return yield* new RetirementError({target:request.worktree,reason:"proposal_changed"});
-      const allowed=new Set([...(base.ignored ?? []).flatMap(r=>[r.path,...(r.paths ?? [])]),...(base.untrackedPaths ?? []).map(p=>Path.resolve(request.worktree,p))]);
+      const allowed=new Set([...(base.ignored ?? []).flatMap(r=>[r.path,...(r.paths ?? [])]),...(base.untrackedPaths ?? []).map(p=>NodePath.resolve(request.worktree,p))]);
       if(request.ownerCoverage.paths.length>10000 || request.ownerCoverage.paths.some(p=>!allowed.has(p))) return yield* new RetirementError({target:request.worktree,reason:"coverage_path_changed"});
       ownerPaths=request.ownerCoverage.paths;
     }
@@ -147,15 +147,15 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
       // This explicit lifecycle boundary can link existing production facts. Ordinary work
       // keeps J1's unbounded-sink skip; this is never called while holding our reservation.
       const references = yield* io(request.worktree, async () => {
-        const directory = Path.join(bound.git_dir, "workspace-completions");
+        const directory = NodePath.join(bound.git_dir, "workspace-completions");
         if (!await exists(directory)) return [];
-        const names = await FS.readdir(directory);
+        const names = await NodeFSP.readdir(directory);
         if (names.length > 20) return [];
         const matching: string[] = [];
         let bytes = 65536;
         for (const name of names) {
           if (!/^[a-f0-9]{32}\.json$/.test(name)) continue;
-          const reference = Path.join(directory, name), content = await readBounded(reference, bytes);
+          const reference = NodePath.join(directory, name), content = await readBounded(reference, bytes);
           bytes -= content.length;
           const value = JSON.parse(content.toString());
           if (value.schema === "workspace-output-observation/v1" && value.proofStatus === "deferred" &&
@@ -175,7 +175,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (req
     }}).pipe(Effect.provideService(Receipts,store));
   }).pipe(mapError,Effect.catch(error=>Effect.succeed({state:"held" as const,reasons:[error.reason],target:error.target,outputs})));
   const qualification="qualification" in result ? result.qualification : null;
-  const outcome:WorkspaceRetirementOutcome={state:result.state,reasonCodes:result.reasons,receiptId:"id" in result ? result.id : null,fingerprint:qualification?.fingerprint ?? null,paths:qualification ? [...new Set([...(qualification.ignored ?? []).flatMap(r=>[r.path,...(r.paths ?? [])]),...(qualification.untrackedPaths ?? []).map(p=>Path.resolve(request.worktree,p))])] : [],details:qualification?.details ?? result.reasons.map(reason=>({reason,target:request.worktree,root:request.worktree,fact:reason==="settle_script_unfinished" ? "Durable settle-script completion has not been recorded." : reason==="final_checkpoint_unfinished" ? "The latest run has no ready final checkpoint." : reason,missingFact:reason,lineage:request.threadId ? [{threadId:request.threadId}] : [],nextAction:reason==="settle_script_unfinished" ? "Resolve the settle script's actual holder and record its completion before reevaluating this checkout." : "Resolve this named target fact, then request a fresh proposal."})),outputObligations:outputs.map(r=>({id:r.id,path:r.path,owner:r.owner,state:r.state}))};
+  const outcome:WorkspaceRetirementOutcome={state:result.state,reasonCodes:result.reasons,receiptId:"id" in result ? result.id : null,fingerprint:qualification?.fingerprint ?? null,paths:qualification ? [...new Set([...(qualification.ignored ?? []).flatMap(r=>[r.path,...(r.paths ?? [])]),...(qualification.untrackedPaths ?? []).map(p=>NodePath.resolve(request.worktree,p))])] : [],details:qualification?.details ?? result.reasons.map(reason=>({reason,target:request.worktree,root:request.worktree,fact:reason==="settle_script_unfinished" ? "Durable settle-script completion has not been recorded." : reason==="final_checkpoint_unfinished" ? "The latest run has no ready final checkpoint." : reason,missingFact:reason,lineage:request.threadId ? [{threadId:request.threadId}] : [],nextAction:reason==="settle_script_unfinished" ? "Resolve the settle script's actual holder and record its completion before reevaluating this checkout." : "Resolve this named target fact, then request a fresh proposal."})),outputObligations:outputs.map(r=>({id:r.id,path:r.path,owner:r.owner,state:r.state}))};
   if(request.threadId) {
     const t=yield* projections.getThread(ThreadId.make(request.threadId));
     if(t.settledAt) {

@@ -1,12 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off -- C2 native descriptor/publication adapter shared with the dependency-free setup entrypoint.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import { constants } from "node:fs";
-import { randomBytes, createHash } from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeFS from "node:fs";
+import * as NodeCrypto from "node:crypto";
 import {
   canonical,
   exists,
   fdPath,
+  nativePlatform,
   git,
   inside,
   openAbsolute,
@@ -90,11 +91,11 @@ const safeNumber = (n: bigint) => {
   return v;
 };
 export async function binding(worktree: string): Promise<Binding> {
-  const path = await FS.realpath(worktree);
-  const git_dir = await FS.realpath(
+  const path = await NodeFSP.realpath(worktree);
+  const git_dir = await NodeFSP.realpath(
     (await git(path, ["rev-parse", "--absolute-git-dir"])).toString().trim(),
   );
-  const git_common_dir = await FS.realpath(
+  const git_common_dir = await NodeFSP.realpath(
     (await git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]))
       .toString()
       .trim(),
@@ -105,7 +106,7 @@ export async function binding(worktree: string): Promise<Binding> {
     const rs = await root.stat({ bigint: true }),
       gs = await admin.stat({ bigint: true });
     let breadcrumb_id: string | null = null;
-    const breadcrumb = Path.join(git_dir, "workspace-provenance.json");
+    const breadcrumb = NodePath.join(git_dir, "workspace-provenance.json");
     if (await exists(breadcrumb)) {
       const value = JSON.parse((await readBounded(breadcrumb, 65536)).toString());
       breadcrumb_id = value.breadcrumb_id ?? value.incarnation_id;
@@ -119,7 +120,7 @@ export async function binding(worktree: string): Promise<Binding> {
       git_dir_dev: safeNumber(gs.dev),
       git_dir_ino: safeNumber(gs.ino),
       git_common_dir,
-      admin_id: Path.basename(git_dir),
+      admin_id: NodePath.basename(git_dir),
       breadcrumb_id,
     };
   } finally {
@@ -148,11 +149,11 @@ async function darwinMetadata(
   return { ...data, snapshots: new Map(Object.entries(data.snapshots)) };
 }
 export async function metadata(
-  root: FS.FileHandle,
+  root: NodeFSP.FileHandle,
   deadline: number,
   limits: { entries: number; bytes: number },
 ): Promise<Metadata> {
-  if (process.platform === "darwin")
+  if (nativePlatform === "darwin")
     return darwinMetadata(fdPath(root.fd), "metadata", {
       ...limits,
       seconds: Math.max(0.001, (deadline - performance.now()) / 1000),
@@ -170,7 +171,7 @@ export async function metadata(
     const relative = pending.pop()!;
     const dir = await openRelative(root, relative, true);
     try {
-      const iterator = await FS.opendir(fdPath(dir.fd));
+      const iterator = await NodeFSP.opendir(fdPath(dir.fd));
       try {
         for await (const child of iterator) {
           if (performance.now() > deadline || entries.length >= limits.entries)
@@ -178,7 +179,7 @@ export async function metadata(
           if (child.name.includes("\ufffd")) throw new Error("observation_failed");
           const relpath = relative ? relative + "/" + child.name : child.name;
           const path = `${fdPath(dir.fd)}/${child.name}`;
-          const s = await FS.lstat(path, { bigint: true });
+          const s = await NodeFSP.lstat(path, { bigint: true });
           if (s.dev !== device) throw new Error("mount_boundary");
           const type = s.isFile()
             ? "file"
@@ -204,7 +205,7 @@ export async function metadata(
           }
           if (type === "symlink")
             e.target = new TextDecoder("utf-8", { fatal: true }).decode(
-              await FS.readlink(path, { encoding: "buffer" }),
+              await NodeFSP.readlink(path, { encoding: "buffer" }),
             );
           else if (type === "directory" && child.name !== ".git" && !sensitive(child.name))
             pending.push(relpath);
@@ -225,8 +226,8 @@ export async function metadata(
   entries.sort(pathOrder);
   const directories = new Set(entries.filter((e) => e.type === "directory").map((e) => e.relpath));
   for (const entry of entries)
-    if (entry.type === "file" && Path.basename(entry.relpath) === "HEAD") {
-      const parent = Path.posix.dirname(entry.relpath),
+    if (entry.type === "file" && NodePath.basename(entry.relpath) === "HEAD") {
+      const parent = NodePath.posix.dirname(entry.relpath),
         prefix = parent === "." ? "" : parent + "/";
       if (directories.has(prefix + "objects") && directories.has(prefix + "refs")) {
         reasons.add("nested_repository");
@@ -275,12 +276,12 @@ export async function contentManifest(
     content_manifest_sha256: null,
     reasons: [],
   };
-  let root: FS.FileHandle | undefined;
+  let root: NodeFSP.FileHandle | undefined;
   try {
-    if (path.split(Path.sep).some(sensitive)) throw new Error("sensitive_ignored");
-    if (path.split(Path.sep).includes(".git")) throw new Error("nested_repository");
+    if (path.split(NodePath.sep).some(sensitive)) throw new Error("sensitive_ignored");
+    if (path.split(NodePath.sep).includes(".git")) throw new Error("nested_repository");
     const deadline = performance.now() + limits.seconds * 1000;
-    if (process.platform === "darwin") {
+    if (nativePlatform === "darwin") {
       const first = await darwinMetadata(path, "content", limits);
       Object.assign(observation, {
         entries: first.entries.length,
@@ -314,7 +315,7 @@ export async function contentManifest(
         try {
           if (snapshot(await file.stat({ bigint: true })) !== first.snapshots.get(entry.relpath))
             throw new Error("attestation_mismatch");
-          const digest = createHash("sha256"),
+          const digest = NodeCrypto.createHash("sha256"),
             block = Buffer.alloc(1024 * 1024);
           let count = 0;
           while (true) {
@@ -345,7 +346,7 @@ export async function contentManifest(
       canonical([...second.snapshots].sort()) !== canonical([...first.snapshots].sort()) ||
       second.reasons.length ||
       snapshot(await root.stat({ bigint: true })) !== initial ||
-      snapshot(await FS.lstat(path, { bigint: true })) !== initial
+      snapshot(await NodeFSP.lstat(path, { bigint: true })) !== initial
     )
       throw new Error("attestation_mismatch");
     const payload = manifestBytes(first.entries);
@@ -388,21 +389,24 @@ export interface Attestation {
   finished_at: string;
   manifest: string | null;
 }
-async function publish(directory: FS.FileHandle, name: string, payload: Buffer) {
-  const temporary = `.${name}.${randomBytes(8).toString("hex")}`;
+async function publish(directory: NodeFSP.FileHandle, name: string, payload: Buffer) {
+  const temporary = `.${name}.${NodeCrypto.randomBytes(8).toString("hex")}`;
   const base = fdPath(directory.fd);
-  const output = await FS.open(
+  const output = await NodeFSP.open(
     `${base}/${temporary}`,
-    constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+    NodeFS.constants.O_WRONLY |
+      NodeFS.constants.O_CREAT |
+      NodeFS.constants.O_EXCL |
+      NodeFS.constants.O_NOFOLLOW,
     0o600,
   );
   try {
     await output.writeFile(payload);
     await output.sync();
-    await FS.link(`${base}/${temporary}`, `${base}/${name}`);
+    await NodeFSP.link(`${base}/${temporary}`, `${base}/${name}`);
   } finally {
     await output.close();
-    await FS.unlink(`${base}/${temporary}`);
+    await NodeFSP.unlink(`${base}/${temporary}`);
   }
 }
 export async function attest(input: {
@@ -422,7 +426,7 @@ export async function attest(input: {
   const bound = await binding(input.worktree);
   if (input.expected && canonical(input.expected) !== canonical(bound))
     throw new Error("identity_mismatch");
-  const path = Path.resolve(input.root);
+  const path = NodePath.resolve(input.root);
   if (!inside(path, bound.path) || path === bound.path || inside(path, bound.git_dir))
     throw new Error("outside_worktree");
   // Only explicit proof needs the Effect timestamp formatter; automatic
@@ -433,13 +437,13 @@ export async function attest(input: {
     const { observation, payload } = await contentManifest(path);
     if (canonical(await binding(bound.path)) !== canonical(bound))
       throw new Error("identity_mismatch");
-    const parent = Path.join(bound.git_dir, "workspace-outputs");
-    await FS.mkdir(parent, { mode: 0o700 }).catch((cause) => {
+    const parent = NodePath.join(bound.git_dir, "workspace-outputs");
+    await NodeFSP.mkdir(parent, { mode: 0o700 }).catch((cause) => {
       if (cause.code !== "EEXIST") throw cause;
     });
     const dir = await openAbsolute(parent, true);
     try {
-      const id = input.producer + "-" + randomBytes(16).toString("hex");
+      const id = input.producer + "-" + NodeCrypto.randomBytes(16).toString("hex");
       const manifest = observation.verification === "content" ? id + ".manifest.jsonl" : null;
       if (manifest) await publish(dir, manifest, payload);
       const record: Attestation = {
@@ -456,7 +460,7 @@ export async function attest(input: {
       };
       await publish(dir, id + ".json", Buffer.from(canonical(record) + "\n"));
       await dir.sync();
-      return { ...record, sidecar: Path.join(parent, id + ".json") };
+      return { ...record, sidecar: NodePath.join(parent, id + ".json") };
     } finally {
       await dir.close();
     }
@@ -474,8 +478,8 @@ export async function verify(
   try {
     const bound = await binding(worktree);
     if (
-      Path.dirname(sidecar) !== Path.join(bound.git_dir, "workspace-outputs") ||
-      !/^[a-z0-9][a-z0-9._-]{0,23}-[a-f0-9]{32}\.json$/.test(Path.basename(sidecar))
+      NodePath.dirname(sidecar) !== NodePath.join(bound.git_dir, "workspace-outputs") ||
+      !/^[a-z0-9][a-z0-9._-]{0,23}-[a-f0-9]{32}\.json$/.test(NodePath.basename(sidecar))
     )
       throw new Error("location");
     const record: Attestation = JSON.parse((await readBounded(sidecar, 65536)).toString());
@@ -485,7 +489,7 @@ export async function verify(
     )
       return { verification: "unverifiable", reason: "identity_mismatch" };
     if (
-      record.id + ".json" !== Path.basename(sidecar) ||
+      record.id + ".json" !== NodePath.basename(sidecar) ||
       !["succeeded", "failed", "cancelled"].includes(record.status) ||
       typeof record.producer_version !== "string" ||
       typeof record.started_at !== "string" ||
@@ -495,7 +499,7 @@ export async function verify(
       throw new Error("record");
     const root = record.roots[0]!;
     if (
-      Path.resolve(root.path) !== root.path ||
+      NodePath.resolve(root.path) !== root.path ||
       !inside(root.path, bound.path) ||
       root.path === bound.path ||
       inside(root.path, bound.git_dir)
@@ -506,7 +510,7 @@ export async function verify(
     const current = await contentManifest(root.path);
     if (current.observation.verification !== "content") throw new Error("content");
     const baseline = await readBounded(
-      Path.join(Path.dirname(sidecar), record.manifest),
+      NodePath.join(NodePath.dirname(sidecar), record.manifest),
       256 * 1024 * 1024,
     );
     if (sha256(baseline) !== root.content_manifest_sha256 || !baseline.equals(current.payload))

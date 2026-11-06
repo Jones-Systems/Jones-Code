@@ -26,7 +26,7 @@ export const provide=layer=>e=>effect(async c=>{if(layer instanceof Map)return e
 export const context=()=>effect(async c=>c), serviceOption=tag=>effect(async c=>c.has(tag)?{_tag:'Some',value:c.get(tag)}:{_tag:'None'});
 export const runPromise=e=>e.run(new Map());
 `,
-  'effect/DateTime': `export const nowUnsafe=()=>new Date();export const formatIso=value=>value.toISOString();`,
+  'effect/DateTime': `export const nowUnsafe=()=>new Date();export const toEpochMillis=value=>value.getTime();export const formatIso=value=>value.toISOString();`,
   'effect/Context': `import {effect} from 'effect/Effect';export const Service=()=>()=>class {static of(x){return x}static *[Symbol.iterator](){return yield effect(c=>{if(!c.has(this))throw Error('Missing test service '+this.name);return c.get(this)})}};`,
   'effect/Layer': `export const effect=(tag,value)=>({tag,value});`,
   'effect/Schema': `import {fail as failEffect} from 'effect/Effect';export const String={},Defect=()=>({}),optional=x=>x;export const TaggedError=()=>()=>class extends Error {constructor(v){super(v.reason);Object.assign(this,v)}*[Symbol.iterator](){return yield failEffect(this)}};export const is=c=>v=>v instanceof c;`,

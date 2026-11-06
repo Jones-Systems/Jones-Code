@@ -1,10 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Disposable repositories exercise the real adapters without provider or app state.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import * as OS from "node:os";
-import { execFile } from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeOS from "node:os";
+import * as NodeChildProcess from "node:child_process";
 import { binding, attest, contentManifest, type Attestation } from "./OutputAttestation.ts";
-import { canonical } from "./Filesystem.ts";
+import * as DateTime from "effect/DateTime";
+import { canonical, nativePlatform } from "./Filesystem.ts";
 import { participantGuard } from "./ParticipantGuard.ts";
 import { qualify, type QualificationInput } from "./Qualification.ts";
 import type { ConsumerEvidence } from "./ConsumerProbe.ts";
@@ -13,7 +14,7 @@ import type { Preservation } from "./IgnoredClassifier.ts";
 export type Recipe = Record<string, unknown>;
 export function command(cwd: string, args: string[]) {
   return new Promise<string>((resolve, reject) =>
-    execFile(
+    NodeChildProcess.execFile(
       "git",
       ["-C", cwd, ...args],
       {
@@ -37,7 +38,9 @@ export function command(cwd: string, args: string[]) {
     ),
   );
 }
-export function completeConsumers(now = Date.now()): ConsumerEvidence {
+export function completeConsumers(
+  now = DateTime.toEpochMillis(DateTime.nowUnsafe()),
+): ConsumerEvidence {
   const probe = () => ({
     observedAt: now,
     status: "complete" as const,
@@ -53,31 +56,31 @@ export function completeConsumers(now = Date.now()): ConsumerEvidence {
     process: probe(),
   };
 }
-export async function fixture<T>(
-  run: (f: {
-    base: string;
-    repo: string;
-    worktree: string;
-    input: QualificationInput;
-  }) => Promise<T>,
-) {
-  const base = await FS.realpath(await FS.mkdtemp(Path.join(OS.tmpdir(), "jones-swl-j2-")));
-  const owner = await FS.lstat(base);
+interface ConformanceFixture {
+  base: string;
+  repo: string;
+  worktree: string;
+  input: QualificationInput;
+}
+export async function acquireFixture(): Promise<ConformanceFixture> {
+  const base = await NodeFSP.realpath(
+    await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-swl-j2-")),
+  );
   try {
-    const repo = Path.join(base, "repo"),
-      worktree = Path.join(base, "checkout");
-    await FS.mkdir(repo);
+    const repo = NodePath.join(base, "repo"),
+      worktree = NodePath.join(base, "checkout");
+    await NodeFSP.mkdir(repo);
     await command(repo, ["init", "-b", "main"]);
-    await FS.writeFile(Path.join(repo, "tracked"), "original\n");
-    await FS.writeFile(
-      Path.join(repo, ".gitignore"),
+    await NodeFSP.writeFile(NodePath.join(repo, "tracked"), "original\n");
+    await NodeFSP.writeFile(
+      NodePath.join(repo, ".gitignore"),
       "node_modules/\ninstall/\ncache/\n.venv/\n__pycache__/\n.DS_Store\nbuild/\nnotes/\n.t3/\n",
     );
     await command(repo, ["add", "."]);
     await command(repo, ["commit", "-m", "base"]);
     await command(repo, ["worktree", "add", "-b", "task", worktree]);
     const expected = await binding(worktree);
-    return await run({
+    return {
       base,
       repo,
       worktree,
@@ -90,15 +93,25 @@ export async function fixture<T>(
         nativeRecreation: "supported",
         consumers: completeConsumers(),
       },
-    });
+    };
+  } catch (cause) {
+    await NodeFSP.rm(base, { recursive: true, force: true });
+    throw cause;
+  }
+}
+export async function fixture<T>(run: (f: ConformanceFixture) => Promise<T>) {
+  const f = await acquireFixture();
+  const owner = await NodeFSP.lstat(f.base);
+  try {
+    return await run(f);
   } finally {
-    const current = await FS.lstat(base);
+    const current = await NodeFSP.lstat(f.base);
     if (current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino)
-      throw new Error("fixture_owner_changed:" + base);
-    await FS.rm(base, { recursive: true, force: true });
+      throw new Error("fixture_owner_changed:" + f.base);
+    await NodeFSP.rm(f.base, { recursive: true, force: true });
     try {
-      await FS.lstat(base);
-      throw new Error("fixture_cleanup_unproved:" + base);
+      await NodeFSP.lstat(f.base);
+      throw new Error("fixture_cleanup_unproved:" + f.base);
     } catch (cause) {
       if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
     }
@@ -108,9 +121,9 @@ export async function executeRecipe(recipe: Recipe) {
   return fixture(async ({ base, repo, worktree, input }) => {
     const g = (args: string[]) => command(worktree, args);
     const write = async (relative: string, bytes: string | Buffer) => {
-      const path = Path.join(worktree, relative);
-      await FS.mkdir(Path.dirname(path), { recursive: true });
-      await FS.writeFile(path, bytes);
+      const path = NodePath.join(worktree, relative);
+      await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true });
+      await NodeFSP.writeFile(path, bytes);
       return path;
     };
     const commit = async () => {
@@ -148,15 +161,15 @@ export async function executeRecipe(recipe: Recipe) {
       await write("tracked", "hidden edit\n");
     }
     if (recipe.change === "MERGE_HEAD")
-      await FS.writeFile(
-        Path.join(input.expected.git_dir, "MERGE_HEAD"),
+      await NodeFSP.writeFile(
+        NodePath.join(input.expected.git_dir, "MERGE_HEAD"),
         await g(["rev-parse", "HEAD"]),
       );
     if (recipe.change === "locked") await command(repo, ["worktree", "lock", worktree]);
     for (const name of (recipe.operation_files as string[]) ?? [])
-      await FS.writeFile(Path.join(input.expected.git_dir, name), "stale\n");
+      await NodeFSP.writeFile(NodePath.join(input.expected.git_dir, name), "stale\n");
     if (recipe.missing_path) {
-      await FS.rename(worktree, Path.join(base, "missing"));
+      await NodeFSP.rename(worktree, NodePath.join(base, "missing"));
       return qualify(input);
     }
     if (recipe.reflog_tips) {
@@ -176,7 +189,7 @@ export async function executeRecipe(recipe: Recipe) {
       input.projectRoots = [];
     }
     if (recipe.contains_project_root)
-      input.projectRoots = [Path.join(worktree, "registered-project")];
+      input.projectRoots = [NodePath.join(worktree, "registered-project")];
     if (recipe.tracked_lockfile) {
       await write("package.json", "{}\n");
       await write("pnpm-lock.yaml", "lockfileVersion: 9\n");
@@ -190,11 +203,11 @@ export async function executeRecipe(recipe: Recipe) {
     }
     let root: string | undefined;
     if (typeof recipe.ignored === "string") {
-      root = Path.join(worktree, recipe.ignored);
+      root = NodePath.join(worktree, recipe.ignored);
       if (recipe.ignored === ".DS_Store")
         await write(".DS_Store", Buffer.from([0, 0, 0, 1, ...Buffer.from("Bud1")]));
       else {
-        await FS.mkdir(root, { recursive: true });
+        await NodeFSP.mkdir(root, { recursive: true });
         await write(recipe.ignored + "/output", "original output\n");
         if (recipe.ignored === "cache" || recipe.cachedir_tag)
           await write(
@@ -204,24 +217,24 @@ export async function executeRecipe(recipe: Recipe) {
         if (recipe.pyvenv) await write(recipe.ignored + "/pyvenv.cfg", "fixture\n");
         if (recipe.ignored === "__pycache__") {
           if (recipe.valid_pyc) {
-            const source = Path.join(base, "foreign.py"),
-              bytecode = Path.join(root, "module.cpython-fixture.pyc");
-            await FS.writeFile(
+            const source = NodePath.join(base, "foreign.py"),
+              bytecode = NodePath.join(root, "module.cpython-fixture.pyc");
+            await NodeFSP.writeFile(
               source,
               recipe.bytecode_source === "different"
                 ? "value = 'different source'\n"
                 : "value = 'tracked source'\n",
             );
             await new Promise<void>((resolve, reject) =>
-              execFile(
-                process.platform === "darwin" ? "/usr/bin/python3" : "python3",
+              NodeChildProcess.execFile(
+                nativePlatform === "darwin" ? "/usr/bin/python3" : "python3",
                 [
                   "-B",
                   "-c",
                   "import py_compile,sys; py_compile.compile(sys.argv[1],cfile=sys.argv[2],dfile=sys.argv[3],doraise=True)",
                   source,
                   bytecode,
-                  Path.join(worktree, "module.py"),
+                  NodePath.join(worktree, "module.py"),
                 ],
                 { timeout: 5000, maxBuffer: 65536 },
                 (error) => (error ? reject(error) : resolve()),
@@ -234,13 +247,15 @@ export async function executeRecipe(recipe: Recipe) {
           (recipe.files as Record<string, string>) ?? {},
         )) {
           const file = await write(recipe.ignored + "/" + path, value);
-          if (value === "mode-000") await FS.chmod(file, 0);
+          if (value === "mode-000") await NodeFSP.chmod(file, 0);
         }
       }
     }
     input.coverage = {
       classes: (recipe.coverage_classes as string[]) ?? [],
-      exactRoots: ((recipe.coverage_roots as string[]) ?? []).map((p) => Path.join(worktree, p)),
+      exactRoots: ((recipe.coverage_roots as string[]) ?? []).map((p) =>
+        NodePath.join(worktree, p),
+      ),
     };
     if (root && recipe.attestation) {
       const record = await attest({
@@ -261,27 +276,27 @@ export async function executeRecipe(recipe: Recipe) {
           })),
           manifest: null,
         };
-        await FS.writeFile(record.sidecar, canonical(value));
+        await NodeFSP.writeFile(record.sidecar, canonical(value));
       }
     }
     if (root && recipe.mutation) {
-      const file = Path.join(root, "output"),
-        before = await FS.stat(file);
+      const file = NodePath.join(root, "output"),
+        before = await NodeFSP.stat(file);
       if (recipe.mutation === "same_size_restored_mtime") {
-        await FS.writeFile(file, "modified output\n");
-        await FS.utimes(file, before.atime, before.mtime);
+        await NodeFSP.writeFile(file, "modified output\n");
+        await NodeFSP.utimes(file, before.atime, before.mtime);
       }
       if (recipe.mutation === "added_file")
-        await FS.writeFile(Path.join(root, "extra"), "addition\n");
+        await NodeFSP.writeFile(NodePath.join(root, "extra"), "addition\n");
       if (recipe.mutation === "edited_notes")
-        await FS.writeFile(file, "unique handwritten notes\n");
+        await NodeFSP.writeFile(file, "unique handwritten notes\n");
     }
     if (root && recipe.nested_git) {
-      const nested = Path.join(root, "nested");
-      await FS.mkdir(nested);
+      const nested = NodePath.join(root, "nested");
+      await NodeFSP.mkdir(nested);
       if (recipe.shared_common_store) {
         await command(nested, ["init", "-b", "main"]);
-        await FS.writeFile(Path.join(nested, "file"), "fixture\n");
+        await NodeFSP.writeFile(NodePath.join(nested, "file"), "fixture\n");
         await command(nested, ["add", "."]);
         await command(nested, ["commit", "-m", "base"]);
         await command(nested, [
@@ -289,19 +304,19 @@ export async function executeRecipe(recipe: Recipe) {
           "add",
           "-b",
           "linked",
-          Path.join(base, "external-linked"),
+          NodePath.join(base, "external-linked"),
         ]);
       } else if (recipe.nested_git === "gitfile")
-        await FS.writeFile(Path.join(nested, ".git"), "gitdir: /nonexistent/fixture\n");
-      else await FS.mkdir(Path.join(nested, ".git"));
+        await NodeFSP.writeFile(NodePath.join(nested, ".git"), "gitdir: /nonexistent/fixture\n");
+      else await NodeFSP.mkdir(NodePath.join(nested, ".git"));
     }
     if (recipe.submodule) {
-      const submodule = Path.join(worktree, "submodule");
-      await FS.mkdir(submodule);
+      const submodule = NodePath.join(worktree, "submodule");
+      await NodeFSP.mkdir(submodule);
       let head = await g(["rev-parse", "HEAD"]);
       if (recipe.submodule === "populated") {
         await command(submodule, ["init", "-b", "main"]);
-        await FS.writeFile(Path.join(submodule, "file"), "retained\n");
+        await NodeFSP.writeFile(NodePath.join(submodule, "file"), "retained\n");
         await command(submodule, ["add", "."]);
         await command(submodule, ["commit", "-m", "submodule"]);
         head = await command(submodule, ["rev-parse", "HEAD"]);
@@ -311,36 +326,38 @@ export async function executeRecipe(recipe: Recipe) {
       await command(repo, ["update-ref", "refs/heads/main", await g(["rev-parse", "HEAD"])]);
     }
     if (recipe.admin_modules)
-      await FS.mkdir(Path.join(input.expected.git_dir, "modules/retained"), { recursive: true });
+      await NodeFSP.mkdir(NodePath.join(input.expected.git_dir, "modules/retained"), {
+        recursive: true,
+      });
     if (recipe.worktree_config) {
       await command(repo, ["config", "extensions.worktreeConfig", "true"]);
       for (const [key, value] of Object.entries(recipe.worktree_config as Record<string, string>))
         await g(["config", "--worktree", key, value]);
       if (recipe.sparse_patterns) {
-        await FS.mkdir(Path.join(input.expected.git_dir, "info"), { recursive: true });
-        await FS.writeFile(
-          Path.join(input.expected.git_dir, "info/sparse-checkout"),
+        await NodeFSP.mkdir(NodePath.join(input.expected.git_dir, "info"), { recursive: true });
+        await NodeFSP.writeFile(
+          NodePath.join(input.expected.git_dir, "info/sparse-checkout"),
           (recipe.sparse_patterns as string[]).join("\n") + "\n",
         );
         await g(["read-tree", "-mu", "HEAD"]);
       }
     }
     if (recipe.alternates) {
-      const alternate = Path.join(base, "temporary-objects");
-      await FS.mkdir(alternate);
-      await FS.writeFile(
-        Path.join(input.expected.git_common_dir, "objects/info/alternates"),
+      const alternate = NodePath.join(base, "temporary-objects");
+      await NodeFSP.mkdir(alternate);
+      await NodeFSP.writeFile(
+        NodePath.join(input.expected.git_common_dir, "objects/info/alternates"),
         alternate + "\n",
       );
       input.temporaryRoots = [alternate];
     }
     if (recipe.preservation) {
       const source = await write("notes/evidence", "retained evidence\n");
-      const sourceRoot = Path.dirname(source),
-        destination = Path.join(base, "preserved");
-      await FS.cp(sourceRoot, destination, { recursive: true });
+      const sourceRoot = NodePath.dirname(source),
+        destination = NodePath.join(base, "preserved");
+      await NodeFSP.cp(sourceRoot, destination, { recursive: true });
       const content = await contentManifest(destination),
-        info = await FS.stat(destination);
+        info = await NodeFSP.stat(destination);
       const record: Preservation = {
         source: sourceRoot,
         destination,
@@ -349,16 +366,19 @@ export async function executeRecipe(recipe: Recipe) {
         sourceManifestSha256: content.observation.content_manifest_sha256!,
         mode: recipe.preservation === "verified_move" ? "move" : "copy",
         retainedOwner: "fixture-owner",
-        recordPath: Path.join(base, "preservation.json"),
+        recordPath: NodePath.join(base, "preservation.json"),
       };
-      if (record.mode === "move") await FS.rm(sourceRoot, { recursive: true });
+      if (record.mode === "move") await NodeFSP.rm(sourceRoot, { recursive: true });
       if (recipe.preservation === "copy_source_changed")
-        await FS.writeFile(source, "changed evidence\n");
-      await FS.writeFile(record.recordPath, canonical(record));
+        await NodeFSP.writeFile(source, "changed evidence\n");
+      await NodeFSP.writeFile(record.recordPath, canonical(record));
       input.preservations = [record];
     }
     if (recipe.legacy_mark || recipe.cleanup_candidate)
-      await FS.writeFile(Path.join(input.expected.git_dir, "legacy-cleanup-mark"), "candidate\n");
+      await NodeFSP.writeFile(
+        NodePath.join(input.expected.git_dir, "legacy-cleanup-mark"),
+        "candidate\n",
+      );
     input.consumers = completeConsumers();
     if (recipe.obligation)
       input.consumers.obligations = { ...input.consumers.obligations, paths: [worktree] };

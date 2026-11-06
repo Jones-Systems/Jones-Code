@@ -1,13 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Native no-follow descriptor adapter; callers own the Effect lifetime.
-import * as FS from "node:fs/promises";
-import { constants, type BigIntStats } from "node:fs";
-import * as Path from "node:path";
-import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeChildProcess from "node:child_process";
 import { darwinFilesystem } from "./DarwinFilesystem.ts";
 
 export const sha256 = (value: string | Uint8Array) =>
-  createHash("sha256").update(value).digest("hex");
+  NodeCrypto.createHash("sha256").update(value).digest("hex");
 export function canonical(value: unknown): string {
   const sorted = (v: unknown): unknown =>
     Array.isArray(v)
@@ -25,8 +25,8 @@ export function canonical(value: unknown): string {
   );
 }
 export const inside = (path: string, root: string) =>
-  path === root || path.startsWith(root + Path.sep);
-export const snapshot = (s: BigIntStats) =>
+  path === root || path.startsWith(root + NodePath.sep);
+export const snapshot = (s: NodeFS.BigIntStats) =>
   [s.dev, s.ino, s.mode, s.size, s.mtimeNs, s.ctimeNs].join(":");
 export const sensitive = (name: string) => {
   const n = name.toLowerCase();
@@ -39,35 +39,37 @@ export const sensitive = (name: string) => {
   );
 };
 const directoryPaths = new Map<number, string>();
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Descriptor paths and no-follow syscalls bind to the actual host ABI, including standalone setup; an injected application platform cannot select that ABI.
+export const nativePlatform = process.platform;
 export const fdPath = (fd: number) =>
-  process.platform === "darwin" ? directoryPaths.get(fd)! : `/proc/self/fd/${fd}`;
-export async function openRelative(root: FS.FileHandle, relpath: string, directory = false) {
+  nativePlatform === "darwin" ? directoryPaths.get(fd)! : `/proc/self/fd/${fd}`;
+export async function openRelative(root: NodeFSP.FileHandle, relpath: string, directory = false) {
   const parts = relpath.split("/").filter(Boolean);
   if (parts.some((x) => x === "." || x === ".." || x.includes("\0")))
     throw new Error("identity_mismatch");
   let parent = root;
   try {
     for (let i = 0; i < parts.length; i++) {
-      const next = await FS.open(
+      const next = await NodeFSP.open(
         `${fdPath(parent.fd)}/${parts[i]}`,
-        constants.O_RDONLY |
-          constants.O_NOFOLLOW |
-          constants.O_NONBLOCK |
-          (i < parts.length - 1 || directory ? constants.O_DIRECTORY : 0),
+        NodeFS.constants.O_RDONLY |
+          NodeFS.constants.O_NOFOLLOW |
+          NodeFS.constants.O_NONBLOCK |
+          (i < parts.length - 1 || directory ? NodeFS.constants.O_DIRECTORY : 0),
       );
-      if (process.platform === "darwin")
-        directoryPaths.set(next.fd, Path.join(fdPath(parent.fd), parts[i]!));
+      if (nativePlatform === "darwin")
+        directoryPaths.set(next.fd, NodePath.join(fdPath(parent.fd), parts[i]!));
       if (parent !== root) await parent.close();
       parent = next;
     }
     if (parent === root) {
       // The descriptor link is an intermediate anchor on Linux. Opening it as
       // the final component with O_NOFOLLOW rejects /proc/self/fd/N itself.
-      const copy = await FS.open(
+      const copy = await NodeFSP.open(
         `${fdPath(root.fd)}/.`,
-        constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+        NodeFS.constants.O_RDONLY | NodeFS.constants.O_DIRECTORY | NodeFS.constants.O_NOFOLLOW,
       );
-      if (process.platform === "darwin") directoryPaths.set(copy.fd, fdPath(root.fd));
+      if (nativePlatform === "darwin") directoryPaths.set(copy.fd, fdPath(root.fd));
       return copy;
     }
     return parent;
@@ -77,9 +79,10 @@ export async function openRelative(root: FS.FileHandle, relpath: string, directo
   }
 }
 export async function openAbsolute(path: string, directory = false) {
-  if (!Path.isAbsolute(path) || Path.normalize(path) !== path) throw new Error("identity_mismatch");
-  const anchor = await FS.open("/", constants.O_RDONLY | constants.O_DIRECTORY);
-  if (process.platform === "darwin") directoryPaths.set(anchor.fd, "/");
+  if (!NodePath.isAbsolute(path) || NodePath.normalize(path) !== path)
+    throw new Error("identity_mismatch");
+  const anchor = await NodeFSP.open("/", NodeFS.constants.O_RDONLY | NodeFS.constants.O_DIRECTORY);
+  if (nativePlatform === "darwin") directoryPaths.set(anchor.fd, "/");
   try {
     return await openRelative(anchor, path.slice(1), directory);
   } finally {
@@ -87,7 +90,7 @@ export async function openAbsolute(path: string, directory = false) {
   }
 }
 export async function readBounded(path: string, limit: number) {
-  if (process.platform === "darwin") {
+  if (nativePlatform === "darwin") {
     const value = (await darwinFilesystem({ operation: "read", path, limit })) as { bytes: string };
     return Buffer.from(value.bytes, "base64");
   }
@@ -129,7 +132,7 @@ export function git(cwd: string, args: readonly string[], timeout = 10000): Prom
     )
       delete env[key as keyof typeof env];
   return new Promise((resolve, reject) =>
-    execFile(
+    NodeChildProcess.execFile(
       "git",
       [
         "--no-optional-locks",
@@ -152,7 +155,7 @@ export function git(cwd: string, args: readonly string[], timeout = 10000): Prom
 }
 export async function exists(path: string) {
   try {
-    await FS.lstat(path);
+    await NodeFSP.lstat(path);
     return true;
   } catch (cause) {
     if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;

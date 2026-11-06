@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- C4 common-store protocol is shared with V3, independent of Jones' database.
-import * as OS from "node:os";
-import * as FS from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { canonical } from "./Filesystem.ts";
+import * as NodeOS from "node:os";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeChildProcess from "node:child_process";
+import { canonical, nativePlatform } from "./Filesystem.ts";
 import { incarnation, type Binding } from "./OutputAttestation.ts";
 import { reservationTransaction } from "./ParticipantGuard.ts";
 
@@ -10,12 +10,14 @@ export interface ReservationRecord {
   schema: "workspace-reservation/v1"; admin_id: string; incarnation: string;
   executor: string; receipt: string; host: string; boot_id: string; pid: number; process_start: string;
 }
-const command = (file: string, args: string[]) => new Promise<string>((resolve,reject)=>execFile(file,args,{timeout:2000,maxBuffer:4096,encoding:"utf8"},(error,out)=>error ? reject(error) : resolve(out.trim())));
+const command = (file: string, args: string[]) => new Promise<string>((resolve,reject)=>NodeChildProcess.execFile(file,args,{timeout:2000,maxBuffer:4096,encoding:"utf8"},(error,out)=>error ? reject(error) : resolve(out.trim())));
+// oxlint-disable-next-line t3code/no-global-process-runtime -- Reservation recovery identifies the actual executor PID, independent of injected application runtime values.
+export const nativePid = process.pid;
 export async function holderIdentity() {
-  const boot_id = process.platform === "linux" ? (await FS.readFile("/proc/sys/kernel/random/boot_id","utf8")).trim() : process.platform === "darwin" ? await command("/usr/sbin/sysctl",["-n","kern.boottime"]) : "";
-  const process_start = await command("/bin/ps",["-p",String(process.pid),"-o","lstart="]);
+  const boot_id = nativePlatform === "linux" ? (await NodeFSP.readFile("/proc/sys/kernel/random/boot_id","utf8")).trim() : nativePlatform === "darwin" ? await command("/usr/sbin/sysctl",["-n","kern.boottime"]) : "";
+  const process_start = await command("/bin/ps",["-p",String(nativePid),"-o","lstart="]);
   if(!boot_id || !process_start) throw new Error("holder_identity_unavailable");
-  return {host:OS.hostname(),boot_id,pid:process.pid,process_start};
+  return {host:NodeOS.hostname(),boot_id,pid:nativePid,process_start};
 }
 function readRecord(value: unknown): ReservationRecord {
   if(typeof value !== "string") throw new Error("reservation_unverifiable");

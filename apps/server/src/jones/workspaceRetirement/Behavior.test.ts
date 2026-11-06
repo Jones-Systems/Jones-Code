@@ -1,3 +1,3 @@
-import { it } from "vitest";
+import { it } from "vite-plus/test";
 import { behaviorCases } from "./Behavior.testkit.ts";
-for (const [name, run] of Object.entries(behaviorCases)) it(name, run, 30000);
+it.each(Object.entries(behaviorCases))("%s", (_name, run) => run());

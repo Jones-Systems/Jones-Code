@@ -1,14 +1,14 @@
 // @effect-diagnostics nodeBuiltinImport:off -- unlinkat with no-follow parent descriptors prevents disposal from traversing symlinks.
-import * as FS from "node:fs/promises";
-import * as Path from "node:path";
-import { execFile } from "node:child_process";
+import * as NodeFSP from "node:fs/promises";
+import * as NodePath from "node:path";
+import * as NodeChildProcess from "node:child_process";
 import { canonical, git, inside } from "./Filesystem.ts";
 import type { Binding } from "./OutputAttestation.ts";
 import { classifyIgnored } from "./IgnoredClassifier.ts";
 import type { JournalEntry } from "./Receipts.ts";
 
 export async function pathIdentity(path:string) {
-  const s=await FS.lstat(path,{bigint:true});
+  const s=await NodeFSP.lstat(path,{bigint:true});
   return canonical({dev:String(s.dev),ino:String(s.ino),mode:String(s.mode),size:String(s.size),mtime_ns:String(s.mtimeNs),ctime_ns:String(s.ctimeNs)});
 }
 export async function enumerateDisposal(bound:Binding, keepMode:string) {
@@ -19,14 +19,14 @@ export async function enumerateDisposal(bound:Binding, keepMode:string) {
   const ignored=(await git(bound.path,["ls-files","--others","--ignored","--exclude-standard","--directory","-z"])).toString().split("\0").filter(Boolean).map(p=>p.replace(/\/$/,""));
   const entries:JournalEntry[]=[];
   for(const [kind,paths] of [["untracked",untracked],["ignored",ignored]] as const) for(const relative of paths) {
-    const absolute=Path.resolve(bound.path,relative);
+    const absolute=NodePath.resolve(bound.path,relative);
     if(!inside(absolute,bound.path) || absolute===bound.path || relative.split("/").some(p=>p===".git" || p==="..")) throw new Error("identity_mismatch");
     // Every untracked selection gets the same sensitive/nested-store protections as ignored roots.
     if(kind==="untracked") {
       if(keepMode!=="tracked-changes") throw new Error("untracked");
       const result=await classifyIgnored({worktree:bound.path,root:absolute,common:bound.git_common_dir,coverage:{keepMode:"tracked-changes",exactRoots:[absolute]}});
       if(result.outcome!=="disposable") throw new Error(result.reason ?? "untracked");
-      const stat=await FS.lstat(absolute);
+      const stat=await NodeFSP.lstat(absolute);
       if(stat.isDirectory()) throw new Error("untracked_directory_unverifiable");
     }
     entries.push({path:absolute,kind,identity:await pathIdentity(absolute),state:"planned"});
@@ -56,12 +56,12 @@ finally:
 `;
 export async function disposePath(bound:Binding,entry:JournalEntry) {
   if(entry.kind!=="untracked") throw new Error("invalid_disposal_kind");
-  return new Promise<void>((resolve,reject)=>execFile("/usr/bin/python3",["-I","-S","-B","-c",unlinkScript,JSON.stringify({binding:bound,path:entry.path,identity:entry.identity})],{timeout:5000,maxBuffer:4096},error=>error ? reject(error) : resolve()));
+  return new Promise<void>((resolve,reject)=>NodeChildProcess.execFile("/usr/bin/python3",["-I","-S","-B","-c",unlinkScript,JSON.stringify({binding:bound,path:entry.path,identity:entry.identity})],{timeout:5000,maxBuffer:4096},error=>error ? reject(error) : resolve()));
 }
 export async function verifyClean(bound:Binding, journal:readonly JournalEntry[]) {
   const status=await git(bound.path,["status","--porcelain=v1","-z","--untracked-files=all","--ignore-submodules=none"]);
   if(status.length) throw new Error("remaining_local_changes");
   const remaining=(await git(bound.path,["ls-files","--others","--ignored","--exclude-standard","--directory","-z"])).toString().split("\0").filter(Boolean);
   const roots=journal.filter(e=>e.kind==="ignored").map(e=>e.path);
-  if(remaining.some(p=>!roots.some(root=>inside(Path.resolve(bound.path,p),root)))) throw new Error("remaining_ignored_changed");
+  if(remaining.some(p=>!roots.some(root=>inside(NodePath.resolve(bound.path,p),root)))) throw new Error("remaining_ignored_changed");
 }

@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- A killable, bounded metadata sink; never traverses output roots or invokes a content-proof primitive.
-import { spawnSync } from "node:child_process";
-import * as Path from "node:path";
+import * as NodeChildProcess from "node:child_process";
+import * as NodePath from "node:path";
 import { RESERVATION_DDL } from "./ParticipantGuard.ts";
 import type { Binding } from "./OutputAttestation.ts";
 
@@ -110,16 +110,20 @@ export function recordCompletion(
   const bytes = JSON.stringify(observation);
   if (Buffer.byteLength(bytes) > CAPTURE_LIMITS.bytes)
     return { status: "unavailable", reason: "metadata_bound" };
-  if (!Path.isAbsolute(observation.worktree))
+  if (!NodePath.isAbsolute(observation.worktree))
     return { status: "unavailable", reason: "git_admin_unavailable" };
-  const result = spawnSync(process.execPath, ["--input-type=module", "-e", workerProgram], {
-    input: bytes,
-    encoding: "utf8",
-    timeout: CAPTURE_LIMITS.milliseconds,
-    killSignal: "SIGKILL",
-    maxBuffer: CAPTURE_LIMITS.bytes,
-    env: { PATH: process.env.PATH, NODE_NO_WARNINGS: "1" },
-  });
+  const result = NodeChildProcess.spawnSync(
+    process.execPath,
+    ["--input-type=module", "-e", workerProgram],
+    {
+      input: bytes,
+      encoding: "utf8",
+      timeout: CAPTURE_LIMITS.milliseconds,
+      killSignal: "SIGKILL",
+      maxBuffer: CAPTURE_LIMITS.bytes,
+      env: { PATH: process.env.PATH, NODE_NO_WARNINGS: "1" },
+    },
+  );
   if (result.status !== 0 || result.error)
     return {
       status: "unavailable",
@@ -170,7 +174,7 @@ export async function completionLineage(
   const { readdir } = await import("node:fs/promises");
   const { readBounded } = await import("./Filesystem.ts");
   try {
-    const directory = Path.join(admin, "workspace-completions");
+    const directory = NodePath.join(admin, "workspace-completions");
     const names = await readdir(directory);
     let budget = CAPTURE_LIMITS.bytes,
       partial = names.length > 20;
@@ -181,7 +185,7 @@ export async function completionLineage(
         continue;
       }
       try {
-        const bytes = await readBounded(Path.join(directory, name), budget);
+        const bytes = await readBounded(NodePath.join(directory, name), budget);
         budget -= bytes.length;
         const value = JSON.parse(bytes.toString());
         if (

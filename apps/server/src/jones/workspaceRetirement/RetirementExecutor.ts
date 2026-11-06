@@ -1,8 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- C4 readback observes both Git registration and the filesystem after unforced removal.
-import * as FS from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import * as NodeFSP from "node:fs/promises";
+import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
-import * as Path from "node:path";
+import * as NodePath from "node:path";
 import { canonical, exists, git } from "./Filesystem.ts";
 import { incarnation } from "./OutputAttestation.ts";
 import { finalCheck, qualify, type QualificationInput } from "./Qualification.ts";
@@ -32,7 +32,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (request
     return {state:"not_retired" as const,reasons:previous.reasons.length ? previous.reasons : ["retention_scope"],qualification:previous};
   return yield* withWorkspaceLease(request.worktree,Effect.uninterruptibleMask(restore=>Effect.gen(function* () {
     yield* request.revalidate;
-    const bound=input.expected, id=randomUUID();
+    const bound=input.expected, id=NodeCrypto.randomUUID();
     const record:ReservationRecord={schema:"workspace-reservation/v1",admin_id:bound.admin_id,incarnation:incarnation(bound),executor:"jones",receipt:id,...(yield* io(request.worktree,holderIdentity))};
     yield* io(request.worktree,()=>acquireReservation(bound,record));
     let began=false, effected=false, terminal=false;
@@ -51,7 +51,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (request
       const journal=yield* io(request.worktree,()=>enumerateDisposal(bound,input.coverage?.keepMode ?? "uncommitted-changes"));
       const selected = (paths:readonly string[]) => canonical([...paths].sort());
       if (selected(journal.filter(e=>e.kind==="untracked").map(e=>e.path)) !==
-          selected((final.result.untrackedPaths ?? []).map(p=>Path.resolve(bound.path,p))) ||
+          selected((final.result.untrackedPaths ?? []).map(p=>NodePath.resolve(bound.path,p))) ||
           selected(journal.filter(e=>e.kind==="ignored").map(e=>e.path)) !==
           selected((final.result.ignored ?? []).map(r=>r.path)))
         return yield* new RetirementError({reason:"disposal_selection_changed",target:request.worktree});
@@ -136,7 +136,7 @@ export async function removalReadback(projectRoot:string, receipt:RetirementRece
       await git(projectRoot,["merge-base","--is-ancestor",receipt.qualification.head!,ref]);
     }
     // No restore input is read from the removed admin directory.
-    await FS.stat(receipt.binding.git_common_dir);
+    await NodeFSP.stat(receipt.binding.git_common_dir);
     return "retired";
   } catch {return "unknown";}
 }
