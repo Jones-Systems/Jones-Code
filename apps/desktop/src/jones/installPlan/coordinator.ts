@@ -246,10 +246,12 @@ export function createInstallPlanCoordinator(options: {
             ordinary === undefined && plan.laptop.binding?.transactionId === transactionId
               ? "plan-install"
               : "prior-verified",
-          ...(ordinary === undefined ? {} : {
-            verificationKind: "ordinary-recovery" as const,
-            ordinaryRecovery: ordinary,
-          }),
+          ...(ordinary === undefined
+            ? {}
+            : {
+                verificationKind: "ordinary-recovery" as const,
+                ordinaryRecovery: ordinary,
+              }),
           transactionId,
           activeGeneration: evidence.activeGeneration,
           activeSource: evidence.activeSource,
@@ -291,9 +293,7 @@ export function createInstallPlanCoordinator(options: {
             evidence.activeGeneration === binding.transactionId &&
             evidence.activeGeneration !== binding.fromGeneration;
           const retired =
-            nativeReady &&
-            bound &&
-            (await options.controller.retiredLaptopInstall(binding));
+            nativeReady && bound && (await options.controller.retiredLaptopInstall(binding));
           // Another verified transaction proves the target, never this attempt's success.
           const external =
             targetVerified && (!bound || evidence.activeGeneration !== binding.transactionId);
@@ -376,10 +376,7 @@ export function createInstallPlanCoordinator(options: {
       return work(snapshot, evidence);
     });
   const nativeChange = async (
-    change: (
-      plan: JonesInstallPlan,
-      evidence: JonesInstallPlanLaptopEvidence,
-    ) => JonesInstallPlan,
+    change: (plan: JonesInstallPlan, evidence: JonesInstallPlanLaptopEvidence) => JonesInstallPlan,
     required = false,
   ) => {
     const state = await transact(async (snapshot, evidence) => {
@@ -880,7 +877,10 @@ export function createInstallPlanCoordinator(options: {
             publication:
               code === undefined
                 ? {
-                    kind: evidence.committedTransactionId === undefined ? "ordinary-verified" : "committed",
+                    kind:
+                      evidence.committedTransactionId === undefined
+                        ? "ordinary-verified"
+                        : "committed",
                     source: {
                       repository: "Jones-Systems/Jones-Code",
                       sha: evidence.activeSource!,
@@ -898,7 +898,8 @@ export function createInstallPlanCoordinator(options: {
           const environmentId = options.localEnvironmentId();
           const prior =
             evidence.environmentId === environmentId &&
-            (evidence.committedTransactionId !== undefined || ordinaryProof(evidence) !== undefined) &&
+            (evidence.committedTransactionId !== undefined ||
+              ordinaryProof(evidence) !== undefined) &&
             !evidence.activationBlocked &&
             evidence.activeSource === req.target.sourceSha &&
             evidence.activeTree === req.target.sourceTree;

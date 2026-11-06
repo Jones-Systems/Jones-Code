@@ -228,44 +228,66 @@ describe("ordinary recovery proof", () => {
   it("requires publication opt-in and preserves plan dispositions after Done", async () => {
     const f = recovered();
     expect((await f.coordinator.request({ type: "publication" })).publication).toMatchObject({
-      kind: "withheld", code: "unproved",
+      kind: "withheld",
+      code: "unproved",
     });
     const publish = () => f.coordinator.request({ type: "publication", acceptOrdinaryRecovery: 1 });
     expect((await publish()).publication).toMatchObject({
-      kind: "ordinary-verified", source: { sha: source, tree },
+      kind: "ordinary-verified",
+      source: { sha: source, tree },
     });
     const plan = await f.start([]);
     expect(plan.laptop.gate).toMatchObject({
-      basis: "prior-verified", verificationKind: "ordinary-recovery", ordinaryRecovery: proof,
+      basis: "prior-verified",
+      verificationKind: "ordinary-recovery",
+      ordinaryRecovery: proof,
     });
     const dispositions = structuredClone(f.snapshot().dispositions);
     const dismissed = await f.coordinator.request({
-      type: "dismiss", planId: plan.planId, expectedRevision: plan.revision,
+      type: "dismiss",
+      planId: plan.planId,
+      expectedRevision: plan.revision,
     });
     expect(dismissed.refused).toBeUndefined();
     expect((await publish()).publication).toMatchObject({ kind: "withheld", code: "plan-managed" });
     expect(f.snapshot().dispositions).toEqual(dispositions);
-    f.setEvidence({ activeSource: "9".repeat(40), activeGeneration: "8".repeat(64),
-      ordinaryRecovery: { ...proof, transactionId: `manual-${"8".repeat(64)}`,
-        activeGeneration: "8".repeat(64) } });
+    f.setEvidence({
+      activeSource: "9".repeat(40),
+      activeGeneration: "8".repeat(64),
+      ordinaryRecovery: {
+        ...proof,
+        transactionId: `manual-${"8".repeat(64)}`,
+        activeGeneration: "8".repeat(64),
+      },
+    });
     expect((await publish()).publication).toMatchObject({
-      kind: "ordinary-verified", source: { sha: "9".repeat(40) },
+      kind: "ordinary-verified",
+      source: { sha: "9".repeat(40) },
     });
     expect(f.snapshot().dispositions).toEqual(dispositions);
     expect(f.controller.install).not.toHaveBeenCalled();
   });
 
   it.each(["missing", "manifest", "receipt", "generation", "warm-fallback"])(
-    "closes an ordinary gate when its exact proof changes: %s", async (change) => {
+    "closes an ordinary gate when its exact proof changes: %s",
+    async (change) => {
       const f = recovered();
       await f.start();
-      f.setEvidence(change === "missing" || change === "warm-fallback"
-        ? { ordinaryRecovery: undefined, committedTransactionId: change === "warm-fallback" ? transaction : undefined }
-        : { ordinaryRecovery: { ...proof,
-            ...(change === "manifest" ? { manifestSha256: "9".repeat(64) } : {}),
-            ...(change === "receipt" ? { receiptSha256: "9".repeat(64) } : {}),
-            ...(change === "generation" ? { activeGeneration: "9".repeat(64) } : {}),
-          } });
+      f.setEvidence(
+        change === "missing" || change === "warm-fallback"
+          ? {
+              ordinaryRecovery: undefined,
+              committedTransactionId: change === "warm-fallback" ? transaction : undefined,
+            }
+          : {
+              ordinaryRecovery: {
+                ...proof,
+                ...(change === "manifest" ? { manifestSha256: "9".repeat(64) } : {}),
+                ...(change === "receipt" ? { receiptSha256: "9".repeat(64) } : {}),
+                ...(change === "generation" ? { activeGeneration: "9".repeat(64) } : {}),
+              },
+            },
+      );
       const result = await f.coordinator.request({ type: "read" });
       expect(result.state.current!.laptop.gateClosed?.reason).toBe("changed");
     },
@@ -285,9 +307,17 @@ describe("ordinary recovery proof", () => {
     await f.options.store.transact(async (snapshot) => {
       const plan = snapshot.document.current!;
       const { ordinaryRecovery: _proof, ...gate } = plan.laptop.gate!;
-      return { ...snapshot, document: { ...snapshot.document, current: {
-        ...plan, laptop: { ...plan.laptop, gate },
-      } }, result: undefined };
+      return {
+        ...snapshot,
+        document: {
+          ...snapshot.document,
+          current: {
+            ...plan,
+            laptop: { ...plan.laptop, gate },
+          },
+        },
+        result: undefined,
+      };
     });
     const result = await f.coordinator.request({ type: "read" });
     expect(result.state.current!.laptop.gateClosed?.reason).toBe("changed");

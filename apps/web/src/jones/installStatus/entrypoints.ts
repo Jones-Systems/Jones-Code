@@ -383,11 +383,15 @@ export async function legacyConnectionsGate(targetSource: string): Promise<strin
         result.state.laptop.ordinaryRecovery !== undefined &&
         plan.laptop.gate.ordinaryRecovery?.transactionId === plan.laptop.gate.transactionId &&
         plan.laptop.gate.ordinaryRecovery.activeGeneration === plan.laptop.gate.activeGeneration &&
-        result.state.laptop.ordinaryRecovery.transactionId === `manual-${plan.laptop.gate.activeGeneration}` &&
+        result.state.laptop.ordinaryRecovery.transactionId ===
+          `manual-${plan.laptop.gate.activeGeneration}` &&
         result.state.laptop.ordinaryRecovery.transactionId === plan.laptop.gate.transactionId &&
-        result.state.laptop.ordinaryRecovery.activeGeneration === plan.laptop.gate.activeGeneration &&
-        result.state.laptop.ordinaryRecovery.manifestSha256 === plan.laptop.gate.ordinaryRecovery?.manifestSha256 &&
-        result.state.laptop.ordinaryRecovery.receiptSha256 === plan.laptop.gate.ordinaryRecovery?.receiptSha256
+        result.state.laptop.ordinaryRecovery.activeGeneration ===
+          plan.laptop.gate.activeGeneration &&
+        result.state.laptop.ordinaryRecovery.manifestSha256 ===
+          plan.laptop.gate.ordinaryRecovery?.manifestSha256 &&
+        result.state.laptop.ordinaryRecovery.receiptSha256 ===
+          plan.laptop.gate.ordinaryRecovery?.receiptSha256
       : result.state.laptop.ordinaryRecovery === undefined &&
         plan.laptop.gate.ordinaryRecovery === undefined &&
         result.state.laptop.committedTransactionId === plan.laptop.gate.transactionId)

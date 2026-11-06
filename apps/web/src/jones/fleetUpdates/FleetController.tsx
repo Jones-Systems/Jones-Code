@@ -53,7 +53,8 @@ export async function readFleetPublicationSource() {
   if (bridge?.installPlan === undefined)
     return (await bridge?.getUpdateState())?.jones?.installedSource;
   const result = await bridge.installPlan({ type: "publication", acceptOrdinaryRecovery: 1 });
-  return result.publication?.kind === "committed" || result.publication?.kind === "ordinary-verified"
+  return result.publication?.kind === "committed" ||
+    result.publication?.kind === "ordinary-verified"
     ? result.publication.source
     : undefined;
 }

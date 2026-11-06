@@ -385,18 +385,33 @@ describe("install-plan persisted and native output contracts", () => {
       receiptSha256: "f".repeat(64),
     };
     const observed = { ...state, laptop: { ...state.laptop, ordinaryRecovery } };
-    expect(Schema.decodeUnknownSync(JonesInstallPlanState)(observed)).toEqual(observed);
-    expect(Schema.is(JonesInstallPlanState)({ ...observed,
-      laptop: { ...observed.laptop, ordinaryRecovery: { ...ordinaryRecovery, transactionId: "warm" } },
-    })).toBe(false);
-    expect(Schema.decodeUnknownSync(JonesInstallPlanRequest)({
-      type: "publication", acceptOrdinaryRecovery: 1,
-    })).toEqual({ type: "publication", acceptOrdinaryRecovery: 1 });
-    const publication = { kind: "ordinary-verified", source: {
-      repository: target.repository, sha: source, tree,
-    } };
-    expect(Schema.decodeUnknownSync(JonesInstallPlanResult)({ state: observed, publication }))
-      .toEqual({ state: observed, publication });
+    expect(Schema.decodeSync(JonesInstallPlanState)(observed)).toEqual(observed);
+    expect(
+      Schema.is(JonesInstallPlanState)({
+        ...observed,
+        laptop: {
+          ...observed.laptop,
+          ordinaryRecovery: { ...ordinaryRecovery, transactionId: "warm" },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      Schema.decodeSync(JonesInstallPlanRequest)({
+        type: "publication",
+        acceptOrdinaryRecovery: 1,
+      }),
+    ).toEqual({ type: "publication", acceptOrdinaryRecovery: 1 });
+    const publication = {
+      kind: "ordinary-verified",
+      source: {
+        repository: target.repository,
+        sha: source,
+        tree,
+      },
+    };
+    expect(
+      Schema.decodeUnknownSync(JonesInstallPlanResult)({ state: observed, publication }),
+    ).toEqual({ state: observed, publication });
   });
 
   it("retains host operation leases, Stop/fence correlation, and directive observations", () => {

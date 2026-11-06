@@ -512,8 +512,11 @@ export const make = Effect.gen(function* () {
         const before = await Effect.runPromiseWith(context)(primary.snapshot);
         const config = await Effect.runPromiseWith(context)(primary.currentConfig);
         if (
-          !before.ready || Option.isNone(before.activePid) || Option.isNone(config) ||
-          config.value.jonesColdBackendPermit !== undefined || config.value.bootstrapDelivery !== "fd3"
+          !before.ready ||
+          Option.isNone(before.activePid) ||
+          Option.isNone(config) ||
+          config.value.jonesColdBackendPermit !== undefined ||
+          config.value.bootstrapDelivery !== "fd3"
         )
           return undefined;
         const owner = config.value.jonesDesktopOwner?.();
@@ -522,9 +525,11 @@ export const make = Effect.gen(function* () {
         const after = await Effect.runPromiseWith(context)(primary.snapshot);
         const current = await Effect.runPromiseWith(context)(primary.currentConfig);
         if (
-          !after.ready || Option.isNone(after.activePid) ||
+          !after.ready ||
+          Option.isNone(after.activePid) ||
           after.activePid.value !== before.activePid.value ||
-          Option.isNone(current) || current.value !== config.value
+          Option.isNone(current) ||
+          current.value !== config.value
         )
           return undefined;
         owner.assertCurrent();

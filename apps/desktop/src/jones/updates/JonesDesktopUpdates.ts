@@ -676,25 +676,40 @@ export class JonesDesktopUpdateController {
     try {
       if (!/^[a-f0-9]{64}$/.test(bootstrap.generation)) return base;
       const before = await this.#options.ordinaryRecoveryReadiness?.();
-      if (before === undefined || !Number.isSafeInteger(before.backendPid) || before.backendPid <= 1)
+      if (
+        before === undefined ||
+        !Number.isSafeInteger(before.backendPid) ||
+        before.backendPid <= 1
+      )
         return base;
       before.owner.assertCurrent();
       const path = NodePath.join(
-        this.#options.home, "runtime", "jones-manual-installs", bootstrap.generation, "receipt.json",
+        this.#options.home,
+        "runtime",
+        "jones-manual-installs",
+        bootstrap.generation,
+        "receipt.json",
       );
       if ((await NodeFSP.realpath(path)) !== path) return base;
       const read = async (file: string) => {
-        const input = await NodeFSP.open(file, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+        const input = await NodeFSP.open(
+          file,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
         try {
           const stat = await input.stat();
           if (
-            !stat.isFile() || stat.nlink !== 1 || stat.size > 1024 * 1024 ||
-            stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0
+            !stat.isFile() ||
+            stat.nlink !== 1 ||
+            stat.size > 1024 * 1024 ||
+            stat.uid !== process.getuid?.() ||
+            (stat.mode & 0o077) !== 0
           )
             throw new Error("Ordinary recovery proof ownership or bounds changed.");
           const bytes = Buffer.alloc(1024 * 1024 + 1);
           const { bytesRead } = await input.read(bytes, 0, bytes.length, 0);
-          if (bytesRead > 1024 * 1024) throw new Error("Ordinary recovery proof exceeds its bound.");
+          if (bytesRead > 1024 * 1024)
+            throw new Error("Ordinary recovery proof exceeds its bound.");
           return bytes.subarray(0, bytesRead);
         } finally {
           await input.close();
@@ -727,7 +742,10 @@ export class JonesDesktopUpdateController {
         NodeCrypto.createHash("sha256").update(raw).digest("hex");
       const manifestSha256 = hash(JSON.stringify(manifest));
       const owner = before.owner.binding;
-      const executable = NodePath.relative(receipt.candidate.appPath, receipt.candidate.executablePath);
+      const executable = NodePath.relative(
+        receipt.candidate.appPath,
+        receipt.candidate.executablePath,
+      );
       // A launched receipt needs the present native owner and ready backend run.
       if (
         !NodeUtil.isDeepStrictEqual(active, bootstrap) ||
@@ -741,28 +759,37 @@ export class JonesDesktopUpdateController {
         receipt.candidate.bundleIdentifier !== active.bundleIdentifier ||
         !NodePath.isAbsolute(receipt.candidate.appPath) ||
         !NodePath.isAbsolute(receipt.candidate.executablePath) ||
-        !executable || executable === ".." || executable.startsWith(`..${NodePath.sep}`) ||
+        !executable ||
+        executable === ".." ||
+        executable.startsWith(`..${NodePath.sep}`) ||
         NodePath.isAbsolute(executable) ||
         NodePath.join(active.appPath, executable) !== active.executablePath ||
         owner.manifestSha256 !== manifestSha256 ||
-        owner.home !== active.home || owner.databasePath !== active.databasePath ||
-        owner.profile !== active.profile || owner.environmentId !== active.environmentId ||
-        owner.sourceSha !== active.sourceSha || owner.sourceTree !== active.sourceTree ||
+        owner.home !== active.home ||
+        owner.databasePath !== active.databasePath ||
+        owner.profile !== active.profile ||
+        owner.environmentId !== active.environmentId ||
+        owner.sourceSha !== active.sourceSha ||
+        owner.sourceTree !== active.sourceTree ||
         owner.version !== active.version
       )
         return base;
       const after = await this.#options.ordinaryRecoveryReadiness?.();
       if (
-        after === undefined || after.backendPid !== before.backendPid ||
+        after === undefined ||
+        after.backendPid !== before.backendPid ||
         after.run !== before.run ||
-        after.owner !== before.owner || !NodeUtil.isDeepStrictEqual(after.owner.binding, owner)
+        after.owner !== before.owner ||
+        !NodeUtil.isDeepStrictEqual(after.owner.binding, owner)
       )
         return base;
       after.owner.assertCurrent();
       if (
         !(await read(this.manifestPath)).equals(manifestRaw) ||
         !(await read(path)).equals(receiptRaw) ||
-        this.#bootstrap !== bootstrap || this.#busy !== null || this.#activationBlocked
+        this.#bootstrap !== bootstrap ||
+        this.#busy !== null ||
+        this.#activationBlocked
       )
         return base;
       after.owner.assertCurrent();
@@ -789,7 +816,11 @@ export class JonesDesktopUpdateController {
     )
       return false;
     try {
-      const directory = NodePath.join(this.updaterRoot, "retired-preparations", binding.transactionId);
+      const directory = NodePath.join(
+        this.updaterRoot,
+        "retired-preparations",
+        binding.transactionId,
+      );
       if ((await NodeFSP.realpath(directory)) !== directory) return false;
       const info = await NodeFSP.lstat(directory);
       if (!info.isDirectory() || info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)
@@ -806,7 +837,10 @@ export class JonesDesktopUpdateController {
       if (!(await absent(NodePath.join(this.updaterRoot, "transactions", binding.transactionId))))
         return false;
       const read = async (path: string) => {
-        const input = await NodeFSP.open(path, NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW);
+        const input = await NodeFSP.open(
+          path,
+          NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+        );
         try {
           const stat = await input.stat();
           if (
@@ -833,10 +867,9 @@ export class JonesDesktopUpdateController {
           ? value.map(canonical)
           : typeof value === "object" && value !== null
             ? Object.fromEntries(
-                Object.keys(value).sort().map((key) => [
-                  key,
-                  canonical((value as Record<string, unknown>)[key]),
-                ]),
+                Object.keys(value)
+                  .sort()
+                  .map((key) => [key, canonical((value as Record<string, unknown>)[key])]),
               )
             : value;
       const intent = await read(NodePath.join(directory, "preparation-retirement.json"));
@@ -886,7 +919,11 @@ export class JonesDesktopUpdateController {
         "activation-request.json",
         "preparation-withdrawal.json",
       ]);
-      if (records === null || typeof records !== "object" || Object.keys(records).length > allowed.size)
+      if (
+        records === null ||
+        typeof records !== "object" ||
+        Object.keys(records).length > allowed.size
+      )
         return false;
       const expectedNames = new Set([
         ...Object.keys(records),
@@ -931,14 +968,16 @@ export class JonesDesktopUpdateController {
         })
       )
         return false;
-      if (!NodeUtil.isDeepStrictEqual(attempt.value, {
-        protocol: 1,
-        transactionId: binding.transactionId,
-        stagedHandle: binding.stagedHandle,
-        selectionPath: value.selectionPath,
-        selectionSha256: value.selectionSha256,
-        expected: active,
-      }))
+      if (
+        !NodeUtil.isDeepStrictEqual(attempt.value, {
+          protocol: 1,
+          transactionId: binding.transactionId,
+          stagedHandle: binding.stagedHandle,
+          selectionPath: value.selectionPath,
+          selectionSha256: value.selectionSha256,
+          expected: active,
+        })
+      )
         return false;
       const attemptPath = NodePath.join(
         this.updaterRoot,
@@ -979,7 +1018,10 @@ export class JonesDesktopUpdateController {
         )
       )
         return false;
-      const helper = NodePath.join(this.updaterRoot, `activate-v1-${hash(jonesNativeHelperSource)}.py`);
+      const helper = NodePath.join(
+        this.updaterRoot,
+        `activate-v1-${hash(jonesNativeHelperSource)}.py`,
+      );
       const helperInfo = await NodeFSP.lstat(helper);
       if (
         !helperInfo.isFile() ||
@@ -990,10 +1032,17 @@ export class JonesDesktopUpdateController {
         (await NodeFSP.readFile(helper, "utf8")) !== jonesNativeHelperSource
       )
         return false;
-      const inspection = decodeNativePreparationResult(JSON.parse(await runNativeCommand(
-        "/usr/bin/python3",
-        [helper, "--manifest", this.manifestPath, "--inspect-preparation", binding.transactionId],
-      )));
+      const inspection = decodeNativePreparationResult(
+        JSON.parse(
+          await runNativeCommand("/usr/bin/python3", [
+            helper,
+            "--manifest",
+            this.manifestPath,
+            "--inspect-preparation",
+            binding.transactionId,
+          ]),
+        ),
+      );
       return (
         inspection.operation === "inspect-preparation" &&
         inspection.status === "retired" &&
