@@ -2,7 +2,12 @@ import {
   type RecordedEvent as OrchestrationV2RecordedEvent,
   type RecordedStoredEvent as OrchestrationV2RecordedStoredEvent,
 } from "./RecordedTypes.ts";
-import { type ApplicationProjectEvent, CommandId, ThreadId } from "@t3tools/contracts";
+import {
+  type ApplicationProjectEvent,
+  CommandId,
+  type EventId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -53,6 +58,7 @@ export interface EventStoreV2Shape {
     event: OrchestrationEventStore.UnsequencedProjectEvent,
   ) => Effect.Effect<ApplicationProjectEvent, EventStoreV2Error>;
   readonly read: (input?: {
+    readonly eventId?: EventId;
     readonly afterSequence?: number;
     readonly throughSequence?: number;
     readonly threadId?: ThreadId;
@@ -84,6 +90,7 @@ const layerBase: Layer.Layer<EventStoreV2, never, OrchestrationEventStore.Orches
       const read: EventStoreV2Shape["read"] = (input) =>
         applicationEvents
           .readAgentEvents({
+            ...(input?.eventId === undefined ? {} : { eventId: input.eventId }),
             ...(input?.afterSequence === undefined ? {} : { afterSequence: input.afterSequence }),
             ...(input?.throughSequence === undefined
               ? {}

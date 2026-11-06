@@ -2,6 +2,7 @@ import {
   EventId,
   ProviderSessionId,
   RunId,
+  ProviderRuntimeBinding,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
@@ -13,6 +14,7 @@ import * as Schema from "effect/Schema";
 import * as Switch from "../../orchestration-v2/ProviderSwitchService.ts";
 import * as Sessions from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as Sink from "../../orchestration-v2/EventSink.ts";
+import { runtimeBinding } from "@t3tools/provider-core/server/ProviderAdapter";
 
 export class ExecutionSessionRevalidationError extends Schema.TaggedError<ExecutionSessionRevalidationError>()(
   "ExecutionSessionRevalidationError",
@@ -82,9 +84,30 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
         threadId: run.threadId,
       }) ?? Effect.succeed(false)
     ));
+  const generation = provider.runtimeIdentity?.runtimeGeneration;
+  const hasNativeIdentity =
+    provider.appThreadId === run.threadId &&
+    provider.providerSessionId != null &&
+    provider.nativeThreadRef?.nativeId != null &&
+    provider.nativeThreadRef.driver === provider.driver;
+  const stoppedBinding = !hasNativeIdentity
+    ? undefined
+    : generation === undefined
+      ? ((yield* sink.readStoppedRuntime?.(provider) ?? Effect.succeed(null)) ?? undefined)
+      : runtimeBinding(provider, generation);
+  const identityBinding =
+    stoppedBinding === undefined
+      ? undefined
+      : runtimeBinding(provider, stoppedBinding.runtimeGeneration);
+  const stoppedRuntime =
+    stoppedBinding !== undefined &&
+    identityBinding !== undefined &&
+    Schema.toEquivalence(ProviderRuntimeBinding)(stoppedBinding, identityBinding) &&
+    (yield* sink.hasStoppedRuntime?.(stoppedBinding) ?? Effect.succeed(false));
   // A new session key prevents a pooled sibling's resident runtime from being reused.
   const replacement =
     retiredWriter ||
+    stoppedRuntime ||
     plan.transition.type === "restart_and_resume" ||
     (run.restartContinuationOfRunId !== undefined &&
       (plan.transition.type === "switch_model_in_session" ||
@@ -113,6 +136,22 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     runId: run.id,
     activeAttemptId: run.activeAttemptId,
     expectedStatus: "starting",
+    ...(stoppedRuntime && generation === undefined
+      ? {
+          runtimeIdentityBoundary: {
+            expectedGeneration: null,
+            expectedActiveProviderThreadId: provider.id,
+            expectedProviderThreadIdentity: {
+              id: provider.id,
+              appThreadId: provider.appThreadId,
+              driver: provider.driver,
+              providerInstanceId: provider.providerInstanceId,
+              providerSessionId: provider.providerSessionId,
+              nativeThreadRef: provider.nativeThreadRef,
+            },
+          },
+        }
+      : {}),
     events,
   });
   if (!result.committed) return yield* Effect.fail("Run changed before replacement.");

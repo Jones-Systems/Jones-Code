@@ -25,6 +25,14 @@
   "tombstones": [],
   "allowedImports": [
     {
+      "from": "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/testkit/ProviderReplayHarness.ts",
+      "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
+    },
+    {
       "from": "apps/server/src/orchestration-v2/EffectWorker.ts",
       "to": "apps/server/src/jones/runtime/RuntimeStop.ts"
     },
