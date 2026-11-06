@@ -183,6 +183,7 @@ import {
 } from "../previewMiniPlayerStore";
 import { threadPullRequestPanelTarget } from "./pullRequest/pullRequestDetail.logic";
 import { LinkPullRequestDialogHost } from "./pullRequest/LinkPullRequestDialog";
+import { PlanCreationStatus } from "../jones/pendingSends/PlanCreationStatus";
 import { GuestPendingMessages } from "./chat/GuestShareControls";
 import { useDeviceState } from "~/state/device";
 import { BranchToolbar, type BranchToolbarHandle } from "./BranchToolbar";
@@ -3452,6 +3453,19 @@ export default function ChatView(props: ChatViewProps) {
                               effortLabel={providerSubagentEffortLabel}
                               status={providerSubagentStatus}
                               onOpenParent={parentThreadLink?.open ?? null}
+                            />
+                          ) : null}
+                          {isServerThread && activeThread ? (
+                            <PlanCreationStatus
+                              environmentId={environmentId}
+                              sourceThreadId={activeThread.id}
+                              disabled={
+                                !canOperateThread ||
+                                isSendBusy ||
+                                isConnecting ||
+                                activeEnvironmentUnavailable
+                              }
+                              onResume={onImplementPlanInNewThreadStable}
                             />
                           ) : null}
                           {!composerMounted ? null : (

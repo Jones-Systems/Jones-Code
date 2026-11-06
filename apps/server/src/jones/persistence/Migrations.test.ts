@@ -409,6 +409,82 @@ it.effect("a released 130 database refuses late 125 and applies appended 131 exa
   }).pipe(Effect.provide(memory)),
 );
 
+const released135Identities = [
+  ...released130Identities,
+  [132, "OwnerSelections"],
+  [133, "ThreadResultDependencies"],
+  [134, "GoalContinuity"],
+  [135, "IdleWorktreeAdmission"],
+] as const;
+
+it.effect(
+  "the fixed released 135 runner upgrades retained native facts once without changing upstream",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const released = released135Identities.map(([id, name]) => {
+        const entry = jonesMigrationEntries.find(
+          ([currentId, currentName]) => currentId === id && currentName === name,
+        );
+        assert.isDefined(entry, `Released identity ${id}_${name} must remain registered`);
+        return entry!;
+      });
+      yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
+      assert.deepStrictEqual(yield* runJonesMigrations(released), released135Identities);
+      yield* sql`INSERT INTO native_creation_intents VALUES (
+      'claim', 'operation', 'preparation', 'command', 'thread', 'message',
+      '/synthetic/project', 'branch', '/synthetic/worktree', '{}', '{}'
+    )`;
+      yield* sql`INSERT INTO jones_native_creation_execution_acceptances VALUES (
+      'command', 'claim', 'thread', ${"a".repeat(64)}, ${"b".repeat(64)}, 'event', 1
+    )`;
+      yield* sql`INSERT INTO jones_native_creation_execution_starts
+      (rowid, effect_id, claim_id, command_id, worker_id, expected_attempt, lease_expires_at, reference_json, fact_json)
+      VALUES (401, 'effect', 'claim', 'command', 'worker', 1, '2026-11-05T12:00:30.000Z', '{}', '{}')`;
+      const before = yield* readLedger;
+      const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
+      const facts =
+        yield* sql`SELECT rowid AS retained_rowid, * FROM jones_native_creation_execution_starts`;
+      const trigger = yield* sql`SELECT sql FROM sqlite_master
+      WHERE name = 'jones_native_creation_execution_starts_no_update'`;
+      assert.isTrue(
+        Exit.isFailure(
+          yield* Effect.exit(sql`UPDATE jones_native_creation_execution_starts
+      SET lease_expires_at = '2026-11-05T12:00:40.000Z'`),
+        ),
+      );
+      // No upstream migration is pending; full startup still applies the Jones tail.
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual((yield* readLedger).slice(0, before.length), before);
+      assert.deepStrictEqual(
+        (yield* readLedger).map(({ migration_id, name }) => [migration_id, name]),
+        [
+          ...released135Identities.map(([id, name]) => [id, name]),
+          [136, "WorkspaceProvenance"],
+          [137, "NativeCreationLeaseRenewal"],
+      [138, "WorkspaceRetirement"],
+        ],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`,
+        upstream,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT rowid AS retained_rowid, * FROM jones_native_creation_execution_starts`,
+        facts,
+      );
+      assert.notDeepEqual(
+        yield* sql`SELECT sql FROM sqlite_master
+      WHERE name = 'jones_native_creation_execution_starts_no_update'`,
+        trigger,
+      );
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      const after = yield* readLedger;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* readLedger, after);
+    }).pipe(Effect.provide(memory)),
+);
+
 it.effect("rejects a future ledger gap instead of skipping a pending lower registered ID", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -601,7 +677,8 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [134, "GoalContinuity"],
       [135, "IdleWorktreeAdmission"],
       [136, "WorkspaceProvenance"],
-      [137, "WorkspaceRetirement"],
+      [137, "NativeCreationLeaseRenewal"],
+      [138, "WorkspaceRetirement"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

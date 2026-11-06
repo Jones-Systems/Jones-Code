@@ -22,6 +22,7 @@ import {
   assertRestartIdentity,
 } from "./runtime.mjs";
 import { createScenarioContext, loadScenario } from "./scenario-api.mjs";
+import { classifyNativeFailure } from "./native-workflow-boundary.mjs";
 export function generationProgress(artifacts, appendFile = NodeFSP.appendFile) {
   return async (generation, phase, work) => {
     if (
@@ -167,6 +168,7 @@ export async function runInner() {
   const start = performance.now();
   const result = {
     status: "failed",
+    boundary: { schema: "jones-native-boundary/v1", kind: "unknown", teardown: "unknown" },
     isolation: null,
     runtime: null,
     window: null,
@@ -189,6 +191,7 @@ export async function runInner() {
       await secretService.start();
     }
     const scenario = await loadScenario("/harness/scenario.mjs");
+    result.boundary.scenarioSha256 = scenario.identity.sha256;
     xvfb = await startXvfb(configuration.size);
     if (configuration.managedWindowManager) {
       phase = "window-manager-setup";
@@ -357,6 +360,7 @@ export async function runInner() {
         launch: launchApplication,
         assertIdentity: assertRestartIdentity,
       });
+      phase = "scenario";
       return {
         ...replacement,
         evidence: {
@@ -469,9 +473,22 @@ export async function runInner() {
     if (Math.abs(result.window.viewport.scale - configuration.scale) > 0.01)
       throw new Error("Requested device scale readback mismatch");
     result.status = "passed";
+    result.boundary.kind = "passed";
     code = 0;
   } catch (error) {
     result.error = error.message;
+    const failedScenario = ctx?.results();
+    result.boundary.kind = classifyNativeFailure(
+      phase,
+      error,
+      failedScenario?.assertions,
+      failedScenario?.steps,
+    );
+    result.boundary.failure = {
+      name: error.name,
+      code: error.code ?? null,
+      step: failedScenario?.steps.findLast((step) => step.status === "failed")?.name ?? null,
+    };
     if (secretService) {
       try {
         await NodeFSP.writeFile(
@@ -585,27 +602,40 @@ export async function runInner() {
       }
   } finally {
     clearInterval(timer);
+    result.boundary.phase = phase;
     try {
       if (ctx) Object.assign(result, ctx.results());
       const teardown = performance.now();
-      const logs = await captureSyntheticLogs();
+      let logs;
       // Preserve diagnostics before close on successful scenarios too.
-      if (!result.startupDiagnostics)
-        result.startupDiagnostics = await progress(
-          generations.at(-1)?.index ?? 0,
-          "final-diagnostics",
-          () =>
-            writeStartupDiagnostics({
-              artifacts: "/artifacts",
-              processCapture,
-              logs,
-              readiness,
-              phase,
-            }),
-        );
+      try {
+        logs = await captureSyntheticLogs();
+        if (!result.startupDiagnostics)
+          result.startupDiagnostics = await progress(
+            generations.at(-1)?.index ?? 0,
+            "final-diagnostics",
+            () =>
+              writeStartupDiagnostics({
+                artifacts: "/artifacts",
+                processCapture,
+                logs,
+                readiness,
+                phase,
+              }),
+          );
+      } catch (error) {
+        result.startupDiagnosticsError = error.message;
+        if (code === 0) {
+          code = 1;
+          result.status = "failed";
+        }
+      }
       for (const generation of generations) {
         if (generation.closed) continue;
         try {
+          // A failed partial journey still needs the final generation's exact
+          // process captures; it need not have reached a successful restart.
+          generation.processes ??= await captureApplicationProcesses(generation.app);
           // Control-only diagnostics from the task-owned isolated app.
           await generation.app.evaluate(({ app, BrowserWindow }, index) => {
             const fs = process.getBuiltinModule("fs");
@@ -631,15 +661,25 @@ export async function runInner() {
               app.on(event, () => record(event));
             process.on("uncaughtExceptionMonitor", (error) => record("uncaughtException", error));
           }, generation.index);
-          await progress(generation.index, "final-close", () =>
-            closeApplicationGeneration(generation),
-          );
         } catch (error) {
           generation.closeError = error.message;
           result.closeError = error.message;
           if (code === 0) {
             code = 1;
             result.status = "failed";
+          }
+        } finally {
+          try {
+            await progress(generation.index, "final-close", () =>
+              closeApplicationGeneration(generation),
+            );
+          } catch (error) {
+            generation.closeError ??= error.message;
+            result.closeError ??= error.message;
+            if (code === 0) {
+              code = 1;
+              result.status = "failed";
+            }
           }
         }
       }
@@ -684,9 +724,19 @@ export async function runInner() {
       } finally {
         for (const generation of generations) generation.processCapture.dispose();
       }
-      await stop(windowManagerChild);
-      if (result.windowManager) result.windowManager.closed = true;
-      await stop(xvfb?.child);
+      try {
+        await stop(windowManagerChild);
+        if (result.windowManager) result.windowManager.closed = true;
+      } catch (error) {
+        result.auxiliaryCloseError = error.message;
+      } finally {
+        try {
+          await stop(xvfb?.child);
+          result.boundary.xvfbClosed = Boolean(xvfb?.child);
+        } catch (error) {
+          result.auxiliaryCloseError ??= error.message;
+        }
+      }
       result.resources.teardownSeconds = (performance.now() - teardown) / 1000;
     } finally {
       if (secretService) {
@@ -714,6 +764,23 @@ export async function runInner() {
           }
         }
       }
+      if (result.auxiliaryCloseError && code === 0) {
+        code = 1;
+        result.status = "failed";
+      }
+      if (
+        !result.closeError &&
+        !result.startupDiagnosticsError &&
+        !result.auxiliaryCloseError &&
+        !result.secretServiceTeardownError &&
+        !result.secretServiceCancellationCleanup &&
+        result.boundary.xvfbClosed === true &&
+        !result.pendingElectronLaunch &&
+        generations.length > 0 &&
+        generations.every((g) => g.closed === true && g.processes) &&
+        (!secretService || result.secretService?.status === "closed")
+      )
+        result.boundary.teardown = "complete";
       await NodeFSP.writeFile("/artifacts/inner.json", JSON.stringify(result, null, 2), {
         mode: 0o600,
       });

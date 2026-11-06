@@ -37,10 +37,19 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
+import { CurrentEffectClaim, guardClaim } from "../jones/workspaceLifecycle/ActiveEffectClaim.ts";
+import { LifecycleConfiguration } from "../jones/workspaceLifecycle/NativeSource.ts";
+import { ProviderControlOutcomeUnknown } from "@t3tools/provider-core/server/jones/providerControlOutcome";
+import * as NativeAuthority from "../jones/nativeCreation/NativeCreationAuthority.ts";
+import * as NativeRepository from "../jones/nativeCreation/NativeCreationRepository.ts";
+import * as NativeExecution from "../jones/nativeCreation/NativeCreationProviderExecution.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
 
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as CheckpointService from "./CheckpointService.ts";
@@ -108,6 +117,7 @@ function layerExecutorFor(input: {
   readonly respond?: RuntimeRequestService.RuntimeRequestServiceV2["Service"]["respond"];
   readonly interrupt?: ProviderTurnControlService.ProviderTurnControlServiceV2Shape["interrupt"];
   readonly detach?: ProviderSessionManager.ProviderSessionManagerV2Shape["detach"];
+  readonly captureStartFailure?: ProviderTurnStartService.ProviderTurnStartServiceV2Shape["captureStartFailure"];
   readonly getReceipt?: CommandReceiptStore.CommandReceiptStoreV2Shape["getByCommandId"];
 }) {
   const record = (event: string) => Ref.update(input.events, (events) => [...events, event]);
@@ -142,6 +152,9 @@ function layerExecutorFor(input: {
     Layer.succeed(
       ProviderTurnStartService.ProviderTurnStartServiceV2,
       ProviderTurnStartService.ProviderTurnStartServiceV2.of({
+        ...(input.captureStartFailure === undefined
+          ? {}
+          : { captureStartFailure: input.captureStartFailure }),
         start: () =>
           Effect.gen(function* () {
             yield* record("start");
@@ -714,6 +727,466 @@ it.effect("terminalizes a process-bound claim when success settlement fails", ()
     assert.include(terminalError, "after execution started");
     assert.include(terminalError, "simulated success settlement failure");
   }),
+);
+
+it.effect(
+  "renewal refusal follows the executor failure path once and never retries a process-bound start",
+  () =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const timestamp = DateTime.formatIso(now);
+      const workerId = "worker:lost-custody";
+      const captured: EffectOutbox.OrchestrationEffectV2 = {
+        id: "effect:lost-custody",
+        commandId: CommandId.make("command:lost-custody"),
+        threadId,
+        request: { type: "provider-turn.start", runId: RunId.make("run:lost-custody") },
+        status: "running",
+        attemptCount: 1,
+        availableAt: timestamp,
+        leaseOwner: workerId,
+        leaseExpiresAt: DateTime.formatIso(DateTime.add(now, { seconds: 30 })),
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: null,
+        lastError: null,
+      };
+      const entered = yield* Deferred.make<void>();
+      let renewals = 0;
+      let retries = 0;
+      let failures = 0;
+      let runFailures = 0;
+      const outbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+        claimNext: () => Effect.succeedSome(captured),
+        get: () => Effect.succeedSome(captured),
+        awaitCancellation: () => Effect.never,
+        clearCancellation: () => Effect.void,
+        renew: () => {
+          renewals++;
+          return Effect.fail(new EffectOutbox.EffectClaimRenewalRefused({ effectId: captured.id }));
+        },
+        retry: () =>
+          Effect.sync(() => {
+            retries++;
+            return true;
+          }),
+        fail: (input) =>
+          Effect.sync(() => {
+            failures++;
+            assert.strictEqual(input.claim?.attemptCount, captured.attemptCount);
+            assert.strictEqual(input.claim?.leaseExpiresAt, captured.leaseExpiresAt);
+            return true;
+          }),
+      });
+      const executor = Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+        execute: () =>
+          guardClaim(Deferred.succeed(entered, undefined).pipe(Effect.andThen(Effect.never))).pipe(
+            Effect.catchTags({
+              EffectClaimLost: (cause) =>
+                Effect.sync(() => {
+                  runFailures++;
+                }).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new EffectWorker.OrchestrationEffectExecutionError({
+                        effectId: captured.id,
+                        effectType: captured.request.type,
+                        cause,
+                      }),
+                    ),
+                  ),
+                ),
+            }),
+          ),
+      });
+      const worker = EffectWorker.layerWithOptions({ workerId }).pipe(
+        Layer.provide(Layer.merge(outbox, executor)),
+        Layer.provide(
+          Layer.succeed(LifecycleConfiguration, {
+            environmentId: "synthetic",
+            projects: new Map(),
+          }),
+        ),
+      );
+      const pending = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.flatMap((service) => service.runOnce),
+        Effect.provide(worker),
+        Effect.forkChild,
+      );
+      yield* Deferred.await(entered);
+      yield* TestClock.adjust("10 seconds");
+      assert.isTrue(yield* Fiber.join(pending));
+      yield* TestClock.adjust("1 minute");
+      assert.strictEqual(renewals, 1);
+      assert.strictEqual(runFailures, 1);
+      assert.strictEqual(failures, 1);
+      assert.strictEqual(retries, 0);
+    }),
+);
+
+it.effect.each([false, true])(
+  "typed control uncertainty fails once despite legacy success text=%s",
+  (legacyText) =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const stopId = `effect:typed-unknown:${legacyText}`;
+      const nextId = `${stopId}:next`;
+      yield* outbox.enqueue([
+        {
+          id: stopId,
+          commandId: CommandId.make(`${stopId}:command`),
+          threadId,
+          request: {
+            type: "provider-turn.interrupt",
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+          },
+        },
+        {
+          id: nextId,
+          commandId: CommandId.make(`${nextId}:command`),
+          threadId,
+          request: { type: "delegated-tasks.stop", reason: "test progress" },
+        },
+      ]);
+      let stops = 0;
+      const executor = Layer.succeed(EffectWorker.OrchestrationEffectExecutorV2, {
+        execute: (effect) =>
+          effect.id !== stopId
+            ? Effect.void
+            : Effect.sync(() => {
+                stops++;
+              }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    new EffectWorker.OrchestrationEffectExecutionError({
+                      effectId: effect.id,
+                      effectType: effect.request.type,
+                      cause: new ProviderTurnControlService.ProviderTurnControlError({
+                        threadId,
+                        operation: "interrupt",
+                        providerTurnId,
+                        cause: new ProviderControlOutcomeUnknown({
+                          driver: "claudeAgent",
+                          providerSessionId: oldSessionId,
+                          nativeThreadId: "captured-native",
+                          operation: "interrupt",
+                          ...(legacyText
+                            ? {
+                                cause: new Error(
+                                  "Provider turn is not active; treating as already stopped",
+                                ),
+                              }
+                            : {}),
+                        }),
+                      }),
+                    }),
+                  ),
+                ),
+              ),
+      });
+      yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        assert.isTrue(yield* worker.runOnce);
+        assert.isTrue(yield* worker.runOnce);
+        assert.isFalse(yield* worker.runOnce);
+      }).pipe(Effect.provide(EffectWorker.layer.pipe(Layer.provide(executor))));
+      const completionFailure = yield* outbox.awaitCompletion([stopId]).pipe(Effect.flip);
+      assert.equal(completionFailure.operation, "await-completion");
+      assert.equal(completionFailure.effectId, stopId);
+      yield* outbox.awaitCompletion([nextId]);
+      const stop = Option.getOrThrow(yield* outbox.get(stopId));
+      assert.equal(stop.status, "failed");
+      assert.equal(stop.attemptCount, 1);
+      assert.isNull(stop.leaseOwner);
+      assert.isNull(stop.leaseExpiresAt);
+      assert.isNotNull(stop.completedAt);
+      assert.equal(Option.getOrThrow(yield* outbox.get(nextId)).status, "succeeded");
+      assert.equal(stops, 1);
+    }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
+);
+
+it.effect.each([true, false])(
+  "production interrupt executor preserves typed uncertainty=%s through outbox settlement",
+  (typedUnknown) =>
+    Effect.gen(function* () {
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const stopId = `effect:executor-control:${typedUnknown}`;
+      const nextId = `${stopId}:next`;
+      const workerId = "worker:executor-control";
+      const legacyCause = new Error("Provider turn is not active; treating as already stopped");
+      const controlError = new ProviderTurnControlService.ProviderTurnControlError({
+        threadId,
+        operation: "interrupt",
+        providerTurnId,
+        cause: typedUnknown
+          ? new ProviderControlOutcomeUnknown({
+              driver: "claudeAgent",
+              providerSessionId: oldSessionId,
+              nativeThreadId: "captured-native",
+              operation: "interrupt",
+              cause: legacyCause,
+            })
+          : legacyCause,
+      });
+      assert.isTrue(
+        EffectWorker.isNonRetryableProviderTurnControlFailure(
+          "provider-turn.interrupt",
+          Cause.pretty(Cause.fail(controlError)),
+        ),
+      );
+      yield* outbox.enqueue([
+        {
+          id: stopId,
+          commandId: CommandId.make(`${stopId}:command`),
+          threadId,
+          request: {
+            type: "provider-turn.interrupt",
+            providerSessionId: oldSessionId,
+            providerThreadId,
+            providerTurnId,
+          },
+        },
+        {
+          id: nextId,
+          commandId: CommandId.make(`${nextId}:command`),
+          threadId,
+          request: { type: "provider-session.detach", providerSessionId: oldSessionId },
+        },
+      ]);
+      const capturedClaims: Array<EffectOutbox.OrchestrationEffectV2> = [];
+      let stops = 0;
+      let failures = 0;
+      let retries = 0;
+      const observedOutbox = Layer.succeed(EffectOutbox.EffectOutboxV2, {
+        ...outbox,
+        claimNext: (input) =>
+          outbox.claimNext(input).pipe(
+            Effect.tap((claimed) =>
+              Effect.sync(() => {
+                if (Option.isSome(claimed) && claimed.value.id === stopId) {
+                  capturedClaims.push(claimed.value);
+                }
+              }),
+            ),
+          ),
+        fail: (input) =>
+          Effect.sync(() => {
+            failures++;
+            assert.equal(input.effectId, stopId);
+            assert.equal(input.workerId, workerId);
+            assert.isDefined(capturedClaims[0]);
+            assert.deepEqual(input.claim, capturedClaims[0]);
+          }).pipe(Effect.andThen(outbox.fail(input))),
+        retry: (input) =>
+          Effect.sync(() => {
+            retries++;
+          }).pipe(Effect.andThen(outbox.retry(input))),
+      });
+      const executor = layerExecutorFor({
+        events,
+        interrupt: () =>
+          Effect.gen(function* () {
+            stops++;
+            yield* Ref.update(events, (current) => [...current, "interrupt"]);
+            return yield* controlError;
+          }),
+        threads: {
+          dispatch: (command) =>
+            Ref.update(events, (current) => [...current, command.type]).pipe(
+              Effect.as({ sequence: 1, storedEvents: [] }),
+            ),
+        },
+      });
+      yield* Effect.gen(function* () {
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        assert.isTrue(yield* worker.runOnce);
+        const stop = Option.getOrThrow(yield* outbox.get(stopId));
+        assert.equal(stop.status, typedUnknown ? "failed" : "succeeded");
+        assert.equal(stop.attemptCount, 1);
+        assert.isNull(stop.leaseOwner);
+        assert.isNull(stop.leaseExpiresAt);
+        assert.isNotNull(stop.completedAt);
+        assert.isTrue(yield* worker.runOnce);
+        assert.isFalse(yield* worker.runOnce);
+      }).pipe(
+        Effect.provide(
+          EffectWorker.layerWithOptions({ workerId, maxAttempts: 3 }).pipe(
+            Layer.provide(executor),
+            Layer.provide(observedOutbox),
+          ),
+        ),
+      );
+      if (typedUnknown) {
+        const completionFailure = yield* outbox.awaitCompletion([stopId]).pipe(Effect.flip);
+        assert.equal(completionFailure.operation, "await-completion");
+        assert.equal(completionFailure.effectId, stopId);
+      } else {
+        yield* outbox.awaitCompletion([stopId]);
+      }
+      yield* outbox.awaitCompletion([nextId]);
+      assert.lengthOf(capturedClaims, 1);
+      assert.equal(capturedClaims[0]?.leaseOwner, workerId);
+      assert.equal(capturedClaims[0]?.attemptCount, 1);
+      assert.equal(failures, typedUnknown ? 1 : 0);
+      assert.equal(retries, 0);
+      assert.equal(stops, 1);
+      assert.equal(Option.getOrThrow(yield* outbox.get(nextId)).status, "succeeded");
+      assert.deepEqual(
+        yield* Ref.get(events),
+        typedUnknown
+          ? ["interrupt", "detach"]
+          : ["interrupt", "thread.background-work.settle", "detach"],
+      );
+    }).pipe(Effect.provide(EffectOutbox.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)))),
+);
+
+it.effect("managed retryable startup keeps its original retry and domain failure policy", () =>
+  Effect.gen(function* () {
+    const now = yield* DateTime.now;
+    const events = yield* Ref.make<ReadonlyArray<string>>([]);
+    const failFirstStart = yield* Ref.make(true);
+    let failures = 0;
+    const effect = {
+      ...restartEffect(now, { type: "detach" }),
+      request: { type: "provider-turn.start" as const, runId },
+    };
+    yield* Effect.gen(function* () {
+      const executor = yield* EffectWorker.OrchestrationEffectExecutorV2;
+      assert.isTrue(
+        Exit.isFailure(yield* Effect.exit(executor.execute(effect, { willRetry: true }))),
+      );
+      yield* executor.execute(effect, { willRetry: true });
+      assert.equal(failures, 0);
+      assert.deepEqual(yield* Ref.get(events), ["start", "start"]);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          layerExecutorFor({
+            events,
+            failFirstStart,
+            captureStartFailure: () =>
+              Effect.succeed(() =>
+                Effect.sync(() => {
+                  failures++;
+                }),
+              ),
+          }),
+          Layer.mock(CurrentEffectClaim)({ nativeCustody: true, hasLost: Effect.succeed(false) }),
+        ),
+      ),
+    );
+  }),
+);
+
+it.effect.each(["issue", "successor"] as const)(
+  "native %s failure records the captured run before outbox settlement",
+  (stage) =>
+    Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const timestamp = DateTime.formatIso(now);
+      const captured: EffectOutbox.OrchestrationEffectV2 = {
+        id: `effect:native-preissue:${stage}`,
+        commandId: CommandId.make(`command:native-preissue:${stage}`),
+        threadId,
+        request: { type: "provider-turn.start", runId },
+        status: "running",
+        attemptCount: 1,
+        leaseOwner: "worker:preissue",
+        leaseExpiresAt: DateTime.formatIso(DateTime.add(now, { seconds: 30 })),
+        availableAt: timestamp,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        completedAt: null,
+        lastError: null,
+        nativeCreationExecutionReference: {
+          version: 2,
+          claimId: "claim:preissue",
+          effectId: `effect:native-preissue:${stage}`,
+          stageCommandId: CommandId.make(`command:native-preissue:${stage}`),
+          stage: "native_command",
+        },
+      };
+      let current = captured;
+      let issues = 0;
+      let holds = 0;
+      let runFailures = 0;
+      let effectFailures = 0;
+      const events = yield* Ref.make<ReadonlyArray<string>>([]);
+      const executor = layerExecutorFor({
+        events,
+        captureStartFailure: () =>
+          Effect.sync(() => {
+            if (stage !== "issue") current = { ...captured, attemptCount: 2 };
+            return () =>
+              Effect.sync(() => {
+                runFailures++;
+              });
+          }),
+      });
+      const outbox = Layer.mock(EffectOutbox.EffectOutboxV2)({
+        claimNext: () => Effect.succeedSome(captured),
+        get: () => Effect.sync(() => Option.some(current)),
+        awaitCancellation: () => Effect.never,
+        clearCancellation: () => Effect.void,
+        fail: (input) =>
+          Effect.sync(() => {
+            assert.equal(runFailures, 1, "domain failure precedes the outbox CAS");
+            assert.equal(input.claim?.attemptCount, 1);
+            if (current.attemptCount !== input.claim?.attemptCount) return false;
+            effectFailures++;
+            return true;
+          }),
+      });
+      const native = Layer.mergeAll(
+        Layer.mock(NativeAuthority.NativeCreationAuthority)({
+          issueExecution: () =>
+            Effect.sync(() => {
+              issues++;
+            }).pipe(
+              Effect.andThen(
+                Effect.fail(
+                  new NativeRepository.NativeCreationRepositoryError({
+                    code: "unresolved_claim",
+                    message: "Synthetic lost issue reply",
+                  }),
+                ),
+              ),
+            ),
+        }),
+        Layer.mock(NativeRepository.NativeCreationRepository)({
+          confirmExecution: () => Effect.die("unconfirmed native operation cannot confirm"),
+          holdExecution: () =>
+            Effect.sync(() => {
+              holds++;
+            }),
+        }),
+        Layer.mock(NativeExecution.NativeCreationProviderExecutor)({
+          executeWholeOperation: () => Effect.die("pre-issue failure must not dispatch"),
+        }),
+      );
+      const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
+        Effect.flatMap((worker) => worker.runOnce),
+        Effect.provide(
+          Layer.merge(
+            EffectWorker.layerWithOptions({ workerId: "worker:preissue" }).pipe(
+              Layer.provide(Layer.merge(outbox, executor)),
+            ),
+            native,
+          ),
+        ),
+        Effect.exit,
+      );
+      assert.equal(runFailures, 1);
+      assert.equal(issues, stage === "issue" ? 1 : 0);
+      assert.equal(holds, stage === "issue" ? 1 : 0);
+      assert.equal(effectFailures, stage === "issue" ? 1 : 0);
+      assert.equal(current.attemptCount, stage === "issue" ? 1 : 2);
+      assert.equal(exit._tag, stage === "issue" ? "Success" : "Failure");
+      assert.deepEqual(yield* Ref.get(events), []);
+    }),
 );
 
 it.effect("settles a delegated child once its restart continuation fails for good", () =>

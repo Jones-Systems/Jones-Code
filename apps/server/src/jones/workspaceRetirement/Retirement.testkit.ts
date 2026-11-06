@@ -16,7 +16,7 @@ import { settlementAdmission } from "./SettlementAdmission.ts";
 
 async function fixtureSql(path:string, after?:(query:string,values:unknown[])=>Promise<void>) {
   const db=new DatabaseSync(path);
-  for(const name of ["136_JonesWorkspaceProvenance.ts","137_JonesWorkspaceRetirement.ts"]) {
+  for(const name of ["136_JonesWorkspaceProvenance.ts","138_JonesWorkspaceRetirement.ts"]) {
     const source=await FS.readFile(new URL("../persistence/Migrations/"+name,import.meta.url),"utf8");
     for(const statement of source.matchAll(/yield\* sql`([^`]+)`/g)) db.exec(statement[1]!);
   }

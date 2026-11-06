@@ -2,8 +2,8 @@
   "schema": "jones.boundary-fragment/v1",
   "feature": "workspace-retirement-settlement",
   "jonesOwnedPaths": [
-    "apps/server/src/jones/persistence/Migrations/137_JonesWorkspaceRetirement.test.ts",
-    "apps/server/src/jones/persistence/Migrations/137_JonesWorkspaceRetirement.ts",
+    "apps/server/src/jones/persistence/Migrations/138_JonesWorkspaceRetirement.test.ts",
+    "apps/server/src/jones/persistence/Migrations/138_JonesWorkspaceRetirement.ts",
     "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.ts",
     "apps/server/src/jones/workspaceRetirement/Disposal.ts",
     "apps/server/src/jones/workspaceRetirement/Duty.ts",

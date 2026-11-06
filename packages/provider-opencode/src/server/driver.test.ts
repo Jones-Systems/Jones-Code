@@ -4,15 +4,23 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
-import { ProviderInstanceId } from "@t3tools/contracts";
+import { assert, describe, it } from "@effect/vitest";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
 import type { OpenCodeSettings } from "../settings.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as References from "effect/References";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -25,10 +33,18 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderMaintenance from "@t3tools/provider-core/server/maintenanceResolver";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import * as OpenCodeRuntime from "./OpenCodeRuntime.ts";
 import { OPENCODE_2_RESPONSES, replayOpenCodeServer } from "./probeResponses.fixture.ts";
 import { OpenCodeDriver, openCodeUpdateFor } from "./driver.ts";
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
+import { makeOpenCodeRuntimeProbe, probeOpenCodeRuntime } from "./versionProbe.ts";
+import { readOpenCodeProtocolSource } from "./jones/protocolFreshness.ts";
+import {
+  selectOpenCodeRuntimeAdapter,
+  selectOpenCodeRuntimeTextGeneration,
+} from "./jones/protocolFreshnessSelection.ts";
 
 const serverStarts: Array<string> = [];
 const reachedServer = (operation: string) =>
@@ -244,7 +260,7 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
           Deferred.await(releaseResponse).pipe(Effect.andThen(server.execute(request))),
         ),
       );
-      // Wait for startup and its maintenance enrichment, both of which probe.
+      // Wait for startup and its maintenance enrichment before checking background inactivity.
       const rejected = yield* instance.snapshot.streamChanges.pipe(
         Stream.filter(
           (snapshot) => snapshot.status === "error" && snapshot.versionAdvisory !== undefined,
@@ -263,6 +279,243 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       yield* TestClock.adjust("15 minutes");
       assert.strictEqual(requested.length, readsAfterRejection);
     }).pipe(Effect.scoped, Effect.provide(TestClock.layer())),
+  );
+
+  it.effect("keeps external-server maintenance away from the configured local executable", () =>
+    Effect.gen(function* () {
+      const instance = yield* create(
+        { serverUrl: "http://127.0.0.1:4096", binaryPath: "/must-not-inspect/opencode" },
+        replayOpenCodeServer(OPENCODE_2_RESPONSES, ""),
+      ).pipe(
+        Effect.provideService(
+          FileSystem.FileSystem,
+          FileSystem.makeNoop({
+            stat: () => Effect.die("External maintenance must not inspect a local executable"),
+            realPath: () => Effect.die("External maintenance must not resolve a local executable"),
+          }),
+        ),
+        Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
+          ...openCode2Runtime,
+          runOpenCodeCommand: () =>
+            Effect.die("External maintenance must not run a local executable"),
+        }),
+      );
+      const maintenance = yield* instance.snapshot.resolveMaintenance({ fresh: true });
+      assert.isNull(maintenance.update);
+      assert.isNull(maintenance.packageName);
+    }).pipe(Effect.scoped),
+  );
+});
+
+const selectionInstance = ProviderInstanceId.make("opencode-freshness");
+const selectionInput = (id: string): ProviderAdapter.ProviderAdapterV2OpenSessionInput => ({
+  providerSessionId: ProviderSessionId.make(id),
+  threadId: ThreadId.make(`thread-${id}`),
+  modelSelection: { instanceId: selectionInstance, model: "opencode/big-pickle" },
+  runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    cwd: null,
+  }),
+});
+
+function selectionAdapter(
+  generation: "v1" | "v2",
+  opened: Array<string>,
+  closed: Array<string>,
+): ProviderAdapter.ProviderAdapterV2["Service"] {
+  return {
+    instanceId: selectionInstance,
+    driver: ProviderDriverKind.make("opencode"),
+    getCapabilities: () => Effect.die("Capability shape is outside this admission seam"),
+    planSelectionTransition: () =>
+      Effect.die("Selection transition is outside this admission seam"),
+    openSession: (input) =>
+      Effect.gen(function* () {
+        opened.push(`${generation}:${input.providerSessionId}`);
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => closed.push(`${generation}:${input.providerSessionId}`)),
+        );
+        // The accessor witnesses which captured handle survived; native protocol work is stubbed.
+        return {
+          providerSessionId: input.providerSessionId,
+          getModelContextWindow: () => (generation === "v1" ? 1 : 2),
+        } as unknown as ProviderAdapter.ProviderAdapterV2SessionRuntime;
+      }),
+  };
+}
+
+function selectionTextGeneration(generation: "v1" | "v2", calls: Array<string>) {
+  return {
+    generateThreadTitle: () =>
+      Effect.sync(() => {
+        calls.push(generation);
+        return { title: generation };
+      }),
+  } as unknown as ProviderTextGeneration;
+}
+
+describe("OpenCode driver admission hooks", () => {
+  it.effect.each(["v1", "v2"] as const)(
+    "selects a changed executable after warming %s and leaves existing handles untouched",
+    (initial) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "opencode-freshness-" });
+        const binaryPath = path.join(root, "opencode.exe");
+        const output = (generation: "v1" | "v2") =>
+          generation === "v1" ? "1.18.32\n" : "opencode v2.0.18\n";
+        const replace = (generation: "v1" | "v2") =>
+          Effect.gen(function* () {
+            const next = path.join(root, "next.exe");
+            yield* fileSystem.writeFileString(next, output(generation));
+            yield* fileSystem.chmod(next, 0o755);
+            yield* fileSystem.rename(next, binaryPath);
+          });
+        yield* replace(initial);
+        const configuredBinary = initial === "v1" ? binaryPath : "opencode.exe";
+        const environment = { PATH: root, OPENCODE_CONFIG_DIR: root };
+        const settings = { binaryPath: configuredBinary, serverUrl: "", serverPassword: "" };
+        let probes = 0;
+        const runtime = {
+          runOpenCodeCommand: (input: {
+            readonly binaryPath: string;
+            readonly args: ReadonlyArray<string>;
+            readonly environment?: NodeJS.ProcessEnv;
+          }) =>
+            Effect.gen(function* () {
+              probes += 1;
+              assert.strictEqual(input.binaryPath, configuredBinary);
+              assert.deepStrictEqual(input.args, ["--version"]);
+              assert.strictEqual(input.environment, environment);
+              return {
+                stdout: yield* fileSystem.readFileString(binaryPath),
+                stderr: "",
+                code: 0,
+              };
+            }),
+        } as unknown as OpenCodeRuntime.OpenCodeRuntime["Service"];
+        const probe = yield* makeOpenCodeRuntimeProbe(
+          probeOpenCodeRuntime(settings, environment).pipe(
+            Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, runtime),
+            Effect.provideService(HttpClient.HttpClient, noHttp),
+          ),
+          readOpenCodeProtocolSource(settings, environment).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          ),
+        );
+        const opened: Array<string> = [];
+        const closed: Array<string> = [];
+        const textCalls: Array<string> = [];
+        const adapter = selectOpenCodeRuntimeAdapter({
+          probe,
+          v1: selectionAdapter("v1", opened, closed),
+          v2: selectionAdapter("v2", opened, closed),
+        });
+        const text = selectOpenCodeRuntimeTextGeneration(
+          probe,
+          selectionTextGeneration("v1", textCalls),
+          selectionTextGeneration("v2", textCalls),
+        );
+        const firstInput = selectionInput("first");
+        const old = yield* adapter.openSession(firstInput);
+        yield* adapter.openSession(selectionInput("unchanged"));
+        assert.strictEqual(probes, 1);
+        const changed = initial === "v1" ? "v2" : "v1";
+        yield* replace(changed);
+        const title = yield* text.generateThreadTitle({
+          cwd: root,
+          message: "hello",
+          modelSelection: firstInput.modelSelection,
+        });
+        assert.strictEqual(title.title, changed);
+        const next = yield* adapter.openSession(selectionInput("changed"));
+        assert.strictEqual(probes, 2);
+        assert.deepStrictEqual(opened, [
+          `${initial}:first`,
+          `${initial}:unchanged`,
+          `${changed}:changed`,
+        ]);
+        assert.deepStrictEqual(textCalls, [changed]);
+        assert.strictEqual(
+          old.getModelContextWindow?.(firstInput.modelSelection),
+          initial === "v1" ? 1 : 2,
+        );
+        assert.strictEqual(
+          next.getModelContextWindow?.(firstInput.modelSelection),
+          changed === "v1" ? 1 : 2,
+        );
+        assert.deepStrictEqual(closed, []);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect(
+    "rejects new sessions and text helpers after external auth expires despite lastSuccess",
+    () =>
+      Effect.gen(function* () {
+        let password = "secret";
+        const paths: Array<string> = [];
+        const probe = yield* makeOpenCodeRuntimeProbe(
+          probeOpenCodeRuntime({
+            binaryPath: "/must-not-run/opencode",
+            serverUrl: "http://127.0.0.1:4096",
+            serverPassword: "secret",
+          }).pipe(
+            Effect.provideService(
+              HttpClient.HttpClient,
+              HttpClient.make((request) =>
+                replayOpenCodeServer(OPENCODE_2_RESPONSES, password, paths).execute(request),
+              ),
+            ),
+            Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, {
+              ...openCode2Runtime,
+              runOpenCodeCommand: () =>
+                Effect.die("An external admission must not run a local binary"),
+            }),
+          ),
+        );
+        const opened: Array<string> = [];
+        const closed: Array<string> = [];
+        const textCalls: Array<string> = [];
+        const adapter = selectOpenCodeRuntimeAdapter({
+          probe,
+          v1: selectionAdapter("v1", opened, closed),
+          v2: selectionAdapter("v2", opened, closed),
+        });
+        const text = selectOpenCodeRuntimeTextGeneration(
+          probe,
+          selectionTextGeneration("v1", textCalls),
+          selectionTextGeneration("v2", textCalls),
+        );
+        const input = selectionInput("old");
+        const old = yield* adapter.openSession(input);
+        assert.deepStrictEqual(opened, ["v2:old"]);
+        password = "changed-secret";
+        yield* TestClock.adjust("60 seconds");
+        const sessionError = yield* Effect.flip(adapter.openSession(selectionInput("refused")));
+        assert.strictEqual(sessionError._tag, "ProviderAdapterOpenSessionError");
+        const textError = yield* Effect.flip(
+          text.generateThreadTitle({
+            cwd: "/work",
+            message: "hello",
+            modelSelection: input.modelSelection,
+          }),
+        );
+        assert.strictEqual(textError._tag, "TextGenerationError");
+        assert.strictEqual(textError.detail, "Couldn't verify a fresh OpenCode protocol version.");
+        assert.notInclude(textError.message, password);
+        assert.deepStrictEqual(opened, ["v2:old"]);
+        assert.deepStrictEqual(textCalls, []);
+        assert.deepStrictEqual(closed, []);
+        assert.strictEqual(old.getModelContextWindow?.(input.modelSelection), 2);
+        assert.deepStrictEqual(
+          yield* probe.lastSuccess,
+          Option.some({ generation: "v2", version: "2.0.18" }),
+        );
+        assert.deepStrictEqual(paths, ["/api/info", "/api/info", "/api/info"]);
+      }).pipe(Effect.scoped),
   );
 });
 
