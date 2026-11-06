@@ -28,9 +28,24 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 describe("storage cleanup settings", () => {
+  it("decodes explicit install retention modes and rejects unknown modes", () => {
+    for (const installRetention of ["propose", "retire"] as const) {
+      expect(
+        decodeServerSettings({ storageCleanup: { installRetention } }).storageCleanup
+          .installRetention,
+      ).toBe(installRetention);
+      expect(decodeServerSettingsPatch({ storageCleanup: { installRetention } })).toEqual({
+        storageCleanup: { installRetention },
+      });
+    }
+    expect(() =>
+      decodeServerSettingsPatch({ storageCleanup: { installRetention: "age-only" } }),
+    ).toThrow();
+  });
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
     expect(decodeServerSettings({}).storageCleanup).toEqual({
+      installRetention: "propose",
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
       worktreeOnMerge: false,

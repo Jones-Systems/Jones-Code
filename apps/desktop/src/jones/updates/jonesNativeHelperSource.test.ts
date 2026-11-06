@@ -40,6 +40,34 @@ async function fixture() {
   return { directory, cleanup: () => cleanupFixture(directory) };
 }
 
+// Historical candidates have complete preparation and recovery records but no live
+// stage/attempt binding. Live activation history remains intact in every fixture.
+const historicalWarmFixture = String.raw`
+def historical_warm(identifier, prior, template, phase='rolled-back'):
+    directory = template.parent / identifier
+    selected = dict(staged, handle=identifier)
+    historical_claim = preparation_claim(prior, selected['handle'], identifier,
+        staging / ('historical-' + identifier + '.json'), '0' * 64)
+    historical_intent = dict(intent, transactionId=identifier, expected=prior, staged=selected,
+        continuationReceipt=str(directory / 'continuation.json'))
+    seed_record(directory / 'prepare-intent.json', historical_claim, True)
+    seed_record(directory / 'prepare-dispatched.json', historical_claim, True)
+    seed_record(directory / 'continuation.json', dict(historical_claim, prepared=True), True)
+    seed_record(directory / 'intent.json', historical_intent, True)
+    for name, marker, field in (('previous-pair', 'pair.json', 'expected'), ('advanced-state', 'retained.json', 'previous')):
+        if not (template / name).exists(): continue
+        shutil.copytree(template / name, directory / name)
+        value = read(directory / name / marker)
+        value[field] = prior
+        seed_record(directory / name / marker, value)
+    stable = pathlib.Path(prior['appPath'])
+    previous = stable.with_name(stable.name + '.jones-previous-' + prior['generation'])
+    if not previous.exists(): shutil.copytree(previous_app, previous)
+    seed_record(directory / 'journal.json', {'intent': historical_intent, 'phase': phase,
+        'pairedState': str(directory / 'previous-pair'), 'previousBundle': str(previous)}, True)
+    return directory
+`;
+
 const activationScenario = String.raw`
 root, fault = pathlib.Path(sys.argv[1]), sys.argv[2]
 def seed_record(path, value, exclusive=False):
@@ -58,7 +86,7 @@ database = home / 'state.sqlite'
 with sqlite3.connect(database) as db:
     db.execute('CREATE TABLE identity (value TEXT)')
     db.execute("INSERT INTO identity VALUES ('previous-state')")
-(home / 'settings.json').write_text('previous-settings')
+(home / 'settings.json').write_text('{"fixture":"previous-settings"}')
 (profile / 'opaque').write_text('same-host-profile')
 previous_app, candidate_app = root / 'previous.app', root / 'candidate.app'
 for app in (previous_app, candidate_app):
@@ -224,7 +252,7 @@ def synthetic_launch(active, descriptor=None):
     events.append('candidate-launch')
     assert (tx / 'previous-pair' / 'pair.json').exists()
     with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
-    (home / 'settings.json').write_text('candidate-settings')
+    (home / 'settings.json').write_text('{"fixture":"candidate-settings"}')
     (profile / 'opaque').write_text('advanced-profile')
     if fault == 'untracked-launch': raise RuntimeError('Candidate identity was not captured.')
     wanted = read(descriptor)
@@ -346,7 +374,7 @@ else:
         assert 'stop:2' not in events
     if journal['phase'] == 'rolled-back':
         assert state == 'previous-state'
-        assert (home / 'settings.json').read_text() == 'previous-settings'
+        assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
         assert (profile / 'opaque').read_text() == ('advanced-profile' if 'candidate-launch' in events else 'same-host-profile')
         assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
         if 'preEffect' not in journal and fault not in ('snapshot-failed', 'snapshot-restart-refused', 'state-grew'):
@@ -618,52 +646,67 @@ assert not list(manifest_path.parent.glob(manifest_path.name + '.*'))
       const definitions = jonesNativeHelperSource.split("\nparser = argparse.ArgumentParser()")[0];
       const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
       const scenario = String.raw`
-generations = []
-for generation in range(3):
-    if generation:
-        expected = read(manifest_path)
-        transaction_id = str(generation) * 64
-        tx = tx.parent / transaction_id
-        staged = dict(staged, handle=str(generation + 3) * 64, sourceSha=str(generation + 3) * 40, sourceTree=str(generation + 6) * 40)
-        candidate = dict(candidate, source=staged['sourceSha'], tree=staged['sourceTree'], installedSource=expected['sourceSha'])
-        durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
-            'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}})
-        selection = dict(selection, currentVersion=expected['version'], installedSource=expected['sourceSha'], active=expected, app=staged)
-        selection_path = selection_path.with_name(expected['sourceSha'] + '-' + transaction_id + '.json')
-        durable(selection_path, selection, True)
-        selection_digest = digest(selection_path)
-        attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
-        durable(attempt_path.parent / (attempt_key + '.json'), {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
-        result = selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id=transaction_id)
-        assert result['status'] == 'preparation-claimed', result
-        claim = read(tx / 'prepare-intent.json')
-        durable(tx / 'prepare-dispatched.json', claim, True)
-        durable(tx / 'continuation.json', dict(claim, prepared=True), True)
-        intent = dict(intent, transactionId=transaction_id, expected=expected, staged=staged, continuationReceipt=str(tx / 'continuation.json'))
-        durable(tx / 'activation-request.json', intent, True)
-        result = selection_command('claim-activation', expected, staged['handle'], str(selection_path), selection_digest, str(tx / 'activation-request.json'), transaction_id)
-        assert result['status'] == 'claimed', result
-        events.clear()
-    activate(tx / 'intent.json')
-    journal = read(tx / 'journal.json')
-    assert journal['phase'] == 'resumed', journal
-    assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves']), 'Successful activation retained recovery reserves'
-    assert (tx / 'previous-pair' / 'state.sqlite').exists()
-    assert pathlib.Path(journal['previousBundle']).is_dir()
-    generations.append(tx)
-    active = read(manifest_path)
-    assert retirement_command('inspect-retirement', active, transaction_id)['reason'] == 'protected-generation'
-    if generation:
-        assert retirement_command('inspect-retirement', active, generations[-2].name)['reason'] == 'protected-recovery-parent'
-        assert (generations[-2] / 'previous-pair' / 'state.sqlite').exists()
-acquire_writer_exclusion = native_exclusion
-oldest = generations[0]
-inspected = retirement_command('inspect-retirement', active, oldest.name)
-assert inspected['status'] == 'ready', inspected
-retired = retirement_command('retire-transaction', active, oldest.name, inspected['planSha256'])
-assert retired['status'] == 'retired', retired
-assert not (oldest / 'previous-pair' / 'state.sqlite').exists()
-assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations[1:])
+${historicalWarmFixture}
+with open(manifest_path.with_name('jones-activation.lock'), 'w+') as retention_lock:
+    retention_lock.write('jones-activation-lock-v1\n'); retention_lock.flush()
+    fcntl.flock(retention_lock, fcntl.LOCK_EX)
+    retention_exclusion_held = True
+    retention_exclusion_descriptor = retention_lock.fileno()
+    try:
+        generations = []
+        for generation in range(3):
+            if generation:
+                expected = read(manifest_path)
+                transaction_id = str(generation) * 64
+                tx = tx.parent / transaction_id
+                staged = dict(staged, handle=str(generation + 3) * 64, sourceSha=str(generation + 3) * 40, sourceTree=str(generation + 6) * 40)
+                candidate = dict(candidate, source=staged['sourceSha'], tree=staged['sourceTree'], installedSource=expected['sourceSha'])
+                durable(staged['receiptPath'], {'app': staged, 'candidate': candidate,
+                    'artifact': {'candidate': candidate, 'payloadPath': str(payload), 'receipt': {'sha256': digest(payload)}}})
+                selection = dict(selection, currentVersion=expected['version'], installedSource=expected['sourceSha'], active=expected, app=staged)
+                selection_path = selection_path.with_name(expected['sourceSha'] + '-' + transaction_id + '.json')
+                durable(selection_path, selection, True)
+                selection_digest = digest(selection_path)
+                attempt_key = hashlib.sha256((str(selection_path) + '\n' + selection_digest).encode()).hexdigest()
+                durable(attempt_path.parent / (attempt_key + '.json'), {'protocol': 1, 'transactionId': transaction_id, 'stagedHandle': staged['handle'], 'selectionPath': str(selection_path), 'selectionSha256': selection_digest, 'expected': expected}, True)
+                result = selection_command('claim-preparation', expected, staged['handle'], str(selection_path), selection_digest, transaction_id=transaction_id)
+                assert result['status'] == 'preparation-claimed', result
+                claim = read(tx / 'prepare-intent.json')
+                durable(tx / 'prepare-dispatched.json', claim, True)
+                durable(tx / 'continuation.json', dict(claim, prepared=True), True)
+                intent = dict(intent, transactionId=transaction_id, expected=expected, staged=staged, continuationReceipt=str(tx / 'continuation.json'))
+                durable(tx / 'activation-request.json', intent, True)
+                result = selection_command('claim-activation', expected, staged['handle'], str(selection_path), selection_digest, str(tx / 'activation-request.json'), transaction_id)
+                assert result['status'] == 'claimed', result
+                events.clear()
+            activate(tx / 'intent.json')
+            journal = read(tx / 'journal.json')
+            assert journal['phase'] == 'resumed', journal
+            assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves']), 'Successful activation retained recovery reserves'
+            assert (tx / 'previous-pair' / 'state.sqlite').exists()
+            assert pathlib.Path(journal['previousBundle']).is_dir()
+            generations.append(tx)
+            active = read(manifest_path)
+            assert retirement_command('inspect-retirement', active, transaction_id)['reason'] == 'protected-recovery-parent'
+            if generation:
+                assert retirement_command('inspect-retirement', active, generations[-2].name)['reason'] == 'protected-recovery-parent'
+                assert (generations[-2] / 'previous-pair' / 'state.sqlite').exists()
+        acquire_writer_exclusion = native_exclusion
+        # All three successful generations form a transitive recovery chain.
+        for retained in generations:
+            assert retained.name in install_retention_plan()['snapshot']['warmKeep']
+            inspected = retirement_command('inspect-retirement', active, retained.name)
+            assert inspected['reason'] == 'protected-recovery-parent', inspected
+            assert (retained / 'previous-pair' / 'state.sqlite').exists()
+        obsolete = historical_warm('8' * 64, dict(expected, generation='historical', transactionId='bootstrap'), generations[0])
+        assert obsolete.name not in install_retention_plan()['snapshot']['warmKeep']
+        inspected = retirement_command('inspect-retirement', active, obsolete.name)
+        assert inspected['status'] == 'ready', inspected
+        retired = retirement_command('retire-transaction', active, obsolete.name, inspected['planSha256'])
+        assert retired['status'] == 'retired', retired
+        assert not (obsolete / 'previous-pair' / 'state.sqlite').exists()
+        assert all((generation / 'previous-pair' / 'state.sqlite').exists() for generation in generations)
+    finally: retention_exclusion_held = False
 `;
       runPython(`${definitions}\n${runtime}\n${scenario}`, [f.directory, "success"], {
         encoding: "utf8",
@@ -1756,7 +1799,7 @@ def manual_launch(active, descriptor=None):
     assert (pair / 'state.sqlite').read_bytes() == database.read_bytes()
     assert not (pair / 'profile').exists()
     assert (profile / 'opaque').read_text() == 'same-host-profile'
-    assert (pair / 'settings.json').read_text() == 'previous-settings'
+    assert (pair / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
     events.append('launched')
     if manual_fault == 'launch-unknown':
         with sqlite3.connect(database) as db: db.execute("UPDATE identity SET value='advanced-state'")
@@ -1845,108 +1888,121 @@ print(json.dumps({'case': manual_fault, 'passed': True}))
         )[0];
         const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
         const scenario = String.raw`
-boundary_fault = sys.argv[3]
-activate(tx / 'intent.json')
-assert read(tx / 'journal.json')['phase'] == 'rolled-back'
-# Retirement still supports previously retained pairs with an Electron profile.
-legacy_pair = tx / 'previous-pair'
-shutil.copy2(database, legacy_pair / 'state.sqlite')
-clone_tree(profile, legacy_pair / 'profile', profile=True)
-legacy_marker = read(legacy_pair / 'pair.json')
-del legacy_marker['stateScope']; del legacy_marker['files']
-durable(legacy_pair / 'pair.json', legacy_marker)
-acquire_writer_exclusion = native_exclusion
-selection_path.unlink()
-profile_payload = tx / 'previous-pair' / 'profile'
-before = {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()}
-def changed_device(info):
-    fields = list(info); fields[2] = info.st_dev + 1
-    return os.stat_result(fields)
-if boundary_fault == 'mount-inspect':
-    original_lstat = pathlib.Path.lstat
-    def mounted_lstat(path, *args, **kwargs):
-        info = original_lstat(path, *args, **kwargs)
-        return changed_device(info) if path == profile_payload or path.is_relative_to(profile_payload) else info
-    pathlib.Path.lstat = mounted_lstat
+${historicalWarmFixture}
+with open(manifest_path.with_name('jones-activation.lock'), 'w+') as retention_lock:
+    retention_lock.write('jones-activation-lock-v1\n'); retention_lock.flush()
+    fcntl.flock(retention_lock, fcntl.LOCK_EX)
+    retention_exclusion_held = True
+    retention_exclusion_descriptor = retention_lock.fileno()
     try:
-        outcome = retirement_command('inspect-retirement', expected, transaction_id)
-        assert outcome['status'] == 'refused' and outcome['reason'] == 'unknown-payload-device', outcome
-    finally: pathlib.Path.lstat = original_lstat
-    assert not (tx / 'retirement-intent.json').exists()
-elif boundary_fault == 'mount-delete':
-    _, plan = retirement_context(expected, transaction_id)
-    target = next(target for target in plan['targets'] if target['path'] == str(profile_payload))
-    target['parentDevice'] = str(int(target['parentDevice']) + 1)
-    original_open, original_fstat = os.open, os.fstat
-    parent_fd = None
-    def mounted_open(path, *args, **kwargs):
-        global parent_fd
-        fd = original_open(path, *args, **kwargs)
-        if path == profile_payload.parent: parent_fd = fd
-        return fd
-    def mounted_fstat(fd):
-        info = original_fstat(fd)
-        return changed_device(info) if fd == parent_fd else info
-    os.open, os.fstat = mounted_open, mounted_fstat
-    try:
-        try: remove_retirement_payload(target)
-        except SelectionRefused as error: assert error.reason == 'plan-changed'
-        else: raise AssertionError('A different-device payload root was deleted')
-    finally: os.open, os.fstat = original_open, original_fstat
-else:
-    inspected = retirement_command('inspect-retirement', expected, transaction_id)
-    assert inspected['status'] == 'ready', inspected
-    marker = 'retirement-intent.json' if boundary_fault == 'intent-fsync' else 'retirement-receipt.json'
-    original_link, original_fsync, original_sync_parent = os.link, os.fsync, sync_parent
-    linked, failed_initial, replay_failure, syncing = False, False, False, None
-    synced = []
-    calls = []
-    original_remove = remove_retirement_payload
-    def observed_remove(target):
-        calls.append(target['path'])
-        return original_remove(target)
-    remove_retirement_payload = observed_remove
-    def observed_link(source, destination, *args, **kwargs):
-        global linked
-        result = original_link(source, destination, *args, **kwargs)
-        if pathlib.Path(destination).name == marker: linked = True
-        return result
-    def failed_parent_fsync(fd):
-        global failed_initial
-        if stat.S_ISDIR(os.fstat(fd).st_mode):
-            if linked and not failed_initial:
-                failed_initial = True
-                raise OSError('Synthetic marker link succeeded but parent fsync failed')
-            if syncing == marker and replay_failure:
-                raise OSError('Synthetic retained marker parent fsync still fails')
-        return original_fsync(fd)
-    def observed_sync_parent(path):
-        global syncing
-        syncing = pathlib.Path(path).name
-        try:
-            result = original_sync_parent(path)
-            synced.append(syncing)
-            return result
-        finally: syncing = None
-    os.link, os.fsync, sync_parent = observed_link, failed_parent_fsync, observed_sync_parent
-    try:
-        result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
-        assert linked and failed_initial and (tx / marker).exists()
-        assert result['status'] == 'uncertain', result
-        if boundary_fault == 'intent-fsync': assert calls == []
-        count = len(calls)
-        replay_failure = True
-        for operation in ('retire-transaction', 'inspect-retirement'):
-            result = retirement_command(operation, expected, transaction_id, inspected['planSha256'])
-            assert result['status'] == 'uncertain' and len(calls) == count, result
-        replay_failure = False
-        result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
-        assert result['status'] == 'retired' and marker in synced, result
-        if boundary_fault == 'receipt-fsync': assert len(calls) == count
-    finally: os.link, os.fsync, sync_parent = original_link, original_fsync, original_sync_parent
-if boundary_fault.startswith('mount-'):
-    assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
-assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
+        boundary_fault = sys.argv[3]
+        activate(tx / 'intent.json')
+        assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+        live_bindings = {path: path.read_bytes() for path in (selection_path, attempt_path)}
+        live_transaction = tx
+        tx = historical_warm('8' * 64, dict(expected, generation='historical', transactionId='bootstrap'), live_transaction)
+        transaction_id = tx.name
+        assert transaction_id not in install_retention_plan()['snapshot']['warmKeep']
+        # Retirement still supports previously retained pairs with an Electron profile.
+        legacy_pair = tx / 'previous-pair'
+        shutil.copy2(database, legacy_pair / 'state.sqlite')
+        clone_tree(profile, legacy_pair / 'profile', profile=True)
+        legacy_marker = read(legacy_pair / 'pair.json')
+        del legacy_marker['stateScope']; del legacy_marker['files']
+        durable(legacy_pair / 'pair.json', legacy_marker)
+        acquire_writer_exclusion = native_exclusion
+        profile_payload = tx / 'previous-pair' / 'profile'
+        before = {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()}
+        def changed_device(info):
+            fields = list(info); fields[2] = info.st_dev + 1
+            return os.stat_result(fields)
+        if boundary_fault == 'mount-inspect':
+            original_lstat = pathlib.Path.lstat
+            def mounted_lstat(path, *args, **kwargs):
+                info = original_lstat(path, *args, **kwargs)
+                return changed_device(info) if path == profile_payload or path.is_relative_to(profile_payload) else info
+            pathlib.Path.lstat = mounted_lstat
+            try:
+                outcome = retirement_command('inspect-retirement', expected, transaction_id)
+                assert outcome['status'] == 'refused' and outcome['reason'] == 'unknown-payload-device', outcome
+            finally: pathlib.Path.lstat = original_lstat
+            assert not (tx / 'retirement-intent.json').exists()
+        elif boundary_fault == 'mount-delete':
+            _, plan = retirement_context(expected, transaction_id)
+            target = next(target for target in plan['targets'] if target['path'] == str(profile_payload))
+            target['parentDevice'] = str(int(target['parentDevice']) + 1)
+            original_open, original_fstat = os.open, os.fstat
+            parent_fd = None
+            def mounted_open(path, *args, **kwargs):
+                global parent_fd
+                fd = original_open(path, *args, **kwargs)
+                if path == profile_payload.parent: parent_fd = fd
+                return fd
+            def mounted_fstat(fd):
+                info = original_fstat(fd)
+                return changed_device(info) if fd == parent_fd else info
+            os.open, os.fstat = mounted_open, mounted_fstat
+            try:
+                try: remove_retirement_payload(target)
+                except SelectionRefused as error: assert error.reason == 'plan-changed'
+                else: raise AssertionError('A different-device payload root was deleted')
+            finally: os.open, os.fstat = original_open, original_fstat
+        else:
+            inspected = retirement_command('inspect-retirement', expected, transaction_id)
+            assert inspected['status'] == 'ready', inspected
+            marker = 'retirement-intent.json' if boundary_fault == 'intent-fsync' else 'retirement-receipt.json'
+            original_link, original_fsync, original_sync_parent = os.link, os.fsync, sync_parent
+            linked, failed_initial, replay_failure, syncing = False, False, False, None
+            synced = []
+            calls = []
+            original_remove = remove_retirement_payload
+            def observed_remove(target):
+                calls.append(target['path'])
+                return original_remove(target)
+            remove_retirement_payload = observed_remove
+            def observed_link(source, destination, *args, **kwargs):
+                global linked
+                result = original_link(source, destination, *args, **kwargs)
+                if pathlib.Path(destination).name == marker: linked = True
+                return result
+            def failed_parent_fsync(fd):
+                global failed_initial
+                if stat.S_ISDIR(os.fstat(fd).st_mode):
+                    if linked and not failed_initial:
+                        failed_initial = True
+                        raise OSError('Synthetic marker link succeeded but parent fsync failed')
+                    if syncing == marker and replay_failure:
+                        raise OSError('Synthetic retained marker parent fsync still fails')
+                return original_fsync(fd)
+            def observed_sync_parent(path):
+                global syncing
+                syncing = pathlib.Path(path).name
+                try:
+                    result = original_sync_parent(path)
+                    synced.append(syncing)
+                    return result
+                finally: syncing = None
+            os.link, os.fsync, sync_parent = observed_link, failed_parent_fsync, observed_sync_parent
+            try:
+                result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
+                assert linked and failed_initial and (tx / marker).exists()
+                assert result['status'] == 'uncertain', result
+                if boundary_fault == 'intent-fsync': assert calls == []
+                count = len(calls)
+                replay_failure = True
+                for operation in ('retire-transaction', 'inspect-retirement'):
+                    result = retirement_command(operation, expected, transaction_id, inspected['planSha256'])
+                    assert result['status'] == 'uncertain' and len(calls) == count, result
+                replay_failure = False
+                result = retirement_command('retire-transaction', expected, transaction_id, inspected['planSha256'])
+                assert result['status'] == 'retired' and marker in synced, result
+                if boundary_fault == 'receipt-fsync': assert len(calls) == count
+            finally: os.link, os.fsync, sync_parent = original_link, original_fsync, original_sync_parent
+        if boundary_fault.startswith('mount-'):
+            assert {str(path): path.read_bytes() for path in tx.rglob('*') if path.is_file()} == before
+        assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
+        assert {path: path.read_bytes() for path in live_bindings} == live_bindings
+    finally: retention_exclusion_held = False
 `;
         runPython(
           `${nativeFunctions}\n${runtime}\n${scenario}`,
@@ -1991,130 +2047,142 @@ assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profi
       )[0];
       const runtime = activationScenario.split("\nif fault in ('interrupted-trial'")[0];
       const scenario = String.raw`
-retirement_fault = sys.argv[3]
-activate(tx / 'intent.json')
-assert read(tx / 'journal.json')['phase'] == 'rolled-back'
-# Retirement still supports previously retained pairs with an Electron profile.
-legacy_pair = tx / 'previous-pair'
-shutil.copy2(database, legacy_pair / 'state.sqlite')
-clone_tree(profile, legacy_pair / 'profile', profile=True)
-legacy_marker = read(legacy_pair / 'pair.json')
-del legacy_marker['stateScope']; del legacy_marker['files']
-durable(legacy_pair / 'pair.json', legacy_marker)
-acquire_writer_exclusion = native_exclusion
-if retirement_fault != 'stage': selection_path.unlink()
-journal = read(tx / 'journal.json')
-if retirement_fault in ('active', 'parent'):
-    active = dict(expected, generation=transaction_id, transactionId=transaction_id)
-    if retirement_fault == 'parent':
-        next_id = '9' * 64
-        next_tx = tx.parent / next_id
-        next_intent = dict(intent, transactionId=next_id, expected=active)
-        durable(next_tx / 'intent.json', next_intent, True)
-        durable(next_tx / 'journal.json', {'intent': next_intent, 'phase': 'resumed'}, True)
-        active = dict(expected, generation=next_id, transactionId=next_id)
-    durable(manifest_path, active)
-else: active = expected
-if retirement_fault in ('pending', 'unknown-journal'):
-    durable(tx / 'journal.json', dict(journal, phase='trial' if retirement_fault == 'pending' else 'unknown'))
-if retirement_fault == 'symlink-target':
-    payload = tx / 'previous-pair' / 'profile'
-    payload.rename(payload.with_name('profile-retained'))
-    payload.symlink_to(profile)
-if retirement_fault == 'foreign-hardlink': os.link(tx / 'previous-pair' / 'state.sqlite', root / 'foreign-link')
-if retirement_fault == 'internal-symlink':
-    (root / 'unrelated-payload').write_text('must survive')
-    (tx / 'previous-pair' / 'profile' / 'external-link').symlink_to(root / 'unrelated-payload')
-if retirement_fault == 'reference':
-    shared = pathlib.Path(journal['previousBundle'])
-    shutil.copytree(previous_app, shared)
-    other_tx = tx.parent / ('9' * 64)
-    other_intent = dict(intent, transactionId=other_tx.name)
-    durable(other_tx / 'intent.json', other_intent, True)
-    durable(other_tx / 'journal.json', {'intent': other_intent, 'phase': 'rolled-back', 'previousBundle': str(shared)}, True)
-if retirement_fault in ('reserve', 'reserve-owner'):
-    reserve = allocate_recovery_file(tx / 'recovery-reserve.bin', 16384)
-    journal['recoveryReserves'] = [reserve]
-    durable(tx / 'journal.json', journal)
-    if retirement_fault == 'reserve-owner':
-        pathlib.Path(reserve['path']).rename(root / 'original-reserve')
-        pathlib.Path(reserve['path']).write_bytes(bytes(16384))
-metadata = [path for path in tx.rglob('*.json') if path.name not in SETTINGS]
-before = {str(path): path.read_bytes() for path in metadata}
-inspect = retirement_command('inspect-retirement', active, transaction_id)
-refusals = ('active', 'parent', 'pending', 'stage', 'unknown-journal', 'symlink-target', 'foreign-hardlink', 'reference', 'reserve-owner')
-if retirement_fault in refusals:
-    assert inspect['status'] == 'refused', inspect
-    assert not (tx / 'retirement-intent.json').exists()
-else:
-    assert inspect['status'] == 'ready' and inspect['targets'], inspect
-    plan_sha = inspect['planSha256']
-    if retirement_fault == 'wrong-plan': plan_sha = '0' * 64
-    if retirement_fault == 'changed-inode':
-        payload = pathlib.Path(inspect['targets'][0]['path'])
-        payload.rename(root / 'replaced-payload')
-        payload.write_bytes(b'changed')
-    reader = None
-    if retirement_fault == 'writer-busy':
-        reader = sqlite3.connect(native_writer_lease_paths(active)[0][0], isolation_level=None)
-        reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
-    native_remove = remove_retirement_payload
-    calls = []
-    def observed_remove(target):
-        calls.append(target['path'])
-        native_remove(target)
-        if retirement_fault.startswith('partial') and len(calls) == 1: raise OSError('Synthetic interruption after one approved payload')
-    remove_retirement_payload = observed_remove
-    original_durable = durable
-    if retirement_fault == 'lost-reply':
-        def durable(path, value, exclusive=False):
-            original_durable(path, value, exclusive)
-            if pathlib.Path(path).name == 'retirement-receipt.json': raise OSError('Synthetic completion response lost')
-    try: result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
-    finally:
-        if reader is not None: reader.close()
-    if retirement_fault in ('wrong-plan', 'changed-inode', 'writer-busy'):
-        assert result['status'] == 'refused' and calls == [], result
-        assert not (tx / 'retirement-intent.json').exists()
-    elif retirement_fault.startswith('partial'):
-        assert result['status'] == 'uncertain', result
-        try: inspect_selection_transactions(active)
-        except SelectionRefused as error: assert error.reason == 'activation-pending'
-        else: raise AssertionError('Unreconciled retirement admitted activation')
-        if retirement_fault == 'partial-new-file': (tx / 'previous-pair' / 'profile' / 'new-file').write_text('unapproved')
-        if retirement_fault == 'partial-replacement':
-            payload = tx / 'previous-pair' / 'profile' / 'opaque'
-            payload.rename(root / 'original-profile-payload'); payload.write_text('replacement')
-        resume = retirement_command('inspect-retirement', active, transaction_id)
-        if retirement_fault == 'partial':
-            assert resume['status'] == 'ready' and resume['reconciliation'] is True, resume
-            assert resume['planSha256'] == plan_sha
-            result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
-            assert result['status'] == 'retired', result
+${historicalWarmFixture}
+with open(manifest_path.with_name('jones-activation.lock'), 'w+') as retention_lock:
+    retention_lock.write('jones-activation-lock-v1\n'); retention_lock.flush()
+    fcntl.flock(retention_lock, fcntl.LOCK_EX)
+    retention_exclusion_held = True
+    retention_exclusion_descriptor = retention_lock.fileno()
+    try:
+        retirement_fault = sys.argv[3]
+        activate(tx / 'intent.json')
+        assert read(tx / 'journal.json')['phase'] == 'rolled-back'
+        live_bindings = {path: path.read_bytes() for path in (selection_path, attempt_path)}
+        live_transaction = tx
+        if retirement_fault != 'stage':
+            tx = historical_warm('8' * 64, dict(expected, generation='historical', transactionId='bootstrap'), live_transaction)
+            transaction_id = tx.name
+            assert transaction_id not in install_retention_plan()['snapshot']['warmKeep']
+        # Retirement still supports previously retained pairs with an Electron profile.
+        legacy_pair = tx / 'previous-pair'
+        shutil.copy2(database, legacy_pair / 'state.sqlite')
+        clone_tree(profile, legacy_pair / 'profile', profile=True)
+        legacy_marker = read(legacy_pair / 'pair.json')
+        del legacy_marker['stateScope']; del legacy_marker['files']
+        durable(legacy_pair / 'pair.json', legacy_marker)
+        acquire_writer_exclusion = native_exclusion
+        journal = read(tx / 'journal.json')
+        if retirement_fault in ('active', 'parent'):
+            active = dict(expected, generation=transaction_id, transactionId=transaction_id)
+            if retirement_fault == 'parent':
+                next_id = '9' * 64
+                next_tx = historical_warm(next_id, active, tx, phase='resumed')
+                active = dict(expected, generation=next_id, transactionId=next_id)
+            durable(manifest_path, active)
+        else: active = expected
+        if retirement_fault in ('pending', 'unknown-journal'):
+            durable(tx / 'journal.json', dict(journal, phase='trial' if retirement_fault == 'pending' else 'unknown'))
+        if retirement_fault == 'symlink-target':
+            payload = tx / 'previous-pair' / 'profile'
+            payload.rename(root / 'profile-retained')
+            payload.symlink_to(profile)
+        if retirement_fault == 'foreign-hardlink': os.link(tx / 'previous-pair' / 'state.sqlite', root / 'foreign-link')
+        if retirement_fault == 'internal-symlink':
+            (root / 'unrelated-payload').write_text('must survive')
+            (tx / 'previous-pair' / 'profile' / 'external-link').symlink_to(root / 'unrelated-payload')
+        if retirement_fault == 'reference':
+            shared = pathlib.Path(journal['previousBundle'])
+            other_tx = historical_warm('9' * 64, read(tx / 'intent.json')['expected'], tx)
+            assert read(other_tx / 'journal.json')['previousBundle'] == str(shared)
+        if retirement_fault in ('reserve', 'reserve-owner'):
+            reserve = allocate_recovery_file(tx / 'recovery-reserve.bin', 16384)
+            journal['recoveryReserves'] = [reserve]
+            durable(tx / 'journal.json', journal)
+            if retirement_fault == 'reserve-owner':
+                pathlib.Path(reserve['path']).rename(root / 'original-reserve')
+                pathlib.Path(reserve['path']).write_bytes(bytes(16384))
+        metadata = [path for path in tx.rglob('*.json') if path.name not in SETTINGS]
+        before = {str(path): path.read_bytes() for path in metadata}
+        inspect = retirement_command('inspect-retirement', active, transaction_id)
+        refusals = ('active', 'parent', 'pending', 'stage', 'unknown-journal', 'symlink-target', 'foreign-hardlink', 'reference', 'reserve-owner')
+        if retirement_fault in refusals:
+            reasons = {'active': 'protected-recovery-parent', 'parent': 'protected-recovery-parent',
+                'pending': 'activation-pending', 'stage': 'protected-recovery-parent', 'unknown-journal': 'activation-pending',
+                'symlink-target': 'unknown-payload-type', 'foreign-hardlink': 'unknown-payload-type',
+                'reference': 'protected-reference', 'reserve-owner': 'unknown-reserve-owner'}
+            assert inspect['status'] == 'refused' and inspect['reason'] == reasons[retirement_fault], inspect
+            assert not (tx / 'retirement-intent.json').exists()
         else:
-            assert resume['status'] == 'uncertain', resume
-            prior_calls = len(calls)
-            assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'uncertain'
-            assert len(calls) == prior_calls
-    elif retirement_fault == 'lost-reply':
-        assert result['status'] == 'uncertain', result
-        durable = original_durable
-        count = len(calls)
-        result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
-        assert result['status'] == 'retired' and len(calls) == count, result
-    else:
-        assert result['status'] == 'retired', result
-        count = len(calls)
-        assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'retired'
-        assert len(calls) == count
-    if result['status'] == 'retired':
-        assert all(not pathlib.Path(target['path']).exists() for target in inspect['targets'])
-        assert retirement_command('inspect-retirement', active, transaction_id)['status'] == 'retired'
-assert {str(path): path.read_bytes() for path in metadata} == before
-assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
-assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
-if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
+            assert inspect['status'] == 'ready' and inspect['targets'], inspect
+            plan_sha = inspect['planSha256']
+            if retirement_fault == 'wrong-plan': plan_sha = '0' * 64
+            if retirement_fault == 'changed-inode':
+                payload = pathlib.Path(inspect['targets'][0]['path'])
+                payload.rename(root / 'replaced-payload')
+                payload.write_bytes(b'changed')
+            reader = None
+            if retirement_fault == 'writer-busy':
+                reader = sqlite3.connect(native_writer_lease_paths(active)[0][0], isolation_level=None)
+                reader.execute('BEGIN'); reader.execute('SELECT scope FROM jones_native_writer_lease').fetchall()
+            native_remove = remove_retirement_payload
+            calls = []
+            def observed_remove(target):
+                calls.append(target['path'])
+                native_remove(target)
+                if retirement_fault.startswith('partial') and len(calls) == 1: raise OSError('Synthetic interruption after one approved payload')
+            remove_retirement_payload = observed_remove
+            original_durable = durable
+            if retirement_fault == 'lost-reply':
+                def durable(path, value, exclusive=False):
+                    original_durable(path, value, exclusive)
+                    if pathlib.Path(path).name == 'retirement-receipt.json': raise OSError('Synthetic completion response lost')
+            try: result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+            finally:
+                if reader is not None: reader.close()
+            if retirement_fault in ('wrong-plan', 'changed-inode', 'writer-busy'):
+                assert result['status'] == 'refused' and calls == [], result
+                assert not (tx / 'retirement-intent.json').exists()
+            elif retirement_fault.startswith('partial'):
+                assert result['status'] == 'uncertain', result
+                try: inspect_selection_transactions(active)
+                except SelectionRefused as error: assert error.reason == 'activation-pending'
+                else: raise AssertionError('Unreconciled retirement admitted activation')
+                if retirement_fault == 'partial-new-file': (tx / 'previous-pair' / 'profile' / 'new-file').write_text('unapproved')
+                if retirement_fault == 'partial-replacement':
+                    payload = tx / 'previous-pair' / 'profile' / 'opaque'
+                    payload.rename(root / 'original-profile-payload'); payload.write_text('replacement')
+                resume = retirement_command('inspect-retirement', active, transaction_id)
+                if retirement_fault == 'partial':
+                    assert resume['status'] == 'ready' and resume['reconciliation'] is True, resume
+                    assert resume['planSha256'] == plan_sha
+                    result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+                    assert result['status'] == 'retired', result
+                else:
+                    assert resume['status'] == 'uncertain', resume
+                    prior_calls = len(calls)
+                    assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'uncertain'
+                    assert len(calls) == prior_calls
+            elif retirement_fault == 'lost-reply':
+                assert result['status'] == 'uncertain', result
+                durable = original_durable
+                count = len(calls)
+                result = retirement_command('retire-transaction', active, transaction_id, plan_sha)
+                assert result['status'] == 'retired' and len(calls) == count, result
+            else:
+                assert result['status'] == 'retired', result
+                count = len(calls)
+                assert retirement_command('retire-transaction', active, transaction_id, plan_sha)['status'] == 'retired'
+                assert len(calls) == count
+            if result['status'] == 'retired':
+                assert all(not pathlib.Path(target['path']).exists() for target in inspect['targets'])
+                assert retirement_command('inspect-retirement', active, transaction_id)['status'] == 'retired'
+        assert {str(path): path.read_bytes() for path in metadata} == before
+        assert database.exists() and (profile / 'opaque').read_text() == 'advanced-profile'
+        assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
+        assert read(staged['receiptPath'])['app'] == staged and candidate_app.exists()
+        if retirement_fault == 'internal-symlink': assert (root / 'unrelated-payload').read_text() == 'must survive'
+        assert {path: path.read_bytes() for path in live_bindings} == live_bindings
+    finally: retention_exclusion_held = False
 `;
       // Keep generated programs out of argv: Linux limits each argument to 128 KiB.
       const script = NodePath.join(f.directory, "retirement-scenario.py");
@@ -3550,7 +3618,7 @@ assert not (tx / 'previous-pair' / 'pair.json').exists()
 assert all(not pathlib.Path(reserve['path']).exists() for reserve in journal['recoveryReserves'])
 assert read(manifest_path) == expected
 assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 assert '/private/' not in json.dumps(journal['preEffect'])
 assert len(json.dumps(journal['preEffect'].get('diagnostics', {})).encode()) <= 1024
@@ -3620,7 +3688,7 @@ else:
 assert clock[0] <= 30
 assert 'candidate-launch' not in events
 assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
     runPython(definitions + "\n" + runtime + "\n" + scenario, [f.directory, mode, mode], {
@@ -3737,7 +3805,7 @@ else:
 assert (tx / 'intent.json').read_bytes() == before_intent
 assert (tx / 'recovery-reserve.bin').read_text() == 'retained-reserve'
 assert previous_app.joinpath('Contents/MacOS/Jones').read_text() == 'previous-executable'
-assert (home / 'settings.json').read_text() == 'previous-settings'
+assert (home / 'settings.json').read_text() == '{"fixture":"previous-settings"}'
 assert (profile / 'opaque').read_text() == 'same-host-profile'
 `;
     runPython(
