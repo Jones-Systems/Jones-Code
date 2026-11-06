@@ -487,7 +487,7 @@ it.layer(
   Layer.merge(NodeServices.layer, ProcessRunner.layer.pipe(Layer.provide(NodeServices.layer))),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
-  it.effect.each(["success","nonzero","close","interruption","lost-response","oversized","unavailable"] as const)(
+  it.effect.each(["success","nonzero","close","closed-during-observation","interruption","lost-response","oversized","unavailable"] as const)(
     "project-script observation uses the actual Manager write and native lifecycle (%s)",
     mode=>Effect.gen(function*(){
       yield* runMigrations();
@@ -502,6 +502,24 @@ it.layer(
       const process=ptyAdapter.processes[0]!;
       const input={threadId:"thread-1",terminalId:DEFAULT_TERMINAL_ID,data:mode==="oversized" ? "x".repeat(65535)+"\r" : " echo fixture\r",observation:{invocationId:"4a792973-8d01-4eb5-a710-e34c74f57c6b",projectId:"project",scriptId:"build"}};
       if(mode==="unavailable") input.observation.projectId="x".repeat(257);
+      if (mode === "closed-during-observation") {
+        const observing = yield* Deferred.make<void>();
+        const release = yield* Deferred.make<void>();
+        const writer = yield* manager.write(input).pipe(
+          Effect.provideService(TerminalCwdObservation, {observe: () => Effect.runPromise(
+            Deferred.succeed(observing,undefined).pipe(Effect.andThen(Deferred.await(release)),Effect.as(repo)),
+          )}),
+          Effect.result,
+          Effect.forkChild,
+        );
+        yield* Deferred.await(observing);
+        yield* manager.close({threadId:input.threadId,terminalId:input.terminalId});
+        yield* Deferred.succeed(release,undefined);
+        const result = yield* Fiber.join(writer);
+        assert.equal(result._tag,"Failure");
+        assert.lengthOf(process.writes,0);
+        return;
+      }
       if(mode==="lost-response") {
         const nativeWrite = process.write.bind(process);
         process.write = data => {nativeWrite(data);throw Error("accepted bytes; native response lost");};
