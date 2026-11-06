@@ -5,6 +5,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
+import * as NodeProcess from "node:process";
 import { jonesNativeHelperSource } from "../../../apps/desktop/src/jones/updates/jonesNativeHelperSource.ts";
 import { proposeRuntimeStagingRetention } from "../../../apps/server/src/jones/cloud/runtimeStagingRetention.ts";
 import { withQualifiedRuntimeLock } from "../../../apps/server/src/jones/cloud/qualifiedRuntime.ts";
@@ -512,7 +513,7 @@ NodeTest.test(
       NodeAssert.strict.equal(jonesNativeHelperSource.split(platformGuard).length, 2);
       // Adapt only the unique CLI gate in this disposable copy. Kernel guards stay intact.
       await NodeFSP.writeFile(helper, jonesNativeHelperSource.replace(platformGuard, "\n"));
-      if (process.platform !== "darwin") {
+      if (NodeProcess.platform !== "darwin") {
         const guardManifest = NodePath.join(root, "guard-manifest.json");
         await NodeFSP.writeFile(guardManifest, "{}");
         const native = NodeChildProcess.spawnSync(

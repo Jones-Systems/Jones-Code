@@ -485,7 +485,14 @@ function makeClaudeSessionForkFrame(
 
 function makeReplayQueryRunner(
   transcript: ClaudeAgentSdkReplayTranscript,
-  replayOptions: { readonly replayGate?: ProviderReplayGate } = {},
+  replayOptions: {
+    readonly replayGate?: ProviderReplayGate;
+    readonly retirementForQuery?: (input: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput) => {
+      readonly interrupt?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["interrupt"];
+      readonly close?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["close"];
+      readonly termination?: ClaudeAdapterV2.ClaudeAgentSdkQuerySession["termination"];
+    };
+  } = {},
 ): ClaudeQueryRunner {
   let cursor = 0;
   let failure: ClaudeAgentSdkReplayError | null = null;
@@ -512,16 +519,20 @@ function makeReplayQueryRunner(
     }
   };
 
-  const advance = () => {
-    cursor += 1;
+  const wakeCursorWaiters = () => {
     const signal = cursorAdvanced;
     cursorAdvanced = makeCursorSignal();
     signal.resolve();
+  };
+  const advance = () => {
+    cursor += 1;
+    wakeCursorWaiters();
   };
 
   async function* replayMessages(
     options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
     signal: AbortSignal,
+    isClosing: () => boolean,
   ): AsyncGenerator<SDKMessage, void> {
     while (true) {
       throwIfFailed();
@@ -610,6 +621,7 @@ function makeReplayQueryRunner(
       }
 
       if (entry.type === "expect_outbound") {
+        if (isClosing()) return;
         await waitForCursorAdvance(cursorAdvanced.promise, signal);
         throwIfFailed();
         if (signal.aborted) {
@@ -622,11 +634,12 @@ function makeReplayQueryRunner(
 
   const replayMessagesWithGateCleanup = (
     options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+    isClosing: () => boolean,
   ): AsyncIterable<SDKMessage> => ({
     [Symbol.asyncIterator]: () => {
       const abortController = new AbortController();
       iteratorAbortControllers.add(abortController);
-      const iterator = replayMessages(options, abortController.signal);
+      const iterator = replayMessages(options, abortController.signal, isClosing);
       return {
         next: async () => {
           try {
@@ -804,9 +817,12 @@ function makeReplayQueryRunner(
   return {
     open: (input) => {
       assertNextOutboundFrame(makeClaudeQueryOpenFrame(input));
+      const retirement = replayOptions.retirementForQuery?.(input);
+      let closing = false;
       return {
-        messages: Stream.fromAsyncIterable(replayMessagesWithGateCleanup(input.options), (cause) =>
-          replayQueryRunnerError(transcript, cause),
+        messages: Stream.fromAsyncIterable(
+          replayMessagesWithGateCleanup(input.options, () => closing),
+          (cause) => replayQueryRunnerError(transcript, cause),
         ),
         offer: (message) =>
           replayEffect(() => {
@@ -841,10 +857,20 @@ function makeReplayQueryRunner(
           replayEffect(() => {
             assertNextOutboundFrame({ type: "query.background_tasks", toolUseId });
           }).pipe(Effect.as(true)),
+        termination: retirement?.termination ?? Effect.void,
         interrupt: replayEffect(() => {
           assertNextOutboundFrame({ type: "query.interrupt" });
-        }),
-        close: Effect.void,
+        }).pipe(Effect.andThen(retirement?.interrupt ?? Effect.void)),
+        close: (retirement?.close ?? Effect.void).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              // Drain queued inbound evidence, then end only this query at its next
+              // protocol boundary. A failed close retains its original raw reader.
+              closing = true;
+              wakeCursorWaiters();
+            }),
+          ),
+        ),
       };
     },
     forkSession: (input) => {
@@ -2848,8 +2874,11 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
     layerClaudeProviderAdapterRegistryReplay(transcript, options),
 };
 
-export function makeClaudeRestartReplayHarness(transcript: ClaudeAgentSdkReplayTranscript) {
-  const queryRunner = makeReplayQueryRunner(transcript);
+export function makeClaudeRestartReplayHarness(
+  transcript: ClaudeAgentSdkReplayTranscript,
+  options: Parameters<typeof makeReplayQueryRunner>[1] = {},
+) {
+  const queryRunner = makeReplayQueryRunner(transcript, options);
   return {
     harness: {
       ...ClaudeOrchestratorReplayHarness,
