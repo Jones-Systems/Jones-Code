@@ -21,6 +21,8 @@ vi.mock("../../../../../package.json", () => ({
 import * as SqlClient from "effect/sql/SqlClient";
 import {
   Effect,
+  Gateway,
+  Entry,
   Wire,
   Store,
   TestClock,
@@ -294,9 +296,48 @@ it.effect("ingress declarations are inert revisions and relation cycles serializ
       rejected(yield* edge(c, a), "cycle_conflict");
       const d = yield* h.create("d"),
         e = yield* h.create("e");
-      const outcomes = yield* Effect.all([edge(d, e), edge(e, d, "superseded_by")], {
-        concurrency: "unbounded",
-      });
+      const commands = [
+        yield* h.command({
+          operation: "add_edge",
+          from_workstream_id: d,
+          expected_from_version: yield* h.version(d),
+          to_workstream_id: e,
+          expected_to_version: yield* h.version(e),
+          relation: "continues_as",
+        }),
+        yield* h.command({
+          operation: "add_edge",
+          from_workstream_id: e,
+          expected_from_version: yield* h.version(e),
+          to_workstream_id: d,
+          expected_to_version: yield* h.version(d),
+          relation: "superseded_by",
+        }),
+      ];
+      const outcomes = yield* (yield* Entry.Entry).run("workstreams:write", null, (adapter) =>
+        Effect.gen(function* () {
+          const admitted = yield* Deferred.make<void>();
+          let submissions = 0;
+          const gateway = yield* Gateway.make(
+            {
+              ...adapter.transport,
+              submitCommand: (input) =>
+                Effect.gen(function* () {
+                  if (++submissions === 2) yield* Deferred.succeed(admitted, undefined);
+                  yield* Deferred.await(admitted);
+                  return yield* adapter.transport.submitCommand(input);
+                }),
+            },
+            { binding: yield* adapter.gateway.readSession() },
+          );
+          // Both gateway preflights finish before either real registry write starts.
+          const receipts = yield* Effect.forEach(commands, (command) => gateway.submit(command), {
+            concurrency: "unbounded",
+          });
+          expect(submissions).toBe(2);
+          return receipts;
+        }),
+      );
       expect(outcomes.filter((x) => x.state === "committed")).toHaveLength(1);
       expect(outcomes.filter((x) => x.state === "rejected")).toHaveLength(1);
       expect((yield* h.gateway.readEdges(d, { limit: 100 })).items).toHaveLength(1);

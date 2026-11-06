@@ -48,8 +48,9 @@ as new native issuance. Bearer materialization is a separate reserved-session
 operation and must remain in memory at the authorized transport boundary. Public
 proofs and CLI output contain no bearer or signing key.
 
-Migration 126 records native source issuance in the Jones migration ledger. The
-server mounts validated native lookup only when native home mode is selected;
+Native source issuance is recorded by the enrollment migration registered in the
+[Jones migration ledger](../../apps/server/src/jones/persistence/JonesMigrations.ts).
+The server mounts validated native lookup only when native home mode is selected;
 the registry CLI mounts the explicit owner commands. Source availability does
 not authorize installation, runtime adoption, migration of live state, merge,
 or fleet activation.
