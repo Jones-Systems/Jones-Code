@@ -50,7 +50,11 @@ const readLedger = Effect.gen(function* () {
 });
 const readSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`;
+  return yield* sql<{
+    readonly type: string;
+    readonly name: string;
+    readonly sql: string | null;
+  }>`SELECT type, name, sql FROM sqlite_master ORDER BY type, name`;
 });
 
 const seedLegacy = (prefix = 6) =>
@@ -463,6 +467,7 @@ it.effect(
           [136, "WorkspaceProvenance"],
           [137, "NativeCreationLeaseRenewal"],
           [138, "WorkspaceRetirement"],
+          [139, "ConversationWorkspace"],
         ],
       );
       assert.deepStrictEqual(
@@ -679,6 +684,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [136, "WorkspaceProvenance"],
       [137, "NativeCreationLeaseRenewal"],
       [138, "WorkspaceRetirement"],
+      [139, "ConversationWorkspace"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;
@@ -718,4 +724,112 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       assert.isTrue(Exit.isFailure(yield* Effect.exit(statement)));
     assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
   }).pipe(Effect.provide(memory)),
+);
+
+it.effect(
+  "upgrades an actual138 database to139 atomically, preserving retirement facts and repeating unchanged",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations({ toMigrationInclusive: latestUpstreamMigration });
+      yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 138));
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
+        [{ migration_id: 138, name: "WorkspaceRetirement" }],
+      );
+      yield* sql`INSERT INTO jones_workspace_retirement_intents
+        (event_id,thread_id,worktree,settled_at) VALUES ('event','thread','/checkout','settled')`;
+      yield* sql`INSERT INTO jones_workspace_retirement_receipts VALUES
+        ('receipt','incarnation','/checkout','intent','{}')`;
+      yield* sql`INSERT INTO jones_workspace_retirement_state VALUES
+        ('/checkout','incarnation','retiring','receipt')`;
+      yield* sql`INSERT INTO jones_workspace_duty_claims VALUES
+        ('claim','/checkout','incarnation','terminal','thread','{}','acquired',NULL)`;
+      yield* sql`INSERT INTO jones_workspace_disposal_journal VALUES
+        ('receipt',0,'/checkout/cache','ignored','{}','planned')`;
+      yield* sql`INSERT INTO jones_workspace_duty_identity VALUES ('claim','{}','{}')`;
+      const readState = Effect.gen(function* () {
+        const schema = yield* readSchema;
+        const tables = yield* sql<{ readonly name: string }>`SELECT name FROM sqlite_master
+          WHERE type='table' ORDER BY name`;
+        const rows = yield* Effect.forEach(tables, ({ name }) =>
+          sql.unsafe(`SELECT * FROM "${name.replaceAll('"', '""')}"`),
+        );
+        return { schema, rows };
+      });
+      const before = yield* readState;
+      const failed = yield* runJonesMigrations(
+        jonesMigrationEntries.map(
+          ([id, name, migration]) =>
+            [
+              id,
+              name,
+              id === 139
+                ? migration.pipe(
+                    Effect.andThen(sql`SELECT * FROM controlled_missing_after139_ddl`),
+                    Effect.asVoid,
+                  )
+                : migration,
+            ] as const,
+        ),
+      ).pipe(Effect.exit);
+      assert.isTrue(Exit.isFailure(failed));
+      assert.deepStrictEqual(yield* readState, before);
+      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+        [139, "ConversationWorkspace"],
+      ]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM sqlite_master WHERE type='table'
+          AND name LIKE 'jones_conversation_%' ORDER BY name`,
+        [
+          { name: "jones_conversation_bindings" },
+          { name: "jones_conversation_fallbacks" },
+          { name: "jones_conversation_handoffs" },
+          { name: "jones_conversation_obligations" },
+          { name: "jones_conversation_turns" },
+        ],
+      );
+      yield* sql`INSERT INTO jones_conversation_bindings VALUES ('thread','{}','run')`;
+      yield* sql`INSERT INTO jones_conversation_turns VALUES ('run','thread','{}')`;
+      yield* sql`INSERT INTO jones_conversation_fallbacks VALUES ('thread','claude','unavailable')`;
+      yield* sql`INSERT INTO jones_conversation_handoffs VALUES ('thread','{}')`;
+      yield* sql`INSERT INTO jones_conversation_obligations VALUES ('/conversation','thread','nonempty')`;
+      assert.deepStrictEqual(
+        yield* sql`SELECT thread_id,binding,active_run_id FROM jones_conversation_bindings`,
+        [{ thread_id: "thread", binding: "{}", active_run_id: "run" }],
+      );
+      const after = yield* readState;
+      assert.deepStrictEqual(
+        after.schema.filter(
+          ({ name }) =>
+            !name.startsWith("jones_conversation_") &&
+            !name.startsWith("sqlite_autoindex_jones_conversation_"),
+        ),
+        before.schema,
+      );
+      // Compare every pre-existing table, including both migration ledgers and
+      // all six populated retirement/duty tables, using its original identity.
+      const originalTables = yield* sql<{ readonly name: string }>`SELECT name FROM sqlite_master
+        WHERE type='table' AND name NOT LIKE 'jones_conversation_%' ORDER BY name`;
+      assert.deepStrictEqual(
+        yield* Effect.forEach(originalTables, ({ name }) =>
+          sql.unsafe(
+            name === "jones_sql_migrations"
+              ? "SELECT * FROM jones_sql_migrations WHERE migration_id<=138"
+              : `SELECT * FROM "${name.replaceAll('"', '""')}"`,
+          ),
+        ),
+        before.rows,
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
+        [
+          { migration_id: 138, name: "WorkspaceRetirement" },
+          { migration_id: 139, name: "ConversationWorkspace" },
+        ],
+      );
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(yield* readState, after);
+      assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+    }).pipe(Effect.provide(memory)),
 );

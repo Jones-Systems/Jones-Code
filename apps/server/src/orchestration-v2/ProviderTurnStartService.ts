@@ -1,4 +1,5 @@
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
@@ -216,6 +217,7 @@ export const layer: Layer.Layer<
     );
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
+    const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
     const currentSettings = yield* ServerSettings.ServerSettingsService;
     const instanceRegistry = yield* ProviderInstanceRegistry.ProviderInstanceRegistry;
@@ -1043,10 +1045,72 @@ export const layer: Layer.Layer<
       });
       const { isCurrentAttemptInStatus } = runControls;
 
-      const resolvedRuntimePolicy = yield* runtimePolicy.resolve({
+      if (
+        Option.isSome(conversations) &&
+        projection.thread.lineage.parentThreadId !== null &&
+        run.workspacePreparation === undefined &&
+        projection.thread.worktreePath === null
+      ) {
+        yield* conversations.value
+          .inherit(projection.thread.id, projection.thread.lineage.parentThreadId)
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      }
+      if (Option.isSome(conversations) && projection.thread.worktreePath === null) {
+        const shared = yield* conversations.value
+          .lookup(projection.thread.id)
+          .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+        if (shared?.state === "attached" && shared.ownerThreadId !== projection.thread.id) {
+          yield* conversations.value
+            .attachForTurn(
+              projection.thread.id,
+              run.id,
+              message?.text ?? "",
+              message?.attachments ?? [],
+            )
+            .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          return;
+        }
+      }
+      const conversationTurn =
+        Option.isSome(conversations) && projection.thread.worktreePath === null
+          ? yield* conversations.value
+              .startTurn(projection.thread.id, run.id)
+              .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })))
+          : null;
+      if (conversationTurn !== null) {
+        const instance = yield* instanceRegistry.getInstance(run.modelSelection.instanceId);
+        if (instance?.driverKind !== "codex" && instance?.driverKind !== "claudeAgent") {
+          if (Option.isNone(conversations))
+            return yield* new ProviderTurnStartError({
+              runId,
+              cause:
+                "Eager adapter fallback is unavailable; no unproved adapter may use a conversation directory.",
+            });
+          yield* ConversationPolicy.observeEagerFallback({
+            threadId: projection.thread.id,
+            runId,
+            driver: instance?.driverKind ?? "unavailable",
+            reason: "eager: resumed adapter has no conversation proof",
+          });
+          yield* conversations.value
+            .attachForTurn(
+              projection.thread.id,
+              run.id,
+              message?.text ?? "",
+              message?.attachments ?? [],
+            )
+            .pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+          return;
+        }
+      }
+      const baseRuntimePolicy = yield* runtimePolicy.resolve({
         thread: projection.thread,
         modelSelection: run.modelSelection,
       });
+      const resolvedRuntimePolicy =
+        conversationTurn === null
+          ? baseRuntimePolicy
+          : { ...baseRuntimePolicy, cwd: conversationTurn.binding.path };
       if (!(yield* isCurrentAttemptInStatus("starting"))) return;
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
@@ -1656,12 +1720,14 @@ export const layer: Layer.Layer<
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
-      const userText = workModeProviderPrompt(
-        projectComposerContextForProvider({
-          text: message.text,
-          records: message.context?.records ?? [],
-        }),
-      );
+      const userText =
+        (conversationTurn === null ? "" : `${conversationTurn.context}\n\n`) +
+        workModeProviderPrompt(
+          projectComposerContextForProvider({
+            text: message.text,
+            records: message.context?.records ?? [],
+          }),
+        );
       // Delivered once: this run's provider turn marks the work as told. A
       // restart continuation is prompted by its own text or resumes natively.
       const noteContinuation = isRestartNoteContinuation(

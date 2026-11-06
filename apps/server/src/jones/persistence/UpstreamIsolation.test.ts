@@ -337,6 +337,7 @@ it.effect(
         [136, "WorkspaceProvenance"],
         [137, "NativeCreationLeaseRenewal"],
         [138, "WorkspaceRetirement"],
+        [139, "ConversationWorkspace"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
@@ -430,6 +431,8 @@ it.effect("upstream migration 63 preserves Jones rows and durable settlement pro
     const sql = yield* SqlClient.SqlClient;
     yield* sql`PRAGMA foreign_keys = ON`;
     yield* runMigrations({ toMigrationInclusive: 62 });
+    // This exercises current-service upstream isolation: install the complete
+    // Jones manifest before snapshotting its schema, rows and settlement ledger.
     yield* runJonesMigrations(jonesMigrationEntries);
     yield* seedReferencedRows;
     const proof = JSON.stringify({

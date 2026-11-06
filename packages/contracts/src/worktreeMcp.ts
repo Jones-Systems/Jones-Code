@@ -5,6 +5,7 @@ import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 
 /** Uses the managed worktree folder; handoff detaches the provider, ending this turn and resuming there next run. */
 export const WorktreeMcpHandoffInput = Schema.Struct({
+  clientRequestId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
   branch: TrimmedNonEmptyString,
   baseRef: Schema.optional(
     TrimmedNonEmptyString.annotate({
@@ -114,6 +115,17 @@ export type WorktreeProvenanceEntry = typeof WorktreeProvenanceEntry.Type;
 export const WorktreeMcpStatusResult = Schema.Struct({
   retirement: Schema.optionalKey(WorkspaceRetirementOutcome),
   retirementObservation: Schema.optionalKey(Schema.Literals(["recorded", "none", "unavailable"])),
+  conversation: Schema.optional(
+    Schema.Struct({
+      state: Schema.Literals(["conversation", "attached", "disposed", "conversation_dir_nonempty"]),
+      directory: Schema.String,
+      ownerThreadId: Schema.String,
+      recordedCommit: Schema.String,
+      baseRef: Schema.String,
+      sourcePolicy: Schema.Literal("broker-only"),
+      handoffPhase: Schema.NullOr(Schema.String),
+    }),
+  ),
   provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
   attached: Schema.Boolean,
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),

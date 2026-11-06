@@ -1,0 +1,81 @@
+{
+  "schema": "jones.boundary-fragment/v1",
+  "feature": "conversation-workspace",
+  "jonesOwnedPaths": ["apps/server/src/jones/conversationWorkspace/"],
+  "hookPaths": [],
+  "tombstones": [],
+  "allowedImports": [
+    {
+      "from": "apps/server/src/mcp/McpToolAccess.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/WorktreeMcpService.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/SourceBroker.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/worktree/handlers.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/worktree/handlers.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/SourceBroker.ts"
+    },
+    {
+      "from": "apps/server/src/mcp/toolkits/worktree/tools.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/Orchestrator.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderSessionManager.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadSettlementService.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/runtimeLayer.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/project/ProjectSetupScriptRunner.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/terminal/Manager.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/conversationWorkspace/ConversationPolicy.ts"
+    }
+  ]
+}

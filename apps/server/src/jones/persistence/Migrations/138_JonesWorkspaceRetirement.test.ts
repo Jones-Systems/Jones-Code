@@ -96,7 +96,10 @@ it.effect(
       yield* runMigrations();
       assert.deepEqual(
         yield* sql`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=138 ORDER BY migration_id`,
-        [{ migration_id: 138, name: "WorkspaceRetirement" }],
+        [
+          { migration_id: 138, name: "WorkspaceRetirement" },
+          { migration_id: 139, name: "ConversationWorkspace" },
+        ],
       );
       for (const table of tables)
         assert.equal(

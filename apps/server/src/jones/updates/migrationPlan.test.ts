@@ -223,11 +223,7 @@ it.effect(
       const databasePath = NodePath.join(root, "statev2.sqlite");
       const current = {
         upstream: migrationManifest,
-        jones: [
-          ...released136Identities,
-          [137, "NativeCreationLeaseRenewal"] as const,
-          [138, "WorkspaceRetirement"] as const,
-        ],
+        jones: [...released136Identities, [137, "NativeCreationLeaseRenewal"] as const],
       };
       const released = released136Identities.map(([id, name]) => {
         const entry = jonesMigrationEntries.find(
@@ -292,7 +288,7 @@ it.effect(
         const files = NodeFS.readdirSync(root);
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [], pendingJones: [137, 138] },
+          migrationPlan: { pendingUpstream: [], pendingJones: [137] },
         });
         expect(NodeFS.readFileSync(databasePath)).toEqual(bytes);
         expect(NodeFS.statSync(databasePath).mtimeMs).toBe(modified);
@@ -323,37 +319,25 @@ it.effect(
         expect(capture()).toEqual(before);
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
           status: "ready",
-          migrationPlan: { pendingUpstream: [], pendingJones: [137, 138] },
+          migrationPlan: { pendingUpstream: [], pendingJones: [137] },
         });
-        yield* run(runMigrations());
+        yield* run(runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)));
         const after = capture();
         expect(after.starts).toEqual(before.starts);
         expect(after.upstream).toEqual(before.upstream);
-        expect(after.jones.slice(0, before.jones.length)).toEqual(before.jones);
-        expect(after.jones).toHaveLength(before.jones.length + 2);
-        expect(after.jones.slice(-2)).toMatchObject([
-          { migration_id: 137, name: "NativeCreationLeaseRenewal" },
-          { migration_id: 138, name: "WorkspaceRetirement" },
-        ]);
-        const retirementTables = new Set([
-          "jones_workspace_retirement_intents",
-          "jones_workspace_retirement_receipts",
-          "jones_workspace_retirement_state",
-          "jones_workspace_duty_claims",
-          "jones_workspace_disposal_journal",
-          "jones_workspace_duty_identity",
-        ]);
+        expect(after.jones.slice(0, -1)).toEqual(before.jones);
+        expect(after.jones).toHaveLength(before.jones.length + 1);
+        expect(after.jones.at(-1)).toMatchObject({
+          migration_id: 137,
+          name: "NativeCreationLeaseRenewal",
+        });
         expect(
           after.schema.filter(
-            (row) =>
-              row.name !== "jones_native_creation_execution_starts_no_update" &&
-              !retirementTables.has(String(row.tbl_name)),
+            (row) => row.name !== "jones_native_creation_execution_starts_no_update",
           ),
         ).toEqual(
           before.schema.filter(
-            (row) =>
-              row.name !== "jones_native_creation_execution_starts_no_update" &&
-              !retirementTables.has(String(row.tbl_name)),
+            (row) => row.name !== "jones_native_creation_execution_starts_no_update",
           ),
         );
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({
@@ -370,7 +354,7 @@ it.effect(
           status: "blocked",
           reason: "Candidate older than this database (Jones migration 137).",
         });
-        yield* run(runMigrations());
+        yield* run(runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)));
         expect(capture()).toEqual(after);
       } finally {
         NodeFS.rmSync(root, { recursive: true, force: true });

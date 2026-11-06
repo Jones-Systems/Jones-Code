@@ -812,6 +812,11 @@ export function useComposerSend(input: ComposerSendInput) {
       threadContexts: composerThreadContextsSnapshot,
       messageText: messageTextForSend,
     } = sendSnapshot;
+    const conversationAvailable =
+      appAtomRegistry.get(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+        .conversationWorkspace === true;
+    const effectiveSendEnvMode =
+      sendEnvMode === "auto" && !conversationAvailable ? "worktree" : sendEnvMode;
     const {
       missingWorktreeBaseBranch,
       compactBeforeSend,
@@ -822,7 +827,7 @@ export function useComposerSend(input: ComposerSendInput) {
       sendQueuesBehindSetup,
       isServerThread,
       activeMessageCount,
-      sendEnvMode,
+      sendEnvMode: effectiveSendEnvMode,
       worktreePath: activeThread.worktreePath,
       activeThreadBranch,
       resumeCompactionTokens,
@@ -832,7 +837,7 @@ export function useComposerSend(input: ComposerSendInput) {
     });
     const worktreePreparation = resolveFirstSendWorktreePreparation({
       isFirstMessage: !sendQueuesBehindSetup && (!isServerThread || activeMessageCount === 0),
-      sendEnvMode,
+      sendEnvMode: effectiveSendEnvMode,
       worktreePath: activeThread.worktreePath,
       projectCwd: activeProject.workspaceRoot,
       baseBranch: activeThreadBranch,
@@ -1492,6 +1497,9 @@ export function useComposerSend(input: ComposerSendInput) {
       const bootstrap =
         isLocalDraftThread || shouldCreateWorktree
           ? {
+              ...(isLocalDraftThread && effectiveSendEnvMode === "auto"
+                ? { conversation: true }
+                : {}),
               ...(isLocalDraftThread
                 ? {
                     createThread: {
