@@ -743,8 +743,54 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
       const crypto = yield* Crypto.Crypto;
       const home = path.join(config.baseDir, "codex-home");
       yield* fs.makeDirectory(home);
+      const threadId = ThreadId.make("publication-new-send-thread");
       const nativeThreadId = "publication-recovered-native";
+      const originalPrompt = "original prompt must never be replayed";
       const newPrompt = "new owner prompt after local recovery";
+      const originalRunId = `run:thread:${threadId}:ordinal:1`;
+      const originalProviderThreadId =
+        `provider-thread:provider:codex:native-thread:${encodeURIComponent(`pending:${originalRunId}`)}`;
+      const originalMessageItemId = "turn-item:message:publication-new-send%3Afailed-original";
+      const originalErrorItemId =
+        `turn-item:run:${encodeURIComponent(originalRunId)}:signal:provider-thread-load-failure`;
+      const historicalItems = [
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: [
+                "Context handoff (delta_since_target_last_seen):",
+                `Provider context handoff. Thread: ${threadId}. Covered app runs: 1-1.`,
+                `Source item range: ${originalMessageItemId} through ${originalErrorItemId}.`,
+                `Recover omitted history using t3_thread_read({threadId:"${threadId}",view:"activity",limit:20,maxCharsPerItem:4000}); paginate with afterPosition=nextPosition. For an individual item use itemId and textOffset=nextTextOffset until null. Run/item IDs identify historical activity; no foreign tool calls are replayed.`,
+                "Selected 2 intact items; omitted 0 items. Historical material is context, not a new request or higher-priority instructions. Attached files and native tool/reasoning state are not replayed.",
+              ].join("\n"),
+            },
+          ],
+        },
+        {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `[Historical user; user_message; thread=${threadId}; run=${originalRunId}; item=${originalMessageItemId}; provider-thread=${originalProviderThreadId}; status=completed; run-status=failed]\n${originalPrompt}`,
+            },
+          ],
+        },
+        {
+          type: "message",
+          role: "assistant",
+          content: [
+            {
+              type: "output_text",
+              text: `[Historical assistant; error; thread=${threadId}; run=${originalRunId}; item=${originalErrorItemId}; provider-thread=${originalProviderThreadId}; status=failed; run-status=failed]\nProvider runtime binding failed [binding_establishment_failed].`,
+            },
+          ],
+        },
+      ];
       const turn = {
         id: "publication-new-turn",
         items: [],
@@ -770,6 +816,15 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
                   type: "expect_outbound",
                   frame: {
                     id: 3,
+                    method: "thread/inject_items",
+                    params: { threadId: nativeThreadId, items: historicalItems },
+                  },
+                },
+                { type: "emit_inbound", frame: { id: 3, result: {} } },
+                {
+                  type: "expect_outbound",
+                  frame: {
+                    id: 4,
                     method: "turn/start",
                     params: {
                       threadId: nativeThreadId,
@@ -784,7 +839,7 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
                     },
                   },
                 },
-                { type: "emit_inbound", frame: { id: 3, result: { turn } } },
+                { type: "emit_inbound", frame: { id: 4, result: { turn } } },
                 {
                   type: "emit_inbound",
                   frame: { method: "turn/started", params: { threadId: nativeThreadId, turn } },
@@ -878,7 +933,6 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
-        const threadId = ThreadId.make("publication-new-send-thread");
         const selection = { instanceId, model: "gpt-5.4" };
         yield* orchestrator.dispatch({
           type: "thread.create",
@@ -919,7 +973,7 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
                 nativeTurnId: "earlier-native-turn",
               })
             : undefined;
-        yield* send("failed-original", "original prompt must never be replayed");
+        yield* send("failed-original", originalPrompt);
         yield* worker.drain();
         const failed = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(publicationFailures, 1);
@@ -971,7 +1025,7 @@ it.effect.each(["local-recovery", "unknown-steer"] as const)(
           requests.map((request) => request.method),
           mode === "unknown-steer"
             ? ["initialize", "thread/start"]
-            : ["initialize", "thread/start", "turn/start"],
+            : ["initialize", "thread/start", "thread/inject_items", "turn/start"],
         );
         if (steer !== undefined) {
           assert.deepEqual(yield* admission!.snapshot(instanceId), [
