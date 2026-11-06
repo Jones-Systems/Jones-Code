@@ -241,7 +241,9 @@ export function BranchToolbarBranchSelector({
   const normalizedDeferredBranchQuery = deferredTrimmedBranchQuery.toLowerCase();
   const prReference = parsePullRequestReference(trimmedBranchQuery);
   const isSelectingWorktreeBase =
-    (effectiveEnvMode === "worktree" || effectiveEnvMode === "auto") && !envLocked && !activeWorktreePath;
+    (effectiveEnvMode === "worktree" || effectiveEnvMode === "auto") &&
+    !envLocked &&
+    !activeWorktreePath;
   const checkoutPullRequestItemValue =
     canChangeThreadBranch && prReference && onCheckoutPullRequestRequest
       ? `__checkout_pull_request__:${prReference}`

@@ -303,9 +303,10 @@ it.effect(
       );
       assert.isTrue(Exit.isFailure(failed));
       assert.deepStrictEqual(yield* f.readLeases, before);
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)), [
-        [137, "NativeCreationLeaseRenewal"],
-      ]);
+      assert.deepStrictEqual(
+        yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)),
+        [[137, "NativeCreationLeaseRenewal"]],
+      );
       assert.deepStrictEqual(yield* f.readLeases, before);
       const expiry = yield* f.outbox.renew({ claim: f.claim, leaseDurationMs: 30_000 });
       assert.strictEqual(expiry, "2026-11-05T12:00:40.000Z");
@@ -368,7 +369,10 @@ it.effect(
         ),
       );
       assert.deepStrictEqual(yield* f.readLeases, settled);
-      assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)), []);
+      assert.deepStrictEqual(
+        yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)),
+        [],
+      );
     }).pipe(Effect.provide(Outbox.layer.pipe(Layer.provideMerge(upgradeRepository)))),
 );
 

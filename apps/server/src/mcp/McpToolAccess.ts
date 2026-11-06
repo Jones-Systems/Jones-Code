@@ -106,13 +106,23 @@ const refuseReadOnlyClient = McpInvocationContext.McpInvocationContext.pipe(
   ),
 );
 
-const assertCheckoutAttached = (caller: Caller) => Effect.gen(function* () {
-  if (caller.scope.thread === undefined) return;
-  const policy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
-  if (Option.isSome(policy)) yield* policy.value.assertAttached(caller.scope.thread.threadId).pipe(
-    Effect.mapError(() => new OrchestratorMcpFailure({ code: "attach_required", message: "attach_required: call t3_worktree_handoff before T3 MCP writes." })),
-  );
-});
+const assertCheckoutAttached = (caller: Caller) =>
+  Effect.gen(function* () {
+    if (caller.scope.thread === undefined) return;
+    const policy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+    if (Option.isSome(policy))
+      yield* policy.value
+        .assertAttached(caller.scope.thread.threadId)
+        .pipe(
+          Effect.mapError(
+            () =>
+              new OrchestratorMcpFailure({
+                code: "attach_required",
+                message: "attach_required: call t3_worktree_handoff before T3 MCP writes.",
+              }),
+          ),
+        );
+  });
 
 const writingCaller = refuseReadOnlyClient.pipe(
   Effect.andThen(() => loadCaller()),
@@ -141,20 +151,33 @@ export const readsAsCaller = <P, A, E, R>(handle: (params: P) => Effect.Effect<A
 
 /** The domain service checks immutable receipts before its locked execution guard. */
 export const actsAsCallerWithReceipt = <P, A, E, R>(
-  handle: (params: P, beforeWrite: Effect.Effect<void, OrchestratorMcpFailure>) => Effect.Effect<A, E, R>,
+  handle: (
+    params: P,
+    beforeWrite: Effect.Effect<void, OrchestratorMcpFailure>,
+  ) => Effect.Effect<A, E, R>,
 ) =>
   declare(
-    (params: P) => Effect.gen(function* () {
-      yield* requireThreadCaller;
-      yield* refuseReadOnlyClient;
-      const caller = yield* readCaller();
-      const beforeWrite = Effect.gen(function* () {
-        const fresh = caller.caller === undefined ? undefined : yield* caller.threads.getThreadShell(caller.caller.id).pipe(Effect.mapError(unavailable));
-        if (fresh === null) return yield* new OrchestratorMcpFailure({ code: "thread_not_found", message: "The calling thread no longer exists." });
-        yield* assertLiveCaller({ ...caller, caller: fresh });
-      });
-      return yield* handle(params, beforeWrite);
-    }),
+    (params: P) =>
+      Effect.gen(function* () {
+        yield* requireThreadCaller;
+        yield* refuseReadOnlyClient;
+        const caller = yield* readCaller();
+        const beforeWrite = Effect.gen(function* () {
+          const fresh =
+            caller.caller === undefined
+              ? undefined
+              : yield* caller.threads
+                  .getThreadShell(caller.caller.id)
+                  .pipe(Effect.mapError(unavailable));
+          if (fresh === null)
+            return yield* new OrchestratorMcpFailure({
+              code: "thread_not_found",
+              message: "The calling thread no longer exists.",
+            });
+          yield* assertLiveCaller({ ...caller, caller: fresh });
+        });
+        return yield* handle(params, beforeWrite);
+      }),
     undefined,
   );
 

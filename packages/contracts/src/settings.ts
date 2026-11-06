@@ -1218,7 +1218,9 @@ export const ServerSettings = Schema.Struct({
   ),
   /** Null inherits t3.json, then local; omit it on the wire for older clients requiring a literal. */
   defaultThreadEnvMode: OmittedWhenNull(ThreadEnvMode),
-  worktreeAllocation: Schema.Literals(["on-write", "eager"]).pipe(Schema.withDecodingDefault(Effect.succeed("on-write"))),
+  worktreeAllocation: Schema.Literals(["on-write", "eager"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("on-write")),
+  ),
   newWorktreesStartFromOrigin: Schema.Boolean.pipe(
     Schema.withDecodingDefault(Effect.succeed(true)),
   ),

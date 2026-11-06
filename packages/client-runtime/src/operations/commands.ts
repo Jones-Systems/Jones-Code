@@ -731,30 +731,33 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
     const thread = bootstrap ?? existingProjection!.thread;
     const workspaceStrategy =
       input.bootstrap?.conversation === true
-        ? { type: "auto" as const, ...(bootstrap?.branch == null ? {} : { baseRef: bootstrap.branch }) }
-        : prepareWorktree !== undefined
         ? {
-            type: "worktree" as const,
-            ...(prepareWorktree.baseBranch === undefined
-              ? {}
-              : { baseRef: prepareWorktree.baseBranch }),
-            ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
-            ...(prepareWorktree.startFromOrigin === undefined
-              ? {}
-              : { startFromOrigin: prepareWorktree.startFromOrigin }),
+            type: "auto" as const,
+            ...(bootstrap?.branch == null ? {} : { baseRef: bootstrap.branch }),
           }
-        : bootstrap?.worktreePath
+        : prepareWorktree !== undefined
           ? {
-              type: "existing_worktree" as const,
-              worktreePath: bootstrap.worktreePath,
-              ...(bootstrap.branch === null ? {} : { branch: bootstrap.branch }),
-            }
-          : {
-              type: "root" as const,
-              ...(bootstrap?.branch === null || bootstrap?.branch === undefined
+              type: "worktree" as const,
+              ...(prepareWorktree.baseBranch === undefined
                 ? {}
-                : { branch: bootstrap.branch }),
-            };
+                : { baseRef: prepareWorktree.baseBranch }),
+              ...(prepareWorktree.branch === undefined ? {} : { branch: prepareWorktree.branch }),
+              ...(prepareWorktree.startFromOrigin === undefined
+                ? {}
+                : { startFromOrigin: prepareWorktree.startFromOrigin }),
+            }
+          : bootstrap?.worktreePath
+            ? {
+                type: "existing_worktree" as const,
+                worktreePath: bootstrap.worktreePath,
+                ...(bootstrap.branch === null ? {} : { branch: bootstrap.branch }),
+              }
+            : {
+                type: "root" as const,
+                ...(bootstrap?.branch === null || bootstrap?.branch === undefined
+                  ? {}
+                  : { branch: bootstrap.branch }),
+              };
     return freezePreparedTurnRequest({
       method: ORCHESTRATION_V2_WS_METHODS.launchThread,
       payload: {

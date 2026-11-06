@@ -654,7 +654,11 @@ export type OrchestrationV2RunBackgroundWorkCancelled =
   typeof OrchestrationV2RunBackgroundWorkCancelled.Type;
 
 export const OrchestrationV2ThreadLaunchWorkspaceStrategy = Schema.Union([
-  Schema.Struct({ type: Schema.Literal("auto"), branch: Schema.optional(TrimmedNonEmptyString), baseRef: Schema.optional(TrimmedNonEmptyString) }),
+  Schema.Struct({
+    type: Schema.Literal("auto"),
+    branch: Schema.optional(TrimmedNonEmptyString),
+    baseRef: Schema.optional(TrimmedNonEmptyString),
+  }),
   Schema.Struct({
     type: Schema.Literal("root"),
     branch: Schema.optional(TrimmedNonEmptyString),

@@ -172,10 +172,17 @@ interface NewThreadEnvModeInput {
   readonly newProjectsRoot: string | null | undefined;
   readonly projectHasThreads: boolean;
 }
-export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput & { readonly preferConversation: boolean }): ThreadEnvMode | "auto";
+export function resolveNewThreadEnvMode(
+  input: NewThreadEnvModeInput & { readonly preferConversation: boolean },
+): ThreadEnvMode | "auto";
 export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput): ThreadEnvMode;
-export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput & { readonly preferConversation?: boolean }): ThreadEnvMode | "auto" {
-  const configured = input.preferConversation && input.projectSettings.settings.worktreeAllocation !== "eager" ? "auto" : input.projectSettings.settings.defaultThreadEnvMode;
+export function resolveNewThreadEnvMode(
+  input: NewThreadEnvModeInput & { readonly preferConversation?: boolean },
+): ThreadEnvMode | "auto" {
+  const configured =
+    input.preferConversation && input.projectSettings.settings.worktreeAllocation !== "eager"
+      ? "auto"
+      : input.projectSettings.settings.defaultThreadEnvMode;
   if (
     configured === "local" ||
     input.projectHasThreads ||

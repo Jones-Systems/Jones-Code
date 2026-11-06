@@ -7239,30 +7239,84 @@ it.effect(
     }),
 );
 
-
-it.effect.each(["conversation", "absent", "mismatched", "unrelated", "attached", "disposed", "conversation_dir_nonempty", "attachment-drift"] as const)(
-  "rechecks the exact %s conversation assignment before provider open",
-  (kind) => Effect.gen(function* () {
+it.effect.each([
+  "conversation",
+  "absent",
+  "mismatched",
+  "unrelated",
+  "attached",
+  "disposed",
+  "conversation_dir_nonempty",
+  "attachment-drift",
+] as const)("rechecks the exact %s conversation assignment before provider open", (kind) =>
+  Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const cwd = yield* fs.makeTempDirectoryScoped();
     const state = yield* Ref.make(emptyState);
     const threadId = ThreadId.make(`thread-c9-${kind}`);
-    const binding = { threadId: kind === "unrelated" ? "unrelated-thread" : threadId, projectId: "test", ownerThreadId: threadId, path: kind === "mismatched" ? `${cwd}/other` : cwd, device: "fixture", inode: "fixture", commonDirectory: "/objects", commit: "a".repeat(40), baseRef: "main", state: kind === "attached" || kind === "disposed" || kind === "conversation_dir_nonempty" ? kind : "conversation" } as const;
-    let reads = 0; let assignmentChecks = 0;
+    const binding = {
+      threadId: kind === "unrelated" ? "unrelated-thread" : threadId,
+      projectId: "test",
+      ownerThreadId: threadId,
+      path: kind === "mismatched" ? `${cwd}/other` : cwd,
+      device: "fixture",
+      inode: "fixture",
+      commonDirectory: "/objects",
+      commit: "a".repeat(40),
+      baseRef: "main",
+      state:
+        kind === "attached" || kind === "disposed" || kind === "conversation_dir_nonempty"
+          ? kind
+          : "conversation",
+    } as const;
+    let reads = 0;
+    let assignmentChecks = 0;
     const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
       ownsPath: () => true,
-      lookup: () => Effect.sync(() => { reads++; return kind === "absent" ? null : binding; }),
-      acceptsCwd: (id, requested) => Effect.sync(() => { reads++; assignmentChecks++; return kind !== "absent" && id === binding.threadId && binding.state === "conversation" && requested === binding.path && (kind !== "attachment-drift" || assignmentChecks === 1); }),
+      lookup: () =>
+        Effect.sync(() => {
+          reads++;
+          return kind === "absent" ? null : binding;
+        }),
+      acceptsCwd: (id, requested) =>
+        Effect.sync(() => {
+          reads++;
+          assignmentChecks++;
+          return (
+            kind !== "absent" &&
+            id === binding.threadId &&
+            binding.state === "conversation" &&
+            requested === binding.path &&
+            (kind !== "attachment-drift" || assignmentChecks === 1)
+          );
+        }),
     });
     yield* Effect.gen(function* () {
       const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const sink = yield* EventSink.EventSinkV2;
       const ids = yield* IdAllocator.IdAllocatorV2;
-      yield* sink.write({ events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now })] });
-      const session = yield* ids.allocate.providerSession({ providerInstanceId: modelSelection.instanceId, threadId });
-      const result = yield* manager.open({ threadId, providerSessionId: session, modelSelection, runtimePolicy: { ...runtimePolicy, cwd } }).pipe(Effect.result);
+      yield* sink.write({
+        events: [
+          yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now }),
+        ],
+      });
+      const session = yield* ids.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      const result = yield* manager
+        .open({
+          threadId,
+          providerSessionId: session,
+          modelSelection,
+          runtimePolicy: { ...runtimePolicy, cwd },
+        })
+        .pipe(Effect.result);
       if (kind === "conversation") assert.equal(result._tag, "Success");
-      else { assert.equal(result._tag, "Failure"); assert.equal((yield* Ref.get(state)).openCount, 0); }
+      else {
+        assert.equal(result._tag, "Failure");
+        assert.equal((yield* Ref.get(state)).openCount, 0);
+      }
       assert.isAbove(reads, 0);
       if (kind === "attachment-drift") assert.equal(assignmentChecks, 2);
     }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, conversationLayer })));

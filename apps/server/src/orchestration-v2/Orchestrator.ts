@@ -1192,12 +1192,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   // Jones hook: conversation runs checkpoint their empty cwd, never the project checkout.
   const checkpointService: CheckpointServiceV2["Service"] = {
     ...baseCheckpointService,
-    prepareRootRunScope: (input) => Effect.gen(function* () {
-      const parent = yield* ConversationPolicy.ParentConversation;
-      const binding = Option.isSome(conversationPolicy) ? yield* conversationPolicy.value.lookup(parent ?? input.threadId).pipe(Effect.mapError((cause) => new CheckpointRootScopePrepareError({ threadId: input.threadId, runId: input.runId, cause }))) : null;
-      const current = yield* projectionStore.getThreadShell(parent ?? input.threadId).pipe(Effect.mapError((cause) => new CheckpointRootScopePrepareError({ threadId: input.threadId, runId: input.runId, cause })));
-      return yield* baseCheckpointService.prepareRootRunScope(binding === null || binding.state === "attached" || current?.worktreePath !== null ? input : { ...input, cwd: binding.path });
-    }),
+    prepareRootRunScope: (input) =>
+      Effect.gen(function* () {
+        const parent = yield* ConversationPolicy.ParentConversation;
+        const binding = Option.isSome(conversationPolicy)
+          ? yield* conversationPolicy.value
+              .lookup(parent ?? input.threadId)
+              .pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new CheckpointRootScopePrepareError({
+                      threadId: input.threadId,
+                      runId: input.runId,
+                      cause,
+                    }),
+                ),
+              )
+          : null;
+        const current = yield* projectionStore
+          .getThreadShell(parent ?? input.threadId)
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new CheckpointRootScopePrepareError({
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  cause,
+                }),
+            ),
+          );
+        return yield* baseCheckpointService.prepareRootRunScope(
+          binding === null || binding.state === "attached" || current?.worktreePath !== null
+            ? input
+            : { ...input, cwd: binding.path },
+        );
+      }),
   };
   const commandPolicy = yield* CommandPolicyV2;
   const contextHandoffService = yield* ContextHandoffServiceV2;
@@ -7925,7 +7954,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             ? { type: "start_immediately" }
             : { type: "defer_start", workspaceStrategy: command.workspaceStrategy },
       } satisfies Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>;
-      yield* dispatchMessage(childMessageCommand, events, effects).pipe(Effect.provideService(ConversationPolicy.ParentConversation, command.workspaceStrategy === undefined ? command.parentThreadId : undefined));
+      yield* dispatchMessage(childMessageCommand, events, effects).pipe(
+        Effect.provideService(
+          ConversationPolicy.ParentConversation,
+          command.workspaceStrategy === undefined ? command.parentThreadId : undefined,
+        ),
+      );
 
       const childProjection = yield* getProjectionWithPendingEvents(childThreadId, events);
       const childRun = childProjection.runs[0];

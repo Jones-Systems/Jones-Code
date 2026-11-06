@@ -198,7 +198,9 @@ const RunContextSelector = memo(function RunContextSelector({
   addTargets,
   onAddToMachine,
 }: RunContextSelectorProps) {
-  const conversationAvailable = useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.conversationWorkspace === true;
+  const conversationAvailable =
+    useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .conversationWorkspace === true;
   const composerFloatingLayerProps = useComposerMenuProps();
   const activeEnvironment =
     availableEnvironments?.find((env) => env.environmentId === environmentId) ?? null;
@@ -215,12 +217,14 @@ const RunContextSelector = memo(function RunContextSelector({
       : effectiveEnvMode === "auto"
         ? resolveEnvModeLabel("auto")
         : effectiveEnvMode === "worktree"
-        ? resolveEnvModeLabel("worktree")
-        : resolveCurrentWorkspaceLabel(activeWorktreePath);
+          ? resolveEnvModeLabel("worktree")
+          : resolveCurrentWorkspaceLabel(activeWorktreePath);
   const isPanel = displayMode === "panel";
   const isLocked = envLocked || (envModeLocked && (!isPanel || !showEnvironmentPicker));
   const workspacePath =
-    forceNewWorktree || effectiveEnvMode === "auto" || (effectiveEnvMode === "worktree" && !activeWorktreePath)
+    forceNewWorktree ||
+    effectiveEnvMode === "auto" ||
+    (effectiveEnvMode === "worktree" && !activeWorktreePath)
       ? null
       : (activeWorktreePath ?? workspaceRoot);
   const handleContextMenu = (event: ReactMouseEvent) => {
@@ -446,7 +450,10 @@ const RunContextSelector = memo(function RunContextSelector({
             </MenuRadioItem>
             {conversationAvailable ? (
               <MenuRadioItem disabled={envModeLocked || forceNewWorktree} value="auto" closeOnClick>
-                <span className="flex min-w-0 items-center gap-1.5"><FolderIcon className="size-3" />On write</span>
+                <span className="flex min-w-0 items-center gap-1.5">
+                  <FolderIcon className="size-3" />
+                  On write
+                </span>
               </MenuRadioItem>
             ) : null}
             <MenuRadioItem disabled={envModeLocked} value="worktree" closeOnClick>
@@ -666,7 +673,9 @@ export const BranchToolbar = memo(function BranchToolbar({
   composerControlsHostRef,
   contextStripVisible = true,
 }: BranchToolbarProps) {
-  const conversationAvailable = useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.conversationWorkspace === true;
+  const conversationAvailable =
+    useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities
+      .conversationWorkspace === true;
   const branchSelectorRef = useRef<BranchToolbarBranchSelectorHandle>(null);
   const threadRef = scopeThreadRef(environmentId, threadId);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);

@@ -144,9 +144,11 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
           </ComposerContextLabel>
         </TooltipTrigger>
         <TooltipPopup>
-          {effectiveEnvMode === "auto" ? "Start a conversation; attach a worktree before writing." : effectiveEnvMode === "worktree"
-            ? resolveEnvModeLabel("worktree")
-            : resolveCurrentWorkspaceLabel(activeWorktreePath)}
+          {effectiveEnvMode === "auto"
+            ? "Start a conversation; attach a worktree before writing."
+            : effectiveEnvMode === "worktree"
+              ? resolveEnvModeLabel("worktree")
+              : resolveCurrentWorkspaceLabel(activeWorktreePath)}
           {shortcutLabel ? ` · ${shortcutLabel}` : null}
         </TooltipPopup>
       </Tooltip>
@@ -167,9 +169,14 @@ export const BranchToolbarEnvModeSelector = memo(function BranchToolbarEnvModeSe
               {resolveCurrentWorkspaceLabel(activeWorktreePath)}
             </span>
           </SelectItem>
-          {conversationAvailable ? <SelectItem value="auto">
-            <span className="inline-flex items-center gap-1.5"><FolderIcon className="size-3" />On write</span>
-          </SelectItem> : null}
+          {conversationAvailable ? (
+            <SelectItem value="auto">
+              <span className="inline-flex items-center gap-1.5">
+                <FolderIcon className="size-3" />
+                On write
+              </span>
+            </SelectItem>
+          ) : null}
           <SelectItem value="worktree">
             <span className="inline-flex items-center gap-1.5">
               <FolderGit2Icon className="size-3" />

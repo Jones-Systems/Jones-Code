@@ -1453,10 +1453,15 @@ export const layerWsRpc = (
       const vcsStatusBroadcaster = yield* VcsStatusBroadcaster.VcsStatusBroadcaster;
       const terminalManager = yield* TerminalManager.TerminalManager;
       const conversationHandoffs = yield* WorktreeMcpService.make;
-      const attachTerminalInput = <Input extends { readonly threadId: string; readonly cwd?: string }>(input: Input) => conversationHandoffs.attachForTerminal(ThreadId.make(input.threadId)).pipe(
-        Effect.map((cwd) => cwd === null ? input : { ...input, cwd, worktreePath: cwd }),
-        Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd ?? "", cause })),
-      );
+      const attachTerminalInput = <
+        Input extends { readonly threadId: string; readonly cwd?: string },
+      >(
+        input: Input,
+      ) =>
+        conversationHandoffs.attachForTerminal(ThreadId.make(input.threadId)).pipe(
+          Effect.map((cwd) => (cwd === null ? input : { ...input, cwd, worktreePath: cwd })),
+          Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd ?? "", cause })),
+        );
       const previewManager = yield* PreviewManager.PreviewManager;
       const previewOpenBinding = yield* resolveOpenBinding();
       const portDiscovery = yield* PortScanner.PortDiscovery;
@@ -3329,18 +3334,28 @@ export const layerWsRpc = (
           vcsProvisioning.initRepository(input).pipe(Effect.tap(() => refreshGitStatus(input.cwd))),
         [WS_METHODS.reviewGetDiffPreview]: (input) => review.getDiffPreview(input),
         [WS_METHODS.reviewGetDiffFileContents]: (input) => review.getDiffFileContents(input),
-        [WS_METHODS.terminalOpen]: (input) => attachTerminalInput(input).pipe(Effect.flatMap((resolved) => terminalManager.open(resolved))),
+        [WS_METHODS.terminalOpen]: (input) =>
+          attachTerminalInput(input).pipe(
+            Effect.flatMap((resolved) => terminalManager.open(resolved)),
+          ),
         [WS_METHODS.terminalAttach]: (input) =>
           terminalOutputStream(
             (listener, registerCleanup) =>
-              attachTerminalInput(input).pipe(Effect.flatMap((resolved) => terminalManager.attachStream(resolved, listener, registerCleanup))),
+              attachTerminalInput(input).pipe(
+                Effect.flatMap((resolved) =>
+                  terminalManager.attachStream(resolved, listener, registerCleanup),
+                ),
+              ),
             (listener, registerCleanup) =>
               terminalManager.resyncStream(input, listener, registerCleanup),
           ),
         [WS_METHODS.terminalWrite]: (input) => terminalManager.write(input),
         [WS_METHODS.terminalResize]: (input) => terminalManager.resize(input),
         [WS_METHODS.terminalClear]: (input) => terminalManager.clear(input),
-        [WS_METHODS.terminalRestart]: (input) => attachTerminalInput(input).pipe(Effect.flatMap((resolved) => terminalManager.restart(resolved))),
+        [WS_METHODS.terminalRestart]: (input) =>
+          attachTerminalInput(input).pipe(
+            Effect.flatMap((resolved) => terminalManager.restart(resolved)),
+          ),
         [WS_METHODS.terminalClose]: (input) => terminalManager.close(input),
         [WS_METHODS.terminalObserve]: (input) =>
           terminalOutputStream(

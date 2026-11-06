@@ -15,7 +15,13 @@ import {
 
 describe("resolveDraftEnvModeAfterBranchChange", () => {
   it("keeps conversation selection when choosing its recorded source base", () => {
-    expect(resolveDraftEnvModeAfterBranchChange({ nextWorktreePath: null, currentWorktreePath: null, effectiveEnvMode: "auto" })).toBe("auto");
+    expect(
+      resolveDraftEnvModeAfterBranchChange({
+        nextWorktreePath: null,
+        currentWorktreePath: null,
+        effectiveEnvMode: "auto",
+      }),
+    ).toBe("auto");
   });
 
   it("switches to local mode when returning from an existing worktree to the main worktree", () => {

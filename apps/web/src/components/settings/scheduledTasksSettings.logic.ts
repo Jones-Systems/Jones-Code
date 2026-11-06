@@ -215,7 +215,8 @@ export function taskToDraft(task: ScheduledTask): DraftState {
     weekdays,
     projectId: task.projectId,
     threadId: task.threadId ?? "",
-    workspaceMode: task.workspaceStrategy.type === "auto" ? "worktree" : task.workspaceStrategy.type,
+    workspaceMode:
+      task.workspaceStrategy.type === "auto" ? "worktree" : task.workspaceStrategy.type,
     baseRef:
       task.workspaceStrategy.type === "worktree" ? (task.workspaceStrategy.baseRef ?? "") : "main",
     startFromOrigin:

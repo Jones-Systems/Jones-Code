@@ -6,7 +6,13 @@ import * as NodeChildProcess from "node:child_process";
 import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeSqlite from "@t3tools/shared/nodeSqliteClient";
-import { EnvironmentId, GitCommandError, ProjectId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  GitCommandError,
+  ProjectId,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -17,7 +23,10 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as McpSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
 import { makeAdapterRuntimeProbe } from "./AdapterRuntime.testkit.ts";
-vi.mock("@anthropic-ai/claude-agent-sdk", async (original) => ({ ...(await original<typeof import("@anthropic-ai/claude-agent-sdk")>()), resolveSettings: vi.fn(async () => ({ effective: {}, provenance: {}, sources: [] })) }));
+vi.mock("@anthropic-ai/claude-agent-sdk", async (original) => ({
+  ...(await original<typeof import("@anthropic-ai/claude-agent-sdk")>()),
+  resolveSettings: vi.fn(async () => ({ effective: {}, provenance: {}, sources: [] })),
+}));
 import * as ServerConfig from "../../config.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as GitWorkflow from "../../git/GitWorkflowService.ts";
@@ -33,7 +42,26 @@ import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import Migration from "../persistence/Migrations/139_JonesConversationWorkspace.ts";
 import * as Policy from "./ConversationPolicy.ts";
 
-const git = (cwd: string, ...args: string[]) => NodeChildProcess.execFileSync("git", ["-c", "init.defaultBranch=main", "-c", "user.name=C9 Fixture", "-c", "user.email=c9@example.invalid", ...args], { cwd, encoding: "utf8", timeout: 3000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).trim();
+const git = (cwd: string, ...args: string[]) =>
+  NodeChildProcess.execFileSync(
+    "git",
+    [
+      "-c",
+      "init.defaultBranch=main",
+      "-c",
+      "user.name=C9 Fixture",
+      "-c",
+      "user.email=c9@example.invalid",
+      ...args,
+    ],
+    {
+      cwd,
+      encoding: "utf8",
+      timeout: 3000,
+      maxBuffer: 1024 * 1024,
+      env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" },
+    },
+  ).trim();
 
 it.effect.each([
   { driver: "codex", scenario: "handoff" },
@@ -43,110 +71,281 @@ it.effect.each([
   { driver: "codex", scenario: "terminal" },
   { driver: "claudeAgent", scenario: "nonempty" },
   { driver: "codex", scenario: "shared" },
-] as const)("$driver adapter runtime: $scenario", ({ driver, scenario }) => Effect.scoped(Effect.gen(function* () {
-  const root = yield* Effect.acquireRelease(Effect.promise(async () => {
-    const cache = NodePath.join(NodeOs.homedir(), "Library", "Caches"); await NodeFs.mkdir(cache, { recursive: true });
-    return NodeFs.mkdtemp(NodePath.join(cache, "jones-c9-adapter-"));
-  }), (root) => Effect.promise(() => NodeFs.rm(root, { recursive: true, force: true })));
-  const repo = NodePath.join(root, "repo"); const state = NodePath.join(root, "state"); let checkout = NodePath.join(root, "checkout");
-  yield* Effect.promise(async () => { await NodeFs.mkdir(repo); await NodeFs.mkdir(state); git(repo, "init", "--template="); await NodeFs.writeFile(NodePath.join(repo, "AGENTS.md"), "Read the recorded source.\n"); git(repo, "add", "."); git(repo, "commit", "-qm", "source"); });
-  const threadId = ThreadId.make(`thread:adapter:${driver}`); const projectId = ProjectId.make("project:c9");
-  const thread = { id: threadId, projectId, worktreePath: null as string | null, branch: null as string | null, deletedAt: null, archivedAt: null };
-  const members = new Map([[threadId, thread]]);
-  let created = 0; let setupCount = 0; const sent = new Map<string, string>();
-  const external = Layer.mergeAll(
-    Layer.mock(Threads.ThreadManagementService)({
-      getThreadRecords: (id) => Effect.succeed({ thread: members.get(id)! } as never),
-      dispatch: (command) => Effect.sync(() => { if (command.type === "thread.metadata.update") { const target = members.get(command.threadId)!; target.worktreePath = command.worktreePath ?? target.worktreePath; target.branch = command.branch ?? target.branch; } return { sequence: 1, storedEvents: [] } as never; }),
-      sendToThread: (input) => Effect.sync(() => { sent.set(input.commandId, input.text); return { delivery: "queued" as const } as never; }),
+] as const)("$driver adapter runtime: $scenario", ({ driver, scenario }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const root = yield* Effect.acquireRelease(
+        Effect.promise(async () => {
+          const cache = NodePath.join(NodeOs.homedir(), "Library", "Caches");
+          await NodeFs.mkdir(cache, { recursive: true });
+          return NodeFs.mkdtemp(NodePath.join(cache, "jones-c9-adapter-"));
+        }),
+        (root) => Effect.promise(() => NodeFs.rm(root, { recursive: true, force: true })),
+      );
+      const repo = NodePath.join(root, "repo");
+      const state = NodePath.join(root, "state");
+      let checkout = NodePath.join(root, "checkout");
+      yield* Effect.promise(async () => {
+        await NodeFs.mkdir(repo);
+        await NodeFs.mkdir(state);
+        git(repo, "init", "--template=");
+        await NodeFs.writeFile(NodePath.join(repo, "AGENTS.md"), "Read the recorded source.\n");
+        git(repo, "add", ".");
+        git(repo, "commit", "-qm", "source");
+      });
+      const threadId = ThreadId.make(`thread:adapter:${driver}`);
+      const projectId = ProjectId.make("project:c9");
+      const thread = {
+        id: threadId,
+        projectId,
+        worktreePath: null as string | null,
+        branch: null as string | null,
+        deletedAt: null,
+        archivedAt: null,
+      };
+      const members = new Map([[threadId, thread]]);
+      let created = 0;
+      let setupCount = 0;
+      const sent = new Map<string, string>();
+      const external = Layer.mergeAll(
+        Layer.mock(Threads.ThreadManagementService)({
+          getThreadRecords: (id) => Effect.succeed({ thread: members.get(id)! } as never),
+          dispatch: (command) =>
+            Effect.sync(() => {
+              if (command.type === "thread.metadata.update") {
+                const target = members.get(command.threadId)!;
+                target.worktreePath = command.worktreePath ?? target.worktreePath;
+                target.branch = command.branch ?? target.branch;
+              }
+              return { sequence: 1, storedEvents: [] } as never;
+            }),
+          sendToThread: (input) =>
+            Effect.sync(() => {
+              sent.set(input.commandId, input.text);
+              return { delivery: "queued" as const } as never;
+            }),
+        }),
+        Layer.mock(Projects.ProjectService)({
+          getById: () =>
+            Effect.succeed(
+              Option.some({ id: projectId, workspaceRoot: repo, scripts: [] } as never),
+            ),
+        }),
+        Layer.mock(GitWorkflow.GitWorkflowService)({
+          createWorktree: (input) =>
+            Effect.gen(function* () {
+              const result = yield* Effect.sync(() => {
+                created++;
+                checkout = input.path!;
+                git(repo, "worktree", "add", "-b", input.newRefName!, checkout, input.refName);
+                return {
+                  worktree: {
+                    path: checkout,
+                    refName: input.newRefName,
+                    headSha: git(checkout, "rev-parse", "HEAD"),
+                  },
+                } as never;
+              });
+              if (scenario === "checkout-interruption" && created === 1)
+                return yield* new GitCommandError({
+                  operation: "createWorktree",
+                  command: "git",
+                  cwd: repo,
+                  detail: "Synthetic reply lost after checkout creation",
+                });
+              return result;
+            }),
+          listRefs: () =>
+            Effect.succeed({
+              refs:
+                created === 0
+                  ? []
+                  : [{ name: "work/c9-proof", worktreePath: checkout, isRemote: false }],
+              isRepo: true,
+            } as never),
+        }),
+        Layer.mock(Setup.ProjectSetupScriptRunner)({
+          runForThread: (input) =>
+            Effect.gen(function* () {
+              assert.equal(input.worktreePath, checkout);
+              assert.equal(input.projectCwd, repo);
+              setupCount++;
+              if (scenario === "setup-unknown")
+                return yield* new Setup.ProjectSetupScriptOperationError({
+                  threadId,
+                  worktreePath: checkout,
+                  operation: "writeCommand",
+                  cause: "Synthetic setup acknowledgement lost",
+                });
+              return { status: "no-script" as const };
+            }),
+        }),
+        Layer.mock(VcsStatus.VcsStatusBroadcaster)({ refreshStatus: () => Effect.void as never }),
+        ServerSettings.layerTest({ newWorktreesStartFromOrigin: true }),
+      );
+      const database = NodeSqlite.layer({ filename: ":memory:" });
+      const config = ServerConfig.layerTest(root, state).pipe(
+        Layer.provide(NodeServices.layer),
+        Layer.orDie,
+      );
+      const policyLayer = Policy.layer.pipe(Layer.provideMerge(database), Layer.provide(config));
+      const worktreeLayer = Worktree.layer.pipe(
+        Layer.provide(external),
+        Layer.provide(policyLayer),
+      );
+      const services = Layer.mergeAll(
+        external,
+        policyLayer,
+        worktreeLayer,
+        config,
+        IdAllocator.layer,
+        McpSessions.layer,
+        ControlAdmission.layer,
+      );
+      yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* Migration;
+        yield* sql`CREATE TABLE projection_projects(workspace_root TEXT, deleted_at TEXT)`;
+        yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, payload_json TEXT, deleted_at TEXT)`;
+        yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${threadId},${JSON.stringify({ id: threadId, projectId })},NULL)`;
+        const policy = yield* Policy.ConversationPolicy;
+        const worktree = yield* Worktree.WorktreeMcpService;
+        const binding = yield* policy.allocate({
+          threadId,
+          projectId,
+          projectRoot: repo,
+          baseRef: "main",
+        });
+        const childId = ThreadId.make("thread:shared:c9");
+        if (scenario === "shared") {
+          members.set(childId, { ...thread, id: childId });
+          yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${childId},${JSON.stringify({ id: childId, projectId })},NULL)`;
+          yield* policy.inherit(childId, threadId);
+        }
+        const turn = yield* policy.startTurn(threadId, "run:proof");
+        assert.isNotNull(turn);
+        assert.equal(created, 0);
+        assert.equal(setupCount, 0);
+        const scope: Invocation.McpThreadInvocationScope = {
+          environmentId: EnvironmentId.make("environment:c9"),
+          requestNamespace: "c9",
+          capabilities: new Set(["worktree"]),
+          thread: {
+            threadId,
+            providerInstanceId: ProviderInstanceId.make(driver),
+            providerSessionId: `session:${driver}`,
+          },
+        };
+        const mcpSession = {
+          environmentId: scope.environmentId,
+          threadId,
+          providerInstanceId: scope.thread.providerInstanceId,
+          providerSessionId: scope.thread.providerSessionId,
+          endpoint: "http://127.0.0.1:1/mcp",
+          authorizationHeader: "Bearer synthetic",
+          browserToolsAvailable: false,
+        };
+        const probe = yield* makeAdapterRuntimeProbe(driver, threadId, mcpSession);
+        const providerThread = yield* probe.run(binding.path);
+        assert.isTrue(probe.observed.some((call) => call.cwd === binding.path && call.mcp));
+        const toolkit = yield* WorktreeToolkit.pipe(
+          Effect.provide(
+            ToolAccess.HandlersLayer.layer(Handlers.layer).pipe(Layer.provide(services)),
+          ),
+        );
+        const source = yield* toolkit
+          .handle("t3_source_read", { path: "AGENTS.md" })
+          .pipe(
+            Stream.unwrap,
+            Stream.runCollect,
+            Effect.provideService(Invocation.McpInvocationContext, scope),
+          );
+        assert.include(JSON.stringify(source), "Read the recorded source.");
+        assert.include(JSON.stringify(source), turn!.binding.commit);
+        const input = {
+          clientRequestId: "proof:attach",
+          branch: "work/c9-proof",
+          continuationPrompt: "Continue the original conversation in the checkout.",
+        };
+        if (scenario === "nonempty")
+          yield* Effect.promise(() =>
+            NodeFs.writeFile(NodePath.join(binding.path, "owner-note"), "retain"),
+          );
+        if (scenario === "checkout-interruption") {
+          assert.equal((yield* worktree.handoff(scope, input).pipe(Effect.result))._tag, "Failure");
+          assert.equal((yield* policy.readHandoff(threadId))?.phase, "checkout_issued");
+        }
+        if (scenario === "setup-unknown") {
+          assert.equal((yield* worktree.handoff(scope, input).pipe(Effect.result))._tag, "Failure");
+          const retry = yield* worktree.handoff(scope, input).pipe(Effect.flip);
+          assert.include(retry.message, "handoff_unknown");
+          assert.equal(setupCount, 1);
+          assert.equal(created, 1);
+          assert.equal(sent.size, 0);
+          assert.equal((yield* policy.readHandoff(threadId))?.phase, "setup_issued");
+          return;
+        }
+        if (scenario === "terminal") {
+          assert.equal(yield* worktree.attachForTerminal(threadId), checkout);
+          assert.equal(created, 1);
+          assert.equal(setupCount, 1);
+          assert.equal(sent.size, 0);
+          assert.isFalse(yield* policy.acceptsCwd(threadId, binding.path));
+          return;
+        }
+        const result = yield* worktree.handoff(scope, input);
+        assert.deepEqual(
+          yield* worktree.handoff(
+            scope,
+            input,
+            Effect.die("Replay must not reacquire live execution"),
+          ),
+          result,
+        );
+        assert.equal(created, 1);
+        assert.equal(setupCount, 1);
+        assert.equal(sent.size, 1);
+        assert.equal(result.continuation.status, "scheduled");
+        assert.equal(result.startedFromOrigin, false);
+        assert.equal(git(checkout, "rev-parse", "HEAD"), turn!.binding.commit);
+        if (scenario === "nonempty") {
+          assert.equal(
+            yield* Effect.promise(() =>
+              NodeFs.readFile(NodePath.join(binding.path, "owner-note"), "utf8"),
+            ),
+            "retain",
+          );
+          assert.lengthOf(
+            yield* sql`SELECT 1 FROM jones_conversation_obligations WHERE path=${binding.path} AND thread_id=${threadId}`,
+            1,
+          );
+        } else
+          assert.equal(
+            yield* Effect.promise(() => NodeFs.stat(binding.path).catch(() => null)),
+            null,
+          );
+        if (scenario === "shared") {
+          assert.equal(members.get(childId)!.worktreePath, checkout);
+          const lateId = ThreadId.make("thread:shared:late:c9");
+          members.set(lateId, { ...thread, id: lateId, worktreePath: null });
+          yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${lateId},${JSON.stringify({ id: lateId, projectId })},NULL)`;
+          yield* policy.inherit(lateId, threadId);
+          assert.equal(yield* worktree.attachForTerminal(lateId), checkout);
+          assert.equal(members.get(lateId)!.worktreePath, checkout);
+          yield* worktree.attachForTurn(lateId, "run:late", "Continue shared request", []);
+          assert.equal(created, 1);
+          assert.equal(setupCount, 1);
+          assert.equal(sent.size, 2);
+        }
+        const continued = yield* probe.run(result.worktreePath, providerThread);
+        assert.equal(continued.nativeThreadRef?.nativeId, providerThread.nativeThreadRef?.nativeId);
+        assert.isTrue(
+          probe.observed.some(
+            (call) => call.cwd === result.worktreePath && call.resume && call.mcp,
+          ),
+        );
+        assert.isFalse(yield* policy.acceptsCwd(threadId, binding.path));
+      }).pipe(Effect.provide(services));
     }),
-    Layer.mock(Projects.ProjectService)({ getById: () => Effect.succeed(Option.some({ id: projectId, workspaceRoot: repo, scripts: [] } as never)) }),
-    Layer.mock(GitWorkflow.GitWorkflowService)({
-      createWorktree: (input) => Effect.gen(function* () {
-        const result = yield* Effect.sync(() => { created++; checkout = input.path!; git(repo, "worktree", "add", "-b", input.newRefName!, checkout, input.refName); return { worktree: { path: checkout, refName: input.newRefName, headSha: git(checkout, "rev-parse", "HEAD") } } as never; });
-        if (scenario === "checkout-interruption" && created === 1) return yield* new GitCommandError({ operation: "createWorktree", command: "git", cwd: repo, detail: "Synthetic reply lost after checkout creation" });
-        return result;
-      }),
-      listRefs: () => Effect.succeed({ refs: created === 0 ? [] : [{ name: "work/c9-proof", worktreePath: checkout, isRemote: false }], isRepo: true } as never),
-    }),
-    Layer.mock(Setup.ProjectSetupScriptRunner)({ runForThread: (input) => Effect.gen(function* () {
-      assert.equal(input.worktreePath, checkout); assert.equal(input.projectCwd, repo); setupCount++;
-      if (scenario === "setup-unknown") return yield* new Setup.ProjectSetupScriptOperationError({ threadId, worktreePath: checkout, operation: "writeCommand", cause: "Synthetic setup acknowledgement lost" });
-      return { status: "no-script" as const };
-    }) }),
-    Layer.mock(VcsStatus.VcsStatusBroadcaster)({ refreshStatus: () => Effect.void as never }),
-    ServerSettings.layerTest({ newWorktreesStartFromOrigin: true }),
-  );
-  const database = NodeSqlite.layer({ filename: ":memory:" });
-  const config = ServerConfig.layerTest(root, state).pipe(Layer.provide(NodeServices.layer), Layer.orDie);
-  const policyLayer = Policy.layer.pipe(Layer.provideMerge(database), Layer.provide(config));
-  const worktreeLayer = Worktree.layer.pipe(Layer.provide(external), Layer.provide(policyLayer));
-  const services = Layer.mergeAll(external, policyLayer, worktreeLayer, config, IdAllocator.layer, McpSessions.layer, ControlAdmission.layer);
-  yield* Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient; yield* Migration;
-    yield* sql`CREATE TABLE projection_projects(workspace_root TEXT, deleted_at TEXT)`;
-    yield* sql`CREATE TABLE orchestration_v2_projection_threads(thread_id TEXT PRIMARY KEY, payload_json TEXT, deleted_at TEXT)`;
-    yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${threadId},${JSON.stringify({ id: threadId, projectId })},NULL)`;
-    const policy = yield* Policy.ConversationPolicy; const worktree = yield* Worktree.WorktreeMcpService;
-    const binding = yield* policy.allocate({ threadId, projectId, projectRoot: repo, baseRef: "main" });
-    const childId = ThreadId.make("thread:shared:c9");
-    if (scenario === "shared") {
-      members.set(childId, { ...thread, id: childId });
-      yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${childId},${JSON.stringify({ id: childId, projectId })},NULL)`;
-      yield* policy.inherit(childId, threadId);
-    }
-    const turn = yield* policy.startTurn(threadId, "run:proof"); assert.isNotNull(turn);
-    assert.equal(created, 0); assert.equal(setupCount, 0);
-    const scope: Invocation.McpThreadInvocationScope = { environmentId: EnvironmentId.make("environment:c9"), requestNamespace: "c9", capabilities: new Set(["worktree"]), thread: { threadId, providerInstanceId: ProviderInstanceId.make(driver), providerSessionId: `session:${driver}` } };
-    const mcpSession = { environmentId: scope.environmentId, threadId, providerInstanceId: scope.thread.providerInstanceId, providerSessionId: scope.thread.providerSessionId, endpoint: "http://127.0.0.1:1/mcp", authorizationHeader: "Bearer synthetic", browserToolsAvailable: false };
-    const probe = yield* makeAdapterRuntimeProbe(driver, threadId, mcpSession);
-    const providerThread = yield* probe.run(binding.path);
-    assert.isTrue(probe.observed.some((call) => call.cwd === binding.path && call.mcp));
-    const toolkit = yield* WorktreeToolkit.pipe(Effect.provide(ToolAccess.HandlersLayer.layer(Handlers.layer).pipe(Layer.provide(services))));
-    const source = yield* toolkit.handle("t3_source_read", { path: "AGENTS.md" }).pipe(Stream.unwrap, Stream.runCollect, Effect.provideService(Invocation.McpInvocationContext, scope));
-    assert.include(JSON.stringify(source), "Read the recorded source."); assert.include(JSON.stringify(source), turn!.binding.commit);
-    const input = { clientRequestId: "proof:attach", branch: "work/c9-proof", continuationPrompt: "Continue the original conversation in the checkout." };
-    if (scenario === "nonempty") yield* Effect.promise(() => NodeFs.writeFile(NodePath.join(binding.path, "owner-note"), "retain"));
-    if (scenario === "checkout-interruption") {
-      assert.equal((yield* worktree.handoff(scope, input).pipe(Effect.result))._tag, "Failure");
-      assert.equal((yield* policy.readHandoff(threadId))?.phase, "checkout_issued");
-    }
-    if (scenario === "setup-unknown") {
-      assert.equal((yield* worktree.handoff(scope, input).pipe(Effect.result))._tag, "Failure");
-      const retry = yield* worktree.handoff(scope, input).pipe(Effect.flip);
-      assert.include(retry.message, "handoff_unknown"); assert.equal(setupCount, 1); assert.equal(created, 1); assert.equal(sent.size, 0);
-      assert.equal((yield* policy.readHandoff(threadId))?.phase, "setup_issued");
-      return;
-    }
-    if (scenario === "terminal") {
-      assert.equal(yield* worktree.attachForTerminal(threadId), checkout);
-      assert.equal(created, 1); assert.equal(setupCount, 1); assert.equal(sent.size, 0);
-      assert.isFalse(yield* policy.acceptsCwd(threadId, binding.path));
-      return;
-    }
-    const result = yield* worktree.handoff(scope, input);
-    assert.deepEqual(yield* worktree.handoff(scope, input, Effect.die("Replay must not reacquire live execution")), result);
-    assert.equal(created, 1); assert.equal(setupCount, 1); assert.equal(sent.size, 1);
-    assert.equal(result.continuation.status, "scheduled"); assert.equal(result.startedFromOrigin, false);
-    assert.equal(git(checkout, "rev-parse", "HEAD"), turn!.binding.commit);
-    if (scenario === "nonempty") {
-      assert.equal(yield* Effect.promise(() => NodeFs.readFile(NodePath.join(binding.path, "owner-note"), "utf8")), "retain");
-      assert.lengthOf(yield* sql`SELECT 1 FROM jones_conversation_obligations WHERE path=${binding.path} AND thread_id=${threadId}`, 1);
-    } else assert.equal(yield* Effect.promise(() => NodeFs.stat(binding.path).catch(() => null)), null);
-    if (scenario === "shared") {
-      assert.equal(members.get(childId)!.worktreePath, checkout);
-      const lateId = ThreadId.make("thread:shared:late:c9");
-      members.set(lateId, { ...thread, id: lateId, worktreePath: null });
-      yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES(${lateId},${JSON.stringify({ id: lateId, projectId })},NULL)`;
-      yield* policy.inherit(lateId, threadId);
-      assert.equal(yield* worktree.attachForTerminal(lateId), checkout);
-      assert.equal(members.get(lateId)!.worktreePath, checkout);
-      yield* worktree.attachForTurn(lateId, "run:late", "Continue shared request", []);
-      assert.equal(created, 1); assert.equal(setupCount, 1); assert.equal(sent.size, 2);
-    }
-    const continued = yield* probe.run(result.worktreePath, providerThread);
-    assert.equal(continued.nativeThreadRef?.nativeId, providerThread.nativeThreadRef?.nativeId);
-    assert.isTrue(probe.observed.some((call) => call.cwd === result.worktreePath && call.resume && call.mcp));
-    assert.isFalse(yield* policy.acceptsCwd(threadId, binding.path));
-  }).pipe(Effect.provide(services));
-})).pipe(Effect.provide(NodeServices.layer)));
+  ).pipe(Effect.provide(NodeServices.layer)),
+);

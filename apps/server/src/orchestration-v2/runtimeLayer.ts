@@ -520,6 +520,16 @@ export const layerProduction = Layer.mergeAll(
   Layer.provideMerge(layerEventInfrastructure),
   Layer.provideMerge(WorkspaceLifecycleRuntime.layer),
   Layer.provideMerge(WorkspaceProvenance.layerLive),
-  Layer.provideMerge(WorktreeMcpService.layer.pipe(Layer.provide(Layer.mergeAll(layerThreadManagementProvided, layerProjectService, layerProjectSetupScriptRunner)))),
+  Layer.provideMerge(
+    WorktreeMcpService.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(
+          layerThreadManagementProvided,
+          layerProjectService,
+          layerProjectSetupScriptRunner,
+        ),
+      ),
+    ),
+  ),
   Layer.provideMerge(ConversationPolicy.layer),
 );

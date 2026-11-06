@@ -311,7 +311,9 @@ function failureDetail(error: unknown): string {
 const make = Effect.gen(function* () {
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
   const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
-  const conversationProviders = yield* Effect.serviceOption(ProviderInstanceRegistry.ProviderInstanceRegistry);
+  const conversationProviders = yield* Effect.serviceOption(
+    ProviderInstanceRegistry.ProviderInstanceRegistry,
+  );
   const nativeBootstrapContext = yield* Effect.context<never>();
   const nativeBootstrapConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const nativeBootstrapPath = yield* Effect.serviceOption(Path.Path);
@@ -1505,14 +1507,15 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       workspaceRecorded = true;
-      if (input.workspaceStrategy.type !== "auto") yield* captureProvenance({
-        threadId,
-        reason: input.workspaceStrategy.type === "worktree" ? "launch" : "reference",
-        createdBy: "system",
-        baseRef: provenanceBaseRef,
-        baseIsCurrentHead: provenanceBaseRef !== null && reused === undefined,
-        ...(runId === null ? {} : { runId }),
-      });
+      if (input.workspaceStrategy.type !== "auto")
+        yield* captureProvenance({
+          threadId,
+          reason: input.workspaceStrategy.type === "worktree" ? "launch" : "reference",
+          createdBy: "system",
+          baseRef: provenanceBaseRef,
+          baseIsCurrentHead: provenanceBaseRef !== null && reused === undefined,
+          ...(runId === null ? {} : { runId }),
+        });
       if (input.idleWorktreeAdmission !== undefined) {
         if (worktreePath === null)
           return yield* mapError(
@@ -2607,12 +2610,23 @@ const make = Effect.gen(function* () {
         let conversationLaunch = false;
         let fallbackDriver: string | undefined;
         if (selectedStrategy.type === "auto") {
-          const allocationSettings = resolveProjectSettings(yield* serverSettings.getSettings, input.projectId, project).settings;
-          const instance = Option.isSome(conversationProviders) ? yield* conversationProviders.value.getInstance(input.modelSelection.instanceId) : undefined;
+          const allocationSettings = resolveProjectSettings(
+            yield* serverSettings.getSettings,
+            input.projectId,
+            project,
+          ).settings;
+          const instance = Option.isSome(conversationProviders)
+            ? yield* conversationProviders.value.getInstance(input.modelSelection.instanceId)
+            : undefined;
           const driver = instance?.driverKind ?? "unavailable";
-          conversationLaunch = allocationSettings.worktreeAllocation !== "eager" && Option.isSome(conversations) && (driver === "codex" || driver === "claudeAgent");
+          conversationLaunch =
+            allocationSettings.worktreeAllocation !== "eager" &&
+            Option.isSome(conversations) &&
+            (driver === "codex" || driver === "claudeAgent");
           if (!conversationLaunch) fallbackDriver = driver;
-          selectedStrategy = conversationLaunch ? selectedStrategy : { ...selectedStrategy, type: "worktree" };
+          selectedStrategy = conversationLaunch
+            ? selectedStrategy
+            : { ...selectedStrategy, type: "worktree" };
         }
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.legacyBootstrap === undefined &&
@@ -2715,9 +2729,20 @@ const make = Effect.gen(function* () {
         }
         if (Option.isSome(conversations)) {
           if (conversationLaunch) {
-            yield* conversations.value.allocate({ threadId, projectId: input.projectId, projectRoot: project.workspaceRoot, ...(workspaceStrategy.type === "auto" && workspaceStrategy.baseRef !== undefined ? { baseRef: workspaceStrategy.baseRef } : {}) }).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+            yield* conversations.value
+              .allocate({
+                threadId,
+                projectId: input.projectId,
+                projectRoot: project.workspaceRoot,
+                ...(workspaceStrategy.type === "auto" && workspaceStrategy.baseRef !== undefined
+                  ? { baseRef: workspaceStrategy.baseRef }
+                  : {}),
+              })
+              .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
           } else if (fallbackDriver !== undefined) {
-            yield* conversations.value.fallback(threadId, fallbackDriver, "eager: setting or adapter proof unavailable").pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+            yield* conversations.value
+              .fallback(threadId, fallbackDriver, "eager: setting or adapter proof unavailable")
+              .pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
           }
         }
         const idleRecord =

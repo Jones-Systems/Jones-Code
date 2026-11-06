@@ -2319,10 +2319,10 @@ export const layerWithOptions = (
       ) {
         // Conversation bindings have no checkout lifecycle row, so their exact
         // assignment still needs this recheck when checkout admission selects out.
-        const conversation = Option.isSome(conversationPolicy) && (
-          conversationPolicy.value.ownsPath(cwd ?? null) ||
-          ((yield* conversationPolicy.value.lookup(threadId))?.state === "conversation")
-        );
+        const conversation =
+          Option.isSome(conversationPolicy) &&
+          (conversationPolicy.value.ownsPath(cwd ?? null) ||
+            (yield* conversationPolicy.value.lookup(threadId))?.state === "conversation");
         if (conversation) yield* check;
         if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService))) {
           yield* WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" });
@@ -3507,8 +3507,14 @@ export const layerWithOptions = (
                   thread === null ||
                   thread.deletedAt !== null ||
                   (thread.worktreePath !== input.runtimePolicy.cwd &&
-                    !(thread.worktreePath === null && Option.isSome(conversationPolicy) &&
-                      (yield* conversationPolicy.value.acceptsCwd(input.threadId, input.runtimePolicy.cwd))))
+                    !(
+                      thread.worktreePath === null &&
+                      Option.isSome(conversationPolicy) &&
+                      (yield* conversationPolicy.value.acceptsCwd(
+                        input.threadId,
+                        input.runtimePolicy.cwd,
+                      ))
+                    ))
                 )
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
@@ -3527,7 +3533,12 @@ export const layerWithOptions = (
                 source: originalEntry?.runtime,
               }).pipe(
                 Effect.andThen(
-                  beforeSessionUse(input.threadId, input.providerSessionId, checkOpen, input.runtimePolicy.cwd),
+                  beforeSessionUse(
+                    input.threadId,
+                    input.providerSessionId,
+                    checkOpen,
+                    input.runtimePolicy.cwd,
+                  ),
                 ),
               );
               yield* beforeOpen.pipe(

@@ -1,9 +1,7 @@
 {
   "schema": "jones.boundary-fragment/v1",
   "feature": "conversation-workspace",
-  "jonesOwnedPaths": [
-    "apps/server/src/jones/conversationWorkspace/"
-  ],
+  "jonesOwnedPaths": ["apps/server/src/jones/conversationWorkspace/"],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
