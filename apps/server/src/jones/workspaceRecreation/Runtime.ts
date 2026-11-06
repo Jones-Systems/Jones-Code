@@ -18,6 +18,7 @@ import {
   plannedPath,
   missingSource,
   readBreadcrumb,
+  knownRecreation,
   RecreationHold,
   type RecreationSource,
   type RecreationResult,
@@ -134,7 +135,13 @@ export const prepareTurn = Effect.fn("CheckoutRecreation.prepareTurn")(function*
 }) {
   const present = yield* observe(input.worktree, input.threadId, () => exists(input.worktree));
   let source = yield* retiredSource(input.worktree);
-  if (present && source === null) return null;
+  if (present && source === null) {
+    const known = yield* observe(input.worktree, input.threadId, () =>
+      knownRecreation(input.projectRoot, input.worktree),
+    );
+    if (known !== null) yield* invalidateSource(input.worktree, known);
+    return null;
+  }
   if (input.nativeGuarded)
     return yield* Effect.fail(
       new RecreationHold(
@@ -226,7 +233,9 @@ export const prepareTurn = Effect.fn("CheckoutRecreation.prepareTurn")(function*
 });
 
 // Restore changes thread placement only. Its next turn owns recreation after a terminal receipt.
-export const deferRestore = Effect.fn("CheckoutRecreation.deferRestore")(function* (threadId: string) {
+export const deferRestore = Effect.fn("CheckoutRecreation.deferRestore")(function* (
+  threadId: string,
+) {
   const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
   if (Option.isNone(sql)) return false;
   const rows = yield* sql.value<{
@@ -237,27 +246,27 @@ export const deferRestore = Effect.fn("CheckoutRecreation.deferRestore")(functio
   return worktree == null ? false : (yield* retiredSource(worktree)) !== null;
 });
 
-export const recreatedDetached = Effect.fn("CheckoutRecreation.recreatedDetached")(
-  function* (threadId: string) {
-    const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
-    if (Option.isNone(sql)) return false;
-    const rows = yield* sql.value<{
-      worktree: string | null;
-      branch: string | null;
-    }>`SELECT json_extract(payload_json,'$.worktreePath') AS worktree,
+export const recreatedDetached = Effect.fn("CheckoutRecreation.recreatedDetached")(function* (
+  threadId: string,
+) {
+  const sql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  if (Option.isNone(sql)) return false;
+  const rows = yield* sql.value<{
+    worktree: string | null;
+    branch: string | null;
+  }>`SELECT json_extract(payload_json,'$.worktreePath') AS worktree,
       json_extract(payload_json,'$.branch') AS branch
       FROM orchestration_v2_projection_threads WHERE thread_id=${threadId}`;
-    if (!rows[0]?.worktree || rows[0].branch !== null) return false;
-    const worktree = rows[0].worktree;
-    return yield* observe(worktree, threadId, async () => {
-      const admin = (await git(worktree, ["rev-parse", "--absolute-git-dir"])).toString().trim();
-      const marker = await readBreadcrumb(admin);
-      return (
-        marker !== null &&
-        marker.branch === null &&
-        marker.path === worktree &&
-        (await exists(worktree))
-      );
-    });
-  },
-);
+  if (!rows[0]?.worktree || rows[0].branch !== null) return false;
+  const worktree = rows[0].worktree;
+  return yield* observe(worktree, threadId, async () => {
+    const admin = (await git(worktree, ["rev-parse", "--absolute-git-dir"])).toString().trim();
+    const marker = await readBreadcrumb(admin);
+    return (
+      marker !== null &&
+      marker.branch === null &&
+      marker.path === worktree &&
+      (await exists(worktree))
+    );
+  });
+});

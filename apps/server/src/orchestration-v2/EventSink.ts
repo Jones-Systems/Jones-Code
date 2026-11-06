@@ -1,5 +1,8 @@
 import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration.ts";
-import { bindRecreatedCheckout, type ExpectedCheckout } from "../jones/workspaceRecreation/BindingCommit.ts";
+import {
+  bindRecreatedCheckout,
+  type ExpectedCheckout,
+} from "../jones/workspaceRecreation/BindingCommit.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
 import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
@@ -1075,8 +1078,14 @@ const layerBase: Layer.Layer<
             }
 
             const guardedEvents = yield* guardRuntimeIdentity(input);
-            const identityEvents = input.checkoutRecreation === undefined || guardedEvents === null ? guardedEvents
-              : bindRecreatedCheckout(yield* projectionStore.getThread(input.threadId), input.checkoutRecreation, guardedEvents);
+            const identityEvents =
+              input.checkoutRecreation === undefined || guardedEvents === null
+                ? guardedEvents
+                : bindRecreatedCheckout(
+                    yield* projectionStore.getThread(input.threadId),
+                    input.checkoutRecreation,
+                    guardedEvents,
+                  );
             if (identityEvents === null)
               return {
                 committed: false as const,

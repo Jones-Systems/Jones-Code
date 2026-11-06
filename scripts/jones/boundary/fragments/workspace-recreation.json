@@ -9,13 +9,23 @@
     "apps/server/src/jones/workspaceRecreation/Native.testkit.ts",
     "apps/server/src/jones/workspaceRecreation/Native.ts",
     "apps/server/src/jones/workspaceRecreation/Runtime.test.ts",
-    "apps/server/src/jones/workspaceRecreation/Runtime.ts",
-    "packages/contracts/src/jones/workspaceRecreation.test.ts",
-    "packages/contracts/src/jones/workspaceRecreation.ts"
+    "apps/server/src/jones/workspaceRecreation/Runtime.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
   "allowedImports": [
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/Filesystem.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceRetirement/OutputAttestation.ts"
+    },
+    {
+      "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+      "to": "apps/server/src/jones/workspaceRecreation/Native.testkit.ts"
+    },
     {
       "from": "apps/server/src/orchestration-v2/ProviderTurnStartService.ts",
       "to": "apps/server/src/jones/workspaceRecreation/Runtime.ts"

@@ -47,7 +47,13 @@ import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import * as GitWorkflow from "../git/GitWorkflowService.ts";
+import * as Git from "../vcs/GitVcsDriver.ts";
+import { git as nativeGit } from "../jones/workspaceRetirement/Filesystem.ts";
+import { withNativeFixture } from "../jones/workspaceRecreation/Native.testkit.ts";
+import {
+  binding as checkoutBinding,
+  incarnation as checkoutIncarnation,
+} from "../jones/workspaceRetirement/OutputAttestation.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
@@ -94,6 +100,48 @@ const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
     ServerSettings.layerTest(),
   );
 
+type RecreateCheckout = NonNullable<Git.GitVcsDriver["Service"]["recreateCheckout"]>;
+interface RecreationFixtureBinding {
+  readonly projectRoot: string;
+  readonly baseDir: string;
+  readonly worktreesDir: string;
+}
+const observedRecreationLayer = (
+  binding: RecreationFixtureBinding | undefined,
+  recreateCheckout: ReturnType<typeof vi.fn<RecreateCheckout>>,
+) =>
+  binding === undefined
+    ? Layer.empty
+    : Layer.effect(
+        Git.GitVcsDriver,
+        Effect.gen(function* () {
+          const driver = yield* Git.GitVcsDriver;
+          const actual = driver.recreateCheckout;
+          if (actual === undefined) return yield* Effect.die("Real recreation adapter unavailable");
+          recreateCheckout.mockImplementation((input) => actual(input));
+          return Git.GitVcsDriver.of({ ...driver, recreateCheckout });
+        }),
+      ).pipe(
+        Layer.provide(
+          Git.layer.pipe(
+            Layer.provide(ServerConfig.layerTest(binding.projectRoot, binding.baseDir)),
+          ),
+        ),
+        Layer.provide(NodeServices.layer),
+      );
+
+type RecreationFixture = Parameters<Parameters<typeof withNativeFixture>[0]>[0];
+const withStartRecreationFixture = <A>(
+  use: (fixture: RecreationFixture & { readonly fs: FileSystem.FileSystem }) => Promise<A>,
+) =>
+  withNativeFixture(async (fixture) => {
+    const fs = await Effect.runPromise(
+      FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer)),
+    );
+    await nativeGit(fixture.checkout, ["branch", "-m", "feature/restore"]);
+    return use({ ...fixture, fs });
+  });
+
 function startWithMissingWorktree(
   worktreePath: string,
   realPaths: Record<string, string> = {
@@ -102,6 +150,7 @@ function startWithMissingWorktree(
   },
   lifecycleLayer?: Layer.Layer<WorkspaceLifecycle.WorkspaceLifecycle>,
   provenanceLayer?: Layer.Layer<WorkspaceProvenance.Provenance>,
+  native?: RecreationFixtureBinding,
 ) {
   const threadId = ThreadId.make("thread_provider_turn_start_projection_failure");
   const runId = RunId.make("run_provider_turn_start_projection_failure");
@@ -121,7 +170,7 @@ function startWithMissingWorktree(
   const checkpointScopeId = CheckpointScopeId.make(
     "checkpoint_scope_provider_turn_start_projection_failure",
   );
-  const projection = {
+  let projection = {
     thread: {
       id: threadId,
       projectId: ProjectId.make("project_provider_turn_start_projection_failure"),
@@ -152,12 +201,16 @@ function startWithMissingWorktree(
     turnItems: [],
   } as unknown as OrchestrationV2ThreadProjection;
   let projectionReadCount = 0;
-  const writeIfRunCurrent = vi.fn(() =>
-    Effect.succeed({ committed: true, storedEvents: [] } as never),
+  const writeIfRunCurrent = vi.fn(
+    ({ events }: Parameters<EventSink.EventSinkV2["Service"]["writeIfRunCurrent"]>[0]) =>
+      Effect.sync(() => {
+        for (const event of events)
+          projection = ProjectionStore.applyToProjection(projection, event);
+        return { committed: true, storedEvents: [] };
+      }),
   );
   const startRootRun = vi.fn(() => Effect.void);
-  const pruneWorktrees = vi.fn(() => Effect.void);
-  const createWorktree = vi.fn(() => Effect.succeed({} as never));
+  const recreateCheckout = vi.fn<RecreateCheckout>();
   const layer = ProviderTurnStart.layer.pipe(
     Layer.provide(ContinuityAdmissionTestkit.layerAbsent),
     Layer.provide(ControlAdmission.layer),
@@ -201,11 +254,13 @@ function startWithMissingWorktree(
                   }),
                 ),
         } as never),
-        layerWorktreeLocation(),
-        Layer.mock(GitWorkflow.GitWorkflowService)({ pruneWorktrees, createWorktree }),
+        layerWorktreeLocation(native?.worktreesDir),
+        observedRecreationLayer(native, recreateCheckout),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
-            Effect.succeedSome({ workspaceRoot: "/tmp/provider-turn-start-project" } as never),
+            Effect.succeedSome({
+              workspaceRoot: native?.projectRoot ?? "/tmp/provider-turn-start-project",
+            } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords: () => {
@@ -267,8 +322,7 @@ function startWithMissingWorktree(
   );
   return {
     start,
-    pruneWorktrees,
-    createWorktree,
+    recreateCheckout,
     writeIfRunCurrent,
     startRootRun,
     projectionReads: () => projectionReadCount,
@@ -281,8 +335,7 @@ it("holds managed missing-checkout recreation before prune or creation when regi
   });
   const harness = startWithMissingWorktree(`${managedWorktreesDir}/project/held`, undefined, hold);
   await harness.start;
-  expect(harness.pruneWorktrees).not.toHaveBeenCalled();
-  expect(harness.createWorktree).not.toHaveBeenCalled();
+  expect(harness.recreateCheckout).not.toHaveBeenCalled();
   expect(harness.startRootRun).not.toHaveBeenCalled();
 });
 
@@ -336,9 +389,48 @@ it.each([
   },
   { label: "a relative path", worktreePath: "project/feature-restore", recreated: false },
 ])("recreates a missing worktree only at the managed location: $label", async (input) => {
-  const harness = startWithMissingWorktree(input.worktreePath, input.realPaths);
-  await harness.start;
-  expect(harness.createWorktree).toHaveBeenCalledTimes(input.recreated ? 1 : 0);
+  await withStartRecreationFixture(async (f) => {
+    const remap = (value: string) =>
+      value
+        .replace(managedWorktreesDir, `${f.root}/managed`)
+        .replace("/real-worktrees", `${f.root}/real-worktrees`)
+        .replace("/tmp/provider-turn-start-project", f.repo);
+    const worktreePath = remap(input.worktreePath);
+    const realPaths = Object.fromEntries(
+      Object.entries(input.realPaths ?? {
+        [managedWorktreesDir]: managedWorktreesDir,
+        [`${managedWorktreesDir}/project`]: `${managedWorktreesDir}/project`,
+      }).map(([from, to]) => [remap(from), remap(to)]),
+    );
+    let prior: string | undefined;
+    if (input.recreated) {
+      await Effect.runPromise(
+        f.fs.makeDirectory(worktreePath.slice(0, worktreePath.lastIndexOf("/")), { recursive: true }),
+      );
+      await nativeGit(f.repo, ["worktree", "move", f.checkout, worktreePath]);
+      prior = checkoutIncarnation(await checkoutBinding(worktreePath));
+      await Effect.runPromise(f.fs.remove(worktreePath, { recursive: true }));
+    }
+    const harness = startWithMissingWorktree(worktreePath, realPaths, undefined, undefined, {
+      projectRoot: f.repo,
+      baseDir: `${f.root}/state`,
+      worktreesDir: remap(managedWorktreesDir),
+    });
+    await harness.start;
+    expect(harness.recreateCheckout).toHaveBeenCalledTimes(input.recreated ? 1 : 0);
+    if (input.recreated) {
+      expect(checkoutIncarnation(await checkoutBinding(worktreePath))).not.toBe(prior);
+      expect((await nativeGit(worktreePath, ["rev-parse", "HEAD"])).toString().trim()).toBe(
+        f.source.head,
+      );
+      expect((await nativeGit(worktreePath, ["symbolic-ref", "HEAD"])).toString().trim()).toBe(
+        "refs/heads/feature/restore",
+      );
+      expect(harness.writeIfRunCurrent).toHaveBeenCalledWith(
+        expect.objectContaining({ checkoutRecreation: { worktreePath, branch: "feature/restore" } }),
+      );
+    }
+  });
 });
 
 function makeLocalCommandHarness(input: {
@@ -351,6 +443,7 @@ function makeLocalCommandHarness(input: {
   readonly worktreePath?: string;
   readonly worktreesDir?: string;
   readonly fileSystem?: FileSystem.FileSystem;
+  readonly recreation?: RecreationFixtureBinding;
   readonly previousNativeSession?: boolean;
   readonly previousMessages?: ReadonlyArray<string>;
   readonly keepWarm?: boolean;
@@ -947,7 +1040,7 @@ function makeLocalCommandHarness(input: {
     ({ thread }: Parameters<RuntimePolicy.RuntimePolicyV2Shape["resolve"]>[0]) =>
       Effect.succeed({ cwd: thread.worktreePath ?? "/tmp/native-account-command" } as never),
   );
-  const createWorktree = vi.fn(() => Effect.succeed({} as never));
+  const recreateCheckout = vi.fn<RecreateCheckout>();
   const getThreadRecords = vi.fn<ProjectionStore.ProjectionStoreV2Shape["getThreadRecords"]>(() =>
     Effect.succeed(projection),
   );
@@ -1001,13 +1094,12 @@ function makeLocalCommandHarness(input: {
         input.fileSystem === undefined
           ? FileSystem.layerNoop({ exists: () => Effect.succeed(true) })
           : Layer.succeed(FileSystem.FileSystem, input.fileSystem),
-        Layer.mock(GitWorkflow.GitWorkflowService)({
-          pruneWorktrees: () => Effect.void,
-          createWorktree,
-        }),
+        observedRecreationLayer(input.recreation, recreateCheckout),
         Layer.mock(ProjectService.ProjectService)({
           getById: () =>
-            Effect.succeedSome({ workspaceRoot: "/tmp/native-account-project" } as never),
+            Effect.succeedSome({
+              workspaceRoot: input.recreation?.projectRoot ?? "/tmp/native-account-project",
+            } as never),
         }),
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThreadRecords,
@@ -1082,7 +1174,7 @@ function makeLocalCommandHarness(input: {
       projection = next;
     },
     resolveRuntimePolicy,
-    createWorktree,
+    recreateCheckout,
     reconcilePublication,
     open,
     fallbackEnsure: resumeFallbackSession.ensureThread,
@@ -1301,86 +1393,117 @@ effectIt.effect("does not resume a continuation stopped while recovery was in fl
 effectIt.effect.each(["cleanup-first", "startup-first"])(
   "coordinates provider startup with %s",
   (order) =>
-    Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const workspaceRoot = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-start-" });
-      const worktreePath = path.join(workspaceRoot, "project", "worktree");
-      yield* fileSystem.makeDirectory(worktreePath, { recursive: true });
-      const release = yield* Deferred.make<void>();
-      const openEntered = yield* Deferred.make<void>();
-      const harness = makeLocalCommandHarness({
-        text: "Continue",
-        worktreePath,
-        worktreesDir: workspaceRoot,
-        fileSystem,
-        failReadsAfterRunning: true,
-      });
-      harness.createWorktree.mockImplementation(() =>
-        fileSystem.makeDirectory(worktreePath).pipe(Effect.as({} as never), Effect.orDie),
-      );
-      const open = harness.open.getMockImplementation()!;
-      harness.open.mockImplementation((input) =>
-        Effect.gen(function* () {
-          expect(yield* fileSystem.exists(worktreePath).pipe(Effect.orDie)).toBe(true);
-          yield* Deferred.succeed(openEntered, undefined);
-          if (order === "startup-first") yield* Deferred.await(release);
-          return yield* open(input);
-        }),
-      );
-      let cleanupEntered = false;
-      const cleanupEffect = withWorkspaceLease(
-        worktreePath,
-        Effect.gen(function* () {
-          cleanupEntered = true;
-          if (order === "cleanup-first") yield* Deferred.await(release);
-          else {
-            expect(harness.projection().providerSessions).toHaveLength(1);
-            expect(harness.projection().runs.at(-1)?.status).toBe("running");
-          }
-          yield* fileSystem.remove(worktreePath, { recursive: true, force: true });
-        }),
-      );
-      const cleanup =
-        order === "cleanup-first"
-          ? yield* cleanupEffect.pipe(Effect.forkChild({ startImmediately: true }))
-          : undefined;
-      const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
-      if (order === "cleanup-first") expect(harness.open).not.toHaveBeenCalled();
-      if (order === "startup-first") yield* Deferred.await(openEntered);
-      const laterCleanup =
-        order === "startup-first"
-          ? yield* cleanupEffect.pipe(Effect.forkChild({ startImmediately: true }))
-          : undefined;
-      if (order === "startup-first") expect(cleanupEntered).toBe(false);
-      yield* Deferred.succeed(release, undefined);
-      if (cleanup !== undefined) yield* Fiber.join(cleanup);
-      yield* Fiber.join(startup);
-      if (laterCleanup !== undefined) yield* Fiber.join(laterCleanup);
-      if (order === "cleanup-first") {
-        expect(harness.createWorktree).toHaveBeenCalledWith({
-          cwd: "/tmp/native-account-project",
-          refName: "feature/restore",
-          path: worktreePath,
-        });
-      }
-      expect(harness.resolveRuntimePolicy).toHaveBeenCalledWith(
-        expect.objectContaining({
-          thread: expect.objectContaining({ worktreePath }),
-        }),
-      );
-      expect(harness.open).toHaveBeenCalledWith(
-        expect.objectContaining({
-          runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
-        }),
-      );
-      expect(harness.startRootRun).toHaveBeenCalledWith(
-        expect.objectContaining({
-          appThread: expect.objectContaining({ worktreePath }),
-          runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
-        }),
-      );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    Effect.promise((signal) =>
+      withStartRecreationFixture(async (f) =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const fileSystem = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const workspaceRoot = f.root;
+            const worktreePath = path.join(workspaceRoot, "project", "worktree");
+            yield* fileSystem.makeDirectory(path.dirname(worktreePath), { recursive: true });
+            yield* Effect.promise(() =>
+              nativeGit(f.repo, ["worktree", "move", f.checkout, worktreePath]),
+            );
+            const prior = yield* Effect.promise(() => checkoutBinding(worktreePath));
+            const release = yield* Deferred.make<void>();
+            const openEntered = yield* Deferred.make<void>();
+            const harness = makeLocalCommandHarness({
+              text: "Continue",
+              worktreePath,
+              worktreesDir: workspaceRoot,
+              fileSystem,
+              recreation: {
+                projectRoot: f.repo,
+                baseDir: `${f.root}/state`,
+                worktreesDir: workspaceRoot,
+              },
+              failReadsAfterRunning: true,
+            });
+            const open = harness.open.getMockImplementation()!;
+            harness.open.mockImplementation((input) =>
+              Effect.gen(function* () {
+                expect(yield* fileSystem.exists(worktreePath).pipe(Effect.orDie)).toBe(true);
+                const head = yield* Effect.promise(() =>
+                  nativeGit(worktreePath, ["rev-parse", "HEAD"]),
+                );
+                expect(head.toString().trim()).toBe(f.source.head);
+                if (order === "cleanup-first") {
+                  const current = yield* Effect.promise(() => checkoutBinding(worktreePath));
+                  expect(checkoutIncarnation(current)).not.toBe(checkoutIncarnation(prior));
+                }
+                yield* Deferred.succeed(openEntered, undefined);
+                if (order === "startup-first") yield* Deferred.await(release);
+                return yield* open(input);
+              }),
+            );
+            let cleanupEntered = false;
+            const cleanupEffect = withWorkspaceLease(
+              worktreePath,
+              Effect.gen(function* () {
+                cleanupEntered = true;
+                if (order === "cleanup-first") yield* Deferred.await(release);
+                else {
+                  expect(harness.projection().providerSessions).toHaveLength(1);
+                  expect(harness.projection().runs.at(-1)?.status).toBe("running");
+                }
+                yield* fileSystem.remove(worktreePath, { recursive: true, force: true });
+              }),
+            );
+            const cleanup =
+              order === "cleanup-first"
+                ? yield* cleanupEffect.pipe(Effect.forkChild({ startImmediately: true }))
+                : undefined;
+            const startup = yield* harness.start.pipe(Effect.forkChild({ startImmediately: true }));
+            if (order === "cleanup-first") expect(harness.open).not.toHaveBeenCalled();
+            if (order === "startup-first") yield* Deferred.await(openEntered);
+            const laterCleanup =
+              order === "startup-first"
+                ? yield* cleanupEffect.pipe(Effect.forkChild({ startImmediately: true }))
+                : undefined;
+            if (order === "startup-first") expect(cleanupEntered).toBe(false);
+            yield* Deferred.succeed(release, undefined);
+            if (cleanup !== undefined) yield* Fiber.join(cleanup);
+            yield* Fiber.join(startup);
+            if (laterCleanup !== undefined) yield* Fiber.join(laterCleanup);
+            if (order === "cleanup-first") {
+              expect(harness.recreateCheckout).toHaveBeenCalledTimes(1);
+              expect(harness.recreateCheckout).toHaveBeenCalledWith(
+                expect.objectContaining({
+                  cwd: f.repo,
+                  source: expect.objectContaining({
+                    head: f.source.head,
+                    branch: "refs/heads/feature/restore",
+                    binding: expect.objectContaining({ path: worktreePath }),
+                  }),
+                }),
+              );
+              expect(yield* fileSystem.exists(worktreePath)).toBe(true);
+            } else {
+              expect(harness.recreateCheckout).not.toHaveBeenCalled();
+              expect(yield* fileSystem.exists(worktreePath)).toBe(false);
+            }
+            expect(harness.resolveRuntimePolicy).toHaveBeenCalledWith(
+              expect.objectContaining({
+                thread: expect.objectContaining({ worktreePath }),
+              }),
+            );
+            expect(harness.open).toHaveBeenCalledWith(
+              expect.objectContaining({
+                runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
+              }),
+            );
+            expect(harness.startRootRun).toHaveBeenCalledWith(
+              expect.objectContaining({
+                appThread: expect.objectContaining({ worktreePath }),
+                runtimePolicy: expect.objectContaining({ cwd: worktreePath }),
+              }),
+            );
+          }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+          { signal },
+        ),
+      ),
+    ),
 );
 
 effectIt.effect("reads current startup state after waiting for the workspace lease", () =>
@@ -2320,35 +2443,53 @@ effectIt.effect("terminalizes an unresolved writer retirement before opening its
 );
 
 it("recreation skips provenance and preserves the native recovery failure", async () => {
-  const captures: Array<{ reason: string; runId: string | undefined }> = [];
-  const harness = startWithMissingWorktree(
-    `${managedWorktreesDir}/project/provenance`,
-    undefined,
-    undefined,
-    Layer.mock(WorkspaceProvenance.Provenance)({
-      capture: (input) =>
-        Effect.sync(() => {
-          captures.push({ reason: input.reason, runId: input.runId });
-          return {} as never;
+  await withStartRecreationFixture(async (f) => {
+    const worktreesDir = `${f.root}/managed`;
+    const worktreePath = `${worktreesDir}/project/provenance`;
+    await Effect.runPromise(f.fs.makeDirectory(`${worktreesDir}/project`, { recursive: true }));
+    await nativeGit(f.repo, ["worktree", "move", f.checkout, worktreePath]);
+    const prior = checkoutIncarnation(await checkoutBinding(worktreePath));
+    await Effect.runPromise(f.fs.remove(worktreePath, { recursive: true }));
+    const captures: Array<{ reason: string; runId: string | undefined }> = [];
+    const harness = startWithMissingWorktree(
+      worktreePath,
+      { [worktreesDir]: worktreesDir, [`${worktreesDir}/project`]: `${worktreesDir}/project` },
+      undefined,
+      Layer.mock(WorkspaceProvenance.Provenance)({
+        capture: (input) =>
+          Effect.sync(() => {
+            captures.push({ reason: input.reason, runId: input.runId });
+            return {} as never;
+          }),
+      }),
+      { projectRoot: f.repo, baseDir: `${f.root}/state`, worktreesDir },
+    );
+    const failure = await harness.start;
+    expect(captures).toEqual([]);
+    expect(harness.recreateCheckout).toHaveBeenCalledTimes(1);
+    expect(harness.recreateCheckout).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cwd: f.repo,
+        source: expect.objectContaining({
+          head: f.source.head,
+          branch: "refs/heads/feature/restore",
+          binding: expect.objectContaining({ path: worktreePath }),
         }),
-    }),
-  );
-  const failure = await harness.start;
-  expect(captures).toEqual([]);
-  expect(harness.createWorktree).toHaveBeenCalledTimes(1);
-  expect(harness.createWorktree).toHaveBeenCalledWith({
-    cwd: "/tmp/provider-turn-start-project",
-    refName: "feature/restore",
-    path: `${managedWorktreesDir}/project/provenance`,
+      }),
+    );
+    expect(checkoutIncarnation(await checkoutBinding(worktreePath))).not.toBe(prior);
+    expect((await nativeGit(worktreePath, ["rev-parse", "HEAD"])).toString().trim()).toBe(
+      f.source.head,
+    );
+    expect(failure).toMatchObject({
+      _tag: "ProviderTurnStartError",
+      cause: {
+        _tag: "ProjectionStoreReadError",
+        cause: "simulated inherited-background projection failure",
+      },
+    });
+    expect(harness.startRootRun).not.toHaveBeenCalled();
   });
-  expect(failure).toMatchObject({
-    _tag: "ProviderTurnStartError",
-    cause: {
-      _tag: "ProjectionStoreReadError",
-      cause: "simulated inherited-background projection failure",
-    },
-  });
-  expect(harness.startRootRun).not.toHaveBeenCalled();
 });
 
 effectIt.effect.each([
@@ -2451,7 +2592,7 @@ effectIt.effect.each([
         },
       ]);
       expect(attachments).toBe(1);
-      expect(harness.createWorktree).not.toHaveBeenCalled();
+      expect(harness.recreateCheckout).not.toHaveBeenCalled();
       expect(harness.open).not.toHaveBeenCalled();
       expect(harness.startRootRun).not.toHaveBeenCalled();
     }),

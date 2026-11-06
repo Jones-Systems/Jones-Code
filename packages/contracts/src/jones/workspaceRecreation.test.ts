@@ -5,11 +5,20 @@ import { CheckoutRecreationRequest } from "./workspaceRecreation.ts";
 import { ExecutionEnvironmentCapabilities } from "../environment.ts";
 
 it("preserves explicit receipt-bound detached requests through message-context replay and keeps old messages valid", () => {
-  const context = { version: 1 as const, records: [], checkoutRecreation: { receiptId: "receipt", mode: "detached" as const } };
+  const context = {
+    version: 1 as const,
+    records: [],
+    checkoutRecreation: { receiptId: "receipt", mode: "detached" as const },
+  };
   const codec = Schema.fromJsonString(OrchestrationMessageContext);
   expect(Schema.decodeSync(codec)(Schema.encodeSync(codec)(context))).toEqual(context);
-  expect(Schema.decodeUnknownSync(OrchestrationMessageContext)({ version: 1, records: [] })).toEqual({ version: 1, records: [] });
-  for (const request of [{ receiptId: "", mode: "detached" }, { receiptId: "receipt", mode: "reset" }])
+  expect(
+    Schema.decodeSync(OrchestrationMessageContext)({ version: 1, records: [] }),
+  ).toEqual({ version: 1, records: [] });
+  for (const request of [
+    { receiptId: "", mode: "detached" },
+    { receiptId: "receipt", mode: "reset" },
+  ])
     expect(() => Schema.decodeUnknownSync(CheckoutRecreationRequest)(request)).toThrow();
   const decodeCapabilities = Schema.decodeUnknownSync(ExecutionEnvironmentCapabilities);
   expect(decodeCapabilities({}).checkoutRecreation).toBeUndefined();

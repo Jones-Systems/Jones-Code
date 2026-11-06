@@ -112,16 +112,24 @@ const make = Effect.gen(function* () {
     }),
     read,
     prior,
-    invalidateRecreated: Effect.fn("WorkspaceLifecycleTransitionStore.invalidateRecreated")(function* (worktree) {
-      yield* sql.withTransaction(Effect.gen(function* () {
-        const retiring = yield* sql`SELECT 1 FROM jones_workspace_retirement_state WHERE worktree=${worktree} AND state='retiring'`;
-        if (retiring.length) return yield* new LifecycleError({ reason: "conflict" });
-        const pending = yield* sql`SELECT 1 FROM jones_workspace_lifecycle_transitions WHERE worktree=${worktree} AND state!='confirmed' LIMIT 1`;
-        if (pending.length) return yield* new LifecycleError({ reason: "unknown" });
-        // Historical transitions survive; validation can no longer accept their source generation as current.
-        yield* sql`DELETE FROM jones_workspace_lifecycle_bindings WHERE worktree=${worktree}`;
-      })).pipe(Effect.mapError(storageError));
-    }),
+    invalidateRecreated: Effect.fn("WorkspaceLifecycleTransitionStore.invalidateRecreated")(
+      function* (worktree) {
+        yield* sql
+          .withTransaction(
+            Effect.gen(function* () {
+              const retiring =
+                yield* sql`SELECT 1 FROM jones_workspace_retirement_state WHERE worktree=${worktree} AND state='retiring'`;
+              if (retiring.length) return yield* new LifecycleError({ reason: "conflict" });
+              const pending =
+                yield* sql`SELECT 1 FROM jones_workspace_lifecycle_transitions WHERE worktree=${worktree} AND state!='confirmed' LIMIT 1`;
+              if (pending.length) return yield* new LifecycleError({ reason: "unknown" });
+              // Historical transitions survive; validation can no longer accept their source generation as current.
+              yield* sql`DELETE FROM jones_workspace_lifecycle_bindings WHERE worktree=${worktree}`;
+            }),
+          )
+          .pipe(Effect.mapError(storageError));
+      },
+    ),
     current: Effect.fn("WorkspaceLifecycleTransitionStore.current")(function* (worktree) {
       const pending =
         yield* sql`SELECT transition_id FROM jones_workspace_lifecycle_transitions WHERE worktree=${worktree} AND state!='confirmed' LIMIT 1`;

@@ -114,7 +114,10 @@ export async function binding(worktree: string): Promise<Binding> {
       if (typeof breadcrumb_id !== "string" || !breadcrumb_id) throw new Error("identity_mismatch");
     }
     const recreated = await readBreadcrumb(git_dir);
-    if (recreated !== null) breadcrumb_id = sha256(canonical({ provenance: breadcrumb_id, recreation: recreated.breadcrumb }));
+    if (recreated !== null)
+      breadcrumb_id = sha256(
+        canonical({ provenance: breadcrumb_id, recreation: recreated.breadcrumb }),
+      );
     return {
       path,
       dev: safeNumber(rs.dev),

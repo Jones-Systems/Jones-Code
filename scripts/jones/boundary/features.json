@@ -13,6 +13,8 @@
         "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
         "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ManagedConsumers.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts",
         "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
         "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.test.ts",
         "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",

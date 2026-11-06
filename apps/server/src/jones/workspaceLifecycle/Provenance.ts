@@ -156,7 +156,11 @@ const threadSchema = Schema.fromJsonString(
     branch: Schema.NullOr(Schema.String),
   }),
 );
-const incarnation = (environment: string, source: Sources.CheckoutSource, recreation: string | null) =>
+const incarnation = (
+  environment: string,
+  source: Sources.CheckoutSource,
+  recreation: string | null,
+) =>
   `workspace:${digest({
     environment,
     project: source.target.projectId,
@@ -341,12 +345,13 @@ const make = Effect.gen(function* () {
       });
     }, Effect.mapError(error)),
     record: Effect.fn("Provenance.record")(function* (source, fact) {
-      const recreated = source.target.gitDirectory === null
-        ? null
-        : yield* Effect.tryPromise({
-            try: () => readBreadcrumb(source.target.gitDirectory!),
-            catch: (cause) => cause,
-          });
+      const recreated =
+        source.target.gitDirectory === null
+          ? null
+          : yield* Effect.tryPromise({
+              try: () => readBreadcrumb(source.target.gitDirectory!),
+              catch: (cause) => cause,
+            });
       if (
         incarnation(environment, source, recreated?.breadcrumb ?? null) !== fact.incarnation_id ||
         source.target.threadId !== fact.thread_id

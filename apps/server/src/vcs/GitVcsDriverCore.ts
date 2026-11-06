@@ -4976,11 +4976,24 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     listRefs,
     createWorktree: (input, options) =>
       withListRefsInvalidation(input.cwd, createWorktree(input, options)),
-    recreateCheckout: (input) => withListRefsInvalidation(input.cwd, Effect.tryPromise({
-      try: () => recreate(input),
-      catch: (cause) => cause instanceof RecreationHold ? cause : new RecreationHold("unknown", input.source.binding.path,
-        input.owner, "native recreation observation unavailable", "Reconcile this exact checkout before retrying.", { cause }),
-    }).pipe(Effect.uninterruptible)),
+    recreateCheckout: (input) =>
+      withListRefsInvalidation(
+        input.cwd,
+        Effect.tryPromise({
+          try: () => recreate(input),
+          catch: (cause) =>
+            cause instanceof RecreationHold
+              ? cause
+              : new RecreationHold(
+                  "unknown",
+                  input.source.binding.path,
+                  input.owner,
+                  "native recreation observation unavailable",
+                  "Reconcile this exact checkout before retrying.",
+                  { cause },
+                ),
+        }).pipe(Effect.uninterruptible),
+      ),
     fetchRefIntoBranch: (input) => withListRefsInvalidation(input.cwd, fetchRefIntoBranch(input)),
     fetchRefCommit,
     resolveCommit,

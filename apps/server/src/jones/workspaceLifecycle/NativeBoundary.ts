@@ -88,7 +88,6 @@ export const beforeUse = Effect.fn("WorkspaceLifecycle.beforeNativeUse")(functio
   readonly boundary: NativeTransition["boundary"];
   readonly fallback?: { readonly id: string; readonly request: unknown };
 }) {
-  if (yield* CheckoutRecreation.recreatedDetached(input.threadId)) return;
   const inherited = yield* Effect.serviceOption(OriginalNativeTransition);
   const original =
     Option.getOrUndefined(inherited) ??
@@ -109,6 +108,7 @@ export const beforeUse = Effect.fn("WorkspaceLifecycle.beforeNativeUse")(functio
     if (Option.isSome(configured)) return yield* new LifecycleError({ reason: "unavailable" });
     return;
   }
+  if (yield* CheckoutRecreation.recreatedDetached(input.threadId)) return;
   if (original === undefined) return yield* new LifecycleError({ reason: "identity" });
   yield* service.value.resume({
     transitionId: `${original.id}:${input.boundary}`,
