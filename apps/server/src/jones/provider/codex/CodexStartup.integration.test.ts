@@ -19,6 +19,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
 import * as Cause from "effect/Cause";
+import * as Console from "effect/Console";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -1115,6 +1116,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             },
           });
           yield* Effect.logInfo("Synthetic cache handoff checkpoint", diagnostic).pipe(
+            Effect.provideService(Console.Console, Console.Console.defaultValue()),
             Effect.provideService(References.MinimumLogLevel, "Info"),
             Effect.withLogger(Logger.consoleLogFmt),
           );
