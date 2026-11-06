@@ -7,6 +7,8 @@ import {
   type OrchestrationV2Subagent,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Console from "effect/Console";
+import * as Deferred from "effect/Deferred";
 import * as Exit from "effect/Exit";
 import * as DateTime from "effect/DateTime";
 import * as Layer from "effect/Layer";
@@ -229,27 +231,83 @@ it.effect.each(["pending", "running"] as const)(
       }
       assert.isTrue(yield* orchestrator.restartContinuationPending(interrupted));
       const finalized = yield* Queue.unbounded<boolean>();
-      // Transparent instrumentation waits for the real consumer; neither finalization API is stubbed.
-      const signal = <A, E, R>(id: typeof child.id, effect: Effect.Effect<A, E, R>) =>
-        id !== child.id
-          ? effect
-          : effect.pipe(
-              Effect.tap(() =>
-                orchestrator
-                  .restartContinuationPending(interrupted)
-                  .pipe(Effect.flatMap((pending) => Queue.offer(finalized, pending))),
+      const recordedStages = new Set<string>();
+      const stage = (value: string) =>
+        Effect.suspend(() => {
+          if (recordedStages.has(value)) return Effect.void;
+          recordedStages.add(value);
+          return Effect.logInfo("CR-R1", continuationStatus, child.id, interrupted.id, value).pipe(
+            Effect.provideService(Console.Console, Console.Console.defaultValue()),
+          );
+        });
+      // Transparent instrumentation waits for the real consumer; neither API is stubbed.
+      let finalizerCalls = 0;
+      const signal = <A, E, R>(id: typeof child.id, effect: Effect.Effect<A, E, R>) => {
+        if (id !== child.id) return effect;
+        const call = ++finalizerCalls;
+        const receipt = (phase: string) =>
+          call <= 8 ? stage(`finalizer:${call}:${phase}`) : Effect.void;
+        return receipt("enter").pipe(
+          Effect.andThen(effect),
+          Effect.tap(() => receipt("exit")),
+          Effect.tap(() =>
+            orchestrator
+              .restartContinuationPending(interrupted)
+              .pipe(
+                Effect.flatMap((pending) =>
+                  receipt(`pending:${pending}`).pipe(
+                    Effect.andThen(Queue.offer(finalized, pending)),
+                  ),
+                ),
               ),
-            );
+          ),
+        );
+      };
+      // Delay only consumption of the actual captured stream, never its baseline.
+      // The run update commits before this gate opens, forcing real EventSink replay.
+      const consumeDomainEvents = yield* Deferred.make<void>();
+      let acquired = false;
+      let fixturePublished = false;
       const observed = Layer.succeed(Orchestrator.OrchestratorV2, {
         ...orchestrator,
+        acquireDomainEvents: stage("domain-acquire-enter").pipe(
+          Effect.andThen(orchestrator.acquireDomainEvents),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              assert.isFalse(fixturePublished);
+              acquired = true;
+            }).pipe(Effect.andThen(stage("domain-acquire-exit"))),
+          ),
+          Effect.map((stream) =>
+            Stream.unwrap(
+              stage("domain-consume-enter").pipe(
+                Effect.andThen(Deferred.await(consumeDomainEvents)),
+                Effect.tap(() => stage("domain-consume-released")),
+                Effect.as(
+                  stream.pipe(
+                    Stream.tap((event) =>
+                      event.type === "run.updated" && event.threadId === child.id
+                        ? stage("domain-run-received")
+                        : Effect.void,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
         finalizeDelegatedTask: (id) => signal(id, orchestrator.finalizeDelegatedTask(id)),
         recoverDelegatedTask: (id, runId) =>
           signal(id, orchestrator.recoverDelegatedTask(id, runId)),
       });
       yield* Effect.gen(function* () {
         const reactor = yield* Reactor.DependencyReactor;
+        yield* stage("reactor-start-enter");
         yield* reactor.start();
+        yield* stage("reactor-start-exit");
+        assert.isTrue(acquired);
         // A run update on a child with no dependencies still reaches the reactor.
+        yield* stage("sink-write-enter");
         yield* f.sink.write({
           events: [
             f.event({
@@ -260,7 +318,12 @@ it.effect.each(["pending", "running"] as const)(
             }),
           ],
         });
+        fixturePublished = true;
+        yield* stage("sink-write-exit");
+        yield* Deferred.succeed(consumeDomainEvents, undefined);
+        yield* stage("first-queue-enter");
         assert.isTrue(yield* Queue.take(finalized));
+        yield* stage("first-queue-exit");
         const pending = yield* f.projection.getThreadRecords(f.receiver.id, [
           "subagents",
           "contextTransfers",
@@ -268,17 +331,23 @@ it.effect.each(["pending", "running"] as const)(
         assert.equal(pending.subagents.find((item) => item.id === taskId)?.result, null);
         assert.isFalse(pending.contextTransfers.some((item) => item.type === "subagent_result"));
         assert.isTrue(yield* orchestrator.delegatedTaskResultPending(child.id));
+        yield* stage("cancel-enter");
         yield* outbox.cancelUnsettled({
           threadId: child.id,
           effectTypes: ["provider-runtime.continue"],
           reason: "Continuation declined",
         });
+        yield* stage("cancel-exit");
         assert.isFalse(yield* orchestrator.restartContinuationPending(interrupted));
+        yield* stage("changes-publish-enter");
         yield* changes.publish({ threadIds: [child.id], sequence: yield* f.store.sequence });
+        yield* stage("changes-publish-exit");
+        yield* stage("second-stream-enter");
         yield* Stream.fromQueue(finalized).pipe(
           Stream.filter((pending) => !pending),
           Stream.runHead,
         );
+        yield* stage("second-stream-exit");
         const settled = yield* f.projection.getThreadRecords(f.receiver.id, [
           "subagents",
           "contextTransfers",

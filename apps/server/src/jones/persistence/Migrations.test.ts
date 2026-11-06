@@ -462,6 +462,7 @@ it.effect(
           ...released135Identities.map(([id, name]) => [id, name]),
           [136, "WorkspaceProvenance"],
           [137, "NativeCreationLeaseRenewal"],
+          [138, "WorkspaceRetirement"],
         ],
       );
       assert.deepStrictEqual(
@@ -677,6 +678,7 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [135, "IdleWorktreeAdmission"],
       [136, "WorkspaceProvenance"],
       [137, "NativeCreationLeaseRenewal"],
+      [138, "WorkspaceRetirement"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

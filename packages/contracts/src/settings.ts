@@ -1,3 +1,4 @@
+import { WorkspaceRetirementOutcome } from "./jones/workspaceRetirement.ts";
 import {
   threadActivitySettingsFields,
   threadActivitySettingsPatchFields,
@@ -942,7 +943,18 @@ export const WorktreeKeepWhen = Schema.Literals([
 ]);
 export type WorktreeKeepWhen = typeof WorktreeKeepWhen.Type;
 
+export const WorktreeSettledScope = Schema.Literals(["contained", "branch-retained"]);
+export const WorktreeCoveredDiscard = Schema.Array(
+  Schema.Literals(["declared_cache", "dependency_reproduction", "format_recognized"]),
+);
+
 export const WorktreeCleanupRules = Schema.Struct({
+  worktreeSettledScope: WorktreeSettledScope.pipe(
+    Schema.withDecodingDefault(Effect.succeed("branch-retained")),
+  ),
+  worktreeCoveredDiscard: WorktreeCoveredDiscard.pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
     Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
   ),
@@ -1074,6 +1086,7 @@ export function shouldRecommendDatabaseCompaction(status: DatabaseStorageStatus)
 }
 
 export const StorageCleanupReportEntry = Schema.Struct({
+  retirement: Schema.optionalKey(WorkspaceRetirementOutcome),
   kind: Schema.Literals(["worktree", "browser-artifacts", "logs"]),
   outcome: Schema.Literals(["removed", "kept", "failed"]),
   reason: Schema.String,
@@ -1097,9 +1110,16 @@ export const StorageCleanupReport = Schema.Struct({
 export type StorageCleanupReport = typeof StorageCleanupReport.Type;
 
 export const StorageCleanupSettings = Schema.Struct({
+  worktreeSettledScope: WorktreeSettledScope.pipe(
+    Schema.withDecodingDefault(Effect.succeed("branch-retained")),
+  ),
+  worktreeCoveredDiscard: WorktreeCoveredDiscard.pipe(
+    Schema.withDecodingDefault(Effect.succeed([])),
+  ),
   installRetention: Schema.Literals(["propose", "retire"]).pipe(
     Schema.withDecodingDefault(Effect.succeed("propose" as const)),
   ),
+
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
     Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
   ),
@@ -1467,6 +1487,8 @@ export const ServerSettingsPatch = Schema.Struct({
         Schema.Struct({
           mode: Schema.Literal("custom"),
           rules: Schema.Struct({
+            worktreeSettledScope: Schema.optionalKey(WorktreeSettledScope),
+            worktreeCoveredDiscard: Schema.optionalKey(WorktreeCoveredDiscard),
             worktreeKeepWhen: Schema.optionalKey(WorktreeKeepWhen),
             worktreeAfterDays: Schema.optionalKey(StorageRetentionDays),
             worktreeSettledAfterDays: Schema.optionalKey(SettledWorktreeRetentionDays),
@@ -1480,7 +1502,10 @@ export const ServerSettingsPatch = Schema.Struct({
   ),
   storageCleanup: Schema.optionalKey(
     Schema.Struct({
+      worktreeSettledScope: Schema.optionalKey(WorktreeSettledScope),
+      worktreeCoveredDiscard: Schema.optionalKey(WorktreeCoveredDiscard),
       installRetention: Schema.optionalKey(Schema.Literals(["propose", "retire"])),
+
       worktreeKeepWhen: Schema.optionalKey(WorktreeKeepWhen),
       worktreeAfterDays: Schema.optionalKey(StorageRetentionDays),
       worktreeSettledAfterDays: Schema.optionalKey(SettledWorktreeRetentionDays),

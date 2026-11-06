@@ -1,3 +1,8 @@
+import * as RetirementReceipts from "../jones/workspaceRetirement/Receipts.ts";
+import * as RetirementRuntime from "../jones/workspaceRetirement/Runtime.ts";
+import * as RetirementConfig from "../config.ts";
+import * as SqlClient from "effect/sql/SqlClient";
+import type * as Scope from "effect/Scope";
 import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import * as Option from "effect/Option";
@@ -6,7 +11,7 @@ import {
   backgroundWorkHoldsCompletion,
   turnItemUpdateCanEndBackgroundWork,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
-import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
+import { resolveProjectSettings, resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import { visibleThreadPullRequests } from "@t3tools/shared/threadPullRequests";
 import {
   CommandId,
@@ -26,7 +31,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
-import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as GitManager from "../git/GitManager.ts";
@@ -313,6 +317,38 @@ export const make = Effect.gen(function* () {
   const projectScripts = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
   // Repeated thread.settled retains settledAt; run the action only once per settlement.
   const settleActionRunAt = new Map<ThreadId, number>();
+  const retirementSql = yield* Effect.serviceOption(SqlClient.SqlClient);
+  const retirementConfig = yield* Effect.serviceOption(RetirementConfig.ServerConfig);
+  const retirementScope = yield* Effect.scope;
+  const retirement = Option.isSome(retirementSql)
+    ? yield* RetirementReceipts.Receipts.pipe(
+        Effect.provide(RetirementReceipts.layer),
+        Effect.provideService(SqlClient.SqlClient, retirementSql.value),
+      )
+    : null;
+  const recordRetirementProposal = Effect.fn("ThreadSettlementServiceV2.recordRetirementProposal")(
+    function* (thread: Pick<OrchestrationV2ThreadShell, "id" | "projectId">, worktreePath: string) {
+      if (Option.isNone(retirementSql) || Option.isNone(retirementConfig)) return;
+      const project = yield* projectStore.get(thread.projectId);
+      if (Option.isNone(project)) return;
+      const rules = resolveWorktreeCleanup(yield* settingsService.getSettings, thread.projectId);
+      yield* RetirementRuntime.evaluate({
+        cause: "settlement",
+        worktree: worktreePath,
+        projectRoot: project.value.workspaceRoot,
+        threadId: thread.id,
+        rules,
+        execute: false,
+        admit: Effect.void,
+        revalidate: Effect.void,
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, retirementSql.value),
+        Effect.provideService(RetirementConfig.ServerConfig, retirementConfig.value),
+        Effect.provideService(ProjectionStore.ProjectionStoreV2, projections),
+        Effect.catch(() => Effect.void),
+      );
+    },
+  );
 
   const sweep = Effect.fn("ThreadSettlementServiceV2.sweep")(function* (
     mergedPullRequest: PullRequestService.PullRequestMergeEvent | null,
@@ -588,7 +624,21 @@ export const make = Effect.gen(function* () {
       const thread = yield* projections.getThread(threadId);
       if (thread.settledOverride !== "settled") return;
       const settledAtMs = toMillis(thread.settledAt);
-      if (settledAtMs === null || settleActionRunAt.get(threadId) === settledAtMs) return;
+      if (
+        settledAtMs === null ||
+        (retirement === null && settleActionRunAt.get(threadId) === settledAtMs)
+      )
+        return;
+      const retirementIntent =
+        retirement === null
+          ? null
+          : yield* retirement.settlement(
+              threadId,
+              worktreePath,
+              DateTime.formatIso(thread.settledAt!),
+            );
+      if (retirement !== null && retirementIntent === null) return;
+      if (retirementIntent !== null && retirementIntent.script_state !== "pending") return;
       yield* withOperation(
         {
           id: `settle:${threadId}:${settledAtMs}`,
@@ -615,17 +665,69 @@ export const make = Effect.gen(function* () {
           id: `settle:${threadId}:${settledAtMs}`,
         }),
       );
-      const run = yield* projectScripts.runForThread({
-        threadId,
-        projectId: thread.projectId,
-        worktreePath,
-        trigger: "settle",
-        observeCompletion: {},
-      });
+      if (
+        retirement !== null &&
+        retirementIntent !== null &&
+        !(yield* retirement.startScript(retirementIntent.event_id))
+      )
+        return;
+      if (retirement !== null && retirementIntent !== null)
+        yield* retirement.outcome(retirementIntent.event_id, {
+          state: "held",
+          reasonCodes: ["settle_script_pending"],
+          receiptId: null,
+          fingerprint: null,
+          paths: [],
+          details: [
+            {
+              reason: "settle_script_pending",
+              target: worktreePath,
+              root: worktreePath,
+              fact: "The durable settle-script intent has started and its completion is pending.",
+              missingFact: "durable_settle_script_completion",
+              lineage: [{ threadId }],
+              nextAction:
+                "Wait for the actual script completion; ten minutes without completion holds retirement.",
+            },
+          ],
+          outputObligations: [],
+        });
+      const run = yield* projectScripts
+        .runForThread({
+          threadId,
+          projectId: thread.projectId,
+          worktreePath,
+          trigger: "settle",
+          observeCompletion: {},
+        })
+        .pipe(
+          Effect.tapError(() =>
+            retirement !== null && retirementIntent !== null
+              ? retirement.finishScript(retirementIntent.event_id, "failed", null)
+              : Effect.void,
+          ),
+        );
       settleActionRunAt.set(threadId, settledAtMs);
+      const complete = (exitCode: number | null) =>
+        retirement !== null && retirementIntent !== null
+          ? retirement
+              .finishScript(
+                retirementIntent.event_id,
+                exitCode === 0 ? "completed" : exitCode === null ? "cancelled" : "failed",
+                exitCode,
+              )
+              .pipe(Effect.andThen(recordRetirementProposal(thread, worktreePath)))
+          : Effect.void;
       if (run.status === "started" && run.completion) {
-        yield* run.completion.pipe(Effect.forkDetach);
-      }
+        yield* run.completion.pipe(
+          Effect.tap((result) => complete(result.exitCode)),
+          Effect.catch(() => complete(null)),
+          Effect.catch((cause) =>
+            Effect.logWarning("Durable settle-script completion held", { threadId, cause }),
+          ),
+          Effect.forkIn(retirementScope),
+        );
+      } else if (run.status !== "started") yield* complete(0);
     },
     (effect, threadId) =>
       effect.pipe(

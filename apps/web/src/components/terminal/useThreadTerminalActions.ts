@@ -2,6 +2,7 @@ import {
   AuthTerminalOperateScope,
   AuthTerminalReadScope,
   type ScopedThreadRef,
+  type TerminalWriteInput,
 } from "@t3tools/contracts";
 import { scopeProjectRef } from "@t3tools/client-runtime/environment";
 import { isAtomCommandInterrupted } from "@t3tools/client-runtime/state/runtime";
@@ -132,11 +133,20 @@ export function useThreadTerminalActions(threadRef: ScopedThreadRef | null) {
     })();
   };
 
-  const writeToTerminal = (terminalId: string, data: string) => {
+  const writeToTerminal = (
+    terminalId: string,
+    data: string,
+    observation?: TerminalWriteInput["observation"],
+  ) => {
     if (!threadRef || !canWrite()) return null;
     return writeTerminal({
       environmentId: threadRef.environmentId,
-      input: { threadId: threadRef.threadId, terminalId, data },
+      input: {
+        threadId: threadRef.threadId,
+        terminalId,
+        data,
+        ...(observation === undefined ? {} : { observation }),
+      },
     });
   };
 

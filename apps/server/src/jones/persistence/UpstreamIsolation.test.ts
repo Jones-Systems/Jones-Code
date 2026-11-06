@@ -336,6 +336,7 @@ it.effect(
         [135, "IdleWorktreeAdmission"],
         [136, "WorkspaceProvenance"],
         [137, "NativeCreationLeaseRenewal"],
+        [138, "WorkspaceRetirement"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,
@@ -376,9 +377,10 @@ it.effect("137 preserves canonical and historical starts with upstream isolation
       ),
     );
     const upstream = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
-    assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
-      [137, "NativeCreationLeaseRenewal"],
-    ]);
+    assert.deepStrictEqual(
+      yield* runJonesMigrations(jonesMigrationEntries.filter(([id]) => id <= 137)),
+      [[137, "NativeCreationLeaseRenewal"]],
+    );
     assert.deepStrictEqual(
       (yield* readObjects).filter(({ name }) => name !== trigger),
       before.filter(({ name }) => name !== trigger),
