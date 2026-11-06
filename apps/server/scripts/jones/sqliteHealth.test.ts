@@ -68,9 +68,7 @@ async function withFixture(
   body: (fixture: Fixture) => Promise<void>,
   configure?: (database: NodeSqlite.DatabaseSync, databasePath: string) => void,
 ) {
-  const scratch = NodeFS.mkdtempSync(
-    NodePath.join(NodePath.dirname(worktreePath), ".health-test-"),
-  );
+  const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.homedir(), ".health-test-"));
   const binding = {
     repository: "Jones-Systems/Jones-Code",
     sourceRevision: "73b1702f6d5bde5e16636951f637e5416e5a5a6d",
@@ -355,7 +353,7 @@ async function injectedWorker(
   expect(report.child.closed).toBe(true);
   expect(report.child.reaped).toBe(true);
   expect(report.cleanup.status).toBe("completed");
-  expect(NodePath.dirname(path!)).toBe(NodePath.dirname(worktreePath));
+  expect(NodePath.dirname(path!)).toBe(NodeOS.homedir());
   expect(NodeFS.existsSync(path!)).toBe(false);
   expect(NodeFS.existsSync(fixture.root)).toBe(true);
   return report;
@@ -366,6 +364,33 @@ const readyCode =
 const blockedCode = `${readyCode}process.on('SIGTERM',()=>{});Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);`;
 
 describe("jones-sqlite-health — closed fixture integration", () => {
+  it("refuses the old HOME/.t3/worktrees scratch shape before inspecting its absent parent", () => {
+    const syntheticHome = NodePath.join(
+      NodeOS.tmpdir(),
+      `health-policy-${NodeCrypto.randomUUID()}`,
+    );
+    const protectedRoot = NodePath.join(syntheticHome, ".t3");
+    // No directory or database is created. An ancestry lookup would fail with
+    // aliased_path; protected_path proves the lexical guard runs first.
+    expect(() =>
+      createOwnedRoot({
+        parentPath: NodePath.join(protectedRoot, "worktrees", "synthetic-checkouts"),
+        childName: "fixture",
+        binding: {
+          repository: "Jones-Systems/Jones-Code",
+          sourceRevision: "73b1702f6d5bde5e16636951f637e5416e5a5a6d",
+          taskRef: "spec.jones-performance-portfolio#task.d-health.001",
+          runId: "protected-parent-negative",
+        },
+        policy: {
+          homePath: syntheticHome,
+          worktreePaths: [NodePath.join(protectedRoot, "worktrees", "source")],
+          protectedPaths: [protectedRoot],
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: "protected_path" }));
+  });
+
   it("preserves the independent pin and report while requiring every closure and cleanup condition", async () => {
     await withFixture(async (fixture) => {
       const { report } = await cli(fixture, argumentsFor(fixture), JSON.stringify(fixture.receipt));
@@ -427,7 +452,7 @@ describe("jones-sqlite-health — closed fixture integration", () => {
     };
     const policy = healthPolicy();
     const owner = createOwnedRoot({
-      parentPath: NodePath.dirname(worktreePath),
+      parentPath: NodeOS.homedir(),
       childName: `.health-integration-test-${binding.runId}`,
       binding,
       policy,
