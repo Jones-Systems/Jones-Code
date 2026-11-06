@@ -2,6 +2,25 @@
   "schema": "jones.boundary-checks/v1",
   "groups": [
     {
+      "id": "jones-pending-control-items",
+      "tests": [
+        "apps/server/src/jones/orchestration/pendingControlItems.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts",
+        "packages/client-runtime/src/state/threadRequests.test.ts",
+        "packages/client-runtime/src/jones/pendingControlItems.test.ts"
+      ],
+      "commands": [
+        "vp test run apps/server/src/jones/orchestration/pendingControlItems.test.ts apps/server/src/orchestration-v2/ShellStream.test.ts apps/server/src/orchestration-v2/threadHistoryPaging.test.ts apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts packages/client-runtime/src/state/threadRequests.test.ts packages/client-runtime/src/jones/pendingControlItems.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp lint apps/server/src/jones/orchestration/pendingControlItems.ts apps/server/src/jones/orchestration/pendingControlItems.test.ts apps/server/src/orchestration-v2/ProjectionStore.ts apps/server/src/orchestration-v2/threadHistoryPaging.ts apps/server/src/orchestration-v2/ShellStream.ts apps/server/src/orchestration-v2/ShellStream.test.ts packages/client-runtime/src/jones/pendingControlItems.test.ts",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/client-runtime typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
+      ]
+    },
+    {
       "id": "jones-packaged-desktop-recovery-harness",
       "tests": [
         "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
@@ -4661,6 +4680,26 @@
         "vp test run apps/server/src/jones/fleetCheckpoint/Checkpoint.test.ts apps/server/src/jones/fleetCheckpoint/Connected.test.ts apps/server/src/jones/fleetCheckpoint/Configuration.test.ts",
         "vp run --filter t3 typecheck",
         "node scripts/jones/check-boundary.ts --strict --json"
+      ]
+    },
+    {
+      "id": "jones-install-retention",
+      "tests": [
+        "apps/desktop/src/jones/updates/installRetention.test.ts",
+        "scripts/jones/updates/install-retention.node-test.mjs",
+        "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+        "packages/contracts/src/settings.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "commands": [
+        "node --test --test-concurrency=1 scripts/jones/updates/install-retention.node-test.mjs",
+        "vp test run apps/desktop/src/jones/updates/installRetention.test.ts apps/desktop/src/jones/updates/stagingJobs.test.ts apps/desktop/src/jones/updates/jonesNativeHelperSource.test.ts apps/desktop/src/jones/updates/JonesDesktopUpdates.test.ts packages/contracts/src/settings.test.ts apps/server/src/serviceLauncher.test.ts --maxWorkers=1 --no-file-parallelism",
+        "vp test run apps/web/src/components/settings/StorageSettings.browser.test.tsx --maxWorkers=1 --no-file-parallelism",
+        "vp run --filter @t3tools/contracts typecheck",
+        "vp run --filter t3 typecheck",
+        "vp run --filter @t3tools/web typecheck",
+        "node scripts/jones/check-boundary.ts --strict",
+        "git diff --check"
       ]
     },
     {

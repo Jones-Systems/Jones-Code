@@ -4,6 +4,18 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "pending-control-items",
+      "tests": [
+        "apps/server/src/jones/orchestration/pendingControlItems.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts",
+        "packages/client-runtime/src/state/threadRequests.test.ts",
+        "packages/client-runtime/src/jones/pendingControlItems.test.ts"
+      ],
+      "scope": "Current pending user-input and approval bodies survive SQL snapshot and final wire windows without consuming visible history. Runtime status owns retention, including completed async items; indexed node lookup is scoped by current thread, request and item type. ProjectionStore and threadHistoryPaging retain accepted-shared ownership for the small query/merge hooks. The accepted-shared ShellStream predicate admits only secret_request child item updates; its existing upstream-harness tests receive payload fixtures without removing suppression assertions. Jones-owned server tests verify real in-memory SQLite and bounded codecs; the client-owned regression verifies request derivation after wire restoration, and cover terminal removal, ownership negatives, deduplication, cursor/watermark stability and secret new/save/decline/cancel invalidation. No schema, migration, badge policy or installed-runtime change."
+    },
+    {
       "id": "packaged-desktop-recovery-harness",
       "tests": [
         "scripts/jones/updates/packaged-desktop-helper-fault.node-test.mjs",
@@ -2941,6 +2953,17 @@
         "apps/server/src/jones/fleetCheckpoint/Configuration.test.ts"
       ],
       "scope": "Typed native checkpoint place/get/cancel-pending through the existing fixed Fleet controller client. Original caller identity, bounded process uncertainty and exact native receipt attribution; no new queue, installation or activation."
+    },
+    {
+      "id": "install-retention",
+      "tests": [
+        "apps/desktop/src/jones/updates/installRetention.test.ts",
+        "scripts/jones/updates/install-retention.node-test.mjs",
+        "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+        "packages/contracts/src/settings.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "scope": "C10 manual-install transitive recovery closure, exact-plan retention under the existing activation/admission/startup lock, per-candidate identity and generation comparison, durable intent and held partial effects. Retained external app bundles and launcher generations remain held for unknown consumers. Shared settings/schema/UI edits add propose-default and explicit retire plus optional capability negotiation. The small launcher hooks only publish bounded proposals under launcher ownership and the staging lock. No next-install admission relaxation, native receipt rewrite, runtime adoption, operational disposal authority or external bundle removal. Protocol fixtures use real source functions and CLI contention with synthetic native boundaries; Node/Python source evidence is distinct from packaged macOS acceptance."
     }
   ]
 }

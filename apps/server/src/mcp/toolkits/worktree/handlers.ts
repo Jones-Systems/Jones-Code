@@ -38,7 +38,7 @@ const handlers = {
       const lookup = yield* WorkspaceProvenance.optionalLookup;
       const provenance = yield* lookup(
         provenancePath === undefined ? { threadId: thread.id } : { path: provenancePath },
-      ).pipe(Effect.mapError(unavailable));
+      );
       return {
         ...result,
         ...(provenance === undefined

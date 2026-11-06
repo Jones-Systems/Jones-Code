@@ -7,6 +7,7 @@
 // rest of it being loadable.
 import * as NodeChildProcess from "node:child_process";
 import { SERVER_CHILD_SHUTDOWN_GRACE_MS } from "./jones/cloud/shutdownBudget.ts";
+import { proposeRuntimeStagingRetention } from "./jones/cloud/runtimeStagingRetention.ts";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -946,6 +947,7 @@ export class Launcher {
     this.#enqueue(async () => {
       await ownership.promise;
       await this.#recover();
+      await this.#proposeRuntimeRetention();
     });
     try {
       await withQualifiedRuntimeLock(this.#baseDir, "service-launcher-lock", async () => {
@@ -973,6 +975,16 @@ export class Launcher {
     } finally {
       process.off("SIGTERM", onSigterm);
       process.off("SIGINT", onSigint);
+    }
+  }
+
+  async #proposeRuntimeRetention(): Promise<void> {
+    try {
+      await proposeRuntimeStagingRetention(this.#baseDir);
+    } catch {
+      process.stderr.write(
+        "[service-launcher] Runtime retention proposal held; generations preserved.\n",
+      );
     }
   }
 
@@ -2204,6 +2216,7 @@ export class Launcher {
             }),
       });
       await cleanupTerminalDatabaseBackup(this.#baseDir, pending, "committed");
+      await this.#proposeRuntimeRetention();
     } catch (cause) {
       const attempt = this.#qualifiedCommitAttempt;
       if (pending.qualified === undefined || attempt?.updateId !== pending.id) throw cause;

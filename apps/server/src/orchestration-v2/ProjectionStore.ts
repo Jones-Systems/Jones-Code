@@ -1,4 +1,8 @@
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
+import {
+  encodePendingControlRequests,
+  pendingControlRequests,
+} from "../jones/orchestration/pendingControlItems.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { byThread as dependencyRosterByThread } from "../jones/threadResultDependencies/Projection.ts";
 import { pendingGuestMessageCount } from "@t3tools/contracts";
@@ -6449,6 +6453,25 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 : {}),
               ...(historyAnchor === undefined ? {} : { historyAnchor }),
             });
+            // Add current control bodies only after visible history and fork positions are fixed.
+            const requests = pendingControlRequests(projection);
+            const requestJson = yield* encodePendingControlRequests(requests);
+            const controlRows =
+              requests.length === 0
+                ? []
+                : yield* sql<PayloadRow>`
+              SELECT item.payload_json
+              FROM json_each(${requestJson}) AS request
+              CROSS JOIN orchestration_v2_projection_turn_items AS item
+                ON item.node_id = json_extract(request.value, '$.nodeId')
+              WHERE item.thread_id = ${threadId}
+                AND item.type = json_extract(request.value, '$.type')
+                AND json_extract(item.payload_json, '$.requestId') = json_extract(request.value, '$.id')
+              ORDER BY item.ordinal ASC, item.turn_item_id ASC
+            `;
+            const controlItems = yield* decodeRows(decodeTurnItemPayload, threadId)(controlRows);
+            const turnItems = new Map(projection.turnItems.map((item) => [item.id, item]));
+            for (const item of controlItems) turnItems.set(item.id, item);
             const rows = yield* sql<{ readonly snapshot_sequence: number | null }>`
               SELECT MAX(sequence) AS snapshot_sequence
               FROM orchestration_events
@@ -6459,7 +6482,7 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             return {
               schemaVersion: ORCHESTRATION_V2_PROJECTION_SCHEMA_VERSION,
               snapshotSequence: rows[0]?.snapshot_sequence ?? 0,
-              projection,
+              projection: { ...projection, turnItems: [...turnItems.values()] },
             };
           }),
         )
