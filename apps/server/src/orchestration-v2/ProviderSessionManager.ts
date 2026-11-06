@@ -1,3 +1,4 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as RetirementLedger from "../jones/providerRetirement/RetirementLedger.ts";
 import * as AccountTransfer from "../jones/providerRetirement/accountTransferRetirement.ts";
 import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
@@ -397,6 +398,7 @@ export const layerWithOptions = (
       const idAllocator = yield* IdAllocator.IdAllocatorV2;
       const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const conversationPolicy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
       const physicalEvidence = yield* PhysicalRuntimeEvidence.make;
       const agentScope = yield* AgentScope;
       const makeRuntimeLifecycle = (
@@ -2313,7 +2315,11 @@ export const layerWithOptions = (
         threadId: ThreadId,
         providerSessionId: ProviderSessionId,
         check: Effect.Effect<unknown, C>,
+        cwd?: string | null,
       ) {
+        // Conversation bindings have no checkout lifecycle row, so their exact
+        // assignment still needs this recheck when checkout admission selects out.
+        if (Option.isSome(conversationPolicy) && (conversationPolicy.value.ownsPath(cwd ?? null) || (yield* conversationPolicy.value.lookup(threadId)) !== null)) yield* check;
         if (Option.isNone(yield* Effect.serviceOption(WorkspaceLifecycleService)))
           return yield* WorkspaceLifecycle.beforeUse({ threadId, boundary: "resume" });
         const invocation = yield* idAllocator.allocate.event({ threadId, providerSessionId });
@@ -3492,7 +3498,9 @@ export const layerWithOptions = (
                 if (
                   thread === null ||
                   thread.deletedAt !== null ||
-                  thread.worktreePath !== input.runtimePolicy.cwd
+                  (thread.worktreePath !== input.runtimePolicy.cwd &&
+                    !(thread.worktreePath === null && Option.isSome(conversationPolicy) &&
+                      (yield* conversationPolicy.value.acceptsCwd(input.threadId, input.runtimePolicy.cwd))))
                 )
                   return yield* new ProviderSessionOpenError({
                     instanceId: input.modelSelection.instanceId,
@@ -3511,7 +3519,7 @@ export const layerWithOptions = (
                 source: originalEntry?.runtime,
               }).pipe(
                 Effect.andThen(
-                  beforeSessionUse(input.threadId, input.providerSessionId, checkOpen),
+                  beforeSessionUse(input.threadId, input.providerSessionId, checkOpen, input.runtimePolicy.cwd),
                 ),
               );
               yield* beforeOpen.pipe(

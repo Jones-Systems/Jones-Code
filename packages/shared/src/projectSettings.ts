@@ -166,15 +166,18 @@ function resolveProjectOverrides(
 }
 
 /** New name-only projects use their checkout until the first thread, even when the default is worktree. */
-export function resolveNewThreadEnvMode(input: {
+interface NewThreadEnvModeInput {
   readonly projectSettings: ResolvedProjectSettings<ResolvedServerSettings>;
   readonly workspaceRoot: string | null;
   readonly newProjectsRoot: string | null | undefined;
   readonly projectHasThreads: boolean;
-}): ThreadEnvMode {
-  const configured = input.projectSettings.settings.defaultThreadEnvMode;
+}
+export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput & { readonly preferConversation: boolean }): ThreadEnvMode | "auto";
+export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput): ThreadEnvMode;
+export function resolveNewThreadEnvMode(input: NewThreadEnvModeInput & { readonly preferConversation?: boolean }): ThreadEnvMode | "auto" {
+  const configured = input.preferConversation && input.projectSettings.settings.worktreeAllocation !== "eager" ? "auto" : input.projectSettings.settings.defaultThreadEnvMode;
   if (
-    configured === "local" ||
+    configured === "local" || configured === "auto" ||
     input.projectHasThreads ||
     input.projectSettings.sources.defaultThreadEnvMode !== "environment" ||
     input.workspaceRoot === null ||
@@ -193,10 +196,10 @@ export function resolveNewThreadEnvMode(input: {
   return isNewProjectFolder ? "local" : configured;
 }
 
-export function resolveSendEnvMode(input: {
-  readonly requestedEnvMode: ThreadEnvMode;
+export function resolveSendEnvMode<Mode extends ThreadEnvMode | "auto">(input: {
+  readonly requestedEnvMode: Mode;
   readonly isGitRepo: boolean;
-}): ThreadEnvMode {
+}): Mode | "local" {
   return input.isGitRepo ? input.requestedEnvMode : "local";
 }
 

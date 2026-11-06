@@ -1,3 +1,5 @@
+import { environmentServerConfigsAtom } from "../state/server";
+import { useAtomValue } from "@effect/atom-react";
 import { MachineIcon, MachineOrigin } from "../jones/remoteAgentLineage/MachineIdentity";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
 import { formatFilePathForClipboard } from "@t3tools/client-runtime/media-actions";
@@ -656,6 +658,7 @@ export const BranchToolbar = memo(function BranchToolbar({
   composerControlsHostRef,
   contextStripVisible = true,
 }: BranchToolbarProps) {
+  const conversationAvailable = useAtomValue(environmentServerConfigsAtom).get(environmentId)?.environment.capabilities.conversationWorkspace === true;
   const branchSelectorRef = useRef<BranchToolbarBranchSelectorHandle>(null);
   const threadRef = scopeThreadRef(environmentId, threadId);
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
@@ -838,6 +841,7 @@ export const BranchToolbar = memo(function BranchToolbar({
           )}
           {showGitControls ? (
             <BranchToolbarEnvModeSelector
+              conversationAvailable={conversationAvailable}
               forceNewWorktree={forceNewWorktree}
               envLocked={envModeLocked}
               effectiveEnvMode={effectiveEnvMode}

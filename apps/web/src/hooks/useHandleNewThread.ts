@@ -149,6 +149,7 @@ export function useNewThreadHandler() {
         ? await readT3ProjectFile(project.environmentId, project.workspaceRoot)
         : null;
       return resolveNewThreadEnvMode({
+        preferConversation: environmentServerConfigs.get(projectRef.environmentId)?.environment.capabilities.conversationWorkspace === true && targetServerSettings.defaultThreadEnvMode === null && projectSettings.overrides.defaultThreadEnvMode === undefined && projectFile?.defaultThreadEnvMode === undefined,
         projectSettings: resolveProjectSettings(
           targetServerSettings,
           project?.id ?? null,

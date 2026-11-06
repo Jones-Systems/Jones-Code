@@ -1,8 +1,14 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import { resolveSource } from "../jones/conversationWorkspace/SourceBroker.ts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- Stable legacy request identity; explicit clientRequestId remains preferred.
+import { createHash } from "node:crypto";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import {
   CommandId,
+  type ChatAttachment,
   MessageId,
   type ProjectId,
+  type ThreadId,
   WorktreeMcpFailure,
   type WorktreeMcpContinuationStatus,
   type WorktreeMcpHandoffInput,
@@ -31,7 +37,10 @@ export class WorktreeMcpService extends Context.Service<
     readonly handoff: (
       scope: McpInvocationScope,
       input: WorktreeMcpHandoffInput,
+      beforeWrite?: Effect.Effect<void, WorktreeMcpFailure>,
     ) => Effect.Effect<WorktreeMcpHandoffResult, WorktreeMcpFailure>;
+    readonly attachForTurn: (threadId: ThreadId, runId: string, text: string, attachments: ReadonlyArray<ChatAttachment>) => Effect.Effect<void, WorktreeMcpFailure>;
+    readonly attachForTerminal: (threadId: ThreadId) => Effect.Effect<string | null, WorktreeMcpFailure>;
     readonly status: (
       scope: McpInvocationScope,
     ) => Effect.Effect<WorktreeMcpStatusResult, WorktreeMcpFailure>;
@@ -55,8 +64,9 @@ const asOperationFailed = (prefix: string) =>
     failure("operation_failed", `${prefix}: ${errorMessage(error)}`),
   );
 
-const make = Effect.gen(function* () {
+export const make = Effect.gen(function* () {
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
+  const conversationPolicy = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
   const lookupProvenance = yield* WorkspaceProvenance.optionalLookup;
   const crypto = yield* Crypto.Crypto;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -86,7 +96,7 @@ const make = Effect.gen(function* () {
           failure("capability_denied", "This MCP credential does not grant worktree capabilities."),
         );
 
-  const loadThread = (scope: McpThreadInvocationScope) =>
+  const loadThread = (scope: { readonly thread: { readonly threadId: ThreadId } }) =>
     threadManagement.getThreadRecords(scope.thread.threadId, []).pipe(
       Effect.mapError((error) =>
         error._tag === "OrchestratorProjectionError"
@@ -102,7 +112,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const loadProject = (scope: McpThreadInvocationScope, projectId: ProjectId) =>
+  const loadProject = (scope: { readonly thread: { readonly threadId: ThreadId } }, projectId: ProjectId) =>
     projects.getById(projectId).pipe(
       asOperationFailed(`Unable to read project ${projectId}`),
       Effect.flatMap(
@@ -401,8 +411,92 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const durableHandoff = Effect.fn("WorktreeMcpService.durableHandoff")(function* (
+    threadId: ThreadId, input: WorktreeMcpHandoffInput, beforeWrite: Effect.Effect<void, WorktreeMcpFailure> = Effect.void, continuationAttachments: ReadonlyArray<ChatAttachment> = [],
+  ) {
+    if (Option.isNone(conversationPolicy)) return yield* failure("operation_failed", "Conversation handoff service unavailable.");
+    const policy = conversationPolicy.value;
+    const scope = { thread: { threadId } };
+    const projection = yield* loadThread(scope);
+    const project = yield* loadProject(scope, projection.thread.projectId);
+    const binding = yield* policy.lookup(threadId).pipe(asOperationFailed("Unable to read conversation binding"));
+    const request = JSON.stringify({ branch: input.branch, baseRef: input.baseRef ?? null, startFromOrigin: input.startFromOrigin ?? null, runSetupScript: input.runSetupScript ?? true, continuationPrompt: input.continuationPrompt ?? null, continuationAttachments });
+    const requestId = input.clientRequestId ?? `legacy:${createHash("sha256").update(request).digest("hex")}`;
+    // The journal is read before the already-attached check so exact retries
+    // return the original receipt after binding or provider detachment.
+    const previous = yield* policy.readHandoff(threadId).pipe(asOperationFailed("Unable to read handoff journal"));
+    if (previous !== null && (previous.requestId !== requestId || previous.request !== request)) return yield* failure("invalid_request", "Handoff request conflicts with the persisted original request.");
+    if (previous?.phase === "done") return previous.result ?? (yield* failure("operation_failed", "Handoff result is missing."));
+    yield* beforeWrite;
+    let commit = previous?.commit;
+    let baseRef = previous?.baseRef;
+    let startedFromOrigin = previous?.startedFromOrigin ?? false;
+    if (commit === undefined || baseRef === undefined) {
+      if (binding !== null) {
+        const recorded = yield* policy.snapshot(threadId).pipe(asOperationFailed("Recorded source is unavailable"));
+        commit = recorded.commit;
+        baseRef = recorded.baseRef;
+        if (input.baseRef !== undefined && input.baseRef !== baseRef && input.baseRef !== commit) return yield* failure("invalid_request", "Conversation handoff must use its recorded source commit.");
+      } else {
+        const local = yield* gitWorkflow.localStatus({ cwd: project.workspaceRoot }).pipe(asOperationFailed("Unable to resolve handoff base"));
+        baseRef = input.baseRef ?? local.refName ?? undefined;
+        if (baseRef === undefined) return yield* failure("invalid_request", "Select a base ref for the handoff.");
+        let revision = baseRef;
+        if (input.startFromOrigin ?? (yield* readDefaultStartFromOrigin)) {
+          const remote = yield* gitWorkflow.fetchWorktreeBaseCommit({ cwd: project.workspaceRoot, refName: baseRef }).pipe(asOperationFailed("Unable to fetch handoff base"));
+          if (remote !== null) { revision = remote.commitSha; baseRef = `refs/remotes/${remote.remoteRefName}`; startedFromOrigin = true; }
+        }
+        commit = (yield* Effect.tryPromise({ try: () => resolveSource(project.workspaceRoot, revision), catch: () => failure("invalid_request", "Unable to resolve handoff commit.") })).commit;
+      }
+    }
+    let record = previous ?? (yield* policy.reserveHandoff({ threadId, requestId, request, commit, baseRef, startedFromOrigin }).pipe(asOperationFailed("Unable to reserve handoff")));
+    if (projection.thread.archivedAt !== null) return yield* failure("invalid_request", "Archived threads cannot attach a checkout.");
+    const step = (patch: Parameters<typeof policy.updateHandoff>[1]) => policy.updateHandoff(record, patch).pipe(asOperationFailed("Unable to record handoff progress"));
+    if (record.phase === "reserved") {
+      if (projection.thread.worktreePath !== null) return yield* failure("already_in_worktree", "This thread already has a checkout.");
+      record = yield* step({ phase: "checkout_issued" });
+      // Intentionally no fetch: the checkout must match the already recorded source commit.
+      const created = yield* gitWorkflow.createWorktree({ cwd: project.workspaceRoot, refName: record.commit, newRefName: input.branch, baseRefName: record.baseRef, path: null }).pipe(asOperationFailed("Checkout outcome must be reconciled before retry"));
+      record = yield* step({ phase: "checkout_created", path: created.worktree.path });
+    } else if (record.phase === "checkout_issued") {
+      const refs = yield* gitWorkflow.listRefs({ cwd: project.workspaceRoot, query: input.branch, refKind: "local" }).pipe(asOperationFailed("Unable to reconcile checkout"));
+      const found = refs.refs.find((ref) => ref.name === input.branch && ref.isRemote !== true);
+      if (found?.worktreePath == null) return yield* failure("handoff_in_progress", "handoff_unknown: checkout issuance has no proved result; preserve the request and reconcile its original operation.");
+      const observed = yield* Effect.tryPromise({ try: () => resolveSource(found.worktreePath!, "HEAD"), catch: () => failure("operation_failed", "Unable to verify issued checkout.") });
+      if (observed.commit !== record.commit) return yield* failure("operation_failed", "handoff_unknown: issued checkout does not match the recorded source commit.");
+      record = yield* step({ phase: "checkout_created", path: found.worktreePath });
+    }
+    const worktreePath = record.path;
+    if (worktreePath === null) return yield* failure("operation_failed", "Handoff journal has no checkout path.");
+    const commandKey = `conversation-handoff:${threadId}:${requestId}`;
+    return yield* Effect.uninterruptible(Effect.gen(function* () {
+    if (record.phase === "checkout_created") {
+      const fresh = yield* loadThread(scope);
+      if (fresh.thread.worktreePath !== null && fresh.thread.worktreePath !== worktreePath) return yield* failure("already_in_worktree", "Thread binding changed during handoff.");
+      yield* threadManagement.dispatch({ type: "thread.metadata.update", commandId: CommandId.make(`${commandKey}:bind`), threadId, branch: input.branch, worktreePath }).pipe(asOperationFailed("Unable to bind handoff checkout"));
+      yield* policy.markAttached(threadId).pipe(asOperationFailed("Unable to record checkout binding"));
+      record = yield* step({ phase: "bound" });
+    }
+    if (record.phase === "bound") {
+      // Persist issuance before setup. An interrupted setup is never blindly rerun.
+      record = yield* step({ phase: "setup_issued" });
+      const setup: WorktreeMcpSetupScriptStatus = input.runSetupScript === false ? { status: "skipped" } : yield* setupScriptRunner.runForThread({ threadId, projectId: project.id, projectCwd: project.workspaceRoot, worktreePath, project: { id: project.id, workspaceRoot: project.workspaceRoot, scripts: project.scripts } }).pipe(
+        Effect.map((result): WorktreeMcpSetupScriptStatus => result.status === "started" ? { status: "started", scriptName: result.scriptName, terminalId: result.terminalId } : result.status === "skipped-for-link" ? { status: "skipped" } : { status: "no-script" }),
+        asOperationFailed("Setup outcome must be reconciled before retry"),
+      );
+      record = yield* step({ phase: "setup_done", setup });
+    } else if (record.phase === "setup_issued") return yield* failure("handoff_in_progress", "handoff_unknown: setup was issued; retain its checkout and reconcile the original setup before continuing.");
+    if (record.phase === "setup_done") record = yield* step({ phase: "continuation_issued" });
+    const continuation: WorktreeMcpContinuationStatus = input.continuationPrompt === undefined ? { status: "skipped" } : yield* threadManagement.sendToThread({ projectId: project.id, commandId: CommandId.make(`${commandKey}:continue`), threadId, messageId: MessageId.make(`${commandKey}:message`), text: input.continuationPrompt, attachments: continuationAttachments, mode: "queue", createdBy: "agent", creationSource: "mcp" }).pipe(Effect.map((sent): WorktreeMcpContinuationStatus => ({ status: "scheduled", delivery: sent.delivery })), asOperationFailed("Unable to queue handoff continuation"));
+    const directory = yield* policy.dispose(threadId, true).pipe(asOperationFailed("Unable to finalize conversation directory ownership"));
+    const result: WorktreeMcpHandoffResult = { worktreePath, branch: input.branch, baseRef: record.baseRef, startedFromOrigin: record.startedFromOrigin, setupScript: record.setup ?? { status: "skipped" }, continuation, note: `Handoff recorded at source commit ${record.commit}. The current provider turn ends after the workspace changes; continuation is ${continuation.status}. Conversation directory: ${directory ?? "none"}. Nonempty content is retained with its original owner obligation.` };
+    record = yield* step({ phase: "done", result });
+    return result;
+    }));
+  });
+
   const handoff: WorktreeMcpService["Service"]["handoff"] = Effect.fn("WorktreeMcpService.handoff")(
-    function* (callerScope, input) {
+    function* (callerScope, input, beforeWrite = Effect.void) {
       yield* requireCapability(callerScope);
       const scope = yield* requireThreadScope(callerScope);
       // Acquire and register cleanup atomically so cancellation cannot strand the guard until restart.
@@ -417,7 +511,7 @@ const make = Effect.gen(function* () {
             );
           }
           handoffThreadsInFlight.add(scope.thread.threadId);
-          return restore(performHandoff(scope, input)).pipe(
+          return restore(Option.isSome(conversationPolicy) ? durableHandoff(scope.thread.threadId, input, beforeWrite) : beforeWrite.pipe(Effect.andThen(performHandoff(scope, input)))).pipe(
             Effect.ensuring(
               Effect.sync(() => handoffThreadsInFlight.delete(scope.thread.threadId)),
             ),
@@ -451,7 +545,17 @@ const make = Effect.gen(function* () {
     },
   );
 
-  return WorktreeMcpService.of({ handoff, status });
+  const attachForTerminal = Effect.fn("WorktreeMcpService.attachForTerminal")(function* (threadId: ThreadId) {
+    if (Option.isNone(conversationPolicy)) return null;
+    const binding = yield* conversationPolicy.value.lookup(threadId).pipe(asOperationFailed("Unable to read terminal binding"));
+    if (binding === null || binding.state === "attached") return null;
+    const result = yield* durableHandoff(threadId, { branch: `work/conversation-${createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`, clientRequestId: `terminal:${threadId}`, runSetupScript: true });
+    return result.worktreePath;
+  });
+  const attachForTurn = Effect.fn("WorktreeMcpService.attachForTurn")(function* (threadId: ThreadId, runId: string, text: string, attachments: ReadonlyArray<ChatAttachment>) {
+    yield* durableHandoff(threadId, { branch: `work/conversation-${createHash("sha256").update(threadId).digest("hex").slice(0, 16)}`, clientRequestId: `adapter-fallback:${runId}`, continuationPrompt: text || "Continue the previous request in the attached checkout.", runSetupScript: true }, Effect.void, attachments);
+  });
+  return WorktreeMcpService.of({ handoff, status, attachForTerminal, attachForTurn });
 });
 
 export const layer: Layer.Layer<

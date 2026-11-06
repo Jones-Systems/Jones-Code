@@ -840,6 +840,7 @@ export class OrchestratorMcpFailure extends Schema.TaggedError<OrchestratorMcpFa
       "run_not_found",
       "thread_not_sendable",
       "thread_not_interruptible",
+      "attach_required",
       "invalid_request",
       "content_revision_mismatch",
       "content_evidence_unavailable",

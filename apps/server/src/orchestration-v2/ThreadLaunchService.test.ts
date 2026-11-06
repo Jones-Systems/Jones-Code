@@ -1,3 +1,5 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as ProviderInstances from "../provider/ProviderInstanceRegistry.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
@@ -157,6 +159,8 @@ const claudeAdapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 interface HarnessOptions {
+  readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
+  readonly conversationDriver?: string;
   readonly provenanceLayer?: Layer.Layer<
     WorkspaceProvenance.Provenance,
     never,
@@ -209,10 +213,11 @@ function makeHarness(options: HarnessOptions = {}) {
         : { serverConfigLayer: options.serverConfigLayer }),
     },
   );
+  const layerOrchestratorWithConversation = layerOrchestratorBase.pipe(Layer.provide(options.conversationLayer ?? Layer.empty));
   const layerOrchestrator =
     options.terminalOwner === undefined
-      ? layerOrchestratorBase
-      : layerOrchestratorBase.pipe(Layer.provide(options.terminalOwner));
+      ? layerOrchestratorWithConversation
+      : layerOrchestratorWithConversation.pipe(Layer.provide(options.terminalOwner));
   const layerServerSettings = ServerSettings.layerTest(options.serverSettings);
   const layerReceipts = CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase));
   const layerEvents = EventStore.layer.pipe(Layer.provide(layerDatabase));
@@ -335,6 +340,8 @@ function makeHarness(options: HarnessOptions = {}) {
           }),
         ).pipe(Layer.provide(layerOrchestrator));
   const layerLaunch = ThreadLaunch.layer.pipe(
+    Layer.provide(options.conversationLayer ?? Layer.empty),
+    Layer.provide(Layer.mock(ProviderInstances.ProviderInstanceRegistry)({ getInstance: () => Effect.succeed({ driverKind: options.conversationDriver ?? "codex" } as never) })),
     Layer.provide(options.provenanceLayer?.pipe(Layer.provide(layerDatabase)) ?? Layer.empty),
     Layer.provide(layerLaunchSink),
     Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(layerDatabase))),
@@ -5197,4 +5204,38 @@ it.effect("launch captures provenance from the committed workspace assignment be
       assert.deepEqual(captures, [{ threadId: input.threadId, path: "/repo-worktrees/feature" }]);
     }).pipe(Effect.provide(harness.layer));
   }),
+);
+
+
+it.effect.each(["message", "empty", "eager", "explicit", "unsupported"] as const)(
+  "conversation launch %s selects allocation without idle preparation",
+  (kind) => Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "c9-launch-seam-" });
+    let allocated = 0; let fallback = 0;
+    const bindings = new Map<string, ConversationPolicy.Binding>();
+    const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+      allocate: (input) => Effect.sync(() => {
+        allocated++;
+        const binding: ConversationPolicy.Binding = { threadId: input.threadId, projectId: input.projectId, ownerThreadId: input.threadId, path: cwd, device: "fixture", inode: "fixture", state: "conversation", commonDirectory: "/objects", commit: "a".repeat(40), baseRef: "main" };
+        bindings.set(input.threadId, binding); return binding;
+      }),
+      lookup: (threadId) => Effect.succeed(bindings.get(threadId) ?? null),
+      fallback: () => Effect.sync(() => { fallback++; }),
+    });
+    const harness = makeHarness({ conversationLayer, ...(kind === "eager" ? { serverSettings: { worktreeAllocation: "eager" } } : {}), ...(kind === "unsupported" ? { conversationDriver: "cursor" } : {}) });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const result = yield* launches.launch(launchInput({ command: `command:c9:${kind}`, thread: `thread:c9:${kind}`, workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" }, ...(kind === "empty" ? {} : { message: "Inspect the source." }) }));
+      const isConversation = kind === "empty" || kind === "message";
+      assert.equal(allocated, isConversation ? 1 : 0);
+      assert.equal(fallback, kind === "eager" || kind === "unsupported" ? 1 : 0);
+      assert.equal(harness.createWorktree.mock.calls.length, kind === "eager" || kind === "unsupported" ? 1 : 0);
+      if (isConversation) {
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+        const sql = yield* SqlClient.SqlClient;
+        assert.lengthOf(yield* sql`SELECT 1 FROM jones_idle_worktree_admission WHERE thread_id=${result.threadId}`, 0);
+      }
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

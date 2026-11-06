@@ -1,3 +1,4 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as NativeSetup from "./NativeSetupControl.ts";
 import {
   LegacyOwnedTerminalControl,
@@ -1633,8 +1634,10 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       input: Input,
     ): Effect.fn.Return<
       Input,
-      TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError
+      TerminalProviderInstanceNotFoundError | TerminalProviderEnvironmentError | TerminalCwdStatError
     > {
+      const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+      if (Option.isSome(conversations)) yield* conversations.value.assertAttached(input.threadId).pipe(Effect.mapError((cause) => new TerminalCwdStatError({ cwd: input.cwd ?? "", cause })));
       if (input.providerInstanceId === undefined) return input;
       const resolver = options.resolveProviderInstanceEnvironment;
       if (resolver === undefined) {

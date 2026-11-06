@@ -1,3 +1,5 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
+import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import {
@@ -109,6 +111,7 @@ import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimi
 import * as ThreadManagement from "./ThreadManagementService.ts";
 
 export type ThreadLaunchWorkspaceStrategy =
+  | { readonly type: "auto"; readonly branch?: string; readonly baseRef?: string }
   | { readonly type: "root"; readonly branch?: string | undefined }
   | {
       readonly type: "existing_worktree";
@@ -307,6 +310,8 @@ function failureDetail(error: unknown): string {
 
 const make = Effect.gen(function* () {
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
+  const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+  const conversationProviders = yield* Effect.serviceOption(ProviderInstanceRegistry.ProviderInstanceRegistry);
   const nativeBootstrapContext = yield* Effect.context<never>();
   const nativeBootstrapConfig = yield* Effect.serviceOption(ServerConfig.ServerConfig);
   const nativeBootstrapPath = yield* Effect.serviceOption(Path.Path);
@@ -1500,7 +1505,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.mapError(mapError(input, "update-thread", threadId)));
       }
       workspaceRecorded = true;
-      yield* captureProvenance({
+      if (input.workspaceStrategy.type !== "auto") yield* captureProvenance({
         threadId,
         reason: input.workspaceStrategy.type === "worktree" ? "launch" : "reference",
         createdBy: "system",
@@ -1630,7 +1635,7 @@ const make = Effect.gen(function* () {
           .issueSetup(input.idleWorktreeAdmission)
           .pipe(Effect.mapError(mapError(input, "run-setup-script", threadId)));
       const setup = yield* (
-        input.runSetupScript === false
+        input.runSetupScript === false || input.workspaceStrategy.type === "auto"
           ? Effect.succeed({ status: "no-script" as const })
           : setupScripts.runForThread({
               threadId,
@@ -2598,9 +2603,20 @@ const make = Effect.gen(function* () {
           yield* validateReusableThread(input, candidateThreadId);
         }
 
+        let selectedStrategy = input.workspaceStrategy;
+        let conversationLaunch = false;
+        let fallbackDriver: string | undefined;
+        if (selectedStrategy.type === "auto") {
+          const allocationSettings = resolveProjectSettings(yield* serverSettings.getSettings, input.projectId, project).settings;
+          const instance = Option.isSome(conversationProviders) ? yield* conversationProviders.value.getInstance(input.modelSelection.instanceId) : undefined;
+          const driver = instance?.driverKind ?? "unavailable";
+          conversationLaunch = allocationSettings.worktreeAllocation !== "eager" && Option.isSome(conversations) && (driver === "codex" || driver === "claudeAgent");
+          if (!conversationLaunch) fallbackDriver = driver;
+          selectedStrategy = conversationLaunch ? selectedStrategy : { ...selectedStrategy, type: "worktree" };
+        }
         const workspaceStrategy: ThreadLaunchWorkspaceStrategy =
           input.legacyBootstrap === undefined &&
-          input.workspaceStrategy.type === "root" &&
+          selectedStrategy.type === "root" &&
           Option.isNone(launchReceipt)
             ? Option.match(
                 yield* managedFolders
@@ -2611,11 +2627,11 @@ const make = Effect.gen(function* () {
                   })
                   .pipe(Effect.mapError(mapError(input, "provision-worktree", candidateThreadId))),
                 {
-                  onNone: () => input.workspaceStrategy,
+                  onNone: () => selectedStrategy,
                   onSome: (worktreePath) => ({ type: "existing_worktree", worktreePath }),
                 },
               )
-            : input.workspaceStrategy;
+            : selectedStrategy;
         const initialBranch = workspaceStrategy.branch ?? null;
         const initialWorktreePath =
           workspaceStrategy.type === "existing_worktree" ? workspaceStrategy.worktreePath : null;
@@ -2696,6 +2712,13 @@ const make = Effect.gen(function* () {
             .threadId ?? candidateThreadId;
         if (project.id !== input.projectId) {
           return yield* mapError(input, "resolve-project", threadId)("Project identity changed.");
+        }
+        if (Option.isSome(conversations)) {
+          if (conversationLaunch) {
+            yield* conversations.value.allocate({ threadId, projectId: input.projectId, projectRoot: project.workspaceRoot, ...(workspaceStrategy.type === "auto" && workspaceStrategy.baseRef !== undefined ? { baseRef: workspaceStrategy.baseRef } : {}) }).pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          } else if (fallbackDriver !== undefined) {
+            yield* conversations.value.fallback(threadId, fallbackDriver, "eager: setting or adapter proof unavailable").pipe(Effect.mapError(mapError(input, "provision-worktree", threadId)));
+          }
         }
         const idleRecord =
           idleWorktrees === undefined

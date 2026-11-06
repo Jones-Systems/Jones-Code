@@ -1,3 +1,4 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import {
   ProviderAdapterEventStreamError,
   type ProviderAdapterV2Event,
@@ -502,6 +503,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
 
 function layerTest(input: {
   readonly state: Ref.Ref<TestProviderRuntimeState>;
+  readonly conversationLayer?: Layer.Layer<ConversationPolicy.ConversationPolicy>;
   readonly idleTimeoutMs: number;
   readonly maxIdlePinMs?: number;
   readonly failEventStream?: boolean;
@@ -672,6 +674,7 @@ function layerTest(input: {
       idleTimeoutMs: input.idleTimeoutMs,
       ...(input.maxIdlePinMs === undefined ? {} : { maxIdlePinMs: input.maxIdlePinMs }),
     }).pipe(
+      Layer.provide(input.conversationLayer ?? Layer.empty),
       Layer.provide(
         Layer.mergeAll(
           layerRegistry.pipe(Layer.provideMerge(McpProviderSessions.layer)),
@@ -7234,4 +7237,33 @@ it.effect(
         ),
       );
     }),
+);
+
+
+it.effect.each(["conversation", "absent", "mismatched", "attached", "disposed", "conversation_dir_nonempty", "attachment-drift"] as const)(
+  "rechecks the exact %s conversation assignment before provider open",
+  (kind) => Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped();
+    const state = yield* Ref.make(emptyState);
+    const threadId = ThreadId.make(`thread-c9-${kind}`);
+    const binding = { threadId, projectId: "test", ownerThreadId: threadId, path: kind === "mismatched" ? `${cwd}/other` : cwd, device: "fixture", inode: "fixture", commonDirectory: "/objects", commit: "a".repeat(40), baseRef: "main", state: kind === "attached" || kind === "disposed" || kind === "conversation_dir_nonempty" ? kind : "conversation" } as const;
+    let reads = 0;
+    const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+      ownsPath: () => true,
+      lookup: () => Effect.sync(() => { reads++; return kind === "absent" ? null : binding; }),
+      acceptsCwd: (id, requested) => Effect.sync(() => { reads++; return id === binding.threadId && binding.state === "conversation" && requested === binding.path && kind !== "attachment-drift"; }),
+    });
+    yield* Effect.gen(function* () {
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const sink = yield* EventSink.EventSinkV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      yield* sink.write({ events: [yield* makeThreadCreatedEvent({ idAllocator: ids, threadId, now: yield* DateTime.now })] });
+      const session = yield* ids.allocate.providerSession({ providerInstanceId: modelSelection.instanceId, threadId });
+      const result = yield* manager.open({ threadId, providerSessionId: session, modelSelection, runtimePolicy: { ...runtimePolicy, cwd } }).pipe(Effect.result);
+      if (kind === "conversation") assert.equal(result._tag, "Success");
+      else { assert.equal(result._tag, "Failure"); assert.equal((yield* Ref.get(state)).openCount, 0); }
+      assert.isAbove(reads, 0);
+    }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, conversationLayer })));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );

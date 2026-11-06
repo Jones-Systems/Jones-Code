@@ -168,6 +168,7 @@ interface StartThreadBootstrap {
     readonly branch?: string;
     readonly startFromOrigin?: boolean;
   };
+  readonly conversation?: boolean;
   readonly runSetupScript?: boolean;
 }
 
@@ -729,7 +730,9 @@ export const prepareThreadTurn = Effect.fn("EnvironmentCommands.prepareThreadTur
       bootstrap === undefined ? yield* getProjection(input.threadId) : null;
     const thread = bootstrap ?? existingProjection!.thread;
     const workspaceStrategy =
-      prepareWorktree !== undefined
+      input.bootstrap?.conversation === true
+        ? { type: "auto" as const }
+        : prepareWorktree !== undefined
         ? {
             type: "worktree" as const,
             ...(prepareWorktree.baseBranch === undefined

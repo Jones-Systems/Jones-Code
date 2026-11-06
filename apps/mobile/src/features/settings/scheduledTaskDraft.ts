@@ -265,7 +265,7 @@ export function editDraft(task: ScheduledTask): ScheduledTaskDraft {
     modelSelection: task.modelSelection,
     modelSelectionIsExplicit: true,
     schedule: scheduleDraftForTask(task),
-    workspace: task.workspaceStrategy.type,
+    workspace: task.workspaceStrategy.type === "auto" ? "worktree" : task.workspaceStrategy.type,
     baseRef:
       task.workspaceStrategy.type === "worktree" ? (task.workspaceStrategy.baseRef ?? "") : "main",
     checkoutPath:

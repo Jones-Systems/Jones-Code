@@ -1,3 +1,4 @@
+import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 import { makeDependencyStore } from "../jones/threadResultDependencies/DependencyStore.ts";
 import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
@@ -318,7 +319,7 @@ function scheduledTaskWorkspaceStrategy(
 ): ScheduledTask["workspaceStrategy"] {
   return boundToThread
     ? { type: "root" }
-    : { type: "worktree", baseRef: "main", startFromOrigin: true };
+    : { type: "auto", baseRef: "main" };
 }
 
 function scheduledTaskSummary(task: ScheduledTask, mayRun: boolean): OrchestratorMcpScheduledTask {
@@ -2415,7 +2416,11 @@ const make = Effect.gen(function* () {
           });
         if (input.isolation === "worktree") {
           const project = yield* requireProject(parent.thread.projectId);
-          const base = yield* gitDriver
+          const conversations = yield* Effect.serviceOption(ConversationPolicy.ConversationPolicy);
+          const conversation = Option.isSome(conversations) ? yield* conversations.value.lookup(parent.thread.id).pipe(Effect.mapError(() => failure("invalid_request", "Unable to read the parent conversation binding."))) : null;
+          const recorded = conversation !== null && conversation.state !== "attached" && Option.isSome(conversations)
+            ? yield* conversations.value.snapshot(parent.thread.id).pipe(Effect.mapError(() => failure("invalid_request", "Unable to read the parent source commit."))) : null;
+          const base = recorded === null ? yield* gitDriver
             .resolveCommit({
               cwd: parent.thread.worktreePath ?? project.workspaceRoot,
               revision: "HEAD",
@@ -2424,7 +2429,7 @@ const make = Effect.gen(function* () {
               Effect.mapError(() =>
                 failure("invalid_request", "Unable to resolve the parent checkout commit."),
               ),
-            );
+            ) : { commitSha: recorded.commit };
           // Launch preparation creates the worktree from the project root, so a
           // parent checkout in another repository (such as a Git folder inside
           // Scratch) would hand it a commit it cannot find.
