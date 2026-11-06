@@ -17,13 +17,16 @@ describe("native fleet publication grant", () => {
       }));
       vi.stubGlobal("window", { desktopBridge: { installPlan, getUpdateState } });
       expect(await readFleetPublicationSource()).toBeUndefined();
-      expect(installPlan).toHaveBeenCalledExactlyOnceWith({ type: "publication" });
+      expect(installPlan).toHaveBeenCalledExactlyOnceWith({
+        type: "publication",
+        acceptOrdinaryRecovery: 1,
+      });
       expect(getUpdateState).not.toHaveBeenCalled();
     },
   );
-  it("relays only a committed native grant", async () => {
+  it.each(["committed", "ordinary-verified"])("relays the native %s grant", async (kind) => {
     vi.stubGlobal("window", {
-      desktopBridge: { installPlan: async () => ({ publication: { kind: "committed", source } }) },
+      desktopBridge: { installPlan: async () => ({ publication: { kind, source } }) },
     });
     expect(await readFleetPublicationSource()).toEqual(source);
   });

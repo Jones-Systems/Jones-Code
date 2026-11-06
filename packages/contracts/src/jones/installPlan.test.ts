@@ -138,6 +138,7 @@ describe("install-plan renderer authority", () => {
     const requests = [
       { type: "read" },
       { type: "publication" },
+      { type: "publication", acceptOrdinaryRecovery: 1 },
       {
         type: "start",
         origin: "update-everything",
@@ -374,6 +375,43 @@ describe("install-plan persisted and native output contracts", () => {
     ).toThrow();
     const closed = { ...bound, gateClosed: { at, reason: "rolled-back" } };
     expect(Schema.decodeUnknownSync(JonesInstallPlanLaptop)(closed)).toEqual(closed);
+  });
+
+  it("roundtrips ordinary recovery separately from warm commits and accepts opt-in publication", () => {
+    const ordinaryRecovery = {
+      transactionId: `manual-${"d".repeat(64)}`,
+      activeGeneration: "d".repeat(64),
+      manifestSha256: "e".repeat(64),
+      receiptSha256: "f".repeat(64),
+    };
+    const observed = { ...state, laptop: { ...state.laptop, ordinaryRecovery } };
+    expect(Schema.decodeSync(JonesInstallPlanState)(observed)).toEqual(observed);
+    expect(
+      Schema.is(JonesInstallPlanState)({
+        ...observed,
+        laptop: {
+          ...observed.laptop,
+          ordinaryRecovery: { ...ordinaryRecovery, transactionId: "warm" },
+        },
+      }),
+    ).toBe(false);
+    expect(
+      Schema.decodeSync(JonesInstallPlanRequest)({
+        type: "publication",
+        acceptOrdinaryRecovery: 1,
+      }),
+    ).toEqual({ type: "publication", acceptOrdinaryRecovery: 1 });
+    const publication = {
+      kind: "ordinary-verified",
+      source: {
+        repository: target.repository,
+        sha: source,
+        tree,
+      },
+    };
+    expect(
+      Schema.decodeUnknownSync(JonesInstallPlanResult)({ state: observed, publication }),
+    ).toEqual({ state: observed, publication });
   });
 
   it("retains host operation leases, Stop/fence correlation, and directive observations", () => {

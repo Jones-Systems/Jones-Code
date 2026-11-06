@@ -100,15 +100,26 @@ function fixture() {
     ),
     validateRecoveryReview: vi.fn(async () => {}),
     laptopEvidence: async () => evidence,
+    retiredLaptopInstall: vi.fn(async () => false),
     isStaged: vi.fn(() => staged),
     download: vi.fn(async () => ({ accepted: true, completed: true })),
     stopDownload: vi.fn(async () => "stopped" as const),
-    install: vi.fn(async () => ({ accepted: true, completed: false, failed: false })),
+    install: vi.fn(
+      async (
+        _handle?: string,
+        _campaign?: string,
+        _plan?: {
+          readonly operationId: string;
+          readonly recovery?: JonesInstallPlanReview["recovery"];
+        },
+      ) => ({ accepted: true, completed: false, failed: false }),
+    ),
   } satisfies Pick<
     JonesDesktopUpdateController,
     | "state"
     | "busy"
     | "laptopEvidence"
+    | "retiredLaptopInstall"
     | "download"
     | "stopDownload"
     | "install"
@@ -201,6 +212,283 @@ function fixture() {
   };
 }
 afterEach(() => vi.restoreAllMocks());
+describe("ordinary recovery proof", () => {
+  const proof = {
+    transactionId: `manual-${transaction}`,
+    activeGeneration: transaction,
+    manifestSha256: "e".repeat(64),
+    receiptSha256: "f".repeat(64),
+  };
+  const recovered = () => {
+    const f = fixture();
+    f.setEvidence({ committedTransactionId: undefined, ordinaryRecovery: proof });
+    return f;
+  };
+
+  it("requires publication opt-in and preserves plan dispositions after Done", async () => {
+    const f = recovered();
+    expect((await f.coordinator.request({ type: "publication" })).publication).toMatchObject({
+      kind: "withheld",
+      code: "unproved",
+    });
+    const publish = () => f.coordinator.request({ type: "publication", acceptOrdinaryRecovery: 1 });
+    expect((await publish()).publication).toMatchObject({
+      kind: "ordinary-verified",
+      source: { sha: source, tree },
+    });
+    const plan = await f.start([]);
+    expect(plan.laptop.gate).toMatchObject({
+      basis: "prior-verified",
+      verificationKind: "ordinary-recovery",
+      ordinaryRecovery: proof,
+    });
+    const dispositions = structuredClone(f.snapshot().dispositions);
+    const dismissed = await f.coordinator.request({
+      type: "dismiss",
+      planId: plan.planId,
+      expectedRevision: plan.revision,
+    });
+    expect(dismissed.refused).toBeUndefined();
+    expect((await publish()).publication).toMatchObject({ kind: "withheld", code: "plan-managed" });
+    expect(f.snapshot().dispositions).toEqual(dispositions);
+    f.setEvidence({
+      activeSource: "9".repeat(40),
+      activeGeneration: "8".repeat(64),
+      ordinaryRecovery: {
+        ...proof,
+        transactionId: `manual-${"8".repeat(64)}`,
+        activeGeneration: "8".repeat(64),
+      },
+    });
+    expect((await publish()).publication).toMatchObject({
+      kind: "ordinary-verified",
+      source: { sha: "9".repeat(40) },
+    });
+    expect(f.snapshot().dispositions).toEqual(dispositions);
+    expect(f.controller.install).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "manifest", "receipt", "generation", "warm-fallback"])(
+    "closes an ordinary gate when its exact proof changes: %s",
+    async (change) => {
+      const f = recovered();
+      await f.start();
+      f.setEvidence(
+        change === "missing" || change === "warm-fallback"
+          ? {
+              ordinaryRecovery: undefined,
+              committedTransactionId: change === "warm-fallback" ? transaction : undefined,
+            }
+          : {
+              ordinaryRecovery: {
+                ...proof,
+                ...(change === "manifest" ? { manifestSha256: "9".repeat(64) } : {}),
+                ...(change === "receipt" ? { receiptSha256: "9".repeat(64) } : {}),
+                ...(change === "generation" ? { activeGeneration: "9".repeat(64) } : {}),
+              },
+            },
+      );
+      const result = await f.coordinator.request({ type: "read" });
+      expect(result.state.current!.laptop.gateClosed?.reason).toBe("changed");
+    },
+  );
+
+  it("does not reinterpret a warm gate as ordinary recovery", async () => {
+    const f = fixture();
+    await f.start();
+    f.setEvidence({ committedTransactionId: undefined, ordinaryRecovery: proof });
+    const result = await f.coordinator.request({ type: "read" });
+    expect(result.state.current!.laptop.gateClosed?.reason).toBe("changed");
+  });
+
+  it("closes a partially persisted ordinary gate instead of falling back", async () => {
+    const f = recovered();
+    await f.start();
+    await f.options.store.transact(async (snapshot) => {
+      const plan = snapshot.document.current!;
+      const { ordinaryRecovery: _proof, ...gate } = plan.laptop.gate!;
+      return {
+        ...snapshot,
+        document: {
+          ...snapshot.document,
+          current: {
+            ...plan,
+            laptop: { ...plan.laptop, gate },
+          },
+        },
+        result: undefined,
+      };
+    });
+    const result = await f.coordinator.request({ type: "read" });
+    expect(result.state.current!.laptop.gateClosed?.reason).toBe("changed");
+  });
+});
+describe("Laptop install recovery", () => {
+  const review: JonesInstallPlanReview = {
+    stagedHandle: "stage",
+    targetSource: source,
+    currentVersion: "old",
+    expectedInstalledSource: old,
+    reviewedAt: timestamp,
+  };
+  const startInstall = async (f: ReturnType<typeof fixture>) => {
+    f.setStaged();
+    f.setEvidence({
+      activeSource: old,
+      activeGeneration: "previous",
+      committedTransactionId: undefined,
+    });
+    return f.coordinator.request({
+      type: "start",
+      origin: "update-button",
+      target,
+      select: [],
+      laptop: { action: "install", review },
+    });
+  };
+  const bind = (f: ReturnType<typeof fixture>, operationId: string) =>
+    f.coordinator.bindLaptopInstall({
+      operationId,
+      stagedHandle: "stage",
+      targetSource: source,
+      targetTree: tree,
+      transactionId: transaction,
+      fromGeneration: "previous",
+    });
+
+  it("records a failed result after binding and permits an explicit reviewed retry", async () => {
+    const f = fixture();
+    f.controller.install.mockImplementationOnce(async (_handle, _campaign, plan) => {
+      await bind(f, plan!.operationId);
+      return { accepted: false, completed: false, failed: true };
+    });
+    const started = await startInstall(f);
+    const operationId = started.state.current!.laptop.operations[0]!.operationId;
+    await vi.waitFor(() =>
+      expect(f.snapshot().document.current?.laptop.operations[0]?.result).toMatchObject({
+        status: "failed",
+        code: "install-failed",
+      }),
+    );
+    const retried = await f.coordinator.request({
+      type: "laptop",
+      planId: started.state.current!.planId,
+      action: "install",
+      review,
+    });
+    expect(retried.refused).toBeUndefined();
+    expect(retried.state.current!.laptop.operations[0]!.operationId).toBe(operationId);
+    expect(retried.state.current!.laptop.operations).toHaveLength(2);
+  });
+
+  it("keeps a failed bound handoff held while native activation is unresolved", async () => {
+    const f = fixture();
+    f.controller.install.mockImplementationOnce(async (_handle, _campaign, plan) => {
+      await bind(f, plan!.operationId);
+      f.setEvidence({ activationBlocked: true });
+      return { accepted: false, completed: false, failed: true };
+    });
+    const started = await startInstall(f);
+    await vi.waitFor(() =>
+      expect(f.snapshot().document.current?.laptop.operations[0]?.result).toMatchObject({
+        status: "held",
+        code: "native-unconfirmed",
+      }),
+    );
+    const retried = await f.coordinator.request({
+      type: "laptop",
+      planId: started.state.current!.planId,
+      action: "install",
+      review,
+    });
+    expect(retried.refused?.code).toBe("outstanding-operation");
+    expect(f.controller.install).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["retired", "external", "blocked", "wrong-source", "wrong-tree", "unverified"])(
+    "reconciles a stale bound install only with proved native evidence: %s",
+    async (scenario) => {
+      const f = fixture();
+      f.controller.state = {
+        ...f.controller.state,
+        jones: { ...f.controller.state.jones!, phase: "staged" },
+      };
+      const started = await startInstall(f);
+      const operationId = started.state.current!.laptop.operations[0]!.operationId;
+      await bind(f, operationId);
+      if (scenario === "retired") f.controller.retiredLaptopInstall.mockResolvedValue(true);
+      if (scenario !== "retired")
+        f.setEvidence({
+          activeSource: scenario === "wrong-source" ? old : source,
+          activeTree: scenario === "wrong-tree" ? old : tree,
+          activeGeneration: "external-generation",
+          committedTransactionId: scenario === "unverified" ? undefined : "external-generation",
+          activationBlocked: scenario === "blocked",
+        });
+      const restored = createInstallPlanCoordinator(f.options);
+      const state = (await restored.request({ type: "read" })).state;
+      const result = state.current!.laptop.operations[0]!.result;
+      if (scenario === "retired" || scenario === "external") {
+        expect(result).toMatchObject({
+          status: "interrupted",
+          code: scenario === "external" ? "target-verified-elsewhere" : "install-not-active",
+        });
+        expect(state.current!.laptop.binding?.transactionId).toBe(transaction);
+        expect(state.current!.laptop.gate?.basis).toBe(
+          scenario === "external" ? "prior-verified" : undefined,
+        );
+      } else {
+        expect(result?.status).toBe("held");
+        expect(state.current!.laptop.gate).toBeUndefined();
+        expect(state.view.complete).toBe(false);
+      }
+      expect(f.controller.install).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("ends the retired A-to-B attempt on receiving C without verifying B, then admits a fresh C plan", async () => {
+    const f = fixture();
+    const started = await startInstall(f);
+    const planId = started.state.current!.planId;
+    const operationId = started.state.current!.laptop.operations[0]!.operationId;
+    await bind(f, operationId);
+    f.controller.retiredLaptopInstall.mockResolvedValue(true);
+    f.setEvidence({ activeSource: source, activeGeneration: "manual-B" });
+    const receivingSource = "9".repeat(40);
+    f.setEvidence({ activeSource: receivingSource, activeGeneration: "receiving-C" });
+    const restored = createInstallPlanCoordinator(f.options);
+    const state = (await restored.request({ type: "read" })).state;
+    expect(state.current!.laptop.operations[0]!.result).toMatchObject({
+      status: "interrupted",
+      code: "install-not-active",
+    });
+    expect(state.current!.laptop.gate).toBeUndefined();
+    expect(state.view.complete).toBe(true);
+    const dismissed = await restored.request({
+      type: "dismiss",
+      planId,
+      expectedRevision: state.current!.revision,
+    });
+    expect(dismissed.refused).toBeUndefined();
+    const next = await restored.request({
+      type: "start",
+      origin: "update-button",
+      target: { ...target, sourceSha: receivingSource },
+      select: [],
+      laptop: {
+        action: "install",
+        review: {
+          ...review,
+          targetSource: receivingSource,
+          expectedInstalledSource: receivingSource,
+        },
+      },
+    });
+    expect(next.refused).toBeUndefined();
+    expect(next.state.current!.target.sourceSha).toBe(receivingSource);
+    expect(next.state.last!.laptop.operations[0]!.operationId).toBe(operationId);
+  });
+});
 describe("native client command reservations", () => {
   it("reconciles a lost Laptop handoff across coordinator recreation, refuses changed-body reuse and never starts twice", async () => {
     const f = fixture();

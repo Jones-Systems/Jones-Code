@@ -176,6 +176,13 @@ export const JonesInstallPlanLaptopOperation = Schema.Struct({
 });
 export type JonesInstallPlanLaptopOperation = typeof JonesInstallPlanLaptopOperation.Type;
 
+const OrdinaryRecovery = Schema.Struct({
+  transactionId: Schema.String.check(Schema.isPattern(/^manual-[a-f0-9]{64}$/)),
+  activeGeneration: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  manifestSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+  receiptSha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+});
+
 export const JonesInstallPlanLaptop = Schema.Struct({
   environmentId: EnvironmentId,
   operations: Schema.Array(JonesInstallPlanLaptopOperation).check(Schema.isMaxLength(16)),
@@ -195,6 +202,8 @@ export const JonesInstallPlanLaptop = Schema.Struct({
     Schema.Struct({
       openedAt: Schema.String,
       basis: Schema.Literals(["plan-install", "prior-verified"]),
+      verificationKind: Schema.optionalKey(Schema.Literal("ordinary-recovery")),
+      ordinaryRecovery: Schema.optionalKey(OrdinaryRecovery),
       transactionId: TrimmedNonEmptyString,
       activeGeneration: TrimmedNonEmptyString,
       activeSource: JonesSourceSha,
@@ -236,6 +245,7 @@ export const JonesInstallPlanLaptopEvidence = Schema.Struct({
   activeSource: Schema.optionalKey(JonesSourceSha),
   activeTree: Schema.optionalKey(JonesSourceSha),
   committedTransactionId: Schema.optionalKey(TrimmedNonEmptyString), // validated resumed journal of the active generation
+  ordinaryRecovery: Schema.optionalKey(OrdinaryRecovery),
   activationBlocked: Schema.Boolean,
 });
 export type JonesInstallPlanLaptopEvidence = typeof JonesInstallPlanLaptopEvidence.Type;
@@ -264,7 +274,10 @@ const Evidence = Schema.Union([
 ]);
 export const JonesInstallPlanRequest = Schema.Union([
   Schema.Struct({ type: Schema.Literal("read"), commandId: Schema.optionalKey(JonesOperationId) }),
-  Schema.Struct({ type: Schema.Literal("publication") }),
+  Schema.Struct({
+    type: Schema.Literal("publication"),
+    acceptOrdinaryRecovery: Schema.optionalKey(Schema.Literal(1)),
+  }),
   Schema.Struct({ type: Schema.Literal("recovery-preflight"), input: JonesRecoveryPreflightInput }),
   Schema.Struct({
     type: Schema.Literal("start"),
@@ -388,6 +401,14 @@ export const JonesInstallPlanResult = Schema.Struct({
     Schema.Union([
       Schema.Struct({
         kind: Schema.Literal("committed"),
+        source: Schema.Struct({
+          repository: Schema.Literal("Jones-Systems/Jones-Code"),
+          sha: JonesSourceSha,
+          tree: JonesSourceSha,
+        }),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("ordinary-verified"),
         source: Schema.Struct({
           repository: Schema.Literal("Jones-Systems/Jones-Code"),
           sha: JonesSourceSha,

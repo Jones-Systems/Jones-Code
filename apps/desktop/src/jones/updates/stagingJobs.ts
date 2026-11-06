@@ -76,9 +76,15 @@ export async function prepareJonesStage(
     candidate,
     roots.artifacts,
   );
-  await hooks.admit?.();
-  await hooks.onVerifying?.();
-  const app = await (hooks.stageApp ?? stageJonesMacApp)(artifact, roots.apps, platform);
+  const app = await (hooks.stageApp ?? stageJonesMacApp)(
+    artifact,
+    roots.apps,
+    platform,
+    async () => {
+      await hooks.admit?.();
+      await hooks.onVerifying?.();
+    },
+  );
   return { artifact, app };
 }
 
