@@ -143,7 +143,9 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       );
       const discoveryAttempt = attempts.find((attempt) => attempt.stage === "initial-discovery");
       const titleAttempt = attempts.find((attempt) => attempt.stage === "title");
-      const cause = OpenCodeRuntime.isOpenCodeRuntimeError(failure.cause) ? failure.cause : undefined;
+      const cause = OpenCodeRuntime.isOpenCodeRuntimeError(failure.cause)
+        ? failure.cause
+        : undefined;
       const receipt = {
         operations,
         connectCount,
