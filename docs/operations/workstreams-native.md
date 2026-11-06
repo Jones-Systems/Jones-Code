@@ -63,6 +63,15 @@ prove absence. Open operations and external reservations must be reconciled at
 their original destination; never retarget them or dispatch settlement blindly.
 Retained terminal records have no automatic deletion path.
 
+Qualified member forwarding also accepts raw linked-PR refresh commands. The home
+uses its configured GitHub observer for the reference's original source and
+locator; it does not relay the request through another source. Missing GitHub
+access leaves the accepted intent pending without a provider fallback. Recovery
+uses an encrypted retained observation before another idempotent PR read, and
+fresh caller, session, grant and source-binding checks precede atomic receipt and
+parent completion. A PR observation does not declare workstream completion.
+Raw supplied-proof forwarding remains unsupported.
+
 The placement POST retains its existing body. Omit the placement contract header
 for v1. The exact header
 `x-t3-workstreams-placement-contract: workstreams-t3-placement/2.0.0` requests

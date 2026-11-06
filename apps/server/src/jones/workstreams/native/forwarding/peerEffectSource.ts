@@ -20,7 +20,8 @@ import * as Pins from "../runtime/peerSessionPins.ts";
 import * as Initial from "./peerEffectAdmission.ts";
 import { RegistryError } from "../registry/session.ts";
 import { validateAttestation } from "../providers/localAttestation.ts";
-import { nativeSettlementResult } from "../domain/externalIntents.ts";
+import { matchingPrCache, nativeSettlementResult } from "../domain/externalIntents.ts";
+import * as GitHub from "../providers/githubPrObserver.ts";
 
 const decodeEnvironment = Schema.decodeUnknownEffect(Wire.EnvironmentId);
 const decodeParent = Schema.decodeUnknownEffect(
@@ -58,10 +59,17 @@ export interface PreparedPeerSource {
   readonly ceiling: Ceiling;
 }
 declare const resultBrand: unique symbol;
-export interface AuthenticatedPeerResult {
-  readonly [resultBrand]: true;
-  readonly response: Carrier.WorkstreamsRetainedSourceEffectResultV1;
-}
+export type AuthenticatedPeerResult =
+  | {
+      readonly [resultBrand]: true;
+      readonly kind: "source";
+      readonly response: Carrier.WorkstreamsRetainedSourceEffectResultV1;
+    }
+  | {
+      readonly [resultBrand]: true;
+      readonly kind: "github";
+      readonly observation: GitHub.LinkedPrObservationResult;
+    };
 export type PeerSourceLookup =
   | { readonly kind: "retained"; readonly evidence: AuthenticatedPeerResult }
   | {
@@ -119,7 +127,7 @@ export const checkPeerSourceOrigin = Effect.fn("PeerEffectSource.checkOrigin")(f
   const f = facts.get(proof)!;
   if (f.origin !== origin || f.receiving !== receiving) return yield* refused();
 });
-/** Only fixed attest/settle_lookup calls; this API has no dispatch operation or arbitrary request input. */
+/** Fixed attest/settle_lookup or configured PR reads; no mutation dispatch or arbitrary request input. */
 export const lookupPeerSourceEffect = Effect.fn("PeerEffectSource.lookup")(function* (
   proof: PreparedPeerSource,
 ) {
@@ -157,6 +165,7 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const peer = yield* Peer.PeerMcpClient;
     const links = yield* Links.PeerLinks;
+    const github = yield* Effect.serviceOption(GitHub.LinkedPrObserver);
     return PeerEffectSource.of({
       withReadmission: Effect.fn("PeerEffectSource.withReadmission")(function* <A, E, R>(
         origin: Origin.ValidatedPeerReservation,
@@ -189,6 +198,23 @@ export const layer = Layer.effect(
               .currentGeneration(environmentId)
               .pipe(Effect.mapError(() => refused("unavailable")));
             if (Option.isNone(current) || current.value !== generation) return yield* refused();
+            if (origin.intent.kind === "refresh_linked_pr") {
+              const binding = origin.intent.source_binding;
+              const currentBinding = yield* sql<typeof binding>`SELECT provider,source_instance_id,
+                authority_namespace,store_generation,state FROM jones_workstreams_source_bindings
+                WHERE registry_instance_id=${identity.expected_home.registry_instance_id}
+                  AND owner_id=${identity.expected_home.owner_id}
+                  AND source_instance_id=${binding.source_instance_id}
+                ORDER BY binding_version DESC LIMIT 1`.pipe(
+                Effect.mapError(() => refused("unavailable")),
+              );
+              if (
+                binding.state !== "active" ||
+                currentBinding.length !== 1 ||
+                !same(currentBinding[0], binding)
+              )
+                return yield* refused();
+            }
           });
           yield* checkLocal();
           const request: Parent.WorkstreamsSourceParentReadmissionRequestV3 = {
@@ -235,6 +261,40 @@ export const layer = Layer.effect(
             yield* Origin.checkOriginSnapshot(origin).pipe(Effect.mapError(() => refused()));
             const intent = origin.intent;
             const reference = intent.reference;
+            if (intent.kind === "refresh_linked_pr") {
+              if (
+                intent.command.action.operation !== "refresh_linked_pr" ||
+                reference.identity.provider !== "github" ||
+                reference.identity.resource_kind !== "pull_request" ||
+                reference.pr_locator === null
+              )
+                return yield* refused("provider_mismatch");
+              if (Option.isNone(github)) return yield* refused("provider_unconfigured");
+              const cache = matchingPrCache(
+                intent.previous_observation,
+                reference,
+                intent.authorization.server_generation,
+                intent.source_binding,
+              );
+              if (ticket) yield* Initial.claimInitialPeerTicket(ticket, origin);
+              const observation = yield* github.value
+                .observe({
+                  source_instance_id: reference.identity.source_instance_id,
+                  locator: reference.pr_locator,
+                  previous_success: intent.previous_observation?.last_success ?? null,
+                  etag: cache?.etag ?? null,
+                })
+                .pipe(Effect.mapError((cause) => new RegistryError({ code: cause.code, cause })));
+              // A completed idempotent provider read is retained under its original owner even
+              // when permission changes during the read. Projection still needs fresh admission.
+              yield* Origin.checkOriginSnapshot(origin).pipe(Effect.mapError(() => refused()));
+              const evidence = Object.freeze({
+                kind: "github",
+                observation: deepFreeze(structuredClone(observation)),
+              }) as AuthenticatedPeerResult;
+              resultFacts.set(evidence, { source: proof, origin });
+              return { kind: "retained" as const, evidence };
+            }
             const authority = identity.source_authority;
             if (
               reference.identity.provider !== "t3" ||
@@ -335,6 +395,7 @@ export const layer = Layer.effect(
               // The authenticated original transport may finish after receiver/source permission changes.
               // Retain successful evidence under the actual owner; completion must freshly readmit.
               const evidence = Object.freeze({
+                kind: "source",
                 response: deepFreeze(structuredClone(checked)),
               }) as AuthenticatedPeerResult;
               resultFacts.set(evidence, { source: proof, origin });

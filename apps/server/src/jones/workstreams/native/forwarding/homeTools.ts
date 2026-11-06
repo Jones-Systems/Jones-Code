@@ -183,7 +183,8 @@ const make = Effect.gen(function* () {
           : null;
       const external =
         command?.action.operation === "verify_reference" ||
-        command?.action.operation === "request_native_t3_settlement";
+        command?.action.operation === "request_native_t3_settlement" ||
+        command?.action.operation === "refresh_linked_pr";
       if (external) {
         if (Option.isNone(initial))
           return yield* new Session.RegistryError({ code: "peer_recovery_unmounted" });

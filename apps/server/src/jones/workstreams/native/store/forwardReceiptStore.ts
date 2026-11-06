@@ -232,11 +232,12 @@ export const layer = Layer.effect(
               const command = yield* decodeCommandBody(request.request.body, {
                 onExcessProperty: "error",
               }).pipe(Effect.mapError(() => new RegistryError({ code: "invalid_request" })));
-              if (command.action.operation === "refresh_linked_pr" || request.request.evidence)
+              if (request.request.evidence)
                 return yield* new RegistryError({ code: "peer_recovery_unmounted" });
               const external =
                 command.action.operation === "verify_reference" ||
-                command.action.operation === "request_native_t3_settlement";
+                command.action.operation === "request_native_t3_settlement" ||
+                command.action.operation === "refresh_linked_pr";
               if (external) yield* PeerAdmission.assertPeerEffectAcceptance();
               const snapshot = yield* registry.snapshot(admission.caller, "workstreams:write");
               const action = command.action;

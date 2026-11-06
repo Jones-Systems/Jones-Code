@@ -62,6 +62,9 @@ interface Control {
   beforeReply?: (call: Call) => Effect.Effect<void>;
   relinkAtResolve: boolean;
   status: number;
+  githubCalls: GitHub.GitHubPrHttpRequest[];
+  githubStatus: number;
+  beforeGitHub?: () => Effect.Effect<void>;
 }
 const encodeAttestationRequest = Schema.encodeSync(
   Schema.fromJsonString(Wire.WorkstreamsNativeAttestationRequest),
@@ -77,7 +80,7 @@ const providerUnknown = (request: CarrierRequest) => ({
     reason: "attempt_not_found",
   },
 });
-const harness = () => {
+const harness = (githubSource: string | null = "github:test") => {
   const control: Control = {
     calls: [],
     methods: [],
@@ -85,6 +88,8 @@ const harness = () => {
     result: providerUnknown,
     relinkAtResolve: false,
     status: 200,
+    githubCalls: [],
+    githubStatus: 200,
   };
   const http = Layer.effect(
     HttpClient.HttpClient,
@@ -168,7 +173,60 @@ const harness = () => {
       });
     }),
   ).pipe(Layer.provide(Links.layer), Layer.provide(Layer.mock(Environment.ServerEnvironment)({})));
+  const github =
+    githubSource === null
+      ? GitHub.unconfiguredLayer
+      : GitHub.layer.pipe(
+          Layer.provide(
+            Layer.merge(
+              Layer.succeed(GitHub.GitHubPrAccess, {
+                source_instance_id: githubSource,
+                authorization_header: "Bearer synthetic-github-credential",
+                user_agent: "native-peer-pr-test",
+              }),
+              Layer.effect(
+                GitHub.GitHubPrTransport,
+                Effect.gen(function* () {
+                  const sql = yield* SqlClient.SqlClient;
+                  return GitHub.GitHubPrTransport.of({
+                    get: (request) =>
+                      Effect.gen(function* () {
+                        expect(
+                          Option.isNone(yield* Effect.serviceOption(sql.transactionService)),
+                        ).toBe(true);
+                        expect(request.url).toBe(
+                          "https://api.github.com/repos/jones/example/pulls/7",
+                        );
+                        expect(request.redirect).toBe("error");
+                        expect(request.headers.authorization).toBe(
+                          "Bearer synthetic-github-credential",
+                        );
+                        control.githubCalls.push(request);
+                        if (control.beforeGitHub) yield* control.beforeGitHub();
+                        return {
+                          status: control.githubStatus,
+                          headers: { etag: '"synthetic-peer-pr"' },
+                          body: new TextEncoder().encode(
+                            JSON.stringify({
+                              number: 7,
+                              state: "open",
+                              draft: false,
+                              merged: false,
+                              merged_at: null,
+                              updated_at: "2026-01-01T00:00:00.000Z",
+                              base: { repo: { full_name: "jones/example" } },
+                            }),
+                          ),
+                        };
+                      }),
+                  });
+                }),
+              ),
+            ),
+          ),
+        );
   const layer = Layer.mergeAll(Source.layer, Qualification.layer).pipe(
+    Layer.provideMerge(github),
     Layer.provideMerge(Peer.layer.pipe(Layer.provideMerge(links), Layer.provideMerge(http))),
   );
   return { control, layer };
@@ -226,35 +284,37 @@ const withHome = <A, E, R>(
             }
           : f.intent.reference.registration,
     };
-    yield* f.registry.put(
-      Fixture.scope,
-      "references",
-      {
-        metadata: {
-          native_reference_id: reference.native_reference_id,
-          provider: "t3",
-          resource_kind: "thread",
-          id_kind: "internal",
-          identity_index: yield* (yield* Index.WorkstreamsIdentityIndex).digest(
-            Fixture.scope,
-            reference.identity,
-          ),
-          legacy_identity_sha256: null,
-          attestation_version: reference.registration.attestation_version,
-          registration_state: reference.registration.state,
-          created_by_principal: "principal:test",
-          routing_source_instance_id: reference.registration.evidence?.source_instance_id ?? null,
-          routing_native_id: reference.registration.evidence?.native_id ?? null,
-          routing_authority_namespace: reference.registration.evidence?.authority_namespace ?? null,
-          routing_store_generation: reference.registration.evidence?.store_generation ?? null,
-          routing_attested_at: reference.registration.attested_at,
-          routing_expires_at: reference.registration.expires_at,
-          routing_evidence_sha256: reference.registration.evidence?.evidence_sha256 ?? null,
+    if (f.intent.kind !== "refresh_linked_pr")
+      yield* f.registry.put(
+        Fixture.scope,
+        "references",
+        {
+          metadata: {
+            native_reference_id: reference.native_reference_id,
+            provider: "t3",
+            resource_kind: "thread",
+            id_kind: "internal",
+            identity_index: yield* (yield* Index.WorkstreamsIdentityIndex).digest(
+              Fixture.scope,
+              reference.identity,
+            ),
+            legacy_identity_sha256: null,
+            attestation_version: reference.registration.attestation_version,
+            registration_state: reference.registration.state,
+            created_by_principal: "principal:test",
+            routing_source_instance_id: reference.registration.evidence?.source_instance_id ?? null,
+            routing_native_id: reference.registration.evidence?.native_id ?? null,
+            routing_authority_namespace:
+              reference.registration.evidence?.authority_namespace ?? null,
+            routing_store_generation: reference.registration.evidence?.store_generation ?? null,
+            routing_attested_at: reference.registration.attested_at,
+            routing_expires_at: reference.registration.expires_at,
+            routing_evidence_sha256: reference.registration.evidence?.evidence_sha256 ?? null,
+          },
+          value: reference,
         },
-        value: reference,
-      },
-      null,
-    );
+        null,
+      );
     // HOME-only ports refuse. PEER uses actual authentication, owner, SQL, crypto and transport.
     const local = Layer.succeed(
       Session.Session,
@@ -266,7 +326,6 @@ const withHome = <A, E, R>(
       Layer.mock(Recorded.RecordedCallers)({}),
       Layer.mock(Resolver.ReferenceResolver)({}),
       Layer.mock(Settlement.SourceSettlement)({}),
-      Layer.mock(GitHub.LinkedPrObserver)({}),
       Registry.layer.pipe(Layer.provide(local)),
     );
     const peer = Recovery.layer.pipe(Layer.provideMerge(h.layer));
@@ -809,4 +868,125 @@ it.effect(
       null,
       { accepted: false },
     ),
+);
+
+it.effect(
+  "genuine PEER PR refresh uses the configured GitHub source and atomically completes without an extra relay",
+  () => {
+    const h = harness();
+    return Fixture.withFixture(
+      (f) =>
+        withHome(f, h, (tools) =>
+          Effect.gen(function* () {
+            h.control.beforeGitHub = () =>
+              Effect.gen(function* () {
+                expect(yield* rows(f)).toMatchObject({
+                  parent: [{ state: "accepted", result_envelope: null }],
+                  receipt: [{ state: "pending" }],
+                  effects: [{ state: "active" }],
+                });
+              }).pipe(Effect.orDie);
+            const result = yield* tools.forward(f.forward, f.invocation);
+            expect(result).toMatchObject({
+              kind: "command",
+              result: {
+                command_id: f.command.command_id,
+                request_sha256: hash(f.forward.request.body),
+                state: "committed",
+                effects: {
+                  observation: {
+                    native_reference_id: "ref:test",
+                    observation_version: 1,
+                    outcome: "observed",
+                    last_success: { state: "open", draft: false },
+                    command_id: f.command.command_id,
+                  },
+                },
+              },
+              home: {
+                incoming_peer_pin_id: f.pin.pin_id,
+                incoming_peer_pin_revision: f.pin.revision,
+              },
+            });
+            expect(yield* rows(f)).toMatchObject({
+              parent: [{ state: "completed" }],
+              receipt: [{ state: "committed" }],
+              effects: [{ state: "released" }],
+            });
+            expect(yield* tools.forward(f.forward, f.invocation)).toEqual(result);
+            expect(h.control.githubCalls).toHaveLength(1);
+            expect(carriers(h)).toEqual([]);
+            expect(
+              h.control.calls.every((call) => call.name === "jones_workstreams_source_readmission"),
+            ).toBe(true);
+            expect(f.identity.source_authority.environment_id).toBe("source:test");
+            expect(f.intent.source_binding.source_instance_id).toBe("github:test");
+            expect(yield* f.sql`SELECT * FROM jones_workstreams_pr_observations`).toHaveLength(1);
+          }),
+        ),
+      "refresh_linked_pr",
+      null,
+      { accepted: false },
+    );
+  },
+);
+
+it.effect(
+  "initial PEER PR success is retained but an identical replacement registration cannot complete its old invocation",
+  () => {
+    const h = harness();
+    return Fixture.withFixture(
+      (f) =>
+        withHome(f, h, (tools) =>
+          Effect.gen(function* () {
+            h.control.beforeGitHub = () =>
+              f.authenticateOriginal().pipe(Effect.asVoid, Effect.orDie);
+            expect((yield* tools.forward(f.forward, f.invocation).pipe(Effect.result))._tag).toBe(
+              "Failure",
+            );
+            expect(h.control.githubCalls).toHaveLength(1);
+            expect(yield* f.effects.result(Fixture.scope, f.command.command_id)).toMatchObject({
+              observation: { outcome: "observed", command_id: f.command.command_id },
+            });
+            expect(yield* rows(f)).toMatchObject({
+              parent: [{ state: "accepted", result_envelope: null }],
+              receipt: [{ state: "pending" }],
+              effects: [{ state: "active" }],
+            });
+            expect(yield* f.sql`SELECT * FROM jones_workstreams_pr_observations`).toHaveLength(0);
+          }),
+        ),
+      "refresh_linked_pr",
+      null,
+      { accepted: false },
+    );
+  },
+);
+
+it.effect(
+  "initial PEER PR refresh with no configured GitHub access preserves accepted intent without provider fallback",
+  () => {
+    const h = harness(null);
+    return Fixture.withFixture(
+      (f) =>
+        withHome(f, h, (tools) =>
+          Effect.gen(function* () {
+            expect((yield* tools.forward(f.forward, f.invocation).pipe(Effect.result))._tag).toBe(
+              "Failure",
+            );
+            expect(h.control.githubCalls).toHaveLength(0);
+            expect(carriers(h)).toEqual([]);
+            expect(yield* f.effects.result(Fixture.scope, f.command.command_id)).toBeNull();
+            expect(yield* rows(f)).toMatchObject({
+              parent: [{ state: "accepted", result_envelope: null }],
+              receipt: [{ state: "pending" }],
+              effects: [{ state: "active" }],
+            });
+          }),
+        ),
+      "refresh_linked_pr",
+      null,
+      { accepted: false },
+    );
+  },
 );

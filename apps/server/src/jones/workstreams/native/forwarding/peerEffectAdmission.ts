@@ -89,7 +89,9 @@ export const wrapPeerEffectIfAdmitted = Effect.fn("PeerEffectAdmission.wrap")(fu
     request.identity.request_sha256 !== intent.request_sha256 ||
     hash(body) !== intent.request_sha256 ||
     intent.actor.principal_id !== request.identity.principal_id ||
-    (intent.kind !== "verify_reference" && intent.kind !== "native_t3_settlement")
+    (intent.kind !== "verify_reference" &&
+      intent.kind !== "native_t3_settlement" &&
+      intent.kind !== "refresh_linked_pr")
   )
     return yield* refused();
   return yield* Envelope.wrapPeerEffectIntent(

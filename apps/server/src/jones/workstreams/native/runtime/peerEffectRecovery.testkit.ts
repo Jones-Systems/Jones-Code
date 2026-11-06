@@ -31,6 +31,7 @@ import pinsMigration from "../../../persistence/Migrations/128_JonesWorkstreamsP
 import parentMigration from "../../../persistence/Migrations/130_JonesWorkstreamsForwardReceipts.ts";
 import { NativeHome } from "../mode/authorityMode.ts";
 import * as Db from "../store/sql.ts";
+import * as Index from "../crypto/identityIndex.ts";
 import * as Store from "../store/effectStore.ts";
 import * as PinsStore from "../store/peerSessionPinStore.ts";
 import * as Registry from "../store/registryStore.ts";
@@ -70,8 +71,9 @@ const signing = Layer.succeed(
     remove: () => Effect.die("Unexpected signing secret removal"),
   }),
 );
+type FixtureOperation = "request_native_t3_settlement" | "verify_reference" | "refresh_linked_pr";
 const makeSeed = (
-  operation: "request_native_t3_settlement" | "verify_reference",
+  operation: FixtureOperation,
   previous: StoredPrObservation | null,
   accepted: boolean,
 ) =>
@@ -142,6 +144,16 @@ const makeSeed = (
       store_generation: 3,
       state: "active",
     });
+    if (operation === "refresh_linked_pr") {
+      yield* registry.appendPlain(Test.scope, "source_bindings", {
+        provider: "github",
+        source_instance_id: "github:test",
+        binding_version: 1,
+        authority_namespace: "github-authority",
+        store_generation: 1,
+        state: "active",
+      });
+    }
     const context = (yield* registry.context(home))!;
     const assertion = {
       schema: "jones-workstreams-peer-session-pin/1",
@@ -223,12 +235,20 @@ const makeSeed = (
               native_reference_id: "ref:test",
               expected_attestation_version: 0,
             }
-          : {
-              operation: "request_native_t3_settlement",
-              native_reference_id: "ref:test",
-              expected_attestation_version: 1,
-              native_action: "settle",
-            },
+          : operation === "refresh_linked_pr"
+            ? {
+                operation: "refresh_linked_pr",
+                workstream_id: "workstream:test",
+                expected_version: 1,
+                membership_id: "membership:test",
+                expected_observation_version: previous?.observation_version ?? 0,
+              }
+            : {
+                operation: "request_native_t3_settlement",
+                native_reference_id: "ref:test",
+                expected_attestation_version: 1,
+                native_action: "settle",
+              },
     };
     const body = " \n" + encode(command) + "\n";
     const receipt = {
@@ -274,8 +294,8 @@ const makeSeed = (
       },
     };
     const wire = "\n" + encode(forward) + "\n";
-    const intent: ExternalIntent = {
-      kind: operation === "verify_reference" ? "verify_reference" : "native_t3_settlement",
+    let intent: ExternalIntent = {
+      kind: operation === "request_native_t3_settlement" ? "native_t3_settlement" : operation,
       command,
       owner_id: home.owner_id,
       actor: { principal_id: "principal:test" },
@@ -321,6 +341,145 @@ const makeSeed = (
       membership: null,
       previous_observation: previous,
     };
+    if (operation === "refresh_linked_pr") {
+      const reference: Wire.NativeReference = {
+        ...intent.reference,
+        identity: {
+          provider: "github",
+          source_instance_id: "github:test",
+          resource_kind: "pull_request",
+          id_kind: "external",
+          native_id: "jones/example#7",
+          account_provenance: { kind: "not_account_scoped" },
+        },
+        pr_locator: {
+          host: "github.com",
+          repository_owner: "jones",
+          repository_name: "example",
+          number: 7,
+        },
+        registration: {
+          state: "attested",
+          attestation_version: 1,
+          attested_at: Test.now,
+          expires_at: "2026-01-01T00:05:00.000Z",
+          evidence: {
+            provider: "github",
+            source_instance_id: "github:test",
+            native_id: "jones/example#7",
+            authority_namespace: "github-authority",
+            store_generation: 1,
+            evidence_sha256: "e".repeat(64),
+          },
+        },
+      };
+      const sourceBinding: ExternalIntent["source_binding"] = {
+        provider: "github",
+        source_instance_id: "github:test",
+        authority_namespace: "github-authority",
+        store_generation: 1,
+        state: "active",
+      };
+      const membership: Wire.MembershipEpisode = {
+        membership_id: "membership:test",
+        workstream_id: "workstream:test",
+        native_reference_id: "ref:test",
+        kind: "primary",
+        opened: {
+          at: Test.now,
+          actor: intent.actor,
+          command_id: "seed:membership-original",
+          registry_version: 1,
+        },
+        closed: null,
+      };
+      intent = { ...intent, reference, source_binding: sourceBinding, membership };
+      const workstream: Wire.Workstream = {
+        workstream_id: "workstream:test",
+        owner_id: home.owner_id,
+        name: "Synthetic PR workstream",
+        lifecycle: "active",
+        progress: { state: "unknown" },
+        delivery: "none-observed",
+        freshness: "unknown",
+        sort_order: 0,
+        version: 1,
+        created_at: Test.now,
+        updated_at: Test.now,
+        created_by: intent.actor,
+        updated_by: intent.actor,
+      };
+      yield* registry.put(
+        Test.scope,
+        "records",
+        {
+          metadata: { workstream_id: workstream.workstream_id, version: 1, sort_order: 0 },
+          value: workstream,
+        },
+        null,
+      );
+      yield* registry.put(
+        Test.scope,
+        "references",
+        {
+          metadata: {
+            native_reference_id: reference.native_reference_id,
+            provider: reference.identity.provider,
+            resource_kind: reference.identity.resource_kind,
+            id_kind: reference.identity.id_kind,
+            identity_index: yield* (yield* Index.WorkstreamsIdentityIndex).digest(
+              Test.scope,
+              reference.identity,
+            ),
+            legacy_identity_sha256: null,
+            attestation_version: reference.registration.attestation_version,
+            registration_state: reference.registration.state,
+            created_by_principal: intent.actor.principal_id,
+            routing_source_instance_id: null,
+            routing_native_id: null,
+            routing_authority_namespace: null,
+            routing_store_generation: null,
+            routing_attested_at: null,
+            routing_expires_at: null,
+            routing_evidence_sha256: null,
+          },
+          value: reference,
+        },
+        null,
+      );
+      yield* registry.put(
+        Test.scope,
+        "memberships",
+        {
+          metadata: {
+            membership_id: membership.membership_id,
+            workstream_id: membership.workstream_id,
+            native_reference_id: reference.native_reference_id,
+            kind: membership.kind,
+            opened_registry_version: 1,
+            closed_registry_version: null,
+            closed_at: null,
+          },
+          value: membership,
+        },
+        null,
+      );
+      if (previous)
+        yield* registry.put(
+          Test.scope,
+          "pr_observations",
+          {
+            metadata: {
+              native_reference_id: previous.native_reference_id,
+              observation_version: previous.observation_version,
+              attempted_at: previous.attempted_at,
+              outcome: previous.outcome,
+            },
+            value: previous,
+          },
+          null,
+        );
+    }
     const envelope = yield* Envelope.wrapPeerEffectIntent(
       encode(intent),
       body,
@@ -372,7 +531,7 @@ const makeSeed = (
             command_id: command.command_id,
             principal_id: "principal:test",
             native_reference_id: "ref:test",
-            effect: command.action.operation as "verify_reference" | "request_native_t3_settlement",
+            effect: command.action.operation as FixtureOperation,
             server_generation: 1,
             admitted_registry_version: context.registry_version,
             intent,
@@ -412,7 +571,7 @@ export const withFixture = <A, E, R>(
       setSecretHook: (hook: (name: string) => Effect.Effect<void>) => void;
     },
   ) => Effect.Effect<A, E, R>,
-  operation: "request_native_t3_settlement" | "verify_reference" = "request_native_t3_settlement",
+  operation: FixtureOperation = "request_native_t3_settlement",
   previous: StoredPrObservation | null = null,
   options: { readonly accepted: boolean } = { accepted: true },
 ) =>

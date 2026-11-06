@@ -8,6 +8,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as Wire from "@t3tools/contracts";
 import { NativeHome } from "../mode/authorityMode.ts";
 import type { RegistryExternalResult } from "../domain/state.ts";
+import { observationCache } from "../domain/externalIntents.ts";
 import * as Origin from "../runtime/peerEffectOrigin.ts";
 import * as Receiving from "../runtime/retainedPeerSession.ts";
 import * as Source from "./peerEffectSource.ts";
@@ -140,27 +141,49 @@ const make = Effect.gen(function* () {
     evidence: Source.AuthenticatedPeerResult,
   ) {
     yield* Source.checkAuthenticatedPeerResult(evidence, origin);
-    const response = evidence.response;
     let result: RegistryExternalResult;
-    if (response.state !== "result")
-      return yield* new Session.RegistryError({ code: "invalid_response" });
-    if (response.request.kind === "attest" && response.result.state === "attested") {
-      const value = response.result;
-      result = {
-        registration: {
-          state: "attested",
-          attestation_version: origin.intent.reference.registration.attestation_version + 1,
-          attested_at: value.attested_at,
-          expires_at: value.expires_at,
-          evidence: value.attestation,
-        },
+    if (evidence.kind === "github") {
+      if (origin.intent.kind !== "refresh_linked_pr")
+        return yield* new Session.RegistryError({ code: "invalid_response" });
+      const value = evidence.observation;
+      const observation = {
+        native_reference_id: origin.intent.reference.native_reference_id,
+        observation_version: (origin.intent.previous_observation?.observation_version ?? 0) + 1,
+        attempted_at: value.observed_at,
+        outcome: value.outcome,
+        retry_after_seconds: value.retry_after_seconds,
+        last_success: value.last_success,
+        command_id: origin.intent.command.command_id,
       };
-    } else if (
-      response.result.state === "terminal" &&
-      origin.intent.kind === "native_t3_settlement"
-    )
-      result = response.result.result;
-    else return yield* new Session.RegistryError({ code: "invalid_response" });
+      result = {
+        observation,
+        observation_cache:
+          value.etag && value.last_success
+            ? observationCache(origin.intent, observation, value.etag)
+            : null,
+      };
+    } else {
+      const response = evidence.response;
+      if (response.state !== "result")
+        return yield* new Session.RegistryError({ code: "invalid_response" });
+      if (response.request.kind === "attest" && response.result.state === "attested") {
+        const value = response.result;
+        result = {
+          registration: {
+            state: "attested",
+            attestation_version: origin.intent.reference.registration.attestation_version + 1,
+            attested_at: value.attested_at,
+            expires_at: value.expires_at,
+            evidence: value.attestation,
+          },
+        };
+      } else if (
+        response.result.state === "terminal" &&
+        origin.intent.kind === "native_t3_settlement"
+      )
+        result = response.result.result;
+      else return yield* new Session.RegistryError({ code: "invalid_response" });
+    }
     // Successful authenticated transport evidence survives receiver/source revocation.
     // Only owner/origin currentness is required for this encrypted retention, never client release.
     yield* withStores((effects, db) =>
