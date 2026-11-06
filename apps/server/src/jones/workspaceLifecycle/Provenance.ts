@@ -379,20 +379,16 @@ export const layerLive = layer.pipe(
   Layer.provide(sidecarLayer),
 );
 
-// Capture failures are facts held, never a new execution/admission policy.
+// The current capture adapter does Git I/O, multiple SQL writes and an uninterruptible
+// sidecar publication. It has no cancellable 100ms persistence boundary. Do not
+// start that work on an ordinary operation's path or leave it running in a race.
+// Explicit lifecycle capture remains available to callers that own that work.
 export const optionalCapture = Effect.map(
   Effect.serviceOption(Provenance),
   (service) =>
-    (input: Capture): Effect.Effect<void> =>
+    (_input: Capture): Effect.Effect<void> =>
       Option.isSome(service)
-        ? service.value.capture(input).pipe(
-            Effect.asVoid,
-            Effect.catch((cause) =>
-              input.requireExistingPhysical === true && cause.reason === "prior-lineage"
-                ? Effect.void
-                : Effect.logWarning("Workspace provenance capture held", { reason: cause.reason }),
-            ),
-          )
+        ? Effect.logWarning("Workspace provenance capture skipped", { reason: "unbounded-sink" })
         : Effect.void,
 );
 export const optionalLookup = Effect.map(
@@ -401,9 +397,16 @@ export const optionalLookup = Effect.map(
     (input: {
       readonly path?: string;
       readonly threadId?: string;
-    }): Effect.Effect<readonly WorktreeProvenanceEntry[] | undefined, LifecycleError> =>
+    }): Effect.Effect<readonly WorktreeProvenanceEntry[] | undefined> =>
       Option.isSome(service)
-        ? service.value.lookup(input).pipe(Effect.map((entries) => entries.map(toLookup)))
+        ? service.value.lookup(input).pipe(
+            Effect.map((entries) => entries.map(toLookup)),
+            Effect.catch(() =>
+              Effect.logWarning("Workspace provenance lookup unavailable").pipe(
+                Effect.andThen(Effect.undefined),
+              ),
+            ),
+          )
         : Effect.undefined,
 );
 const toLookup = ({

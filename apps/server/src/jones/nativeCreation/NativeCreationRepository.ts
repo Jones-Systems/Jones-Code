@@ -147,6 +147,13 @@ export class NativeCreationRepository extends Context.Service<
       readonly leaseExpiresAt: string;
       readonly evidence: import("./NativeCreationExecutionTypes.ts").NativeCreationWholeOperationEvidence;
     }) => Effect.Effect<void, NativeCreationRepositoryError>;
+    readonly renewExecutionClaim?: (input: {
+      readonly reference: NativeCreationExecutionReferenceV2;
+      readonly workerId: string;
+      readonly expectedAttempt: number;
+      readonly oldExpiry: string;
+      readonly newExpiry: string;
+    }) => Effect.Effect<void, NativeCreationRepositoryError>;
     readonly holdExecution?: (
       reference: NativeCreationExecutionReferenceV2,
       reason: string,

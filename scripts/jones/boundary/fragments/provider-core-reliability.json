@@ -21,7 +21,14 @@
     "apps/web/src/jones/threadConfiguration/providerAvailability.browser.test.tsx",
     "apps/web/src/jones/threadConfiguration/sendPaths.browser.test.tsx",
     "apps/mobile/src/jones/threadConfiguration/outboxDeliveryContract.ts",
-    "apps/mobile/src/jones/threadConfiguration/legacyOutbox.ts"
+    "apps/mobile/src/jones/threadConfiguration/legacyOutbox.ts",
+    "packages/provider-opencode/src/server/jones/protocolFreshness.ts",
+    "packages/provider-opencode/src/server/jones/protocolFreshness.test.ts",
+    "packages/provider-opencode/src/server/jones/protocolFreshnessSelection.ts",
+    "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.ts",
+    "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.test.ts",
+    "packages/client-runtime/src/jones/planCreationOperation.ts",
+    "packages/client-runtime/src/jones/planCreationOperation.test.ts"
   ],
   "hookPaths": [],
   "tombstones": [],
@@ -133,6 +140,38 @@
     {
       "from": "apps/mobile/src/features/threads/ThreadFeed.tsx",
       "to": "apps/mobile/src/jones/threadConfiguration/outboxDelivery.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/driver.ts",
+      "to": "packages/provider-opencode/src/server/jones/protocolFreshness.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/driver.ts",
+      "to": "packages/provider-opencode/src/server/jones/protocolFreshnessSelection.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/versionProbe.ts",
+      "to": "packages/provider-opencode/src/server/jones/protocolFreshness.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/driver.test.ts",
+      "to": "packages/provider-opencode/src/server/jones/protocolFreshness.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/driver.test.ts",
+      "to": "packages/provider-opencode/src/server/jones/protocolFreshnessSelection.ts"
+    },
+    {
+      "from": "packages/provider-opencode/src/server/versionProbe.test.ts",
+      "to": "packages/provider-opencode/src/server/jones/protocolFreshness.ts"
+    },
+    {
+      "from": "apps/server/src/provider/EventNdjsonLogger.ts",
+      "to": "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/useProposedPlanSend.ts",
+      "to": "packages/client-runtime/src/jones/planCreationOperation.ts"
     }
   ]
 }
