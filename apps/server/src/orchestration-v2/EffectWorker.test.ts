@@ -1063,19 +1063,19 @@ it.effect("managed retryable startup keeps its original retry and domain failure
       assert.deepEqual(yield* Ref.get(events), ["start", "start"]);
     }).pipe(
       Effect.provide(
-        layerExecutorFor({
-          events,
-          failFirstStart,
-          captureStartFailure: () =>
-            Effect.succeed(() =>
-              Effect.sync(() => {
-                failures++;
-              }),
-            ),
-        }),
-      ),
-      Effect.provide(
-        Layer.mock(CurrentEffectClaim)({ nativeCustody: true, hasLost: Effect.succeed(false) }),
+        Layer.merge(
+          layerExecutorFor({
+            events,
+            failFirstStart,
+            captureStartFailure: () =>
+              Effect.succeed(() =>
+                Effect.sync(() => {
+                  failures++;
+                }),
+              ),
+          }),
+          Layer.mock(CurrentEffectClaim)({ nativeCustody: true, hasLost: Effect.succeed(false) }),
+        ),
       ),
     );
   }),
@@ -1170,11 +1170,13 @@ it.effect.each(["issue", "successor"] as const)(
       const exit = yield* EffectWorker.OrchestrationEffectWorkerV2.pipe(
         Effect.flatMap((worker) => worker.runOnce),
         Effect.provide(
-          EffectWorker.layerWithOptions({ workerId: "worker:preissue" }).pipe(
-            Layer.provide(Layer.merge(outbox, executor)),
+          Layer.merge(
+            EffectWorker.layerWithOptions({ workerId: "worker:preissue" }).pipe(
+              Layer.provide(Layer.merge(outbox, executor)),
+            ),
+            native,
           ),
         ),
-        Effect.provide(native),
         Effect.exit,
       );
       assert.equal(runFailures, 1);

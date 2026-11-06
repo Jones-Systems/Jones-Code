@@ -1429,7 +1429,11 @@ it.effect.each([
           },
         },
       });
-    }).pipe(Effect.provide(layerTest), Effect.provide(layerClaim), Effect.exit, Effect.forkChild);
+    }).pipe(
+      Effect.provide(Layer.merge(layerTest, layerClaim)),
+      Effect.exit,
+      Effect.forkChild,
+    );
     if ((custodyLoss && scenario !== "baseline-typed-loss") || unmanaged) {
       yield* Deferred.await(entered);
       yield* Deferred.succeed(

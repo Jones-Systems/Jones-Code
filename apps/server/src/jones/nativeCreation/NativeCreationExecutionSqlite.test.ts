@@ -524,18 +524,18 @@ it.effect.each(["absent", "other-request"] as const)(
       let executions = 0;
       const attempt = executeNativeProviderEffect(effect).pipe(
         Effect.provide(
-          Layer.mock(Authority.NativeCreationAuthority)({
-            issueExecution: () =>
-              Effect.sync(() => {
-                issues++;
-              }).pipe(Effect.andThen(Effect.die("Unqualified issue"))),
-          }),
-        ),
-        Effect.provide(
-          Layer.mock(Repository.NativeCreationRepository)({
-            confirmExecution: () => Effect.void,
-            holdExecution: () => Effect.void,
-          }),
+          Layer.merge(
+            Layer.mock(Authority.NativeCreationAuthority)({
+              issueExecution: () =>
+                Effect.sync(() => {
+                  issues++;
+                }).pipe(Effect.andThen(Effect.die("Unqualified issue"))),
+            }),
+            Layer.mock(Repository.NativeCreationRepository)({
+              confirmExecution: () => Effect.void,
+              holdExecution: () => Effect.void,
+            }),
+          ),
         ),
         Effect.provideService(NativeCreationProviderExecutor, {
           executeWholeOperation: () =>
