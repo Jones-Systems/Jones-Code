@@ -139,7 +139,7 @@ export function makeCodexStartup(
           Effect.gen(function* () {
             if (attempt.complete) return yield* Effect.never;
             yield* abandon(attempt);
-            return yield* Effect.fail(
+            return yield* (
               attempt.mayHaveIssued
                 ? unknown()
                 : new ProviderAdapterProtocolError({
