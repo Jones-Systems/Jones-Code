@@ -7468,12 +7468,9 @@ it.effect.each([
       assert.isTrue(Exit.isFailure(originalLoad));
       assert.isDefined(publication);
       assert.equal((yield* Ref.get(state)).resumeCount, 1);
-      if (mode === "mutated-original-policy")
-        originalPolicy.approvalPolicy.mode = "changed-policy";
+      if (mode === "mutated-original-policy") originalPolicy.approvalPolicy.mode = "changed-policy";
       const nextPolicy =
-        mode === "changed-policy"
-          ? { ...originalPolicy, cwd: "/changed-policy" }
-          : originalPolicy;
+        mode === "changed-policy" ? { ...originalPolicy, cwd: "/changed-policy" } : originalPolicy;
       const nextSelection =
         mode === "changed-model" ? { ...modelSelection, model: "gpt-5.5" } : modelSelection;
       const runId = RunId.make(`recovered-load-run:${mode}`);

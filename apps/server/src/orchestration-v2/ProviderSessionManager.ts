@@ -624,10 +624,7 @@ export const layerWithOptions = (
               const runtime = owner.runtime;
               const loads = runtime === undefined ? undefined : originalThreadLoads.get(runtime);
               const original = loads?.get(binding.threadId);
-              if (
-                original?.binding !== undefined &&
-                equivalentBinding(original.binding, binding)
-              )
+              if (original?.binding !== undefined && equivalentBinding(original.binding, binding))
                 loads?.delete(binding.threadId);
               yield* physicalEvidence.invalidate(binding);
               const current = yield* readThread(binding.threadId, binding.providerThreadId);
@@ -2396,57 +2393,35 @@ export const layerWithOptions = (
               modelFamily: normalizeModelMetricLabel(model),
             },
           });
-        const loadAndMark = Effect.fn("ProviderSessionManager.loadAndMark")(
-          function* (
-            value: {
-              readonly threadId: ThreadId;
-              readonly target: OrchestrationV2ProviderThread | undefined;
-              readonly modelSelection: ModelSelection | undefined;
-              readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined;
-            },
-            load: Effect.Effect<
-              OrchestrationV2ProviderThread,
-              ProviderAdapter.ProviderAdapterV2Error
-            >,
-          ) {
-            const loads =
-              originalThreadLoads.get(runtime) ?? new Map<ThreadId, OriginalThreadLoad>();
-            originalThreadLoads.set(runtime, loads);
-            const original: OriginalThreadLoad | undefined =
-              loads.get(value.threadId) ??
-              (value.target === undefined
-                ? undefined
-                : {
-                    target: {
-                      id: value.target.id,
-                      appThreadId: value.target.appThreadId,
-                      driver: value.target.driver,
-                      providerSessionId: value.target.providerSessionId,
-                      providerInstanceId: value.target.providerInstanceId,
-                      nativeThreadId: value.target.nativeThreadRef?.nativeId ?? null,
-                    },
-                    loadKey: providerThreadLoadKey({
-                      providerThread: value.target,
-                      ...(value.modelSelection === undefined
-                        ? {}
-                        : { modelSelection: value.modelSelection }),
-                      ...(value.runtimePolicy === undefined
-                        ? {}
-                        : { runtimePolicy: value.runtimePolicy }),
-                    }),
-                    binding: undefined,
-                  });
-            if (original !== undefined) loads.set(value.threadId, original);
-            const forget = Effect.sync(() => {
-              if (loads.get(value.threadId) === original) loads.delete(value.threadId);
-            });
-            return yield* load.pipe(
-              Effect.tap((providerThread) =>
-                markProviderThreadLoaded({
-                  providerSessionId,
-                  threadId: value.threadId,
-                  providerThreadKey: providerThreadLoadKey({
-                    providerThread,
+        const loadAndMark = Effect.fn("ProviderSessionManager.loadAndMark")(function* (
+          value: {
+            readonly threadId: ThreadId;
+            readonly target: OrchestrationV2ProviderThread | undefined;
+            readonly modelSelection: ModelSelection | undefined;
+            readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy | undefined;
+          },
+          load: Effect.Effect<
+            OrchestrationV2ProviderThread,
+            ProviderAdapter.ProviderAdapterV2Error
+          >,
+        ) {
+          const loads = originalThreadLoads.get(runtime) ?? new Map<ThreadId, OriginalThreadLoad>();
+          originalThreadLoads.set(runtime, loads);
+          const original: OriginalThreadLoad | undefined =
+            loads.get(value.threadId) ??
+            (value.target === undefined
+              ? undefined
+              : {
+                  target: {
+                    id: value.target.id,
+                    appThreadId: value.target.appThreadId,
+                    driver: value.target.driver,
+                    providerSessionId: value.target.providerSessionId,
+                    providerInstanceId: value.target.providerInstanceId,
+                    nativeThreadId: value.target.nativeThreadRef?.nativeId ?? null,
+                  },
+                  loadKey: providerThreadLoadKey({
+                    providerThread: value.target,
                     ...(value.modelSelection === undefined
                       ? {}
                       : { modelSelection: value.modelSelection }),
@@ -2454,18 +2429,36 @@ export const layerWithOptions = (
                       ? {}
                       : { runtimePolicy: value.runtimePolicy }),
                   }),
+                  binding: undefined,
+                });
+          if (original !== undefined) loads.set(value.threadId, original);
+          const forget = Effect.sync(() => {
+            if (loads.get(value.threadId) === original) loads.delete(value.threadId);
+          });
+          return yield* load.pipe(
+            Effect.tap((providerThread) =>
+              markProviderThreadLoaded({
+                providerSessionId,
+                threadId: value.threadId,
+                providerThreadKey: providerThreadLoadKey({
+                  providerThread,
+                  ...(value.modelSelection === undefined
+                    ? {}
+                    : { modelSelection: value.modelSelection }),
+                  ...(value.runtimePolicy === undefined
+                    ? {}
+                    : { runtimePolicy: value.runtimePolicy }),
                 }),
-              ),
-              Effect.tap(() => forget),
-              Effect.tapError((cause) =>
-                original?.binding !== undefined ||
-                ProviderAdapter.hasUnknownRuntimeBinding(cause)
-                  ? Effect.void
-                  : forget,
-              ),
-            );
-          },
-        );
+              }),
+            ),
+            Effect.tap(() => forget),
+            Effect.tapError((cause) =>
+              original?.binding !== undefined || ProviderAdapter.hasUnknownRuntimeBinding(cause)
+                ? Effect.void
+                : forget,
+            ),
+          );
+        });
         return {
           ...runtime,
           subscribeEvents,
