@@ -320,6 +320,98 @@ describe("createJonesStagingWorker", () => {
     }
   });
 
+  it("reports serialized preflight failure only after both leader exit and process-group absence", async () => {
+    const child = fakeChild();
+    const worker = createJonesStagingWorker(() => child.child);
+    let settled = false;
+    try {
+      const pending = worker.run(prepareJob);
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      const failure = expect(pending).rejects.toMatchObject({
+        name: "Error",
+        message: "incomplete or unknown Mac stage",
+      });
+      await child.ready;
+      child.reply({
+        type: "error",
+        error: { name: "Error", message: "incomplete or unknown Mac stage" },
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(worker.reaped(token)).toBe(false);
+      child.leaderExit(1);
+      expect(settled).toBe(false);
+      expect(worker.reaped(token)).toBe(false);
+      child.groupAlive(false);
+      expect(worker.reaped(token)).toBe(true);
+      await failure;
+      expect(settled).toBe(true);
+      expect(child.sent).toEqual([{ protocol: 2, job: prepareJob }]);
+      expect(worker.heldWorker()).toBeUndefined();
+    } finally {
+      child.exit(1);
+      await worker.close();
+    }
+  });
+
+  it("holds an ordinary preflight error when the worker group cannot be reaped", async () => {
+    vi.useFakeTimers();
+    const child = fakeChild();
+    const worker = createJonesStagingWorker(() => child.child, { graceMs: 5, reapMs: 5 });
+    try {
+      const failure = expect(worker.run(prepareJob)).rejects.toMatchObject({
+        name: "JonesStagingExitUnproved",
+        copyAdmitted: false,
+      });
+      await child.ready;
+      child.reply({ type: "error", error: { name: "Error", message: "preflight refused" } });
+      child.leaderExit(1);
+      await vi.advanceTimersByTimeAsync(10);
+      await failure;
+      expect(worker.reaped(token)).toBe(false);
+      expect(worker.heldWorker()).toEqual({ pid: 4242, processGroup: 4242 });
+      await expect(worker.run(reclaim)).rejects.toThrow("exit is unproved");
+      child.groupAlive(false);
+      expect(worker.reaped(token)).toBe(true);
+    } finally {
+      child.exit(1);
+      await worker.close();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps an admitted serialized failure copy-unconfirmed even when the whole group exits", async () => {
+    const child = fakeChild();
+    const worker = createJonesStagingWorker(() => child.child);
+    try {
+      const failure = expect(worker.run(prepareJob)).rejects.toMatchObject({
+        name: "JonesStagingExitUnproved",
+        copyAdmitted: true,
+      });
+      await child.ready;
+      child.reply({ type: "admit-request" });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(child.sent.at(-1)).toEqual({ type: "admit", jobId: token, decision: "continue" });
+      child.reply({ type: "error", error: { name: "Error", message: "copy failed", safe: true } });
+      child.exit(1);
+      await failure;
+      expect(worker.reaped(token)).toBe(true);
+      expect(child.signals).toEqual([]);
+    } finally {
+      child.exit(1);
+      await worker.close();
+    }
+  });
+
   it("proves cooperative Stop only on exit and remembers cancellation before a queued spawn", async () => {
     const first = fakeChild();
     let spawned = 0;
