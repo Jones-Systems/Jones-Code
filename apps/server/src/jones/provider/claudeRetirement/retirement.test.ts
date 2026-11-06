@@ -109,6 +109,70 @@ it.effect(
     }),
 );
 
+it.effect("fences a pending caller interruption before entering join from a masked region", () =>
+  Effect.gen(function* () {
+    const beforeJoin = yield* Deferred.make<void>();
+    const enterJoin = yield* Deferred.make<void>();
+    const abandonmentStarted = yield* Deferred.make<void>();
+    const releaseAbandonment = yield* Deferred.make<void>();
+    const retired = yield* Deferred.make<void>();
+    const startedAt = yield* Clock.currentTimeMillis;
+    let closes = 0;
+    let abandonments = 0;
+    let fenced = false;
+    const retirement = makeClaudeQueryRetirement({
+      deadline: startedAt + 10_000,
+      close: Effect.sync(() => {
+        closes++;
+      }),
+      termination: Effect.void,
+      drain: Effect.void,
+      retire: Effect.sync(() => {
+        abandonments++;
+      }).pipe(
+        Effect.andThen(Deferred.succeed(abandonmentStarted, undefined)),
+        Effect.andThen(Deferred.await(releaseAbandonment)),
+        Effect.andThen(Deferred.succeed(retired, undefined)),
+        Effect.asVoid,
+      ),
+      failure,
+      fence: () => {
+        fenced = true;
+      },
+    });
+    const caller = yield* Effect.gen(function* () {
+      yield* retirement.start;
+      yield* Deferred.succeed(beforeJoin, undefined);
+      yield* Deferred.await(enterJoin);
+      yield* retirement.join;
+    }).pipe(Effect.uninterruptible, Effect.forkScoped);
+    yield* Effect.addFinalizer(() => Deferred.succeed(enterJoin, undefined));
+    yield* Effect.addFinalizer(() => Deferred.succeed(releaseAbandonment, undefined));
+    yield* Deferred.await(beforeJoin);
+    yield* Deferred.await(abandonmentStarted);
+    const interruption = yield* Fiber.interrupt(caller).pipe(
+      Effect.forkScoped({ startImmediately: true }),
+    );
+    yield* Deferred.succeed(enterJoin, undefined);
+    assert.isTrue(Exit.isFailure(yield* Fiber.await(caller)));
+    yield* Fiber.join(interruption);
+    assert.isTrue(fenced);
+    assert.equal(yield* Clock.currentTimeMillis, startedAt);
+    assert.isFalse(yield* Deferred.isDone(retired));
+    assert.equal(closes, 1);
+    assert.equal(abandonments, 1);
+    const unknown = yield* retirement.join.pipe(Effect.flip);
+    assert.instanceOf(unknown, ProviderControlOutcomeUnknown);
+    yield* Deferred.succeed(releaseAbandonment, undefined);
+    yield* Deferred.await(retired);
+    yield* retirement.start;
+    assert.strictEqual(yield* retirement.join.pipe(Effect.flip), unknown);
+    assert.isTrue(fenced, "late abandonment cannot clear the interrupted caller's fence");
+    assert.equal(closes, 1);
+    assert.equal(abandonments, 1);
+  }),
+);
+
 it.effect.each(["rejection", "uninterruptible silence"] as const)(
   "retains an unknown fence after close %s",
   (mode) =>

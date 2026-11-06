@@ -207,6 +207,7 @@ it.effect.each(["rejected", "silent"] as const)(
             },
           },
         ]);
+        yield* outbox.notifyAvailable(2);
         yield* Deferred.await(cancelled);
         assert.isTrue(yield* Effect.promise(() => gate.waitForReached("late-root-result")));
         const captured = Option.getOrThrow(yield* outbox.get(stopId));
@@ -218,7 +219,10 @@ it.effect.each(["rejected", "silent"] as const)(
         assert.equal(closes, 1);
         assert.isFalse(yield* Deferred.isDone(nativeExit));
         yield* TestClock.adjust("8 seconds");
-        yield* outbox.awaitCompletion([stopId, nextId]);
+        const completionFailure = yield* outbox.awaitCompletion([stopId]).pipe(Effect.flip);
+        assert.equal(completionFailure.operation, "await-completion");
+        assert.equal(completionFailure.effectId, stopId);
+        yield* outbox.awaitCompletion([nextId]);
         const stopped = Option.getOrThrow(yield* outbox.get(stopId));
         assert.equal(stopped.status, "failed");
         assert.equal(stopped.attemptCount, captured.attemptCount);

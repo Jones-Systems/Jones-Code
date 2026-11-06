@@ -16340,6 +16340,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   Effect.andThen(Queue.shutdown(messages)),
                 ),
             });
+            yield* Effect.addFinalizer(() => Deferred.succeed(releaseTranscriptRead, undefined));
             const start = (attemptId: string, ordinal: number, continuation: boolean) =>
               harness.runtime.startTurn(
                 makeClaudeTestTurnInput({
@@ -16423,7 +16424,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 result: "Launched both workflows.",
               }),
             );
-            yield* Queue.take(harness.terminalReceipts);
+            const launchTerminal = yield* Queue.take(harness.terminalReceipts);
             yield* harness.offerAndWait(
               workflowNotification({
                 uuid: "00000000-0000-4000-8000-000000003206",
@@ -16444,10 +16445,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               const stop = yield* harness.runtime
                 .interruptTurn({
                   providerThread: harness.providerThread,
-                  providerTurnId: (yield* IdAllocator.IdAllocatorV2).derive.providerTurn({
-                    driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-                    nativeTurnId: "turn:attempt-workflow-waiting-replay",
-                  }),
+                  providerTurnId: launchTerminal.providerTurnId,
                   requestRuntimeRestart: true,
                 })
                 .pipe(Effect.forkScoped);
@@ -17483,6 +17481,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             makeResultFrame({ uuid: "00000000-0000-4000-8000-000000001365", result: "Done." }),
           );
           yield* Queue.take(harness.terminalReceipts);
+          yield* TestClock.adjust("500 millis");
         }).pipe(
           Effect.provideService(WorkflowAgentTranscriptReadObserver, (read) =>
             Effect.sync(() => {

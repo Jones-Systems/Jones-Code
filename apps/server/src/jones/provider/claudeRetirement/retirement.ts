@@ -88,6 +88,9 @@ export function makeClaudeQueryRetirement(input: {
             fail().pipe(Effect.andThen(startClose), Effect.andThen(Deferred.await(completion))),
         }),
       );
-    }).pipe(Effect.onInterrupt(() => fail().pipe(Effect.andThen(startClose)))),
+    }).pipe(
+      Effect.interruptible,
+      Effect.onInterrupt(() => fail().pipe(Effect.andThen(startClose))),
+    ),
   };
 }

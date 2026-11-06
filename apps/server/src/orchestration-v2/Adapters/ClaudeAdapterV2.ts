@@ -11223,7 +11223,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
             yield* existing.retirement.start;
             yield* existing.retirement.join.pipe(
-              Effect.interruptible,
               Effect.mapError(
                 (cause) =>
                   new ProviderAdapter.ProviderAdapterProtocolError({
