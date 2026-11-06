@@ -298,6 +298,7 @@ it.effect.each(["exact", "changed-session", "changed-native", "installed-generat
     yield* sink.write({ events: [
       { id: EventId.make(`${mode}:birth`), type: "thread.created", threadId, occurredAt: now,
         payload: {
+          createdBy: "user", creationSource: "web",
           id: threadId, projectId: ProjectId.make("stop-project"), title: "Stopped replacement",
           providerInstanceId: instanceId, modelSelection: run.modelSelection,
           runtimeMode: "full-access", interactionMode: "default", branch: null, worktreePath: null,

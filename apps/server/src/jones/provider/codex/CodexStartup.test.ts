@@ -236,7 +236,7 @@ describe("Codex startup caller budget", () => {
         producer: { instanceId: "codex-a", providerSessionId: "session-a", runtimeGeneration: producer.generation },
       };
       const failure = kind === "transport"
-        ? new CodexErrors.CodexAppServerTransportError({ operation: "receive-response", cause: "synthetic transport loss" })
+        ? new CodexErrors.CodexAppServerTransportError({ operation: "read-input-stream", cause: "synthetic transport loss" })
         : new CodexErrors.CodexAppServerRequestError({
             code: kind === "server" ? -32603 : -32602, errorMessage: "synthetic",
             operation: kind === "decode" ? "decode-payload" : "receive-response",

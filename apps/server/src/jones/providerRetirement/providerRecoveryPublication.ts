@@ -14,6 +14,7 @@ import {
   unobservedRuntimeIdentity,
   type CapturedRuntimeBindingPublication,
   type ProviderAdapterV2Event,
+  type ProviderAdapterV2Error,
   type ProviderAdapterV2SessionRuntime,
   type RuntimeBindingPublicationInput,
 } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -36,6 +37,7 @@ export interface PublicationReservation {
   readonly invalidated: Set<string>;
 }
 
+const publicationKey = Schema.encodeSync(Schema.fromJsonString(Schema.Tuple([Schema.String, Schema.String])));
 const equivalentBinding = Schema.toEquivalence(ProviderRuntimeBinding);
 const equivalentThread = Schema.toEquivalence(OrchestrationV2ProviderThread);
 const equivalentRequested = Schema.toEquivalence(RequestedRuntimeIdentity);
@@ -50,15 +52,15 @@ export function makeProviderRecoveryPublication(ports: {
   readonly instanceId: ProviderInstanceId;
   readonly providerSessionId: ProviderSessionId;
   readonly reservations: Map<string, PublicationReservation>;
-  readonly allocate: (threadId: ThreadId) => Effect.Effect<EventId>;
-  readonly readThread: (threadId: ThreadId, id: string) => Effect.Effect<OrchestrationV2ProviderThread | undefined, unknown>;
+  readonly allocate: (threadId: ThreadId) => Effect.Effect<EventId, ProviderAdapterV2Error>;
+  readonly readThread: (threadId: ThreadId, id: string) => Effect.Effect<OrchestrationV2ProviderThread | undefined, ProviderAdapterV2Error>;
   readonly events: Pick<Store.EventStoreV2Shape, "read">;
   readonly sink: Pick<Sink.EventSinkV2Shape, "write">;
   readonly ingestor: Pick<Ingestor.ProviderEventIngestorV2Shape, "ingestNormalized">;
   readonly physical: Pick<Effect.Success<typeof Physical.make>, "bind">;
   readonly forgetTransfers: (threadId: ThreadId) => Effect.Effect<void>;
-  readonly revalidateGuard: (threadId: ThreadId) => Effect.Effect<void, unknown>;
-  readonly bindGuard: (binding: ProviderRuntimeBinding) => Effect.Effect<void, unknown>;
+  readonly revalidateGuard: (threadId: ThreadId) => Effect.Effect<void, ProviderAdapterV2Error>;
+  readonly bindGuard: (binding: ProviderRuntimeBinding) => Effect.Effect<void, ProviderAdapterV2Error>;
 }) {
   const retained = new Map<string, Array<{
     readonly input: RuntimeBindingPublicationInput;
@@ -72,7 +74,7 @@ export function makeProviderRecoveryPublication(ports: {
   });
   const preparation = Semaphore.makeUnsafe(1);
   const prepare = Effect.fn("providerRecovery.preparePublication")(function* (input: RuntimeBindingPublicationInput) {
-    const key = JSON.stringify([input.runtimeGeneration, input.providerThread.id]);
+    const key = publicationKey([input.runtimeGeneration, input.providerThread.id]);
     const operations = retained.get(key) ?? [];
     const existing = operations.find((operation) =>
       equivalentThread(operation.input.providerThread, input.providerThread) &&
@@ -148,12 +150,11 @@ export function makeProviderRecoveryPublication(ports: {
         return yield* failure("Another producer already owns this native conversation.");
       return current;
     });
-    const sameBoundary = (candidate: OrchestrationV2ProviderThread) => equivalentThread({
-      ...candidate,
-      runtimeIdentity: candidate.runtimeIdentity === undefined ? undefined : {
-        ...candidate.runtimeIdentity, evidenceRevision: undefined,
-      },
-    }, boundaryThread);
+    const sameBoundary = (candidate: OrchestrationV2ProviderThread) =>
+      candidate.runtimeIdentity?.runtimeGeneration === input.runtimeGeneration &&
+      sameRequested(candidate.runtimeIdentity.requested, input.requested) &&
+      sameObserved(candidate.runtimeIdentity.observed, boundaryThread.runtimeIdentity!.observed) &&
+      equivalentThread({ ...candidate, runtimeIdentity: boundaryThread.runtimeIdentity }, boundaryThread);
     let inFlight: Deferred.Deferred<Exit.Exit<OrchestrationV2ProviderThread, ProviderRuntimeBindingError>> | undefined;
     const attempt: Effect.Effect<OrchestrationV2ProviderThread, ProviderRuntimeBindingError> = Effect.gen(function* () {
       yield* revalidate;
@@ -208,8 +209,8 @@ export function makeProviderRecoveryPublication(ports: {
         inFlight = completion;
         yield* attempt.pipe(
           Effect.exit,
-          Effect.flatMap((result) => Deferred.succeed(completion, result).pipe(
-            Effect.andThen(Effect.sync(() => { inFlight = undefined; })),
+          Effect.flatMap((result) => Effect.sync(() => { inFlight = undefined; }).pipe(
+            Effect.andThen(Deferred.succeed(completion, result)),
           )),
           Effect.forkDetach({ startImmediately: true }),
         );

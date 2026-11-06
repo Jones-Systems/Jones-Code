@@ -162,7 +162,7 @@ const make = Effect.gen(function* () {
       )
         return yield* error("stop_observation_identity_conflict");
       const worker = workers.get(input.commandId);
-      if (worker !== undefined) yield* awaitWorker(worker).pipe(Effect.catch(() => Effect.void));
+      if (worker !== undefined) yield* awaitWorker(worker).pipe(Effect.ignore);
       const current = yield* eventSink.readRuntimeStop(input.commandId);
       return {
         commandId: input.commandId,

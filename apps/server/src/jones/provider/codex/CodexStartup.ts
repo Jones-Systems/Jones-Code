@@ -15,9 +15,9 @@ export const CODEX_STARTUP_BUDGET_MS = 60_000;
 type StartupOperation = "ensure" | "resume" | "start";
 interface StartupProducer { readonly generation: string; readonly scope: Scope.Closeable }
 interface StartupAttempt {
-  producer?: StartupProducer;
-  target?: ControlAdmission.ControlAdmissionTarget;
-  hold?: ControlAdmission.StartupHold;
+  producer: StartupProducer | undefined;
+  target: ControlAdmission.ControlAdmissionTarget | undefined;
+  hold: ControlAdmission.StartupHold | undefined;
   mayHaveIssued: boolean;
   abandoned: boolean;
   complete: boolean;
@@ -95,7 +95,14 @@ export function makeCodexStartup(
       effect: Effect.Effect<A, E, R>,
       target?: ControlAdmission.ControlAdmissionTarget,
     ) {
-      const attempt: StartupAttempt = { target, mayHaveIssued: false, abandoned: false, complete: false };
+      const attempt: StartupAttempt = {
+        producer: undefined,
+        target,
+        hold: undefined,
+        mayHaveIssued: false,
+        abandoned: false,
+        complete: false,
+      };
       const deadline = Effect.sleep(budgetMs).pipe(Effect.andThen(Effect.suspend(() =>
         attempt.complete ? Effect.never : Effect.fail(attempt.mayHaveIssued ? unknown() :
           new ProviderAdapterProtocolError({ driver: ProviderDriverKind.make("codex"),
@@ -142,8 +149,9 @@ export function makeCodexStartup(
         // Only this native observer outlives the caller. Its late result cannot run publication or a prompt.
         const observation = yield* restore(request).pipe(
           Effect.tap((reply) => Effect.gen(function* () {
-            // Handshake and unarchive replies confirm their whole effect. A thread reply still needs publication.
+            // Only an active caller may use a handshake or unarchive reply to release its fence.
             if (confirmation === "reply") {
+              if (attempt.abandoned) return;
               attempt.mayHaveIssued = false;
               if (attempt.hold !== undefined && admission !== undefined) {
                 yield* admission.resolveStartup(attempt.hold, { kind: "not_applied" });
@@ -179,7 +187,11 @@ export function makeCodexStartup(
               }) : Effect.void),
           Effect.forkIn(producer.scope, { startImmediately: true }),
         );
-        return yield* restore(Fiber.join(observation));
+        return yield* restore(Fiber.join(observation)).pipe(
+          Effect.mapError((cause) =>
+            attempt.mayHaveIssued && !hasUnknownRuntimeBinding(cause) ? unknown(cause) : cause,
+          ),
+        );
       }));
     }),
     retainValidated: Effect.fn("CodexStartup.retainValidated")(function* (

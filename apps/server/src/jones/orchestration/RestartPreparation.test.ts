@@ -619,10 +619,11 @@ it.effect.each([false, true])(
       if (failure?._tag === "RestartThreadHeld") assert.equal(failure.stage, "detach");
     }
     assert.equal(state.cleanupCalls, 0);
-    yield* Deferred.succeed(closed, {
+    const receipt: RuntimeRetirementReceipt = {
       binding: wrongReceipt ? { ...f.binding, runtimeGeneration: "successor" } : f.binding,
       evidence: "thread_closed",
-    });
+    };
+    yield* Deferred.succeed(closed, receipt);
     yield* TestClock.adjust("1 second");
     assert.equal(state.observations, 2);
     assert.equal(state.cleanupCalls, 1);

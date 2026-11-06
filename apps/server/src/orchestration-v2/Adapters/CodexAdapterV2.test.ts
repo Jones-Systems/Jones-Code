@@ -1640,8 +1640,8 @@ describe("CodexAdapterV2 session initialize", () => {
     ),
   );
 
-  // regression: #16260 one-shot initializers raced; a failed handshake must be retried
-  it.effect("retries initialize after a failed handshake", () =>
+  // A received validation rejection leaves the handshake safe for an explicit retry.
+  it.effect("retries initialize after an exact non-applying handshake rejection", () =>
     Effect.gen(function* () {
       const preamble = replayPreamble("initialize-retry");
       const entries: Array<CodexReplay.CodexAppServerReplayEntry> = [
@@ -1649,7 +1649,7 @@ describe("CodexAdapterV2 session initialize", () => {
         {
           type: "emit_inbound",
           label: "initialize",
-          frame: { id: 1, error: { code: -32603, message: "Codex is not ready." } },
+          frame: { id: 1, error: { code: -32602, message: "Codex rejected the client parameters." } },
         },
         ...preamble.slice(0, 2).map((entry) => withReplayRequestId(entry, 2)),
         ...preamble.slice(2, 3),
@@ -1669,6 +1669,31 @@ describe("CodexAdapterV2 session initialize", () => {
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
       ),
+    ),
+  );
+
+  it.effect("holds an arbitrary initialize server failure without another handshake or native creation", () =>
+    Effect.gen(function* () {
+      const preamble = replayPreamble("initialize-server-unknown");
+      const session = yield* openReplaySession(makeCodexReplayTranscript({
+        scenario: "initialize-server-unknown",
+        entries: [
+          ...preamble.slice(0, 1),
+          { type: "emit_inbound", frame: { id: 1, error: { code: -32603, message: "Codex is not ready." } } },
+        ],
+      }));
+      const first = yield* session.ensureThread("thread-initialize-server-unknown").pipe(Effect.flip);
+      assert.equal(first._tag, "ProviderAdapterEnsureThreadError");
+      assert.nestedPropertyVal(first, "cause._tag", "ProviderRuntimeBindingError");
+      assert.nestedPropertyVal(first, "cause.cause.errorMessage", "Codex is not ready.");
+      const retry = yield* session.ensureThread("thread-initialize-server-unknown").pipe(Effect.flip);
+      assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(retry));
+      assert.equal(session.initializeRequests(), 1);
+      assert.deepEqual(session.requests, ["initialize"]);
+      assert.equal(yield* Queue.size(session.events), 0);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
     ),
   );
 
@@ -1982,7 +2007,7 @@ describe("CodexAdapterV2 session initialize", () => {
 const codexControlTarget = (thread: OrchestrationV2ProviderThread): ControlAdmission.ControlAdmissionTarget => ({
   instanceId: String(thread.providerInstanceId), threadId: thread.appThreadId,
   nativeThreadId: thread.nativeThreadRef?.nativeId ?? null,
-  producer: thread.runtimeIdentity == null || thread.providerSessionId === null ? null : {
+  producer: thread.runtimeIdentity?.runtimeGeneration === undefined || thread.providerSessionId === null ? null : {
     instanceId: String(thread.providerInstanceId), providerSessionId: thread.providerSessionId,
     runtimeGeneration: thread.runtimeIdentity.runtimeGeneration,
   },
@@ -9154,6 +9179,7 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const requests: string[] = [];
+        const rawRequests: string[] = [];
         const transcript = makeCodexReplayTranscript({
           scenario: "account-resume-unavailable",
           entries: [
@@ -9189,6 +9215,8 @@ describe("CodexAdapterV2 post-settle continuation", () => {
             Effect.sync(() => {
               requests.push(method);
             }),
+          undefined,
+          { onRawRequest: (method) => Effect.sync(() => { rawRequests.push(method); }) },
         );
         const source = {
           ...harness.providerThread,
@@ -9198,7 +9226,12 @@ describe("CodexAdapterV2 post-settle continuation", () => {
           .resumeThread({ providerThread: source })
           .pipe(Effect.flip);
         assert.equal(error._tag, "ProviderAdapterResumeThreadError");
-        assert.nestedPropertyVal(error, "cause.errorMessage", "thread not found");
+        assert.nestedPropertyVal(error, "cause._tag", "ProviderRuntimeBindingError");
+        assert.nestedPropertyVal(error, "cause.cause.errorMessage", "thread not found");
+        assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(error));
+        const retry = yield* harness.runtime.resumeThread({ providerThread: source }).pipe(Effect.flip);
+        assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(retry));
+        assert.deepEqual(rawRequests, ["thread/resume"]);
         assert.deepEqual(requests, ["initialize", "thread/start"]);
         assert.equal(source.nativeThreadRef?.nativeId, "saved-thread");
       }).pipe(
@@ -13770,16 +13803,25 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ];
       const harness = yield* makeCodexReplayHarness(makeCodexReplayTranscript({ scenario: "recovery-same-producer-sibling", entries }),
         undefined, (method) => Effect.sync(() => { requests.push(method); }));
+      const generation = harness.providerThread.runtimeIdentity?.runtimeGeneration;
+      if (generation === undefined)
+        return yield* Effect.die("The sibling fixture requires a confirmed producer generation.");
       const dispatch = yield* harness.controlAdmission.begin({
         instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID, threadId: harness.threadId,
         providerSessionId: harness.runtime.providerSessionId, providerThreadId: harness.providerThread.id,
-        providerTurnId: "held-steer", runtimeGeneration: harness.providerThread.runtimeIdentity!.runtimeGeneration,
+        providerTurnId: "held-steer", runtimeGeneration: generation,
         nativeThreadId: nativeA, nativeTurnId: "held-native-turn",
       });
       // A received server error leaves the original native resume uncertain.
       const failed = yield* harness.runtime.resumeThread({ providerThread: harness.providerThread }).pipe(Effect.flip);
       assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(failed));
       yield* harness.controlAdmission.markUnknown(dispatch);
+      assert.isNull(yield* harness.runtime.reconcileBindingPublication!({
+        threadId: harness.threadId,
+        providerThreadId: harness.providerThread.id,
+        nativeThreadId: nativeA,
+        revalidate: Effect.die("No candidate cannot authorize local reconciliation."),
+      }));
       const siblingThread = ThreadId.make("recovery-sibling-logical");
       const sibling = yield* harness.runtime.ensureThread({ threadId: siblingThread,
         modelSelection: CODEX_TEST_MODEL_SELECTION, runtimePolicy: CODEX_TEST_RUNTIME_POLICY });
@@ -13794,13 +13836,16 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer))),
   );
 
-  it.effect("recovers only retained local publication before a newly requested prompt without another resume", () =>
-    Effect.gen(function* () {
+  it.effect.each(["complete-failure", "prepare-failure", "prepare-cancellation"] as const)(
+    "recovers retained local publication after %s without another resume or original prompt replay",
+    (phase) => Effect.gen(function* () {
       const target = ThreadId.make("recovery-publication-target");
       const nativeId = "recovery-publication-native";
       const timeline: Array<string> = [];
       let rejectPublication = true;
       let prepares = 0;
+      const prepareEntered = yield* Deferred.make<void>();
+      const targetInputs: Array<ProviderAdapter.RuntimeBindingPublicationInput> = [];
       const base = recordingRuntimeLifecycle(timeline);
       const native = codexReplayPreamble({ nativeThreadId: nativeId, nativeTurnId: "new-owner-turn", prompt: "New owner prompt" });
       const entries = [
@@ -13815,27 +13860,101 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       const harness = yield* makeCodexReplayHarness(makeCodexReplayTranscript({ scenario: "recovery-local-publication", entries }),
         undefined, (method) => Effect.sync(() => { timeline.push(method); }), undefined, {
           onRawRequest: (method) => Effect.sync(() => { timeline.push(method); }),
-          runtimeLifecycle: { ...base, prepareBindingPublication: (publication) => Effect.sync(() => {
-            prepares++;
-            const binding = ProviderAdapter.runtimeBinding(publication.providerThread, publication.runtimeGeneration)!;
-            return { binding, complete: Effect.suspend(() => publication.providerThread.appThreadId === target && rejectPublication
-              ? Effect.fail(new ProviderAdapter.ProviderRuntimeBindingError({ driver: CodexAdapterV2.CODEX_DRIVER_KIND,
-                  detail: "Synthetic local publication failure after native success." })) : base.bind(publication)) };
-          }) },
+          runtimeLifecycle: {
+            ...base,
+            prepareBindingPublication: (publication) => Effect.gen(function* () {
+              prepares++;
+              if (publication.providerThread.appThreadId === target) {
+                targetInputs.push(publication);
+                if (rejectPublication && phase === "prepare-failure")
+                  return yield* new ProviderAdapter.ProviderRuntimeBindingError({
+                    driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                    detail: "Synthetic publication preparation failure after native success.",
+                  });
+                if (rejectPublication && phase === "prepare-cancellation") {
+                  yield* Deferred.succeed(prepareEntered, undefined);
+                  yield* Effect.never;
+                }
+              }
+              const binding = ProviderAdapter.runtimeBinding(publication.providerThread, publication.runtimeGeneration)!;
+              return {
+                binding,
+                complete: Effect.suspend(() =>
+                  publication.providerThread.appThreadId === target && rejectPublication
+                    ? Effect.fail(new ProviderAdapter.ProviderRuntimeBindingError({
+                        driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+                        detail: "Synthetic local publication completion failure after native success.",
+                      }))
+                    : base.bind(publication),
+                ),
+              };
+            }),
+          },
         });
       const row = { ...harness.providerThread, id: ProviderThreadId.make("publication-target-row"), appThreadId: target,
         nativeThreadRef: { driver: CodexAdapterV2.CODEX_DRIVER_KIND, nativeId, strength: "strong" as const } };
       const now = yield* DateTime.now;
       const original = makeCodexTestTurnInput({ threadId: target, providerThread: row, now,
         attemptId: RunAttemptId.make("publication-original"), text: "Original prompt must never replay" });
-      const failure = yield* harness.runtime.startTurn(original).pipe(Effect.flip);
-      assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(failure));
+      if (phase === "prepare-cancellation") {
+        const caller = yield* harness.runtime.startTurn(original).pipe(Effect.forkScoped);
+        yield* Deferred.await(prepareEntered);
+        yield* Fiber.interrupt(caller);
+        yield* harness.controlAdmission.assertOpen(codexControlTarget(row)).pipe(Effect.flip);
+      } else {
+        const failure = yield* harness.runtime.startTurn(original).pipe(Effect.flip);
+        assert.isTrue(ProviderAdapter.hasUnknownRuntimeBinding(failure));
+      }
       assert.equal(timeline.filter((method) => method === "thread/resume").length, 1);
       assert.notInclude(timeline, "turn/start");
+      assert.isDefined(harness.runtime.reconcileBindingPublication);
+      const local = {
+        threadId: target,
+        providerThreadId: row.id,
+        nativeThreadId: nativeId,
+        revalidate: Effect.void,
+      };
+      assert.isNull(yield* harness.runtime.reconcileBindingPublication!({
+        ...local, threadId: ThreadId.make("publication-unrelated-thread"),
+      }));
+      yield* harness.runtime.reconcileBindingPublication!({
+        ...local, providerThreadId: ProviderThreadId.make("publication-unrelated-provider-thread"),
+      }).pipe(Effect.flip);
+      yield* harness.runtime.reconcileBindingPublication!({
+        ...local, nativeThreadId: "publication-unrelated-native",
+      }).pipe(Effect.flip);
+      yield* harness.runtime.reconcileBindingPublication!({
+        ...local,
+        revalidate: Effect.fail(new ProviderAdapter.ProviderAdapterProtocolError({
+          driver: CodexAdapterV2.CODEX_DRIVER_KIND,
+          detail: "Synthetic current-run revalidation refusal.",
+        })),
+      }).pipe(Effect.flip);
+      yield* harness.controlAdmission.assertOpen(codexControlTarget(row)).pipe(Effect.flip);
       rejectPublication = false;
+      let revalidations = 0;
+      const beforeLocal = [...timeline];
+      const reconciled = yield* harness.runtime.reconcileBindingPublication!({
+        ...local,
+        nativeThreadId: phase === "prepare-failure" ? null : nativeId,
+        revalidate: Effect.sync(() => { revalidations++; }),
+      });
+      assert.equal(reconciled?.id, row.id);
+      assert.equal(reconciled?.nativeThreadRef?.nativeId, nativeId);
+      assert.equal(revalidations, 2);
+      assert.equal(timeline.filter((method) => method === "thread/resume").length, 1);
+      assert.notInclude(timeline, "turn/start");
+      assert.deepEqual(timeline.filter((entry) => !entry.startsWith("bind:")),
+        beforeLocal.filter((entry) => !entry.startsWith("bind:")));
+      assert.isNull(yield* harness.runtime.reconcileBindingPublication!(local));
       yield* harness.runtime.startTurn(makeCodexTestTurnInput({ threadId: target, providerThread: row, now,
         attemptId: RunAttemptId.make("publication-new-owner"), text: "New owner prompt" }));
-      assert.equal(prepares, 2, "one opener publication and one retained target publication");
+      assert.equal(prepares, phase === "complete-failure" ? 2 : 3);
+      if (phase === "complete-failure") assert.lengthOf(targetInputs, 1);
+      else {
+        assert.lengthOf(targetInputs, 2);
+        assert.equal(targetInputs[1], targetInputs[0], "preparation retries retain the original exact input");
+      }
       assert.equal(timeline.filter((method) => method === "thread/resume").length, 1);
       assert.equal(timeline.filter((method) => method === "turn/start").length, 1);
       yield* harness.controlAdmission.assertOpen(codexControlTarget(row));

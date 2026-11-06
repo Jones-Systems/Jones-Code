@@ -3,7 +3,7 @@ import {
   EventId, ProviderDriverKind, ProviderInstanceId, ProviderSessionId, ProviderThreadId, ThreadId,
   type OrchestrationV2ProviderThread, type OrchestrationV2StoredEvent,
 } from "@t3tools/contracts";
-import { requestedRuntimeIdentity, unobservedRuntimeIdentity } from "@t3tools/provider-core/server/ProviderAdapter";
+import { ProviderRuntimeBindingError, requestedRuntimeIdentity, unobservedRuntimeIdentity } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -43,7 +43,7 @@ it.effect("concurrent completion joins one attempt and recovers guard and physic
       events: { read: (input) => Stream.fromIterable(stored.filter((row) =>
         row.event.id === input?.eventId && row.event.threadId === input?.threadId && row.event.type === input?.eventType)) },
       sink: { write: (input) => Effect.sync(() => {
-        const rows = input.events.map((event) => ({ event, sequence: stored.length + 1 }));
+        const rows = input.events.map((event) => ({ event, sequence: stored.length + 1, commandId: null }));
         stored.push(...rows);
         const update = input.events.find((event) => event.type === "provider-thread.updated");
         if (update?.type === "provider-thread.updated") current = update.payload;
@@ -56,7 +56,7 @@ it.effect("concurrent completion joins one attempt and recovers guard and physic
         current = { ...current, runtimeIdentity: {
           runtimeGeneration: "generation", requested: input.event.requested, observed: input.event.observed,
         } };
-        const row: OrchestrationV2StoredEvent = { sequence: stored.length + 1, event: {
+        const row: OrchestrationV2StoredEvent = { sequence: stored.length + 1, commandId: null, event: {
           id: input.runtimeIdentityEventId!, type: "provider-thread.updated", threadId,
           occurredAt: now, payload: current,
         } };
@@ -70,7 +70,7 @@ it.effect("concurrent completion joins one attempt and recovers guard and physic
         if (guardCalls === 1) {
           yield* Deferred.succeed(guardEntered, undefined);
           yield* Deferred.await(guardRelease);
-          return yield* Effect.fail("guard observation interrupted");
+          return yield* Effect.fail(new ProviderRuntimeBindingError({ driver, detail: "guard observation interrupted" }));
         }
       }),
       physical: { bind: () => Effect.sync(() => {

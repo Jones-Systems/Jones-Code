@@ -170,6 +170,8 @@ function startWithMissingWorktree(
         Layer.mock(ContextHandoffService.ContextHandoffServiceV2)({}),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
+          readStoppedRuntime: () => Effect.succeed(null),
+          hasStoppedRuntime: () => Effect.succeed(false),
           assertRuntimeStopStartAllowed: () => Effect.void,
           assertImportedHistoryStartAllowed: () => Effect.void,
         }),
@@ -221,6 +223,7 @@ function startWithMissingWorktree(
           },
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          reconcileThreadBindingPublication: () => Effect.succeed(null),
           awaitThreadRetirement: () => Effect.void,
           hasRetiredWriter: () => Effect.succeed(false),
         }),
@@ -961,6 +964,8 @@ function makeLocalCommandHarness(input: {
         }),
         Layer.mock(EventSink.EventSinkV2)({
           writeIfRunCurrent,
+          readStoppedRuntime: () => Effect.succeed(null),
+          hasStoppedRuntime: () => Effect.succeed(false),
           assertRuntimeStopStartAllowed: () => Effect.void,
           assertImportedHistoryStartAllowed: () => Effect.void,
           write: () => (input.effortProof?.duringHandoff ?? Effect.void).pipe(Effect.as([])),
@@ -1001,6 +1006,7 @@ function makeLocalCommandHarness(input: {
               : Effect.succeed([]),
         }),
         Layer.mock(ProviderSessionManager.ProviderSessionManagerV2)({
+          reconcileThreadBindingPublication: () => Effect.succeed(null),
           awaitThreadRetirement: () => Effect.void,
           hasRetiredWriter: () => Effect.succeed(false),
           open,

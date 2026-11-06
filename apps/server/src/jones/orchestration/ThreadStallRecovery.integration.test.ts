@@ -78,6 +78,7 @@ it.effect(
             };
             yield* boundedSteer({
               instanceId: binding.instanceId,
+              target: ControlAdmission.targetFromDispatch(binding),
               prepare: Effect.succeed({
                 binding,
                 producerScope,
@@ -182,6 +183,16 @@ it.effect("lease loss prevents a stale worker from emitting a delivery explanati
       execute: () =>
         boundedSteer({
           instanceId: "lost",
+          target: {
+            instanceId: "lost",
+            threadId: effect.threadId,
+            nativeThreadId: "native-thread:loss",
+            producer: {
+              instanceId: "lost",
+              providerSessionId: "session:loss",
+              runtimeGeneration: "generation:loss",
+            },
+          },
           prepare: Effect.succeed({
             binding: {
               instanceId: "lost",

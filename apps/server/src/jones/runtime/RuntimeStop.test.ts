@@ -860,7 +860,7 @@ it.effect("generation-less readback compares every remaining identity field and 
       { ...f.provider, appThreadId: ThreadId.make("thread:other") },
       { ...f.provider, id: ProviderThreadId.make("provider-thread:other") },
       { ...f.provider, providerSessionId: ProviderSessionId.make("session:other") },
-      { ...f.provider, providerInstanceId: ProviderInstanceId.make("instance:other") },
+      { ...f.provider, providerInstanceId: ProviderInstanceId.make("instance-other") },
       { ...f.provider, nativeThreadRef: { ...f.provider.nativeThreadRef!, nativeId: "native:other" } },
       { ...f.provider, driver: otherDriver, nativeThreadRef: { ...f.provider.nativeThreadRef!, driver: otherDriver } },
     ];

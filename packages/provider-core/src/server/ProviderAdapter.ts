@@ -738,6 +738,12 @@ export type ProviderAdapterV2SubagentOutcome = {
 };
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly reconcileBindingPublication?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly nativeThreadId: string | null;
+    readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+  }) => Effect.Effect<OrchestrationV2ProviderThread | null, ProviderAdapterV2Error>;
   readonly captureRuntimeStop?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<CapturedRuntimeStop | null, ProviderAdapterV2Error>;

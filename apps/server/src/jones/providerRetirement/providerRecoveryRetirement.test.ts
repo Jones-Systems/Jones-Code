@@ -6,7 +6,6 @@ import {
 import { ProviderRuntimeBindingError } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
-import * as Option from "effect/Option";
 import { makeProviderRecoveryRetirements } from "./providerRecoveryRetirement.ts";
 
 const binding: ProviderRuntimeBinding = {
@@ -26,10 +25,10 @@ it.effect("retains exact native proof across cleanup failure and pending-ledger 
       })) : Effect.void;
     }));
     const waiting = yield* handle.awaitRetired.pipe(Effect.forkChild);
-    assert.isTrue(Option.isNone(yield* Fiber.poll(waiting)));
+    assert.isUndefined(waiting.pollUnsafe());
     assert.isNull(owner.capture({ ...binding, runtimeGeneration: "foreign" }));
     yield* owner.complete({ binding: { ...binding, nativeThreadId: "foreign" }, evidence: "thread_closed" });
-    assert.isTrue(Option.isNone(yield* Fiber.poll(waiting)));
+    assert.isUndefined(waiting.pollUnsafe());
     const receipt = { binding, evidence: "thread_closed" as const };
     yield* owner.complete(receipt);
     assert.equal((yield* Fiber.await(waiting))._tag, "Failure");

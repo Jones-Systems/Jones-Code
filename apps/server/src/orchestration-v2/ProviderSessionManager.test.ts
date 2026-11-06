@@ -16,6 +16,10 @@ import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import { PROVIDER_SCOPE_CLOSE_TIMEOUT_MS } from "@t3tools/shared/jones/shutdownBudget";
 import {
+  NodeId,
+  RunId,
+  RunAttemptId,
+  type OrchestrationV2Run,
   EnvironmentId,
   EventId,
   MessageId,
@@ -372,6 +376,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
     readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
     readonly backgroundTasksEndWithProcess?: boolean;
     readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
+    readonly reconcileBindingPublication?: ProviderAdapterV2SessionRuntime["reconcileBindingPublication"];
     readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
     readonly retireThreadForTransfer?: ProviderAdapterV2SessionRuntime["retireThreadForTransfer"];
     readonly hangSessionScopeClose?: boolean;
@@ -479,6 +484,7 @@ const makeProviderAdapter = Effect.fnUntraced(function* (
           ...(options.readThreadActivity === undefined
             ? {}
             : { readThreadActivity: options.readThreadActivity }),
+          ...(options.reconcileBindingPublication === undefined ? {} : { reconcileBindingPublication: options.reconcileBindingPublication }),
           ...(options.captureRuntimeStop === undefined
             ? {}
             : { captureRuntimeStop: options.captureRuntimeStop }),
@@ -547,6 +553,7 @@ function layerTest(input: {
   readonly hasPendingBackgroundWorkForThread?: Effect.Effect<boolean>;
   readonly backgroundTasksEndWithProcess?: boolean;
   readonly readThreadActivity?: ProviderAdapterV2SessionRuntime["readThreadActivity"];
+  readonly reconcileBindingPublication?: ProviderAdapterV2SessionRuntime["reconcileBindingPublication"];
   readonly captureRuntimeStop?: ProviderAdapterV2SessionRuntime["captureRuntimeStop"];
   readonly retireThreadForTransfer?: ProviderAdapterV2SessionRuntime["retireThreadForTransfer"];
   readonly hangSessionScopeClose?: boolean;
@@ -595,6 +602,7 @@ function layerTest(input: {
       ...(input.readThreadActivity === undefined
         ? {}
         : { readThreadActivity: input.readThreadActivity }),
+      ...(input.reconcileBindingPublication === undefined ? {} : { reconcileBindingPublication: input.reconcileBindingPublication }),
       ...(input.captureRuntimeStop === undefined
         ? {}
         : { captureRuntimeStop: input.captureRuntimeStop }),
@@ -6759,7 +6767,7 @@ it.effect("a shared detach timeout retains exact proof without a process Stop ca
       const receipt = yield* observer.awaitRetired.pipe(Effect.forkChild);
       yield* TestClock.adjust("11 seconds");
       assert.isTrue(Exit.isFailure(yield* Fiber.await(detach)));
-      assert.isTrue(Option.isNone(yield* Fiber.poll(receipt)));
+      assert.isUndefined(receipt.pollUnsafe());
       const sameRuntime = yield* fixture.manager.open({ ...fixture.input, threadId: sibling });
       assert.strictEqual(sameRuntime, fixture.runtime);
       assert.equal((yield* Ref.get(state)).closeCount, 0);
@@ -7318,5 +7326,79 @@ it.effect("a foreign committed generation refuses retained publication recovery"
       assert.deepEqual(yield* events.read({ threadId }).pipe(Stream.runCollect), before);
     }).pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 60_000, publicationFault: fault,
       beforeOpen: (input) => Ref.set(controller, input.runtimeLifecycle) })));
+  }),
+);
+
+
+it.effect.each(["exact", "absent", "unknown-native", "missing-runtime", "missing-capability", "changed-run", "changed-attempt", "changed-attempt-status", "changed-target", "changed-model", "changed-session", "changed-native", "changed-runtime"] as const)(
+  "local publication lookup uses only an existing exact runtime and new starting attempt: %s", (mode) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    let mutate: Effect.Effect<void, ProviderSessionManager.ProviderSessionManagerV2Error | EventSink.EventSinkV2Error> = Effect.void;
+    let published: OrchestrationV2ProviderThread | null = null;
+    let calls = 0;
+    yield* Effect.gen(function* () {
+      const fixture = yield* openTransferFixture(`reconcile-new-start:${mode}`);
+      const runId = RunId.make(`reconcile-run:${mode}`);
+      const attemptId = RunAttemptId.make(`reconcile-attempt:${mode}`);
+      const rootNodeId = NodeId.make(`reconcile-node:${mode}`);
+      const run: OrchestrationV2Run = {
+        id: runId, threadId: fixture.threadId, ordinal: 2, providerInstanceId: modelSelection.instanceId,
+        modelSelection, providerThreadId: fixture.providerThread.id, userMessageId: MessageId.make(`reconcile-message:${mode}`),
+        rootNodeId, activeAttemptId: attemptId, status: "starting", requestedAt: fixture.now,
+        startedAt: null, completedAt: null, checkpointId: null, contextHandoffId: null,
+      };
+      yield* fixture.sink.write({ events: [
+        { id: EventId.make(`${mode}:reconcile-run`), type: "run.updated", threadId: fixture.threadId, runId, occurredAt: fixture.now, payload: run },
+        { id: EventId.make(`${mode}:reconcile-attempt`), type: "run-attempt.updated", threadId: fixture.threadId, runId, occurredAt: fixture.now,
+          payload: { id: attemptId, runId, attemptOrdinal: 1, rootNodeId, providerInstanceId: modelSelection.instanceId,
+            providerThreadId: fixture.providerThread.id, providerTurnId: null, providerSettlement: null, reason: "initial", status: "starting", startedAt: null, completedAt: null } },
+      ] });
+      published = fixture.providerThread;
+      if (mode === "unknown-native") {
+        published = null;
+        yield* fixture.sink.write({ events: [{ id: EventId.make(`${mode}:reconcile-native`), type: "provider-thread.updated", threadId: fixture.threadId, occurredAt: fixture.now,
+          payload: { ...fixture.providerThread, nativeThreadRef: null } }] });
+      }
+      if (mode === "changed-run" || mode === "changed-attempt" || mode === "changed-target" || mode === "changed-model")
+        mutate = fixture.sink.write({ events: [{ id: EventId.make(`${mode}:reconcile-change`), type: "run.updated", threadId: fixture.threadId, runId, occurredAt: fixture.now,
+          payload: { ...run, ...(mode === "changed-run" ? { status: "running" as const }
+            : mode === "changed-attempt" ? { activeAttemptId: RunAttemptId.make("replacement-attempt") }
+            : mode === "changed-target" ? { providerThreadId: ProviderThreadId.make("replacement-target") }
+            : { modelSelection: { ...modelSelection, model: "replacement-model" } }) } }] }).pipe(Effect.asVoid);
+      if (mode === "changed-session" || mode === "changed-native")
+        mutate = fixture.sink.write({ events: [{ id: EventId.make(`${mode}:reconcile-change`), type: "provider-thread.updated", threadId: fixture.threadId, occurredAt: fixture.now,
+          payload: { ...fixture.providerThread, ...(mode === "changed-session" ? { providerSessionId: ProviderSessionId.make("foreign-session") }
+            : { nativeThreadRef: { ...fixture.providerThread.nativeThreadRef!, nativeId: "foreign-native" } }) } }] }).pipe(Effect.asVoid);
+      if (mode === "changed-attempt-status") mutate = fixture.sink.write({ events: [{
+        id: EventId.make(`${mode}:reconcile-change`), type: "run-attempt.updated", threadId: fixture.threadId, runId, occurredAt: fixture.now,
+        payload: { id: attemptId, runId, attemptOrdinal: 1, rootNodeId, providerInstanceId: modelSelection.instanceId,
+          providerThreadId: fixture.providerThread.id, providerTurnId: null, providerSettlement: null, reason: "initial", status: "failed", startedAt: null, completedAt: fixture.now },
+      }] }).pipe(Effect.asVoid);
+      if (mode === "changed-runtime") mutate = fixture.manager.close(fixture.providerSessionId).pipe(
+        Effect.andThen(fixture.manager.open(fixture.input)), Effect.asVoid,
+      );
+      if (mode === "missing-runtime") yield* fixture.manager.close(fixture.providerSessionId);
+      const result = yield* fixture.manager.reconcileThreadBindingPublication!({
+        run, providerThread: mode === "unknown-native" ? { ...fixture.providerThread, nativeThreadRef: null } : fixture.providerThread,
+      }).pipe(Effect.exit);
+      if (mode.startsWith("changed-")) assert.isTrue(Exit.isFailure(result));
+      else {
+        assert.isTrue(Exit.isSuccess(result));
+        if (Exit.isSuccess(result)) assert.equal(result.value?.id ?? null, mode === "exact" ? fixture.providerThread.id : null);
+      }
+      assert.equal(calls, mode === "missing-runtime" || mode === "missing-capability" ? 0 : 1);
+      assert.equal((yield* Ref.get(state)).resumeCount, 0);
+      assert.equal((yield* Ref.get(state)).openCount, mode === "changed-runtime" ? 2 : 1);
+    }).pipe(Effect.provide(layerTest({
+      state, idleTimeoutMs: 60_000,
+      ...(mode === "missing-capability" ? {} : { reconcileBindingPublication: (value: Parameters<NonNullable<ProviderAdapterV2SessionRuntime["reconcileBindingPublication"]>>[0]) => Effect.gen(function* () {
+        calls++;
+        yield* value.revalidate;
+        yield* mutate.pipe(Effect.mapError((cause) => new ProviderAdapter.ProviderRuntimeBindingError({ driver: CODEX_DRIVER, detail: "Synthetic target mutation failed", cause })));
+        yield* value.revalidate;
+        return mode === "absent" ? null : published;
+      }) }),
+    })));
   }),
 );

@@ -728,3 +728,125 @@ it.effect(
       }).pipe(Effect.provide(services));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
+
+it.effect.each(["local-recovery", "unknown-steer"] as const)(
+  "a new ordinary send reconciles a preboundary native creation before admission: %s", (mode) =>
+  Effect.gen(function* () {
+    const cwd = yield* checkpointWorkspace("codex-publication-new-send");
+    const configContext = yield* Layer.build(ServerConfig.layerTest(cwd, { prefix: "jones-publication-new-send-" }));
+    const config = yield* ServerConfig.ServerConfig.pipe(Effect.provide(configContext));
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const crypto = yield* Crypto.Crypto;
+    const home = path.join(config.baseDir, "codex-home");
+    yield* fs.makeDirectory(home);
+    const nativeThreadId = "publication-recovered-native";
+    const newPrompt = "new owner prompt after local recovery";
+    const turn = {
+      id: "publication-new-turn", items: [], itemsView: "notLoaded", status: "inProgress",
+      error: null, startedAt: 1782622440, completedAt: null, durationMs: null,
+    };
+    const transcript = yield* CodexTestkit.CodexOrchestratorReplayHarness.decodeTranscript({
+      provider: "codex", protocol: "codex.app-server", version: "0.144.0", scenario: "publication-new-send",
+      entries: [
+        ...replayInitialize(home), ...replayEnsure(2, nativeThreadId, cwd, home, "native-success-before-publication"),
+        ...(mode === "unknown-steer" ? [] : [
+        { type: "expect_outbound", frame: { id: 3, method: "turn/start", params: {
+          threadId: nativeThreadId, input: [{ type: "text", text: newPrompt }], cwd, model: "gpt-5.4",
+          approvalPolicy: "never", approvalsReviewer: "user", sandboxPolicy: { type: "dangerFullAccess" },
+          summary: "detailed", collaborationMode: { mode: "default", settings: { model: "gpt-5.4" } },
+        } } },
+        { type: "emit_inbound", frame: { id: 3, result: { turn } } },
+        { type: "emit_inbound", frame: { method: "turn/started", params: { threadId: nativeThreadId, turn } } },
+        { type: "emit_inbound", frame: { method: "turn/completed", params: { threadId: nativeThreadId,
+          turn: { ...turn, status: "completed", completedAt: 1782622441, durationMs: 1000 } } } },
+        ] satisfies Array<Replay.CodexAppServerReplayEntry>),
+      ],
+    });
+    const replay = yield* Replay.makeReplayDriver(transcript);
+    const requests: Array<{ readonly method: string; readonly params: unknown }> = [];
+    const factory = CodexTestkit.makeCodexReplayClientFactory({ transcript, driver: replay });
+    const instanceId = ProviderInstanceId.make("codex-publication-new-send");
+    let admission: ControlAdmission.ControlAdmission["Service"] | undefined;
+    const registry = ProviderAdapterRegistry.layerFromAdaptersEffect(Effect.gen(function* () {
+      admission = yield* ControlAdmission.ControlAdmission;
+      const allocator = yield* IdAllocator.IdAllocatorV2;
+      const adapter = yield* Codex.makeCodexAdapterV2({
+        instanceId, settings: Schema.decodeSync(CodexSettings)({ homePath: home }), environment: { CODEX_HOME: home },
+        crypto, fileSystem: fs, idAllocator: allocator, serverConfig: config,
+        clientFactory: { open: (input) => factory.open(input).pipe(Effect.map((client): CodexClient.CodexAppServerClient["Service"] => ({
+          ...client, request: (method, params) => Effect.sync(() => { requests.push({ method, params }); }).pipe(Effect.andThen(client.request(method, params))),
+        }))) },
+      });
+      return [adapter];
+    })).pipe(Layer.provide(IdAllocator.layer), Layer.provide(ControlAdmission.layer), Layer.provide(NodeServices.layer));
+    let publicationFailures = 0;
+    const faultStore = Layer.effect(EventStore.EventStoreV2, Effect.gen(function* () {
+      const delegate = yield* EventStore.EventStoreV2;
+      return EventStore.EventStoreV2.of({
+        ...delegate,
+        append: (input) => Effect.suspend(() => {
+          const boundary = input.events.some((event) => event.type === "provider-thread.updated" &&
+            event.payload.nativeThreadRef?.nativeId === nativeThreadId && event.payload.runtimeIdentity?.runtimeGeneration !== undefined);
+          if (boundary && publicationFailures === 0) {
+            publicationFailures++;
+            return Effect.fail(new EventStore.EventStoreAppendEventsError({ eventCount: input.events.length, cause: "synthetic failure before boundary commit" }));
+          }
+          return delegate.append(input);
+        }),
+      });
+    })).pipe(Layer.provide(EventStore.layer));
+    yield* Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+      const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const threadId = ThreadId.make("publication-new-send-thread");
+      const selection = { instanceId, model: "gpt-5.4" };
+      yield* orchestrator.dispatch({
+        type: "thread.create", commandId: CommandId.make("publication-new-send:create"), threadId,
+        projectId: ProjectId.make("publication-new-send-project"), title: "Publication recovery",
+        modelSelection: selection, runtimeMode: "full-access", interactionMode: "default", branch: null,
+        worktreePath: cwd, createdBy: "user", creationSource: "web",
+      });
+      const send = (key: string, text: string) => orchestrator.dispatch({
+        type: "message.dispatch", commandId: CommandId.make(`publication-new-send:${key}`), threadId,
+        messageId: MessageId.make(`publication-new-send:${key}`), text, attachments: [],
+        createdBy: "user", creationSource: "web", dispatchMode: { type: "start_immediately" },
+      });
+      const steer = mode === "unknown-steer" ? yield* admission!.begin({
+        instanceId, threadId, providerSessionId: "earlier-control-session", runtimeGeneration: "earlier-control-generation",
+        providerThreadId: "earlier-control-thread", providerTurnId: "earlier-control-turn",
+        nativeThreadId, nativeTurnId: "earlier-native-turn",
+      }) : undefined;
+      yield* send("failed-original", "original prompt must never be replayed");
+      yield* worker.drain();
+      const failed = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(publicationFailures, 1);
+      assert.equal(failed.runs[0]?.status, "failed");
+      assert.isTrue(failed.providerThreads.every((provider) => provider.nativeThreadRef === null));
+      assert.deepEqual(requests.map((request) => request.method), ["initialize", "thread/start"]);
+      const originalSessionId = failed.providerThreads[0]!.providerSessionId!;
+      assert.isTrue(yield* sessions.isLive(originalSessionId));
+      if (steer !== undefined) yield* admission!.markUnknown(steer);
+      yield* send("new-owner", newPrompt);
+      yield* worker.drain();
+      const recovered = yield* orchestrator.getThreadProjection(threadId);
+      assert.equal(recovered.runs[0]?.status, "failed");
+      assert.equal(recovered.runs[1]?.status, mode === "unknown-steer" ? "failed" : "completed");
+      assert.notEqual(recovered.runs[1]?.id, recovered.runs[0]?.id);
+      assert.equal(recovered.providerThreads.find((provider) => provider.id === recovered.runs[1]?.providerThreadId)?.nativeThreadRef?.nativeId, nativeThreadId);
+      assert.deepEqual(requests.map((request) => request.method), mode === "unknown-steer"
+        ? ["initialize", "thread/start"] : ["initialize", "thread/start", "turn/start"]);
+      if (steer !== undefined) {
+        assert.deepEqual(yield* admission!.snapshot(instanceId), [{ binding: steer.binding, unknown: true }]);
+        assert.isTrue(recovered.turnItems.some((item) => item.type === "error" && item.title === "Provider work is held"));
+      }
+      const replayState = yield* Ref.get(replay.state);
+      assert.isNull(replayState.failure);
+      assert.equal(replayState.cursor, replay.transcript.entries.length);
+    }).pipe(Effect.provide(Harness.layerWithRegistryAndServices(
+      { name: "publication-new-send", runtimePolicyOverride: { cwd } }, registry,
+      { serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, config), eventStoreLayer: faultStore },
+    )));
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
