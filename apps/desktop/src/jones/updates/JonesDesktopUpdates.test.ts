@@ -7,7 +7,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import * as Schema from "effect/Schema";
-import { JonesInstallIntent } from "./jonesActivation.ts";
+import { JonesActiveInstall, JonesInstallIntent } from "./jonesActivation.ts";
 import type { DesktopUpdateState } from "@t3tools/contracts";
 import { EnvironmentId } from "@t3tools/contracts";
 import type {
@@ -277,7 +277,7 @@ async function fixture(
         return artifact;
       },
     },
-    stageApp: async (artifact, stageRoot) => {
+    stageApp: async (artifact, stageRoot, _platform, admit) => {
       const appPath = NodePath.join(
         stageRoot,
         ...(attemptLayout ? ["attempts", "stage-native"] : []),
@@ -286,6 +286,7 @@ async function fixture(
       );
       const executablePath = NodePath.join(appPath, "Contents", "MacOS", "Jones");
       const asarPath = NodePath.join(appPath, "Contents", "Resources", "app.asar");
+      await admit?.();
       await NodeFSP.mkdir(NodePath.dirname(executablePath), { recursive: true });
       await NodeFSP.mkdir(NodePath.dirname(asarPath));
       await NodeFSP.writeFile(executablePath, "staged-native-executable");
@@ -525,9 +526,9 @@ describe("Jones desktop updates", () => {
       const controller = new JonesDesktopUpdateController({
         ...f.options,
         executablePath: executable,
-        stageApp: async (artifact, stageRoot, platform) => {
+        stageApp: async (artifact, stageRoot, platform, admit) => {
           const staged = {
-            ...(await f.options.stageApp!(artifact, stageRoot, platform)),
+            ...(await f.options.stageApp!(artifact, stageRoot, platform, admit)),
             startupGateProtocol: 1 as const,
           };
           await NodeFSP.writeFile(
@@ -2385,6 +2386,283 @@ it("does not let a newer rollback journal hide the committed transaction of the 
     await NodeFSP.utimes(NodePath.join(directory, "journal.json"), laterTime, laterTime);
     await f.controller.configure();
     expect((await f.controller.laptopEvidence()).committedTransactionId).toBe(handle);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("proves an exact retired A-to-B preparation on receiving C and refuses changed or live evidence", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.configure();
+    const root = f.controller.updaterRoot;
+    const directory = NodePath.join(root, "retired-preparations", handle);
+    const selectionPath = NodePath.join(root, "staging", "original-selection.json");
+    const original = { ...f.active, generation: "original-A", sourceSha: "0".repeat(40) };
+    const hash = (raw: string) => NodeCrypto.createHash("sha256").update(raw).digest("hex");
+    const sorted = (value: unknown): unknown =>
+      Array.isArray(value)
+        ? value.map(sorted)
+        : typeof value === "object" && value !== null
+          ? Object.fromEntries(
+              Object.keys(value)
+                .sort()
+                .map((key) => [key, sorted((value as Record<string, unknown>)[key])]),
+            )
+          : value;
+    const write = async (path: string, value: unknown) => {
+      await NodeFSP.mkdir(NodePath.dirname(path), { recursive: true, mode: 0o700 });
+      const raw = JSON.stringify(value) + "\n";
+      await NodeFSP.writeFile(path, raw, { mode: 0o600 });
+      return hash(raw);
+    };
+    const selectionSha256 = await write(selectionPath, {
+      schema: 1,
+      source: "jones-actions",
+      home: f.home,
+      profile: original.profile,
+      currentVersion: original.version,
+      installedSource: original.sourceSha,
+      active: original,
+      artifactDirectory: "retained-artifact",
+      app: {
+        handle,
+        receiptPath: "retained-receipt",
+        appPath: "retained-app",
+        executablePath: "retained-executable",
+        version: candidate.version,
+        sourceSha: candidate.source,
+        sourceTree: candidate.tree,
+        appDigest: "app-digest",
+        asarDigest: "asar-digest",
+        executableDigest: "executable-digest",
+      },
+    });
+    const claim = {
+      protocol: 1,
+      preparationClaimProtocol: 3,
+      transactionId: handle,
+      stagedHandle: handle,
+      selectionPath,
+      selectionSha256,
+      home: original.home,
+      databasePath: original.databasePath,
+      profile: original.profile,
+      environmentId: original.environmentId,
+    };
+    const claimSha256 = await write(NodePath.join(directory, "prepare-intent.json"), claim);
+    const withdrawalSha256 = await write(NodePath.join(directory, "preparation-withdrawal.json"), {
+      protocol: 1,
+      withdrawalProtocol: 1,
+      transactionId: handle,
+      claimSha256,
+      claim,
+      expected: original,
+      evidence: "withdrawal-protocol",
+    });
+    const attemptSha256 = await write(NodePath.join(directory, "attempt-selection.json"), {
+      protocol: 1,
+      transactionId: handle,
+      stagedHandle: handle,
+      selectionPath,
+      selectionSha256,
+      expected: original,
+    });
+    const plan = {
+      protocol: 1,
+      transactionId: handle,
+      activeBinding: original,
+      records: {
+        "prepare-intent.json": claimSha256,
+        "preparation-withdrawal.json": withdrawalSha256,
+      },
+      attemptSelection: NodePath.join(
+        root,
+        "attempt-selections",
+        `${hash(`${selectionPath}\n${selectionSha256}`)}.json`,
+      ),
+      attemptSha256,
+      retiredPath: directory,
+    };
+    const planSha256 = hash(JSON.stringify(sorted(plan)));
+    await write(NodePath.join(directory, "preparation-retirement.json"), {
+      protocol: 1,
+      planSha256,
+      plan,
+      evidence: "withdrawn",
+    });
+    await write(NodePath.join(directory, "preparation-retirement-receipt.json"), {
+      protocol: 1,
+      transactionId: handle,
+      planSha256,
+      status: "retired",
+      evidence: "withdrawn",
+    });
+    vi.mocked(NodeChildProcess.execFile).mockImplementation(
+      (_command, args, _options, callback) => {
+        if (typeof callback !== "function" || !args?.includes("--inspect-preparation"))
+          throw new Error("Only read-only preparation inspection is allowed.");
+        callback(
+          null,
+          JSON.stringify({
+            protocol: 1,
+            operation: "inspect-preparation",
+            transactionId: handle,
+            status: "retired",
+            planSha256,
+          }),
+          "",
+        );
+        return new NodeChildProcess.ChildProcess();
+      },
+    );
+    const binding = {
+      operationId: "11111111-1111-4111-8111-111111111111",
+      stagedHandle: handle,
+      targetSource: candidate.source,
+      targetTree: candidate.tree,
+      transactionId: handle,
+      fromGeneration: "original-A",
+    };
+    expect(await f.controller.retiredLaptopInstall(binding)).toBe(true);
+    expect(
+      await f.controller.retiredLaptopInstall({ ...binding, fromGeneration: "unrelated" }),
+    ).toBe(false);
+    expect(
+      await f.controller.retiredLaptopInstall({ ...binding, targetSource: "9".repeat(40) }),
+    ).toBe(false);
+    const claimPath = NodePath.join(directory, "prepare-intent.json");
+    const claimRaw = await NodeFSP.readFile(claimPath);
+    await NodeFSP.appendFile(claimPath, " ");
+    expect(await f.controller.retiredLaptopInstall(binding)).toBe(false);
+    await NodeFSP.writeFile(claimPath, claimRaw);
+    const live = NodePath.join(root, "transactions", handle);
+    await NodeFSP.mkdir(live, { recursive: true, mode: 0o700 });
+    expect(await f.controller.retiredLaptopInstall(binding)).toBe(false);
+    await NodeFSP.rm(live, { recursive: true });
+    await NodeFSP.unlink(NodePath.join(directory, "preparation-retirement-receipt.json"));
+    expect(await f.controller.retiredLaptopInstall(binding)).toBe(false);
+    expect((await f.controller.laptopEvidence()).committedTransactionId).toBeUndefined();
+  } finally {
+    await f.cleanup();
+  }
+});
+
+it("proves ordinary recovery only with the exact manual receipt, current owner and same ready run", async () => {
+  const f = await fixture();
+  try {
+    await f.controller.configure();
+    const installed = Schema.decodeUnknownSync(JonesActiveInstall)(
+      JSON.parse(await NodeFSP.readFile(f.controller.manifestPath, "utf8")),
+    );
+    const active = { ...installed, generation: handle, transactionId: `manual-${handle}` };
+    const manifestRaw = JSON.stringify(active);
+    await NodeFSP.writeFile(f.controller.manifestPath, manifestRaw);
+    await NodeFSP.chmod(f.controller.manifestPath, 0o600);
+    const receiptPath = NodePath.join(
+      f.home,
+      "runtime",
+      "jones-manual-installs",
+      handle,
+      "receipt.json",
+    );
+    await NodeFSP.mkdir(NodePath.dirname(receiptPath), { recursive: true, mode: 0o700 });
+    const candidate = {
+      appPath: "/retained-stage.app",
+      executablePath: "/retained-stage.app/Jones",
+      sourceSha: active.sourceSha,
+      sourceTree: active.sourceTree,
+      version: active.version,
+      appDigest: active.appDigest,
+      bundleIdentifier: active.bundleIdentifier,
+    };
+    const receipt = {
+      protocol: 1,
+      operation: "manual-install",
+      phase: "launched",
+      automaticContinuationRequested: false,
+      transactionId: handle,
+      nextActive: active,
+      candidate,
+      process: { pid: 999999 },
+    };
+    const receiptRaw = JSON.stringify(receipt);
+    await NodeFSP.writeFile(receiptPath, receiptRaw, { mode: 0o600 });
+    const hash = (raw: string) => NodeCrypto.createHash("sha256").update(raw).digest("hex");
+    const owner = {
+      assertCurrent: vi.fn(),
+      binding: {
+        home: active.home,
+        databasePath: active.databasePath,
+        profile: active.profile,
+        environmentId: active.environmentId,
+        version: active.version,
+        sourceSha: active.sourceSha,
+        sourceTree: active.sourceTree,
+        manifestSha256: hash(manifestRaw),
+      },
+    };
+    type Ready = Awaited<
+      ReturnType<NonNullable<JonesDesktopUpdateOptions["ordinaryRecoveryReadiness"]>>
+    >;
+    const ready = { owner, backendPid: 4242, run: {} };
+    const readiness = vi.fn(async (): Promise<Ready> => ready);
+    const controller = new JonesDesktopUpdateController({
+      ...f.options,
+      activeGeneration: active.generation,
+      ordinaryRecoveryReadiness: readiness,
+    });
+    await controller.configure();
+    expect(await controller.laptopEvidence()).toMatchObject({
+      ordinaryRecovery: {
+        transactionId: active.transactionId,
+        activeGeneration: handle,
+        manifestSha256: hash(manifestRaw),
+        receiptSha256: hash(receiptRaw),
+      },
+    });
+    expect((await controller.laptopEvidence()).committedTransactionId).toBeUndefined();
+    for (const invalid of [
+      { ...receipt, phase: "held" },
+      { ...receipt, automaticContinuationRequested: true },
+      { ...receipt, transactionId: "unrelated" },
+      { ...receipt, nextActive: { ...active, profile: "other-profile" } },
+      { ...receipt, candidate: { ...candidate, sourceSha: "9".repeat(40) } },
+      { ...receipt, candidate: { ...candidate, sourceTree: "9".repeat(40) } },
+      { ...receipt, candidate: { ...candidate, appDigest: "wrong" } },
+      { ...receipt, candidate: { ...candidate, executablePath: "/outside-stage/Jones" } },
+    ]) {
+      await NodeFSP.writeFile(receiptPath, JSON.stringify(invalid));
+      expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
+    }
+    await NodeFSP.writeFile(receiptPath, receiptRaw);
+    readiness.mockResolvedValueOnce(undefined);
+    expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
+    for (const binding of [
+      { ...owner.binding, environmentId: "other-environment" },
+      { ...owner.binding, profile: "other-profile" },
+      { ...owner.binding, manifestSha256: "9".repeat(64) },
+    ]) {
+      readiness.mockResolvedValueOnce({ ...ready, owner: { ...owner, binding } });
+      expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
+    }
+    readiness.mockResolvedValueOnce(ready).mockResolvedValueOnce({ ...ready, backendPid: 4243 });
+    expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
+    readiness.mockResolvedValueOnce(ready).mockResolvedValueOnce({ ...ready, run: {} });
+    expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
+    for (const path of [receiptPath, controller.manifestPath]) {
+      readiness.mockResolvedValueOnce(ready).mockImplementationOnce(async () => {
+        await NodeFSP.appendFile(path, " ");
+        return ready;
+      });
+      expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
+      await NodeFSP.writeFile(path, path === receiptPath ? receiptRaw : manifestRaw);
+    }
+    owner.assertCurrent.mockImplementationOnce(() => {
+      throw new Error("Owner lost");
+    });
+    expect((await controller.laptopEvidence()).ordinaryRecovery).toBeUndefined();
+    expect((await controller.laptopEvidence()).ordinaryRecovery).toBeDefined();
   } finally {
     await f.cleanup();
   }

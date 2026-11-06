@@ -136,6 +136,14 @@ export function installPlanPresentation(
     laptopState.stagedHandle !== undefined &&
     laptopState.provenance?.sourceSha === plan.target.sourceSha &&
     laptopState.provenance.sourceTree === plan.target.sourceTree;
+  const retryLaptopInstall =
+    laptopOperation?.step === "install" &&
+    ["failed", "refused", "interrupted"].includes(laptopOperation.result?.status ?? "") &&
+    !state.laptop.activationBlocked &&
+    laptopState?.phase === "staged" &&
+    laptopState.stagedHandle !== undefined &&
+    laptopState.provenance?.sourceSha === plan.target.sourceSha &&
+    laptopState.provenance.sourceTree === plan.target.sourceTree;
   const laptopPhase =
     plan.laptop.gateClosed !== undefined
       ? "gateClosed"
@@ -183,7 +191,9 @@ export function installPlanPresentation(
       laptopState.provenance?.sourceSha === plan.target.sourceSha,
     install:
       !readOnly &&
-      laptopPhase === "staged" &&
+      (laptopPhase === "staged" || retryLaptopInstall) &&
+      plan.laptop.gate === undefined &&
+      plan.laptop.gateClosed === undefined &&
       laptopState?.capability.install === true &&
       laptopState.stagedHandle !== undefined &&
       laptopState.provenance?.sourceSha === plan.target.sourceSha,
@@ -210,7 +220,9 @@ export function installPlanPresentation(
       text:
         laptopOperation?.step === "download" && laptopPhase === "refused"
           ? "Download request did not start"
-          : (laptopCopy[laptopPhase] ?? "Not confirmed"),
+          : laptopOperation?.step === "install" && ["failed", "interrupted"].includes(laptopPhase)
+            ? "Install didn't finish"
+            : (laptopCopy[laptopPhase] ?? "Not confirmed"),
       downloadLabel: retryLaptopDownload ? "Retry download" : "Download on Laptop",
       actions: laptopActions,
       ...(laptopOperation === undefined ? {} : { operationId: laptopOperation.operationId }),
