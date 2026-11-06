@@ -58,6 +58,7 @@ import * as AuthHttp from "../../../../auth/http.ts";
 import {
   workstreamHttpApiLayer,
   workstreamResponseHeadersLayer,
+  workstreamStartupLayer,
 } from "../../../../workstreams/http.ts";
 import * as Layer from "effect/Layer";
 import * as Context from "effect/Context";
@@ -1467,8 +1468,9 @@ it.effect(
           NodePath.join(f.M.f.baseDir, "workstreams-native.json"),
           selectedInput.text,
         );
+        // The early source lookup and HTTP services share this production startup layer.
         const selected = yield* Startup.Startup.pipe(
-          Effect.provide(Startup.layer),
+          Effect.provide(workstreamStartupLayer),
           Effect.provide(resources),
           Effect.provideService(HostProcess.Environment, {}),
         );
