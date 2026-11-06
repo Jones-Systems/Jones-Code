@@ -3636,7 +3636,8 @@
         "apps/mobile/src/lib/attachmentDownload.test.ts",
         "apps/mobile/src/features/workstreams/Controls.operations.test.tsx",
         "packages/shared/src/atomicWrite.test.ts",
-        "apps/server/src/serverRuntimeState.test.ts"
+        "apps/server/src/serverRuntimeState.test.ts",
+        "apps/server/src/jones/workstreams/native/compat/legacyAuthorityFence.test.ts"
       ],
       "commands": [
         "vp test run packages/client-runtime/src/state/workstreams/nativeRead.test.ts packages/client-runtime/src/state/workstreams/nativeExport.test.ts --maxWorkers=1 --no-file-parallelism",

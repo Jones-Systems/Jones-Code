@@ -291,16 +291,18 @@ const canonicalJson = (value: unknown): string => {
   return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
 };
 
-const transportFailure = (error: WorkstreamTransportError) =>
+const gatewayTransportFailure = (error: WorkstreamTransportError) =>
   new WorkstreamGatewayError({
     reason:
       error.detail === "cursor_stale"
         ? "cursor-stale"
         : error.effect === "unknown-effect"
           ? "unknown-effect"
-          : error.detail === WORKSTREAM_ACTIVATION_DISABLED_DETAIL
-            ? "not-configured"
-            : "offline",
+          : error.detail === "authority_fenced"
+            ? "authorization-not-current"
+            : error.detail === WORKSTREAM_ACTIVATION_DISABLED_DETAIL
+              ? "not-configured"
+              : "offline",
     detail: error.detail,
   });
 
@@ -341,6 +343,10 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
       terminalReceipts.clear();
       commandDigests.clear();
       lastBindingKey = null;
+    };
+    const transportFailure = (error: WorkstreamTransportError) => {
+      if (error.detail === "authority_fenced") purgeAuthorization();
+      return gatewayTransportFailure(error);
     };
     const remember = <V>(map: Map<string, V>, key: string, value: V) => {
       map.delete(key);
@@ -756,7 +762,9 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
         // These reads are separate CP snapshots: the witness must come first.
         const authorized = yield* authorize("workstreams:read");
         if (!transport.readCommandReceipt) return yield* recoveryFailure(undefined);
-        const result = yield* transport.readCommandReceipt({ commandId, ...contractInput });
+        const result = yield* transport
+          .readCommandReceipt({ commandId, ...contractInput })
+          .pipe(Effect.mapError(transportFailure));
         if (result.kind === "receipt") {
           const receipt = yield* decodeReceipt(result.receipt, {
             onExcessProperty: "error",
@@ -777,12 +785,14 @@ export const make = (transport: WorkstreamTransport, options: WorkstreamGatewayO
           return yield* recoveryFailure(undefined);
         // CP atomically checks retained bytes before deciding a fresh command. Local revision,
         // generation and digest guards cannot resolve an earlier dispatch or an absent index.
-        const result = yield* transport.resubmitCommand({
-          body: retainedBody,
-          command,
-          idempotencyKey: commandId,
-          ...contractInput,
-        });
+        const result = yield* transport
+          .resubmitCommand({
+            body: retainedBody,
+            command,
+            idempotencyKey: commandId,
+            ...contractInput,
+          })
+          .pipe(Effect.mapError(transportFailure));
         if (result.kind === "receipt") {
           const receipt = yield* decodeReceipt(result.receipt, {
             onExcessProperty: "error",
