@@ -1,3 +1,4 @@
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as RetirementLedger from "../jones/providerRetirement/RetirementLedger.ts";
 import * as AccountTransfer from "../jones/providerRetirement/accountTransferRetirement.ts";
 import { WorkspaceLifecycle as WorkspaceLifecycleService } from "../jones/workspaceLifecycle/WorkspaceLifecycle.ts";
@@ -399,6 +400,8 @@ export const layerWithOptions = (
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const physicalEvidence = yield* PhysicalRuntimeEvidence.make;
       const agentScope = yield* AgentScope;
+      yield* WorkspaceDuty.startup;
+      const workspaceDuty = yield* WorkspaceDuty.hooks;
       const makeRuntimeLifecycle = (
         providerSessionId: ProviderSessionId,
         instanceId: ProviderInstanceId,
@@ -3610,6 +3613,10 @@ export const layerWithOptions = (
                 }
               });
               const sessionScope = yield* Scope.fork(sessionScopes);
+              const releaseWorkspaceDuty = yield* workspaceDuty.hold(cwd, "session", input.providerSessionId).pipe(
+                Effect.mapError(cause => new ProviderSessionOpenError({instanceId:input.modelSelection.instanceId,providerSessionId:input.providerSessionId,cause})),
+              );
+              yield* Scope.addFinalizer(sessionScope, releaseWorkspaceDuty.pipe(Effect.orDie));
               yield* agentScope.clear(input.threadId);
               const runtime = yield* adapter
                 .openSession({

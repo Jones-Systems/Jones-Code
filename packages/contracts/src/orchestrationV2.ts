@@ -1,3 +1,4 @@
+import { WorkspaceRetirementOutcome } from "./jones/workspaceRetirement.ts";
 import { GuardedThreadSettlement } from "./jones/guardedThreadSettlement.ts";
 import {
   OptionalDispatchDeliveryEvidence,
@@ -2122,6 +2123,8 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   updatedAt: Schema.DateTimeUtc,
   archivedAt: Schema.NullOr(Schema.DateTimeUtc),
   settledOverride: Schema.NullOr(Schema.Literals(["settled", "active"])),
+  retirement: Schema.optionalKey(WorkspaceRetirementOutcome),
+  retirementObservation: Schema.optionalKey(Schema.Literals(["recorded","none","unavailable"])),
   settledAt: Schema.NullOr(Schema.DateTimeUtc),
   unsettledAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   snoozedUntil: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),

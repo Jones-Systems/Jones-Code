@@ -4,6 +4,29 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "workspace-retirement-settlement",
+      "tests": [
+        "apps/server/src/jones/cleanup/DeletionWorktreeRemoval.test.ts",
+        "apps/server/src/jones/persistence/Migrations/137_JonesWorkspaceRetirement.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
+        "apps/server/src/jones/workspaceRetirement/Retirement.test.ts",
+        "apps/server/src/mcp/WorktreeMcpService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/orchestration-v2/ThreadSettlementService.test.ts",
+        "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "apps/server/src/storageCleanup.test.ts",
+        "apps/server/src/terminal/Manager.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx",
+        "packages/contracts/src/settings.test.ts",
+        "packages/shared/src/projectSettings.test.ts"
+      ],
+      "scope": "C7 durable settlement intents and script completion, live-duty exclusion, common-store reservation, shared unforced retirement with a durable per-path disposal journal, additive settings, target proposals, exact-path owner action and sparse outcomes. Existing native deletion admission remains the authorization owner; readiness grants no deletion authority. Source and sequential Node fixture evidence are separate from configured Effect, browser, typecheck, lint and platform qualification."
+    },
+    {
       "id": "workspace-retirement-qualification",
       "tests": [
         "apps/server/src/jones/workspaceRetirement/Conformance.test.ts",

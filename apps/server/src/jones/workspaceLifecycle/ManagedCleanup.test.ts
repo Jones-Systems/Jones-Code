@@ -1,3 +1,4 @@
+import * as RetirementGate from "../workspaceRetirement/RemovalGate.ts";
 import { resolveWorktreeCleanup } from "@t3tools/shared/projectSettings";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
@@ -180,6 +181,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
               Removal.layer.pipe(
                 Layer.provide(
                   Removal.producerLayer.pipe(
+                    Layer.provide(RetirementGate.layer),
                     Layer.provide(
                       Layer.succeed(Removal.DeletionWorktreeGit, { execute: f.git.execute }),
                     ),

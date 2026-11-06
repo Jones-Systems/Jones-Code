@@ -1,3 +1,4 @@
+import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
 import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
@@ -833,6 +834,7 @@ const layerBase: Layer.Layer<
       Effect.fnUntraced(function* (
         storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
       ) {
+        yield* RetirementEvents.events(sql, storedEvents.map(stored => stored.event), projectionStore.getThread);
         // Jones: capture settlement before the projection replaces the prior state.
         if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
           yield* settlementRestores.capture(storedEvents, projectionStore.getThread);

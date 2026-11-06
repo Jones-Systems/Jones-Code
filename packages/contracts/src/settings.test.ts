@@ -28,6 +28,13 @@ const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
 describe("storage cleanup settings", () => {
+  it("decodes older settings without enabling retirement and accepts additive covered classes",()=>{
+    const legacy=decodeServerSettings({storageCleanup:{worktreeSettledAfterDays:null}});
+    expect(legacy.storageCleanup.worktreeSettledScope).toBe("branch-retained");
+    expect(legacy.storageCleanup.worktreeCoveredDiscard).toEqual([]);
+    expect(legacy.storageCleanup.worktreeSettledAfterDays).toBeNull();
+    expect(decodeServerSettingsPatch({storageCleanup:{worktreeCoveredDiscard:["declared_cache"]}}).storageCleanup?.worktreeCoveredDiscard).toEqual(["declared_cache"]);
+  });
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
     expect(decodeServerSettings({}).storageCleanup).toEqual({
@@ -37,6 +44,8 @@ describe("storage cleanup settings", () => {
       worktreeOnDelete: false,
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
       browserArtifactsAfterDays: null,
       logsAfterDays: null,
     });

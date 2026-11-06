@@ -1,3 +1,4 @@
+import { WorkspaceRetirementOutcome } from "./jones/workspaceRetirement.ts";
 import * as Schema from "effect/Schema";
 
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -111,6 +112,8 @@ export const WorktreeProvenanceEntry = Schema.Struct({
 export type WorktreeProvenanceEntry = typeof WorktreeProvenanceEntry.Type;
 
 export const WorktreeMcpStatusResult = Schema.Struct({
+  retirement: Schema.optionalKey(WorkspaceRetirementOutcome),
+  retirementObservation: Schema.optionalKey(Schema.Literals(["recorded","none","unavailable"])),
   provenance: Schema.optional(Schema.Array(WorktreeProvenanceEntry)),
   attached: Schema.Boolean,
   worktreePath: Schema.NullOr(TrimmedNonEmptyString),

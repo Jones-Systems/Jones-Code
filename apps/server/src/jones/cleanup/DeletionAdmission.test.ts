@@ -21,6 +21,8 @@ const testLayer = Receipts.layer.pipe(
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const rules: WorktreeCleanupRules = {
   worktreeKeepWhen: "uncommitted-changes",
+  worktreeSettledScope: "branch-retained",
+  worktreeCoveredDiscard: [],
   worktreeAfterDays: null,
   worktreeSettledAfterDays: null,
   worktreeOnDelete: true,

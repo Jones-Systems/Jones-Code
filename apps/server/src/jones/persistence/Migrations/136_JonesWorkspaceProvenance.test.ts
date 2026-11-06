@@ -18,7 +18,7 @@ it.effect(
       const ledger = yield* sql`SELECT * FROM effect_sql_migrations ORDER BY migration_id`;
       const transitions = yield* sql`SELECT * FROM jones_workspace_lifecycle_transitions`;
       const bindings = yield* sql`SELECT * FROM jones_workspace_lifecycle_bindings`;
-      assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), [
+      assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id])=>id<=136)), [
         [136, "WorkspaceProvenance"],
       ]);
       const after = yield* sql<{
@@ -53,6 +53,6 @@ it.effect(
         yield* sql`SELECT * FROM pragma_foreign_key_list('jones_workspace_provenance_facts')`,
         [],
       );
-      assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      assert.deepEqual(yield* runJonesMigrations(jonesMigrationEntries.filter(([id])=>id<=136)), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );

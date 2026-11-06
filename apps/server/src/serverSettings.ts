@@ -1,3 +1,4 @@
+import { guardRetentionSettings } from "./jones/workspaceRetirement/RetentionGuard.ts";
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
@@ -1013,7 +1014,7 @@ const make = Effect.gen(function* () {
         yield* Cache.set(settingsCache, cacheKey, { settings: next, parseFailure: Option.none() });
         yield* emitChange(next);
         return resolveTextGenerationProvider(materialized);
-      }),
+      }).pipe(effect=>guardRetentionSettings(sql,patch,effect),Effect.mapError(cause=>cause instanceof ServerSettingsError ? cause : new ServerSettingsError({settingsPath,operation:"write-file",cause}))),
     );
 
   const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (use) =>

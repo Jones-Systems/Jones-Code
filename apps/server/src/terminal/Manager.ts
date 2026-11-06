@@ -1,3 +1,4 @@
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as NativeSetup from "./NativeSetupControl.ts";
 import {
   LegacyOwnedTerminalControl,
@@ -1615,6 +1616,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const workspaceDuty = yield* WorkspaceDuty.hooks;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
 
@@ -2574,6 +2576,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 detail: "Selected setup shell or arguments contain invalid terminal input.",
               });
             }
+            const releaseWorkspaceDuty = yield* workspaceDuty.hold(input.worktreePath ?? input.cwd, "terminal", `${session.threadId}:${session.terminalId}`).pipe(Effect.orDie);
             invocationEntered = true;
             const spawnResult = yield* trySpawn(
               legacy === undefined && nativeSetup === undefined
@@ -2581,7 +2584,9 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 : shellCandidates.slice(0, 1),
               terminalEnv,
               session,
-            );
+            ).pipe(Effect.onError(() => releaseWorkspaceDuty.pipe(Effect.orDie)));
+            // This independent subscription survives close/kill escalation; only a verified exit releases the claim.
+            spawnResult.process.onExit(() => { runFork(releaseWorkspaceDuty.pipe(Effect.orDie)); });
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
 

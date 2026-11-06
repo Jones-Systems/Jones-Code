@@ -1,3 +1,5 @@
+import * as RetirementGate from "../workspaceRetirement/RemovalGate.ts";
+import { RetirementError } from "../workspaceRetirement/Receipts.ts";
 // @effect-diagnostics nodeBuiltinImport:off - Direct lstat distinguishes ENOENT from unreadable targets.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -157,6 +159,7 @@ const assertOrdinal = (startOrdinal: number) =>
 
 /** Reports observations only. Durable start, consent, reservation and outcome qualification belong to EventSink. */
 const makeDeletionWorktreeRemoval = Effect.gen(function* () {
+  const retirement = yield* RetirementGate.RemovalGate;
   const filesystem = yield* DeletionWorktreeFilesystem;
   const attemptedStarts = new Set<string>();
   const git = yield* DeletionWorktreeGit;
@@ -327,26 +330,12 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
         before,
         yield* inspectTarget(target),
       );
-    const operation = yield* git
-      .execute({
-        operation: "DeletionWorktreeRemoval.executeStarted",
-        cwd: target.projectRoot,
-        args: ["worktree", "remove", ...(target.force ? ["--force"] : []), "--", target.path],
-        timeoutMs: 30_000,
-        maxOutputBytes: 65_536,
-        appendTruncationMarker: true,
-        allowNonZeroExit: true,
-      })
-      .pipe(
-        Effect.map((result): DeletionWorktreeRemovalObservationV1["operation"] => ({
-          kind: "executed",
-          exitCode: result.exitCode,
-          completion: result.stdoutTruncated || result.stderrTruncated ? "unknown" : "exited",
-        })),
-        Effect.orElseSucceed(
-          () => ({ kind: "executed", exitCode: null, completion: "unknown" }) as const,
-        ),
-      );
+    const operation = yield* retirement.remove(start,
+      revalidateStart(start,startOrdinal).pipe(Effect.mapError(cause=>new RetirementError({target:target.path,reason:"recorded_start_revalidation_failed",cause}))),
+    ).pipe(
+      Effect.map(result => ({kind:"executed" as const,...result})),
+      Effect.mapError(cause=>new DeletionWorktreeRemovalPreconditionError({reason:cause.reason,cause})),
+    );
     return yield* observation(start, startOrdinal, operation, before, yield* inspectTarget(target));
   });
   const observeStarted: DeletionWorktreeRemovalProducer["observeStarted"] = Effect.fn(

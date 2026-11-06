@@ -23,7 +23,7 @@ export interface QualificationResult {
   schema:"workspace-qualification/v1"; authority_effect:"none"; outcome:"retirable"|"hold"|"unknown";
   level:"contained"|"branch-retained"|null; reasons:string[]; decision:"propose"|"hold"|"unknown";
   binding?:Binding; head?:string; branch?:string|null; containingRefs?:string[]; preservationTips?:string[];
-  ignored?:IgnoredResult[]; consumers?:ReturnType<typeof consumerDecision>; capturedConfig?:Record<string,string>;
+  untrackedPaths?:string[]; ignored?:IgnoredResult[]; consumers?:ReturnType<typeof consumerDecision>; capturedConfig?:Record<string,string>;
   sparsePatterns?:string; fingerprint?:string; observationMs:number;
   details?:ReasonDetail[]; lineageObservation?:Awaited<ReturnType<typeof completionLineage>>;
 }
@@ -52,7 +52,7 @@ export async function qualify(input:QualificationInput):Promise<QualificationRes
       });
     });
     result.observationMs=performance.now()-started;
-    result.fingerprint=sha256(canonical({...result,observationMs:0,fingerprint:undefined}));
+    result.fingerprint=sha256(canonical({binding:result.binding,head:result.head,branch:result.branch,containingRefs:result.containingRefs,preservationTips:result.preservationTips,untrackedPaths:result.untrackedPaths,ignored:result.ignored,capturedConfig:result.capturedConfig,sparsePatterns:result.sparsePatterns,reasons:result.reasons,level:result.level}));
     return result;
   };
   try {
@@ -76,6 +76,8 @@ export async function qualify(input:QualificationInput):Promise<QualificationRes
       const code=item.slice(0,2), path=item.slice(3);
       if(code==="??") untracked.push(path);else {reasons.add("dirty_tracked");if(code.includes("R")||code.includes("C")) i++;}
     }
+    result.untrackedPaths=untracked;
+    if(untracked.length>10000) reasons.add("untracked_paths_bound");
     if(untracked.some(path=>input.coverage?.keepMode!=="tracked-changes" || !input.coverage?.exactRoots?.includes(Path.join(current.path,path)))) reasons.add("untracked");
     const flags=(await g(["ls-files","-v","-z"])).toString().split("\0").filter(line=>line && (line[0]===line[0]!.toLowerCase() || line[0]==="S"));
     if(flags.length>2000) reasons.add("index_flags");
@@ -145,6 +147,6 @@ export async function qualify(input:QualificationInput):Promise<QualificationRes
 // J3 must invoke this while holding the reservation; this helper supplies no exclusion or deletion authority.
 export async function finalCheck(input:QualificationInput,previous:QualificationResult) {
   const fresh=await qualify(input);
-  const fact=(r:QualificationResult)=>canonical({binding:r.binding,head:r.head,branch:r.branch,containingRefs:r.containingRefs,preservationTips:r.preservationTips,ignored:r.ignored,capturedConfig:r.capturedConfig,sparsePatterns:r.sparsePatterns});
+  const fact=(r:QualificationResult)=>canonical({binding:r.binding,head:r.head,branch:r.branch,containingRefs:r.containingRefs,preservationTips:r.preservationTips,untrackedPaths:r.untrackedPaths,ignored:r.ignored,capturedConfig:r.capturedConfig,sparsePatterns:r.sparsePatterns});
   return {result:fresh,conflict:fresh.outcome!=="retirable" || fact(fresh)!==fact(previous)};
 }

@@ -1,3 +1,8 @@
+import * as RetirementOwnerAction from "./jones/workspaceRetirement/OwnerAction.ts";
+import type { WorkspaceRetirementAction } from "@t3tools/contracts";
+import * as RetirementGate from "./jones/workspaceRetirement/RemovalGate.ts";
+import * as RetirementRuntime from "./jones/workspaceRetirement/Runtime.ts";
+import { RetirementError } from "./jones/workspaceRetirement/Receipts.ts";
 import { backgroundRead, interactiveRead } from "./jones/serverParallelism/readClassification.ts";
 import { LifecycleError } from "./jones/workspaceLifecycle/Protocol.ts";
 import { withOperation } from "./jones/workspaceLifecycle/NativeOperation.ts";
@@ -53,8 +58,6 @@ import * as Settings from "./serverSettings.ts";
 import * as TerminalManager from "./terminal/Manager.ts";
 import { isFilesystemRoot, managedWorktreesDirectories } from "./worktreesDirectory.ts";
 import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
-import { removeLinkedWorktree } from "./vcs/worktreeRemoval.ts";
-import { withWorkspaceLease } from "./workspace/workspaceLease.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { isNetworkPath } from "@t3tools/shared/path";
@@ -82,8 +85,6 @@ const decodePnpmModulesManifest = Schema.decodeUnknownEffect(
 );
 
 const DAY_MS = 86_400_000;
-// Give settle scripts time to open terminals that protect the worktree.
-const SETTLE_SCRIPT_GRACE_MS = 60_000;
 // Worktree creation can precede its thread row, including review-guide checkouts.
 const ORPHAN_WORKTREE_GRACE_MS = 60 * 60 * 1_000;
 
@@ -214,6 +215,7 @@ export function storageCleanupPullRequestMerged(
 export class StorageCleanup extends Context.Service<
   StorageCleanup,
   {
+    readonly retirement: (input:WorkspaceRetirementAction)=>Effect.Effect<StorageCleanupReport,ServerSettingsError>;
     readonly runNow: Effect.Effect<StorageCleanupReport, ServerSettingsError>;
     readonly latestReport: Effect.Effect<StorageCleanupReport | null>;
     readonly reports: Stream.Stream<StorageCleanupReport | null>;
@@ -223,6 +225,7 @@ export class StorageCleanup extends Context.Service<
 
 const make = Effect.gen(function* () {
   const config = yield* ServerConfig.ServerConfig;
+  const retirementAction = yield* RetirementOwnerAction.make;
   const settingsService = yield* Settings.ServerSettingsService;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
   const engine = yield* Orchestrator.OrchestratorV2;
@@ -236,6 +239,7 @@ const make = Effect.gen(function* () {
         Layer.provide(
           DeletionWorktreeRemoval.producerLayer.pipe(
             Layer.provide(DeletionWorktreeRemoval.gitLayer),
+            Layer.provide(RetirementGate.layer),
           ),
         ),
       ),
@@ -599,143 +603,6 @@ const make = Effect.gen(function* () {
     return file === undefined ? null : `has ignored files (${file})`;
   });
 
-  const submoduleRemoval = Effect.fn("StorageCleanup.submoduleRemoval")(
-    function* (cwd: string, rules: WorktreeCleanupRules) {
-      const inspect = (args: string[], maxOutputBytes = 64 * 1024) =>
-        git.execute({
-          operation: "StorageCleanup.submodules",
-          cwd,
-          args,
-          maxOutputBytes,
-        });
-      const admin = yield* inspect(["rev-parse", "--absolute-git-dir"]);
-      if (admin.stdoutTruncated || admin.stderrTruncated)
-        return { force: false, reason: "submodule inspection exceeded the limit" };
-      const modules = path.join(admin.stdout.replace(/\n$/, ""), "modules");
-      const stored = yield* fs.exists(modules);
-      if (!stored && !(yield* fs.exists(path.join(cwd, ".gitmodules"))))
-        return { force: false, reason: null };
-      const populated = yield* inspect([
-        "submodule",
-        "foreach",
-        "--recursive",
-        "--quiet",
-        'printf "%s\\0" "$toplevel/$sm_path"',
-      ]);
-      if (populated.stdoutTruncated || populated.stderrTruncated)
-        return { force: false, reason: "submodule inspection exceeded the limit" };
-      const paths = populated.stdout.split("\0").filter(Boolean);
-      const pending = [modules];
-      for (const submodule of paths) {
-        const directory = yield* inspect(["-C", submodule, "rev-parse", "--absolute-git-dir"]);
-        if (directory.stdoutTruncated || directory.stderrTruncated)
-          return { force: false, reason: "submodule inspection exceeded the limit" };
-        pending.push(directory.stdout.replace(/\n$/, ""));
-      }
-      const visited = new Set<string>();
-      while (pending.length > 0) {
-        const directory = pending.pop()!;
-        if (!(yield* fs.exists(directory))) continue;
-        const canonical = yield* fs.realPath(directory);
-        if (visited.has(canonical)) continue;
-        visited.add(canonical);
-        if (visited.size > 10_000)
-          return { force: false, reason: "submodule inspection exceeded the limit" };
-        if ((yield* fs.stat(directory)).type !== "Directory")
-          return { force: false, reason: "submodule repository could not be inspected" };
-        if (yield* fs.exists(path.join(directory, "HEAD"))) {
-          const unpushed = yield* inspect([
-            "--git-dir",
-            directory,
-            "--work-tree",
-            cwd,
-            "rev-list",
-            "--max-count=1",
-            "HEAD",
-            "--all",
-            "--reflog",
-            "--not",
-            "--remotes",
-          ]);
-          if (unpushed.stdoutTruncated || unpushed.stderrTruncated)
-            return { force: false, reason: "submodule inspection exceeded the limit" };
-          if (unpushed.stdout.trim() !== "")
-            return { force: false, reason: "submodule has commits not on a remote-tracking ref" };
-          pending.push(path.join(directory, "modules"));
-        } else {
-          for (const name of yield* fs.readDirectory(directory))
-            pending.push(path.join(directory, name));
-        }
-      }
-      // Check files after walking stored history to shorten the gap before forced removal.
-      for (const submodule of paths) {
-        const changes = yield* localChangesReason(submodule, rules);
-        if (changes !== null) return { force: false, reason: `submodule ${changes}` };
-      }
-      const force = stored || paths.length > 0;
-      if (force && rules.worktreeKeepWhen !== "tracked-changes") {
-        const root = yield* fs.realPath(cwd);
-        // Git status and foreach omit files inside deinitialized gitlink directories.
-        const populatedPaths = new Set(paths.map(pathKey));
-        const unchecked: string[] = [];
-        for (const repository of [root, ...paths]) {
-          const index = yield* inspect(
-            ["-C", repository, "ls-files", "--stage", "-z"],
-            16 * 1024 * 1024,
-          );
-          if (index.stdoutTruncated || index.stderrTruncated)
-            return { force: false, reason: "submodule inspection exceeded the limit" };
-          for (const entry of index.stdout.split("\0")) {
-            if (!entry.startsWith("160000 ")) continue;
-            const submodule = path.resolve(repository, entry.slice(entry.indexOf("\t") + 1));
-            if (!inside(root, submodule))
-              return { force: false, reason: "submodules could not be inspected" };
-            if (!populatedPaths.has(pathKey(submodule)) && (yield* fs.exists(submodule)))
-              unchecked.push(submodule);
-          }
-        }
-        let inspected = unchecked.length;
-        while (unchecked.length > 0) {
-          if (inspected > 10_000)
-            return { force: false, reason: "submodule inspection exceeded the limit" };
-          const target = unchecked.pop()!;
-          if (
-            (yield* fs.realPath(target)) !== path.resolve(target) ||
-            (yield* fs.stat(target)).type !== "Directory"
-          )
-            return { force: false, reason: "submodule has local files" };
-          if (path.basename(target) === "node_modules") continue;
-          const names = yield* fs.readDirectory(target);
-          inspected += names.length;
-          for (const name of names) unchecked.push(path.join(target, name));
-        }
-      }
-      return { force, reason: null };
-    },
-    Effect.orElseSucceed(() => ({ force: false, reason: "submodules could not be inspected" })),
-  );
-
-  const cleanupGit = Effect.fn("StorageCleanup.cleanupGit")(function* (
-    cwd: string,
-    args: string[],
-    command: string,
-  ) {
-    const result = yield* git.execute({
-      operation: "StorageCleanup.cleanupGit",
-      cwd,
-      args,
-      allowNonZeroExit: true,
-      timeoutMs: 300_000,
-    });
-    if (result.exitCode !== 0)
-      return yield* new GitCommandError({
-        operation: "StorageCleanup.cleanupGit",
-        command,
-        cwd,
-        detail: result.stderr.trim().split(/\r?\n/)[0]?.slice(0, 1000) || "command failed",
-      });
-  });
-
   const cleanWorktrees = Effect.fn("StorageCleanup.cleanWorktrees")(function* (
     serverSettings: ServerSettings,
     now: number,
@@ -860,15 +727,6 @@ const make = Effect.gen(function* () {
           return keep("repository or branch changed");
         const changes = yield* localChangesReason(worktreePath, settings);
         if (changes !== null) return keep(changes);
-        if (
-          group.some(
-            (member) =>
-              member.settledAt !== null &&
-              now - Math.max(DateTime.toEpochMillis(member.updatedAt), activityAt) <
-                SETTLE_SCRIPT_GRACE_MS,
-          )
-        )
-          return keep("settled moments ago");
         const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
         const old =
           !deleted &&
@@ -1090,69 +948,26 @@ const make = Effect.gen(function* () {
           else yield* deletionRemoval.observe(admission.start.effectId);
           if (yield* fs.exists(worktreePath)) return keep("qualified deletion removal is pending");
         } else {
-          // Clean only untracked files. Ordinary worktrees retain Git's final tracked-edit check.
-          const preservationCheck = Effect.gen(function* () {
-            if ((yield* blockedSinceCheck()) !== null)
-              return yield* new LifecycleError({ reason: "stale" });
-            const latest = resolveWorktreeCleanup(
-              yield* settingsService.getSettings,
-              thread.projectId,
-            );
-            if (
-              Object.keys(settings).some(
-                (key) =>
-                  latest[key as keyof typeof settings] !== settings[key as keyof typeof settings],
-              )
-            )
-              return yield* new LifecycleError({ reason: "stale" });
+          const result = yield* RetirementRuntime.evaluate({
+            cause: settled ? "settlement" : "sweep", worktree: worktreePath,
+            projectRoot: project.workspaceRoot, threadId: thread.id, rules: settings, execute: true,
+            admit: withOperation({id:`cleanup:${thread.id}`,kind:"preservation",threadId:thread.id,worktree:worktreePath,boundaries:["cleanup"],inherit:false,
+              check: Effect.gen(function* () {if((yield* blockedSinceCheck())!==null) return yield* new LifecycleError({reason:"stale"});})},
+              beforeCleanup({threadId:thread.id,boundary:"cleanup",id:`cleanup:${thread.id}`})).pipe(Effect.mapError(cause=>new RetirementError({target:worktreePath,reason:"workspace_preservation_hold",cause}))),
+            revalidate: Effect.gen(function* () {
+              const blocked=yield* blockedSinceCheck();
+              if(blocked!==null) return yield* new RetirementError({target:worktreePath,reason:blocked});
+              const current=resolveWorktreeCleanup(yield* settingsService.getSettings,thread.projectId);
+              if(!Equal.equals(current,settings)) return yield* new RetirementError({target:worktreePath,reason:"settings_changed"});
+            }).pipe(Effect.mapError(cause=>cause instanceof RetirementError ? cause : new RetirementError({target:worktreePath,reason:"observation_failed",cause}))),
           });
-          const preservation = () =>
-            withOperation(
-              {
-                id: `cleanup:${thread.id}`,
-                kind: "preservation",
-                threadId: thread.id,
-                worktree: worktreePath,
-                boundaries: ["cleanup"],
-                inherit: false,
-                check: preservationCheck,
-              },
-              beforeCleanup({
-                threadId: thread.id,
-                boundary: "cleanup",
-                id: `cleanup:${thread.id}`,
-              }),
-            );
-          const semanticVeto = yield* preservation().pipe(Effect.result);
-          if (semanticVeto._tag === "Failure")
-            return keep("workspace preservation assessment is unavailable or changed");
-          if (settings.worktreeKeepWhen === "tracked-changes")
-            yield* cleanupGit(worktreePath, ["clean", "-ffdx"], "git clean");
-          const submodules = yield* submoduleRemoval(worktreePath, settings);
-          if (submodules.reason !== null) return keep(submodules.reason);
-          if (submodules.force) {
-            const changes = yield* localChangesReason(worktreePath, settings);
-            if (changes !== null) return keep(changes);
-          }
-          const finalSemanticVeto = yield* preservation().pipe(Effect.result);
-          if (finalSemanticVeto._tag === "Failure")
-            return keep("workspace preservation assessment is unavailable or changed");
-          yield* removeLinkedWorktree({
-            operation: "StorageCleanup.cleanupGit",
-            cwd: project.workspaceRoot,
-            worktreePath,
-            // Git requires force for submodules; recursive checks above cannot make removal atomic.
-            force: submodules.force,
-            execute: git.execute,
-            run: (args) => cleanupGit(project.workspaceRoot, [...args], "git worktree remove"),
-          });
+          if(result.state!=="retired") return keep(result.reasons.join(", ") || "retirement proposed");
         }
         entries.push({ ...entry, outcome: "removed", reason: sentence(removalReason), bytes });
         yield* gitManager.invalidateStatus(project.workspaceRoot);
         // Preserve branch/path so ProviderTurnStartService can recreate the checkout on resume.
         yield* Effect.logInfo("storage cleanup removed worktree", { threadId: thread.id });
       }).pipe(
-        (effect) => withWorkspaceLease(worktreePath, effect),
         Effect.catch((error) =>
           Effect.gen(function* () {
             entries.push({
@@ -1397,6 +1212,7 @@ const make = Effect.gen(function* () {
   });
   yield* start();
   return StorageCleanup.of({
+    retirement: input=>retirementAction(input).pipe(Effect.tap(report=>SubscriptionRef.set(reportRef,report))),
     runNow,
     latestReport: SubscriptionRef.get(reportRef),
     reports: SubscriptionRef.changes(reportRef),

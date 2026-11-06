@@ -1,3 +1,4 @@
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
@@ -278,6 +279,7 @@ export const make = Effect.gen(function* () {
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
   const serviceScope = yield* Effect.scope;
+  const workspaceDuty = yield* WorkspaceDuty.hooks;
   const completionShell = resolveCompletionShell(
     yield* HostProcess.Platform,
     yield* HostProcess.Environment,
@@ -751,6 +753,9 @@ export const make = Effect.gen(function* () {
             onOutputLine: observe.onOutputLine,
           })
         : undefined;
+    const releaseWorkspaceDuty = yield* workspaceDuty.hold(input.worktreePath, trigger === "settle" ? "settle-script" : "setup", input.threadId).pipe(
+      Effect.mapError(cause => new ProjectSetupScriptOperationError({...errorContext,operation:"openTerminal",cause})),
+    );
     const finishProduction = yield* ProjectProduction.begin({threadId:input.threadId,worktreePath:input.worktreePath,trigger,projectId:project.id});
     const lifetime = preparationLifetime ?? serviceScope;
     yield* Scope.addFinalizer(lifetime, finishProduction("cancelled"));
@@ -868,6 +873,7 @@ export const make = Effect.gen(function* () {
     );
 
     const observedCompletion = observed?.completion.pipe(
+      Effect.tap(() => releaseWorkspaceDuty.pipe(Effect.orDie)),
       Effect.tap(result => finishProduction(result.exitCode === null ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed")),
       Effect.tap((result) =>
         native !== undefined
