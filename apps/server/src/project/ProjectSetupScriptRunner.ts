@@ -1,4 +1,3 @@
-import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
@@ -33,6 +32,7 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectService from "./ProjectService.ts";
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as ProjectProduction from "../jones/workspaceRetirement/ProjectProduction.ts";
 
 export interface ProjectSetupScriptRunnerResultNoScript {
@@ -273,13 +273,13 @@ function wrapCommandForCompletion(
 
 /** @public */
 export const make = Effect.gen(function* () {
+  const workspaceDuty = yield* WorkspaceDuty.hooks;
   const projects = yield* ProjectService.ProjectService;
   const threads = yield* ProjectionStore.ProjectionStoreV2;
   const terminalManager = yield* TerminalManager.TerminalManager;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const crypto = yield* Crypto.Crypto;
   const serviceScope = yield* Effect.scope;
-  const workspaceDuty = yield* WorkspaceDuty.hooks;
   const completionShell = resolveCompletionShell(
     yield* HostProcess.Platform,
     yield* HostProcess.Environment,
@@ -606,8 +606,9 @@ export const make = Effect.gen(function* () {
       // Before client attachment, truecolor probes wait for terminal replies nobody can send.
       COLORTERM: "",
     };
-    const observeRequested = input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
-    const observe = input.observeCompletion ?? {};
+    const observeRequested =
+      input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
+    const observe = input.observeCompletion ?? (legacy !== undefined || native !== undefined ? {} : undefined);
     const completionToken =
       captured?.completionToken ??
       (observe ? (yield* crypto.randomUUIDv4().pipe(Effect.orDie)).replaceAll("-", "") : null);
@@ -753,10 +754,18 @@ export const make = Effect.gen(function* () {
             onOutputLine: observe.onOutputLine,
           })
         : undefined;
-    const releaseWorkspaceDuty = yield* workspaceDuty.hold(input.worktreePath, trigger === "settle" ? "settle-script" : "setup", input.threadId).pipe(
-      Effect.mapError(cause => new ProjectSetupScriptOperationError({...errorContext,operation:"openTerminal",cause})),
-    );
-    const finishProduction = yield* ProjectProduction.begin({threadId:input.threadId,worktreePath:input.worktreePath,trigger,projectId:project.id});
+    // Ordinary setup keeps native completion semantics; its terminal holds the real duty.
+    const releaseWorkspaceDuty = observed === undefined ? Effect.void : yield* workspaceDuty.hold(
+      input.worktreePath, trigger === "settle" ? "settle-script" : "setup", input.threadId,
+    ).pipe(Effect.mapError((cause) => new ProjectSetupScriptOperationError({
+      ...errorContext, operation: "openTerminal", cause,
+    })));
+    const finishProduction = yield* ProjectProduction.begin({
+      threadId: input.threadId,
+      worktreePath: input.worktreePath,
+      trigger,
+      projectId: project.id,
+    });
     const lifetime = preparationLifetime ?? serviceScope;
     yield* Scope.addFinalizer(lifetime, finishProduction("cancelled"));
     // Subscribe before opening; owned hooks may resolve a shell different from the host default.
@@ -781,7 +790,11 @@ export const make = Effect.gen(function* () {
           readiness?.unsubscribe();
         }),
       ),
-      Effect.onExit(exit => Exit.isFailure(exit) ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed") : Effect.void),
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit)
+          ? releaseWorkspaceDuty.pipe(Effect.orDie, Effect.andThen(finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed")))
+          : Effect.void,
+      ),
     );
     const write = Effect.suspend(() => {
       const writeInput = {
@@ -850,7 +863,11 @@ export const make = Effect.gen(function* () {
       Effect.onExit((exit) =>
         (Exit.isFailure(exit) ? cleanupObservation : Effect.void).pipe(
           Effect.andThen(Deferred.done(written, exit)),
-          Effect.andThen(Exit.isFailure(exit) ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed") : Effect.void),
+          Effect.andThen(
+            Exit.isFailure(exit)
+              ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed")
+              : Effect.void,
+          ),
         ),
       ),
       Effect.catchCause((cause) =>
@@ -874,7 +891,11 @@ export const make = Effect.gen(function* () {
 
     const observedCompletion = observed?.completion.pipe(
       Effect.tap(() => releaseWorkspaceDuty.pipe(Effect.orDie)),
-      Effect.tap(result => finishProduction(result.exitCode === null ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed")),
+      Effect.tap((result) =>
+        finishProduction(
+          result.exitCode === null ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed",
+        ),
+      ),
       Effect.tap((result) =>
         native !== undefined
           ? native.afterCompletion(result).pipe(
@@ -908,13 +929,18 @@ export const make = Effect.gen(function* () {
       observedCompletion === undefined
         ? undefined
         : yield* Effect.cached(
-              writeCompletion.pipe(
-                Effect.andThen(observedCompletion),
-                Effect.onInterrupt(() => cancelPendingWrite),
-              ),
-            )
-          ;
-    if(!owned && completion) yield* completion.pipe(Effect.catchCause(()=>Effect.void),Effect.forkIn(lifetime));
+            owned
+              ? writeCompletion.pipe(
+                  Effect.andThen(observedCompletion),
+                  Effect.onInterrupt(() => cancelPendingWrite),
+                )
+              : observedCompletion,
+          );
+    if (!owned && completion)
+      yield* completion.pipe(
+        Effect.catchCause(() => Effect.void),
+        Effect.forkIn(lifetime),
+      );
 
     return {
       status: "started",

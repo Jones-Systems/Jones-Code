@@ -2576,7 +2576,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 detail: "Selected setup shell or arguments contain invalid terminal input.",
               });
             }
-            const releaseWorkspaceDuty = yield* workspaceDuty.hold(input.worktreePath ?? input.cwd, "terminal", `${session.threadId}:${session.terminalId}`).pipe(Effect.orDie);
+            const releaseWorkspaceDuty = yield* workspaceDuty.hold(input.worktreePath ?? input.cwd, session.terminalId.startsWith("settle-") ? "settle-script" : session.terminalId.startsWith("setup-") ? "setup" : "terminal", `${session.threadId}:${session.terminalId}`).pipe(Effect.orDie);
             invocationEntered = true;
             const spawnResult = yield* trySpawn(
               legacy === undefined && nativeSetup === undefined

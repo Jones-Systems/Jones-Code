@@ -35,6 +35,7 @@
         "apps/server/src/jones/workspaceRetirement/ProjectProduction.test.ts",
         "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",
         "apps/server/src/project/ProjectSetupScriptRunner.test.ts",
+        "apps/server/src/jones/platformCompatibility/project/ProjectSetupScriptRunner.test.ts",
         "scripts/jones/worktree-setup/setup.node-test.mjs",
         "scripts/jones/worktree-setup/entrypoint.node-test.mjs"
       ],
