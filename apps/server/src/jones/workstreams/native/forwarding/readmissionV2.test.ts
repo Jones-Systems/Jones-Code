@@ -407,7 +407,7 @@ const scenario = () => {
       }),
       Layer.succeed(Source.SourceIssuer, {
         authority: { readCurrent: authority },
-        build: Effect.succeed(Option.some(build)),
+        build: Effect.succeedSome(build),
       }),
       Layer.succeed(Source.SourceSetupOwner, {
         verifyUnchanged: outside("owner").pipe(
@@ -1146,7 +1146,7 @@ const retainedProvider = (f: SourceFixture, beforeClaim = Effect.void) =>
       {
         ...fixture.ports,
         authority: { readCurrent: Effect.sync(() => f.state.authority) },
-        build: Effect.succeed(Option.some(build)),
+        build: Effect.succeedSome(build),
         attempts: {
           ...fixture.ports.attempts,
           startDispatch: (request, at) =>

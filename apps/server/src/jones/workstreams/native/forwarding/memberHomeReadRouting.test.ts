@@ -86,9 +86,7 @@ it.effect.each(["fixed", "revoked", "reduced"] as const)(
         call: (input) => {
           calls.push(input);
           // oxlint-disable-next-line t3code/no-inline-schema-compile -- The peer supplies its result decoder per invocation.
-          return Schema.decodeUnknownEffect(input.success)({ sentinel: "synthetic" }).pipe(
-            Effect.orDie,
-          );
+          return Schema.decodeEffect(input.success)({ sentinel: "synthetic" }).pipe(Effect.orDie);
         },
       }),
     );

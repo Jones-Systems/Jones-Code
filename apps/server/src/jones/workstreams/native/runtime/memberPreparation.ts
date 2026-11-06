@@ -81,7 +81,7 @@ const make = Effect.gen(function* () {
                     Effect.as(prepared.authority),
                   ),
                 },
-                build: Effect.succeed(Option.some(prepared.build)),
+                build: Effect.succeedSome(prepared.build),
               }),
               Context.add(Source.SourceSetupOwner, {
                 verifyUnchanged: check.pipe(

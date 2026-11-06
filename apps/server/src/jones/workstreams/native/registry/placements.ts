@@ -124,7 +124,7 @@ export const layer = Layer.effect(
                     return true;
                   },
                   catch: () => false,
-                }).pipe(Effect.catch(() => Effect.succeed(false)));
+                }).pipe(Effect.orElseSucceed(() => false));
                 if (
                   !attested ||
                   !r.registration.evidence ||

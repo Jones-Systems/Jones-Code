@@ -6,7 +6,6 @@ import type { WorkstreamsSetupOwnerDescriptor as Descriptor } from "@t3tools/con
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Context from "effect/Context";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Authority from "../../../../environment/NativeStoreAuthority.ts";
 import type { DesktopNativeEnrollmentOwner } from "../../enrollment/desktopOwner.ts";
@@ -195,7 +194,7 @@ export const setupOwnerLayer = (operation: QualifiedSetupOperation) =>
         Layer.succeed(Source.SourceSetupOwner, { verifyUnchanged: facts.check }),
         Layer.succeed(Source.SourceIssuer, {
           authority: facts.authority,
-          build: Effect.succeed(Option.some(facts.descriptor.build)),
+          build: Effect.succeedSome(facts.descriptor.build),
         }),
       );
     }),

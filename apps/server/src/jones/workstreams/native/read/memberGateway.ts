@@ -146,7 +146,7 @@ const make = Effect.gen(function* () {
               result.value.context.authorization_revision !== before.authorization_revision))
         )
           return yield* new RegistryError({ code: "forbidden" });
-        return yield* Schema.decodeUnknownEffect(schema)(result.value, {
+        return yield* Schema.decodeEffect(schema)(result.value, {
           onExcessProperty: "error",
         }).pipe(Effect.mapError(() => new RegistryError({ code: "invalid_response" })));
       }).pipe(

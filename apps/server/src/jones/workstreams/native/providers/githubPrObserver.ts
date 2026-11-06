@@ -266,7 +266,7 @@ const make = Effect.gen(function* () {
             return { response, body };
           }).pipe(
             Effect.timeoutOption(GITHUB_PR_OBSERVATION_TIMEOUT_MS),
-            Effect.catchTags({ WorkstreamsProviderError: () => Effect.succeed(Option.none()) }),
+            Effect.catchTags({ WorkstreamsProviderError: () => Effect.succeedNone }),
           ),
         (controller) => Effect.sync(() => controller.abort()),
       );

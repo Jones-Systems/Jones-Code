@@ -6,7 +6,6 @@ import * as Wire from "@t3tools/contracts/jones/workstreamsForwarding";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Option from "effect/Option";
 import * as HttpClient from "effect/http/HttpClient";
 import * as Peer from "../../../../peer/PeerMcpClient.ts";
 import * as Links from "../../../../peer/PeerLinks.ts";
@@ -242,11 +241,11 @@ it.effect(
     const links = Layer.succeed(Links.PeerLinks, {
       link: () => Effect.die("unused"),
       list: Effect.succeed([]),
-      get: () => Effect.succeed(Option.none()),
+      get: () => Effect.succeedNone,
       unlink: () => Effect.succeed(false),
       resolve: () => Effect.die("unused"),
       recordOutcome: () => Effect.void,
-      currentGeneration: () => Effect.succeed(Option.some("opaque:replacement")),
+      currentGeneration: () => Effect.succeedSome("opaque:replacement"),
     });
     const network = Layer.succeed(
       HttpClient.HttpClient,

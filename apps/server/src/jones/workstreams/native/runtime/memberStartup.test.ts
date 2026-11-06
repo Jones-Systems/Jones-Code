@@ -225,7 +225,7 @@ const fixture = Effect.gen(function* () {
   let read = (
     _call: number,
   ): Effect.Effect<Option.Option<typeof record>, Members.MemberEnrollmentError> =>
-    Effect.succeed(Option.some(record));
+    Effect.succeedSome(record);
   const forbidden = () =>
     Effect.die("Startup must not issue, bind, materialize or use home authority");
   const members = Members.MemberEnrollments.of({
@@ -246,7 +246,7 @@ const fixture = Effect.gen(function* () {
   });
   const keyReads: string[] = [];
   let acquireKey = (): Effect.Effect<Option.Option<Uint8Array>, Secrets.SecretStoreReadError> =>
-    Effect.succeed(Option.some(new Uint8Array(32).fill(7)));
+    Effect.succeedSome(new Uint8Array(32).fill(7));
   const secrets = Secrets.ServerSecretStore.of({
     get: (name) => {
       keyReads.push(name);
@@ -487,7 +487,7 @@ it.effect(
       const f = yield* fixture;
       yield* Effect.gen(function* () {
         yield* seed;
-        f.setRead(() => Effect.succeed(Option.none()));
+        f.setRead(() => Effect.succeedNone);
         fenced(yield* selectMember(f.input), "authority_fenced");
         for (const code of [
           "authority_unavailable",
@@ -508,7 +508,7 @@ it.effect(
           let calls = 0;
           f.setRead(() =>
             ++calls === 1
-              ? Effect.succeed(Option.some(f.record))
+              ? Effect.succeedSome(f.record)
               : Effect.fail(new Members.MemberEnrollmentError({ code })),
           );
           fenced(
@@ -533,7 +533,7 @@ it.effect(
       const f = yield* fixture;
       yield* Effect.gen(function* () {
         yield* seed;
-        f.setAcquireKey(() => Effect.succeed(Option.none()));
+        f.setAcquireKey(() => Effect.succeedNone);
         fenced(yield* selectMember(f.input), "key_unavailable");
         f.setAcquireKey(() =>
           Effect.fail(
@@ -544,7 +544,7 @@ it.effect(
           ),
         );
         fenced(yield* selectMember(f.input), "key_unavailable");
-        f.setAcquireKey(() => Effect.succeed(Option.some(new Uint8Array(2))));
+        f.setAcquireKey(() => Effect.succeedSome(new Uint8Array(2)));
         fenced(yield* selectMember(f.input), "key_unavailable");
         expect(f.keyReads.every((key) => key === "workstreams-content-key-local-key")).toBe(true);
         const sql = yield* SqlClient.SqlClient;
@@ -573,21 +573,19 @@ it.effect(
         f.setRead(() =>
           changed
             ? Effect.fail(new Members.MemberEnrollmentError({ code: "link_changed" }))
-            : Effect.succeed(Option.some(f.record)),
+            : Effect.succeedSome(f.record),
         );
         fenced(yield* selectMember(f.input), "authority_fenced");
         changed = false;
         // Even a new apparently valid association may not replace the captured original bytes.
         f.setRead(() =>
-          Effect.succeed(
-            Option.some(
-              changed
-                ? {
-                    ...f.record,
-                    local_binding: { ...f.record.local_binding, pin_bound_revision: 3 },
-                  }
-                : f.record,
-            ),
+          Effect.succeedSome(
+            changed
+              ? {
+                  ...f.record,
+                  local_binding: { ...f.record.local_binding, pin_bound_revision: 3 },
+                }
+              : f.record,
           ),
         );
         fenced(yield* selectMember(f.input), "binding_mismatch");

@@ -468,6 +468,12 @@ it.effect(
           [137, "NativeCreationLeaseRenewal"],
           [138, "WorkspaceRetirement"],
           [139, "ConversationWorkspace"],
+          [140, "WorkstreamsNative"],
+          [141, "WorkstreamsSourceEnrollments"],
+          [142, "WorkstreamsRollupAttempts"],
+          [143, "WorkstreamsPeerSessionPins"],
+          [144, "WorkstreamsMemberBindings"],
+          [145, "WorkstreamsForwardReceipts"],
         ],
       );
       assert.deepStrictEqual(
@@ -783,6 +789,12 @@ it.effect(
       assert.deepStrictEqual(yield* readState, before);
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
         [139, "ConversationWorkspace"],
+        [140, "WorkstreamsNative"],
+        [141, "WorkstreamsSourceEnrollments"],
+        [142, "WorkstreamsRollupAttempts"],
+        [143, "WorkstreamsPeerSessionPins"],
+        [144, "WorkstreamsMemberBindings"],
+        [145, "WorkstreamsForwardReceipts"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type='table'

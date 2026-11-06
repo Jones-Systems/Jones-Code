@@ -31,8 +31,8 @@ export function SetupStatusContent({
       <p>
         {status.registry.state === "not_configured"
           ? native
-            ? "Not configured — configure native Workstreams on this server."
-            : "Not configured — configure Workstreams activation on this server."
+            ? "Not configured: configure native Workstreams on this server."
+            : "Not configured: configure Workstreams activation on this server."
           : status.registry.state === "unavailable"
             ? "Offline. restore the registry connection, then refresh."
             : `Registry ready · ${status.registry.can_write ? "Write access" : "Read-only"}`}

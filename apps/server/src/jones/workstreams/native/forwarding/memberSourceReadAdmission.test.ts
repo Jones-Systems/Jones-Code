@@ -2,7 +2,6 @@ import { expect, it } from "@effect/vitest";
 import { EnvironmentId, WorkstreamsNativeSettlementRequest } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as HomeWire from "@t3tools/contracts/jones/workstreamsHomeBind";
 import * as MemberWire from "@t3tools/contracts/jones/workstreamsMemberEnrollment";
@@ -337,7 +336,7 @@ it.effect.each([
     const actualProvider = makeWorkstreamsNativeProvider(
       {
         ...native.ports,
-        build: Effect.succeed(Option.some(build)),
+        build: Effect.succeedSome(build),
         authority: {
           readCurrent: Effect.succeed({
             environmentId: "member:test",
@@ -364,7 +363,7 @@ it.effect.each([
           ),
       }),
       Layer.mock(Members.MemberEnrollments)({
-        getValidatedByEnrollmentId: () => Effect.succeed(Option.some(bound)),
+        getValidatedByEnrollmentId: () => Effect.succeedSome(bound),
       }),
       Layer.succeed(Pins.PeerSessionPins, {
         forInvocation: (scope, selection) => {

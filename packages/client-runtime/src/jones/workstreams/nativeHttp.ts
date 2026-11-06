@@ -135,7 +135,7 @@ export const fetchEnvironmentNativeWorkstreamExport = Effect.fn(
           Effect.gen(function* () {
             if (response.status === 401) {
               const rejected = yield* decodeCredentialError(yield* response.json);
-              return yield* Effect.fail(rejected);
+              return yield* rejected;
             }
             if (
               response.status !== 200 ||

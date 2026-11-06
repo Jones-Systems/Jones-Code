@@ -134,7 +134,7 @@ const make = Effect.gen(function* () {
                         Effect.as(prepared.authority),
                       ),
                     },
-                    build: Effect.succeed(Option.some(prepared.build)),
+                    build: Effect.succeedSome(prepared.build),
                   }),
                 ).pipe(
                   Context.add(SqlClient.SqlClient, sql),
@@ -193,7 +193,7 @@ const make = Effect.gen(function* () {
                     ),
                   visible: (record, threadId) =>
                     guarded(callers.visible(record, threadId)).pipe(
-                      Effect.catch(() => Effect.succeed(false)),
+                      Effect.orElseSucceed(() => false),
                     ),
                 });
                 return yield* guarded(Effect.suspend(() => use(scopedCallers))).pipe(

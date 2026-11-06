@@ -102,7 +102,7 @@ const fixture = (
   const native = makeWorkstreamsNativeProvider(
     {
       ...ProviderTest.makeProviderFixture().ports,
-      build: Effect.succeed(Option.some(observedBuild)),
+      build: Effect.succeedSome(observedBuild),
     },
     "v2",
   );

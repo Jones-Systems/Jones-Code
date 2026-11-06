@@ -24,6 +24,9 @@ import {
   JonesUpdateRecordRetiredInput,
 } from "./jonesUpdates.ts";
 
+const decodeUpdateInstall = Schema.decodeSync(JonesUpdateInstallInput);
+const decodeUpdateCapability = Schema.decodeSync(JonesUpdateCapability);
+
 // The public API metadata is also consumed by independently upgraded clients.
 // Keep the Jones routes and authentication identity stable through relocation.
 describe("Jones environment HTTP registration", () => {
@@ -204,7 +207,7 @@ it("requires an explicit native attempt without changing ordinary install reques
     ...base,
     transactionId: "b".repeat(64),
   });
-  expect(Schema.decodeSync(JonesUpdateInstallInput)(base)).toEqual(base);
+  expect(decodeUpdateInstall(base)).toEqual(base);
 });
 
 it("selects an exact source by full commit only and keeps older capability shapes decodable", () => {
@@ -215,8 +218,8 @@ it("selects an exact source by full commit only and keeps older capability shape
     expect(() => decode({ targetSource: invalid })).toThrow();
   expect(() => decode({})).toThrow();
   const legacy = { check: true, download: true, install: false };
-  expect(Schema.decodeSync(JonesUpdateCapability)(legacy)).toEqual(legacy);
-  expect(Schema.decodeSync(JonesUpdateCapability)({ ...legacy, exactSource: true })).toEqual({
+  expect(decodeUpdateCapability(legacy)).toEqual(legacy);
+  expect(decodeUpdateCapability({ ...legacy, exactSource: true })).toEqual({
     ...legacy,
     exactSource: true,
   });
@@ -255,7 +258,7 @@ it("requires the complete immutable binding for an optional staged replacement",
     exactSource: true,
     replaceStaged: true,
   };
-  expect(Schema.decodeSync(JonesUpdateCapability)(capability)).toEqual(capability);
+  expect(decodeUpdateCapability(capability)).toEqual(capability);
 });
 
 it("accepts both explicitly versioned registration responses on the local HTTP boundary", () => {

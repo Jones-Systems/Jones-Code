@@ -33,6 +33,12 @@ import {
 import * as Repository from "./NativeCreationRepository.ts";
 import * as RepositorySqlite from "./NativeCreationRepositorySqlite.ts";
 
+const decodePreparationBinding = Schema.decodeEffect(NativePreparationBinding);
+const decodeHistoricalBinding = Schema.decodeEffect(NativeCreationHistoricalBinding);
+const decodeCommand = Schema.decodeEffect(OrchestrationV2Command);
+const decodeExecutionReference = Schema.decodeEffect(NativeCreationExecutionReferenceV2);
+const decodeWholeOperationEvidence = Schema.decodeEffect(NativeCreationWholeOperationEvidence);
+
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
 it.effect("records additive fork migration 3 without changing upstream migration identity", () =>
   Effect.gen(function* () {
@@ -127,7 +133,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repository = yield* Repository.NativeCreationRepository;
   const outbox = yield* Outbox.EffectOutboxV2;
-  const binding = yield* Schema.decodeEffect(NativePreparationBinding)({
+  const binding = yield* decodePreparationBinding({
     backend_instance: "lease-upgrade-backend",
     environment_id: "lease-upgrade-environment",
     project_id: "lease-upgrade-project",
@@ -161,7 +167,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
       }),
     ),
   );
-  const historical = yield* Schema.decodeEffect(NativeCreationHistoricalBinding)({
+  const historical = yield* decodeHistoricalBinding({
     backendInstance: binding.backend_instance,
     environmentId: binding.environment_id,
     projectId: binding.project_id,
@@ -195,7 +201,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     },
     Effect.succeed(historical),
   );
-  const command = yield* Schema.decodeEffect(OrchestrationV2Command)({
+  const command = yield* decodeCommand({
     type: "prepared-run.release",
     commandId: `${prepared.commandId}:native:v2:message`,
     threadId: prepared.threadId,
@@ -207,7 +213,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
     prepared.commandId,
     command.commandId,
   ]);
-  const normalized = yield* Schema.decodeEffect(OrchestrationV2Command)({
+  const normalized = yield* decodeCommand({
     type: "message.dispatch",
     createdBy: "user",
     creationSource: "server",
@@ -221,7 +227,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
   });
   yield* repository.recordNormalizedCommand(claimId, normalized);
   yield* repository.reserveCommand(claimId, command);
-  const reference = yield* Schema.decodeEffect(NativeCreationExecutionReferenceV2)({
+  const reference = yield* decodeExecutionReference({
     version: 2,
     claimId,
     stageCommandId: command.commandId,
@@ -274,7 +280,7 @@ const nativeUpgradeFixture = Effect.gen(function* () {
   );
   const start = yield* repository.startEffectV2!(reference, now, Effect.succeed(historical));
   assert.strictEqual(start.status, "started");
-  const evidence = yield* Schema.decodeEffect(NativeCreationWholeOperationEvidence)({
+  const evidence = yield* decodeWholeOperationEvidence({
     version: 1,
     outcome: "confirmed_success",
     effectId: reference.effectId,

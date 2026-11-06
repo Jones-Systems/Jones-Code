@@ -220,7 +220,7 @@ const baseServices = (filename?: string) =>
       Auth.layer.pipe(
         Layer.provide(
           Layer.succeed(Secrets.ServerSecretStore, {
-            get: () => Effect.succeed(Option.some(Test.keyBytes)),
+            get: () => Effect.succeedSome(Test.keyBytes),
             getOrCreateRandom: () => Effect.succeed(Test.keyBytes),
             set: () => Effect.die("unexpected synthetic write"),
             create: () => Effect.die("unexpected synthetic create"),

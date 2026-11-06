@@ -131,10 +131,9 @@ it.effect(
           assignOperation("primary-ingress-a-000001", a),
           assignOperation("primary-ingress-b-000001", b),
         ];
-        const results = yield* Effect.all(
-          requests.map((request) =>
-            operations.submit({ request, wait_ms: 3000 }).pipe(Effect.result),
-          ),
+        const results = yield* Effect.forEach(
+          requests,
+          (request) => operations.submit({ request, wait_ms: 3000 }).pipe(Effect.result),
           { concurrency: "unbounded" },
         );
         expect(

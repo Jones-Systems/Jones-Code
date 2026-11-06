@@ -78,7 +78,7 @@ const sourceBootstrap = (selection: Admin.InitSelection, action: "plan" | "apply
           const sql = yield* SqlClient.SqlClient;
           const authority =
             action === "apply" ? yield* trusted.bindAuthorityToSqlClient(sql) : trusted.authority;
-          return { authority, build: Effect.succeed(Option.some(trusted.build)) };
+          return { authority, build: Effect.succeedSome(trusted.build) };
         }),
       );
       // Bound authority rechecks owner/source metadata and qualifies main through the owned SQL transaction.

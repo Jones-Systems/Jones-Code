@@ -64,7 +64,7 @@ const ceiling = {
 const signing = Layer.succeed(
   Secrets.ServerSecretStore,
   Secrets.ServerSecretStore.of({
-    get: () => Effect.succeed(Option.some(Test.keyBytes)),
+    get: () => Effect.succeedSome(Test.keyBytes),
     getOrCreateRandom: () => Effect.succeed(Test.keyBytes),
     set: () => Effect.die("Unexpected signing secret write"),
     create: () => Effect.die("Unexpected signing secret creation"),

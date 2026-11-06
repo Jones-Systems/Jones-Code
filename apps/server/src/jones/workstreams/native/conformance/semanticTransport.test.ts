@@ -679,15 +679,15 @@ it.effect(
         command_id: "concurrent-command-000000",
         action: { ...ca.action, workstream_id: b },
       };
-      const results = yield* Effect.all(
-        [ca, cb].map((c) =>
+      const results = yield* Effect.forEach(
+        [ca, cb],
+        (c) =>
           h.transport.submitCommand({
             ...headers,
             command: c,
             body: canonicalJson(c),
             idempotencyKey: c.command_id,
           }),
-        ),
         { concurrency: 2 },
       );
       expect(results.filter((x) => x.state === "committed")).toHaveLength(1);
@@ -833,9 +833,7 @@ it.effect(
             can_write: true,
           });
           expect(status.next_steps.some((x) => x.code === "enroll_native_source")).toBe(false);
-          const backend = yield* Effect.gen(function* () {
-            return yield* McpTools.WorkstreamToolsBackend;
-          }).pipe(
+          const backend = yield* McpTools.WorkstreamToolsBackend.pipe(
             Effect.provide(
               McpHandlers.backendLayer.pipe(
                 Layer.provide(Layer.succeed(Operations.WorkstreamOperations, service)),

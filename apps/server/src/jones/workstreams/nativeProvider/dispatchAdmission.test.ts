@@ -37,7 +37,7 @@ it.effect("checks original caller after durable dispatch claiming, before the en
           checked++;
           expect(binding).toBe(Test.binding);
           expect(request).toBe(Test.request);
-          if (!current) return yield* Effect.fail(new NativeProviderDispatchRefused());
+          if (!current) return yield* new NativeProviderDispatchRefused();
         }),
       ),
     );

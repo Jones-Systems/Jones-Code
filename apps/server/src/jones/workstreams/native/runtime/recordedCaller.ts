@@ -403,7 +403,7 @@ const make = Effect.gen(function* () {
       yield* caller.check("workstreams:read", threadId);
       return true;
     },
-    Effect.catch(() => Effect.succeed(false)),
+    Effect.orElseSucceed(() => false),
   );
   return RecordedCallers.of({ captureCaller, readmitRecorded, visible });
 });

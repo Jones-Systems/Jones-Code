@@ -280,11 +280,9 @@ export const layer = Layer.effect(
                 ...request,
                 params: { ...params, ...(prior ? { cursor: prior.inner } : {}) },
               } as WorkstreamsNativeHomeRead;
-              // The whole authoritative read state was captured in this SQL transaction,
-              // and on continuation its complete fingerprint was verified at current time.
-              // Run the existing producers at that proved observation, including placement
-              // provenance. Current authorization/coverage are checked with the real clock
-              // again before exposure; a pinned clock is never an authority check.
+              // This transaction captured the full state and verified continuation fingerprints.
+              // Pin production to that observation; recheck authorization and coverage with the
+              // real clock before exposure. The pinned clock never supplies authority.
               const clock = yield* Clock.Clock;
               const at = Date.parse(snapshot.envelope.provenance.observed_at);
               const pinnedClock: Clock.Clock = {
@@ -356,7 +354,7 @@ export const authorizedLayer = Layer.effect(
       session = yield* Session.Session;
     return AuthorizedReads.of({
       read: Effect.fn("NativeRead.authorized")(function* (request, placementContract) {
-        const evidence = yield* boundary.current().pipe(Effect.mapError(Projection.readFailure));
+        const evidence = yield* boundary.current();
         return yield* Effect.gen(function* () {
           const caller = yield* admission.admit("workstreams:read");
           const result = yield* homeReads.read(caller, request, placementContract);
@@ -365,11 +363,8 @@ export const authorizedLayer = Layer.effect(
           if (current.authorization.grant.grant_version !== result.authorization_revision)
             return yield* new RegistryError({ code: "forbidden" });
           return result;
-        }).pipe(
-          Effect.provideService(Admission.RequestCaller, evidence),
-          Effect.mapError(Projection.readFailure),
-        );
-      }),
+        }).pipe(Effect.provideService(Admission.RequestCaller, evidence));
+      }, Effect.mapError(Projection.readFailure)),
     });
   }),
 );

@@ -6,7 +6,7 @@ import * as Schema from "effect/Schema";
 import * as Forwarder from "./forwarder.ts";
 import * as Transport from "./memberTransport.ts";
 
-const command = Schema.decodeUnknownSync(WorkstreamCommand)({
+const command = Schema.decodeSync(WorkstreamCommand)({
   command_id: "command:transport-001",
   expected_server_generation: 1,
   expected_registry_version: 0,

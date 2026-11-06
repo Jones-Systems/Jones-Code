@@ -569,7 +569,7 @@ export function makeWorkstreamsNativeProvider(
         dispatchAdmission !== undefined &&
         !(yield* dispatchAdmission(binding, request).pipe(
           Effect.as(true),
-          Effect.catch(() => Effect.succeed(false)),
+          Effect.orElseSucceed(() => false),
         ))
       )
         return reject("forbidden");

@@ -22,6 +22,7 @@ import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagem
 import * as PeerForwarding from "../../../peer/PeerForwarding.ts";
 import * as PeerLinks from "../../../peer/PeerLinks.ts";
 import * as PeerMcpClient from "../../../peer/PeerMcpClient.ts";
+import * as ProjectService from "../../../project/ProjectService.ts";
 import { liveThreadShell } from "../../../mcp/McpToolAccess.testkit.ts";
 import { handlers } from "./handlers.ts";
 import { WorkstreamToolkit, WorkstreamToolsBackend } from "./tools.ts";
@@ -458,6 +459,9 @@ const routingFixture = (callerThreads = threads) =>
     const forwarding = PeerForwarding.layer.pipe(
       Layer.provide(Layer.succeed(PeerMcpClient.PeerMcpClient, { call })),
       Layer.provide(Layer.mock(PeerLinks.PeerLinks)({})),
+      Layer.provide(
+        Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+      ),
       Layer.provide(NodeCrypto.layer),
       Layer.provide(callerThreads),
     );

@@ -97,6 +97,7 @@ import * as PublicOperations from "../../operations/service.ts";
 import * as PublicMcpTools from "../../../mcp/workstreams/tools.ts";
 import * as PublicMcpHandlers from "../../../mcp/workstreams/handlers.ts";
 import * as PeerForwarding from "../../../../peer/PeerForwarding.ts";
+import * as ProjectService from "../../../../project/ProjectService.ts";
 import * as OperationWire from "@t3tools/contracts/jones/workstreamOperations";
 import * as MemberServices from "../runtime/memberServices.ts";
 import * as NativeDescriptor from "../runtime/descriptor.ts";
@@ -3251,6 +3252,9 @@ it.effect(
         const forwarding = yield* PeerForwarding.PeerForwarding.pipe(
           Effect.provide(
             PeerForwarding.layer.pipe(
+              Layer.provide(
+                Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+              ),
               Layer.provide(
                 Layer.mock(ThreadManagementService)({
                   getThreadShell: (id) =>

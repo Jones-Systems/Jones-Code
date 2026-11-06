@@ -99,7 +99,7 @@ const fixture = (
           calls.push(input);
           if (options.failure !== undefined) return yield* options.failure;
           // oxlint-disable-next-line t3code/no-inline-schema-compile -- This synthetic generic client decodes the per-call schema supplied by the real port.
-          return yield* Schema.decodeUnknownEffect(input.success)(raw).pipe(
+          return yield* Schema.decodeEffect(input.success)(raw).pipe(
             Effect.mapError(
               () =>
                 new OrchestratorMcpFailure({

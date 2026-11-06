@@ -122,7 +122,6 @@ const withRuntime = <A, E, R>(
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
 import { EnvironmentId } from "@t3tools/contracts";
-import * as Option from "effect/Option";
 import * as DateTime from "effect/DateTime";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
 import * as Secrets from "../../../../auth/ServerSecretStore.ts";
@@ -142,7 +141,7 @@ const registrationLayer = Pins.nativeLayer.pipe(
         Layer.succeed(
           Secrets.ServerSecretStore,
           Secrets.ServerSecretStore.of({
-            get: () => Effect.succeed(Option.some(new Uint8Array(32).fill(17))),
+            get: () => Effect.succeedSome(new Uint8Array(32).fill(17)),
             getOrCreateRandom: () => Effect.succeed(new Uint8Array(32).fill(17)),
             set: () => Effect.die("unexpected synthetic secret mutation"),
             create: () => Effect.die("unexpected synthetic secret mutation"),

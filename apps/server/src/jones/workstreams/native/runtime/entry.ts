@@ -367,14 +367,12 @@ export const operationsLayer = Layer.effect(
             }),
           )
           .pipe(
-            Effect.catch(() =>
-              Effect.succeed(
-                "operation_id" in input
-                  ? { operation: null }
-                  : "open" in input
-                    ? { operations: [] }
-                    : { assignment: { kind: "unverified" as const }, open_operation: null },
-              ),
+            Effect.orElseSucceed(() =>
+              "operation_id" in input
+                ? { operation: null }
+                : "open" in input
+                  ? { operations: [] }
+                  : { assignment: { kind: "unverified" as const }, open_operation: null },
             ),
           ),
       setupStatus: Effect.fn("NativeOperations.setupStatus")(function* () {

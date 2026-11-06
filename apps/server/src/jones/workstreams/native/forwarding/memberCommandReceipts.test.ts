@@ -235,7 +235,7 @@ const fixture = (
         calls.push(input);
         expect(input.tool).toBe("jones_workstreams_home_forward_readback");
         // oxlint-disable-next-line t3code/no-inline-schema-compile -- The external peer applies the production client's supplied decoder.
-        return Schema.decodeUnknownEffect(input.success)(
+        return Schema.decodeEffect(input.success)(
           options.reply ?? {
             contract: request.contract,
             identity: request.identity,

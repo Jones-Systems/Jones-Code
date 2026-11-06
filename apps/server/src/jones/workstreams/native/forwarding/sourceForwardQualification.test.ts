@@ -61,7 +61,7 @@ const target = {
   home_environment_id: home.home_environment_id,
   server_generation: home.server_generation,
 };
-const input = Schema.decodeUnknownSync(Forward.WorkstreamsForwardRequest)({
+const input = Schema.decodeSync(Forward.WorkstreamsForwardRequest)({
   contract: Forward.WORKSTREAMS_NATIVE_FORWARDING_CONTRACT,
   kind: "appearance",
   identity: {
@@ -150,7 +150,7 @@ const harness = () => {
   const signing = Layer.succeed(
     Secrets.ServerSecretStore,
     Secrets.ServerSecretStore.of({
-      get: () => Effect.succeed(Option.some(new Uint8Array(32).fill(17))),
+      get: () => Effect.succeedSome(new Uint8Array(32).fill(17)),
       getOrCreateRandom: () => Effect.succeed(new Uint8Array(32).fill(17)),
       set: () => Effect.die("unexpected secret mutation"),
       create: () => Effect.die("unexpected secret creation"),

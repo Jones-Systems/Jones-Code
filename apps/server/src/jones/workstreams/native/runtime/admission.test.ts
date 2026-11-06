@@ -6,7 +6,6 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -100,7 +99,7 @@ const fixture = Effect.gen(function* () {
   };
   const enrollments = yield* Enrollment.makeNativeEnrollments({
     authority,
-    build: Effect.succeed(Option.some(request.context.build)),
+    build: Effect.succeedSome(request.context.build),
   }).pipe(Effect.provideService(AuthSessions.AuthSessionRepository, sessions));
   yield* enrollments.reserve(request);
   const provider = makeProviderFixture();

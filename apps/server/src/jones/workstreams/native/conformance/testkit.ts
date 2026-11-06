@@ -8,7 +8,6 @@ import * as NodeOS from "node:os";
 import * as Wire from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -217,7 +216,7 @@ export const seed = Effect.fn("NativeIngress.seed")(function* (
         Layer.provide(
           Layer.succeed(SourceEnrollment.SourceIssuer, {
             authority,
-            build: Effect.succeed(Option.some(selectedEnrollment.context.build)),
+            build: Effect.succeedSome(selectedEnrollment.context.build),
           }),
         ),
       ),
@@ -592,7 +591,7 @@ export const http = Effect.gen(function* () {
       EnvironmentAuth.layer.pipe(
         Layer.provide(
           Layer.succeed(ServerSecretStore.ServerSecretStore, {
-            get: () => Effect.succeed(Option.some(Fixture.keyBytes)),
+            get: () => Effect.succeedSome(Fixture.keyBytes),
             getOrCreateRandom: () => Effect.succeed(Fixture.keyBytes),
             set: () => Effect.die("Unexpected auth key write"),
             create: () => Effect.die("Unexpected auth key create"),

@@ -127,7 +127,7 @@ export const layer = (
                     }),
                   ),
                 );
-              }).pipe(Effect.catch(() => Effect.succeed("unknown" as const)));
+              }).pipe(Effect.orElseSucceed(() => "unknown" as const));
               return Startup.capability(
                 selection,
                 { readProjection: true, placementsV2: true },

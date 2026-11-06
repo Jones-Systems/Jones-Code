@@ -97,9 +97,9 @@ it.effect("imports and reads back unchanged F-full receipt evidence", () =>
       expect(found.result.proof.provenance.ciphertext_sha256).toBe(row.row.ciphertext_sha256);
       expect(found.result.proof.request_bytes).toBe("unknown");
       const codec = Schema.fromJsonString(WorkstreamsLegacyReceiptLookupResult);
-      expect(
-        yield* Schema.decodeUnknownEffect(codec)(yield* Schema.encodeEffect(codec)(found)),
-      ).toEqual(found);
+      expect(yield* Schema.decodeEffect(codec)(yield* Schema.encodeEffect(codec)(found))).toEqual(
+        found,
+      );
       expect(yield* archive.contains(scope, request.command_id)).toBe(true);
       expect(
         Exit.isFailure(yield* Effect.exit(receipts.lookup(scope, request.command_id, 7))),

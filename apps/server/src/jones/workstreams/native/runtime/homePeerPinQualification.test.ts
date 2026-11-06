@@ -5,7 +5,6 @@ import * as F from "@t3tools/contracts/jones/workstreamsHomeBind";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Auth from "../../../../auth/EnvironmentAuth.ts";
@@ -45,7 +44,7 @@ const sourceAuthority = {
 const signing = Layer.succeed(
   Secrets.ServerSecretStore,
   Secrets.ServerSecretStore.of({
-    get: () => Effect.succeed(Option.some(Test.keyBytes)),
+    get: () => Effect.succeedSome(Test.keyBytes),
     getOrCreateRandom: () => Effect.succeed(Test.keyBytes),
     set: () => Effect.die("unexpected set"),
     create: () => Effect.die("unexpected create"),

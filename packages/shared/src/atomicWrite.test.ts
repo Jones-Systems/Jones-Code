@@ -151,17 +151,6 @@ it.layer(NodeServices.layer)("writeFileStringAtomically", (it) => {
   );
 });
 
-// Advance one retry at a time because real target-stat I/O runs outside the test clock.
-const advanceUntilDone = <A, E>(fiber: Fiber.Fiber<A, E>) =>
-  Effect.gen(function* () {
-    while (fiber.pollUnsafe() === undefined) {
-      yield* TestClock.adjust("100 millis");
-      // oxlint-disable-next-line t3code/no-real-time-wait-in-tests -- a macrotask boundary so the real stat I/O can finish; time moves only via TestClock
-      yield* Effect.promise(() => new Promise((resolve) => setImmediate(resolve)));
-    }
-    return yield* Fiber.join(fiber);
-  });
-
 const renameError = (code: string, path: string) =>
   PlatformError.systemError({
     _tag: "Unknown",

@@ -180,9 +180,8 @@ it.effect.each([
     if (change === "context") r.value.context.registry_version++;
     if (change === "observed") r.value.observed_at = "2026-01-01T00:00:01Z";
   });
-  return Effect.gen(function* () {
-    yield* Current.CurrentMemberRead;
-  }).pipe(
+  return Current.CurrentMemberRead.pipe(
+    Effect.asVoid,
     Effect.provide(f.request),
     Effect.result,
     Effect.map((r) => {

@@ -97,7 +97,7 @@ const make = Effect.gen(function* () {
       const currentWrite = Option.isSome(write)
         ? yield* write.value.checkCurrent().pipe(
             Effect.map((limits) => canonicalJson(limits) === canonicalJson(admitted.limits)),
-            Effect.catch(() => Effect.succeed(false)),
+            Effect.orElseSucceed(() => false),
           )
         : false;
       yield* checkRead();

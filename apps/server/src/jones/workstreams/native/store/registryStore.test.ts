@@ -62,10 +62,9 @@ it.effect("competing owner transactions admit one registry CAS winner", () =>
   Effect.gen(function* () {
     yield* seed;
     const store = yield* RegistryStore.RegistryStore;
-    const results = yield* Effect.all(
-      [1, 2, 3].map(() =>
-        Effect.exit(store.advance(scope, { server_generation: 1, registry_version: 0 })),
-      ),
+    const results = yield* Effect.forEach(
+      [1, 2, 3],
+      () => Effect.exit(store.advance(scope, { server_generation: 1, registry_version: 0 })),
       { concurrency: 3 },
     );
     expect(results.filter(Exit.isSuccess)).toHaveLength(1);

@@ -227,7 +227,7 @@ const seed = (
           Layer.provide(
             Layer.succeed(SourceEnrollment.SourceIssuer, {
               authority,
-              build: Effect.succeed(Option.some(enrollmentRequest.context.build)),
+              build: Effect.succeedSome(enrollmentRequest.context.build),
             }),
           ),
         ),
@@ -434,8 +434,10 @@ it.effect(
         expect(
           (yield* gateway
             .readMetadata()
-            .pipe(Effect.provideService(Wire.EnvironmentAuthenticatedPrincipal, principal))
-            .pipe(Effect.result))._tag,
+            .pipe(
+              Effect.provideService(Wire.EnvironmentAuthenticatedPrincipal, principal),
+              Effect.result,
+            ))._tag,
         ).toBe("Failure");
       }).pipe(Effect.provide(prepared.services));
     }).pipe(Effect.scoped, Effect.provide(f.layer));
@@ -652,7 +654,7 @@ it.effect(
       const authLayer = Auth.layer.pipe(
         Layer.provide(
           Layer.mock(Secrets.ServerSecretStore)({
-            get: () => Effect.succeed(Option.some(Fixture.keyBytes)),
+            get: () => Effect.succeedSome(Fixture.keyBytes),
             getOrCreateRandom: () => Effect.succeed(Fixture.keyBytes),
           }),
         ),
@@ -888,6 +890,7 @@ it.effect(
           Layer.provide(McpOAuth.layerMcpClientAuthenticator),
           Layer.provide(
             Layer.mock(McpSessions.McpSessionRegistry)({
+              // @effect-diagnostics-next-line effectSucceedWithVoid:off - This optional result requires undefined, not the wider void type.
               resolve: () => Effect.succeed(undefined),
             }),
           ),

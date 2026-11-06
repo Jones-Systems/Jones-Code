@@ -343,8 +343,8 @@ const make = Effect.gen(function* () {
     port: PinSetup.PeerPinSetupQualification["Service"],
   ) {
     const scope = { ...r.expected_home, key_scope: "local" as const };
-    const active = yield* keys.activeKeyId(scope).pipe(Effect.mapError(Pins.mapFailure));
-    const bytes = yield* keys.get(active).pipe(Effect.mapError(Pins.mapFailure));
+    const active = yield* keys.activeKeyId(scope);
+    const bytes = yield* keys.get(active);
     const cached = Layer.succeed(Keys.WorkstreamsKeyProvider, {
       activeKeyId: (s) =>
         keys
@@ -374,7 +374,7 @@ const make = Effect.gen(function* () {
       Layer.provide(Owner.setupOwnerLayer(op)),
       Layer.provide(Layer.succeed(PinSetup.PeerPinSetupQualification, port)),
     );
-  });
+  }, Effect.mapError(Pins.mapFailure));
   const read = Effect.fn("PeerSetup.read")(function* (
     input: W.WorkstreamsPeerSetupReadRequest,
     invocation: Mcp.McpInvocationScope,

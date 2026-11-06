@@ -3,7 +3,6 @@ import { EnvironmentId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as DateTime from "effect/DateTime";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -35,7 +34,7 @@ const receiver = {
 const signing = Layer.succeed(
   Secrets.ServerSecretStore,
   Secrets.ServerSecretStore.of({
-    get: () => Effect.succeed(Option.some(Test.keyBytes)),
+    get: () => Effect.succeedSome(Test.keyBytes),
     getOrCreateRandom: () => Effect.succeed(Test.keyBytes),
     set: () => Effect.die("unexpected set"),
     create: () => Effect.die("unexpected create"),

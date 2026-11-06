@@ -356,7 +356,7 @@ const make = Effect.gen(function* () {
             return { ...response, assignment: { kind: "unverified" as const } };
         }
         return response;
-      }).pipe(Effect.catch(() => Effect.succeed(readFallback(input)))),
+      }).pipe(Effect.orElseSucceed(() => readFallback(input))),
     ),
     // Application-owned MemberRecovery handles retained lookup. Public resume cannot mint recovery authority.
     resumeRecorded: () => Effect.fail(new Recorded.RecordedCallerFence({ code: "missing" })),

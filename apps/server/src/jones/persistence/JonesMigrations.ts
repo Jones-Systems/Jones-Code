@@ -114,12 +114,12 @@ export const jonesMigrationEntries = [
   [137, "NativeCreationLeaseRenewal", JonesMigration0137],
   [138, "WorkspaceRetirement", JonesMigration0138],
   [139, "ConversationWorkspace", JonesMigration0139],
-  [140, "WorkstreamsNative", JonesMigration0125],
-  [141, "WorkstreamsSourceEnrollments", JonesMigration0126],
-  [142, "WorkstreamsRollupAttempts", JonesMigration0127],
-  [143, "WorkstreamsPeerSessionPins", JonesMigration0128],
-  [144, "WorkstreamsMemberBindings", JonesMigration0129],
-  [145, "WorkstreamsForwardReceipts", JonesMigration0130],
+  [140, "WorkstreamsNative", JonesMigration0140],
+  [141, "WorkstreamsSourceEnrollments", JonesMigration0141],
+  [142, "WorkstreamsRollupAttempts", JonesMigration0142],
+  [143, "WorkstreamsPeerSessionPins", JonesMigration0143],
+  [144, "WorkstreamsMemberBindings", JonesMigration0144],
+  [145, "WorkstreamsForwardReceipts", JonesMigration0145],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
