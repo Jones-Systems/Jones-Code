@@ -751,7 +751,9 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
     ] as const)("preserves closed dispatch and authorization for %s", (scenario) =>
       Effect.gen(function* () {
         const fs = yield* WsFileSystem.FileSystem;
-        const temporaryRoot = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-ws-forwarding-" });
+        const temporaryRoot = yield* fs.makeTempDirectoryScoped({
+          prefix: "legacy-ws-forwarding-",
+        });
         const cwd = yield* fs.realPath(temporaryRoot);
         const receivingDatabase = scenario.startsWith("actual_input_")
           ? SqlitePersistence.layerFromPath(`${cwd}/lexical.sqlite`).pipe(
@@ -1072,7 +1074,13 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                     ) {
                       const result = yield* nativeRunner.run({
                         command: "git",
-                        args: ["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgSign=false", ...args],
+                        args: [
+                          "-c",
+                          "core.hooksPath=/dev/null",
+                          "-c",
+                          "commit.gpgSign=false",
+                          ...args,
+                        ],
                         cwd,
                         env: {
                           HOME: cwd,
@@ -1090,7 +1098,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                           GIT_COMMITTER_NAME: "Fixture",
                           GIT_COMMITTER_EMAIL: "fixture@example.invalid",
                         },
-                      });
+                      }).pipe(Effect.orDie);
                       expect(result.code).toBe(0);
                       return result.stdout.trim();
                     });
@@ -1108,7 +1116,15 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
                           return yield* Effect.die("Synthetic checkout refuses pipelines");
                         const args = [...command.args];
                         if (args.includes("add")) {
-                          yield* nativeGit(["worktree", "add", "-b", branch, "--", worktreePath, "main"]);
+                          yield* nativeGit([
+                            "worktree",
+                            "add",
+                            "-b",
+                            branch,
+                            "--",
+                            worktreePath,
+                            "main",
+                          ]);
                           nativeCheckoutRoot = yield* fs.realPath(worktreePath);
                           expect(
                             yield* nativeGit(["-C", worktreePath, "rev-parse", "--show-toplevel"]),

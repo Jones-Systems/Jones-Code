@@ -76,7 +76,10 @@ async function observe(pid: number, physical: DutyIdentity | undefined): Promise
       worker.once("message", (value) => void finish(value));
       worker.once("error", () => void finish(null));
       worker.once("exit", () => void finish(null));
-      void NodeTimersPromises.setTimeout(remaining, undefined, { signal: deadline.signal, ref: false }).then(
+      void NodeTimersPromises.setTimeout(remaining, undefined, {
+        signal: deadline.signal,
+        ref: false,
+      }).then(
         () => void finish(null),
         () => {
           if (!deadline.signal.aborted) void finish(null);

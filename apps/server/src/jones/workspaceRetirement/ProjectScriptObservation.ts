@@ -246,7 +246,10 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
           // This native timer is owned by the observer. Abort synchronously clears
           // it on every detach; the rejection branch drains cancellation quietly.
           const signal = deadline.signal;
-          void NodeTimersPromises.setTimeout(10 * 60 * 1000, undefined, { signal, ref: false }).then(
+          void NodeTimersPromises.setTimeout(10 * 60 * 1000, undefined, {
+            signal,
+            ref: false,
+          }).then(
             () => finish(null, "observer_timeout; observation_unknown"),
             () => {
               if (!signal.aborted) finish(null, "observer_timer_unavailable; observation_unknown");

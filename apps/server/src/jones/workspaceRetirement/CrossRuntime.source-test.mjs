@@ -183,7 +183,9 @@ await fixture(async ({ base, repo, worktree, input }) => {
   const jonesPath = NodePath.join(base, "jones-writer.sqlite3");
   await NodeFSP.writeFile(jonesPath, "untouched participant");
   const digest = () =>
-    NodeFSP.readFile(jonesPath).then((bytes) => NodeCrypto.createHash("sha256").update(bytes).digest("hex"));
+    NodeFSP.readFile(jonesPath).then((bytes) =>
+      NodeCrypto.createHash("sha256").update(bytes).digest("hex"),
+    );
   const initial = await digest();
   let writes = 0;
   try {

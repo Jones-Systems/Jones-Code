@@ -327,10 +327,7 @@ export const make = Effect.gen(function* () {
       )
     : null;
   const recordRetirementProposal = Effect.fn("ThreadSettlementServiceV2.recordRetirementProposal")(
-    function* (
-      thread: Pick<OrchestrationV2ThreadShell, "id" | "projectId">,
-      worktreePath: string,
-    ) {
+    function* (thread: Pick<OrchestrationV2ThreadShell, "id" | "projectId">, worktreePath: string) {
       if (Option.isNone(retirementSql) || Option.isNone(retirementConfig)) return;
       const project = yield* projectStore.get(thread.projectId);
       if (Option.isNone(project)) return;

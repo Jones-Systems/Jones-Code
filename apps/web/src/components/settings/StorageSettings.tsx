@@ -198,7 +198,9 @@ function factsWithKeys<A>(values: readonly A[], identity: (value: A) => string) 
 }
 
 function lineageIdentity(lineage: Readonly<Record<string, string>>) {
-  return JSON.stringify(Object.entries(lineage).sort(([left], [right]) => left.localeCompare(right)));
+  return JSON.stringify(
+    Object.entries(lineage).sort(([left], [right]) => left.localeCompare(right)),
+  );
 }
 
 function CleanupResults({
@@ -250,13 +252,15 @@ function CleanupResults({
                     <code>{detail.root}</code>: {detail.fact}{" "}
                     {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
                     {detail.nextAction}
-                    {factsWithKeys(detail.lineage, lineageIdentity).map(({ value: lineage, key }) => (
-                      <span key={key} className="block">
-                        {Object.entries(lineage)
-                          .map(([key, value]) => `${key}: ${value}`)
-                          .join(" · ")}
-                      </span>
-                    ))}
+                    {factsWithKeys(detail.lineage, lineageIdentity).map(
+                      ({ value: lineage, key }) => (
+                        <span key={key} className="block">
+                          {Object.entries(lineage)
+                            .map(([key, value]) => `${key}: ${value}`)
+                            .join(" · ")}
+                        </span>
+                      ),
+                    )}
                   </span>
                 ))}
                 {entry.retirement?.outputObligations.map((output) => (

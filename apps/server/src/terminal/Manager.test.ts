@@ -693,86 +693,88 @@ it.layer(
       assert.equal(claimCount[0]!.n, 0);
     }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
-  it.effect("unchanged null, omitted and verified root hints reuse the live native terminal and history", () =>
-    Effect.gen(function* () {
-      yield* runMigrations();
-      const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
-        shellResolver: () => "/bin/sh",
-      });
-      const fs = yield* FileSystem.FileSystem;
-      const runner = yield* ProcessRunner.ProcessRunner;
-      const repo = `${yield* fs.realPath(baseDir)}/root`;
-      yield* fs.makeDirectory(repo);
-      const initialized = yield* runner.run({
-        command: "git",
-        args: ["init", "-b", "terminal-reuse"],
-        cwd: repo,
-        env: {
-          GIT_DIR: undefined,
-          GIT_WORK_TREE: undefined,
-          GIT_INDEX_FILE: undefined,
-          GIT_OBJECT_DIRECTORY: undefined,
-          GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
-          GIT_CONFIG_GLOBAL: "/dev/null",
-          GIT_CONFIG_NOSYSTEM: "1",
-          GIT_CONFIG_COUNT: "0",
-        },
-      });
-      assert.equal(initialized.code, 0);
-      const input = openInput({ cwd: repo, worktreePath: null });
-      const first = yield* manager.open(input);
-      const process = ptyAdapter.processes[0]!;
-      const observed = yield* Deferred.make<void>();
-      const unsubscribe = yield* manager.subscribe((event) =>
-        event.type === "output" && event.data === "preserved history\n"
-          ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
-          : Effect.void,
-      );
-      yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
-      process.emitData("preserved history\n");
-      yield* Deferred.await(observed);
-      const repeated = yield* manager.open(input);
-      const omitted = yield* manager.open(openInput({ cwd: repo }));
-      const rooted = yield* manager.open(openInput({ cwd: repo, worktreePath: repo }));
-      assert.equal(repeated.pid, first.pid);
-      assert.equal(omitted.pid, first.pid);
-      assert.equal(rooted.pid, first.pid);
-      assert.equal(repeated.history, "preserved history\n");
-      assert.equal(omitted.history, repeated.history);
-      assert.equal(rooted.history, repeated.history);
-      assert.lengthOf(ptyAdapter.spawnInputs, 1);
-      assert.lengthOf(process.killSignals, 0);
-      const sql = yield* SqlClient.SqlClient;
-      const claims = yield* sql<{
-        worktree: string;
-        incarnation_id: string | null;
-      }>`SELECT worktree,incarnation_id FROM jones_workspace_duty_claims`;
-      assert.lengthOf(claims, 1);
-      assert.equal(claims[0]!.worktree, repo);
-      assert.ok(claims[0]!.incarnation_id);
-      process.onKill = () => process.emitExit({ exitCode: 0, signal: 15 });
-      const changed = yield* manager.open({ ...input, env: { REUSE_FIXTURE: "changed" } });
-      assert.notEqual(changed.pid, first.pid);
-      assert.lengthOf(ptyAdapter.spawnInputs, 2);
-      assert.lengthOf(process.killSignals, 1);
-      const replacement = ptyAdapter.processes[1]!;
-      replacement.onKill = () => replacement.emitExit({ exitCode: 0, signal: 15 });
-      const restarted = yield* manager.restart(
-        restartInput({
+  it.effect(
+    "unchanged null, omitted and verified root hints reuse the live native terminal and history",
+    () =>
+      Effect.gen(function* () {
+        yield* runMigrations();
+        const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+          shellResolver: () => "/bin/sh",
+        });
+        const fs = yield* FileSystem.FileSystem;
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const repo = `${yield* fs.realPath(baseDir)}/root`;
+        yield* fs.makeDirectory(repo);
+        const initialized = yield* runner.run({
+          command: "git",
+          args: ["init", "-b", "terminal-reuse"],
           cwd: repo,
-          worktreePath: null,
-          env: { REUSE_FIXTURE: "changed" },
+          env: {
+            GIT_DIR: undefined,
+            GIT_WORK_TREE: undefined,
+            GIT_INDEX_FILE: undefined,
+            GIT_OBJECT_DIRECTORY: undefined,
+            GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_COUNT: "0",
+          },
+        });
+        assert.equal(initialized.code, 0);
+        const input = openInput({ cwd: repo, worktreePath: null });
+        const first = yield* manager.open(input);
+        const process = ptyAdapter.processes[0]!;
+        const observed = yield* Deferred.make<void>();
+        const unsubscribe = yield* manager.subscribe((event) =>
+          event.type === "output" && event.data === "preserved history\n"
+            ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        process.emitData("preserved history\n");
+        yield* Deferred.await(observed);
+        const repeated = yield* manager.open(input);
+        const omitted = yield* manager.open(openInput({ cwd: repo }));
+        const rooted = yield* manager.open(openInput({ cwd: repo, worktreePath: repo }));
+        assert.equal(repeated.pid, first.pid);
+        assert.equal(omitted.pid, first.pid);
+        assert.equal(rooted.pid, first.pid);
+        assert.equal(repeated.history, "preserved history\n");
+        assert.equal(omitted.history, repeated.history);
+        assert.equal(rooted.history, repeated.history);
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        assert.lengthOf(process.killSignals, 0);
+        const sql = yield* SqlClient.SqlClient;
+        const claims = yield* sql<{
+          worktree: string;
+          incarnation_id: string | null;
+        }>`SELECT worktree,incarnation_id FROM jones_workspace_duty_claims`;
+        assert.lengthOf(claims, 1);
+        assert.equal(claims[0]!.worktree, repo);
+        assert.ok(claims[0]!.incarnation_id);
+        process.onKill = () => process.emitExit({ exitCode: 0, signal: 15 });
+        const changed = yield* manager.open({ ...input, env: { REUSE_FIXTURE: "changed" } });
+        assert.notEqual(changed.pid, first.pid);
+        assert.lengthOf(ptyAdapter.spawnInputs, 2);
+        assert.lengthOf(process.killSignals, 1);
+        const replacement = ptyAdapter.processes[1]!;
+        replacement.onKill = () => replacement.emitExit({ exitCode: 0, signal: 15 });
+        const restarted = yield* manager.restart(
+          restartInput({
+            cwd: repo,
+            worktreePath: null,
+            env: { REUSE_FIXTURE: "changed" },
+          }),
+        );
+        assert.notEqual(restarted.pid, changed.pid);
+        assert.lengthOf(ptyAdapter.spawnInputs, 3);
+        assert.lengthOf(replacement.killSignals, 1);
+      }).pipe(
+        Effect.provide(SqlitePersistence.layerMemory),
+        Effect.provideService(WorkspaceDuty.NativeOwnerCapture, {
+          capture: async () => unresolvedOwner("controlled PTY; no shared-host lookup"),
         }),
-      );
-      assert.notEqual(restarted.pid, changed.pid);
-      assert.lengthOf(ptyAdapter.spawnInputs, 3);
-      assert.lengthOf(replacement.killSignals, 1);
-    }).pipe(
-      Effect.provide(SqlitePersistence.layerMemory),
-      Effect.provideService(WorkspaceDuty.NativeOwnerCapture, {
-        capture: async () => unresolvedOwner("controlled PTY; no shared-host lookup"),
-      }),
-    ),
+      ),
   );
   it.effect.each(["child-survives", "unknown", "verified-absent"] as const)(
     "terminal duty uses owned-session observation after parent exit (%s)",

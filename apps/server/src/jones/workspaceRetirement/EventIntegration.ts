@@ -25,8 +25,7 @@ export const events = Effect.fn("WorkspaceRetirement.admitRecordedEvents")(funct
     const nextPath = "worktreePath" in payload ? payload.worktreePath : undefined;
     let prior: { worktreePath: string | null } | null = null;
     if (event.type !== "thread.created") {
-      if (batchPaths.has(event.threadId))
-        prior = { worktreePath: batchPaths.get(event.threadId)! };
+      if (batchPaths.has(event.threadId)) prior = { worktreePath: batchPaths.get(event.threadId)! };
       else {
         // Read only the binding inside this same transaction. Do not enter a
         // projection lookup/lineage barrier before the event's actual owner does.
@@ -37,9 +36,7 @@ export const events = Effect.fn("WorkspaceRetirement.admitRecordedEvents")(funct
       }
     }
     const paths = [
-      ...new Set(
-        [prior?.worktreePath, nextPath].filter((p): p is string => typeof p === "string"),
-      ),
+      ...new Set([prior?.worktreePath, nextPath].filter((p): p is string => typeof p === "string")),
     ];
     // Binding changes, queue delivery, restore and owner metadata writes all conflict in this same transaction.
     for (const worktree of paths) {
