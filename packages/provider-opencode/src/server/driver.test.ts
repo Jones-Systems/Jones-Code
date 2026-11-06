@@ -92,7 +92,11 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
   it.effect("never starts a 1.x server for an OpenCode 2 instance", () =>
     Effect.gen(function* () {
       const initialStart = yield* Deferred.make<void>();
-      const caseStarts: Array<string> = [];
+      const attempts: Array<{
+        readonly stage: "initial-discovery" | "title";
+        readonly operation: "start" | "connect";
+        readonly error: OpenCodeRuntime.OpenCodeRuntimeError;
+      }> = [];
       const operations: Array<{
         readonly sequence: number;
         readonly stage: "initial-discovery" | "title";
@@ -103,24 +107,26 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
       let connectCount = 0;
       const reachedCaseServer = (operation: "start" | "connect", verifyPresent?: boolean) =>
         Effect.gen(function* () {
-          caseStarts.push(operation);
+          const attemptStage = stage;
+          const error = new OpenCodeRuntime.OpenCodeRuntimeError({
+            operation,
+            detail: "reached a 1.x server path",
+          });
+          attempts.push({ stage: attemptStage, operation, error });
           operations.push({
             sequence: operations.length + 1,
-            stage,
+            stage: attemptStage,
             operation,
             ...(verifyPresent === undefined ? {} : { verifyPresent }),
           });
           if (operation === "start") yield* Deferred.succeed(initialStart, undefined);
           else connectCount += 1;
-          return yield* new OpenCodeRuntime.OpenCodeRuntimeError({
-            operation,
-            detail: "reached a 1.x server path",
-          });
+          return yield* error;
         });
       const caseRuntime: OpenCodeRuntime.OpenCodeRuntime["Service"] = {
         ...openCode2Runtime,
         startOpenCodeServerProcess: (input) =>
-          reachedCaseServer("start", input.verify !== undefined),
+          reachedCaseServer("start", typeof input.verify === "function"),
         connectToOpenCodeServer: () => reachedCaseServer("connect"),
       };
       const instance = yield* create({}, noHttp).pipe(
@@ -135,15 +141,48 @@ it.layer(layer)("OpenCodeDriver runtime selection", (it) => {
           modelSelection: { instanceId: instance.instanceId, model: "opencode/big-pickle" },
         }),
       );
+      const discoveryAttempt = attempts.find((attempt) => attempt.stage === "initial-discovery");
+      const titleAttempt = attempts.find((attempt) => attempt.stage === "title");
+      const cause = OpenCodeRuntime.isOpenCodeRuntimeError(failure.cause) ? failure.cause : undefined;
       const receipt = {
         operations,
         connectCount,
         titleFailure: { tag: failure._tag, operation: failure.operation, detail: failure.detail },
+        titleCause:
+          cause === undefined
+            ? { matchesTitleAttempt: false }
+            : {
+                tag: cause._tag,
+                operation: cause.operation,
+                detail: cause.detail,
+                matchesTitleAttempt: cause === titleAttempt?.error,
+              },
       };
       yield* Console.log("OpenCode runtime selection diagnostic", JSON.stringify(receipt)).pipe(
         Effect.provideService(Console.Console, Console.Console.defaultValue()),
       );
-      assert.deepStrictEqual(caseStarts, ["start"], JSON.stringify(receipt));
+      assert.deepStrictEqual(operations, [
+        { sequence: 1, stage: "initial-discovery", operation: "start", verifyPresent: true },
+        { sequence: 2, stage: "title", operation: "start", verifyPresent: true },
+      ]);
+      assert.strictEqual(connectCount, 0);
+      assert.deepStrictEqual(
+        operations
+          .filter((operation) => operation.stage === "title")
+          .map((operation) => operation.operation),
+        ["start"],
+      );
+      assert.strictEqual(failure._tag, "TextGenerationError");
+      assert.strictEqual(failure.operation, "generateThreadTitle");
+      assert.strictEqual(failure.detail, "OpenCode text generation failed.");
+      if (cause === undefined) {
+        assert.fail("Expected the title attempt's OpenCodeRuntimeError cause");
+      } else {
+        assert.strictEqual(cause.operation, "start");
+        assert.strictEqual(cause.detail, "reached a 1.x server path");
+        assert.strictEqual(cause, titleAttempt?.error);
+        assert.notStrictEqual(cause, discoveryAttempt?.error);
+      }
     }).pipe(Effect.scoped),
   );
 

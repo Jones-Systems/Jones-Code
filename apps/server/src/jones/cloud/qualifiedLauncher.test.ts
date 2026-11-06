@@ -259,6 +259,26 @@ if (${JSON.stringify(options.settlementRequests !== undefined)}) {
     }
 
     if (${JSON.stringify(mode)} === "commit-then-rollback") {
+      const NodeAssert = await import("node:assert/strict");
+      const operationId = context.update.id;
+      NodeAssert.equal(m.updateId, operationId);
+      const queryId = 1;
+      // The correlated reply fences the prepared handler's awaited cleanup and retention.
+      const outcome = await new Promise(resolve => {
+        const onOutcome = reply => {
+          if (reply.type !== "update-outcome" || reply.operationId !== operationId || reply.queryId !== queryId) return;
+          process.off("message", onOutcome);
+          resolve(reply);
+        };
+        process.on("message", onOutcome);
+        process.send({type:"reconcile-update", operationId, queryId});
+      });
+      NodeAssert.equal(outcome.outcome, "accepted");
+      const committed = JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "service-state.json"))}, "utf8"));
+      NodeAssert.equal(committed.update?.id, operationId);
+      NodeAssert.equal(committed.update?.status, "committed");
+      NodeAssert.equal(committed.activeVersion, ${JSON.stringify(target)});
+      NodeAssert.equal(committed.update?.targetVersion, ${JSON.stringify(target)});
       const { protocol, payloadSha256, ...artifact } = JSON.parse(readFileSync(${JSON.stringify(NodePath.join(base, "runtime", "versions", target, QUALIFIED_RUNTIME_RECEIPT))}, "utf8"));
       const staged = await stageQualifiedRuntime({
         artifact: {...artifact, version:${JSON.stringify(laterTarget)}, sourceSha:${JSON.stringify("e".repeat(40))}, installedSourceSha:artifact.sourceSha, runId:102, payloadDirectory:${JSON.stringify(NodePath.join(base, "later-payload"))}},
