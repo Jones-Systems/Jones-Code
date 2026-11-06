@@ -206,7 +206,7 @@ it("keeps row and list Working after detail acknowledgement until their shell ca
     ledger.row = row;
     ledger.all = all;
   };
-  using screen = await render(
+  await using screen = await render(
     <InputHookCarrier thread={base} threads={[base]} onCommit={record} />,
     { router: false },
   );
