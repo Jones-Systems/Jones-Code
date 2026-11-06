@@ -1,9 +1,5 @@
 import { ProviderDriverKind, type ProviderRuntimeBinding } from "@t3tools/contracts";
-import {
-  hasUnknownRuntimeBinding,
-  ProviderAdapterProtocolError,
-  ProviderRuntimeBindingError,
-} from "@t3tools/provider-core/server/ProviderAdapter";
+import { hasUnknownRuntimeBinding, ProviderAdapterProtocolError, ProviderRuntimeBindingError } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as CodexErrors from "effect-codex-app-server/errors";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -17,10 +13,7 @@ import * as ControlAdmission from "../../orchestration/ControlAdmission.ts";
 export const CODEX_STARTUP_BUDGET_MS = 60_000;
 
 type StartupOperation = "ensure" | "resume" | "start";
-interface StartupProducer {
-  readonly generation: string;
-  readonly scope: Scope.Closeable;
-}
+interface StartupProducer { readonly generation: string; readonly scope: Scope.Closeable }
 interface StartupAttempt {
   producer: StartupProducer | undefined;
   target: ControlAdmission.ControlAdmissionTarget | undefined;
@@ -30,8 +23,7 @@ interface StartupAttempt {
   complete: boolean;
 }
 class StartupAttemptContext extends Context.Reference<StartupAttempt | undefined>(
-  "jones/CodexStartup/Attempt",
-  { defaultValue: () => undefined },
+  "jones/CodexStartup/Attempt", { defaultValue: () => undefined },
 ) {}
 class CodexStartupNotDispatched extends Schema.TaggedError<CodexStartupNotDispatched>()(
   "CodexStartupNotDispatched",
@@ -43,10 +35,8 @@ class CodexStartupNotDispatched extends Schema.TaggedError<CodexStartupNotDispat
 }
 
 export const isNonApplyingStartupRejection = (error: unknown, method: string | undefined) =>
-  method !== undefined &&
-  Schema.is(CodexErrors.CodexAppServerRequestError)(error) &&
-  error.operation === "receive-response" &&
-  error.method === method &&
+  method !== undefined && Schema.is(CodexErrors.CodexAppServerRequestError)(error) &&
+  error.operation === "receive-response" && error.method === method &&
   (error.code === -32600 || error.code === -32601 || error.code === -32602);
 
 const isPreDispatchRefusal = (error: unknown) => {
@@ -63,13 +53,8 @@ const isPreDispatchRefusal = (error: unknown) => {
 const replyNativeId = (reply: unknown) => {
   if (typeof reply !== "object" || reply === null || !("thread" in reply)) return undefined;
   const thread = reply.thread;
-  return typeof thread === "object" &&
-    thread !== null &&
-    "id" in thread &&
-    typeof thread.id === "string" &&
-    thread.id.trim().length > 0
-    ? thread.id
-    : undefined;
+  return typeof thread === "object" && thread !== null && "id" in thread &&
+    typeof thread.id === "string" && thread.id.trim().length > 0 ? thread.id : undefined;
 };
 
 export function makeCodexStartup(
@@ -82,30 +67,26 @@ export function makeCodexStartup(
     if (attempt.producer !== undefined) uncertain.get(attempt.producer)?.delete(attempt);
     if (attempt.hold !== undefined) holdOwners.delete(attempt.hold);
   };
-  const holdAttempt = (attempt: StartupAttempt) =>
-    Effect.gen(function* () {
-      if (!attempt.mayHaveIssued || attempt.producer === undefined) return;
-      const attempts = uncertain.get(attempt.producer) ?? new Set<StartupAttempt>();
-      attempts.add(attempt);
-      uncertain.set(attempt.producer, attempts);
-      if (admission !== undefined && attempt.target !== undefined && attempt.hold === undefined) {
-        attempt.hold = yield* admission.holdStartup(attempt.target);
-        holdOwners.set(attempt.hold, attempt);
-      }
-    });
-  const abandon = (attempt: StartupAttempt) =>
-    Effect.gen(function* () {
-      if (attempt.complete) return;
-      attempt.abandoned = true;
-      yield* holdAttempt(attempt);
-    });
-  const unknown = (cause?: unknown) =>
-    new ProviderRuntimeBindingError({
-      driver: ProviderDriverKind.make("codex"),
-      detail:
-        "Codex startup has an unconfirmed native effect for this conversation; another admission is not safe.",
-      ...(cause === undefined ? {} : { cause }),
-    });
+  const holdAttempt = (attempt: StartupAttempt) => Effect.gen(function* () {
+    if (!attempt.mayHaveIssued || attempt.producer === undefined) return;
+    const attempts = uncertain.get(attempt.producer) ?? new Set<StartupAttempt>();
+    attempts.add(attempt);
+    uncertain.set(attempt.producer, attempts);
+    if (admission !== undefined && attempt.target !== undefined && attempt.hold === undefined) {
+      attempt.hold = yield* admission.holdStartup(attempt.target);
+      holdOwners.set(attempt.hold, attempt);
+    }
+  });
+  const abandon = (attempt: StartupAttempt) => Effect.gen(function* () {
+    if (attempt.complete) return;
+    attempt.abandoned = true;
+    yield* holdAttempt(attempt);
+  });
+  const unknown = (cause?: unknown) => new ProviderRuntimeBindingError({
+    driver: ProviderDriverKind.make("codex"),
+    detail: "Codex startup has an unconfirmed native effect for this conversation; another admission is not safe.",
+    ...(cause === undefined ? {} : { cause }),
+  });
 
   return {
     isUncertain: (producer: StartupProducer) => (uncertain.get(producer)?.size ?? 0) > 0,
@@ -131,22 +112,17 @@ export function makeCodexStartup(
       return yield* effect.pipe(
         Effect.provideService(StartupAttemptContext, attempt),
         Effect.raceFirst(deadline),
-        Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon(attempt) : Effect.void)),
+        Effect.onExit((exit) => Exit.isFailure(exit) ? abandon(attempt) : Effect.void),
       );
     }),
     // Install the hold before interruption releases the lifecycle permit.
-    withinPermit: Effect.fn("CodexStartup.withinPermit")(function* <A, E, R>(
-      effect: Effect.Effect<A, E, R>,
-    ) {
+    withinPermit: Effect.fn("CodexStartup.withinPermit")(function* <A, E, R>(effect: Effect.Effect<A, E, R>) {
       const attempt = yield* StartupAttemptContext;
       if (attempt === undefined) return yield* effect;
       return yield* effect.pipe(
-        Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon(attempt) : Effect.void)),
-        Effect.mapError((cause) =>
-          attempt.mayHaveIssued && !attempt.complete && !hasUnknownRuntimeBinding(cause)
-            ? unknown(cause)
-            : cause,
-        ),
+        Effect.onExit((exit) => Exit.isFailure(exit) ? abandon(attempt) : Effect.void),
+        Effect.mapError((cause) => attempt.mayHaveIssued && !attempt.complete && !hasUnknownRuntimeBinding(cause)
+          ? unknown(cause) : cause),
       );
     }),
     observe: Effect.fn("CodexStartup.observe")(function* <A, E, R>(
@@ -160,13 +136,9 @@ export function makeCodexStartup(
       if (attempt.abandoned || (attempt.producer !== undefined && attempt.producer !== producer))
         return yield* unknown();
       if (attempt.target?.producer != null) {
-        attempt.target = {
-          ...attempt.target,
-          producer: {
-            ...attempt.target.producer,
-            runtimeGeneration: producer.generation,
-          },
-        };
+        attempt.target = { ...attempt.target, producer: {
+          ...attempt.target.producer, runtimeGeneration: producer.generation,
+        } };
       }
       if (admission !== undefined && attempt.target !== undefined)
         yield* admission.assertOpen(attempt.target);
@@ -260,10 +232,7 @@ export function makeCodexStartup(
     // End the startup budget before turn/start enters its own lifecycle.
     complete: Effect.gen(function* () {
       const attempt = yield* StartupAttemptContext;
-      if (attempt !== undefined) {
-        attempt.complete = true;
-        attempt.mayHaveIssued = false;
-      }
+      if (attempt !== undefined) { attempt.complete = true; attempt.mayHaveIssued = false; }
     }),
   };
 }

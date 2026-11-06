@@ -1,10 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import {
-  ProviderDriverKind,
-  ProviderInstanceId,
-  ProviderSessionId,
-  ProviderThreadId,
-  ThreadId,
+  ProviderDriverKind, ProviderInstanceId, ProviderSessionId, ProviderThreadId, ThreadId,
   type ProviderRuntimeBinding,
 } from "@t3tools/contracts";
 import { ProviderRuntimeBindingError } from "@t3tools/provider-core/server/ProviderAdapter";
@@ -13,33 +9,21 @@ import * as Fiber from "effect/Fiber";
 import { makeProviderRecoveryRetirements } from "./providerRecoveryRetirement.ts";
 
 const binding: ProviderRuntimeBinding = {
-  driver: ProviderDriverKind.make("codex"),
-  providerInstanceId: ProviderInstanceId.make("account"),
-  providerSessionId: ProviderSessionId.make("session"),
-  providerThreadId: ProviderThreadId.make("provider-thread"),
-  threadId: ThreadId.make("thread"),
-  nativeThreadId: "native",
-  runtimeGeneration: "generation",
+  driver: ProviderDriverKind.make("codex"), providerInstanceId: ProviderInstanceId.make("account"),
+  providerSessionId: ProviderSessionId.make("session"), providerThreadId: ProviderThreadId.make("provider-thread"),
+  threadId: ThreadId.make("thread"), nativeThreadId: "native", runtimeGeneration: "generation",
 };
 
 it.effect("retains exact native proof across cleanup failure and pending-ledger removal", () =>
   Effect.gen(function* () {
     const owner = makeProviderRecoveryRetirements();
     let attempts = 0;
-    const handle = owner.retain(
-      binding,
-      Effect.suspend(() => {
-        attempts += 1;
-        return attempts === 1
-          ? Effect.fail(
-              new ProviderRuntimeBindingError({
-                driver: binding.driver,
-                detail: "synthetic manager cleanup failure",
-              }),
-            )
-          : Effect.void;
-      }),
-    );
+    const handle = owner.retain(binding, Effect.suspend(() => {
+      attempts += 1;
+      return attempts === 1 ? Effect.fail(new ProviderRuntimeBindingError({
+        driver: binding.driver, detail: "synthetic manager cleanup failure",
+      })) : Effect.void;
+    }));
     const waiting = yield* handle.awaitRetired.pipe(Effect.forkChild);
     assert.isUndefined(waiting.pollUnsafe());
     assert.isNull(owner.capture({ ...binding, runtimeGeneration: "foreign" }));

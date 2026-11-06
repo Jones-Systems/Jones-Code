@@ -610,16 +610,9 @@ export function layerWithRegistryAndServices<Error>(
           ),
         )
       : Layer.empty;
-  const layerCurrentRuntimeStop = RuntimeStop.layer.pipe(
-    Layer.provide(
-      Layer.mergeAll(
-        layerStores,
-        layerEventSinkProvided,
-        layerProviderSessionManagerProvided,
-        layerRestartPreparationProvided,
-      ),
-    ),
-  );
+  const layerCurrentRuntimeStop = RuntimeStop.layer.pipe(Layer.provide(
+    Layer.mergeAll(layerStores, layerEventSinkProvided, layerProviderSessionManagerProvided, layerRestartPreparationProvided),
+  ));
   const layerEffectExecutorBase = EffectWorker.layerExecutor.pipe(
     Layer.provide(layerCurrentRuntimeStop),
     Layer.provide(layerRestartPreparationProvided),

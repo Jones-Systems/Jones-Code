@@ -148,14 +148,10 @@ it.effect(
       yield* Deferred.succeed(late[0]!, { turnId: "native-turn:0" });
       yield* TestClock.adjust(0);
       assert.lengthOf(yield* admission.snapshot("held"), 3);
-      yield* admission
-        .assertOpen({
-          instanceId: "held",
-          threadId: effects[1]!.threadId,
-          nativeThreadId: "native-thread:1",
-          producer: null,
-        })
-        .pipe(Effect.flip);
+      yield* admission.assertOpen({
+        instanceId: "held", threadId: effects[1]!.threadId,
+        nativeThreadId: "native-thread:1", producer: null,
+      }).pipe(Effect.flip);
       yield* TestClock.adjust(CODEX_STEER_TIMEOUT_MS * 2);
       assert.deepEqual(Array.from(dispatches.values()), [1, 1, 1, 1, 1]);
       yield* Fiber.interrupt(daemon);

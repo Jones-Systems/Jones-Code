@@ -426,10 +426,10 @@ const makeEventStore = Effect.gen(function* () {
         input.eventId !== undefined
           ? sql``
           : input.commandId !== undefined
-            ? sql`INDEXED BY idx_orch_events_command_id`
-            : input.onlyAgentEvents === true
-              ? sql``
-              : sql`INDEXED BY idx_orchestration_events_application_high_water`
+          ? sql`INDEXED BY idx_orch_events_command_id`
+          : input.onlyAgentEvents === true
+            ? sql``
+            : sql`INDEXED BY idx_orchestration_events_application_high_water`
       }
       WHERE sequence > ${input.afterSequence}
         AND sequence <= ${input.throughSequence ?? Number.MAX_SAFE_INTEGER}

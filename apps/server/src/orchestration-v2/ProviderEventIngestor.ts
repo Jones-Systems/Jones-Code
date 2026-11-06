@@ -355,7 +355,7 @@ export const layer: Layer.Layer<
       ) {
         const threadId = payloadInput.threadId ?? input.threadId;
         const eventId = yield* input.event.type === "runtime_identity.observed" &&
-        input.runtimeIdentityEventId !== undefined
+          input.runtimeIdentityEventId !== undefined
           ? Effect.succeed(input.runtimeIdentityEventId)
           : idAllocator.allocate.event({
               threadId,
@@ -545,15 +545,10 @@ export const layer: Layer.Layer<
       /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
       Effect.fnUntraced(
         function* (input) {
-          if (
-            input.runtimeIdentityEventId !== undefined &&
-            input.event.type !== "runtime_identity.observed"
-          )
+          if (input.runtimeIdentityEventId !== undefined && input.event.type !== "runtime_identity.observed")
             return yield* new ProviderEventNormalizeError({
-              providerSessionId: input.providerSessionId,
-              threadId: input.threadId,
-              providerEvent: input.event,
-              cause: "A retained identity event ID requires runtime_identity.observed.",
+              providerSessionId: input.providerSessionId, threadId: input.threadId,
+              providerEvent: input.event, cause: "A retained identity event ID requires runtime_identity.observed.",
             });
           switch (input.event.type) {
             case "runtime_identity.observed": {

@@ -268,6 +268,7 @@ it.effect(
     }).pipe(Effect.provide(testLayer)),
 );
 
+
 it.effect.each(["exact", "changed-session", "changed-native", "installed-generation"] as const)(
   "stopped-runtime replacement atomically revalidates the old identity: %s", (mode) =>
   Effect.gen(function* () {
@@ -329,31 +330,17 @@ it.effect.each(["exact", "changed-session", "changed-native", "installed-generat
           providerInstanceId: provider.providerInstanceId, providerSessionId: provider.providerSessionId,
           nativeThreadRef: provider.nativeThreadRef,
         },
-        events: [
-          {
-            id: EventId.make(`${mode}:replacement`),
-            type: "provider-thread.updated",
-            threadId,
-            occurredAt: now,
-            payload: { ...provider, providerSessionId: ProviderSessionId.make("fresh-session") },
-          },
-          {
-            id: EventId.make(`${mode}:running`),
-            type: "run.updated",
-            threadId,
-            runId,
-            occurredAt: now,
-            payload: { ...run, status: "running", startedAt: now },
-          },
-        ],
-      });
-      assert.equal(result.committed, mode === "exact");
-      if (mode !== "exact") {
-        assert.equal(yield* sink.latestSequence({ threadId }), before);
-        assert.equal(
-          (yield* projections.getThreadRecords(threadId, ["runs"])).runs[0]!.status,
-          "starting",
-        );
-      }
-    }).pipe(Effect.provide(testLayer)),
+      },
+      events: [
+        { id: EventId.make(`${mode}:replacement`), type: "provider-thread.updated", threadId, occurredAt: now,
+          payload: { ...provider, providerSessionId: ProviderSessionId.make("fresh-session") } },
+        { id: EventId.make(`${mode}:running`), type: "run.updated", threadId, runId, occurredAt: now, payload: { ...run, status: "running", startedAt: now } },
+      ],
+    });
+    assert.equal(result.committed, mode === "exact");
+    if (mode !== "exact") {
+      assert.equal(yield* sink.latestSequence({ threadId }), before);
+      assert.equal((yield* projections.getThreadRecords(threadId, ["runs"])).runs[0]!.status, "starting");
+    }
+  }).pipe(Effect.provide(testLayer)),
 );

@@ -147,10 +147,7 @@ describe("physical evidence sidecar", () => {
       const before = (yield* sql`SELECT * FROM jones_physical_process_evidence`).length;
       yield* owner.bind({ ...binding() }, originalLease);
       expect((yield* sql`SELECT * FROM jones_physical_process_evidence`).length).toBe(before);
-      const foreign = {
-        ...binding(),
-        providerSessionId: ProviderSessionId.make("foreign-session"),
-      };
+      const foreign = { ...binding(), providerSessionId: ProviderSessionId.make("foreign-session") };
       yield* owner.invalidate(foreign);
       expect(yield* owner.read(binding())).toMatchObject({ status: "observed" });
       yield* owner.bind(foreign, originalLease);
@@ -160,4 +157,5 @@ describe("physical evidence sidecar", () => {
       expect(yield* owner.read(foreign)).toMatchObject({ reason: "not_captured" });
     }).pipe(Effect.provide(memory)),
   );
+
 });

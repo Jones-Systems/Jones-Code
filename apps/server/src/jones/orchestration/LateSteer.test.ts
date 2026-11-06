@@ -152,12 +152,8 @@ describe("bounded native steering", () => {
           target: ControlAdmission.targetFromDispatch(binding),
           prepare: Effect.succeed({ binding, producerScope, send: Effect.fail(error) }),
         }).pipe(Effect.flip);
-        if (kind === "validation")
-          yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding));
-        else
-          yield* admission
-            .assertOpen(ControlAdmission.targetFromDispatch(binding))
-            .pipe(Effect.flip);
+        if (kind === "validation") yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding));
+        else yield* admission.assertOpen(ControlAdmission.targetFromDispatch(binding)).pipe(Effect.flip);
       }).pipe(Effect.scoped, Effect.provide(ControlAdmission.layer)),
   );
 

@@ -42,10 +42,8 @@ const equivalentBinding = Schema.toEquivalence(ProviderRuntimeBinding);
 const equivalentThread = Schema.toEquivalence(OrchestrationV2ProviderThread);
 const equivalentRequested = Schema.toEquivalence(RequestedRuntimeIdentity);
 const equivalentObserved = Schema.toEquivalence(ObservedRuntimeIdentity);
-const sameRequested = (
-  left: RequestedRuntimeIdentity | undefined,
-  right: RequestedRuntimeIdentity,
-) => left !== undefined && equivalentRequested(left, right);
+const sameRequested = (left: RequestedRuntimeIdentity | undefined, right: RequestedRuntimeIdentity) =>
+  left !== undefined && equivalentRequested(left, right);
 const sameObserved = (left: ObservedRuntimeIdentity | undefined, right: ObservedRuntimeIdentity) =>
   left !== undefined && equivalentObserved(left, right);
 
@@ -64,21 +62,16 @@ export function makeProviderRecoveryPublication(ports: {
   readonly revalidateGuard: (threadId: ThreadId) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly bindGuard: (binding: ProviderRuntimeBinding) => Effect.Effect<void, ProviderAdapterV2Error>;
 }) {
-  const retained = new Map<
-    string,
-    Array<{
-      readonly input: RuntimeBindingPublicationInput;
-      readonly handle: CapturedRuntimeBindingPublication;
-      completed: boolean;
-    }>
-  >();
-  const failure = (cause: unknown) =>
-    new ProviderRuntimeBindingError({
-      driver: ports.driver,
-      detail:
-        "Failed to establish the actual provider runtime binding; native effects must not be replayed.",
-      cause,
-    });
+  const retained = new Map<string, Array<{
+    readonly input: RuntimeBindingPublicationInput;
+    readonly handle: CapturedRuntimeBindingPublication;
+    completed: boolean;
+  }>>();
+  const failure = (cause: unknown) => new ProviderRuntimeBindingError({
+    driver: ports.driver,
+    detail: "Failed to establish the actual provider runtime binding; native effects must not be replayed.",
+    cause,
+  });
   const preparation = Semaphore.makeUnsafe(1);
   const prepare = Effect.fn("providerRecovery.preparePublication")(function* (input: RuntimeBindingPublicationInput) {
     const key = publicationKey([input.runtimeGeneration, input.providerThread.id]);
@@ -117,25 +110,30 @@ export function makeProviderRecoveryPublication(ports: {
       runtimeIdentity: {
         runtimeGeneration: input.runtimeGeneration,
         requested: input.requested,
-        observed: input.observed,
-      };
-      if (input.producerOrigin !== undefined)
-        Origin.stampProviderEvent(observedEvent, { producer: input.producerOrigin });
-      const revalidate = Effect.gen(function* () {
-        if (
-          retained.get(key)?.at(-1)?.handle !== handle ||
+        observed: unobservedRuntimeIdentity(),
+      },
+    };
+    const boundary = {
+      id: boundaryId,
+      type: "provider-thread.updated" as const,
+      threadId: binding.threadId,
+      occurredAt: yield* DateTime.now,
+      payload: boundaryThread,
+    };
+    const observedEvent: ProviderAdapterV2Event = {
+      type: "runtime_identity.observed", driver: ports.driver, binding,
+      requested: input.requested, observed: input.observed,
+    };
+    if (input.producerOrigin !== undefined)
+      Origin.stampProviderEvent(observedEvent, { producer: input.producerOrigin });
+    const revalidate = Effect.gen(function* () {
+      if (retained.get(key)?.at(-1)?.handle !== handle ||
           ports.reservations.get(input.runtimeGeneration) !== reservation ||
-          reservation.invalidated.has(thread.id)
-        )
-          return yield* failure(
-            "The original launch reservation no longer owns this conversation.",
-          );
-        yield* ports.revalidateGuard(binding.threadId);
-        yield* Origin.revalidateProviderEventOrigin(observedEvent, {
-          driver: ports.driver,
-          instanceId: ports.instanceId,
-          providerSessionId: ports.providerSessionId,
-        });
+          reservation.invalidated.has(thread.id))
+        return yield* failure("The original launch reservation no longer owns this conversation.");
+      yield* ports.revalidateGuard(binding.threadId);
+      yield* Origin.revalidateProviderEventOrigin(observedEvent, {
+        driver: ports.driver, instanceId: ports.instanceId, providerSessionId: ports.providerSessionId,
       });
     });
     const readEvent = (eventId: EventId) => ports.events.read({
@@ -216,16 +214,15 @@ export function makeProviderRecoveryPublication(ports: {
           )),
           Effect.forkDetach({ startImmediately: true }),
         );
-      const handle: CapturedRuntimeBindingPublication = { binding, complete };
-      retained.set(key, [...operations, { input, handle, completed: false }]);
-      return handle;
-    },
-    Effect.mapError(failure),
-    preparation.withPermits(1),
-  );
-  return {
-    prepare,
-    bind: (input: RuntimeBindingPublicationInput) =>
-      prepare(input).pipe(Effect.flatMap((publication) => publication.complete)),
-  };
+        return yield* restore(Deferred.await(completion)).pipe(Effect.flatMap((result) => result));
+      }
+      return yield* restore(Deferred.await(inFlight)).pipe(Effect.flatMap((result) => result));
+    }));
+    const handle: CapturedRuntimeBindingPublication = { binding, complete };
+    retained.set(key, [...operations, { input, handle, completed: false }]);
+    return handle;
+  }, Effect.mapError(failure), preparation.withPermits(1));
+  return { prepare, bind: (input: RuntimeBindingPublicationInput) => prepare(input).pipe(
+    Effect.flatMap((publication) => publication.complete),
+  ) };
 }

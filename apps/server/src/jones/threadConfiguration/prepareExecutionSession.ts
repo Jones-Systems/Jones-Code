@@ -85,25 +85,17 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
       }) ?? Effect.succeed(false)
     ));
   const generation = provider.runtimeIdentity?.runtimeGeneration;
-  const hasNativeIdentity =
-    provider.appThreadId === run.threadId &&
-    provider.providerSessionId != null &&
-    provider.nativeThreadRef?.nativeId != null &&
+  const hasNativeIdentity = provider.appThreadId === run.threadId &&
+    provider.providerSessionId != null && provider.nativeThreadRef?.nativeId != null &&
     provider.nativeThreadRef.driver === provider.driver;
-  const stoppedBinding = !hasNativeIdentity
-    ? undefined
-    : generation === undefined
-      ? ((yield* sink.readStoppedRuntime?.(provider) ?? Effect.succeed(null)) ?? undefined)
-      : runtimeBinding(provider, generation);
-  const identityBinding =
-    stoppedBinding === undefined
-      ? undefined
-      : runtimeBinding(provider, stoppedBinding.runtimeGeneration);
-  const stoppedRuntime =
-    stoppedBinding !== undefined &&
-    identityBinding !== undefined &&
+  const stoppedBinding = !hasNativeIdentity ? undefined : generation === undefined
+    ? (yield* (sink.readStoppedRuntime?.(provider) ?? Effect.succeed(null))) ?? undefined
+    : runtimeBinding(provider, generation);
+  const identityBinding = stoppedBinding === undefined ? undefined
+    : runtimeBinding(provider, stoppedBinding.runtimeGeneration);
+  const stoppedRuntime = stoppedBinding !== undefined && identityBinding !== undefined &&
     Schema.toEquivalence(ProviderRuntimeBinding)(stoppedBinding, identityBinding) &&
-    (yield* sink.hasStoppedRuntime?.(stoppedBinding) ?? Effect.succeed(false));
+    (yield* (sink.hasStoppedRuntime?.(stoppedBinding) ?? Effect.succeed(false)));
   // A new session key prevents a pooled sibling's resident runtime from being reused.
   const replacement =
     retiredWriter ||
@@ -136,22 +128,17 @@ export const prepareExecutionSession = Effect.fn("jones.prepareExecutionSession"
     runId: run.id,
     activeAttemptId: run.activeAttemptId,
     expectedStatus: "starting",
-    ...(stoppedRuntime && generation === undefined
-      ? {
-          runtimeIdentityBoundary: {
-            expectedGeneration: null,
-            expectedActiveProviderThreadId: provider.id,
-            expectedProviderThreadIdentity: {
-              id: provider.id,
-              appThreadId: provider.appThreadId,
-              driver: provider.driver,
-              providerInstanceId: provider.providerInstanceId,
-              providerSessionId: provider.providerSessionId,
-              nativeThreadRef: provider.nativeThreadRef,
-            },
-          },
-        }
-      : {}),
+    ...(stoppedRuntime && generation === undefined ? {
+      runtimeIdentityBoundary: {
+        expectedGeneration: null,
+        expectedActiveProviderThreadId: provider.id,
+        expectedProviderThreadIdentity: {
+          id: provider.id, appThreadId: provider.appThreadId, driver: provider.driver,
+          providerInstanceId: provider.providerInstanceId, providerSessionId: provider.providerSessionId,
+          nativeThreadRef: provider.nativeThreadRef,
+        },
+      },
+    } : {}),
     events,
   });
   if (!result.committed) return yield* Effect.fail("Run changed before replacement.");

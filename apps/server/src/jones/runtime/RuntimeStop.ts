@@ -69,12 +69,12 @@ const make = Effect.gen(function* () {
   const workers = new Map<CommandId, Deferred.Deferred<void, StopStore.RuntimeStopError>>();
   const error = (reason: string, cause?: unknown) =>
     new StopStore.RuntimeStopError({ reason, ...(cause === undefined ? {} : { cause }) });
-  const canObserveOrInitiate = Effect.fn("CurrentRuntimeStop.canObserveOrInitiate")(function* (
-    capture: CapturedRuntimeStop,
-  ) {
-    if (capture.retirement !== undefined && (yield* capture.retirement.started)) return true;
-    return yield* capture.isCurrent;
-  });
+  const canObserveOrInitiate = Effect.fn("CurrentRuntimeStop.canObserveOrInitiate")(
+    function* (capture: CapturedRuntimeStop) {
+      if (capture.retirement !== undefined && (yield* capture.retirement.started)) return true;
+      return yield* capture.isCurrent;
+    },
+  );
   const awaitWorker = Effect.fn("CurrentRuntimeStop.awaitWorker")(
     (worker: Deferred.Deferred<void, StopStore.RuntimeStopError>) => Deferred.await(worker),
     (effect) =>

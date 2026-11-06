@@ -204,14 +204,11 @@ export const makeRuntimeStopMethods = (
         nativeThreadId: provider.nativeThreadRef?.nativeId,
       }).pipe(
         Effect.mapError(
-          (cause) =>
-            new RuntimeStopError({ reason: "runtime_stop_readback_identity_incomplete", cause }),
+          (cause) => new RuntimeStopError({ reason: "runtime_stop_readback_identity_incomplete", cause }),
         ),
       );
       if (provider.nativeThreadRef?.driver !== identity.driver)
-        return yield* new RuntimeStopError({
-          reason: "runtime_stop_readback_native_driver_conflict",
-        });
+        return yield* new RuntimeStopError({ reason: "runtime_stop_readback_native_driver_conflict" });
       if (!(yield* available)) return null;
       // Normalize all binding fields before DISTINCT: separate commands for one binding are one candidate.
       const rows = yield* sql<{ binding_json: string }>`
@@ -243,8 +240,7 @@ export const makeRuntimeStopMethods = (
           row.binding_json,
         ).pipe(
           Effect.mapError(
-            (cause) =>
-              new RuntimeStopError({ reason: "runtime_stop_readback_binding_invalid", cause }),
+            (cause) => new RuntimeStopError({ reason: "runtime_stop_readback_binding_invalid", cause }),
           ),
         );
         if (

@@ -279,15 +279,8 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
-      readonly expectedProviderThreadIdentity?: Pick<
-        OrchestrationV2ProviderThread,
-        | "id"
-        | "appThreadId"
-        | "driver"
-        | "providerInstanceId"
-        | "providerSessionId"
-        | "nativeThreadRef"
-      >;
+      readonly expectedProviderThreadIdentity?: Pick<OrchestrationV2ProviderThread,
+        "id" | "appThreadId" | "driver" | "providerInstanceId" | "providerSessionId" | "nativeThreadRef">;
     };
     /** Return no events if another thread owns this native session at commit time. */
     readonly unlessNativeThreadOwned?: Pick<
@@ -306,15 +299,8 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
-      readonly expectedProviderThreadIdentity?: Pick<
-        OrchestrationV2ProviderThread,
-        | "id"
-        | "appThreadId"
-        | "driver"
-        | "providerInstanceId"
-        | "providerSessionId"
-        | "nativeThreadRef"
-      >;
+      readonly expectedProviderThreadIdentity?: Pick<OrchestrationV2ProviderThread,
+        "id" | "appThreadId" | "driver" | "providerInstanceId" | "providerSessionId" | "nativeThreadRef">;
     };
     /**
      * Rebuilds each run.updated from the stored row with only its delegatedCompletion replaced.
@@ -339,15 +325,8 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
-      readonly expectedProviderThreadIdentity?: Pick<
-        OrchestrationV2ProviderThread,
-        | "id"
-        | "appThreadId"
-        | "driver"
-        | "providerInstanceId"
-        | "providerSessionId"
-        | "nativeThreadRef"
-      >;
+      readonly expectedProviderThreadIdentity?: Pick<OrchestrationV2ProviderThread,
+        "id" | "appThreadId" | "driver" | "providerInstanceId" | "providerSessionId" | "nativeThreadRef">;
     };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
@@ -374,15 +353,8 @@ export interface EventSinkV2Shape {
     readonly runtimeIdentityBoundary?: {
       readonly expectedGeneration: string | null;
       readonly expectedActiveProviderThreadId?: ProviderThreadId;
-      readonly expectedProviderThreadIdentity?: Pick<
-        OrchestrationV2ProviderThread,
-        | "id"
-        | "appThreadId"
-        | "driver"
-        | "providerInstanceId"
-        | "providerSessionId"
-        | "nativeThreadRef"
-      >;
+      readonly expectedProviderThreadIdentity?: Pick<OrchestrationV2ProviderThread,
+        "id" | "appThreadId" | "driver" | "providerInstanceId" | "providerSessionId" | "nativeThreadRef">;
     };
     readonly guardPendingUserInputCancellations?: boolean;
     readonly commandId?: CommandId;
@@ -760,24 +732,16 @@ const layerBase: Layer.Layer<
         const current =
           records.providerThreads.find((thread) => thread.id === update.payload.id) ?? null;
         const expectedIdentity = input.runtimeIdentityBoundary.expectedProviderThreadIdentity;
-        if (
-          expectedIdentity !== undefined &&
-          (expectedIdentity.id !== update.payload.id ||
-            expectedIdentity.appThreadId !== update.threadId ||
-            current === null ||
-            current.id !== expectedIdentity.id ||
-            current.appThreadId !== expectedIdentity.appThreadId ||
-            current.driver !== expectedIdentity.driver ||
-            current.providerInstanceId !== expectedIdentity.providerInstanceId ||
-            current.providerSessionId !== expectedIdentity.providerSessionId ||
-            (current.nativeThreadRef === null || expectedIdentity.nativeThreadRef === null
-              ? current.nativeThreadRef !== expectedIdentity.nativeThreadRef
-              : !Schema.toEquivalence(OrchestrationV2ProviderRef)(
-                  current.nativeThreadRef,
-                  expectedIdentity.nativeThreadRef,
-                )))
-        )
-          return null;
+        if (expectedIdentity !== undefined && (
+          expectedIdentity.id !== update.payload.id || expectedIdentity.appThreadId !== update.threadId ||
+          current === null || current.id !== expectedIdentity.id ||
+          current.appThreadId !== expectedIdentity.appThreadId || current.driver !== expectedIdentity.driver ||
+          current.providerInstanceId !== expectedIdentity.providerInstanceId ||
+          current.providerSessionId !== expectedIdentity.providerSessionId ||
+          (current.nativeThreadRef === null || expectedIdentity.nativeThreadRef === null
+            ? current.nativeThreadRef !== expectedIdentity.nativeThreadRef
+            : !Schema.toEquivalence(OrchestrationV2ProviderRef)(current.nativeThreadRef, expectedIdentity.nativeThreadRef))
+        )) return null;
         if (
           (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== undefined &&
             (input.runtimeIdentityBoundary.expectedActiveProviderThreadId !== update.payload.id ||
