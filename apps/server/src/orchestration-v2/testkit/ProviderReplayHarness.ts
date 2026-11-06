@@ -1,3 +1,5 @@
+import * as RuntimeStop from "../../jones/runtime/RuntimeStop.ts";
+import * as AuthSessions from "../../persistence/AuthSessions.ts";
 import * as RestartPreparation from "../../jones/orchestration/RestartPreparation.ts";
 import * as ControlAdmission from "../../jones/orchestration/ControlAdmission.ts";
 import type * as CheckoutIntent from "../../jones/ordinaryCheckout/CheckoutIntent.ts";
@@ -335,6 +337,8 @@ export function layerWithRegistryAndServices<Error>(
     ) => Effect.Effect<void>;
   } = {},
 ): Layer.Layer<
+  | RuntimeStop.CurrentRuntimeStop
+  | AuthSessions.AuthSessionRepository
   | ProjectionStore.ProjectionStoreV2
   | ProviderSwitchService.ProviderSwitchServiceV2
   | ServerSettings.ServerSettingsService
@@ -379,6 +383,7 @@ export function layerWithRegistryAndServices<Error>(
     options.eventStoreLayer ?? EventStore.layer,
     ProjectionStore.layer,
     ProjectStore.layer,
+    AuthSessions.layer,
     CommandReceiptStore.layer,
     EffectOutbox.layer,
     TurnItemPositionStore.layer,
@@ -605,7 +610,18 @@ export function layerWithRegistryAndServices<Error>(
           ),
         )
       : Layer.empty;
+  const layerCurrentRuntimeStop = RuntimeStop.layer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        layerStores,
+        layerEventSinkProvided,
+        layerProviderSessionManagerProvided,
+        layerRestartPreparationProvided,
+      ),
+    ),
+  );
   const layerEffectExecutorBase = EffectWorker.layerExecutor.pipe(
+    Layer.provide(layerCurrentRuntimeStop),
     Layer.provide(layerRestartPreparationProvided),
     Layer.provide(
       Layer.mergeAll(
@@ -642,6 +658,7 @@ export function layerWithRegistryAndServices<Error>(
     Layer.provide(Layer.merge(layerStores, layerEffectExecutorProvided)),
   );
   const layerReplayRuntime = Layer.mergeAll(
+    layerCurrentRuntimeStop,
     layerDatabase,
     layerStores,
     layerServerSettings,

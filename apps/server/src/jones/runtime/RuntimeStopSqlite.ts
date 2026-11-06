@@ -6,6 +6,9 @@ import {
   ServerAuthSessionMethod,
   CurrentRuntimeStopTarget,
   StopCurrentThreadRuntimeInput,
+  ProviderRuntimeBinding,
+  ProviderRuntimeEvidenceCapture,
+  type OrchestrationV2ProviderThread,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -165,5 +168,115 @@ export const makeRuntimeStopMethods = (
       }),
     );
   });
-  return { assertIdentity, record, readState, start, complete, assertStartAllowed };
+  const hasStoppedRuntime = Effect.fnUntraced(
+    function* (binding: ProviderRuntimeBinding) {
+      if (!(yield* available)) return false;
+      const rows = yield* sql`
+      SELECT intent.command_id
+      FROM jones_runtime_stop_intents AS intent
+      JOIN jones_runtime_stop_observations AS observation ON observation.command_id=intent.command_id
+      WHERE observation.phase='completed' AND observation.result='stopped'
+        AND intent.thread_id=${binding.threadId}
+        AND json_extract(intent.identity_json,'$.request.target.binding.threadId')=${binding.threadId}
+        AND json_extract(intent.identity_json,'$.request.target.binding.providerThreadId')=${binding.providerThreadId}
+        AND json_extract(intent.identity_json,'$.request.target.binding.providerSessionId')=${binding.providerSessionId}
+        AND json_extract(intent.identity_json,'$.request.target.binding.providerInstanceId')=${binding.providerInstanceId}
+        AND json_extract(intent.identity_json,'$.request.target.binding.driver')=${binding.driver}
+        AND json_extract(intent.identity_json,'$.request.target.binding.nativeThreadId')=${binding.nativeThreadId}
+        AND json_extract(intent.identity_json,'$.request.target.binding.runtimeGeneration')=${binding.runtimeGeneration}
+      LIMIT 1
+      `;
+      return rows.length === 1;
+    },
+    Effect.mapError(
+      (cause) => new RuntimeStopError({ reason: "runtime_stop_readback_unavailable", cause }),
+    ),
+  );
+  const readStoppedRuntime = Effect.fnUntraced(
+    function* (provider: OrchestrationV2ProviderThread) {
+      if (provider.runtimeIdentity?.runtimeGeneration !== undefined) return null;
+      const identity = yield* Schema.decodeUnknownEffect(ProviderRuntimeEvidenceCapture)({
+        threadId: provider.appThreadId,
+        providerThreadId: provider.id,
+        providerSessionId: provider.providerSessionId,
+        providerInstanceId: provider.providerInstanceId,
+        driver: provider.driver,
+        nativeThreadId: provider.nativeThreadRef?.nativeId,
+      }).pipe(
+        Effect.mapError(
+          (cause) =>
+            new RuntimeStopError({ reason: "runtime_stop_readback_identity_incomplete", cause }),
+        ),
+      );
+      if (provider.nativeThreadRef?.driver !== identity.driver)
+        return yield* new RuntimeStopError({
+          reason: "runtime_stop_readback_native_driver_conflict",
+        });
+      if (!(yield* available)) return null;
+      // Normalize all binding fields before DISTINCT: separate commands for one binding are one candidate.
+      const rows = yield* sql<{ binding_json: string }>`
+        SELECT DISTINCT json_object(
+          'threadId',json_extract(intent.identity_json,'$.request.target.binding.threadId'),
+          'providerThreadId',json_extract(intent.identity_json,'$.request.target.binding.providerThreadId'),
+          'providerSessionId',json_extract(intent.identity_json,'$.request.target.binding.providerSessionId'),
+          'providerInstanceId',json_extract(intent.identity_json,'$.request.target.binding.providerInstanceId'),
+          'driver',json_extract(intent.identity_json,'$.request.target.binding.driver'),
+          'nativeThreadId',json_extract(intent.identity_json,'$.request.target.binding.nativeThreadId'),
+          'runtimeGeneration',json_extract(intent.identity_json,'$.request.target.binding.runtimeGeneration')
+        ) AS binding_json
+        FROM jones_runtime_stop_intents AS intent
+        JOIN jones_runtime_stop_observations AS observation ON observation.command_id=intent.command_id
+        WHERE observation.phase='completed' AND observation.result='stopped'
+          AND intent.thread_id=${identity.threadId}
+          AND json_extract(intent.identity_json,'$.request.threadId')=${identity.threadId}
+          AND json_extract(intent.identity_json,'$.request.target.binding.threadId')=${identity.threadId}
+          AND json_extract(intent.identity_json,'$.request.target.binding.providerThreadId')=${identity.providerThreadId}
+          AND json_extract(intent.identity_json,'$.request.target.binding.providerSessionId')=${identity.providerSessionId}
+          AND json_extract(intent.identity_json,'$.request.target.binding.providerInstanceId')=${identity.providerInstanceId}
+          AND json_extract(intent.identity_json,'$.request.target.binding.driver')=${identity.driver}
+          AND json_extract(intent.identity_json,'$.request.target.binding.nativeThreadId')=${identity.nativeThreadId}
+        LIMIT 2
+      `;
+      const bindings = new Map<string, ProviderRuntimeBinding>();
+      for (const row of rows) {
+        const binding = yield* Schema.decodeEffect(Schema.fromJsonString(ProviderRuntimeBinding))(
+          row.binding_json,
+        ).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RuntimeStopError({ reason: "runtime_stop_readback_binding_invalid", cause }),
+          ),
+        );
+        if (
+          binding.threadId !== identity.threadId ||
+          binding.providerThreadId !== identity.providerThreadId ||
+          binding.providerSessionId !== identity.providerSessionId ||
+          binding.providerInstanceId !== identity.providerInstanceId ||
+          binding.driver !== identity.driver ||
+          binding.nativeThreadId !== identity.nativeThreadId
+        )
+          return yield* new RuntimeStopError({ reason: "runtime_stop_readback_binding_conflict" });
+        bindings.set(nativeCreationCanonicalJson(binding), binding);
+      }
+      if (bindings.size > 1)
+        return yield* new RuntimeStopError({ reason: "runtime_stop_readback_ambiguous" });
+      const binding: ProviderRuntimeBinding | undefined = bindings.values().next().value;
+      return binding !== undefined && (yield* hasStoppedRuntime(binding)) ? binding : null;
+    },
+    Effect.mapError((cause) =>
+      Schema.is(RuntimeStopError)(cause)
+        ? cause
+        : new RuntimeStopError({ reason: "runtime_stop_readback_unavailable", cause }),
+    ),
+  );
+  return {
+    assertIdentity,
+    record,
+    readState,
+    start,
+    complete,
+    assertStartAllowed,
+    hasStoppedRuntime,
+    readStoppedRuntime,
+  };
 };

@@ -71,6 +71,45 @@ describe("retained Codex producer retirement", () => {
       }),
   );
 
+  it.effect(
+    "retries only captured exit observation after a recoverable failure without closing twice",
+    () =>
+      Effect.gen(function* () {
+        let closes = 0;
+        let observations = 0;
+        let releases = 0;
+        const retirement = yield* makeCodexProducerRetirement(
+          Effect.sync(() => {
+            closes++;
+          }),
+          Effect.sync(() => {
+            releases++;
+          }),
+        );
+        retirement.captureProcessExit(
+          Effect.suspend(() => {
+            observations++;
+            return observations === 1
+              ? Effect.fail(
+                  new CodexErrors.CodexAppServerTransportError({
+                    operation: "read-process-exit-status",
+                    cause: "Synthetic recoverable observation failure",
+                  }),
+                )
+              : Effect.void;
+          }),
+        );
+        const first = yield* retirement.processExit!.pipe(Effect.result);
+        assert.equal(first._tag, "Failure");
+        assert.equal(closes, 0);
+        yield* retirement.close;
+        yield* retirement.close;
+        assert.equal(observations, 2);
+        assert.equal(closes, 1);
+        assert.equal(releases, 1);
+      }),
+  );
+
   it.effect("does not mistake completed finalizers for physical exit", () =>
     Effect.gen(function* () {
       const finalized = yield* Deferred.make<void>();
@@ -150,6 +189,45 @@ describe("captured native thread retirement", () => {
         assert.isUndefined(late.pollUnsafe());
         yield* state.observeClosed(producer, binding.nativeThreadId);
         assert.equal((yield* Fiber.join(late)).evidence, "thread_closed");
+      }),
+  );
+
+  it.effect(
+    "allows a later exact observer to recover process-exit proof without another detach",
+    () =>
+      Effect.gen(function* () {
+        const state = makeCodexThreadRetirements<object>();
+        const observed = yield* Deferred.make<void>();
+        let observations = 0;
+        let sends = 0;
+        const request = yield* state.begin({
+          producer: {},
+          binding,
+          dispatch: Effect.sync(() => {
+            sends++;
+            return "producer" as const;
+          }),
+          processExit: Effect.suspend(() => {
+            observations++;
+            return observations === 1
+              ? Deferred.succeed(observed, undefined).pipe(
+                  Effect.andThen(
+                    Effect.fail(
+                      new CodexErrors.CodexAppServerTransportError({
+                        operation: "read-process-exit-status",
+                        cause: "synthetic",
+                      }),
+                    ),
+                  ),
+                )
+              : Effect.void;
+          }),
+        });
+        yield* Deferred.await(observed);
+        const receipt = yield* request!.wait;
+        assert.deepEqual(receipt, { binding, evidence: "producer_exited" });
+        assert.equal(sends, 1);
+        assert.equal(observations, 2);
       }),
   );
 

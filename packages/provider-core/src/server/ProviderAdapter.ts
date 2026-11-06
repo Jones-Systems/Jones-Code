@@ -472,10 +472,21 @@ export interface ProviderRuntimeLifecycle {
     readonly producerOrigin?: ProviderEventProducerOrigin;
     readonly physicalProcess?: PhysicalProcessLease | undefined;
   }) => Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
+  // Completing this retained local publication never repeats a native request.
+  readonly prepareBindingPublication?: (
+    input: RuntimeBindingPublicationInput,
+  ) => Effect.Effect<CapturedRuntimeBindingPublication, ProviderAdapterV2Error>;
   readonly abandon: (runtimeGeneration: string) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly invalidate: (
     binding: ProviderRuntimeBinding,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+}
+
+export type RuntimeBindingPublicationInput = Parameters<ProviderRuntimeLifecycle["bind"]>[0];
+
+export interface CapturedRuntimeBindingPublication {
+  readonly binding: ProviderRuntimeBinding;
+  readonly complete: Effect.Effect<OrchestrationV2ProviderThread, ProviderAdapterV2Error>;
 }
 
 export function requestedRuntimeIdentity(
@@ -668,11 +679,25 @@ export interface ProviderAdapterV2HistoricalContext {
   readonly context: string;
 }
 
+export interface RuntimeRetirementReceipt {
+  readonly binding: ProviderRuntimeBinding;
+  readonly evidence: "thread_closed" | "producer_exited";
+}
+
+export interface CapturedRuntimeRetirement {
+  readonly binding: ProviderRuntimeBinding;
+  readonly awaitRetired: Effect.Effect<RuntimeRetirementReceipt, ProviderAdapterV2Error>;
+}
+
 export interface CapturedRuntimeStop {
   readonly binding: ProviderRuntimeBinding;
   readonly evidenceRevision: number;
   readonly isCurrent: Effect.Effect<boolean>;
   readonly stop: Effect.Effect<void, ProviderAdapterV2Error>;
+  // Observation stays bound to the captured retirement after new-work admission closes.
+  readonly retirement?: CapturedRuntimeRetirement & {
+    readonly started: Effect.Effect<boolean>;
+  };
 }
 
 export interface ProviderAdapterV2McpTool {
@@ -713,6 +738,12 @@ export type ProviderAdapterV2SubagentOutcome = {
 };
 
 export interface ProviderAdapterV2SessionRuntime {
+  readonly reconcileBindingPublication?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerThreadId: ProviderThreadId;
+    readonly nativeThreadId: string | null;
+    readonly revalidate: Effect.Effect<void, ProviderAdapterV2Error>;
+  }) => Effect.Effect<OrchestrationV2ProviderThread | null, ProviderAdapterV2Error>;
   readonly captureRuntimeStop?: (
     providerThread: OrchestrationV2ProviderThread,
   ) => Effect.Effect<CapturedRuntimeStop | null, ProviderAdapterV2Error>;
