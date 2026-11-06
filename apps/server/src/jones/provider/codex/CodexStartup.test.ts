@@ -79,7 +79,10 @@ describe("Codex startup caller budget", () => {
           .pipe(Effect.result, Effect.forkChild);
         yield* Deferred.await(held);
         let dispatches = 0;
-        const request = startup.observe(producer, Effect.sync(() => ++dispatches));
+        const request = startup.observe(
+          producer,
+          Effect.sync(() => ++dispatches),
+        );
         const waiter = yield* startup
           .run(operation, permit.withPermits(1)(startup.withinPermit(request)))
           .pipe(Effect.result, Effect.forkChild);

@@ -1021,30 +1021,32 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             cancelledHandoff
               ? {
                   ...adapter,
-                  openSession: Effect.fn("CodexStartupTest.openCancellationSession")(
-                    function* (input: Parameters<typeof adapter.openSession>[0]) {
-                      const runtime = yield* adapter.openSession(input);
-                      return {
-                        ...runtime,
-                        reconcileBindingPublication: Effect.fn(
-                          "CodexStartupTest.pauseCompletedPublication",
-                        )(function* (
-                          value: Parameters<
-                            NonNullable<ProviderAdapterV2SessionRuntime["reconcileBindingPublication"]>
-                          >[0],
-                        ) {
-                          const completed = yield* runtime.reconcileBindingPublication!(value);
-                          publicationLookups.push(completed === null ? "absent" : "completed");
-                          if (completed !== null && !pausedCacheHandoff) {
-                            pausedCacheHandoff = true;
-                            yield* Deferred.succeed(cacheHandoffEntered, undefined);
-                            yield* Effect.never;
-                          }
-                          return completed;
-                        }),
-                      };
-                    },
-                  ),
+                  openSession: Effect.fn("CodexStartupTest.openCancellationSession")(function* (
+                    input: Parameters<typeof adapter.openSession>[0],
+                  ) {
+                    const runtime = yield* adapter.openSession(input);
+                    return {
+                      ...runtime,
+                      reconcileBindingPublication: Effect.fn(
+                        "CodexStartupTest.pauseCompletedPublication",
+                      )(function* (
+                        value: Parameters<
+                          NonNullable<
+                            ProviderAdapterV2SessionRuntime["reconcileBindingPublication"]
+                          >
+                        >[0],
+                      ) {
+                        const completed = yield* runtime.reconcileBindingPublication!(value);
+                        publicationLookups.push(completed === null ? "absent" : "completed");
+                        if (completed !== null && !pausedCacheHandoff) {
+                          pausedCacheHandoff = true;
+                          yield* Deferred.succeed(cacheHandoffEntered, undefined);
+                          yield* Effect.never;
+                        }
+                        return completed;
+                      }),
+                    };
+                  }),
                 }
               : adapter,
           ];
@@ -1158,15 +1160,8 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             return yield* Effect.die("The cancellation fixture did not claim its ordinary send.");
           assert.equal(claimed.request.runId, cancelledRunId);
           const capturedClaim = yield* Deferred.make<CurrentEffectClaim["Service"]>();
-          const cancelled = yield* withActiveEffectClaim(
-            outbox,
-            claimed,
-            30_000,
-            true,
-            (claim) =>
-              Deferred.succeed(capturedClaim, claim).pipe(
-                Effect.andThen(executor.execute(claimed)),
-              ),
+          const cancelled = yield* withActiveEffectClaim(outbox, claimed, 30_000, true, (claim) =>
+            Deferred.succeed(capturedClaim, claim).pipe(Effect.andThen(executor.execute(claimed))),
           ).pipe(Effect.exit, Effect.forkScoped({ startImmediately: true }));
           yield* Deferred.await(cacheHandoffEntered);
           const claim = yield* Deferred.await(capturedClaim);
@@ -1185,10 +1180,10 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           );
           const cancelledProjection = yield* orchestrator.getThreadProjection(threadId);
           assert.equal(cancelledProjection.runs[1]?.status, "failed");
-          assert.deepEqual(requests.map((request) => request.method), [
-            "initialize",
-            "thread/start",
-          ]);
+          assert.deepEqual(
+            requests.map((request) => request.method),
+            ["initialize", "thread/start"],
+          );
         }
         const terminal =
           mode !== "unknown-steer"

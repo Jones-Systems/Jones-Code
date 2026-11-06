@@ -157,9 +157,7 @@ it.effect(
       };
       const publication = yield* owner.prepare(input);
       assert.isNull(yield* owner.readCompleted(publication));
-      assert.isTrue(
-        Exit.isFailure(yield* Effect.exit(owner.readCompleted({ ...publication }))),
-      );
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(owner.readCompleted({ ...publication }))));
       const first = yield* publication.complete.pipe(Effect.exit, Effect.forkChild);
       yield* Deferred.await(guardEntered);
       const joined = yield* publication.complete.pipe(Effect.exit, Effect.forkChild);

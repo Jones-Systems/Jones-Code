@@ -588,33 +588,32 @@ export const layerWithOptions = (
               }
             }).pipe(Effect.mapError(protocolError)),
           ),
-          prepareBindingPublication: Effect.fn(
-            "ProviderSessionManager.prepareBindingPublication",
-          )((value: Parameters<ProviderRuntimeLifecycle["bind"]>[0]) =>
-            Effect.uninterruptibleMask((restore) =>
-              Effect.gen(function* () {
-                const captured = yield* restore(captureOriginalLoadBinding(value));
-                const handle = yield* restore(publication.prepare(value));
-                if (captured !== undefined) {
-                  const current = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
-                  if (
-                    current?.runtime !== captured.runtime ||
-                    originalThreadLoads.get(captured.runtime)?.get(captured.threadId) !==
-                      captured.original ||
-                    (captured.original.publication !== undefined &&
-                      captured.original.publication.handle !== handle)
-                  )
-                    return yield* protocolError(
-                      "The original load changed before publication preparation completed.",
-                    );
-                  captured.original.publication ??= {
-                    handle,
-                    readCompleted: publication.readCompleted(handle),
-                  };
-                }
-                return handle;
-              }),
-            ),
+          prepareBindingPublication: Effect.fn("ProviderSessionManager.prepareBindingPublication")(
+            (value: Parameters<ProviderRuntimeLifecycle["bind"]>[0]) =>
+              Effect.uninterruptibleMask((restore) =>
+                Effect.gen(function* () {
+                  const captured = yield* restore(captureOriginalLoadBinding(value));
+                  const handle = yield* restore(publication.prepare(value));
+                  if (captured !== undefined) {
+                    const current = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));
+                    if (
+                      current?.runtime !== captured.runtime ||
+                      originalThreadLoads.get(captured.runtime)?.get(captured.threadId) !==
+                        captured.original ||
+                      (captured.original.publication !== undefined &&
+                        captured.original.publication.handle !== handle)
+                    )
+                      return yield* protocolError(
+                        "The original load changed before publication preparation completed.",
+                      );
+                    captured.original.publication ??= {
+                      handle,
+                      readCompleted: publication.readCompleted(handle),
+                    };
+                  }
+                  return handle;
+                }),
+              ),
           ),
           bind: (value) =>
             captureOriginalLoadBinding(value).pipe(Effect.andThen(publication.bind(value))),
