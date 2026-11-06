@@ -815,7 +815,7 @@
         "apps/server/src/jones/cleanup/RuntimeUseStore.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseInvocation.test.ts",
         "apps/server/src/jones/cleanup/WorkspaceLeaseProof.test.ts",
-        "apps/server/src/jones/persistence/Migrations/140_JonesWorkspaceRuntimeUses.test.ts",
+        "apps/server/src/jones/persistence/Migrations/141_JonesWorkspaceRuntimeUses.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseClaim.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseManager.test.ts",
         "apps/server/src/jones/cleanup/RuntimeUseLifetime.test.ts",
@@ -994,9 +994,10 @@
         "apps/server/src/jones/persistence/ForeignHistoryCompatibility.test.ts",
         "apps/server/src/jones/persistence/JonesTablePresence.test.ts",
         "apps/server/src/jones/persistence/Migrations/110_JonesThreadLookupIndexes.test.ts",
-        "apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts"
+        "apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts",
+        "apps/server/src/jones/persistence/Migrations/137_JonesNativeCreationLeaseRenewal.test.ts"
       ],
-      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows; 110 adds only Jones thread indexes. Receiving startup preserves populated foreign 7-13 history. Ordinary outbox success reads no Jones table; native success keeps the strict envelope decode and confirmed-lease proof. Event sink hooks keep their key lookups without per-command schema reads."
+      "scope": "Jones migrations leave upstream tables, indexes, triggers and the upstream ledger unchanged and keep no foreign keys to upstream tables. Released 002 columns remain in place; 105 rebuilds released Jones tables without upstream references, preserving rows; 110 adds only Jones thread indexes. Receiving startup preserves populated foreign 7-13 history. Ordinary outbox success reads no Jones table; native success keeps the strict envelope decode and confirmed-lease proof. Event sink hooks keep their key lookups without per-command schema reads. Migration137 permits only canonical monotonic native-start expiry renewal; released-prefix135/136 preservation and coordinated rollback remain covered."
     },
     {
       "id": "composer-thread-query",
@@ -2148,9 +2149,11 @@
         "apps/desktop/scripts/ui-evidence/thread-self-configure.test.mjs",
         "apps/desktop/scripts/ui-evidence/two-clients-one-server.test.mjs",
         "apps/desktop/scripts/ui-evidence/two-servers-one-client.test.mjs",
-        "scripts/jones/e2e/acp-stub/agent.node-test.mjs"
+        "scripts/jones/e2e/acp-stub/agent.node-test.mjs",
+        "scripts/jones/ci/native-workflow-paths.node-test.cjs",
+        "scripts/jones/ci/native-workflow-evidence.node-test.mjs"
       ],
-      "scope": "Five advisory Linux Electron journeys run nightly, manually or on the native-e2e PR label: pin/unpin and rename through reload and full process restart with unchanged backend control; synthetic-provider self-configuration and follow-up continuity; queue edit/cancel with unchanged-draft and exactly-once delivery oracles; ordinarily paired read-only Node observer updates and reconnect; independent-server endpoint/credential isolation and encrypted catalog disable/re-enable persistence. The observer sends zero commands; its cache guards do not prove production-client cache behavior. Source tests preserve lifecycle, process identity, sibling isolation, unknown cleanup, endpoint trace truth and synthetic ACP protocol checks. Native checks bind the observed Electron version to the candidate manifest, build once and preserve first failures. Source checks do not qualify native execution, live provider inference, physical hosts or timing. The inherited two-server trace timeout remains an unresolved native qualification gap."
+      "scope": "Five advisory Linux Electron journeys run nightly, manually or on the native-e2e PR label: pin/unpin and rename through reload and full process restart with unchanged backend control; synthetic-provider self-configuration and follow-up continuity; queue edit/cancel with unchanged-draft and exactly-once delivery oracles; ordinarily paired read-only Node observer updates and reconnect; independent-server endpoint/credential isolation and encrypted catalog disable/re-enable persistence. The observer sends zero commands; its cache guards do not prove production-client cache behavior. Source tests preserve lifecycle, process identity, sibling isolation, unknown cleanup, endpoint trace truth and synthetic ACP protocol checks. Native checks bind the observed Electron version to the candidate manifest, build once and preserve first failures. Source checks do not qualify native execution, live provider inference, physical hosts or timing. The inherited two-server trace timeout remains an unresolved native qualification gap. TP-NATIVE-01/02 add exact-candidate labelled path selection and cumulative source/build/process/cleanup safety gates so an isolated behavioral failure can retain a red aggregate while later independent first attempts run. Required-CI synthetic Node tests cover selection and continuation; schedules, native oracles and original issue592 native acceptance remain unchanged/unproved."
     },
     {
       "id": "linked-threads",
@@ -2224,9 +2227,24 @@
         "apps/server/scripts/jones/currentFixtures.test.ts",
         "apps/server/src/jones/updates/migrationPlan.test.ts",
         "apps/server/src/jones/nativeCreation/NativeCreationAuthority.test.ts",
-        "apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts"
+        "apps/server/src/jones/nativeCreation/NativeCreationExecutionSqlite.test.ts",
+        "apps/server/src/orchestration-v2/EffectOutbox.test.ts",
+        "apps/server/src/orchestration-v2/EffectOutboxEnqueue.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ActiveEffectClaim.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeEffectCompletion.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationRepository.test.ts",
+        "apps/server/src/jones/nativeCreation/NativeCreationExecutionTypes.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/FoundationPersistence.test.ts",
+        "apps/server/src/jones/orchestration/actionWorkerAdmission.test.ts",
+        "apps/server/src/jones/orchestration/effectClaimTiming.test.ts",
+        "apps/server/src/jones/orchestration/runtimeLayer.jones.test.ts",
+        "apps/server/src/jones/provider/codex/CodexStartup.integration.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/RequestContextAdmission.http.test.ts",
+        "apps/server/src/jones/remoteAdmissionIntegration/registration.test.ts",
+        "apps/server/src/jones/persistence/Migrations/137_JonesNativeCreationLeaseRenewal.test.ts"
       ],
-      "scope": "Source-only W1 lifecycle composition with operation-scoped attestation issued by the native effect, run/start, session, validated-command and preservation owners. Stable checkout lineage and physical generation are separate from ephemeral native operation provenance in existing transition metadata. The V3 registry retains semantic assessments and a separate CAS generation. Invoking transitions reconcile their original stored binding before fresh execution authorization, without a second CAS or reconstructed native-start capability. Explicit/implicit unsettle and restore invalidate present or absent recorded incarnations; recreation requires prior lineage/branch/HEAD and records a replacement physical incarnation before provider use. Registry I/O stays outside native command transactions; EventSink checks SQL ownership inside commit. Matching assessments can pass settle scripts, ordinary cleanup and qualified deletion without resume or a live-provider requirement, while independent native policy remains authoritative. Production composition remains opt-in and preserves unconfigured behavior and the unavailable native-creation authority gate. Real native consumers and the production issuer use synthetic SQL/Git targets and external effect fixtures; no external store, API, executable, installation or runtime activation is introduced."
+      "scope": "Source-only W1 lifecycle composition with operation-scoped attestation issued by the native effect, run/start, session, validated-command and preservation owners. Stable checkout lineage and physical generation are separate from ephemeral native operation provenance in existing transition metadata. The V3 registry retains semantic assessments and a separate CAS generation. Invoking transitions reconcile their original stored binding before fresh execution authorization, without a second CAS or reconstructed native-start capability. Explicit/implicit unsettle and restore invalidate present or absent recorded incarnations; recreation requires prior lineage/branch/HEAD and records a replacement physical incarnation before provider use. Registry I/O stays outside native command transactions; EventSink checks SQL ownership inside commit. Matching assessments can pass settle scripts, ordinary cleanup and qualified deletion without resume or a live-provider requirement, while independent native policy remains authoritative. Production composition remains opt-in and preserves unconfigured behavior and the unavailable native-creation authority gate. Real native consumers and the production issuer use synthetic SQL/Git targets and external effect fixtures; no external store, API, executable, installation or runtime activation is introduced. Audit1.3/5.3 exact active-claim renewal and loss fencing cover managed preparation, native issuance, confirmation and guarded settlement. Migration137 permits only canonical monotonic native-start expiry renewal; released-prefix135/136 preservation and coordinated rollback remain covered."
     },
     {
       "id": "pr-watch-efficiency",
@@ -2808,9 +2826,25 @@
         "apps/server/src/orchestration-v2/SelectionRestart.integration.test.ts",
         "apps/server/src/jones/threadConfiguration/ThreadSelfConfiguration.integration.test.ts",
         "apps/server/src/orchestration-v2/testkit/ProviderSwitch.integration.test.ts",
-        "apps/server/src/jones/processPlacement/CapturedScopeRetirement.test.ts"
+        "apps/server/src/jones/processPlacement/CapturedScopeRetirement.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ThreadFork.integration.test.ts",
+        "apps/server/src/jones/provider/claudeRetirement/retirement.test.ts",
+        "packages/provider-core/src/server/jones/providerControlOutcome.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.test.ts",
+        "apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts",
+        "packages/provider-cursor/src/server/adapter.test.ts",
+        "packages/provider-cursor/src/server/CursorAgentSdk.test.ts",
+        "packages/provider-cursor/src/server/driver.test.ts",
+        "apps/server/src/orchestration-v2/RunExecutionService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderEventIngestor.test.ts",
+        "apps/server/src/jones/orchestration/HistoricalTerminalHistory.test.ts",
+        "apps/server/src/orchestration-v2/ClaudeAutomaticDelivery.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/ClaudeReplayFixtures.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/CursorReplayFixtures.integration.test.ts",
+        "apps/server/src/orchestration-v2/testkit/OrchestratorReplayRecovery.integration.test.ts",
+        "apps/server/src/jones/provider/claudeRetirement/controlOutcome.integration.test.ts"
       ],
-      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. Loaded account-transfer detaches are gated by their accepted command receipt in EffectWorker and guarded inside ProviderSessionManager before capture. They return after capture; in-memory conversation keys limit preparation and attach/open barriers to shared native history, while unknown destinations fail closed. Permanent runtime/thread markers force a fresh normal-start key after cancellation or completion. CommandReceiptStore is an explicit executor requirement, including runtime and replay composition; the replay executor observer exposes typed attempt receipts for the delayed-proof retry case. Jones account-transfer integration cases remain in the existing manager and executor harnesses to prove attachment-lock, revocation and executor wiring; the new subprocess integration stays Jones-owned. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes. Codex startup uses an injectable caller deadline while exact-producer response observers retain uncertain native outcomes. New admissions are fenced before permit release, existing bound sessions retain events and controls, and unknown load outcomes cannot retry or fall back to a fresh conversation. The sixty-second default is a conservative design assumption, with no added healthy-path RPC."
+      "scope": "Retain captured session and logical-thread retirement fences through subscriber drain, thread closure and verified Codex process exit. Confirmed transfer has a narrow optional adapter receipt; ordinary idle unsubscribe keeps native rejoin behavior. Loaded account-transfer detaches are gated by their accepted command receipt in EffectWorker and guarded inside ProviderSessionManager before capture. They return after capture; in-memory conversation keys limit preparation and attach/open barriers to shared native history, while unknown destinations fail closed. Permanent runtime/thread markers force a fresh normal-start key after cancellation or completion. CommandReceiptStore is an explicit executor requirement, including runtime and replay composition; the replay executor observer exposes typed attempt receipts for the delayed-proof retry case. Jones account-transfer integration cases remain in the existing manager and executor harnesses to prove attachment-lock, revocation and executor wiring; the new subprocess integration stays Jones-owned. ProviderAdapter adds an internal optional contract, and transfer callers use small existing manager hooks. No wire or persisted-state changes. Codex startup uses an injectable caller deadline while exact-producer response observers retain uncertain native outcomes. New admissions are fenced before permit release, existing bound sessions retain events and controls, and unknown load outcomes cannot retry or fall back to a fresh conversation. The sixty-second default is a conservative design assumption, with no added healthy-path RPC. EXEC-FORK-01 extends the existing Codex caller budget to native fork, retaining exact raw request observers and fencing late target binding. Root loadFromProvider makes selected fork failures terminal without another fork attempt; real default-worker startup integration checks persisted run/attempt failure and capacity release. Audit1.1/1.2 captured Claude/Cursor retirement preserves physical termination and persisted terminal evidence separately from cancellation intent, and fences unknown outcomes. The composed Claude control/SQL/outbox case requires exact failed claims, released caller capacity and persisted late terminals while native admission stays fenced."
     },
     {
       "id": "packaged-recovery-harness",
@@ -2904,7 +2938,6 @@
         "apps/server/src/usage/UsageService.test.ts",
         "apps/mobile/src/dependency-graph.test.ts",
         "apps/mobile/src/reactCompilerCoverage.test.ts",
-        "apps/mobile/src/state/edit-pending-thread-message.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/RequestContextAdmission.http.test.ts",
         "apps/server/src/jones/remoteAdmissionIntegration/registration.test.ts",
         "apps/server/src/jones/threadResultDependencies/AdmissionObservation.integration.test.ts",
@@ -2913,9 +2946,17 @@
         "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
         "apps/server/src/peer/RemoteDelegation.test.ts",
         "apps/server/src/provider/ProviderAuthService.test.ts",
-        "apps/server/src/provider/providerInstallation.test.ts"
+        "apps/server/src/provider/providerInstallation.test.ts",
+        "packages/provider-opencode/src/server/jones/protocolFreshness.test.ts",
+        "apps/server/src/provider/EventNdjsonLogger.test.ts",
+        "apps/server/src/jones/provider/diagnosticLogging/SegmentBuffer.test.ts",
+        "packages/shared/src/logging.test.ts",
+        "packages/effect-codex-app-server/src/protocol.test.ts",
+        "packages/client-runtime/src/jones/planCreationOperation.test.ts",
+        "apps/web/src/jones/pendingSends/planCreation.test.ts",
+        "apps/server/src/jones/orchestration/planCreationReplay.integration.test.ts"
       ],
-      "scope": "Command-bound optional dispatch and compound launch evidence preserve accepted creation separately from initial-message delivery. Frozen prepared request serialization supports restart retries without recapturing provider selection, IDs or capabilities. Existing prepare/dispatch behavior and performance checks remain part of the maintained integration recipe. Catalog updates retain exact live-source authority through metadata mutation and cache rename, publish current aggregate state, and respect complete OpenCode empty option metadata. MCP automatic delivery uses the locked shared capability policy; accepted replay reconstructs immutable creation and task bindings before mutable validation; keyed and unkeyed fresh launches independently resolve omitted model and runtime defaults. Mobile persists possibly-issued prepared requests before RPC, replays immutable payloads before fresh validation, preserves legacy unknown outcomes, and restores rejected first messages into the proven created thread without erasing newer editor or explicit selection intent. Web and desktop renderer recover exact rejected sends, preserve uncertain frozen retries and accepted launch targets, retain explicit equal picker intent until matching acknowledgement, show unavailable saved providers, and capture plan/standalone selection before asynchronous work. Exact durable dispatch/launch receipts supply failure evidence at the V2 boundary; the public-intake lifecycle spine covers launch, subsequent sends, explicit switch, lost-response replay and idempotent Stop with real execution services. OpenCode loader completion provenance distinguishes settled empty options from partial/error/timeout progress; direct producer tests and producer-to-registry integration retain known variants until authoritative removal. Legacy existing-thread outbox rows reconcile only exact live accepted content; uncertain edits preserve durable retry ownership across editor and storage races. The mobile projection fixture import is a test-only integration exception reusing the existing canonical V2 projection; no runtime package export is added. Upstream edit/pencil hooks stay in their existing revision, draft, and UI owners."
+      "scope": "Command-bound optional dispatch and compound launch evidence preserve accepted creation separately from initial-message delivery. Frozen prepared request serialization supports restart retries without recapturing provider selection, IDs or capabilities. Existing prepare/dispatch behavior and performance checks remain part of the maintained integration recipe. Catalog updates retain exact live-source authority through metadata mutation and cache rename, publish current aggregate state, and respect complete OpenCode empty option metadata. MCP automatic delivery uses the locked shared capability policy; accepted replay reconstructs immutable creation and task bindings before mutable validation; keyed and unkeyed fresh launches independently resolve omitted model and runtime defaults. Mobile persists possibly-issued prepared requests before RPC, replays immutable payloads before fresh validation, preserves legacy unknown outcomes, and restores rejected first messages into the proven created thread without erasing newer editor or explicit selection intent. Web and desktop renderer recover exact rejected sends, preserve uncertain frozen retries and accepted launch targets, retain explicit equal picker intent until matching acknowledgement, show unavailable saved providers, and capture plan/standalone selection before asynchronous work. Exact durable dispatch/launch receipts supply failure evidence at the V2 boundary; the public-intake lifecycle spine covers launch, subsequent sends, explicit switch, lost-response replay and idempotent Stop with real execution services. OpenCode loader completion provenance distinguishes settled empty options from partial/error/timeout progress; direct producer tests and producer-to-registry integration retain known variants until authoritative removal. Legacy existing-thread outbox rows reconcile only exact live accepted content; uncertain edits preserve durable retry ownership across editor and storage races. The mobile projection fixture import is a test-only integration exception reusing the existing canonical V2 projection; no runtime package export is added. Upstream edit/pencil hooks stay in their existing revision, draft, and UI owners. Audit 4.3 adds instance-owned bounded protocol freshness for new OpenCode session/text-generation admission, local executable identity and source-epoch fencing, while existing session handles remain unchanged. Driver/versionProbe test additions are shared harness integration exceptions; pure age/concurrency tests remain Jones-owned. Audit 5.2 separates bounded in-memory diagnostic admission from per-file drain and retention I/O, preserving FIFO, charged in-flight capacity, close and redaction. The held-file regression exercises another logger and real synthetic Codex protocol transport below the global buffer cap; EventNdjsonLogger test edits remain a shared harness exception. C2-OBS-01 persists frozen two-stage plan launch identities before transport and retains accepted target linkage for explicit recovery."
     },
     {
       "id": "fleet-checkpoint",
@@ -2981,6 +3022,29 @@
       "id": "checked-foreign-declarations",
       "tests": ["scripts/jones/analysis/foreignBindings.test.ts", "scripts/knip-schemas.test.ts"],
       "scope": "Root-selected finite foreign-contract validation for exact GJS full URI/packaged graph, bounded native command callers and verified native compiler namespace. All proofs and containing identities precede exact issue mutation; unrelated findings and full stronger workspace commands remain. No npm implementation/native hardware claim or runtime effect."
+    },
+    {
+      "id": "pending-control-items",
+      "tests": [
+        "apps/server/src/jones/orchestration/pendingControlItems.test.ts",
+        "apps/server/src/orchestration-v2/ShellStream.test.ts",
+        "apps/server/src/orchestration-v2/threadHistoryPaging.test.ts",
+        "apps/server/src/orchestration-v2/boundedSnapshotTransport.test.ts",
+        "packages/client-runtime/src/state/threadRequests.test.ts",
+        "packages/client-runtime/src/jones/pendingControlItems.test.ts"
+      ],
+      "scope": "Current pending user-input and approval bodies survive SQL snapshot and final wire windows without consuming visible history. Runtime status owns retention, including completed async items; indexed node lookup is scoped by current thread, request and item type. ProjectionStore and threadHistoryPaging retain accepted-shared ownership for the small query/merge hooks. The accepted-shared ShellStream predicate admits only secret_request child item updates; its existing upstream-harness tests receive payload fixtures without removing suppression assertions. Jones-owned server tests verify real in-memory SQLite and bounded codecs; the client-owned regression verifies request derivation after wire restoration, and cover terminal removal, ownership negatives, deduplication, cursor/watermark stability and secret new/save/decline/cancel invalidation. No schema, migration, badge policy or installed-runtime change."
+    },
+    {
+      "id": "install-retention",
+      "tests": [
+        "apps/desktop/src/jones/updates/installRetention.test.ts",
+        "scripts/jones/updates/install-retention.node-test.mjs",
+        "apps/desktop/src/jones/updates/stagingJobs.test.ts",
+        "packages/contracts/src/settings.test.ts",
+        "apps/web/src/components/settings/StorageSettings.browser.test.tsx"
+      ],
+      "scope": "C10 manual-install transitive recovery closure, exact-plan retention under the existing activation/admission/startup lock, per-candidate identity and generation comparison, durable intent and held partial effects. Retained external app bundles and launcher generations remain held for unknown consumers. Shared settings/schema/UI edits add propose-default and explicit retire plus optional capability negotiation. The small launcher hooks only publish bounded proposals under launcher ownership and the staging lock. No next-install admission relaxation, native receipt rewrite, runtime adoption, operational disposal authority or external bundle removal. Protocol fixtures use real source functions and CLI contention with synthetic native boundaries; Node/Python source evidence is distinct from packaged macOS acceptance."
     }
   ]
 }

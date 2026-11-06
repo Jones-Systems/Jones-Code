@@ -240,17 +240,19 @@ it.layer(layerTest)("CursorDriver", (it) => {
                   Effect.sync(() => {
                     sentModels.push(input.options?.model);
                     const runId = `native-cursor-window-run-${sentModels.length}`;
+                    const nativeWait = Effect.succeed({
+                      id: runId,
+                      requestId: runId,
+                      status: "finished" as const,
+                      model: { id: "claude-opus-5-5" },
+                      durationMs: 1,
+                    });
                     return {
                       agentId: "native-cursor-window",
                       runId,
                       cancel: Effect.void,
-                      wait: Effect.succeed({
-                        id: runId,
-                        requestId: runId,
-                        status: "finished" as const,
-                        model: { id: "claude-opus-5-5" },
-                        durationMs: 1,
-                      }),
+                      nativeWait,
+                      wait: nativeWait,
                     };
                   }),
               };

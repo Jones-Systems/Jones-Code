@@ -1,4 +1,5 @@
 import * as NativeGuard from "../nativeCreation/NativeCreationProviderGuard.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   CommandId,
@@ -113,6 +114,8 @@ export const fixture = Effect.gen(function* () {
     beforeRegistryRead: Effect.void as Effect.Effect<void>,
     afterResume: Effect.void as Effect.Effect<void>,
     beforeProviderUse: Effect.void as Effect.Effect<void>,
+    beforeProviderEnsure: Effect.void as Effect.Effect<void>,
+    beforeBaseline: Effect.void as Effect.Effect<void>,
     loseResponse: false,
     resumes: 0,
     view: () => view,
@@ -234,6 +237,7 @@ export const fixture = Effect.gen(function* () {
           events: Stream.never,
           ensureThread: (request) =>
             Effect.gen(function* () {
+              yield* state.beforeProviderEnsure;
               if (input.runtimeLifecycle && generation)
                 yield* input.runtimeLifecycle.admit({
                   runtimeGeneration: generation,
@@ -324,7 +328,7 @@ export const fixture = Effect.gen(function* () {
     },
   };
   const platform = Layer.merge(
-    NodeServices.layer,
+    Layer.merge(NodeServices.layer, NodeCrypto.layer),
     Layer.mock(SourceControl.SourceControlProviderRegistry)({
       resolveLink: () => Effect.die("Unused title link"),
     }),
@@ -347,6 +351,17 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(configured),
     Layer.provide(platform),
   );
+  const checkpoints = Layer.effect(
+    CheckpointStore.CheckpointStore,
+    Effect.gen(function* () {
+      const store = yield* CheckpointStore.CheckpointStore;
+      return CheckpointStore.CheckpointStore.of({
+        ...store,
+        captureCheckpoint: (input) =>
+          state.beforeBaseline.pipe(Effect.andThen(store.captureCheckpoint(input))),
+      });
+    }),
+  ).pipe(Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcs))));
   const runtime = Layer.mergeAll(
     Runtime.layer,
     Runtime.layerEventSink,
@@ -359,7 +374,7 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(McpProviderSessions.layer),
     Layer.provideMerge(LifecycleRuntime.layer),
     Layer.provideMerge(database),
-    Layer.provide(CheckpointStore.layer.pipe(Layer.provide(vcs))),
+    Layer.provide(checkpoints),
     Layer.provide(configured),
     Layer.provide(Settings.layerTest()),
     Layer.provide(

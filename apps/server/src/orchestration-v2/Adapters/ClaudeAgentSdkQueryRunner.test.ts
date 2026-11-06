@@ -541,6 +541,7 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       );
       yield* Effect.promise(() => leftoverStarted);
       yield* session.close;
+      yield* session.termination;
       yield* Effect.promise(() => leftoverStopped);
       assert.strictEqual(yield* Deferred.await(stopped), "t3code-claude-test.scope");
     }),
@@ -631,3 +632,48 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     }).pipe(Effect.provide(runner));
   });
 });
+
+it.effect("requires the captured child exit after SDK close returns", () =>
+  Effect.gen(function* () {
+    const child = new NodeChildProcess.ChildProcess();
+    Object.defineProperty(child, "pid", { value: 424242 });
+    let closes = 0;
+    const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation((input) => {
+      input.options?.spawnClaudeCodeProcess?.({
+        command: "synthetic-claude",
+        args: [],
+        cwd: "/synthetic",
+        env: {},
+        signal: new AbortController().signal,
+      });
+      return {
+        close: () => {
+          closes++;
+        },
+      } as unknown as ClaudeSdk.Query;
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+    const runner = yield* ClaudeAgentSdkQueryRunner;
+    const session = yield* runner.open({
+      threadId: ThreadId.make("synthetic-termination-thread"),
+      providerSessionId: ProviderSessionId.make("synthetic-termination-session"),
+      options: {
+        sessionId: "synthetic-native-session",
+        model: "claude-sonnet-4-6",
+        tools: [],
+        permissionMode: "default",
+        pathToClaudeCodeExecutable: "/synthetic/claude.js",
+        spawnClaudeCodeProcess: () => child as unknown as ClaudeSdk.SpawnedProcess,
+      },
+    });
+    const termination = yield* session.termination.pipe(Effect.forkChild);
+    yield* session.close;
+    assert.equal(closes, 1);
+    assert.isUndefined(
+      termination.pollUnsafe(),
+      "SDK close returning does not witness process exit",
+    );
+    child.emit("exit", 0, null);
+    yield* Fiber.join(termination);
+  }).pipe(Effect.provide(realQueryRunner)),
+);

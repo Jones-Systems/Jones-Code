@@ -30,6 +30,10 @@ export const confirmedNativeCompletion = (
     AND start.expected_attempt = orchestration_v2_effect_outbox.attempt_count
     AND start.claimed_at = orchestration_v2_effect_outbox.updated_at
     AND NOT EXISTS (SELECT 1 FROM jones_native_creation_execution_process_holds hold WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id)
+    AND start.command_id = orchestration_v2_effect_outbox.command_id
+    AND start.claim_id = json_extract(orchestration_v2_effect_outbox.payload_json, '$.nativeCreationExecutionReference.claimId')
+    AND json_extract(start.reference_json, '$.effectId') = orchestration_v2_effect_outbox.effect_id
+    AND json_extract(start.reference_json, '$.stageCommandId') = orchestration_v2_effect_outbox.command_id
     AND NOT EXISTS (
       SELECT 1 FROM jones_native_creation_execution_holds hold
       WHERE hold.effect_id = orchestration_v2_effect_outbox.effect_id

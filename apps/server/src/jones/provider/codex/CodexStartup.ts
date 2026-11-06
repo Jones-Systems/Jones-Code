@@ -15,7 +15,7 @@ import type * as Scope from "effect/Scope";
 // This is a caller budget, not a measured Codex latency or a process-exit deadline.
 export const CODEX_STARTUP_BUDGET_MS = 60_000;
 
-type StartupOperation = "ensure" | "resume" | "start";
+type StartupOperation = "ensure" | "resume" | "start" | "fork";
 
 interface StartupProducer {
   readonly generation: string;
@@ -23,6 +23,7 @@ interface StartupProducer {
 }
 
 interface StartupAttempt {
+  readonly operation: StartupOperation;
   producer?: StartupProducer;
   mayHaveIssued: boolean;
   abandoned: boolean;
@@ -36,7 +37,7 @@ class StartupAttemptContext extends Context.Reference<StartupAttempt | undefined
 
 class CodexStartupNotDispatched extends Schema.TaggedError<CodexStartupNotDispatched>()(
   "CodexStartupNotDispatched",
-  { operation: Schema.Literals(["ensure", "resume", "start"]), budgetMs: Schema.Number },
+  { operation: Schema.Literals(["ensure", "resume", "start", "fork"]), budgetMs: Schema.Number },
 ) {
   override get message(): string {
     return "Codex startup exceeded its caller budget before an unconfirmed native request.";
@@ -47,18 +48,29 @@ const compiledIs1 = Schema.is(CodexErrors.CodexAppServerRequestError);
 
 export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
   const uncertain = new WeakSet<StartupProducer>();
-  const abandon = (attempt: StartupAttempt) =>
-    Effect.sync(() => {
-      if (attempt.complete) return;
-      attempt.abandoned = true;
-      if (attempt.mayHaveIssued && attempt.producer !== undefined) uncertain.add(attempt.producer);
-    });
+  const abandon = (attempt: StartupAttempt) => {
+    if (attempt.complete) return;
+    attempt.abandoned = true;
+    if (attempt.mayHaveIssued && attempt.producer !== undefined) uncertain.add(attempt.producer);
+  };
   const unknown = (cause?: unknown) =>
     new ProviderRuntimeBindingError({
       driver: ProviderDriverKind.make("codex"),
       detail: "Codex startup has an unconfirmed native effect; another admission is not safe.",
       ...(cause === undefined ? {} : { cause }),
     });
+  const completeWith = Effect.fn("CodexStartup.completeWith")(function* <A>(handoff: () => A) {
+    const attempt = yield* StartupAttemptContext;
+    return yield* Effect.suspend(() => {
+      if (attempt?.abandoned) return Effect.fail(unknown());
+      const value = handoff();
+      if (attempt !== undefined) {
+        attempt.complete = true;
+        attempt.mayHaveIssued = false;
+      }
+      return Effect.succeed(value);
+    });
+  });
 
   return {
     isUncertain: (producer: StartupProducer) => uncertain.has(producer),
@@ -67,31 +79,52 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
       effect: Effect.Effect<A, E, R>,
     ) {
       const attempt: StartupAttempt = {
+        operation,
         mayHaveIssued: false,
         abandoned: false,
         complete: false,
       };
       const deadline = Effect.sleep(budgetMs).pipe(
         Effect.andThen(
-          Effect.suspend(() =>
-            attempt.complete
-              ? Effect.never
-              : Effect.fail(
-                  attempt.mayHaveIssued
-                    ? unknown()
-                    : new ProviderAdapterProtocolError({
-                        driver: ProviderDriverKind.make("codex"),
-                        detail: "Codex startup exceeded its caller budget before native dispatch",
-                        cause: new CodexStartupNotDispatched({ operation, budgetMs }),
-                      }),
-                ),
-          ),
+          Effect.suspend(() => {
+            if (attempt.complete) return Effect.never;
+            abandon(attempt);
+            return Effect.fail(
+              attempt.mayHaveIssued
+                ? unknown()
+                : new ProviderAdapterProtocolError({
+                    driver: ProviderDriverKind.make("codex"),
+                    detail: "Codex startup exceeded its caller budget before native dispatch",
+                    cause: new CodexStartupNotDispatched({ operation, budgetMs }),
+                  }),
+            );
+          }),
         ),
       );
       return yield* effect.pipe(
         Effect.provideService(StartupAttemptContext, attempt),
         Effect.raceFirst(deadline),
-        Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon(attempt) : Effect.void)),
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) ? Effect.sync(() => abandon(attempt)) : Effect.void,
+        ),
+      );
+    }),
+    completeWith,
+    // Fork follow-ups inherit the original issuance uncertainty. Keep their
+    // raw observers without adding a binding error to the native client port.
+    retainRequest: Effect.fn("CodexStartup.retainRequest")(function* <A, E, R>(
+      producer: StartupProducer,
+      request: Effect.Effect<A, E, R>,
+    ) {
+      const attempt = yield* StartupAttemptContext;
+      return yield* Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          if (attempt?.abandoned) return yield* Effect.interrupt;
+          const observation = yield* restore(request).pipe(
+            Effect.forkIn(producer.scope, { startImmediately: true }),
+          );
+          return yield* restore(Fiber.join(observation));
+        }),
       );
     }),
     // Install this inside the lifecycle permit. The fence must exist before
@@ -102,7 +135,9 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
       const attempt = yield* StartupAttemptContext;
       if (attempt === undefined) return yield* effect;
       return yield* effect.pipe(
-        Effect.onExit((exit) => (Exit.isFailure(exit) ? abandon(attempt) : Effect.void)),
+        Effect.onExit((exit) =>
+          Exit.isFailure(exit) ? Effect.sync(() => abandon(attempt)) : Effect.void,
+        ),
         Effect.mapError((cause) =>
           attempt.mayHaveIssued && !attempt.complete && !hasUnknownRuntimeBinding(cause)
             ? unknown(cause)
@@ -122,24 +157,27 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
         return yield* unknown();
       return yield* Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
+          if (attempt.abandoned) return yield* unknown();
           attempt.producer = producer;
+          const previouslyIssued = attempt.mayHaveIssued;
           attempt.mayHaveIssued = true;
           // Retain only the raw RPC observer in this exact producer's scope.
           // Late replies never run binding code or clear an abandoned generation's fence.
           const observation = yield* restore(request).pipe(
-            // Handshake/unarchive replies confirm their whole effect. Opening a
-            // thread still needs the caller's binding publication after its reply.
+            // A reply/rejection settles only this request. A successful fork
+            // remains unconfirmed through later history or rollback requests.
             Effect.tap(() =>
               confirmation === "reply"
                 ? Effect.sync(() => {
-                    attempt.mayHaveIssued = false;
+                    if (!attempt.abandoned) attempt.mayHaveIssued = previouslyIssued;
                   })
                 : Effect.void,
             ),
             Effect.tapError((error) =>
-              compiledIs1(error)
+              compiledIs1(error) &&
+              (attempt.operation !== "fork" || error.operation !== "decode-payload")
                 ? Effect.sync(() => {
-                    attempt.mayHaveIssued = false;
+                    if (!attempt.abandoned) attempt.mayHaveIssued = previouslyIssued;
                   })
                 : Effect.void,
             ),
@@ -151,12 +189,6 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
     }),
     // A bound thread's turn/start has its own acknowledgement deadline.
     // Finish the startup budget before entering that existing turn lifecycle.
-    complete: Effect.gen(function* () {
-      const attempt = yield* StartupAttemptContext;
-      if (attempt !== undefined) {
-        attempt.complete = true;
-        attempt.mayHaveIssued = false;
-      }
-    }),
+    complete: completeWith(() => undefined),
   };
 }

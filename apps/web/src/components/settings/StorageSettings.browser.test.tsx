@@ -9,6 +9,7 @@ const state = vi.hoisted(() => ({
   targets: [] as Array<{ environmentId: string; settings: typeof DEFAULT_SERVER_SETTINGS }>,
   run: vi.fn(),
   report: null as StorageCleanupReport | null,
+  installRetentionSupported: true,
 }));
 
 vi.mock(import("../../state/server"), async (original) => {
@@ -43,6 +44,7 @@ vi.mock(import("./SettingsScopeContext"), async (original) => ({
         environment: {
           capabilities: {
             storageCleanup: true,
+            installRetention: state.installRetentionSupported,
             storageCleanupRun: true,
             settledWorktreeCleanup: true,
           },
@@ -93,9 +95,11 @@ vi.mock(import("../ui/toast"), async (original) => {
 import { StorageCleanupSections } from "./StorageSettings";
 
 function setup() {
+  state.installRetentionSupported = true;
   state.settings = {
     ...DEFAULT_SERVER_SETTINGS,
     storageCleanup: {
+      installRetention: "propose",
       worktreeKeepWhen: "uncommitted-changes",
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
@@ -234,4 +238,18 @@ it("settles mixed retention statuses independently across selected machines", as
   await screen.rerender(panel());
   await advance(300);
   await expect.element(screen.getByTestId("logs-retention-status")).not.toBeInTheDocument();
+});
+
+it("shows propose by default when the selected server supports install retention", async () => {
+  setup();
+  await using screen = await render(panel());
+  const control = screen.container.querySelector('[aria-label="Install retention"]');
+  expect(control?.textContent).toContain("Propose");
+});
+
+it("hides install retention for a server without the additive capability", async () => {
+  setup();
+  state.installRetentionSupported = false;
+  await using screen = await render(panel());
+  expect(screen.container.querySelector('[aria-label="Install retention"]')).toBeNull();
 });

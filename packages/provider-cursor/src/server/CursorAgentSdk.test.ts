@@ -2,6 +2,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
@@ -169,6 +171,88 @@ describe("CursorAgentSdkRunner", () => {
       );
       assert.strictEqual(load.mock.calls.length, 1);
     }),
+  );
+
+  it.effect.each([
+    { operation: "cancel", sink: "blocked" },
+    { operation: "cancel", sink: "failed" },
+    { operation: "close", sink: "blocked" },
+    { operation: "close", sink: "failed" },
+  ] as const)("invokes native $operation before a $sink diagnostic sink", ({ operation, sink }) =>
+    Effect.gen(function* () {
+      const diagnosticStarted = yield* Deferred.make<void>();
+      const releaseDiagnostic = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseDiagnostic, undefined));
+      cursorSdkMock.setAgentCloseFailure(undefined);
+      cursorSdkMock.setStaleRunActive(false);
+      cursorSdkMock.agentClose.mockClear();
+      cursorSdkMock.runCancel.mockClear();
+      const runner = yield* CursorAgentSdk.makeCursorAgentSdkRunner(
+        () => (event) =>
+          event.payload.type === (operation === "cancel" ? "run.cancel" : "agent.close")
+            ? Deferred.succeed(diagnosticStarted, undefined).pipe(
+                Effect.andThen(
+                  sink === "blocked"
+                    ? Deferred.await(releaseDiagnostic)
+                    : Effect.die("synthetic diagnostic failure"),
+                ),
+              )
+            : Effect.void,
+      );
+      const session = yield* runner.open({
+        operation: "create",
+        options: { model: { id: "default" }, mode: "agent" },
+        threadId: ThreadId.make("synthetic-control-thread"),
+        providerSessionId: ProviderSessionId.make("synthetic-control-session"),
+      });
+      const run = yield* session.send({ message: "synthetic prompt" });
+      const signal = yield* (operation === "cancel" ? run.cancel : session.close).pipe(
+        Effect.exit,
+        Effect.forkChild,
+      );
+      yield* Deferred.await(diagnosticStarted);
+      assert.equal(
+        operation === "cancel"
+          ? cursorSdkMock.runCancel.mock.calls.length
+          : cursorSdkMock.agentClose.mock.calls.length,
+        1,
+      );
+      yield* Deferred.succeed(releaseDiagnostic, undefined);
+      yield* Fiber.join(signal);
+    }).pipe(Effect.provide(Layer.mergeAll(CursorSdk.layer, NodeServices.layer))),
+  );
+
+  it.effect("observes native completion independently of blocked completion diagnostics", () =>
+    Effect.gen(function* () {
+      const diagnosticStarted = yield* Deferred.make<void>();
+      const releaseDiagnostic = yield* Deferred.make<void>();
+      yield* Effect.addFinalizer(() => Deferred.succeed(releaseDiagnostic, undefined));
+      cursorSdkMock.runWait.mockClear();
+      cursorSdkMock.setStaleRunActive(false);
+      const runner = yield* CursorAgentSdk.makeCursorAgentSdkRunner(
+        () => (event) =>
+          event.payload.type === "run.completed"
+            ? Deferred.succeed(diagnosticStarted, undefined).pipe(
+                Effect.andThen(Deferred.await(releaseDiagnostic)),
+              )
+            : Effect.void,
+      );
+      const session = yield* runner.open({
+        operation: "create",
+        options: { model: { id: "default" }, mode: "agent" },
+        threadId: ThreadId.make("synthetic-wait-thread"),
+        providerSessionId: ProviderSessionId.make("synthetic-wait-session"),
+      });
+      const run = yield* session.send({ message: "synthetic prompt" });
+      const drained = yield* run.wait.pipe(Effect.forkChild);
+      yield* Deferred.await(diagnosticStarted);
+      assert.equal((yield* run.nativeWait).status, "finished");
+      assert.equal((yield* run.nativeWait).status, "finished");
+      assert.equal(cursorSdkMock.runWait.mock.calls.length, 1);
+      assert.isUndefined(drained.pollUnsafe());
+      yield* Deferred.succeed(releaseDiagnostic, undefined);
+      yield* Fiber.join(drained);
+    }).pipe(Effect.provide(Layer.mergeAll(CursorSdk.layer, NodeServices.layer))),
   );
 
   it.effect("retries a resumed send after cancelling its abandoned local run", () =>

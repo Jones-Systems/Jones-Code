@@ -479,7 +479,7 @@ export function shouldPublishShellApplicationEvent(
   return !(
     subagentThreadIds.has(event.threadId) &&
     (event.type === "node.updated" ||
-      event.type === "turn-item.updated" ||
+      (event.type === "turn-item.updated" && event.payload.type !== "secret_request") ||
       event.type === "provider-turn.updated" ||
       event.type === "message.updated")
   );

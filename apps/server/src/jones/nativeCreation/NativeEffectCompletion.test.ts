@@ -64,7 +64,7 @@ it.effect(
       ]);
       // Lease rows as a worker claim would; claiming needs projection state this test omits.
       yield* sql`UPDATE orchestration_v2_effect_outbox SET status='running', attempt_count=1,
-        lease_owner='worker', lease_expires_at='2099-01-01T00:00:00.000Z'`;
+        lease_owner='worker'`;
       for (const effectId of ["effect:ordinary:start", "effect:ordinary:continue"]) {
         const queries: Array<readonly [string, ReadonlyArray<unknown>]> = [];
         const succeeded = yield* outbox.succeed({ effectId, workerId: "worker" }).pipe(
@@ -88,6 +88,7 @@ it.effect(
         SET status = 'succeeded', lease_owner = NULL,
             completed_at = ?, updated_at = ?, last_error = NULL
         WHERE effect_id = ? AND status = 'running' AND lease_owner = ?
+          AND 1 = 1
           AND json_type(payload_json, '$.request') IS NULL
           AND json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL
           AND 1 = 1

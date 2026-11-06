@@ -4,6 +4,7 @@ import type { SqlError } from "effect/sql/SqlError";
 import { URGENT_ACTION_EFFECT_TYPES } from "../jones/orchestration/actionWorkerAdmission.ts";
 import type { NativeCreationExecutionReferenceV2 } from "../jones/nativeCreation/NativeCreationExecutionTypes.ts";
 import { confirmedNativeCompletion } from "../jones/nativeCreation/NativeEffectCompletion.ts";
+import { sameOperationRequest } from "../jones/workspaceLifecycle/NativeOperation.ts";
 import { CommandId, ThreadId } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -85,6 +86,8 @@ export interface OrchestrationEffectV2 {
   readonly updatedAt: string;
   readonly completedAt: string | null;
   readonly lastError: string | null;
+  /** Exact stored bytes captured by the outbox owner, never a re-encoded request. */
+  readonly payloadIdentity?: string;
 }
 
 const isEffectOutboxError = Schema.is(EffectOutboxError);
@@ -135,17 +138,20 @@ export interface EffectOutboxV2Shape {
   readonly succeed: (input: {
     readonly effectId: string;
     readonly workerId: string;
+    readonly claim?: OrchestrationEffectV2;
   }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly retry: (input: {
     readonly effectId: string;
     readonly workerId: string;
     readonly error: string;
     readonly delayMs: number;
+    readonly claim?: OrchestrationEffectV2;
   }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly fail: (input: {
     readonly effectId: string;
     readonly workerId: string;
     readonly error: string;
+    readonly claim?: OrchestrationEffectV2;
   }) => Effect.Effect<boolean, EffectOutboxError>;
   readonly pruneSettled: Effect.Effect<number, EffectOutboxError>;
 }
@@ -211,6 +217,7 @@ const rowToEffect = (row: EffectRow) =>
       updatedAt: row.updated_at,
       completedAt: row.completed_at,
       lastError: row.last_error,
+      payloadIdentity: row.payload_json,
     })),
   );
 
@@ -252,6 +259,33 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
     // This predicate reads no Jones table, so it works on upstream-only schema.
     const ordinaryPayload = sql`json_type(payload_json, '$.request') IS NULL
       AND json_type(payload_json, '$.nativeCreationExecutionReference') IS NULL`;
+    const capturedClaim = (claim?: OrchestrationEffectV2) => {
+      if (claim === undefined) return sql`1 = 1`;
+      if (claim.payloadIdentity === undefined) return sql`0 = 1`;
+      try {
+        const raw: unknown = JSON.parse(claim.payloadIdentity);
+        const native =
+          typeof raw === "object" &&
+          raw !== null &&
+          (Object.hasOwn(raw, "request") || Object.hasOwn(raw, "nativeCreationExecutionReference"));
+        const request = native && "request" in raw ? raw.request : raw;
+        const reference =
+          native && "nativeCreationExecutionReference" in raw
+            ? raw.nativeCreationExecutionReference
+            : undefined;
+        if (
+          !sameOperationRequest(request, claim.request) ||
+          !sameOperationRequest(reference, claim.nativeCreationExecutionReference)
+        )
+          return sql`0 = 1`;
+      } catch {
+        return sql`0 = 1`;
+      }
+      return sql`effect_id = ${claim.id} AND thread_id = ${claim.threadId} AND command_id = ${claim.commandId}
+        AND effect_type = ${claim.request.type} AND attempt_count = ${claim.attemptCount}
+        AND lease_owner = ${claim.leaseOwner} AND updated_at = ${claim.updatedAt}
+        AND payload_json = ${claim.payloadIdentity}`;
+    };
     const notifyAvailable = (count = 1) =>
       Queue.offerAll(
         available,
@@ -626,7 +660,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
         ),
       ),
       succeed: Effect.fn("EffectOutbox.succeed")(
-        function* ({ effectId, workerId }) {
+        function* ({ effectId, workerId, claim }) {
           const now = DateTime.formatIso(yield* DateTime.now);
           const settle = (guard: typeof ordinaryPayload) =>
             guardedRows(
@@ -642,6 +676,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
             WHERE effect_id = ${effectId}
               AND status = 'running'
               AND lease_owner = ${workerId}
+              AND ${capturedClaim(claim)}
               AND ${guard}
               AND ${allowed}
             RETURNING effect_id
@@ -683,7 +718,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           ),
       ),
       retry: Effect.fn("EffectOutbox.retry")(
-        function* ({ effectId, workerId, error, delayMs }) {
+        function* ({ effectId, workerId, error, delayMs, claim }) {
           const now = yield* DateTime.now;
           const nowIso = DateTime.formatIso(now);
           const availableAt = DateTime.formatIso(
@@ -703,6 +738,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               AND status = 'running'
               AND lease_owner = ${workerId}
               AND ${allowed}
+              AND ${capturedClaim(claim)}
             RETURNING effect_id
           `,
           );
@@ -721,7 +757,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
           ),
       ),
       fail: Effect.fn("EffectOutbox.fail")(
-        function* ({ effectId, workerId, error }) {
+        function* ({ effectId, workerId, error, claim }) {
           const now = DateTime.formatIso(yield* DateTime.now);
           const rows = yield* guardedRows(
             sql`orchestration_v2_effect_outbox.thread_id`,
@@ -737,6 +773,7 @@ export const layer: Layer.Layer<EffectOutboxV2, never, SqlClient.SqlClient> = La
               AND status = 'running'
               AND lease_owner = ${workerId}
               AND ${allowed}
+              AND ${capturedClaim(claim)}
             RETURNING effect_id
           `,
           );

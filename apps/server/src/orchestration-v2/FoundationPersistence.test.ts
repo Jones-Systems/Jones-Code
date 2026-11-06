@@ -2822,17 +2822,35 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const firstFiber = yield* worker.runOnce.pipe(Effect.forkChild);
         yield* Deferred.await(firstStarted);
+        const firstClaim = Option.getOrThrow(yield* outbox.get(firstEffectId));
+        assert.equal(firstClaim.status, "running");
+        assert.equal(firstClaim.leaseOwner, "no-live-reclaim-worker");
+        assert.equal(firstClaim.attemptCount, 1);
         yield* TestClock.adjust(Duration.seconds(60));
+        assert.deepEqual(Option.getOrThrow(yield* outbox.get(firstEffectId)), firstClaim);
 
         assert.isFalse(yield* worker.runOnce);
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId]);
 
         yield* Deferred.succeed(releaseFirst, undefined);
         assert.isTrue(yield* Fiber.join(firstFiber));
+        const firstSettled = Option.getOrThrow(yield* outbox.get(firstEffectId));
+        assert.equal(firstSettled.status, "succeeded");
+        assert.equal(firstSettled.attemptCount, firstClaim.attemptCount);
+        assert.equal(firstSettled.commandId, firstClaim.commandId);
+        assert.equal(firstSettled.threadId, firstClaim.threadId);
+        assert.equal(firstSettled.payloadIdentity, firstClaim.payloadIdentity);
+        assert.isNull(firstSettled.leaseOwner);
         assert.isTrue(yield* worker.runOnce);
         assert.deepEqual(yield* Ref.get(executions), [firstEffectId, secondEffectId]);
-      }).pipe(Effect.provide(layerWorker));
-    }),
+        const secondSettled = Option.getOrThrow(yield* outbox.get(secondEffectId));
+        assert.equal(secondSettled.status, "succeeded");
+        assert.equal(secondSettled.attemptCount, 1);
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(releaseFirst, undefined)),
+        Effect.provide(layerWorker),
+      );
+    }).pipe(Effect.provide(layerIsolatedOutbox)),
   );
 
   it.effect.each([{ replayed: false }, { replayed: true }] as const)(
@@ -3111,9 +3129,11 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
         const commandId = CommandId.make(
           `command:foundation-reclaim-running:${replayRequest.type}`,
         );
+        const providerEffectId = `effect:a-foundation-cancel-provider-turn:${replayRequest.type}`;
+        const replayEffectId = `effect:b-foundation-requeue-cleanup:${replayRequest.type}`;
         yield* outbox.enqueue([
           {
-            id: `effect:a-foundation-cancel-provider-turn:${replayRequest.type}`,
+            id: providerEffectId,
             commandId,
             threadId: ThreadId.make(`thread:foundation-reclaim-running:${replayRequest.type}`),
             request: {
@@ -3122,34 +3142,72 @@ it.layer(layerTest)("orchestration V2 foundation persistence", (it) => {
             },
           },
           {
-            id: `effect:b-foundation-requeue-cleanup:${replayRequest.type}`,
+            id: replayEffectId,
             commandId,
             threadId: ThreadId.make(`thread:foundation-reclaim-cleanup:${replayRequest.type}`),
             request: replayRequest,
           },
         ]);
-        assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "crashed-worker" })));
-        assert.isTrue(Option.isSome(yield* outbox.claimNext({ workerId: "crashed-worker" })));
+        const providerClaim = yield* outbox.claimNext({
+          workerId: "crashed-worker",
+        });
+        assert.isTrue(Option.isSome(providerClaim));
+        const replayClaim = yield* outbox.claimNext({
+          workerId: "crashed-worker",
+        });
+        assert.isTrue(Option.isSome(replayClaim));
+        const provider = Option.getOrThrow(providerClaim);
+        const replay = Option.getOrThrow(replayClaim);
+        assert.equal(provider.id, providerEffectId);
+        assert.equal(replay.id, replayEffectId);
+        for (const claimed of [provider, replay]) {
+          assert.equal(claimed.status, "running");
+          assert.equal(claimed.commandId, commandId);
+          assert.equal(claimed.leaseOwner, "crashed-worker");
+          assert.equal(claimed.attemptCount, 1);
+        }
         assert.deepEqual(yield* outbox.reconcileAfterProcessLoss, {
           cancelled: 1,
           requeued: 1,
         });
-        const cancelled = yield* outbox.get(
-          `effect:a-foundation-cancel-provider-turn:${replayRequest.type}`,
-        );
+        const cancelled = yield* outbox.get(providerEffectId);
         assert.isTrue(Option.isSome(cancelled));
-        if (Option.isSome(cancelled)) assert.equal(cancelled.value.status, "cancelled");
+        if (Option.isSome(cancelled)) {
+          assert.equal(cancelled.value.status, "cancelled");
+          assert.equal(cancelled.value.attemptCount, provider.attemptCount);
+          assert.equal(cancelled.value.commandId, provider.commandId);
+          assert.equal(cancelled.value.payloadIdentity, provider.payloadIdentity);
+          assert.isNull(cancelled.value.leaseOwner);
+        }
+        const pending = Option.getOrThrow(yield* outbox.get(replayEffectId));
+        assert.equal(pending.status, "pending");
+        assert.equal(pending.attemptCount, replay.attemptCount);
+        assert.equal(pending.commandId, replay.commandId);
+        assert.equal(pending.threadId, replay.threadId);
+        assert.equal(pending.payloadIdentity, replay.payloadIdentity);
+        assert.isNull(pending.leaseOwner);
 
         const reclaimed = yield* outbox.claimNext({
           workerId: "recovery-worker",
         });
         assert.isTrue(Option.isSome(reclaimed));
         if (Option.isSome(reclaimed)) {
+          assert.equal(reclaimed.value.id, replayEffectId);
           assert.equal(reclaimed.value.request.type, replayRequest.type);
           assert.equal(reclaimed.value.attemptCount, 2);
-          yield* outbox.succeed({ effectId: reclaimed.value.id, workerId: "recovery-worker" });
+          assert.equal(reclaimed.value.commandId, replay.commandId);
+          assert.equal(reclaimed.value.threadId, replay.threadId);
+          assert.equal(reclaimed.value.payloadIdentity, replay.payloadIdentity);
+          assert.equal(reclaimed.value.leaseOwner, "recovery-worker");
+          assert.isTrue(
+            yield* outbox.succeed({
+              effectId: reclaimed.value.id,
+              workerId: "recovery-worker",
+              claim: reclaimed.value,
+            }),
+          );
         }
-      }),
+      }).pipe(Effect.provide(layerIsolatedOutbox)),
   );
 
   it.effect("atomically cancels stale runs and their process-bound effects", () =>

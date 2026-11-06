@@ -210,6 +210,10 @@
     "./server/jones/AppIdentity": {
       "types": "./src/server/jones/AppIdentity.ts",
       "import": "./src/server/jones/AppIdentity.ts"
+    },
+    "./server/jones/providerControlOutcome": {
+      "types": "./src/server/jones/providerControlOutcome.ts",
+      "import": "./src/server/jones/providerControlOutcome.ts"
     }
   },
   "scripts": {

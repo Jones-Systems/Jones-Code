@@ -713,6 +713,9 @@ export function StorageCleanupSections() {
   const scopedSettings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
   const settings = scopedSettings.storageCleanup;
+  const installRetentionMixed = targets.some(
+    (target) => target.settings.storageCleanup.installRetention !== settings.installRetention,
+  );
   const targetIdsKey = environmentIdsKey(targets.map((target) => target.environmentId).sort());
   const artifactsMixed =
     targets.length > 1 &&
@@ -763,6 +766,39 @@ export function StorageCleanupSections() {
       {databaseStorageNotice}
       <SettingsSection id="storage-artifacts" title="Artifacts and logs">
         <AnimatedHeight>
+          {connectedEnvironments.every(
+            (environment) =>
+              environment.serverConfig?.environment.capabilities.installRetention === true,
+          ) && (
+            <SettingsRow
+              title="Install retention"
+              status={installRetentionMixed}
+              description="Propose keeps all install material. Retire permits an exact approved plan after recovery checks; it does not authorize removal by itself. Active and previous recovery pairs stay protected."
+              serverScoped
+              control={
+                <Select
+                  value={installRetentionMixed ? null : settings.installRetention}
+                  onValueChange={(next) => {
+                    if (next === "propose" || next === "retire") update({ installRetention: next });
+                  }}
+                >
+                  <SelectTrigger size="sm" aria-label="Install retention">
+                    <SelectValue>
+                      {installRetentionMixed
+                        ? "Mixed"
+                        : settings.installRetention === "retire"
+                          ? "Retire"
+                          : "Propose"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem value="propose">Propose</SelectItem>
+                    <SelectItem value="retire">Retire</SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+          )}
           <SettingsRow
             title="Delete old browser artifacts"
             status={artifactsStatus}

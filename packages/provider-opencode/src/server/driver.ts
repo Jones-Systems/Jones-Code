@@ -19,8 +19,6 @@ import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderL
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import * as OpenCodeAdapterV2 from "./adapter.ts";
 import * as OpenCode2AdapterV2 from "./v2/adapter.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
 import { ProviderDriverError } from "@t3tools/provider-core/server/errors";
 import { openCodeUsageReader, type OpenCodeUsageReaderEnv } from "./usage.ts";
 import { readOpenCodeGoUsageLimits } from "./usageLimits.ts";
@@ -45,6 +43,11 @@ import {
 import * as OpenCodeServerOwner from "./OpenCodeServerOwner.ts";
 import * as OpenCode2Client from "./v2/OpenCode2Client.ts";
 import * as OpenCode2Server from "./v2/OpenCode2Server.ts";
+import { readOpenCodeProtocolSource } from "./jones/protocolFreshness.ts";
+import {
+  selectOpenCodeRuntimeAdapter,
+  selectOpenCodeRuntimeTextGeneration,
+} from "./jones/protocolFreshnessSelection.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -89,77 +92,20 @@ export const openCodeUpdateFor = (generation: ProbedOpenCode["generation"]) =>
     },
   });
 
-type OpenCodeRuntimeProbe = Effect.Success<
-  ReturnType<typeof makeOpenCodeRuntimeProbe<OpenCodeRuntime.OpenCodeRuntimeError>>
->;
-
 function byOpenCodeRuntime<A, E, R, PE>(
   probed: Effect.Effect<ProbedOpenCode | undefined, PE>,
-  paths: { readonly v1: Effect.Effect<A, E, R>; readonly v2: Effect.Effect<A, E, R> },
+  paths: {
+    readonly v1: Effect.Effect<A, E, R>;
+    readonly v2: Effect.Effect<A, E, R>;
+    readonly unavailable: Effect.Effect<A, E, R>;
+  },
 ): Effect.Effect<A, E, R> {
   return probed.pipe(
     Effect.orElseSucceed(() => undefined),
-    Effect.flatMap((result) => (result?.generation === "v2" ? paths.v2 : paths.v1)),
+    Effect.flatMap((result) =>
+      result === undefined ? paths.unavailable : result.generation === "v2" ? paths.v2 : paths.v1,
+    ),
   );
-}
-
-// Hot reads use the last successful probe; session opens await it to select the correct protocol.
-function selectOpenCodeRuntimeAdapter(input: {
-  readonly probe: OpenCodeRuntimeProbe;
-  readonly v1: ProviderAdapter.ProviderAdapterV2["Service"];
-  readonly v2: ProviderAdapter.ProviderAdapterV2["Service"];
-}): ProviderAdapter.ProviderAdapterV2["Service"] {
-  const pick = <PE>(probed: Effect.Effect<ProbedOpenCode | undefined, PE>) =>
-    byOpenCodeRuntime(probed, { v1: Effect.succeed(input.v1), v2: Effect.succeed(input.v2) });
-  const hot = pick(Effect.map(input.probe.lastSuccess, Option.getOrUndefined));
-  return {
-    instanceId: input.v1.instanceId,
-    driver: DRIVER_KIND,
-    getCapabilities: () => Effect.flatMap(hot, (adapter) => adapter.getCapabilities()),
-    planSelectionTransition: (transition) =>
-      Effect.flatMap(hot, (adapter) => adapter.planSelectionTransition(transition)),
-    openSession: (session) =>
-      Effect.flatMap(pick(input.probe.get), (adapter) => adapter.openSession(session)),
-  };
-}
-
-function selectOpenCodeRuntimeTextGeneration(
-  probe: OpenCodeRuntimeProbe,
-  v1: ProviderTextGeneration,
-  v2: ProviderTextGeneration,
-): ProviderTextGeneration {
-  return {
-    generateCommitMessage: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateCommitMessage(input),
-        v2: v2.generateCommitMessage(input),
-      }),
-    generatePrContent: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generatePrContent(input),
-        v2: v2.generatePrContent(input),
-      }),
-    generateBranchName: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateBranchName(input),
-        v2: v2.generateBranchName(input),
-      }),
-    generateThreadTitle: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateThreadTitle(input),
-        v2: v2.generateThreadTitle(input),
-      }),
-    evaluateRemoteRequest: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.evaluateRemoteRequest(input),
-        v2: v2.evaluateRemoteRequest(input),
-      }),
-    generateReviewGuide: (input) =>
-      byOpenCodeRuntime(probe.get, {
-        v1: v1.generateReviewGuide(input),
-        v2: v2.generateReviewGuide(input),
-      }),
-  };
 }
 
 export type OpenCodeDriverEnv =
@@ -226,6 +172,10 @@ export const OpenCodeDriver: ProviderDriver<
         Effect.provideService(HttpClient.HttpClient, httpClient),
         Effect.provideService(OpenCodeRuntime.OpenCodeRuntime, openCodeRuntime),
       ),
+      readOpenCodeProtocolSource(effectiveConfig, processEnv).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.provideService(Path.Path, pathService),
+      ),
     );
     const noUpdate = makeManualOnlyProviderMaintenanceCapabilities({
       provider: DRIVER_KIND,
@@ -250,15 +200,20 @@ export const OpenCodeDriver: ProviderDriver<
     const cachedMaintenance = yield* makeCachedProviderMaintenanceResolution(
       maintenanceFor(runtimeProbe.get),
     );
-    const resolveMaintenance = (options?: { readonly fresh?: boolean }) =>
-      !effectiveConfig.enabled
-        ? Effect.succeed(noUpdate)
-        : options?.fresh === true
-          ? runtimeProbe.refresh.pipe(
-              Effect.ignore,
-              Effect.andThen(cachedMaintenance({ fresh: true })),
-            )
-          : cachedMaintenance();
+    const resolveMaintenance = (options?: { readonly fresh?: boolean }) => {
+      if (!effectiveConfig.enabled) return Effect.succeed(noUpdate);
+      if (effectiveConfig.serverUrl.trim().length > 0) {
+        return options?.fresh === true
+          ? runtimeProbe.refresh.pipe(Effect.ignore, Effect.as(noUpdate))
+          : Effect.succeed(noUpdate);
+      }
+      return options?.fresh === true
+        ? runtimeProbe.refresh.pipe(
+            Effect.ignore,
+            Effect.andThen(cachedMaintenance({ fresh: true })),
+          )
+        : cachedMaintenance();
+    };
     const openCodeV1Adapter = yield* OpenCodeAdapterV2.OpenCodeAdapterV2Driver.create({
       instanceId,
       displayName,
@@ -511,6 +466,7 @@ export const OpenCodeDriver: ProviderDriver<
         !effectiveConfig.enabled
           ? snapshot.getSnapshot
           : byOpenCodeRuntime(runtimeProbe.get, {
+              unavailable: snapshot.getSnapshot,
               v2: Effect.all([
                 snapshot.getSnapshot,
                 listOpenCode2Workspace(cwd).pipe(

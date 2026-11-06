@@ -1,3 +1,4 @@
+import { planCreation } from "../jones/pendingSends/planCreation";
 import { clearMonitorEnvironment } from "../jones/threadMonitor/store";
 import {
   ClientCapabilities,
@@ -794,9 +795,12 @@ const layerEnvironmentOwnedDataCleanup = Layer.succeed(
   Persistence.EnvironmentOwnedDataCleanup.of({
     clear: Effect.fn("Persistence.EnvironmentOwnedDataCleanup.clear")(function (environmentId) {
       return Effect.suspend(() => {
+        const plansRetired = planCreation.clearEnvironment(environmentId);
         clearComposerDraftsEnvironment(environmentId);
         const retired = clearMonitorEnvironment(environmentId);
-        return Effect.promise(() => retired);
+        return Effect.promise(async () => {
+          await Promise.all([retired, plansRetired]);
+        });
       });
     }),
   }),

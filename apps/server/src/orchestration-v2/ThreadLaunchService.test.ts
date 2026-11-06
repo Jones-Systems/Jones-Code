@@ -5306,7 +5306,7 @@ it.effect("retries a failed workspace preparation on the same run", () => {
     assert.equal(rejected._tag, "OrchestratorDispatchError");
   }).pipe(Effect.provide(harness.layer));
 });
-it.effect("launch captures provenance from the committed workspace assignment before setup", () =>
+it.effect("launch reaches setup while unbounded optional provenance is skipped", () =>
   Effect.gen(function* () {
     const captures: Array<{ threadId: string; path: string | null }> = [];
     const provenanceLayer = Layer.unwrap(
@@ -5333,7 +5333,7 @@ it.effect("launch captures provenance from the committed workspace assignment be
       provenanceLayer,
       runSetup: () =>
         Effect.sync(() => {
-          assert.lengthOf(captures, 1);
+          assert.lengthOf(captures, 0);
           return { status: "no-script" as const };
         }),
     });
@@ -5346,7 +5346,7 @@ it.effect("launch captures provenance from the committed workspace assignment be
       });
       yield* launches.launch(input);
       yield* awaitIdleAgentReady(input.threadId);
-      assert.deepEqual(captures, [{ threadId: input.threadId, path: "/repo-worktrees/feature" }]);
+      assert.deepEqual(captures, []);
     }).pipe(Effect.provide(harness.layer));
   }),
 );

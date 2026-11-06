@@ -58,12 +58,12 @@ import JonesMigration0132 from "./Migrations/132_JonesOwnerSelections.ts";
 import JonesMigration0133 from "./Migrations/133_JonesThreadResultDependencies.ts";
 import JonesMigration0134 from "./Migrations/134_JonesGoalContinuity.ts";
 import JonesMigration0135 from "./Migrations/135_JonesIdleWorktreeAdmission.ts";
-
 import JonesMigration0136 from "./Migrations/136_JonesWorkspaceProvenance.ts";
-import JonesMigration0137 from "./Migrations/137_JonesNativeExecutionProcessCustody.ts";
-import JonesMigration0138 from "./Migrations/138_JonesOrdinaryCheckoutProcessCustody.ts";
-import JonesMigration0139 from "./Migrations/139_JonesAuthSessionClientMetadata.ts";
-import JonesMigration0140 from "./Migrations/140_JonesWorkspaceRuntimeUses.ts";
+import JonesMigration0137 from "./Migrations/137_JonesNativeCreationLeaseRenewal.ts";
+import JonesMigration0138 from "./Migrations/138_JonesNativeExecutionProcessCustody.ts";
+import JonesMigration0139 from "./Migrations/139_JonesOrdinaryCheckoutProcessCustody.ts";
+import JonesMigration0140 from "./Migrations/140_JonesAuthSessionClientMetadata.ts";
+import JonesMigration0141 from "./Migrations/141_JonesWorkspaceRuntimeUses.ts";
 
 export const jonesMigrationEntries = [
   [1, "WorktreeOwnershipLeases", JonesMigration0001],
@@ -103,10 +103,11 @@ export const jonesMigrationEntries = [
   [134, "GoalContinuity", JonesMigration0134],
   [135, "IdleWorktreeAdmission", JonesMigration0135],
   [136, "WorkspaceProvenance", JonesMigration0136],
-  [137, "NativeExecutionProcessCustody", JonesMigration0137],
-  [138, "OrdinaryCheckoutProcessCustody", JonesMigration0138],
-  [139, "AuthSessionClientMetadata", JonesMigration0139],
-  [140, "WorkspaceRuntimeUses", JonesMigration0140],
+  [137, "NativeCreationLeaseRenewal", JonesMigration0137],
+  [138, "NativeExecutionProcessCustody", JonesMigration0138],
+  [139, "OrdinaryCheckoutProcessCustody", JonesMigration0139],
+  [140, "AuthSessionClientMetadata", JonesMigration0140],
+  [141, "WorkspaceRuntimeUses", JonesMigration0141],
 ] as const;
 
 export const runMigrations = Effect.fn("JonesMigrations.runMigrations")(function* () {
