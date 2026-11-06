@@ -131,12 +131,16 @@ export const makeDeletionAdmission = Effect.gen(function* () {
       readonly state: string;
     }>`SELECT binding_json,start_json,state FROM jones_deletion_worktree_admissions WHERE effect_id=${effectId}`;
     if (rows.length !== 1) return null;
-    const savedBinding=rows[0]!.binding_json;
-    const start=yield* Schema.decodeEffect(jsonStart)(rows[0]!.start_json);
-    const savedBindingSha256=nativeCreationSha256(savedBinding);
+    const savedBinding = rows[0]!.binding_json;
+    const start = yield* Schema.decodeEffect(jsonStart)(rows[0]!.start_json);
+    const savedBindingSha256 = nativeCreationSha256(savedBinding);
     // The original canonical bytes own receipt identity. Decoding a legacy
     // policy may add defaults; that resolved view must never replace its digest.
-    if(nativeCreationCanonicalJson(JSON.parse(savedBinding))!==savedBinding || start.effectId!==effectId || savedBindingSha256!==start.bindingSha256)
+    if (
+      nativeCreationCanonicalJson(JSON.parse(savedBinding)) !== savedBinding ||
+      start.effectId !== effectId ||
+      savedBindingSha256 !== start.bindingSha256
+    )
       return yield* failure("original_removal_binding_changed");
     return {
       binding: yield* Schema.decodeEffect(jsonBinding)(savedBinding),
@@ -261,7 +265,9 @@ export const makeDeletionAdmission = Effect.gen(function* () {
     if (currentRules === undefined || currentLive === undefined)
       return yield* failure("current_policy_owner_unavailable");
     const rules = yield* Schema.decodeUnknownEffect(WorktreeCleanupRules)(yield* currentRules);
-    const resolvedBindingRules = yield* Schema.decodeUnknownEffect(WorktreeCleanupRules)(binding.rules);
+    const resolvedBindingRules = yield* Schema.decodeUnknownEffect(WorktreeCleanupRules)(
+      binding.rules,
+    );
     if (!rules.worktreeOnDelete || !same(rules, resolvedBindingRules))
       return yield* failure("original_worktree_policy_changed");
     if (!(yield* currentLive))
@@ -402,8 +408,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
           original.state !== "started" ||
           ordinal !== 0 ||
           !same(original.start, captured) ||
-          original.savedBindingSha256 !==
-            captured.bindingSha256
+          original.savedBindingSha256 !== captured.bindingSha256
         )
           return yield* failure("original_start_no_longer_executable");
         const outcomes =
@@ -456,8 +461,7 @@ export const makeDeletionAdmission = Effect.gen(function* () {
             original === null ||
             observation.startOrdinal !== 0 ||
             !same(original.start, observation.start) ||
-            original.savedBindingSha256 !==
-              observation.start.bindingSha256 ||
+            original.savedBindingSha256 !== observation.start.bindingSha256 ||
             Option.isNone(observedAt) ||
             Option.isNone(startTime) ||
             DateTime.formatIso(observedAt.value) !== observation.observedAt ||

@@ -344,7 +344,7 @@ const cleanupFixture = (
     // Synthetic policy fixture: the scoped common store is declared durable and
     // has no external workloads/output obligations. Real filesystem, Git removal,
     // retirement transactions, claims, receipts and disposal journal still execute.
-    const retirementContext = yield* Layer.build(NodeSqliteClient.layer({filename: ":memory:"}));
+    const retirementContext = yield* Layer.build(NodeSqliteClient.layer({ filename: ":memory:" }));
     const retirementSql = Context.get(retirementContext, SqlClient.SqlClient);
     yield* runMigrations().pipe(Effect.provide(retirementContext));
     const synchronizeSettlementFacts = Effect.gen(function* () {
@@ -361,22 +361,73 @@ const cleanupFixture = (
         const [strings] = argumentsList as [TemplateStringsArray];
         const text = strings.join("");
         const candidates = [...threads, ...deletedThreads];
-        if (text.includes("FROM orchestration_v2_projection_threads") && text.includes("json_extract(payload_json,'$.worktreePath')")) {
+        if (
+          text.includes("FROM orchestration_v2_projection_threads") &&
+          text.includes("json_extract(payload_json,'$.worktreePath')")
+        ) {
           const worktreePath = argumentsList[1];
-          return Effect.suspend(() => synchronizeSettlementFacts.pipe(Effect.as(
-            candidates.filter(thread => thread.worktreePath === worktreePath && (!text.includes("deleted_at IS NULL") || thread.deletedAt === null))
-              .map(thread => ({thread_id: thread.id, payload_json: JSON.stringify(thread)})),
-          )));
+          return Effect.suspend(() =>
+            synchronizeSettlementFacts.pipe(
+              Effect.as(
+                candidates
+                  .filter(
+                    (thread) =>
+                      thread.worktreePath === worktreePath &&
+                      (!text.includes("deleted_at IS NULL") || thread.deletedAt === null),
+                  )
+                  .map((thread) => ({
+                    thread_id: thread.id,
+                    payload_json: JSON.stringify(thread),
+                  })),
+              ),
+            ),
+          );
         }
         if (text.includes("SELECT workspace_root FROM projection_projects"))
-          return Effect.sync(() => projectRoots.map(workspace_root => ({workspace_root})));
-        if (text.includes("projection_provider_sessions")) return Effect.sync(() => openSessionCwd === null ? [] : [{payload_json: JSON.stringify({id: "session-1",driver: "codex",providerInstanceId: "codex",status: "ready",cwd: openSessionCwd,model:null,capabilities:CodexProviderCapabilitiesV2,createdAt:"2026-06-01T12:00:00.000Z",updatedAt:"2026-06-01T12:00:00.000Z",lastError:null})}]);
-        if (text.includes("deleted_at IS NOT NULL")) return Effect.sync(() => deletedThreads.map(thread => ({payload_json:JSON.stringify(thread),workspaceRoot:repo})));
-        if (text.includes('AS "worktreePath"')) return Effect.sync(() => [...threads.flatMap(thread => thread.worktreePath ?? []),...storedWorktreePaths].map(worktreePath=>({worktreePath})));
-        return Reflect.apply(target,thisArg,argumentsList);
+          return Effect.sync(() => projectRoots.map((workspace_root) => ({ workspace_root })));
+        if (text.includes("projection_provider_sessions"))
+          return Effect.sync(() =>
+            openSessionCwd === null
+              ? []
+              : [
+                  {
+                    payload_json: JSON.stringify({
+                      id: "session-1",
+                      driver: "codex",
+                      providerInstanceId: "codex",
+                      status: "ready",
+                      cwd: openSessionCwd,
+                      model: null,
+                      capabilities: CodexProviderCapabilitiesV2,
+                      createdAt: "2026-06-01T12:00:00.000Z",
+                      updatedAt: "2026-06-01T12:00:00.000Z",
+                      lastError: null,
+                    }),
+                  },
+                ],
+          );
+        if (text.includes("deleted_at IS NOT NULL"))
+          return Effect.sync(() =>
+            deletedThreads.map((thread) => ({
+              payload_json: JSON.stringify(thread),
+              workspaceRoot: repo,
+            })),
+          );
+        if (text.includes('AS "worktreePath"'))
+          return Effect.sync(() =>
+            [...threads.flatMap((thread) => thread.worktreePath ?? []), ...storedWorktreePaths].map(
+              (worktreePath) => ({ worktreePath }),
+            ),
+          );
+        return Reflect.apply(target, thisArg, argumentsList);
       },
     });
-    const fixtureProbe = async () => ({observedAt:DateTime.toEpochMillis(DateTime.nowUnsafe()),status:"complete" as const,paths:[],limits:["isolated synthetic policy fixture"]});
+    const fixtureProbe = async () => ({
+      observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+      status: "complete" as const,
+      paths: [],
+      limits: ["isolated synthetic policy fixture"],
+    });
     const context = yield* Layer.build(StorageCleanup.layer).pipe(
       Effect.provide(
         Layer.mock(EventSink.EventSinkV2)({
@@ -411,9 +462,16 @@ const cleanupFixture = (
         ...git,
         execute: (input) =>
           Effect.gen(function* () {
-            if (input.args[0] === "worktree" && input.args[1] === "remove") {worktreeRemovalCalls++;removalArgs.push([...input.args]);}
+            if (input.args[0] === "worktree" && input.args[1] === "remove") {
+              worktreeRemovalCalls++;
+              removalArgs.push([...input.args]);
+            }
             if (lockBeforeRemoval && input.args[0] === "worktree" && input.args[1] === "remove")
-              yield* git.execute({operation:"cleanup-test-late-lock",cwd:repo,args:["worktree","lock",worktree]});
+              yield* git.execute({
+                operation: "cleanup-test-late-lock",
+                cwd: repo,
+                args: ["worktree", "lock", worktree],
+              });
             // Before Git's own clean check: inside `git worktree remove`, or on
             // Windows the same status check the removal makes before deleting.
             if (
@@ -468,12 +526,13 @@ const cleanupFixture = (
                 : [],
             ),
           ),
-        getThread: (threadId: ThreadId) => Effect.sync(() => {
-          const thread = [...threads,...deletedThreads].find(thread=>thread.id===threadId);
-          if (!thread) throw new Error(`Missing synthetic thread ${threadId}`);
-          return thread;
-        }),
-        getCheckpointContext: () => Effect.succeed({runs:[],checkpoints:[]}),
+        getThread: (threadId: ThreadId) =>
+          Effect.sync(() => {
+            const thread = [...threads, ...deletedThreads].find((thread) => thread.id === threadId);
+            if (!thread) throw new Error(`Missing synthetic thread ${threadId}`);
+            return thread;
+          }),
+        getCheckpointContext: () => Effect.succeed({ runs: [], checkpoints: [] }),
         getThreadShell: (threadId: ThreadId) =>
           Effect.sync(() => threads.find((thread) => thread.id === threadId) ?? null),
       } as unknown as ProjectionStore.ProjectionStoreV2["Service"]),
@@ -484,8 +543,28 @@ const cleanupFixture = (
         streamDomainEvents: Stream.suspend(() => events),
       } as unknown as Orchestrator.OrchestratorV2["Service"]),
       Effect.provideService(SqlClient.SqlClient, reportSql),
-      Effect.provideService(NativeObservations, {services:fixtureProbe,processes:fixtureProbe,workloads:()=>Effect.promise(fixtureProbe),temporaryRoots:[]}),
-      Effect.provideService(LifecycleRegistry, {show: path=>Effect.succeed({worktree:path,generation:null,binding:null,assessment:null,disposition:"unknown",assessment_status:"absent",stored_readiness:null,physical_readiness:"unknown",binding_evidence:"caller_asserted",authority_effect:"none"}),outputs:()=>Effect.succeed([])}),
+      Effect.provideService(NativeObservations, {
+        services: fixtureProbe,
+        processes: fixtureProbe,
+        workloads: () => Effect.promise(fixtureProbe),
+        temporaryRoots: [],
+      }),
+      Effect.provideService(LifecycleRegistry, {
+        show: (path) =>
+          Effect.succeed({
+            worktree: path,
+            generation: null,
+            binding: null,
+            assessment: null,
+            disposition: "unknown",
+            assessment_status: "absent",
+            stored_readiness: null,
+            physical_readiness: "unknown",
+            binding_evidence: "caller_asserted",
+            authority_effect: "none",
+          }),
+        outputs: () => Effect.succeed([]),
+      }),
       Effect.provideService(GitManager.GitManager, {
         invalidateStatus: () => Effect.void,
       } as unknown as GitManager.GitManager["Service"]),
@@ -551,7 +630,9 @@ const cleanupFixture = (
       setOpenSessionCwd: (cwd: string | null) => {
         openSessionCwd = cwd;
       },
-      lockAtRemoval: () => {lockBeforeRemoval = true;},
+      lockAtRemoval: () => {
+        lockBeforeRemoval = true;
+      },
       removalArgs: () => removalArgs,
       fullStatusCalls: () => fullStatusCalls,
       deletionEvidence: () => ({ worktreeRemovalCalls, deletionRefusals, qualifiedDeletions }),
@@ -624,50 +705,81 @@ const submoduleCleanupFixture = () =>
     return { ...fixture, submodule, child, recordSubmodules };
   });
 
-it.live("holds populated and deinitialized nested submodules without removing their metadata or bytes", () =>
-  runCleanupTest(
-    Effect.gen(function* () {
-      const { service, fs, repo, worktree, submodule, child, command, recordSubmodules, removalArgs } =
-        yield* submoduleCleanupFixture();
-      yield* command(submodule, [
-        "-c",
-        "protocol.file.allow=always",
-        "submodule",
-        "add",
-        repo,
-        "stored",
-      ]);
-      yield* recordSubmodules();
-      yield* command(submodule, ["submodule", "deinit", "stored"]);
-      const admin = (yield* command(worktree, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
-      const moduleAdmin = (yield* command(submodule,["rev-parse","--absolute-git-dir"])).stdout.trim();
-      const childAdmin = (yield* command(child,["rev-parse","--absolute-git-dir"])).stdout.trim();
-      const original = yield* fs.readFileString(`${child}/tracked.txt`);
-      const head = (yield* command(child,["rev-parse","HEAD"])).stdout.trim();
-      const report = yield* service.runNow;
-      expect(report.entries.find((entry) => entry.path === worktree)).toMatchObject({
-        outcome: "kept", reason: expect.stringContaining("populated_submodules"),
-      });
-      expect(report.counts).toEqual({ removed: 0, kept: 1, failed: 0 });
-      for (const retained of [worktree,admin,moduleAdmin,childAdmin,`${moduleAdmin}/modules/stored`])
-        expect(yield* fs.exists(retained)).toBe(true);
-      expect(yield* fs.readFileString(`${child}/tracked.txt`)).toBe(original);
-      expect((yield* command(child,["rev-parse","HEAD"])).stdout.trim()).toBe(head);
-      expect(removalArgs()).toEqual([]);
-    }),
-  ),
+it.live(
+  "holds populated and deinitialized nested submodules without removing their metadata or bytes",
+  () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const {
+          service,
+          fs,
+          repo,
+          worktree,
+          submodule,
+          child,
+          command,
+          recordSubmodules,
+          removalArgs,
+        } = yield* submoduleCleanupFixture();
+        yield* command(submodule, [
+          "-c",
+          "protocol.file.allow=always",
+          "submodule",
+          "add",
+          repo,
+          "stored",
+        ]);
+        yield* recordSubmodules();
+        yield* command(submodule, ["submodule", "deinit", "stored"]);
+        const admin = (yield* command(worktree, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
+        const moduleAdmin = (yield* command(submodule, [
+          "rev-parse",
+          "--absolute-git-dir",
+        ])).stdout.trim();
+        const childAdmin = (yield* command(child, [
+          "rev-parse",
+          "--absolute-git-dir",
+        ])).stdout.trim();
+        const original = yield* fs.readFileString(`${child}/tracked.txt`);
+        const head = (yield* command(child, ["rev-parse", "HEAD"])).stdout.trim();
+        const report = yield* service.runNow;
+        expect(report.entries.find((entry) => entry.path === worktree)).toMatchObject({
+          outcome: "kept",
+          reason: expect.stringContaining("populated_submodules"),
+        });
+        expect(report.counts).toEqual({ removed: 0, kept: 1, failed: 0 });
+        for (const retained of [
+          worktree,
+          admin,
+          moduleAdmin,
+          childAdmin,
+          `${moduleAdmin}/modules/stored`,
+        ])
+          expect(yield* fs.exists(retained)).toBe(true);
+        expect(yield* fs.readFileString(`${child}/tracked.txt`)).toBe(original);
+        expect((yield* command(child, ["rev-parse", "HEAD"])).stdout.trim()).toBe(head);
+        expect(removalArgs()).toEqual([]);
+      }),
+    ),
 );
 
-it.live("retires an eligible ordinary linked checkout with unforced removal and absent root/admin", () =>
-  runCleanupTest(Effect.gen(function* () {
-    const f = yield* cleanupFixture();
-    const admin = (yield* f.command(f.worktree,["rev-parse","--absolute-git-dir"])).stdout.trim();
-    const report = yield* f.service.runNow;
-    expect(report.entries.find(entry=>entry.path===f.worktree)?.outcome).toBe("removed");
-    expect(yield* f.fs.exists(f.worktree)).toBe(false);
-    expect(yield* f.fs.exists(admin)).toBe(false);
-    expect(f.removalArgs()).toEqual([["worktree","remove","--",f.worktree]]);
-  })),
+it.live(
+  "retires an eligible ordinary linked checkout with unforced removal and absent root/admin",
+  () =>
+    runCleanupTest(
+      Effect.gen(function* () {
+        const f = yield* cleanupFixture();
+        const admin = (yield* f.command(f.worktree, [
+          "rev-parse",
+          "--absolute-git-dir",
+        ])).stdout.trim();
+        const report = yield* f.service.runNow;
+        expect(report.entries.find((entry) => entry.path === f.worktree)?.outcome).toBe("removed");
+        expect(yield* f.fs.exists(f.worktree)).toBe(false);
+        expect(yield* f.fs.exists(admin)).toBe(false);
+        expect(f.removalArgs()).toEqual([["worktree", "remove", "--", f.worktree]]);
+      }),
+    ),
 );
 
 it.live("keeps nested submodule files protected by the current keep rule", () =>

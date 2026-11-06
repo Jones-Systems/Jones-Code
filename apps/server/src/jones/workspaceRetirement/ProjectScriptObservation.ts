@@ -49,15 +49,28 @@ function shellOf(name: string | null | undefined): CompletionShell | null {
   return ["sh", "bash", "zsh", "dash", "ksh"].includes(shell ?? "") ? "posix" : null;
 }
 function validDescriptor(value: Descriptor) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value.invocationId) &&
-    [value.projectId, value.scriptId].every(v => typeof v === "string" && v.trim().length > 0 && v.length <= 256);
+  return (
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+      value.invocationId,
+    ) &&
+    [value.projectId, value.scriptId].every(
+      (v) => typeof v === "string" && v.trim().length > 0 && v.length <= 256,
+    )
+  );
 }
 
 export function makeProjectScriptObserver(options: ObserverOptions = {}) {
   const capture = options.capture ?? recordCompletion;
-  const states = new WeakMap<object, { seen: Map<string, Invocation>; active: Invocation | null }>();
+  const states = new WeakMap<
+    object,
+    { seen: Map<string, Invocation>; active: Invocation | null }
+  >();
   const diagnostic = (reason: string) => {
-    try { options.diagnostic?.(reason); } catch { /* Optional diagnostics cannot affect native work. */ }
+    try {
+      options.diagnostic?.(reason);
+    } catch {
+      /* Optional diagnostics cannot affect native work. */
+    }
   };
   return {
     write(input: TerminalWriteInput, terminal: NativeTerminal, submit: (data: string) => void) {
@@ -71,8 +84,14 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
       // This hashes command bytes solely for invocation identity, never a file,
       // output tree, allocation baseline or producer proof. No command is retained.
       let signature: string;
-      try {signature = NodeCrypto.createHash("sha256").update(JSON.stringify([descriptor, input.data])).digest("hex");}
-      catch {diagnostic("observer_identity_unavailable; ordinary write remains unobserved");return submit(input.data);}
+      try {
+        signature = NodeCrypto.createHash("sha256")
+          .update(JSON.stringify([descriptor, input.data]))
+          .digest("hex");
+      } catch {
+        diagnostic("observer_identity_unavailable; ordinary write remains unobserved");
+        return submit(input.data);
+      }
       const prior = state.seen.get(descriptor.invocationId);
       if (prior) {
         if (prior.signature !== signature) throw new Error("project_script_invocation_changed");
@@ -87,26 +106,55 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
         diagnostic("observer_history_bound; ordinary write remains unobserved");
         return submit(input.data);
       }
-      const invocation: Invocation = { signature, hasNativeError: false, entered: false, completed: false, detach: () => {} };
+      const invocation: Invocation = {
+        signature,
+        hasNativeError: false,
+        entered: false,
+        completed: false,
+        detach: () => {},
+      };
       state.seen.set(descriptor.invocationId, invocation);
       const issue = (data: string) => {
         invocation.entered = true;
-        try { submit(data); }
-        catch (error) { invocation.nativeError = error; invocation.hasNativeError = true; diagnostic("write_issuance_unknown; no replay"); throw error; }
+        try {
+          submit(data);
+        } catch (error) {
+          invocation.nativeError = error;
+          invocation.hasNativeError = true;
+          diagnostic("write_issuance_unknown; no replay");
+          throw error;
+        }
       };
       const shell = shellOf(terminal.shell);
       const physical = terminal.physical;
-      if (!validDescriptor(descriptor) || state.active !== null || shell === null || physical?.status !== "bound" || terminal.observedCwd === null || !input.data.endsWith("\r") || !terminal.isCurrent()) {
+      if (
+        !validDescriptor(descriptor) ||
+        state.active !== null ||
+        shell === null ||
+        physical?.status !== "bound" ||
+        terminal.observedCwd === null ||
+        !input.data.endsWith("\r") ||
+        !terminal.isCurrent()
+      ) {
         diagnostic("observer_unavailable; ordinary write remains unobserved");
         return issue(input.data);
       }
       let data = input.data;
-      let unsubscribeData = () => {}, unsubscribeExit = () => {};
+      let unsubscribeData = () => {},
+        unsubscribeExit = () => {};
       let timeout: ReturnType<typeof NodeTimers.setTimeout> | undefined;
       const detach = () => {
         if (timeout) NodeTimers.clearTimeout(timeout);
-        try { unsubscribeData(); } catch { /* A broken observer unsubscribe cannot alter native completion. */ }
-        try { unsubscribeExit(); } catch { /* Keep the native owner independent. */ }
+        try {
+          unsubscribeData();
+        } catch {
+          /* A broken observer unsubscribe cannot alter native completion. */
+        }
+        try {
+          unsubscribeExit();
+        } catch {
+          /* Keep the native owner independent. */
+        }
         if (state.active === invocation) state.active = null;
       };
       invocation.detach = detach;
@@ -116,7 +164,8 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
         const hidden = input.data.startsWith(" ");
         const body = input.data.slice(hidden ? 1 : 0, -1);
         data = `${hidden ? " " : ""}${wrapCommandForCompletion(body, shell, completionSentinel(nonce), true)}\r`;
-        if (data.length > 65536 || Buffer.byteLength(data) > 65536) throw new Error("observer_wrapper_bound");
+        if (data.length > 65536 || Buffer.byteLength(data) > 65536)
+          throw new Error("observer_wrapper_bound");
         const marker = completionSentinelPattern(nonce);
         let partial = "";
         const finish = (exitCode: number | null, reason: string) => {
@@ -124,33 +173,55 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
           invocation.completed = true;
           detach();
           if (exitCode === null || !invocation.entered || !terminal.isCurrent()) {
-            diagnostic(reason); return;
+            diagnostic(reason);
+            return;
           }
           try {
-            const result = capture(completionObservation({
-              producer: "jones-project-script", owner: terminal.threadId,
-              worktree: physical.binding.path,
-              status: exitCode === 0 ? "succeeded" : "failed", roots: [],
-              lineage: {
-                threadId: terminal.threadId, terminalId: terminal.terminalId,
-                terminalPid: String(terminal.process.pid), launchCwd: terminal.launchCwd, observedCwd: terminal.observedCwd!,
-                invocationId: descriptor.invocationId,
-                requestedProjectId: descriptor.projectId, requestedScriptId: descriptor.scriptId,
-                gitDirectory: physical.binding.gitDirectory,
-                gitCommonDirectory: physical.binding.commonDirectory,
-                rootDevice: physical.binding.dev, rootInode: physical.binding.ino,
-                exitCode: String(exitCode),
-              },
-              omittedEnrichment: ["output_roots_not_declared", "shell_cwd_observed_before_write_only"],
-            }));
-            if (result.status !== "recorded") diagnostic(result.reason ?? "completion_capture_unavailable");
-          } catch { diagnostic("completion_capture_unavailable"); }
+            const result = capture(
+              completionObservation({
+                producer: "jones-project-script",
+                owner: terminal.threadId,
+                worktree: physical.binding.path,
+                status: exitCode === 0 ? "succeeded" : "failed",
+                roots: [],
+                lineage: {
+                  threadId: terminal.threadId,
+                  terminalId: terminal.terminalId,
+                  terminalPid: String(terminal.process.pid),
+                  launchCwd: terminal.launchCwd,
+                  observedCwd: terminal.observedCwd!,
+                  invocationId: descriptor.invocationId,
+                  requestedProjectId: descriptor.projectId,
+                  requestedScriptId: descriptor.scriptId,
+                  gitDirectory: physical.binding.gitDirectory,
+                  gitCommonDirectory: physical.binding.commonDirectory,
+                  rootDevice: physical.binding.dev,
+                  rootInode: physical.binding.ino,
+                  exitCode: String(exitCode),
+                },
+                omittedEnrichment: [
+                  "output_roots_not_declared",
+                  "shell_cwd_observed_before_write_only",
+                ],
+              }),
+            );
+            if (result.status !== "recorded")
+              diagnostic(result.reason ?? "completion_capture_unavailable");
+          } catch {
+            diagnostic("completion_capture_unavailable");
+          }
         };
         state.active = invocation;
-        unsubscribeData = terminal.process.onData(chunk => {
+        unsubscribeData = terminal.process.onData((chunk) => {
           if (invocation.completed) return;
-          if (chunk.length > 65536) { finish(null, "observer_output_bound; observation_unknown"); return; }
-          if (!terminal.isCurrent()) { finish(null, "terminal_lifecycle_changed"); return; }
+          if (chunk.length > 65536) {
+            finish(null, "observer_output_bound; observation_unknown");
+            return;
+          }
+          if (!terminal.isCurrent()) {
+            finish(null, "terminal_lifecycle_changed");
+            return;
+          }
           const lines = (partial + chunk).split(/\r\n|\r|\n/);
           partial = (lines.pop() ?? "").slice(-4096);
           for (const line of lines) {
@@ -163,11 +234,20 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
             if (Number.isSafeInteger(exit)) finish(exit, "exit_observed");
           }
         });
-        unsubscribeExit = terminal.process.onExit(() => finish(null, "terminal_exited_without_command_marker; observation_unknown"));
-        if (invocation.completed) { detach(); data = input.data; }
-        else timeout = NodeTimers.setTimeout(() => finish(null, "observer_timeout; observation_unknown"), 10 * 60 * 1000).unref();
+        unsubscribeExit = terminal.process.onExit(() =>
+          finish(null, "terminal_exited_without_command_marker; observation_unknown"),
+        );
+        if (invocation.completed) {
+          detach();
+          data = input.data;
+        } else
+          timeout = NodeTimers.setTimeout(
+            () => finish(null, "observer_timeout; observation_unknown"),
+            10 * 60 * 1000,
+          ).unref();
       } catch {
-        detach(); diagnostic("observer_prewrite_unavailable; ordinary write remains unobserved");
+        detach();
+        diagnostic("observer_prewrite_unavailable; ordinary write remains unobserved");
         return issue(input.data);
       }
       // No fallback surrounds this call: a throw may follow accepted bytes.

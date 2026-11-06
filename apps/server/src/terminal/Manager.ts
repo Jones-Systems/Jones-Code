@@ -1,6 +1,6 @@
 import { TerminalCwdObservation } from "../jones/workspaceRetirement/TerminalCwdObservation.ts";
-import {makeProjectScriptObserver} from "../jones/workspaceRetirement/ProjectScriptObservation.ts";
-import type {DutyIdentity} from "../jones/workspaceRetirement/DutyIdentity.ts";
+import { makeProjectScriptObserver } from "../jones/workspaceRetirement/ProjectScriptObservation.ts";
+import type { DutyIdentity } from "../jones/workspaceRetirement/DutyIdentity.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as NativeSetup from "./NativeSetupControl.ts";
 import {
@@ -1623,7 +1623,11 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
   const workspaceDuty = yield* WorkspaceDuty.hooks;
   const context = yield* Effect.context<never>();
   const runFork = Effect.runForkWith(context);
-  const scriptObserver = makeProjectScriptObserver({diagnostic:reason=>{runFork(Effect.logDebug("Project script observation",{reason}));}});
+  const scriptObserver = makeProjectScriptObserver({
+    diagnostic: (reason) => {
+      runFork(Effect.logDebug("Project script observation", { reason }));
+    },
+  });
 
   const logsDir = options.logsDir;
   const historyLineLimit = options.historyLineLimit ?? DEFAULT_HISTORY_LINE_LIMIT;
@@ -2581,7 +2585,17 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
                 detail: "Selected setup shell or arguments contain invalid terminal input.",
               });
             }
-            const releaseWorkspaceDuty = yield* workspaceDuty.hold(input.worktreePath ?? input.cwd, session.terminalId.startsWith("settle-") ? "settle-script" : session.terminalId.startsWith("setup-") ? "setup" : "terminal", `${session.threadId}:${session.terminalId}`).pipe(Effect.orDie);
+            const releaseWorkspaceDuty = yield* workspaceDuty
+              .hold(
+                input.worktreePath ?? input.cwd,
+                session.terminalId.startsWith("settle-")
+                  ? "settle-script"
+                  : session.terminalId.startsWith("setup-")
+                    ? "setup"
+                    : "terminal",
+                `${session.threadId}:${session.terminalId}`,
+              )
+              .pipe(Effect.orDie);
             invocationEntered = true;
             const spawnResult = yield* trySpawn(
               legacy === undefined && nativeSetup === undefined
@@ -2591,10 +2605,16 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
               session,
             ).pipe(Effect.onError(() => releaseWorkspaceDuty.pipe(Effect.orDie)));
             // This independent subscription survives close/kill escalation; only a verified exit releases the claim.
-            spawnResult.process.onExit(() => { runFork(releaseWorkspaceDuty.pipe(Effect.orDie)); });
-            yield* workspaceDuty.bindNative(releaseWorkspaceDuty,spawnResult.process.pid).pipe(
-              Effect.catch(cause=>Effect.logDebug("Native terminal duty binding unavailable",{cause})),
-            );
+            spawnResult.process.onExit(() => {
+              runFork(releaseWorkspaceDuty.pipe(Effect.orDie));
+            });
+            yield* workspaceDuty
+              .bindNative(releaseWorkspaceDuty, spawnResult.process.pid)
+              .pipe(
+                Effect.catch((cause) =>
+                  Effect.logDebug("Native terminal duty binding unavailable", { cause }),
+                ),
+              );
             session.workspaceDutyIdentity = workspaceDuty.identity(releaseWorkspaceDuty);
             ptyProcess = spawnResult.process;
             startedShell = spawnResult.shellLabel;
@@ -2793,7 +2813,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     const closedEventSequence = Option.isSome(session) ? session.value.eventSequence + 1 : 0;
 
     if (Option.isSome(session)) {
-      if(session.value.process) scriptObserver.close(session.value.process);
+      if (session.value.process) scriptObserver.close(session.value.process);
       yield* stopProcess(session.value);
       yield* unregisterTerminal({ threadId, terminalId });
       yield* persistHistory(threadId, terminalId, session.value.history);
@@ -3675,20 +3695,36 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
       });
     }
     const cwdObservation = yield* TerminalCwdObservation;
-    const observedCwd = input.observation === undefined ? null : yield* Effect.tryPromise({try: () => cwdObservation.observe(process.pid,session.workspaceDutyIdentity), catch: () => null}).pipe(Effect.catch(() => Effect.succeed(null)));
+    const observedCwd =
+      input.observation === undefined
+        ? null
+        : yield* Effect.tryPromise({
+            try: () => cwdObservation.observe(process.pid, session.workspaceDutyIdentity),
+            catch: () => null,
+          }).pipe(Effect.catch(() => Effect.succeed(null)));
     // Optional cwd observation can yield. Re-read the native owner before issuing
     // bytes; closing/replacing that lifecycle must never write to the captured PTY.
-    const current = yield* requireSession(input.threadId,terminalId);
+    const current = yield* requireSession(input.threadId, terminalId);
     if (current !== session || current.process !== process || current.status !== "running")
-      return yield* new TerminalNotRunningError({threadId:input.threadId,terminalId});
+      return yield* new TerminalNotRunningError({ threadId: input.threadId, terminalId });
     session.idlePrompt?.input();
     session.inputCount += 1;
     yield* Effect.try({
-      try: () => scriptObserver.write(input,{
-        process,threadId:session.threadId,terminalId:session.terminalId,
-        launchCwd:session.cwd,observedCwd,shell:session.shellName,physical:session.workspaceDutyIdentity,
-        isCurrent:()=>session.process===process && session.status==="running",
-      },data=>process.write(data)),
+      try: () =>
+        scriptObserver.write(
+          input,
+          {
+            process,
+            threadId: session.threadId,
+            terminalId: session.terminalId,
+            launchCwd: session.cwd,
+            observedCwd,
+            shell: session.shellName,
+            physical: session.workspaceDutyIdentity,
+            isCurrent: () => session.process === process && session.status === "running",
+          },
+          (data) => process.write(data),
+        ),
       catch: (cause) =>
         new TerminalWriteError({
           threadId: input.threadId,

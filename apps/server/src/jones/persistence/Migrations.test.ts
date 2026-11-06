@@ -462,7 +462,7 @@ it.effect(
           ...released135Identities.map(([id, name]) => [id, name]),
           [136, "WorkspaceProvenance"],
           [137, "NativeCreationLeaseRenewal"],
-      [138, "WorkspaceRetirement"],
+          [138, "WorkspaceRetirement"],
         ],
       );
       assert.deepStrictEqual(

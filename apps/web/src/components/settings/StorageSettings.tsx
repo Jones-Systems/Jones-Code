@@ -194,7 +194,7 @@ function CleanupResults({
 }: {
   report: StorageCleanupReport;
   environmentLabel: string;
-  onRetire?: (entry:StorageCleanupReport["entries"][number])=>void;
+  onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
 }) {
   return (
     <>
@@ -216,12 +216,31 @@ function CleanupResults({
                 <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
                   {entry.reason}
                 </span>
-                {entry.retirement?.receiptId && <span className="block">Receipt: {entry.retirement.receiptId} · {entry.retirement.state}</span>}
-                {entry.retirement?.details.map((detail,index)=><span key={`${detail.reason}:${detail.root}:${index}`} className="block">
-                  <code>{detail.root}</code>: {detail.fact} {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}{detail.nextAction}
-                  {detail.lineage.map((lineage,n)=><span key={n} className="block">{Object.entries(lineage).map(([key,value])=>`${key}: ${value}`).join(" · ")}</span>)}
-                </span>)}
-                {entry.retirement?.outputObligations.map(output=><span key={output.id} className="block">Output {output.id}: <code>{output.path}</code> · Owner {output.owner} · {output.state}</span>)}
+                {entry.retirement?.receiptId && (
+                  <span className="block">
+                    Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
+                  </span>
+                )}
+                {entry.retirement?.details.map((detail, index) => (
+                  <span key={`${detail.reason}:${detail.root}:${index}`} className="block">
+                    <code>{detail.root}</code>: {detail.fact}{" "}
+                    {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
+                    {detail.nextAction}
+                    {detail.lineage.map((lineage, n) => (
+                      <span key={n} className="block">
+                        {Object.entries(lineage)
+                          .map(([key, value]) => `${key}: ${value}`)
+                          .join(" · ")}
+                      </span>
+                    ))}
+                  </span>
+                ))}
+                {entry.retirement?.outputObligations.map((output) => (
+                  <span key={output.id} className="block">
+                    Output {output.id}: <code>{output.path}</code> · Owner {output.owner} ·{" "}
+                    {output.state}
+                  </span>
+                ))}
                 <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
                   <span>Machine</span>
                   <span className="text-foreground/80">{environmentLabel}</span>
@@ -246,22 +265,36 @@ function CleanupResults({
                 </span>
               </span>
             }
-            control={<>
-              {onRetire && entry.threadId && entry.path && entry.retirement?.fingerprint && entry.retirement.paths.length<=200 && entry.retirement.reasonCodes.every(reason=>["unattested_ignored","sensitive_ignored","untracked"].includes(reason)) && entry.retirement.state!=="retired" && <Button variant="outline" size="sm" onClick={()=>onRetire(entry)}>Retire</Button>}
-              {(entry.outcome === "removed" ||
-                (entry.outcome === "kept" && entry.bytes !== null)) && (
-                <span className="text-xs text-muted-foreground">
-                  {[
-                    entry.kind !== "worktree" && entry.files !== null
-                      ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
-                      : null,
-                    entry.bytes !== null ? formatBytes(entry.bytes) : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </span>
-              )}
-            </>}
+            control={
+              <>
+                {onRetire &&
+                  entry.threadId &&
+                  entry.path &&
+                  entry.retirement?.fingerprint &&
+                  entry.retirement.paths.length <= 200 &&
+                  entry.retirement.reasonCodes.every((reason) =>
+                    ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
+                  ) &&
+                  entry.retirement.state !== "retired" && (
+                    <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
+                      Retire
+                    </Button>
+                  )}
+                {(entry.outcome === "removed" ||
+                  (entry.outcome === "kept" && entry.bytes !== null)) && (
+                  <span className="text-xs text-muted-foreground">
+                    {[
+                      entry.kind !== "worktree" && entry.files !== null
+                        ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
+                        : null,
+                      entry.bytes !== null ? formatBytes(entry.bytes) : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                )}
+              </>
+            }
           />
         );
       })}
@@ -341,7 +374,7 @@ function CleanupSection() {
         ? `${report.counts.removed} removed, ${report.counts.kept} kept${report.counts.failed > 0 ? `, ${report.counts.failed} failed` : ""}`
         : "",
       description: report
-        ? `Last run ${formatRelativeTimeLabel(report.finishedAt, nowMs)}. ${report.entries.some(entry => entry.retirement && entry.bytes === null) ? "Recovered bytes unavailable" : `${formatBytes(report.bytesFreed)} recovered`}.${report.counts.failed > 0 ? ` ${report.counts.failed} ${report.counts.failed === 1 ? "item" : "items"} couldn't be removed.` : ""}`
+        ? `Last run ${formatRelativeTimeLabel(report.finishedAt, nowMs)}. ${report.entries.some((entry) => entry.retirement && entry.bytes === null) ? "Recovered bytes unavailable" : `${formatBytes(report.bytesFreed)} recovered`}.${report.counts.failed > 0 ? ` ${report.counts.failed} ${report.counts.failed === 1 ? "item" : "items"} couldn't be removed.` : ""}`
         : query?.failed
           ? "Could not load the last run."
           : query?.loading
@@ -350,31 +383,77 @@ function CleanupSection() {
     };
   });
   const propose = async () => {
-    if(pending) return;
+    if (pending) return;
     setPending(true);
     try {
-      for(const environment of supported.filter(e=>e.serverConfig?.environment.capabilities.settledWorktreeRetirement===true && state.some(s=>s.environmentId===e.environmentId && s.allowed))) {
-        const result=await run({environmentId:environment.environmentId,input:{retirement:{action:"propose"}}});
-        if(result._tag==="Failure" && !isAtomCommandInterrupted(result)) toastManager.add({type:"error",title:`Could not propose retirements on ${environment.label}`,description:String(squashAtomCommandFailure(result))});
+      for (const environment of supported.filter(
+        (e) =>
+          e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true &&
+          state.some((s) => s.environmentId === e.environmentId && s.allowed),
+      )) {
+        const result = await run({
+          environmentId: environment.environmentId,
+          input: { retirement: { action: "propose" } },
+        });
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+          toastManager.add({
+            type: "error",
+            title: `Could not propose retirements on ${environment.label}`,
+            description: String(squashAtomCommandFailure(result)),
+          });
       }
     } catch (error) {
-      toastManager.add({type:"error",title:"Could not propose checkout retirements",description:error instanceof Error ? error.message : String(error)});
-    } finally {setPending(false);}
+      toastManager.add({
+        type: "error",
+        title: "Could not propose checkout retirements",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPending(false);
+    }
   };
-  const retireTarget = async (environmentId:typeof supportedIds[number],entry:StorageCleanupReport["entries"][number]) => {
-    if(pending || !entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
-    const coveredPaths=entry.retirement.paths;
-    const confirmed=await (requestConfirmDialog(`Retire ${entry.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
+  const retireTarget = async (
+    environmentId: (typeof supportedIds)[number],
+    entry: StorageCleanupReport["entries"][number],
+  ) => {
+    if (pending || !entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
+    const coveredPaths = entry.retirement.paths;
+    const confirmed = await (requestConfirmDialog(
+      `Retire ${entry.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
 ${coveredPaths.length ? coveredPaths.join("\n") : "No local content selected."}
-Live consumers, tracked edits, nested repositories and other protections still hold.`,{variant:"destructive"}) ?? Promise.resolve(false));
-    if(!confirmed) return;
+Live consumers, tracked edits, nested repositories and other protections still hold.`,
+      { variant: "destructive" },
+    ) ?? Promise.resolve(false));
+    if (!confirmed) return;
     setPending(true);
     try {
-      const result=await run({environmentId,input:{retirement:{action:"retire",threadId:entry.threadId,worktreePath:entry.path,expectedFingerprint:entry.retirement.fingerprint,coveredPaths}}});
-      if(result._tag==="Failure" && !isAtomCommandInterrupted(result)) toastManager.add({type:"error",title:"Checkout retirement failed",description:String(squashAtomCommandFailure(result))});
+      const result = await run({
+        environmentId,
+        input: {
+          retirement: {
+            action: "retire",
+            threadId: entry.threadId,
+            worktreePath: entry.path,
+            expectedFingerprint: entry.retirement.fingerprint,
+            coveredPaths,
+          },
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+        toastManager.add({
+          type: "error",
+          title: "Checkout retirement failed",
+          description: String(squashAtomCommandFailure(result)),
+        });
     } catch (error) {
-      toastManager.add({type:"error",title:"Checkout retirement failed",description:error instanceof Error ? error.message : String(error)});
-    } finally {setPending(false);}
+      toastManager.add({
+        type: "error",
+        title: "Checkout retirement failed",
+        description: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setPending(false);
+    }
   };
   const deleteNow = async () => {
     if (pending) return;
@@ -423,15 +502,26 @@ Live consumers, tracked edits, nested repositories and other protections still h
           }
           control={
             <>
-            {supported.some(e=>e.serverConfig?.environment.capabilities.settledWorktreeRetirement===true) && <Button variant="outline" size="sm" disabled={pending || !state.some(e=>e.allowed)} onClick={()=>void propose()}>Propose retirements</Button>}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
-              onClick={() => void deleteNow()}
-            >
-              {pending ? "Working…" : "Delete now"}
-            </Button>
+              {supported.some(
+                (e) => e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true,
+              ) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pending || !state.some((e) => e.allowed)}
+                  onClick={() => void propose()}
+                >
+                  Propose retirements
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
+                onClick={() => void deleteNow()}
+              >
+                {pending ? "Working…" : "Delete now"}
+              </Button>
             </>
           }
         />
@@ -453,7 +543,15 @@ Live consumers, tracked edits, nested repositories and other protections still h
                   key={environment.environmentId}
                   report={report}
                   environmentLabel={label}
-                  onRetire={!pending && environment.serverConfig?.environment.capabilities.settledWorktreeRetirement===true && state.some(e=>e.environmentId===environment.environmentId && e.allowed) ? entry=>void retireTarget(environment.environmentId,entry) : undefined}
+                  {...(!pending &&
+                  environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
+                    true &&
+                  state.some((e) => e.environmentId === environment.environmentId && e.allowed)
+                    ? {
+                        onRetire: (entry: StorageCleanupReport["entries"][number]) =>
+                          void retireTarget(environment.environmentId, entry),
+                      }
+                    : {})}
                 />
               ),
           )}
@@ -482,9 +580,11 @@ export function StorageSettingsPanel() {
   const ruleStatus = (key: keyof StorageCleanupSettings) =>
     targets.some(
       (target) =>
-        JSON.stringify(({ ...target.settings.storageCleanup, ...resolveWorktreeCleanup(target.settings, null) })[
-          key
-        ]) !== JSON.stringify(settings[key]),
+        JSON.stringify(
+          { ...target.settings.storageCleanup, ...resolveWorktreeCleanup(target.settings, null) }[
+            key
+          ],
+        ) !== JSON.stringify(settings[key]),
     )
       ? "Mixed across selected machines"
       : undefined;
@@ -669,10 +769,64 @@ export function StorageSettingsPanel() {
                 />
               }
             />
-            {connectedEnvironments.length>0 && connectedEnvironments.every(e=>e.serverConfig?.environment.capabilities.settledWorktreeRetirement===true) && <>
-              <SettingsRow title="Settled checkout scope" description="Contained allows only commits reachable from another retained reference. Branch-retained also keeps unique commits on the saved branch or recovery references." serverScoped={!isProjectScope} control={<Select value={settings.worktreeSettledScope} onValueChange={value=>{if(value==="contained" || value==="branch-retained") updateWorktree({worktreeSettledScope:value});}}><SelectTrigger size="sm" aria-label="Settled checkout scope"><SelectValue /></SelectTrigger><SelectPopup><SelectItem value="contained">Contained</SelectItem><SelectItem value="branch-retained">Branch retained</SelectItem></SelectPopup></Select>} />
-              {(["declared_cache","dependency_reproduction","format_recognized"] as const).map(coverage=><SettingsRow key={coverage} title={coverage==="declared_cache" ? "Discard declared caches" : coverage==="dependency_reproduction" ? "Discard reproducible dependencies" : "Discard recognized format files"} description="Applies only to ignored content that passes the selected class checks. Includes additions; sensitive content and nested repositories stay protected." serverScoped={!isProjectScope} control={<Switch aria-label={`Discard ${coverage}`} checked={settings.worktreeCoveredDiscard.includes(coverage)} onCheckedChange={checked=>updateWorktree({worktreeCoveredDiscard:checked ? [...settings.worktreeCoveredDiscard,coverage] : settings.worktreeCoveredDiscard.filter(c=>c!==coverage)})} />} />)}
-            </>}
+            {connectedEnvironments.length > 0 &&
+              connectedEnvironments.every(
+                (e) => e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true,
+              ) && (
+                <>
+                  <SettingsRow
+                    title="Settled checkout scope"
+                    description="Contained allows only commits reachable from another retained reference. Branch-retained also keeps unique commits on the saved branch or recovery references."
+                    serverScoped={!isProjectScope}
+                    control={
+                      <Select
+                        value={settings.worktreeSettledScope}
+                        onValueChange={(value) => {
+                          if (value === "contained" || value === "branch-retained")
+                            updateWorktree({ worktreeSettledScope: value });
+                        }}
+                      >
+                        <SelectTrigger size="sm" aria-label="Settled checkout scope">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectPopup>
+                          <SelectItem value="contained">Contained</SelectItem>
+                          <SelectItem value="branch-retained">Branch retained</SelectItem>
+                        </SelectPopup>
+                      </Select>
+                    }
+                  />
+                  {(
+                    ["declared_cache", "dependency_reproduction", "format_recognized"] as const
+                  ).map((coverage) => (
+                    <SettingsRow
+                      key={coverage}
+                      title={
+                        coverage === "declared_cache"
+                          ? "Discard declared caches"
+                          : coverage === "dependency_reproduction"
+                            ? "Discard reproducible dependencies"
+                            : "Discard recognized format files"
+                      }
+                      description="Applies only to ignored content that passes the selected class checks. Includes additions; sensitive content and nested repositories stay protected."
+                      serverScoped={!isProjectScope}
+                      control={
+                        <Switch
+                          aria-label={`Discard ${coverage}`}
+                          checked={settings.worktreeCoveredDiscard.includes(coverage)}
+                          onCheckedChange={(checked) =>
+                            updateWorktree({
+                              worktreeCoveredDiscard: checked
+                                ? [...settings.worktreeCoveredDiscard, coverage]
+                                : settings.worktreeCoveredDiscard.filter((c) => c !== coverage),
+                            })
+                          }
+                        />
+                      }
+                    />
+                  ))}
+                </>
+              )}
             {connectedEnvironments.every(
               (environment) =>
                 environment.serverConfig?.environment.capabilities.storageCleanupRun === true,

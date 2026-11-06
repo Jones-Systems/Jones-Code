@@ -279,7 +279,8 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       return;
     }
 
-    const writeResult = await writeProjectScriptOnce(terminalActions.writeToTerminal,
+    const writeResult = await writeProjectScriptOnce(
+      terminalActions.writeToTerminal,
       targetTerminalId,
       options?.shellHistory === "preserve"
         ? `${script.command}\r`
@@ -477,7 +478,6 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
   };
 }
 
-
 /** The terminal write is issued exactly once. Optional descriptor preparation
  * can fail before issuance; an unknown/native write result is never retried. */
 export function writeProjectScriptOnce<A>(
@@ -489,9 +489,15 @@ export function writeProjectScriptOnce<A>(
 ): A {
   let observation: TerminalWriteInput["observation"];
   try {
-    if ([references.projectId, references.scriptId].every(value => value.length > 0 && value.length <= 256)) {
+    if (
+      [references.projectId, references.scriptId].every(
+        (value) => value.length > 0 && value.length <= 256,
+      )
+    ) {
       observation = { invocationId: makeInvocationId(), ...references };
     }
-  } catch { /* Optional metadata cannot prevent an ordinary script write. */ }
+  } catch {
+    /* Optional metadata cannot prevent an ordinary script write. */
+  }
   return write(terminalId, data, observation);
 }

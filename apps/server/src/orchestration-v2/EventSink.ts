@@ -896,7 +896,10 @@ const layerBase: Layer.Layer<
       Effect.fnUntraced(function* (
         storedEvents: ReadonlyArray<OrchestrationV2RecordedStoredEvent>,
       ) {
-        yield* RetirementEvents.events(sql, storedEvents.map(stored => stored.event));
+        yield* RetirementEvents.events(
+          sql,
+          storedEvents.map((stored) => stored.event),
+        );
         // Jones: capture settlement before the projection replaces the prior state.
         if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
           yield* settlementRestores.capture(storedEvents, projectionStore.getThread);

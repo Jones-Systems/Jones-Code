@@ -223,7 +223,11 @@ it.effect(
       const databasePath = NodePath.join(root, "statev2.sqlite");
       const current = {
         upstream: migrationManifest,
-        jones: [...released136Identities, [137, "NativeCreationLeaseRenewal"] as const, [138, "WorkspaceRetirement"] as const],
+        jones: [
+          ...released136Identities,
+          [137, "NativeCreationLeaseRenewal"] as const,
+          [138, "WorkspaceRetirement"] as const,
+        ],
       };
       const released = released136Identities.map(([id, name]) => {
         const entry = jonesMigrationEntries.find(
@@ -328,18 +332,28 @@ it.effect(
         expect(after.jones.slice(0, before.jones.length)).toEqual(before.jones);
         expect(after.jones).toHaveLength(before.jones.length + 2);
         expect(after.jones.slice(-2)).toMatchObject([
-          {migration_id:137,name:"NativeCreationLeaseRenewal"},
-          {migration_id:138,name:"WorkspaceRetirement"},
+          { migration_id: 137, name: "NativeCreationLeaseRenewal" },
+          { migration_id: 138, name: "WorkspaceRetirement" },
         ]);
-        const retirementTables = new Set(["jones_workspace_retirement_intents","jones_workspace_retirement_receipts",
-          "jones_workspace_retirement_state","jones_workspace_duty_claims","jones_workspace_disposal_journal","jones_workspace_duty_identity"]);
+        const retirementTables = new Set([
+          "jones_workspace_retirement_intents",
+          "jones_workspace_retirement_receipts",
+          "jones_workspace_retirement_state",
+          "jones_workspace_duty_claims",
+          "jones_workspace_disposal_journal",
+          "jones_workspace_duty_identity",
+        ]);
         expect(
           after.schema.filter(
-            (row) => row.name !== "jones_native_creation_execution_starts_no_update" && !retirementTables.has(String(row.tbl_name)),
+            (row) =>
+              row.name !== "jones_native_creation_execution_starts_no_update" &&
+              !retirementTables.has(String(row.tbl_name)),
           ),
         ).toEqual(
           before.schema.filter(
-            (row) => row.name !== "jones_native_creation_execution_starts_no_update" && !retirementTables.has(String(row.tbl_name)),
+            (row) =>
+              row.name !== "jones_native_creation_execution_starts_no_update" &&
+              !retirementTables.has(String(row.tbl_name)),
           ),
         );
         expect(readMigrationPlan({ databasePath, ...current })).toEqual({

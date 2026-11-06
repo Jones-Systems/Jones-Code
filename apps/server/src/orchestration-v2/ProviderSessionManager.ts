@@ -495,11 +495,24 @@ export const layerWithOptions = (
           sink: eventSink,
           ingestor: providerEventIngestor,
           physical: {
-            bind: (binding,lease) => physicalEvidence.bind(binding,lease).pipe(
-              Effect.tap(() => workspaceDuty.bindSession(providerSessionId,binding.providerThreadId,binding.runtimeGeneration).pipe(
-                Effect.catch(cause=>Effect.logDebug("Native session duty binding unavailable",{cause})),
-              )),
-            ),
+            bind: (binding, lease) =>
+              physicalEvidence
+                .bind(binding, lease)
+                .pipe(
+                  Effect.tap(() =>
+                    workspaceDuty
+                      .bindSession(
+                        providerSessionId,
+                        binding.providerThreadId,
+                        binding.runtimeGeneration,
+                      )
+                      .pipe(
+                        Effect.catch((cause) =>
+                          Effect.logDebug("Native session duty binding unavailable", { cause }),
+                        ),
+                      ),
+                  ),
+                ),
           },
           forgetTransfers: forgetCompletedThreadTransfers,
           revalidateGuard: (threadId) =>

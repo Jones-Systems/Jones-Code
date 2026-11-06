@@ -37,4 +37,3 @@ export function wrapCommandForCompletion(
       return `${preserveShellState ? "{ " : "( "}${body}\r${preserveShellState ? "}" : ")"}; printf '\\n${sentinel}%s\\n' "$?"`;
   }
 }
-

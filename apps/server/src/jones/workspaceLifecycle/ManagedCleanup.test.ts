@@ -53,7 +53,12 @@ const recordLineage = Effect.fnUntraced(function* (f: Effect.Success<typeof fixt
 });
 
 // No shared-host service/process scan is performed by these isolated native-policy fixtures.
-const fixtureProbe = () => ({observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()), status: "complete" as const, paths: [], limits: ["isolated synthetic cleanup fixture"]});
+const fixtureProbe = () => ({
+  observedAt: DateTime.toEpochMillis(DateTime.nowUnsafe()),
+  status: "complete" as const,
+  paths: [],
+  limits: ["isolated synthetic cleanup fixture"],
+});
 
 const decodeCleanupRules = Schema.decodeUnknownEffect(WorktreeCleanupRules);
 
@@ -191,7 +196,12 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
               Removal.layer.pipe(
                 Layer.provide(
                   Removal.producerLayer.pipe(
-                    Layer.provide(RetirementGate.layer.pipe(Layer.provide(f.configured),Layer.provide(Settings.layerTest()))),
+                    Layer.provide(
+                      RetirementGate.layer.pipe(
+                        Layer.provide(f.configured),
+                        Layer.provide(Settings.layerTest()),
+                      ),
+                    ),
                     Layer.provide(
                       Layer.succeed(Removal.DeletionWorktreeGit, { execute: f.git.execute }),
                     ),
@@ -206,10 +216,15 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           expect(f.state.resumes).toBe(1);
         }).pipe(
           Effect.provideService(NativeObservations, {
-            services: async () => fixtureProbe(), processes: async () => fixtureProbe(),
-            workloads: () => Effect.sync(fixtureProbe), temporaryRoots: [],
+            services: async () => fixtureProbe(),
+            processes: async () => fixtureProbe(),
+            workloads: () => Effect.sync(fixtureProbe),
+            temporaryRoots: [],
           }),
-          Effect.provideService(LifecycleRegistry, {show: () => Effect.sync(f.state.view), outputs: () => Effect.succeed([])}),
+          Effect.provideService(LifecycleRegistry, {
+            show: () => Effect.sync(f.state.view),
+            outputs: () => Effect.succeed([]),
+          }),
           Effect.provide(f.layer),
         );
       }),
@@ -272,10 +287,15 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
           expect(f.state.resumes).toBe(1);
         }).pipe(
           Effect.provideService(NativeObservations, {
-            services: async () => fixtureProbe(), processes: async () => fixtureProbe(),
-            workloads: () => Effect.sync(fixtureProbe), temporaryRoots: [],
+            services: async () => fixtureProbe(),
+            processes: async () => fixtureProbe(),
+            workloads: () => Effect.sync(fixtureProbe),
+            temporaryRoots: [],
           }),
-          Effect.provideService(LifecycleRegistry, {show: () => Effect.sync(f.state.view), outputs: () => Effect.succeed([])}),
+          Effect.provideService(LifecycleRegistry, {
+            show: () => Effect.sync(f.state.view),
+            outputs: () => Effect.succeed([]),
+          }),
           Effect.provide(f.layer),
         );
       }),

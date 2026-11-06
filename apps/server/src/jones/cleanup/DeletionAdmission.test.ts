@@ -10,7 +10,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
-import { nativeCreationCanonicalJson, nativeCreationSha256 } from "../nativeCreation/NativeCreationPreparation.ts";
+import {
+  nativeCreationCanonicalJson,
+  nativeCreationSha256,
+} from "../nativeCreation/NativeCreationPreparation.ts";
 import { makeDeletionAdmission } from "./DeletionAdmission.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "./DeletionWorktreeRemoval.ts";
 
@@ -290,31 +293,80 @@ it.effect("observation cannot substitute another original target or Git common d
   }).pipe(Effect.provide(testLayer)),
 );
 
-
-it.effect("legacy canonical receipts retain their original digest, policy checks and restart fence",()=>Effect.gen(function*(){
-  const {owner,sql}=yield* setup;
-  const issued=yield* owner.start(input);
-  const rows=yield* sql<{binding_json:string;start_json:string}>`SELECT binding_json,start_json FROM jones_deletion_worktree_admissions WHERE effect_id=${issued.start.effectId}`;
-  // Exact synthetic pre-J3 persisted representation, whose digest predates both defaults.
-  const legacy=JSON.parse(rows[0]!.binding_json);
-  delete legacy.rules.worktreeSettledScope;delete legacy.rules.worktreeCoveredDiscard;
-  const canonical=nativeCreationCanonicalJson(legacy);
-  const digest=nativeCreationSha256(canonical);
-  const start={...issued.start,effectId:`deletion-worktree:${legacy.deletionEventId}:${digest}`,bindingSha256:digest};
-  yield* sql`DELETE FROM jones_deletion_worktree_admissions WHERE effect_id=${issued.start.effectId}`;
-  yield* sql`INSERT INTO jones_deletion_worktree_admissions(effect_id,worktree_path,binding_json,start_json,state) VALUES(${start.effectId},${target.path},${canonical},${nativeCreationCanonicalJson(start)},'started')`;
-  const recovered=yield* makeDeletionAdmission;
-  assert.deepStrictEqual(yield* recovered.read(start.effectId),{start,ordinal:0});
-  assert.strictEqual((yield* recovered.revalidate(start,0,input.currentRules,input.currentLive).pipe(Effect.flip)).reason,"original_start_observation_only");
-  // Current policy must still agree before a caller can seek any new admission.
-  assert.strictEqual((yield* owner.start({...input,currentRules:Effect.succeed({...rules,worktreeSettledScope:"contained"})}).pipe(Effect.flip)).reason,"original_worktree_policy_changed");
-  const before={registration:{status:"complete" as const,projectRoot:target.projectRoot,gitCommonDirectory:"/synthetic/common",entries:[]},filesystem:{status:"absent" as const,path:target.path}};
-  const observation:DeletionWorktreeRemovalObservationV1={version:1,start,startOrdinal:0,operation:{kind:"reconciled",completion:"unknown"},before,after:before,observedAt:DateTime.formatIso(yield* DateTime.now)};
-  yield* recovered.qualify(observation);
-  assert.strictEqual((yield* sql<{binding_json:string}>`SELECT binding_json FROM jones_deletion_worktree_admissions WHERE effect_id=${start.effectId}`)[0]!.binding_json,canonical);
-  // Do not rehash or rewrite the start to accommodate tampered saved content.
-  legacy.rules.worktreeOnMerge=true;
-  yield* sql`UPDATE jones_deletion_worktree_admissions SET binding_json=${nativeCreationCanonicalJson(legacy)} WHERE effect_id=${start.effectId}`;
-  assert.strictEqual((yield* recovered.read(start.effectId).pipe(Effect.flip)).reason,"original_removal_binding_changed");
-  assert.isTrue(Exit.isFailure(yield* Effect.exit(recovered.qualify(observation))));
-}).pipe(Effect.provide(testLayer)));
+it.effect(
+  "legacy canonical receipts retain their original digest, policy checks and restart fence",
+  () =>
+    Effect.gen(function* () {
+      const { owner, sql } = yield* setup;
+      const issued = yield* owner.start(input);
+      const rows = yield* sql<{
+        binding_json: string;
+        start_json: string;
+      }>`SELECT binding_json,start_json FROM jones_deletion_worktree_admissions WHERE effect_id=${issued.start.effectId}`;
+      // Exact synthetic pre-J3 persisted representation, whose digest predates both defaults.
+      const legacy = JSON.parse(rows[0]!.binding_json);
+      delete legacy.rules.worktreeSettledScope;
+      delete legacy.rules.worktreeCoveredDiscard;
+      const canonical = nativeCreationCanonicalJson(legacy);
+      const digest = nativeCreationSha256(canonical);
+      const start = {
+        ...issued.start,
+        effectId: `deletion-worktree:${legacy.deletionEventId}:${digest}`,
+        bindingSha256: digest,
+      };
+      yield* sql`DELETE FROM jones_deletion_worktree_admissions WHERE effect_id=${issued.start.effectId}`;
+      yield* sql`INSERT INTO jones_deletion_worktree_admissions(effect_id,worktree_path,binding_json,start_json,state) VALUES(${start.effectId},${target.path},${canonical},${nativeCreationCanonicalJson(start)},'started')`;
+      const recovered = yield* makeDeletionAdmission;
+      assert.deepStrictEqual(yield* recovered.read(start.effectId), { start, ordinal: 0 });
+      assert.strictEqual(
+        (yield* recovered
+          .revalidate(start, 0, input.currentRules, input.currentLive)
+          .pipe(Effect.flip)).reason,
+        "original_start_observation_only",
+      );
+      // Current policy must still agree before a caller can seek any new admission.
+      assert.strictEqual(
+        (yield* owner
+          .start({
+            ...input,
+            currentRules: Effect.succeed({ ...rules, worktreeSettledScope: "contained" }),
+          })
+          .pipe(Effect.flip)).reason,
+        "original_worktree_policy_changed",
+      );
+      const before = {
+        registration: {
+          status: "complete" as const,
+          projectRoot: target.projectRoot,
+          gitCommonDirectory: "/synthetic/common",
+          entries: [],
+        },
+        filesystem: { status: "absent" as const, path: target.path },
+      };
+      const observation: DeletionWorktreeRemovalObservationV1 = {
+        version: 1,
+        start,
+        startOrdinal: 0,
+        operation: { kind: "reconciled", completion: "unknown" },
+        before,
+        after: before,
+        observedAt: DateTime.formatIso(yield* DateTime.now),
+      };
+      yield* recovered.qualify(observation);
+      assert.strictEqual(
+        (yield* sql<{
+          binding_json: string;
+        }>`SELECT binding_json FROM jones_deletion_worktree_admissions WHERE effect_id=${start.effectId}`)[0]!
+          .binding_json,
+        canonical,
+      );
+      // Do not rehash or rewrite the start to accommodate tampered saved content.
+      legacy.rules.worktreeOnMerge = true;
+      yield* sql`UPDATE jones_deletion_worktree_admissions SET binding_json=${nativeCreationCanonicalJson(legacy)} WHERE effect_id=${start.effectId}`;
+      assert.strictEqual(
+        (yield* recovered.read(start.effectId).pipe(Effect.flip)).reason,
+        "original_removal_binding_changed",
+      );
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(recovered.qualify(observation))));
+    }).pipe(Effect.provide(testLayer)),
+);

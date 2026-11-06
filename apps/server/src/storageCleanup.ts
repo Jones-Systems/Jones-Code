@@ -737,7 +737,14 @@ const make = Effect.gen(function* () {
           return keep("repository or branch changed");
         const changes = yield* localChangesReason(worktreePath, settings);
         if (changes !== null) return keep(changes);
-        if (group.some(member => member.settledAt !== null && now - Math.max(DateTime.toEpochMillis(member.updatedAt),activityAt) < SETTLE_SCRIPT_GRACE_MS))
+        if (
+          group.some(
+            (member) =>
+              member.settledAt !== null &&
+              now - Math.max(DateTime.toEpochMillis(member.updatedAt), activityAt) <
+                SETTLE_SCRIPT_GRACE_MS,
+          )
+        )
           return keep("settled moments ago");
         const head = yield* git.resolveCommit({ cwd: worktreePath, revision: "HEAD" });
         const old =
@@ -1015,13 +1022,19 @@ const make = Effect.gen(function* () {
             ),
           });
           retirementOutcome = result.outcome;
-          if (result.state === "partial" || result.state === "unknown" || (result.state === "not_retired" && result.reasons.includes("git_removal_refused"))) {
+          if (
+            result.state === "partial" ||
+            result.state === "unknown" ||
+            (result.state === "not_retired" && result.reasons.includes("git_removal_refused"))
+          ) {
             entries.push({
               ...entry,
               retirement: retirementOutcome,
               outcome: "failed",
               reason: sentence(
-                "removalDiagnostic" in result && typeof result.removalDiagnostic === "string" ? result.removalDiagnostic : result.reasons.join(", ") || "retirement effects require reconciliation",
+                "removalDiagnostic" in result && typeof result.removalDiagnostic === "string"
+                  ? result.removalDiagnostic
+                  : result.reasons.join(", ") || "retirement effects require reconciliation",
               ),
               bytes: null,
               files: null,

@@ -409,6 +409,8 @@ describe("resolveWorktreeCleanup", () => {
       worktreeOnMerge: true,
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
     });
     expect(
       resolveWorktreeCleanup(applyServerSettingsPatch(edited, { worktreeCleanup: null }), null)

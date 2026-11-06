@@ -23,7 +23,12 @@ const command = (file: string, args: string[]) =>
     NodeChildProcess.execFile(
       file,
       args,
-      { timeout: 2000, maxBuffer: 4096, encoding: "utf8", env: {...NodeProcess.env,LC_ALL:"C"} },
+      {
+        timeout: 2000,
+        maxBuffer: 4096,
+        encoding: "utf8",
+        env: { ...NodeProcess.env, LC_ALL: "C" },
+      },
       (error, out) => (error ? reject(error) : resolve(out.trim())),
     ),
   );

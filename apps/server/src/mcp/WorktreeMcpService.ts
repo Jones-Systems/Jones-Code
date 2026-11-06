@@ -341,7 +341,9 @@ const make = Effect.gen(function* () {
           );
 
         const duty = yield* WorkspaceDuty.hooks;
-        const releaseDuty = yield* duty.hold(worktreePath,"handoff",scope.thread.threadId).pipe(asOperationFailed("Workspace handoff duty refused"));
+        const releaseDuty = yield* duty
+          .hold(worktreePath, "handoff", scope.thread.threadId)
+          .pipe(asOperationFailed("Workspace handoff duty refused"));
         const continuation = yield* recheckAndBind.pipe(
           Effect.andThen(
             captureProvenance({

@@ -1,4 +1,10 @@
-import {completionSentinel,completionSentinelPattern,stripTerminalControl,wrapCommandForCompletion,type CompletionShell} from "../jones/workspaceRetirement/ScriptCompletionProtocol.ts";
+import {
+  completionSentinel,
+  completionSentinelPattern,
+  stripTerminalControl,
+  wrapCommandForCompletion,
+  type CompletionShell,
+} from "../jones/workspaceRetirement/ScriptCompletionProtocol.ts";
 import { linkOriginIsFenced, ProjectId, type ProjectScript, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NativeSetup from "../terminal/NativeSetupControl.ts";
@@ -222,7 +228,6 @@ function lineEditorReading(text: string, previous: boolean): boolean {
   const off = text.lastIndexOf(BRACKETED_PASTE_OFF);
   return on === off ? previous : on > off;
 }
-
 
 function resolveCompletionShell(
   platform: NodeJS.Platform,
@@ -720,11 +725,24 @@ export const make = Effect.gen(function* () {
           })
         : undefined;
     // Ordinary setup keeps native completion semantics; its terminal holds the real duty.
-    const releaseWorkspaceDuty = !observeRequested ? Effect.void : yield* workspaceDuty.hold(
-      input.worktreePath, trigger === "settle" ? "settle-script" : "setup", input.threadId,
-    ).pipe(Effect.mapError((cause) => new ProjectSetupScriptOperationError({
-      ...errorContext, operation: "openTerminal", cause,
-    })));
+    const releaseWorkspaceDuty = !observeRequested
+      ? Effect.void
+      : yield* workspaceDuty
+          .hold(
+            input.worktreePath,
+            trigger === "settle" ? "settle-script" : "setup",
+            input.threadId,
+          )
+          .pipe(
+            Effect.mapError(
+              (cause) =>
+                new ProjectSetupScriptOperationError({
+                  ...errorContext,
+                  operation: "openTerminal",
+                  cause,
+                }),
+            ),
+          );
     const finishProduction = yield* ProjectProduction.begin({
       threadId: input.threadId,
       worktreePath: input.worktreePath,
@@ -757,7 +775,12 @@ export const make = Effect.gen(function* () {
       ),
       Effect.onExit((exit) =>
         Exit.isFailure(exit)
-          ? releaseWorkspaceDuty.pipe(Effect.orDie, Effect.andThen(finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed")))
+          ? releaseWorkspaceDuty.pipe(
+              Effect.orDie,
+              Effect.andThen(
+                finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed"),
+              ),
+            )
           : Effect.void,
       ),
     );
