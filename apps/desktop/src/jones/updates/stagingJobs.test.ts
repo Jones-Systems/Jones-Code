@@ -1216,6 +1216,26 @@ describe("reclaimJonesStagePayload", () => {
     expect(await reclaimJonesStagePayload(root, replaced)).toEqual({ status: "absent" });
   });
 
+  it("keeps payload dependencies in the distinct manual-install store", async () => {
+    const root = await updatesRoot(true);
+    const old = await completedStage(root, replaced);
+    const transactionId = "a".repeat(64);
+    const directory = NodePath.join(NodePath.dirname(root), "jones-manual-installs", transactionId);
+    await NodeFSP.mkdir(directory, { recursive: true });
+    await NodeFSP.writeFile(
+      NodePath.join(directory, "receipt.json"),
+      JSON.stringify({
+        protocol: 1,
+        operation: "manual-install",
+        transactionId,
+        phase: "launched",
+        candidate: { stagedHandle: replaced },
+      }),
+    );
+    expect(await reclaimJonesStagePayload(root, replaced)).toEqual({ status: "referenced" });
+    expect(await exists(old.appAttempt)).toBe(true);
+  });
+
   it.each([
     ["a selection", "staging", "selection.json"],
     ["an attempt selection", "attempt-selections", "attempt.json"],

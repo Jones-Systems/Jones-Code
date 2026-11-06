@@ -2603,10 +2603,20 @@
     "scripts/jones/updates/packaged-desktop-pair.node-test.mjs": "jones-owned",
     "scripts/jones/updates/packaged-desktop-dialog-observer.m": "jones-owned",
     "scripts/jones/boundary/fragments/packaged-desktop-recovery.json": "jones-owned",
+    "apps/desktop/src/jones/updates/installRetention.test.ts": "jones-owned",
+    "apps/server/src/jones/cloud/runtimeStagingRetention.ts": "jones-owned",
+    "scripts/jones/updates/install-retention.node-test.mjs": "jones-owned",
+    "scripts/jones/boundary/fragments/install-retention.json": "jones-owned",
+    "apps/web/src/components/settings/StorageSettings.tsx": "accepted-shared",
+    "apps/web/src/components/settings/StorageSettings.browser.test.tsx": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.testkit.ts": "accepted-shared",
     "apps/server/src/orchestration-v2/Adapters/ClaudeAgentSdkQueryRunner.test.ts": "jones-tests-in-upstream",
     "apps/server/src/orchestration-v2/testkit/CursorReplayFixtures.integration.test.ts": "jones-tests-in-upstream",
-    "packages/contracts/src/worktreeMcp.ts": "accepted-shared"
+    "packages/contracts/src/worktreeMcp.ts": "accepted-shared",
+    "apps/server/src/jones/orchestration/pendingControlItems.ts": "jones-owned",
+    "apps/server/src/jones/orchestration/pendingControlItems.test.ts": "jones-owned",
+    "scripts/jones/boundary/fragments/pending-control-items.json": "jones-owned",
+    "packages/client-runtime/src/jones/pendingControlItems.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

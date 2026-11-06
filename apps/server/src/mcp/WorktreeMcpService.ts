@@ -439,9 +439,7 @@ const make = Effect.gen(function* () {
 
       const defaultStartFromOrigin = yield* readDefaultStartFromOrigin;
 
-      const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId }).pipe(
-        asOperationFailed("Unable to read workspace provenance"),
-      );
+      const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId });
       const result: WorktreeMcpStatusResult = {
         ...(yield* retirementOutcome(scope.thread.threadId)),
         attached: projection.thread.worktreePath !== null,

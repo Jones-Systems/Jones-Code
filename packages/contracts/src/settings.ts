@@ -1106,6 +1106,10 @@ export type StorageCleanupReport = typeof StorageCleanupReport.Type;
 export const StorageCleanupSettings = Schema.Struct({
   worktreeSettledScope: WorktreeSettledScope.pipe(Schema.withDecodingDefault(Effect.succeed("branch-retained"))),
   worktreeCoveredDiscard: WorktreeCoveredDiscard.pipe(Schema.withDecodingDefault(Effect.succeed([]))),
+  installRetention: Schema.Literals(["propose", "retire"]).pipe(
+    Schema.withDecodingDefault(Effect.succeed("propose" as const)),
+  ),
+
   worktreeKeepWhen: WorktreeKeepWhen.pipe(
     Schema.withDecodingDefault(Effect.succeed("uncommitted-changes")),
   ),
@@ -1490,6 +1494,8 @@ export const ServerSettingsPatch = Schema.Struct({
     Schema.Struct({
       worktreeSettledScope: Schema.optionalKey(WorktreeSettledScope),
       worktreeCoveredDiscard: Schema.optionalKey(WorktreeCoveredDiscard),
+      installRetention: Schema.optionalKey(Schema.Literals(["propose", "retire"])),
+
       worktreeKeepWhen: Schema.optionalKey(WorktreeKeepWhen),
       worktreeAfterDays: Schema.optionalKey(StorageRetentionDays),
       worktreeSettledAfterDays: Schema.optionalKey(SettledWorktreeRetentionDays),

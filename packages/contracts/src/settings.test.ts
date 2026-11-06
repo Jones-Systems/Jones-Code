@@ -35,17 +35,33 @@ describe("storage cleanup settings", () => {
     expect(legacy.storageCleanup.worktreeSettledAfterDays).toBeNull();
     expect(decodeServerSettingsPatch({storageCleanup:{worktreeCoveredDiscard:["declared_cache"]}}).storageCleanup?.worktreeCoveredDiscard).toEqual(["declared_cache"]);
   });
+
+  it("decodes explicit install retention modes and rejects unknown modes", () => {
+    for (const installRetention of ["propose", "retire"] as const) {
+      expect(
+        decodeServerSettings({ storageCleanup: { installRetention } }).storageCleanup
+          .installRetention,
+      ).toBe(installRetention);
+      expect(decodeServerSettingsPatch({ storageCleanup: { installRetention } })).toEqual({
+        storageCleanup: { installRetention },
+      });
+    }
+    expect(() =>
+      decodeServerSettingsPatch({ storageCleanup: { installRetention: "age-only" } }),
+    ).toThrow();
+  });
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
     expect(decodeServerSettings({}).storageCleanup).toEqual({
+      installRetention: "propose",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
       worktreeAfterDays: null,
       worktreeSettledAfterDays: null,
       worktreeOnMerge: false,
       worktreeOnDelete: false,
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
-      worktreeSettledScope: "branch-retained",
-      worktreeCoveredDiscard: [],
       browserArtifactsAfterDays: null,
       logsAfterDays: null,
     });

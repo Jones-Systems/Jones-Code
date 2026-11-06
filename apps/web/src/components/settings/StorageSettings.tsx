@@ -718,6 +718,39 @@ export function StorageSettingsPanel() {
 
       {!isProjectScope && (
         <SettingsSection id="storage-artifacts" title="Artifacts and logs">
+          {connectedEnvironments.every(
+            (environment) =>
+              environment.serverConfig?.environment.capabilities.installRetention === true,
+          ) && (
+            <SettingsRow
+              title="Install retention"
+              status={ruleStatus("installRetention")}
+              description="Propose keeps all install material. Retire permits an exact approved plan after recovery checks; it does not authorize removal by itself. Active and previous recovery pairs stay protected."
+              serverScoped
+              control={
+                <Select
+                  value={ruleStatus("installRetention") ? null : settings.installRetention}
+                  onValueChange={(next) => {
+                    if (next === "propose" || next === "retire") update({ installRetention: next });
+                  }}
+                >
+                  <SelectTrigger size="sm" aria-label="Install retention">
+                    <SelectValue>
+                      {ruleStatus("installRetention")
+                        ? "Mixed"
+                        : settings.installRetention === "retire"
+                          ? "Retire"
+                          : "Propose"}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup align="end" alignItemWithTrigger={false}>
+                    <SelectItem value="propose">Propose</SelectItem>
+                    <SelectItem value="retire">Retire</SelectItem>
+                  </SelectPopup>
+                </Select>
+              }
+            />
+          )}
           <SettingsRow
             title="Delete old browser artifacts"
             status={ruleStatus("browserArtifactsAfterDays")}

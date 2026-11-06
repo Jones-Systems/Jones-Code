@@ -881,6 +881,43 @@ async function handleReferenced(updatesRoot: string, handle: string): Promise<bo
       finalizeNativeReferences(context, directory, updatesRoot);
     }
   }
+  // Manual installs are a sibling store, not warm update transactions. Unknown
+  // or unfinished receipts pin staging rather than making their payload disposable.
+  const manualRoot = NodePath.join(NodePath.dirname(updatesRoot), "jones-manual-installs");
+  for (const entry of await boundedEntries(manualRoot, device)) {
+    const directory = NodePath.join(manualRoot, entry);
+    await ownedDirectory(directory, device);
+    const file = await NodeFSP.open(
+      NodePath.join(directory, "receipt.json"),
+      NodeFS.constants.O_RDONLY | NodeFS.constants.O_NOFOLLOW,
+    );
+    try {
+      const info = await file.stat();
+      if (
+        !info.isFile() ||
+        info.uid !== process.getuid?.() ||
+        info.dev !== device ||
+        info.size > MAX_RECORD_BYTES
+      )
+        throw new Error("Unknown manual install receipt; staging cleanup held.");
+      const raw = await file.readFile("utf8");
+      if (Buffer.byteLength(raw) > MAX_RECORD_BYTES)
+        throw new Error("Manual receipt exceeds its bound.");
+      const receipt = nativeReferenceObject(JSON.parse(raw));
+      if (JSON.stringify(receipt).includes(handle)) return true;
+      if (
+        !HANDLE.test(entry) ||
+        receipt.protocol !== 1 ||
+        receipt.operation !== "manual-install" ||
+        receipt.transactionId !== entry
+      )
+        throw new Error("Unknown manual install binding; staging cleanup held.");
+      if (receipt.phase !== "launched")
+        throw new Error("Unfinished manual installation; staging cleanup held.");
+    } finally {
+      await file.close();
+    }
+  }
   return false;
 }
 

@@ -26,6 +26,7 @@ import { canonical, CheckoutError } from "../ordinaryCheckout/CheckoutProtocol.t
 import * as Sources from "./CheckoutSource.ts";
 import * as Provenance from "./Provenance.ts";
 import * as Store from "./TransitionStore.ts";
+import { LifecycleError } from "./Protocol.ts";
 import migration from "../persistence/Migrations/136_JonesWorkspaceProvenance.ts";
 
 const at = "2026-11-05T12:00:00.000Z";
@@ -465,6 +466,76 @@ it.effect("unavailable provenance lookup remains absent for older compositions",
     const lookup = yield* Provenance.optionalLookup;
     expect(yield* lookup({ path: "/unknown" })).toBeUndefined();
   }),
+);
+
+it.effect("automatic capture skips an unbounded sink without starting or accumulating work", () =>
+  Effect.gen(function* () {
+    let starts = 0;
+    const service = Provenance.Provenance.of({
+      capture: () =>
+        Effect.sync(() => {
+          starts++;
+        }).pipe(Effect.andThen(Effect.never)),
+      lookup: () => Effect.succeed([]),
+      record: () => Effect.void,
+    });
+    const capture = yield* Provenance.optionalCapture.pipe(
+      Effect.provideService(Provenance.Provenance, service),
+    );
+    // Even oversized identifiers never reach the unbounded SQL/Git/sidecar adapter.
+    for (let i = 0; i < 3; i++)
+      yield* capture({ threadId: "x".repeat(65537), reason: "launch", createdBy: "system" });
+    expect(starts).toBe(0);
+  }),
+);
+
+it.effect(
+  "optional lookup failure is unavailable, while an observed empty lookup stays empty",
+  () =>
+    Effect.gen(function* () {
+      const service = Provenance.Provenance.of({
+        capture: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+        lookup: () => Effect.fail(new LifecycleError({ reason: "storage" })),
+        record: () => Effect.void,
+      });
+      const lookup = yield* Provenance.optionalLookup.pipe(
+        Effect.provideService(Provenance.Provenance, service),
+      );
+      expect(yield* lookup({ path: "/missing-sidecar" })).toBeUndefined();
+      const empty = yield* Provenance.optionalLookup.pipe(
+        Effect.provideService(Provenance.Provenance, {
+          ...service,
+          lookup: () => Effect.succeed([]),
+        }),
+      );
+      expect(yield* empty({ path: "/ordinary" })).toEqual([]);
+    }),
+);
+
+it.effect("oversized stored lineage is unavailable instead of a partial empty observation", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* Effect.gen(function* () {
+      const p = yield* Provenance.Provenance;
+      const record = yield* p.capture({
+        threadId: "thread",
+        reason: "launch",
+        createdBy: "system",
+      });
+      const oversizedFact = canonical({
+        id: "oversized",
+        incarnation_id: record.incarnation_id,
+        thread_id: "thread",
+        kind: "pr_link",
+        recorded_at: at,
+        reference: "x".repeat(65537),
+      });
+      expect(new TextEncoder().encode(oversizedFact).byteLength).toBeGreaterThan(65536);
+      yield* f.sql`INSERT INTO jones_workspace_provenance_facts VALUES ('oversized',${record.incarnation_id},${oversizedFact})`;
+      const lookup = yield* Provenance.optionalLookup;
+      expect(yield* lookup({ threadId: "thread" })).toBeUndefined();
+    }).pipe(Effect.provide(f.layer));
+  }).pipe(Effect.provide(memory)),
 );
 
 it.effect("producer facts use the existing incarnation and refuse a different worktree", () =>
