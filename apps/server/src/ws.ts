@@ -2821,7 +2821,10 @@ export const layerWsRpc = (
           Effect.fnUntraced(function* (rule) {
             return yield* keybindings.removeKeybindingRule(rule);
           }),
-        [WS_METHODS.serverRunStorageCleanup]: () => storageCleanup.runNow,
+        [WS_METHODS.serverRunStorageCleanup]: (input) =>
+          input.retirement === undefined
+            ? storageCleanup.runNow
+            : storageCleanup.retirement(input.retirement),
         [WS_METHODS.serverGetStorageCleanupReport]: () => storageCleanup.reports,
         [WS_METHODS.serverGetDatabaseStorage]: () => databaseStorage.status,
         [WS_METHODS.peerLinksList]: (_input) =>

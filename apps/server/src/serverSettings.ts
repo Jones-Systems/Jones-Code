@@ -1,3 +1,4 @@
+import { guardRetentionSettings } from "./jones/workspaceRetirement/RetentionGuard.ts";
 import {
   DEFAULT_SERVER_SETTINGS,
   ModelSelection,
@@ -630,6 +631,8 @@ function foldLegacyProjectSettings(
   };
 }
 
+const compiledMain3acaCodec29 = Schema.is(ServerSettingsError);
+
 const make = Effect.gen(function* () {
   const { settingsPath } = yield* ServerConfig.ServerConfig;
   const fs = yield* FileSystem.FileSystem;
@@ -1171,7 +1174,14 @@ const make = Effect.gen(function* () {
         materialized = { source: next, value: resolved };
         yield* emitChange(next);
         return resolved;
-      }),
+      }).pipe(
+        (effect) => guardRetentionSettings(sql, patch, effect),
+        Effect.mapError((cause) =>
+          compiledMain3acaCodec29(cause)
+            ? cause
+            : new ServerSettingsError({ settingsPath, operation: "write-file", cause }),
+        ),
+      ),
     );
 
   const withSettingsSnapshot: ServerSettingsService["Service"]["withSettingsSnapshot"] = (use) =>

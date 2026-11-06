@@ -137,3 +137,5 @@ export * from "./jones/desktopThreadMonitor.ts";
 export * from "./jones/guardedThreadSettlement.ts";
 
 export * from "./jones/threadResultDependency.ts";
+
+export * from "./jones/workspaceRetirement.ts";

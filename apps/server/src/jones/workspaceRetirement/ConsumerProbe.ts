@@ -5,7 +5,7 @@ import * as NodeChildProcess from "node:child_process";
 import * as DateTime from "effect/DateTime";
 import { inside, nativePlatform, readBounded } from "./Filesystem.ts";
 
-const CONSUMER_LIMITS = [
+export const CONSUMER_LIMITS = [
   "other-user/root processes",
   "remote consumers",
   "unmanaged writers and tools without claims or reservations",

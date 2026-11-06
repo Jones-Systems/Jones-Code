@@ -2,6 +2,7 @@ import {
   validateRuntimeUseAttachmentPublication,
   revalidateRuntimeUseAttachmentBeforePublication,
 } from "../jones/cleanup/RuntimeUseAttachment.ts";
+import * as RetirementEvents from "../jones/workspaceRetirement/EventIntegration.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as WorkspaceProvenanceStore from "../jones/workspaceLifecycle/TransitionStore.ts";
 import { ChangedThreads as DependencyChangedThreads } from "../jones/threadResultDependencies/ChangeTracking.ts";
@@ -216,6 +217,12 @@ export interface EventSinkV2Shape {
     EventSinkV2Error
   >;
   readonly revalidateDeletionWorktreeRemovalStart?: (
+    start: DeletionWorktreeRemovalStartV1,
+    ordinal: number,
+    currentRules?: DeletionPolicyRead,
+    currentLive?: DeletionLiveRead,
+  ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly checkRetainedDeletionWorktreeRemovalStart?: (
     start: DeletionWorktreeRemovalStartV1,
     ordinal: number,
     currentRules?: DeletionPolicyRead,
@@ -919,6 +926,10 @@ const layerBase: Layer.Layer<
               Effect.provideService(SqlClient.SqlClient, sql),
             );
         }
+        yield* RetirementEvents.events(
+          sql,
+          storedEvents.map((stored) => stored.event),
+        );
         // Jones: capture settlement before the projection replaces the prior state.
         if (storedEvents.some((stored) => stored.event.type === "thread.settled"))
           yield* settlementRestores.capture(storedEvents, projectionStore.getThread);
@@ -2281,6 +2292,10 @@ const layerBase: Layer.Layer<
       startDeletionWorktreeRemoval: (input) =>
         deletionAdmission
           .start(input)
+          .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      checkRetainedDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
+        deletionAdmission
+          .checkRetained(start, ordinal, rules, live)
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
       readDeletionWorktreeRemovalStart: (effectId) =>
         deletionAdmission

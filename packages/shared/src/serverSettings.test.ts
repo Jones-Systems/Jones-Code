@@ -117,6 +117,8 @@ describe("serverSettings helpers", () => {
       worktreeOnDelete: false,
       worktreeUnchanged: false,
       worktreeKeepWhen: "uncommitted-changes",
+      worktreeSettledScope: "branch-retained",
+      worktreeCoveredDiscard: [],
       browserArtifactsAfterDays: null,
       logsAfterDays: 30,
       installRetention: "propose",

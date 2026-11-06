@@ -1,9 +1,12 @@
+// Test-only clock adapter; native filesystem, Git and proof behavior is unchanged.
+import { installEffectSeam } from "./EffectSeam.node-test-support.mjs";
+installEffectSeam();
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeTest from "node:test";
 import corpus from "./conformance/v1/cases.json" with { type: "json" };
 import source from "./conformance/v1/source.json" with { type: "json" };
-import { executeRecipe } from "./Conformance.testkit.ts";
+const { executeRecipe } = await import("./Conformance.testkit.ts");
 import { sha256 } from "./Filesystem.ts";
 import { incarnation, listingDigest, manifestBytes } from "./OutputAttestation.ts";
 

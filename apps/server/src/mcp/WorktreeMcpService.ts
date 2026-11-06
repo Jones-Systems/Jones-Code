@@ -1,3 +1,5 @@
+import * as RetirementOutcome from "../jones/workspaceRetirement/Outcome.ts";
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import {
   CommandId,
@@ -57,6 +59,7 @@ const asOperationFailed = (prefix: string) =>
 
 const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
+  const retirementOutcome = yield* RetirementOutcome.lookup;
   const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
   const lookupProvenance = yield* WorkspaceProvenance.optionalLookup;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
@@ -337,6 +340,10 @@ const make = Effect.gen(function* () {
                   ),
           );
 
+        const duty = yield* WorkspaceDuty.hooks;
+        const releaseDuty = yield* duty
+          .hold(worktreePath, "handoff", scope.thread.threadId)
+          .pipe(asOperationFailed("Workspace handoff duty refused"));
         const continuation = yield* recheckAndBind.pipe(
           Effect.andThen(
             captureProvenance({
@@ -348,6 +355,7 @@ const make = Effect.gen(function* () {
             }),
           ),
           Effect.andThen(queueContinuation),
+          Effect.ensuring(releaseDuty.pipe(Effect.orDie)),
         );
 
         yield* vcsStatusBroadcaster
@@ -438,6 +446,7 @@ const make = Effect.gen(function* () {
 
       const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId });
       const result: WorktreeMcpStatusResult = {
+        ...(yield* retirementOutcome(scope.thread.threadId)),
         attached: projection.thread.worktreePath !== null,
         worktreePath: projection.thread.worktreePath,
         branch: projection.thread.branch,

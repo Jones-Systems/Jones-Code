@@ -8,6 +8,7 @@ import {
   unobservedRuntimeIdentity,
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderEventOrigin from "@t3tools/provider-core/server/jones/ProviderEventOrigin";
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import { makeProviderRecoveryRetirements } from "../jones/providerRetirement/providerRecoveryRetirement.ts";
 import { makeProviderRecoveryPublication } from "../jones/providerRetirement/providerRecoveryPublication.ts";
 import * as EventStore from "./EventStore.ts";
@@ -461,6 +462,12 @@ export const layerWithOptions = (
       const physicalEvidence = yield* PhysicalRuntimeEvidence.make;
       const runtimeUseGuard = yield* RuntimeUseOpenGuard.make;
       const agentScope = yield* AgentScope;
+      yield* WorkspaceDuty.startup;
+      const workspaceDuty = yield* WorkspaceDuty.hooks;
+      const workspaceDuties = new Map<
+        Scope.Closeable,
+        Effect.Success<ReturnType<typeof workspaceDuty.hold>>
+      >();
       type OriginalThreadLoad = {
         readonly target: Pick<
           OrchestrationV2ProviderThread,
@@ -526,7 +533,26 @@ export const layerWithOptions = (
           events: eventStore,
           sink: eventSink,
           ingestor: providerEventIngestor,
-          physical: physicalEvidence,
+          physical: {
+            bind: (binding, lease) =>
+              physicalEvidence
+                .bind(binding, lease)
+                .pipe(
+                  Effect.tap(() =>
+                    workspaceDuty
+                      .bindSession(
+                        providerSessionId,
+                        binding.providerThreadId,
+                        binding.runtimeGeneration,
+                      )
+                      .pipe(
+                        Effect.catch((cause) =>
+                          Effect.logDebug("Native session duty binding unavailable", { cause }),
+                        ),
+                      ),
+                  ),
+                ),
+          },
           forgetTransfers: forgetCompletedThreadTransfers,
           revalidateGuard: (threadId) =>
             NativeProvider.revalidateNativeProviderGuard(nativeCreationGuard, { threadId }).pipe(
@@ -1455,6 +1481,20 @@ export const layerWithOptions = (
             scopeClosures.set(scope, completion);
             yield* Scope.close(scope, Exit.void).pipe(
               Effect.tap(() => retirements.completeScope(scope)),
+              // Scope finalizers can run in parallel or fail. Release only after the
+              // complete native scope close succeeds; a timed-out close retains duty.
+              Effect.tap(() =>
+                Effect.gen(function* () {
+                  const closed = scope === sessionScopes ? [...workspaceDuties.keys()] : [scope];
+                  for (const ownedScope of closed) {
+                    const release = workspaceDuties.get(ownedScope);
+                    if (release) {
+                      yield* release.pipe(Effect.orDie);
+                      workspaceDuties.delete(ownedScope);
+                    }
+                  }
+                }),
+              ),
               Effect.exit,
               Effect.flatMap((exit) => Deferred.succeed(completion, exit)),
               Effect.forkDetach({ startImmediately: true }),
@@ -4144,6 +4184,19 @@ export const layerWithOptions = (
                   }
                 });
                 const sessionScope = yield* Scope.fork(sessionScopes);
+                const releaseWorkspaceDuty = yield* workspaceDuty
+                  .hold(cwd, "session", input.providerSessionId)
+                  .pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ProviderSessionOpenError({
+                          instanceId: input.modelSelection.instanceId,
+                          providerSessionId: input.providerSessionId,
+                          cause,
+                        }),
+                    ),
+                  );
+                workspaceDuties.set(sessionScope, releaseWorkspaceDuty);
                 yield* agentScope.clear(input.threadId);
                 const runtimeOwner: { runtime: ProviderAdapterV2SessionRuntime | undefined } = {
                   runtime: undefined,

@@ -18,7 +18,10 @@ import * as Fixture from "./testkit.ts";
 
 // Exercise the real follower, SQL facts and EventSink. The peer transport and
 // provider-launch boundary are ports; neither launches a process in this test.
-const ports = (f: Effect.Success<typeof Fixture.seed>) =>
+const ports = (
+  f: Effect.Success<typeof Fixture.seed>,
+  acquisition?: Orchestrator.OrchestratorV2Shape["acquireDomainEvents"],
+) =>
   Layer.mock(Orchestrator.OrchestratorV2)({
     getThreadRecords: (threadId, fields, filter) =>
       f.projection
@@ -44,6 +47,19 @@ const ports = (f: Effect.Success<typeof Fixture.seed>) =>
             (cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause }),
           ),
         ),
+    acquireDomainEvents:
+      acquisition ??
+      f.sink.latestSequence().pipe(
+        Effect.map((afterSequence) =>
+          f.sink.stream({ afterSequence }).pipe(
+            Stream.map((stored) => stored.event),
+            Stream.mapError(
+              (cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause }),
+            ),
+          ),
+        ),
+        Effect.mapError((cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause })),
+      ),
     streamDomainEvents: f.sink.stream({ afterSequence: 0 }).pipe(
       Stream.map((stored) => stored.event),
       Stream.mapError((cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause })),
@@ -246,14 +262,26 @@ it.effect(
           const original = yield* Orchestrator.OrchestratorV2;
           return {
             ...original,
-            streamStoredEventsFrom: (
-              input: Parameters<typeof original.streamStoredEventsFrom>[0],
-            ) => {
-              cursors.push(input);
-              return Stream.unwrap(
-                Deferred.await(gate).pipe(Effect.as(original.streamStoredEventsFrom(input))),
-              );
-            },
+            acquireDomainEvents: f.sink.latestSequence().pipe(
+              Effect.map((afterSequence) => {
+                cursors.push({ afterSequence });
+                return Stream.unwrap(
+                  Deferred.await(gate).pipe(
+                    Effect.as(
+                      f.sink.stream({ afterSequence }).pipe(
+                        Stream.map((stored) => stored.event),
+                        Stream.mapError(
+                          (cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause }),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }),
+              Effect.mapError(
+                (cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause }),
+              ),
+            ),
             finalizeDelegatedTask: (id: typeof f.waiter.id) =>
               Queue.offer(finalized, id).pipe(Effect.asVoid),
           };
@@ -291,4 +319,106 @@ it.effect(
         ),
       );
     }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("failed baseline acquisition refuses startup before admitting subscribers", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const changes = yield* Changes.DependencyChanges;
+    const failure = new Orchestrator.OrchestratorDomainEventStreamError({
+      cause: "synthetic baseline read failure",
+    });
+    let subscriptions = 0;
+    const observedChanges = Layer.succeed(Changes.DependencyChanges, {
+      ...changes,
+      subscribe: changes.subscribe.pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            subscriptions++;
+          }),
+        ),
+      ),
+    });
+    yield* Effect.gen(function* () {
+      const reactor = yield* Reactor.DependencyReactor;
+      const result = yield* reactor.start().pipe(Effect.result);
+      assert.equal(result._tag, "Failure");
+      if (result._tag === "Failure") assert.strictEqual(result.failure, failure);
+      assert.equal(subscriptions, 0);
+    }).pipe(
+      Effect.provide(
+        Reactor.layer.pipe(
+          Layer.provide(Watch.layer),
+          Layer.provide(ports(f, Effect.fail(failure))),
+          Layer.provide(observedChanges),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(Forwarding.PeerForwarding)({
+              call: () => Effect.die("Failed acquisition must not admit a follower"),
+            }),
+          ),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(Fixture.layer)),
+);
+
+it.effect("the acquired domain consumer drains when its owning startup scope closes", () =>
+  Effect.gen(function* () {
+    const f = yield* Fixture.seed;
+    const entered = yield* Deferred.make<void>();
+    const withheld = yield* Deferred.make<void>();
+    let acquisitions = 0;
+    let drained = false;
+    const acquisition = Effect.sync(() => {
+      acquisitions++;
+    }).pipe(
+      Effect.andThen(f.sink.latestSequence()),
+      Effect.map((afterSequence) =>
+        Stream.unwrap(
+          Deferred.succeed(entered, undefined).pipe(
+            Effect.andThen(Deferred.await(withheld)),
+            Effect.as(
+              f.sink.stream({ afterSequence }).pipe(
+                Stream.map((stored) => stored.event),
+                Stream.mapError(
+                  (cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause }),
+                ),
+              ),
+            ),
+          ),
+        ).pipe(
+          Stream.ensuring(
+            Effect.sync(() => {
+              drained = true;
+            }),
+          ),
+        ),
+      ),
+      Effect.mapError((cause) => new Orchestrator.OrchestratorDomainEventStreamError({ cause })),
+    );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const reactor = yield* Reactor.DependencyReactor;
+        yield* reactor.start();
+        yield* Deferred.await(entered);
+        assert.equal(acquisitions, 1);
+        assert.isFalse(drained);
+      }),
+    ).pipe(
+      Effect.provide(
+        Reactor.layer.pipe(
+          Layer.provide(Watch.layer),
+          Layer.provide(ports(f, acquisition)),
+          Layer.provide(NodeCrypto.layer),
+          Layer.provide(
+            Layer.mock(Forwarding.PeerForwarding)({
+              call: () => Effect.die("This local subscription must not call a peer"),
+            }),
+          ),
+        ),
+      ),
+    );
+    assert.isTrue(drained);
+  }).pipe(Effect.provide(Fixture.layer)),
 );

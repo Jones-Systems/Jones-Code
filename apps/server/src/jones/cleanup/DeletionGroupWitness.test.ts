@@ -316,6 +316,8 @@ it.effect(
       const { sink, stop, sql } = yield* setup;
       yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES(${projectId},'Synthetic completed cleanup',${target.projectRoot},'[]',${at},${at})`;
       const rules = {
+        worktreeSettledScope: "branch-retained" as const,
+        worktreeCoveredDiscard: [],
         worktreeKeepWhen: "uncommitted-changes" as const,
         worktreeAfterDays: null,
         worktreeSettledAfterDays: null,
@@ -378,6 +380,8 @@ it.effect.each(["lineage", "pending-child", "active-turn"] as const)(
       yield* sql`INSERT INTO projection_projects(project_id,title,workspace_root,scripts_json,created_at,updated_at) VALUES(${projectId},'Synthetic completed cleanup',${target.projectRoot},'[]',${at},${at})`;
       yield* stop;
       const rules = {
+        worktreeSettledScope: "branch-retained" as const,
+        worktreeCoveredDiscard: [],
         worktreeKeepWhen: "uncommitted-changes" as const,
         worktreeAfterDays: null,
         worktreeSettledAfterDays: null,

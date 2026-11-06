@@ -572,6 +572,8 @@ const deletionInput = {
   },
   rules: {
     worktreeKeepWhen: "uncommitted-changes" as const,
+    worktreeSettledScope: "branch-retained" as const,
+    worktreeCoveredDiscard: [],
     worktreeAfterDays: null,
     worktreeSettledAfterDays: null,
     worktreeOnDelete: true,

@@ -47,6 +47,8 @@ const target = {
 };
 const workspace = target.path;
 const rules: WorktreeCleanupRules = {
+  worktreeSettledScope: "branch-retained" as const,
+  worktreeCoveredDiscard: [],
   worktreeKeepWhen: "uncommitted-changes",
   worktreeAfterDays: null,
   worktreeSettledAfterDays: null,

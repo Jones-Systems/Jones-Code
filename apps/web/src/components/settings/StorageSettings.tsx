@@ -1,3 +1,4 @@
+import { requestConfirmDialog } from "~/confirmDialog";
 import type {
   StorageCleanupReport,
   StorageCleanupSettings,
@@ -191,12 +192,30 @@ function lastRunSummary(
   return entries.map((entry) => `${entry.label}: ${entry.counts}`).join(" · ");
 }
 
+function factsWithKeys<A>(values: readonly A[], identity: (value: A) => string) {
+  const occurrences = new Map<string, number>();
+  return values.map((value) => {
+    const fact = identity(value);
+    const occurrence = occurrences.get(fact) ?? 0;
+    occurrences.set(fact, occurrence + 1);
+    return { value, key: `${fact}:${occurrence}` };
+  });
+}
+
+function lineageIdentity(lineage: Readonly<Record<string, string>>) {
+  return JSON.stringify(
+    Object.entries(lineage).sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
 function CleanupResults({
   report,
   environmentLabel,
+  onRetire,
 }: {
   report: StorageCleanupReport;
   environmentLabel: string;
+  onRetire?: (entry: StorageCleanupReport["entries"][number]) => void;
 }) {
   return (
     <>
@@ -218,6 +237,43 @@ function CleanupResults({
                 <span className={`block ${entry.outcome === "failed" ? "text-destructive" : ""}`}>
                   {entry.reason}
                 </span>
+                {entry.retirement?.receiptId && (
+                  <span className="block">
+                    Receipt: {entry.retirement.receiptId} · {entry.retirement.state}
+                  </span>
+                )}
+                {factsWithKeys(entry.retirement?.details ?? [], (detail) =>
+                  JSON.stringify([
+                    detail.target,
+                    detail.root,
+                    detail.reason,
+                    detail.fact,
+                    detail.missingFact,
+                    detail.nextAction,
+                    detail.lineage.map(lineageIdentity),
+                  ]),
+                ).map(({ value: detail, key }) => (
+                  <span key={key} className="block">
+                    <code>{detail.root}</code>: {detail.fact}{" "}
+                    {detail.missingFact ? `Missing: ${detail.missingFact}. ` : ""}
+                    {detail.nextAction}
+                    {factsWithKeys(detail.lineage, lineageIdentity).map(
+                      ({ value: lineage, key }) => (
+                        <span key={key} className="block">
+                          {Object.entries(lineage)
+                            .map(([key, value]) => `${key}: ${value}`)
+                            .join(" · ")}
+                        </span>
+                      ),
+                    )}
+                  </span>
+                ))}
+                {entry.retirement?.outputObligations.map((output) => (
+                  <span key={output.id} className="block">
+                    Output {output.id}: <code>{output.path}</code> · Owner {output.owner} ·{" "}
+                    {output.state}
+                  </span>
+                ))}
                 <span className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 border-l border-border/60 pl-3">
                   <span>Machine</span>
                   <span className="text-foreground/80">{environmentLabel}</span>
@@ -243,19 +299,34 @@ function CleanupResults({
               </span>
             }
             control={
-              (entry.outcome === "removed" ||
-                (entry.outcome === "kept" && entry.bytes !== null)) && (
-                <span className="text-xs text-muted-foreground">
-                  {[
-                    entry.kind !== "worktree" && entry.files !== null
-                      ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
-                      : null,
-                    entry.bytes !== null ? formatBytes(entry.bytes) : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </span>
-              )
+              <>
+                {onRetire &&
+                  entry.threadId &&
+                  entry.path &&
+                  entry.retirement?.fingerprint &&
+                  entry.retirement.paths.length <= 200 &&
+                  entry.retirement.reasonCodes.every((reason) =>
+                    ["unattested_ignored", "sensitive_ignored", "untracked"].includes(reason),
+                  ) &&
+                  entry.retirement.state !== "retired" && (
+                    <Button variant="outline" size="sm" onClick={() => onRetire(entry)}>
+                      Retire
+                    </Button>
+                  )}
+                {(entry.outcome === "removed" ||
+                  (entry.outcome === "kept" && entry.bytes !== null)) && (
+                  <span className="text-xs text-muted-foreground">
+                    {[
+                      entry.kind !== "worktree" && entry.files !== null
+                        ? `${entry.files.toLocaleString()} ${entry.files === 1 ? "file" : "files"}`
+                        : null,
+                      entry.bytes !== null ? formatBytes(entry.bytes) : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </span>
+                )}
+              </>
             }
           />
         );
@@ -336,7 +407,7 @@ function CleanupSection() {
         ? `${report.counts.removed} removed, ${report.counts.kept} kept${report.counts.failed > 0 ? `, ${report.counts.failed} failed` : ""}`
         : "",
       description: report
-        ? `Last run ${formatRelativeTimeLabel(report.finishedAt, nowMs)}. ${formatBytes(report.bytesFreed)} recovered.${report.counts.failed > 0 ? ` ${report.counts.failed} ${report.counts.failed === 1 ? "item" : "items"} couldn't be removed.` : ""}`
+        ? `Last run ${formatRelativeTimeLabel(report.finishedAt, nowMs)}. ${report.entries.some((entry) => entry.retirement && entry.bytes === null) ? "Recovered bytes unavailable" : `${formatBytes(report.bytesFreed)} recovered`}.${report.counts.failed > 0 ? ` ${report.counts.failed} ${report.counts.failed === 1 ? "item" : "items"} couldn't be removed.` : ""}`
         : query?.failed
           ? "Could not load the last run."
           : query?.loading
@@ -344,6 +415,81 @@ function CleanupSection() {
             : "Cleanup hasn't run yet.",
     };
   });
+  const propose = async () => {
+    if (pending) return;
+    setPending(true);
+    try {
+      for (const environment of supported.filter(
+        (e) =>
+          e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true &&
+          state.some((s) => s.environmentId === e.environmentId && s.allowed),
+      )) {
+        const result = await run({
+          environmentId: environment.environmentId,
+          input: { retirement: { action: "propose" } },
+        });
+        if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+          toastManager.add({
+            type: "error",
+            title: `Could not propose retirements on ${environment.label}`,
+            description: String(squashAtomCommandFailure(result)),
+          });
+      }
+    } catch (error) {
+      setPending(false);
+      toastManager.add({
+        type: "error",
+        title: "Could not propose checkout retirements",
+        description: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    setPending(false);
+  };
+  const retireTarget = async (
+    environmentId: (typeof supportedIds)[number],
+    entry: StorageCleanupReport["entries"][number],
+  ) => {
+    if (pending || !entry.threadId || !entry.path || !entry.retirement?.fingerprint) return;
+    const coveredPaths = entry.retirement.paths;
+    const confirmed = await (requestConfirmDialog(
+      `Retire ${entry.path}? Branches and recovery references are kept. This authorizes disposal only of these exact selections, including additions within the listed roots:
+${coveredPaths.length ? coveredPaths.join("\n") : "No local content selected."}
+Live consumers, tracked edits, nested repositories and other protections still hold.`,
+      { variant: "destructive" },
+    ) ?? Promise.resolve(false));
+    if (!confirmed) return;
+    setPending(true);
+    try {
+      const result = await run({
+        environmentId,
+        input: {
+          retirement: {
+            action: "retire",
+            threadId: entry.threadId,
+            worktreePath: entry.path,
+            expectedFingerprint: entry.retirement.fingerprint,
+            coveredPaths,
+          },
+        },
+      });
+      if (result._tag === "Failure" && !isAtomCommandInterrupted(result))
+        toastManager.add({
+          type: "error",
+          title: "Checkout retirement failed",
+          description: String(squashAtomCommandFailure(result)),
+        });
+    } catch (error) {
+      setPending(false);
+      toastManager.add({
+        type: "error",
+        title: "Checkout retirement failed",
+        description: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    setPending(false);
+  };
   const deleteNow = async () => {
     if (pending) return;
     setPending(true);
@@ -390,14 +536,28 @@ function CleanupSection() {
             </span>
           }
           control={
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
-              onClick={() => void deleteNow()}
-            >
-              {pending ? "Deleting…" : "Delete now"}
-            </Button>
+            <>
+              {supported.some(
+                (e) => e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true,
+              ) && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={pending || !state.some((e) => e.allowed)}
+                  onClick={() => void propose()}
+                >
+                  Propose retirements
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={pending || !hasRules || !state.some((entry) => entry.allowed)}
+                onClick={() => void deleteNow()}
+              >
+                {pending ? "Working…" : "Delete now"}
+              </Button>
+            </>
           }
         />
       </SettingsGroup>
@@ -418,6 +578,15 @@ function CleanupSection() {
                   key={environment.environmentId}
                   report={report}
                   environmentLabel={label}
+                  {...(!pending &&
+                  environment.serverConfig?.environment.capabilities.settledWorktreeRetirement ===
+                    true &&
+                  state.some((e) => e.environmentId === environment.environmentId && e.allowed)
+                    ? {
+                        onRetire: (entry: StorageCleanupReport["entries"][number]) =>
+                          void retireTarget(environment.environmentId, entry),
+                      }
+                    : {})}
                 />
               ),
           )}
@@ -477,9 +646,11 @@ export function WorktreeCleanupSection() {
   const ruleStatus = (key: keyof StorageCleanupSettings) =>
     targets.some(
       (target) =>
-        ({ ...target.settings.storageCleanup, ...resolveWorktreeCleanup(target.settings, null) })[
-          key
-        ] !== settings[key],
+        JSON.stringify(
+          { ...target.settings.storageCleanup, ...resolveWorktreeCleanup(target.settings, null) }[
+            key
+          ],
+        ) !== JSON.stringify(settings[key]),
     )
       ? "Mixed across selected machines"
       : undefined;
@@ -627,7 +798,7 @@ export function WorktreeCleanupSection() {
                     ]
                       .filter(Boolean)
                       .join(". ")}
-                    description="Remove worktrees this many days after their thread settles. Set 0 days to remove them at the next cleanup. Branches and thread history are kept."
+                    description="Retire worktrees this many days after their thread settles, its settle script durably finishes, and its final checkpoint completes. Set 0 days for the next cleanup. Branches and history are kept. Disabling this rule stops settlement retirement only. To stop all automatic checkout removal, disable every applicable cleanup cause in the effective project and environment settings."
                     serverScoped={!isProjectScope}
                     control={
                       <RetentionControl
@@ -640,6 +811,67 @@ export function WorktreeCleanupSection() {
                       />
                     }
                   />
+                )}
+              {connectedEnvironments.length > 0 &&
+                connectedEnvironments.every(
+                  (e) =>
+                    e.serverConfig?.environment.capabilities.settledWorktreeRetirement === true,
+                ) && (
+                  <>
+                    <SettingsRow
+                      title="Settled checkout scope"
+                      managedPaths={lockablePath("worktreeSettledScope")}
+                      description="Contained allows only commits reachable from another retained reference. Branch-retained also keeps unique commits on the saved branch or recovery references."
+                      serverScoped={!isProjectScope}
+                      control={
+                        <Select
+                          value={settings.worktreeSettledScope}
+                          onValueChange={(value) => {
+                            if (value === "contained" || value === "branch-retained")
+                              updateWorktree({ worktreeSettledScope: value });
+                          }}
+                        >
+                          <SelectTrigger size="sm" aria-label="Settled checkout scope">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectPopup>
+                            <SelectItem value="contained">Contained</SelectItem>
+                            <SelectItem value="branch-retained">Branch retained</SelectItem>
+                          </SelectPopup>
+                        </Select>
+                      }
+                    />
+                    {(
+                      ["declared_cache", "dependency_reproduction", "format_recognized"] as const
+                    ).map((coverage) => (
+                      <SettingsRow
+                        key={coverage}
+                        managedPaths={lockablePath("worktreeCoveredDiscard")}
+                        title={
+                          coverage === "declared_cache"
+                            ? "Discard declared caches"
+                            : coverage === "dependency_reproduction"
+                              ? "Discard reproducible dependencies"
+                              : "Discard recognized format files"
+                        }
+                        description="Applies only to ignored content that passes the selected class checks. Includes additions; sensitive content and nested repositories stay protected."
+                        serverScoped={!isProjectScope}
+                        control={
+                          <Switch
+                            aria-label={`Discard ${coverage}`}
+                            checked={settings.worktreeCoveredDiscard.includes(coverage)}
+                            onCheckedChange={(checked) =>
+                              updateWorktree({
+                                worktreeCoveredDiscard: checked
+                                  ? [...settings.worktreeCoveredDiscard, coverage]
+                                  : settings.worktreeCoveredDiscard.filter((c) => c !== coverage),
+                              })
+                            }
+                          />
+                        }
+                      />
+                    ))}
+                  </>
                 )}
               <SettingsRow
                 title="Delete unchanged worktrees"
@@ -665,10 +897,10 @@ export function WorktreeCleanupSection() {
                   managedPaths={lockablePath("worktreeKeepWhen")}
                   description={
                     settings.worktreeKeepWhen === "any-local-files"
-                      ? "Includes ignored files, except node_modules."
+                      ? "Keeps any untracked or ignored content."
                       : settings.worktreeKeepWhen === "tracked-changes"
-                        ? "Deletes untracked and ignored files, including .env."
-                        : "Keeps edits and untracked files. Deletes ignored files, including .env."
+                        ? "Keeps tracked edits. Individually enumerates up to 10,000 untracked paths and ignored roots for journaled disposal. Sensitive paths require exact confirmation; nested repositories and live consumers stay protected."
+                        : "Keeps tracked edits and untracked files. Ignored roots require producer proof, preservation or the selected coverage classes. Sensitive paths stay protected."
                   }
                   serverScoped={!isProjectScope}
                   control={

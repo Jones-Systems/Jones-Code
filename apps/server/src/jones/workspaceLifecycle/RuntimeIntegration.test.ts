@@ -83,6 +83,7 @@ const fixture = Effect.gen(function* () {
   yield* sql`INSERT INTO orchestration_v2_projection_threads VALUES('thread',${canonical(thread)})`;
   yield* sql`INSERT INTO orchestration_events VALUES('birth',1,${canonical(thread)},2,'thread','thread','thread.created')`;
   yield* jonesMigrationEntries.find(([id]) => id === 123)![2];
+  yield* jonesMigrationEntries.find(([id]) => id === 138)![2];
   const settings: Configuration = {
     environmentId: "environment",
     projects: [{ projectId: "project", repository: "Jones-Systems/Synthetic", projectRoot: repo }],

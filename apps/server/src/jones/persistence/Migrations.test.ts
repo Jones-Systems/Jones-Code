@@ -462,10 +462,11 @@ it.effect(
           ...released135Identities.map(([id, name]) => [id, name]),
           [136, "WorkspaceProvenance"],
           [137, "NativeCreationLeaseRenewal"],
-          [138, "NativeExecutionProcessCustody"],
-          [139, "OrdinaryCheckoutProcessCustody"],
-          [140, "AuthSessionClientMetadata"],
-          [141, "WorkspaceRuntimeUses"],
+          [138, "WorkspaceRetirement"],
+          [139, "NativeExecutionProcessCustody"],
+          [140, "OrdinaryCheckoutProcessCustody"],
+          [141, "AuthSessionClientMetadata"],
+          [142, "WorkspaceRuntimeUses"],
         ],
       );
       assert.deepStrictEqual(
@@ -685,10 +686,11 @@ it.effect("migration 107 backfills only complete attributable native settlement 
       [135, "IdleWorktreeAdmission"],
       [136, "WorkspaceProvenance"],
       [137, "NativeCreationLeaseRenewal"],
-      [138, "NativeExecutionProcessCustody"],
-      [139, "OrdinaryCheckoutProcessCustody"],
-      [140, "AuthSessionClientMetadata"],
-      [141, "WorkspaceRuntimeUses"],
+      [138, "WorkspaceRetirement"],
+      [139, "NativeExecutionProcessCustody"],
+      [140, "OrdinaryCheckoutProcessCustody"],
+      [141, "AuthSessionClientMetadata"],
+      [142, "WorkspaceRuntimeUses"],
     ]);
     const proofs = yield* sql<{
       native_command_id: string;

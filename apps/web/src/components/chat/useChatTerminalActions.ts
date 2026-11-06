@@ -22,6 +22,7 @@ import {
 } from "@t3tools/contracts/jones/shellDestinationFence";
 import { randomUUID } from "../../lib/utils";
 import { projectScriptTerminalInput } from "@t3tools/shared/projectScripts";
+import type { TerminalWriteInput } from "@t3tools/contracts";
 import { type SetStateAction } from "react";
 import {
   isAtomCommandInterrupted,
@@ -282,11 +283,13 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
       return;
     }
 
-    const writeResult = await terminalActions.writeToTerminal(
+    const writeResult = await writeProjectScriptOnce(
+      terminalActions.writeToTerminal,
       targetTerminalId,
       options?.shellHistory === "preserve"
         ? `${script.command}\r`
         : projectScriptTerminalInput(script.command),
+      { projectId: activeProject.id, scriptId: script.id },
     );
     if (!writeResult) return;
     if (writeResult._tag === "Failure") {
@@ -473,4 +476,28 @@ export function useChatTerminalActions(input: ChatTerminalActionsInput) {
     splitTerminalStable,
     toggleTerminalVisibilityStable,
   };
+}
+
+/** The terminal write is issued exactly once. Optional descriptor preparation
+ * can fail before issuance; an unknown/native write result is never retried. */
+export function writeProjectScriptOnce<A>(
+  write: (terminalId: string, data: string, observation?: TerminalWriteInput["observation"]) => A,
+  terminalId: string,
+  data: string,
+  references: { projectId: string; scriptId: string },
+  makeInvocationId: () => string = randomUUID,
+): A {
+  let observation: TerminalWriteInput["observation"];
+  try {
+    if (
+      [references.projectId, references.scriptId].every(
+        (value) => value.length > 0 && value.length <= 256,
+      )
+    ) {
+      observation = { invocationId: makeInvocationId(), ...references };
+    }
+  } catch {
+    /* Optional metadata cannot prevent an ordinary script write. */
+  }
+  return write(terminalId, data, observation);
 }

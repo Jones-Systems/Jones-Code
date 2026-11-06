@@ -101,10 +101,20 @@ export async function acquireFixture(): Promise<ConformanceFixture> {
 }
 export async function fixture<T>(run: (f: ConformanceFixture) => Promise<T>) {
   const f = await acquireFixture();
+  const owner = await NodeFSP.lstat(f.base);
   try {
     return await run(f);
   } finally {
+    const current = await NodeFSP.lstat(f.base);
+    if (current.isSymbolicLink() || current.dev !== owner.dev || current.ino !== owner.ino)
+      throw new Error("fixture_owner_changed:" + f.base);
     await NodeFSP.rm(f.base, { recursive: true, force: true });
+    try {
+      await NodeFSP.lstat(f.base);
+      throw new Error("fixture_cleanup_unproved:" + f.base);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    }
   }
 }
 export async function executeRecipe(recipe: Recipe) {

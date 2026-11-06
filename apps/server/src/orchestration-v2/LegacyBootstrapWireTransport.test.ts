@@ -33,6 +33,7 @@ import * as Sink from "effect/Sink";
 import { projectThreadProjectionForWire } from "./WireProjection.ts";
 import { makeCommandObservationQuery } from "./CommandObservation.ts";
 import * as Deferred from "effect/Deferred";
+import * as Console from "effect/Console";
 import * as PtyAdapter from "@t3tools/shared/PtyAdapter";
 import type { ProjectScript } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -618,6 +619,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
       generate: denyRpcWork,
     }),
     Layer.succeed(WsStorageCleanup.StorageCleanup, {
+      retirement: denyRpcWork,
       runNow: denyRpcWork(),
       latestReport: denyRpcWork(),
       reports: Stream.fromEffect(denyRpcWork()),
@@ -846,7 +848,10 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
     ] as const)("preserves closed dispatch and authorization for %s", (scenario) =>
       Effect.gen(function* () {
         const fs = yield* WsFileSystem.FileSystem;
-        const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "legacy-ws-forwarding-" });
+        const temporaryRoot = yield* fs.makeTempDirectoryScoped({
+          prefix: "legacy-ws-forwarding-",
+        });
+        const cwd = yield* fs.realPath(temporaryRoot);
         const receivingDatabase = scenario.startsWith("actual_input_")
           ? SqlitePersistence.layerFromPath(`${cwd}/lexical.sqlite`).pipe(
               Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
@@ -949,6 +954,17 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
         const worktreeBarrier = yield* Deferred.make<void>();
         const releaseWorktree = Deferred.succeed(worktreeBarrier, undefined);
         const worktreePath = `${cwd}/unresolved-checkout`;
+        let nativeCheckoutRoot: string | null = null;
+        const setupStages = new Set<string>();
+        const setupStage = Effect.fn("LegacyBootstrapWireFixture.setupStage")(function* (
+          stage: string,
+        ) {
+          if (!successfulWorktree || setupStages.has(stage)) return;
+          setupStages.add(stage);
+          yield* Effect.logInfo("legacy-native-setup", scenario, threadId, stage).pipe(
+            Effect.provideService(Console.Console, Console.Console.defaultValue()),
+          );
+        });
         const startedSetup =
           scenario === "actual_sync" ||
           scenario === "actual_async" ||
@@ -1037,6 +1053,16 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                   },
                 },
               }).pipe(Effect.provide(ProcessRunner.layer));
+              const unsubscribeTerminal = yield* manager.subscribe((event) => {
+                if (!successfulWorktree || event.threadId !== threadId) return Effect.void;
+                if (event.type === "started")
+                  return Effect.sync(() => {
+                    expect(nativeCheckoutRoot).not.toBeNull();
+                    expect(event.snapshot.worktreePath).toBe(nativeCheckoutRoot);
+                  }).pipe(Effect.andThen(setupStage("terminal-started")));
+                return event.type === "error" ? setupStage("terminal-error") : Effect.void;
+              });
+              yield* Effect.addFinalizer(() => Effect.sync(unsubscribeTerminal));
               const terminal = Layer.succeed(WsTerminalManager.TerminalManager, manager);
               const projectOwner = Layer.mock(WsProjectService.ProjectService)({
                 getById: (id) =>
@@ -1136,23 +1162,75 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
               const store = EventStore.layer.pipe(Layer.provide(receivingDatabase));
               const successfulCheckout = successfulWorktree
                 ? yield* Effect.gen(function* () {
+                    // Native terminal admission reads the actual filesystem/Git owner,
+                    // independently of the synthetic VCS command transport below.
+                    const nativeRunner = yield* ProcessRunner.ProcessRunner.pipe(
+                      Effect.provide(ProcessRunner.layer),
+                    );
+                    const nativeGit = Effect.fn("LegacyBootstrapWireFixture.nativeGit")(function* (
+                      args: ReadonlyArray<string>,
+                    ) {
+                      const result = yield* nativeRunner
+                        .run({
+                          command: "git",
+                          args: [
+                            "-c",
+                            "core.hooksPath=/dev/null",
+                            "-c",
+                            "commit.gpgSign=false",
+                            ...args,
+                          ],
+                          cwd,
+                          env: {
+                            HOME: cwd,
+                            GIT_DIR: undefined,
+                            GIT_WORK_TREE: undefined,
+                            GIT_INDEX_FILE: undefined,
+                            GIT_OBJECT_DIRECTORY: undefined,
+                            GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+                            GIT_CONFIG_GLOBAL: "/dev/null",
+                            GIT_CONFIG_NOSYSTEM: "1",
+                            GIT_CONFIG_COUNT: "0",
+                            GIT_TERMINAL_PROMPT: "0",
+                            GIT_AUTHOR_NAME: "Fixture",
+                            GIT_AUTHOR_EMAIL: "fixture@example.invalid",
+                            GIT_COMMITTER_NAME: "Fixture",
+                            GIT_COMMITTER_EMAIL: "fixture@example.invalid",
+                          },
+                        })
+                        .pipe(Effect.orDie);
+                      expect(result.code).toBe(0);
+                      return result.stdout.trim();
+                    });
+                    yield* nativeGit(["init", "-b", "main"]);
+                    yield* nativeGit(["commit", "--allow-empty", "-m", "native admission fixture"]);
                     const common = `${cwd}/.git`;
-                    const gitDirectory = `${common}/worktrees/card-fixture`;
-                    yield* fs.makeDirectory(gitDirectory, { recursive: true });
+                    const gitDirectory = `${common}/worktrees/unresolved-checkout`;
                     let added = false;
                     const branch = "owned/forwarding";
-                    const oid = "9".repeat(40);
+                    const oid = yield* nativeGit(["rev-parse", "HEAD"]);
+                    yield* setupStage("native-repository-ready");
                     const spawner = ChildProcessSpawner.make((command) =>
                       Effect.gen(function* () {
                         if (!ChildProcess.isStandardCommand(command))
                           return yield* Effect.die("Synthetic checkout refuses pipelines");
                         const args = [...command.args];
                         if (args.includes("add")) {
-                          yield* fs.makeDirectory(worktreePath);
-                          yield* fs.writeFileString(
-                            `${worktreePath}/.git`,
-                            `gitdir: ${gitDirectory}\n`,
-                          );
+                          yield* nativeGit([
+                            "worktree",
+                            "add",
+                            "-b",
+                            branch,
+                            "--",
+                            worktreePath,
+                            "main",
+                          ]);
+                          nativeCheckoutRoot = yield* fs.realPath(worktreePath);
+                          expect(
+                            yield* nativeGit(["-C", worktreePath, "rev-parse", "--show-toplevel"]),
+                          ).toBe(nativeCheckoutRoot);
+                          expect(yield* fs.realPath(gitDirectory)).toBe(gitDirectory);
+                          yield* setupStage("native-checkout-created");
                           added = true;
                         }
                         let stdout = "";
@@ -1486,6 +1564,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
               Effect.die("Legacy bootstrap must not generate a pull request review guide."),
           }),
           Layer.succeed(WsStorageCleanup.StorageCleanup, {
+            retirement: () => Effect.die("Legacy bootstrap must not retire a checkout."),
             runNow: Effect.die("Legacy bootstrap must not run storage cleanup."),
             latestReport: Effect.die("Legacy bootstrap must not read a storage cleanup report."),
             reports: Stream.fromEffect(
@@ -1874,8 +1953,11 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
             return;
           }
           if (successfulWorktree) {
+            yield* setupStage("setup-written-wait-enter");
             yield* Deferred.await(setupWritten).pipe(Effect.timeout("5 seconds"));
+            yield* setupStage("setup-written-wait-exit");
             const sink = yield* EventSink.EventSinkV2;
+            yield* setupStage("setup-known-started-wait-enter");
             yield* sink.stream({ threadId, eventType: "run.updated" }).pipe(
               Stream.filter(
                 (stored) =>
@@ -1887,6 +1969,7 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
               Stream.runHead,
               Effect.timeout("5 seconds"),
             );
+            yield* setupStage("setup-known-started-wait-exit");
             const receipts = yield* Receipts.CommandReceiptStoreV2;
             const threads = yield* Threads.ThreadManagementService;
             const store = yield* EventStore.EventStoreV2;
@@ -1942,7 +2025,15 @@ effectIt.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer), { excludeTe
                 responseSequence = frame.exit?.value?.sequence;
               }
               if (frame.requestId === "2" && frame.values !== undefined) {
-                runningCard = frame.values.find((card) => card?.phase === "running");
+                // A request receipt and an earlier running frame do not prove
+                // that the async agent stage has finished. Consume its real
+                // later frame under the existing ACK/iteration/time bounds.
+                runningCard = frame.values.find(
+                  (card) =>
+                    card?.phase === "running" &&
+                    (!asyncWorktree ||
+                      card.stages.find((stage) => stage.id === "agent")?.status === "done"),
+                );
                 yield* WsQueue.offer(
                   incoming,
                   yield* encodeSocketRpcRequest({ _tag: "Ack", requestId: "2" }),

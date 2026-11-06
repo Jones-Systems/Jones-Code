@@ -64,6 +64,17 @@ export type TerminalObserveInput = Schema.Codec.Encoded<typeof TerminalObserveIn
 export const TerminalWriteInput = Schema.Struct({
   ...TerminalSessionInput.fields,
   data: Schema.String.check(Schema.isNonEmpty()).check(Schema.isMaxLength(65_536)),
+  observation: Schema.optional(
+    Schema.Struct({
+      invocationId: Schema.String.check(
+        Schema.isPattern(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+        ),
+      ),
+      projectId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+      scriptId: TrimmedNonEmptyStringSchema.check(Schema.isMaxLength(256)),
+    }),
+  ),
 });
 export type TerminalWriteInput = Schema.Codec.Encoded<typeof TerminalWriteInput>;
 

@@ -1,4 +1,5 @@
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as RetirementOutcome from "../jones/workspaceRetirement/Outcome.ts";
 import * as DependencyChanges from "../jones/threadResultDependencies/DependencyChanges.ts";
 import { dispatchDeliveryEvidence } from "../jones/orchestration/deliveryEvidence.ts";
 import type { DispatchDeliveryEvidence } from "@t3tools/contracts/jones/deliveryEvidence";
@@ -1805,10 +1806,25 @@ const make = Effect.gen(function* () {
       function (threadId, fields, filter) {
         return ensureProjectionTranscript(threadId).pipe(
           Effect.andThen(orchestrator.getThreadRecords(threadId, fields, filter)),
+          Effect.flatMap((records) =>
+            Effect.gen(function* () {
+              const lookup = yield* RetirementOutcome.lookup;
+              return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+            }),
+          ),
         );
       },
     ),
-    getThreadProjection,
+    getThreadProjection: Effect.fn("ThreadManagementService.getThreadProjection")((threadId) =>
+      getThreadProjection(threadId).pipe(
+        Effect.flatMap((records) =>
+          Effect.gen(function* () {
+            const lookup = yield* RetirementOutcome.lookup;
+            return { ...records, thread: { ...records.thread, ...(yield* lookup(threadId)) } };
+          }),
+        ),
+      ),
+    ),
     getCheckpointContext,
     getThreadSnapshot,
     getThreadTranscript,

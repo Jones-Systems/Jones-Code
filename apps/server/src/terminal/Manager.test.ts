@@ -1,5 +1,15 @@
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import type { TerminalRestartInput } from "./Manager.ts";
+import { TerminalCwdObservation } from "../jones/workspaceRetirement/TerminalCwdObservation.ts";
+import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
+import {
+  observeNativeOwner,
+  type NativeDutyOwner,
+  type NativeOwnerIO,
+  unresolvedOwner,
+} from "../jones/workspaceRetirement/NativeDutyOwner.ts";
+import { runMigrations } from "../persistence/Migrations.ts";
+import * as SqlClient from "effect/sql/SqlClient";
 import * as NativeSetup from "./NativeSetupControl.ts";
 import {
   LegacyOwnedTerminalControl,
@@ -27,9 +37,9 @@ import {
   TerminalProviderInstanceNotFoundError,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Clock from "effect/Clock";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Base64Url from "effect/encoding/Base64Url";
 import * as Exit from "effect/Exit";
@@ -503,6 +513,396 @@ it.layer(
   ),
   { excludeTestServices: true },
 )("TerminalManager", (it) => {
+  it.effect.each([
+    "success",
+    "nonzero",
+    "close",
+    "closed-during-observation",
+    "interruption",
+    "lost-response",
+    "oversized",
+    "unavailable",
+  ] as const)(
+    "project-script observation uses the actual Manager write and native lifecycle (%s)",
+    (mode) =>
+      Effect.gen(function* () {
+        yield* runMigrations();
+        const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+          shellResolver: () => "/bin/sh",
+        });
+        const fs = yield* FileSystem.FileSystem;
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const repo = `${baseDir}/project`;
+        yield* fs.makeDirectory(repo);
+        const initialized = yield* runner.run({
+          command: "git",
+          args: ["init", "-b", "fixture-script"],
+          cwd: repo,
+        });
+        assert.equal(initialized.code, 0);
+        yield* manager.open(openInput({ cwd: repo, worktreePath: repo }));
+        const process = ptyAdapter.processes[0]!;
+        const input = {
+          threadId: "thread-1",
+          terminalId: DEFAULT_TERMINAL_ID,
+          data: mode === "oversized" ? "x".repeat(65535) + "\r" : " echo fixture\r",
+          observation: {
+            invocationId: "4a792973-8d01-4eb5-a710-e34c74f57c6b",
+            projectId: "project",
+            scriptId: "build",
+          },
+        };
+        if (mode === "unavailable") input.observation.projectId = "x".repeat(257);
+        if (mode === "closed-during-observation") {
+          const observing = yield* Deferred.make<void>();
+          const release = Promise.withResolvers<string | null>();
+          yield* Effect.addFinalizer(() => Effect.sync(() => release.resolve(null)));
+          const writer = yield* manager.write(input).pipe(
+            Effect.provideService(TerminalCwdObservation, {
+              observe: () => {
+                Deferred.doneUnsafe(observing, Effect.void);
+                return release.promise;
+              },
+            }),
+            Effect.result,
+            Effect.forkChild,
+          );
+          yield* Deferred.await(observing);
+          yield* manager.close({ threadId: input.threadId, terminalId: input.terminalId });
+          yield* Effect.sync(() => release.resolve(repo));
+          const result = yield* Fiber.join(writer);
+          assert.equal(result._tag, "Failure");
+          assert.lengthOf(process.writes, 0);
+          return;
+        }
+        if (mode === "lost-response") {
+          const nativeWrite = process.write.bind(process);
+          process.write = (data) => {
+            nativeWrite(data);
+            throw Error("accepted bytes; native response lost");
+          };
+        }
+        if (mode === "interruption") {
+          const accepted = yield* Deferred.make<void>();
+          const writer = yield* manager
+            .write(input)
+            .pipe(
+              Effect.andThen(Deferred.succeed(accepted, undefined)),
+              Effect.andThen(Effect.never),
+              Effect.forkChild,
+            );
+          yield* Deferred.await(accepted);
+          yield* Fiber.interrupt(writer);
+        }
+        const result = yield* manager.write(input).pipe(Effect.result);
+        if (mode === "lost-response") {
+          assert.equal(result._tag, "Failure");
+          assert.equal((yield* manager.write(input).pipe(Effect.result))._tag, "Failure");
+          assert.lengthOf(process.writes, 1);
+        } else {
+          assert.equal(result._tag, "Success");
+          assert.lengthOf(process.writes, 1);
+          if (mode === "oversized" || mode === "unavailable")
+            assert.equal(process.writes[0], input.data);
+          else {
+            const marker = /__T3_SETUP_DONE__([_a-f0-9]+):/.exec(process.writes[0]!);
+            assert.ok(marker);
+            if (mode === "interruption") {
+              assert.lengthOf(process.writes, 1);
+              process.emitExit({ exitCode: 130, signal: null });
+            } else if (mode === "close")
+              yield* manager.close({ threadId: input.threadId, terminalId: input.terminalId });
+            else {
+              process.emitData(`${marker[0]}${mode === "nonzero" ? 7 : 0}\n`);
+              yield* manager.write(input);
+              assert.lengthOf(process.writes, 1);
+            }
+          }
+        }
+        const sql = yield* SqlClient.SqlClient;
+        const claims = yield* sql<{
+          incarnation_id: string | null;
+        }>`SELECT incarnation_id FROM jones_workspace_duty_claims WHERE worktree=${repo}`;
+        assert.ok(claims[0]?.incarnation_id);
+      }).pipe(
+        Effect.provide(SqlitePersistence.layerMemory),
+        Effect.provideService(WorkspaceDuty.NativeOwnerCapture, {
+          capture: async () => unresolvedOwner("controlled-fake-PTY; no shared-host PID lookup"),
+        }),
+        Effect.provideService(TerminalCwdObservation, {
+          observe: async (_pid, physical) =>
+            physical?.status === "bound" ? physical.binding.path : null,
+        }),
+      ),
+  );
+  it.effect(
+    "native terminal admission binds a subdirectory to its checkout root and rejects a mismatched hint",
+    () =>
+      Effect.gen(function* () {
+        yield* runMigrations();
+        const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+          shellResolver: () => "/bin/sh",
+        });
+        const fs = yield* FileSystem.FileSystem;
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const repo = `${baseDir}/root`,
+          child = `${repo}/subdir`;
+        yield* fs.makeDirectory(child, { recursive: true });
+        const initialized = yield* runner.run({
+          command: "git",
+          args: ["init", "-b", "terminal-root"],
+          cwd: repo,
+        });
+        assert.equal(initialized.code, 0);
+        yield* manager.open(openInput({ cwd: child }));
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        const sql = yield* SqlClient.SqlClient;
+        const rows = yield* sql<{
+          worktree: string;
+          incarnation_id: string | null;
+        }>`SELECT worktree,incarnation_id FROM jones_workspace_duty_claims`;
+        assert.lengthOf(rows, 1);
+        assert.equal(rows[0]!.worktree, repo);
+        assert.ok(rows[0]!.incarnation_id);
+        const refused = yield* manager
+          .open(openInput({ terminalId: "mismatch", cwd: child, worktreePath: baseDir }))
+          .pipe(Effect.result);
+        assert.equal(refused._tag, "Failure");
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        // Known non-Git directories retain ordinary terminal behavior without inventing a checkout claim.
+        yield* manager.open(openInput({ terminalId: "outside", cwd: baseDir }));
+        assert.lengthOf(ptyAdapter.spawnInputs, 2);
+        const claimCount = yield* sql<{
+          n: number;
+        }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims`;
+        assert.equal(claimCount[0]!.n, 1);
+      }).pipe(
+        Effect.provide(SqlitePersistence.layerMemory),
+        Effect.provideService(WorkspaceDuty.NativeOwnerCapture, {
+          capture: async () => unresolvedOwner("controlled PTY"),
+        }),
+      ),
+  );
+  it.effect("a retiring root excludes terminal admission from a subdirectory before spawn", () =>
+    Effect.gen(function* () {
+      yield* runMigrations();
+      const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+        shellResolver: () => "/bin/sh",
+      });
+      const fs = yield* FileSystem.FileSystem;
+      const runner = yield* ProcessRunner.ProcessRunner;
+      const repo = `${baseDir}/root`,
+        child = `${repo}/subdir`;
+      yield* fs.makeDirectory(child, { recursive: true });
+      const initialized = yield* runner.run({
+        command: "git",
+        args: ["init", "-b", "terminal-root"],
+        cwd: repo,
+      });
+      assert.equal(initialized.code, 0);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO jones_workspace_retirement_state VALUES(${repo},'fixture-incarnation','retiring','fixture-receipt')`;
+      const opening = yield* manager
+        .open(openInput({ cwd: child }))
+        .pipe(Effect.exit, Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()));
+      assert.isTrue(Exit.isFailure(opening));
+      assert.lengthOf(ptyAdapter.spawnInputs, 0);
+      const claimCount = yield* sql<{
+        n: number;
+      }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims`;
+      assert.equal(claimCount[0]!.n, 0);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  );
+  it.effect(
+    "unchanged null, omitted and verified root hints reuse the live native terminal and history",
+    () =>
+      Effect.gen(function* () {
+        yield* runMigrations();
+        const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+          shellResolver: () => "/bin/sh",
+        });
+        const fs = yield* FileSystem.FileSystem;
+        const runner = yield* ProcessRunner.ProcessRunner;
+        const repo = `${yield* fs.realPath(baseDir)}/root`;
+        yield* fs.makeDirectory(repo);
+        const initialized = yield* runner.run({
+          command: "git",
+          args: ["init", "-b", "terminal-reuse"],
+          cwd: repo,
+          env: {
+            GIT_DIR: undefined,
+            GIT_WORK_TREE: undefined,
+            GIT_INDEX_FILE: undefined,
+            GIT_OBJECT_DIRECTORY: undefined,
+            GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
+            GIT_CONFIG_COUNT: "0",
+          },
+        });
+        assert.equal(initialized.code, 0);
+        const input = openInput({ cwd: repo, worktreePath: null });
+        const first = yield* manager.open(input);
+        const process = ptyAdapter.processes[0]!;
+        const observed = yield* Deferred.make<void>();
+        const unsubscribe = yield* manager.subscribe((event) =>
+          event.type === "output" && event.data === "preserved history\n"
+            ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(unsubscribe));
+        process.emitData("preserved history\n");
+        yield* Deferred.await(observed);
+        const repeated = yield* manager.open(input);
+        const omitted = yield* manager.open(openInput({ cwd: repo }));
+        const rooted = yield* manager.open(openInput({ cwd: repo, worktreePath: repo }));
+        assert.equal(repeated.pid, first.pid);
+        assert.equal(omitted.pid, first.pid);
+        assert.equal(rooted.pid, first.pid);
+        assert.equal(repeated.history, "preserved history\n");
+        assert.equal(omitted.history, repeated.history);
+        assert.equal(rooted.history, repeated.history);
+        assert.lengthOf(ptyAdapter.spawnInputs, 1);
+        assert.lengthOf(process.killSignals, 0);
+        const sql = yield* SqlClient.SqlClient;
+        const claims = yield* sql<{
+          worktree: string;
+          incarnation_id: string | null;
+        }>`SELECT worktree,incarnation_id FROM jones_workspace_duty_claims`;
+        assert.lengthOf(claims, 1);
+        assert.equal(claims[0]!.worktree, repo);
+        assert.ok(claims[0]!.incarnation_id);
+        process.onKill = () => process.emitExit({ exitCode: 0, signal: 15 });
+        const changed = yield* manager.open({ ...input, env: { REUSE_FIXTURE: "changed" } });
+        assert.notEqual(changed.pid, first.pid);
+        assert.lengthOf(ptyAdapter.spawnInputs, 2);
+        assert.lengthOf(process.killSignals, 1);
+        const replacement = ptyAdapter.processes[1]!;
+        replacement.onKill = () => replacement.emitExit({ exitCode: 0, signal: 15 });
+        const restarted = yield* manager.restart(
+          restartInput({
+            cwd: repo,
+            worktreePath: null,
+            env: { REUSE_FIXTURE: "changed" },
+          }),
+        );
+        assert.notEqual(restarted.pid, changed.pid);
+        assert.lengthOf(ptyAdapter.spawnInputs, 3);
+        assert.lengthOf(replacement.killSignals, 1);
+      }).pipe(
+        Effect.provide(SqlitePersistence.layerMemory),
+        Effect.provideService(WorkspaceDuty.NativeOwnerCapture, {
+          capture: async () => unresolvedOwner("controlled PTY; no shared-host lookup"),
+        }),
+      ),
+  );
+  it.effect.each(["child-survives", "unknown", "verified-absent"] as const)(
+    "terminal duty uses owned-session observation after parent exit (%s)",
+    (mode) =>
+      Effect.gen(function* () {
+        const host = {
+          host: "terminal-fixture",
+          boot_id: "boot-one",
+          process_namespace: "fixture-session-space",
+          pid: 701,
+          process_start: "original-server",
+        };
+        const native: NativeDutyOwner = {
+          schema: "workspace-duty-owner/v1",
+          type: "native-session",
+          host,
+          pid: 702,
+          start: "original-parent",
+          session: "owned-session",
+        };
+        const io: NativeOwnerIO = {
+          host: async () => host,
+          linuxIdentity: async () => ({ bootId: "boot-one", startTime: "original-parent" }),
+          processes: async () => {
+            if (mode === "unknown") throw Error("owned session snapshot unavailable");
+            // The parent is absent in BOTH snapshots; a surviving child keeps the duty.
+            return mode === "child-survives"
+              ? "703 owned-session surviving-child\n"
+              : "704 other-session unrelated\n";
+          },
+        };
+        const parentObserved = yield* Deferred.make<void>();
+        let observations = 0;
+        return yield* Effect.gen(function* () {
+          yield* runMigrations();
+          const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+            shellResolver: () => "/bin/sh",
+          });
+          const fs = yield* FileSystem.FileSystem;
+          const runner = yield* ProcessRunner.ProcessRunner;
+          const repo = `${baseDir}/root`;
+          yield* fs.makeDirectory(repo);
+          const initialized = yield* runner.run({
+            command: "git",
+            args: ["init", "-b", "terminal-owner"],
+            cwd: repo,
+          });
+          assert.equal(initialized.code, 0);
+          yield* manager.open(openInput({ cwd: repo }));
+          const duty = yield* WorkspaceDuty.hooks;
+          const release = yield* duty.hold(repo, "terminal", "controlled-drain");
+          yield* duty.bindNative(release, ptyAdapter.processes[0]!.pid);
+          yield* duty.observeParentExit(release);
+          const sql = yield* SqlClient.SqlClient;
+          const live = yield* sql<{
+            owner: string;
+          }>`SELECT owner FROM jones_workspace_duty_claims WHERE released_at IS NULL`;
+          assert.equal(
+            live.some((row) => row.owner === "controlled-drain"),
+            mode !== "verified-absent",
+          );
+          ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
+          yield* Deferred.await(parentObserved);
+          if (mode !== "verified-absent") {
+            const retained = yield* sql<{
+              n: number;
+            }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims WHERE released_at IS NULL`;
+            assert.equal(retained[0]!.n, 2);
+          }
+          assert.equal(observations, 2);
+        }).pipe(
+          Effect.provide(SqlitePersistence.layerMemory),
+          Effect.provideService(WorkspaceDuty.NativeOwnerCapture, { capture: async () => native }),
+          Effect.provideService(WorkspaceDuty.NativeOwnerObservation, {
+            observe: async (owner) => {
+              const result = await observeNativeOwner(owner, io);
+              if (++observations === 2) Deferred.doneUnsafe(parentObserved, Effect.void);
+              return result;
+            },
+          }),
+        );
+      }),
+  );
+  const nativeSetupWorkspace = Effect.fn("TerminalManagerFixture.nativeSetupWorkspace")(function* (
+    baseDir: string,
+  ) {
+    const fs = yield* FileSystem.FileSystem;
+    const runner = yield* ProcessRunner.ProcessRunner;
+    const root = `${baseDir}/native-setup-root`;
+    yield* fs.makeDirectory(root);
+    const initialized = yield* runner.run({
+      command: "git",
+      args: ["init", "-b", "native-setup-fixture"],
+      cwd: root,
+      env: {
+        GIT_DIR: undefined,
+        GIT_WORK_TREE: undefined,
+        GIT_INDEX_FILE: undefined,
+        GIT_OBJECT_DIRECTORY: undefined,
+        GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_COUNT: "0",
+      },
+    });
+    assert.equal(initialized.code, 0);
+    return yield* fs.realPath(root);
+  });
   const nativeSetupControl = (cwd: string): NativeSetup.NativeSetupControl => ({
     claimId: "native-fixture-claim",
     effectId: "native-fixture-setup",
@@ -519,8 +919,10 @@ it.layer(
     "native setup captures one exact spawn and write and refuses ordinary replacement",
     () =>
       Effect.gen(function* () {
-        const { manager, ptyAdapter } = yield* createManager(5, { shellResolver: () => "/bin/sh" });
-        const control = nativeSetupControl(process.cwd());
+        const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+          shellResolver: () => "/bin/sh",
+        });
+        const control = nativeSetupControl(yield* nativeSetupWorkspace(baseDir));
         const input = openInput({
           threadId: control.threadId,
           terminalId: control.terminalId,
@@ -597,8 +999,10 @@ it.layer(
     "native setup retains unknown and refuses replay after %s refusal",
     (phase) =>
       Effect.gen(function* () {
-        const { manager, ptyAdapter } = yield* createManager(5, { shellResolver: () => "/bin/sh" });
-        const control = nativeSetupControl(process.cwd());
+        const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+          shellResolver: () => "/bin/sh",
+        });
+        const control = nativeSetupControl(yield* nativeSetupWorkspace(baseDir));
         const input = openInput({
           threadId: control.threadId,
           terminalId: control.terminalId,
@@ -611,11 +1015,22 @@ it.layer(
             message: "synthetic revoked authority",
           }),
         );
+        const authorityCalls: string[] = [];
         const opened = yield* manager.openNativeSetup!(input, {
           control,
-          beforeSpawn: () => (phase === "before-spawn" ? denied : Effect.void),
-          afterSpawn: () => (phase === "after-spawn" ? denied : Effect.void),
+          beforeSpawn: () =>
+            Effect.sync(() => authorityCalls.push("before-spawn")).pipe(
+              Effect.andThen(phase === "before-spawn" ? denied : Effect.void),
+            ),
+          afterSpawn: () =>
+            Effect.sync(() => authorityCalls.push("after-spawn")).pipe(
+              Effect.andThen(phase === "after-spawn" ? denied : Effect.void),
+            ),
         }).pipe(Effect.result);
+        assert.deepEqual(
+          authorityCalls,
+          phase === "before-spawn" ? ["before-spawn"] : ["before-spawn", "after-spawn"],
+        );
         if (phase === "before-write") {
           assert.equal(opened._tag, "Success");
           const result = yield* manager.writeNativeSetup!(

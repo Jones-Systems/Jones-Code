@@ -80,10 +80,11 @@ it.effect("records additive fork migration 3 without changing upstream migration
         { migration_id: 135, name: "IdleWorktreeAdmission" },
         { migration_id: 136, name: "WorkspaceProvenance" },
         { migration_id: 137, name: "NativeCreationLeaseRenewal" },
-        { migration_id: 138, name: "NativeExecutionProcessCustody" },
-        { migration_id: 139, name: "OrdinaryCheckoutProcessCustody" },
-        { migration_id: 140, name: "AuthSessionClientMetadata" },
-        { migration_id: 141, name: "WorkspaceRuntimeUses" },
+        { migration_id: 138, name: "WorkspaceRetirement" },
+        { migration_id: 139, name: "NativeExecutionProcessCustody" },
+        { migration_id: 140, name: "OrdinaryCheckoutProcessCustody" },
+        { migration_id: 141, name: "AuthSessionClientMetadata" },
+        { migration_id: 142, name: "WorkspaceRuntimeUses" },
       ],
     );
     assert.deepEqual(
@@ -226,10 +227,11 @@ const nativeUpgradeFixture = Effect.gen(function* () {
   const legacyBefore = yield* sql`SELECT * FROM jones_native_creation_execution_starts`;
   assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), [
     [137, "NativeCreationLeaseRenewal"],
-    [138, "NativeExecutionProcessCustody"],
-    [139, "OrdinaryCheckoutProcessCustody"],
-    [140, "AuthSessionClientMetadata"],
-    [141, "WorkspaceRuntimeUses"],
+    [138, "WorkspaceRetirement"],
+    [139, "NativeExecutionProcessCustody"],
+    [140, "OrdinaryCheckoutProcessCustody"],
+    [141, "AuthSessionClientMetadata"],
+    [142, "WorkspaceRuntimeUses"],
   ]);
   assert.deepStrictEqual(
     yield* sql`SELECT * FROM jones_native_creation_execution_starts`,
@@ -363,6 +365,7 @@ it.effect(
       yield* TestClock.adjust("10 seconds");
       assert.deepStrictEqual(yield* f.readLeases, before);
       assert.deepStrictEqual(yield* runJonesMigrations(jonesMigrationEntries), []);
+      assert.deepStrictEqual(yield* f.readLeases, before);
       const confirmation = {
         reference: f.reference,
         workerId: "lease-worker",

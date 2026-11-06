@@ -1,3 +1,4 @@
+import { RetirementReservationOwner } from "../workspaceRetirement/Receipts.ts";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, it } from "@effect/vitest";
 import { CommandId, ProjectId, ThreadId, type WorktreeCleanupRules } from "@t3tools/contracts";
@@ -11,6 +12,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Receipts from "../../orchestration-v2/CommandReceiptStore.ts";
 import { runMigrations } from "../../persistence/Migrations.ts";
+import {
+  nativeCreationCanonicalJson,
+  nativeCreationSha256,
+} from "../nativeCreation/NativeCreationPreparation.ts";
 import { DeletionAdmissionError, makeDeletionAdmission } from "./DeletionAdmission.ts";
 import { makeRuntimeUseStore } from "./RuntimeUseStore.ts";
 import type { DeletionWorktreeRemovalObservationV1 } from "./DeletionWorktreeRemoval.ts";
@@ -23,6 +28,8 @@ const testLayer = Receipts.layer.pipe(
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const rules: WorktreeCleanupRules = {
   worktreeKeepWhen: "uncommitted-changes",
+  worktreeSettledScope: "branch-retained",
+  worktreeCoveredDiscard: [],
   worktreeAfterDays: null,
   worktreeSettledAfterDays: null,
   worktreeOnDelete: true,
@@ -395,5 +402,252 @@ it.effect(
         yield* sql`SELECT workspace_root FROM projection_projects WHERE project_id=${projectId}`,
         [{ workspace_root: target.projectRoot }],
       );
+    }).pipe(Effect.provide(testLayer)),
+);
+// Historical bytes are seeded before the permanent admission owns this target.
+// Keep this representation explicit: current schema decoding supplies two new defaults.
+const legacyReceipt = (deletionPayload: string) => {
+  const binding = {
+    actor: "storage-cleanup-policy",
+    threadId,
+    birthEventId: "event:original-birth",
+    birthSequence: 1,
+    deletionEventId: "event:original-deletion",
+    deletionSequence: 2,
+    commandId,
+    deletionPayload,
+    target,
+    rules: {
+      worktreeKeepWhen: rules.worktreeKeepWhen,
+      worktreeAfterDays: rules.worktreeAfterDays,
+      worktreeSettledAfterDays: rules.worktreeSettledAfterDays,
+      worktreeOnDelete: rules.worktreeOnDelete,
+      worktreeOnMerge: rules.worktreeOnMerge,
+      worktreeUnchanged: rules.worktreeUnchanged,
+    },
+  };
+  const canonical = nativeCreationCanonicalJson(binding);
+  const digest = nativeCreationSha256(canonical);
+  const start: DeletionWorktreeRemovalObservationV1["start"] = {
+    schema: "t3.deletion-worktree-removal-start/v1",
+    effectId: `deletion-worktree:${binding.deletionEventId}:${digest}`,
+    bindingSha256: digest,
+    workerId: "storage-cleanup-policy",
+    expectedAttempt: 1,
+    target,
+    startedAt: timestamp,
+  };
+  return { binding, canonical, start };
+};
+
+it.effect(
+  "legacy canonical receipts retain their original digest, policy checks and restart fence",
+  () =>
+    Effect.gen(function* () {
+      const { owner, sql, payload } = yield* setup;
+      const { binding: legacy, canonical, start } = legacyReceipt(encodeJson(payload));
+      yield* sql`INSERT INTO jones_deletion_worktree_admissions(effect_id,worktree_path,binding_json,start_json,state) VALUES(${start.effectId},${target.path},${canonical},${nativeCreationCanonicalJson(start)},'started')`;
+      const recovered = yield* makeDeletionAdmission;
+      assert.deepStrictEqual(yield* recovered.read(start.effectId), { start, ordinal: 0 });
+      assert.strictEqual(
+        (yield* recovered
+          .revalidate(start, 0, input.currentRules, input.currentLive)
+          .pipe(Effect.flip)).reason,
+        "original_start_observation_only",
+      );
+      // Current policy must still agree before a caller can seek any new admission.
+      assert.strictEqual(
+        (yield* owner
+          .start({
+            ...input,
+            currentRules: Effect.succeed({ ...rules, worktreeSettledScope: "contained" }),
+          })
+          .pipe(Effect.flip)).reason,
+        "original_worktree_policy_changed",
+      );
+      const before = {
+        registration: {
+          status: "complete" as const,
+          projectRoot: target.projectRoot,
+          gitCommonDirectory: "/synthetic/common",
+          entries: [],
+        },
+        filesystem: { status: "absent" as const, path: target.path },
+      };
+      const observation: DeletionWorktreeRemovalObservationV1 = {
+        version: 1,
+        start,
+        startOrdinal: 0,
+        operation: { kind: "reconciled", completion: "unknown" },
+        before,
+        after: before,
+        // Historical fixture chronology is independent of Effect's epoch-zero test clock.
+        observedAt: start.startedAt,
+      };
+      yield* recovered.qualify(observation);
+      assert.strictEqual(
+        (yield* sql<{
+          binding_json: string;
+        }>`SELECT binding_json FROM jones_deletion_worktree_admissions WHERE effect_id=${start.effectId}`)[0]!
+          .binding_json,
+        canonical,
+      );
+      // The real schema rejects mutation and deletion of the original receipt.
+      legacy.rules.worktreeOnMerge = true;
+      assert.isTrue(
+        Exit.isFailure(
+          yield* sql`UPDATE jones_deletion_worktree_admissions SET binding_json=${nativeCreationCanonicalJson(legacy)} WHERE effect_id=${start.effectId}`.pipe(
+            Effect.exit,
+          ),
+        ),
+      );
+      assert.isTrue(
+        Exit.isFailure(
+          yield* sql`DELETE FROM jones_deletion_worktree_admissions WHERE effect_id=${start.effectId}`.pipe(
+            Effect.exit,
+          ),
+        ),
+      );
+      assert.deepStrictEqual(yield* recovered.read(start.effectId), { start, ordinal: 0 });
+      assert.strictEqual(
+        (yield* sql<{
+          binding_json: string;
+        }>`SELECT binding_json FROM jones_deletion_worktree_admissions WHERE effect_id=${start.effectId}`)[0]!
+          .binding_json,
+        canonical,
+      );
+    }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect("historical binding tampering is rejected without rewriting protected receipts", () =>
+  Effect.gen(function* () {
+    const { sql, payload } = yield* setup;
+    const { binding, start } = legacyReceipt(encodeJson(payload));
+    // A separate database starts with damaged historical bytes; no immutable row is edited.
+    binding.rules.worktreeOnMerge = true;
+    const tampered = nativeCreationCanonicalJson(binding);
+    yield* sql`INSERT INTO jones_deletion_worktree_admissions(effect_id,worktree_path,binding_json,start_json,state) VALUES(${start.effectId},${target.path},${tampered},${nativeCreationCanonicalJson(start)},'started')`;
+    const recovered = yield* makeDeletionAdmission;
+    assert.isTrue(Exit.isFailure(yield* recovered.read(start.effectId).pipe(Effect.exit)));
+    assert.strictEqual(
+      (yield* recovered.readTarget(threadId, target).pipe(Effect.flip)).reason,
+      "original_removal_binding_changed",
+    );
+    const before = {
+      registration: {
+        status: "complete" as const,
+        projectRoot: target.projectRoot,
+        gitCommonDirectory: "/synthetic/common",
+        entries: [],
+      },
+      filesystem: { status: "absent" as const, path: target.path },
+    };
+    assert.isTrue(
+      Exit.isFailure(
+        yield* recovered
+          .qualify({
+            version: 1,
+            start,
+            startOrdinal: 0,
+            operation: { kind: "reconciled", completion: "unknown" },
+            before,
+            after: before,
+            observedAt: DateTime.formatIso(yield* DateTime.now),
+          })
+          .pipe(Effect.exit),
+      ),
+    );
+    assert.strictEqual((yield* sql`SELECT * FROM jones_deletion_worktree_observations`).length, 0);
+    assert.deepStrictEqual(
+      yield* sql`SELECT binding_json,state FROM jones_deletion_worktree_admissions`,
+      [{ binding_json: tampered, state: "started" }],
+    );
+  }).pipe(Effect.provide(testLayer)),
+);
+
+it.effect(
+  "one consumed admission supports repeated owned readbacks but never another execution permit",
+  () =>
+    Effect.gen(function* () {
+      const { owner, sql } = yield* setup;
+      const admitted = yield* owner.start(input);
+      yield* owner.revalidate(admitted.start, 0, input.currentRules, input.currentLive);
+      yield* owner.checkRetained(admitted.start, 0, input.currentRules, input.currentLive);
+      yield* owner.checkRetained(admitted.start, 0, input.currentRules, input.currentLive);
+      assert.strictEqual(
+        (yield* owner
+          .revalidate(admitted.start, 0, input.currentRules, input.currentLive)
+          .pipe(Effect.flip)).reason,
+        "original_start_observation_only",
+      );
+      const recovered = yield* makeDeletionAdmission;
+      assert.strictEqual(
+        (yield* recovered
+          .checkRetained(admitted.start, 0, input.currentRules, input.currentLive)
+          .pipe(Effect.flip)).reason,
+        "original_start_observation_only",
+      );
+      assert.strictEqual(
+        (yield* owner
+          .checkRetained(
+            admitted.start,
+            0,
+            Effect.succeed({ ...rules, worktreeOnMerge: true }),
+            input.currentLive,
+          )
+          .pipe(Effect.flip)).reason,
+        "original_worktree_policy_changed",
+      );
+      assert.strictEqual(
+        (yield* owner
+          .checkRetained(admitted.start, 0, input.currentRules, Effect.succeed(false))
+          .pipe(Effect.flip)).reason,
+        "current_cleanup_owner_or_live_prerequisites_changed",
+      );
+      const record = {
+        schema: "workspace-reservation/v1" as const,
+        admin_id: "fixture-admin",
+        incarnation: "fixture-incarnation",
+        executor: "jones",
+        receipt: "fixture-receipt",
+        host: "fixture-host",
+        boot_id: "fixture-boot",
+        pid: 1,
+        process_start: "fixture-start",
+      };
+      yield* sql`INSERT INTO jones_workspace_retirement_state VALUES(${target.path},${record.incarnation},'retiring',${record.receipt})`;
+      const readback = owner.checkRetained(
+        admitted.start,
+        0,
+        input.currentRules,
+        input.currentLive,
+      );
+      assert.strictEqual((yield* readback.pipe(Effect.flip)).reason, "conflicting_retirement");
+      const own = { worktree: target.path, record };
+      yield* readback.pipe(Effect.provideService(RetirementReservationOwner, own));
+      yield* readback.pipe(Effect.provideService(RetirementReservationOwner, own));
+      assert.strictEqual(
+        (yield* readback.pipe(
+          Effect.provideService(RetirementReservationOwner, {
+            ...own,
+            record: { ...record, receipt: "another-receipt" },
+          }),
+          Effect.flip,
+        )).reason,
+        "retirement_ownership_lost",
+      );
+      yield* sql`DELETE FROM jones_workspace_retirement_state WHERE worktree=${target.path}`;
+      assert.strictEqual(
+        (yield* readback.pipe(Effect.provideService(RetirementReservationOwner, own), Effect.flip))
+          .reason,
+        "retirement_ownership_lost",
+      );
+      assert.strictEqual(
+        (yield* sql`SELECT * FROM jones_deletion_worktree_observations`).length,
+        0,
+      );
+      assert.deepStrictEqual(yield* sql`SELECT state FROM jones_deletion_worktree_admissions`, [
+        { state: "started" },
+      ]);
     }).pipe(Effect.provide(testLayer)),
 );

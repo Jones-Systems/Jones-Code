@@ -28,7 +28,13 @@ import { notification } from "./Wake.ts";
 
 export class DependencyReactor extends Context.Service<
   DependencyReactor,
-  { readonly start: () => Effect.Effect<void, never, import("effect/Scope").Scope> }
+  {
+    readonly start: () => Effect.Effect<
+      void,
+      Orchestrator.OrchestratorV2Error,
+      import("effect/Scope").Scope
+    >;
+  }
 >()("t3/jones/threadResultDependencies/DependencyReactor") {}
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -160,10 +166,10 @@ const make = Effect.gen(function* () {
   });
   const start = Effect.fn("DependencyReactor.start")(function* () {
     const scope = yield* Effect.scope;
+    // A completed acquisition fences publication even if stream execution starts later.
+    // Failure propagates before any subscriber/follower is admitted; it is not readiness.
+    const domainEvents = yield* orchestrator.acquireDomainEvents;
     const subscription = yield* changes.subscribe;
-    // Pin committed history before forking: the live-only stream samples its cursor later,
-    // so an event committed after start returns could otherwise become its excluded baseline.
-    const afterSequence = yield* store.sequence.pipe(Effect.orDie);
     const reconcile = Effect.fn("DependencyReactor.reconcile")(function* (
       threadIds?: ReadonlyArray<ThreadId>,
     ) {
@@ -228,8 +234,7 @@ const make = Effect.gen(function* () {
       ),
       Effect.forkScoped,
     );
-    yield* orchestrator.streamStoredEventsFrom({ afterSequence }).pipe(
-      Stream.map((stored) => stored.event),
+    yield* domainEvents.pipe(
       Stream.filter(
         (event) =>
           event.type === "run.updated" ||
