@@ -9,9 +9,10 @@ import {
   type AuthSessionState,
   type T3WorkstreamBinding,
 } from "@t3tools/contracts";
-import type {
-  PreparedConnection,
-  SupervisorConnectionState,
+import {
+  PrimaryConnectionTarget,
+  type PreparedConnection,
+  type SupervisorConnectionState,
 } from "@t3tools/client-runtime/connection";
 import type {
   NativeWorkstreamsEffectRunner,
@@ -84,13 +85,12 @@ const prepared: PreparedConnection = {
   httpBaseUrl: "https://member.invalid",
   socketUrl: "wss://member.invalid/ws",
   httpAuthorization: { _tag: "Bearer", token: "fixture" },
-  target: {
-    _tag: "PrimaryConnectionTarget",
+  target: new PrimaryConnectionTarget({
     environmentId: id,
     label: "Member",
     httpBaseUrl: "https://member.invalid",
     wsBaseUrl: "wss://member.invalid",
-  },
+  }),
 };
 const connected: SupervisorConnectionState = {
   desired: true,

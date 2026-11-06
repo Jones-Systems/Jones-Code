@@ -11,6 +11,7 @@ import {
 } from "../../state/workstreams/nativeRead.ts";
 import { liveT3PlacementsCurrent } from "../../state/workstreams/placements.ts";
 import { loadNativePlacements, type NativePlacementConnection } from "./nativePlacements.ts";
+import { PrimaryConnectionTarget } from "../../connection/model.ts";
 
 const at = "2026-11-03T00:00:00Z";
 const now = Date.parse(at);
@@ -141,13 +142,12 @@ function harness() {
       httpBaseUrl: "https://source.invalid",
       socketUrl: "wss://source.invalid/ws",
       httpAuthorization: { _tag: "Bearer", token: "fixture" },
-      target: {
-        _tag: "PrimaryConnectionTarget",
+      target: new PrimaryConnectionTarget({
         environmentId: EnvironmentId.make("env:a"),
         label: "Source",
         httpBaseUrl: "https://source.invalid",
         wsBaseUrl: "wss://source.invalid",
-      },
+      }),
     },
     generation: 2,
     session: { authenticated: true },
