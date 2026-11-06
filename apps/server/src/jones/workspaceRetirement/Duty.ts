@@ -1,12 +1,15 @@
+// @effect-diagnostics nodeBuiltinImport:off -- A run-local nonce distinguishes server holders; restart alone never proves a consumer absent.
+import * as Schema from "effect/Schema";
+import { PhysicalProcessObservation } from "@t3tools/contracts";
+import { DutyHolderJson } from "./DurableCodecs.ts";
 import { nativePid } from "./Reservation.ts";
 import { reconcile } from "./ClaimReconciliation.ts";
-// @effect-diagnostics nodeBuiltinImport:off -- A run-local nonce distinguishes server holders; restart alone never proves a consumer absent.
 import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
-import { Receipts, layer } from "./Receipts.ts";
+import { Receipts, layer, RetirementError } from "./Receipts.ts";
 import { captureNativeOwner, type NativeDutyOwner } from "./NativeDutyOwner.ts";
 import type { DutyIdentity } from "./DutyIdentity.ts";
 
@@ -30,9 +33,12 @@ export const hooks = Effect.gen(function* () {
     : null;
   const nativeBindings = new WeakMap<
     object,
-    (pid: number, expected?: { bootId: string; startTime: string }) => Effect.Effect<void, unknown>
+    (
+      pid: number,
+      expected?: { bootId: string; startTime: string },
+    ) => Effect.Effect<void, RetirementError>
   >();
-  const sessions = new Map<string, Effect.Effect<void, unknown>>();
+  const sessions = new Map<string, Effect.Effect<void, RetirementError>>();
   const identities = new WeakMap<object, DutyIdentity>();
   const nativeOwner = yield* NativeOwnerCapture;
   return {
@@ -44,15 +50,33 @@ export const hooks = Effect.gen(function* () {
       if (worktree === null || store === null) return Effect.void;
       const id = NodeCrypto.randomUUID();
       for (let attempt = 0; attempt <= 20; attempt++) {
-        const holder = JSON.stringify({ serverPid: nativePid, nonce: id, kind, owner });
+        const holder = yield* Schema.encodeEffect(DutyHolderJson)({
+          serverPid: nativePid,
+          nonce: id,
+          kind,
+          owner,
+        }).pipe(
+          Effect.mapError(
+            (cause) =>
+              new RetirementError({ target: worktree, reason: "claim_holder_encoding_failed", cause }),
+          ),
+        );
         const result = yield* store
           .claim({ id, worktree, kind, owner, holder })
           .pipe(Effect.result);
         if (result._tag === "Success") {
           const release = store.releaseClaim(id);
-          identities.set(release, result.value);
+          identities.set(release, result.success);
           nativeBindings.set(release, (pid, expected) =>
-            Effect.promise(() => nativeOwner.capture(pid, expected)).pipe(
+            Effect.tryPromise({
+              try: () => nativeOwner.capture(pid, expected),
+              catch: (cause) =>
+                new RetirementError({
+                  target: worktree,
+                  reason: "native_owner_capture_unavailable",
+                  cause,
+                }),
+            }).pipe(
               Effect.flatMap((native) => store.bindNativeOwner(id, holder, native)),
             ),
           );
@@ -60,14 +84,14 @@ export const hooks = Effect.gen(function* () {
           return release;
         }
         if (result.failure.reason !== "retiring" || attempt === 20)
-          return yield* Effect.fail(result.failure);
+          return yield* result.failure;
         yield* Effect.sleep("250 millis");
       }
       return Effect.void;
     }),
-    bindNative: (release: Effect.Effect<void, unknown>, pid: number) =>
+    bindNative: (release: Effect.Effect<void, RetirementError>, pid: number) =>
       nativeBindings.get(release)?.(pid) ?? Effect.void,
-    identity: (release: Effect.Effect<void, unknown>) => identities.get(release),
+    identity: (release: Effect.Effect<void, RetirementError>) => identities.get(release),
     // Consume the observation already made by the provider's native lifecycle. No
     // extra diagnostics request, capture worker, provenance or start-path retry.
     bindSession: Effect.fn("WorkspaceRetirement.bindSessionOwner")(function* (
@@ -82,16 +106,12 @@ export const hooks = Effect.gen(function* () {
         observation_json: string;
       }>`SELECT observation_json FROM jones_physical_process_evidence WHERE provider_thread_id=${providerThreadId} AND runtime_generation=${generation} ORDER BY rowid DESC LIMIT 1`;
       if (!rows[0]) return;
-      let observation: {
-        status: string;
-        responder?: { pid: number; bootId: string; startTime: string };
-      };
-      try {
-        observation = JSON.parse(rows[0].observation_json);
-      } catch {
-        return;
-      }
-      if (observation.status !== "observed" || !observation.responder) return;
+      const decoded = yield* Schema.decodeEffect(
+        Schema.fromJsonString(PhysicalProcessObservation),
+      )(rows[0].observation_json).pipe(Effect.result);
+      // Malformed historical evidence never establishes an owner or absence.
+      if (decoded._tag === "Failure" || decoded.success.status !== "observed") return;
+      const observation = decoded.success;
       yield* (
         nativeBindings.get(release)?.(observation.responder.pid, {
           bootId: observation.responder.bootId,

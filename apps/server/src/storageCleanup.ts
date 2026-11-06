@@ -1011,7 +1011,7 @@ const make = Effect.gen(function* () {
                 });
             }).pipe(
               Effect.mapError((cause) =>
-                cause instanceof RetirementError
+                Schema.is(RetirementError)(cause)
                   ? cause
                   : new RetirementError({
                       target: worktreePath,

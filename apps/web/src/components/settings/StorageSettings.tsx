@@ -403,14 +403,15 @@ function CleanupSection() {
           });
       }
     } catch (error) {
+      setPending(false);
       toastManager.add({
         type: "error",
         title: "Could not propose checkout retirements",
         description: error instanceof Error ? error.message : String(error),
       });
-    } finally {
-      setPending(false);
+      return;
     }
+    setPending(false);
   };
   const retireTarget = async (
     environmentId: (typeof supportedIds)[number],
@@ -446,14 +447,15 @@ Live consumers, tracked edits, nested repositories and other protections still h
           description: String(squashAtomCommandFailure(result)),
         });
     } catch (error) {
+      setPending(false);
       toastManager.add({
         type: "error",
         title: "Checkout retirement failed",
         description: error instanceof Error ? error.message : String(error),
       });
-    } finally {
-      setPending(false);
+      return;
     }
+    setPending(false);
   };
   const deleteNow = async () => {
     if (pending) return;

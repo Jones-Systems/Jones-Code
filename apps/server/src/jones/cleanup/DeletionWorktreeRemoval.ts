@@ -1,6 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off - Direct lstat distinguishes ENOENT from unreadable targets.
 import * as RetirementGate from "../workspaceRetirement/RemovalGate.ts";
 import { RetirementError } from "../workspaceRetirement/Receipts.ts";
-// @effect-diagnostics nodeBuiltinImport:off - Direct lstat distinguishes ENOENT from unreadable targets.
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import type { GitCommandError } from "@t3tools/contracts";
@@ -81,6 +81,7 @@ export interface DeletionWorktreeRemovalProducer {
     start: DeletionWorktreeRemovalStartV1,
     startOrdinal: number,
     revalidateStart: DeletionWorktreeStartRevalidation,
+    checkRetainedStart: DeletionWorktreeStartRevalidation,
   ) => Effect.Effect<
     DeletionWorktreeRemovalObservationV1,
     DeletionWorktreeRemovalPreconditionError
@@ -257,7 +258,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
 
   const executeStarted: DeletionWorktreeRemovalProducer["executeStarted"] = Effect.fn(
     "DeletionWorktreeRemoval.executeStarted",
-  )(function* (original, startOrdinal, revalidateStart) {
+  )(function* (original, startOrdinal, revalidateStart, checkRetainedStart) {
     yield* assertOrdinal(startOrdinal);
     const start = frozenStart(
       yield* Schema.decodeEffect(DeletionWorktreeRemovalStartV1)(original, {
@@ -333,7 +334,7 @@ const makeDeletionWorktreeRemoval = Effect.gen(function* () {
     const operation = yield* retirement
       .remove(
         start,
-        revalidateStart(start, startOrdinal).pipe(
+        checkRetainedStart(start, startOrdinal).pipe(
           Effect.mapError(
             (cause) =>
               new RetirementError({
@@ -478,7 +479,13 @@ export const layer = Layer.effect(
         const read = sink.readDeletionWorktreeRemovalStart;
         const revalidate = sink.revalidateDeletionWorktreeRemovalStart;
         const qualify = sink.qualifyDeletionWorktreeRemovalObservation;
-        if (read === undefined || revalidate === undefined || qualify === undefined) {
+        const checkRetained = sink.checkRetainedDeletionWorktreeRemovalStart;
+        if (
+          read === undefined ||
+          revalidate === undefined ||
+          qualify === undefined ||
+          (execute && checkRetained === undefined)
+        ) {
           return yield* new DeletionWorktreeRemovalPreconditionError({
             reason: "native_deletion_owner_unavailable",
           });
@@ -490,16 +497,35 @@ export const layer = Layer.effect(
           });
         }
         const observed = execute
-          ? yield* producer.executeStarted(admitted.start, admitted.ordinal, (start, ordinal) =>
-              revalidate(start, ordinal, currentRules, currentLive).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new DeletionWorktreeRemovalPreconditionError({
-                      reason: "workspace_preservation_hold",
-                      cause,
-                    }),
+          ? yield* producer.executeStarted(
+              admitted.start,
+              admitted.ordinal,
+              (start, ordinal) =>
+                revalidate(start, ordinal, currentRules, currentLive).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new DeletionWorktreeRemovalPreconditionError({
+                        reason: "workspace_preservation_hold",
+                        cause,
+                      }),
+                  ),
                 ),
-              ),
+              (start, ordinal) =>
+                checkRetained === undefined
+                  ? Effect.fail(
+                      new DeletionWorktreeRemovalPreconditionError({
+                        reason: "native_deletion_owner_unavailable",
+                      }),
+                    )
+                  : checkRetained(start, ordinal, currentRules, currentLive).pipe(
+                      Effect.mapError(
+                        (cause) =>
+                          new DeletionWorktreeRemovalPreconditionError({
+                            reason: "original_start_readback_failed",
+                            cause,
+                          }),
+                      ),
+                    ),
             )
           : yield* producer.observeStarted(admitted.start, admitted.ordinal);
         yield* qualify(observed);

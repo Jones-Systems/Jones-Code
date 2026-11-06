@@ -3701,7 +3701,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
         : yield* Effect.tryPromise({
             try: () => cwdObservation.observe(process.pid, session.workspaceDutyIdentity),
             catch: () => null,
-          }).pipe(Effect.catch(() => Effect.succeed(null)));
+          }).pipe(Effect.orElseSucceed(() => null));
     // Optional cwd observation can yield. Re-read the native owner before issuing
     // bytes; closing/replacing that lifecycle must never write to the captured PTY.
     const current = yield* requireSession(input.threadId, terminalId);

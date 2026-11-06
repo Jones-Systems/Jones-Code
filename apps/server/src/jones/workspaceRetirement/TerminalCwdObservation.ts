@@ -1,18 +1,44 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Metadata-only observation of the exact PTY owned by this Manager; no process scan or contents.
+// @effect-diagnostics nodeBuiltinImport:off -- Metadata-only observation of the exact owned PTY; deadline termination drains its worker.
 import * as NodeChildProcess from "node:child_process";
-import * as NodeFSP from "node:fs/promises";
-import * as NodePath from "node:path";
-import * as NodeTimers from "node:timers";
+import * as NodeWorker from "node:worker_threads";
+import { performance } from "node:perf_hooks";
+import { scheduler } from "node:timers/promises";
 import * as Context from "effect/Context";
 import { nativePlatform } from "./Filesystem.ts";
 import type { DutyIdentity } from "./DutyIdentity.ts";
 
+// Only metadata is read in this owned worker. There are no child processes,
+// hashes, file contents or optional provenance reads to outlive termination.
+const PROGRAM = String.raw`
+const { parentPort, workerData } = require('node:worker_threads');
+const fs = require('node:fs/promises');
+const path = require('node:path');
+(async () => {
+  const { pid, physical, suppliedCwd } = workerData;
+  const cwd = suppliedCwd ?? await fs.readlink('/proc/' + pid + '/cwd');
+  if (!path.isAbsolute(cwd) || cwd.includes('\0')) return null;
+  const root = physical.binding.path;
+  const [stat, real] = await Promise.all([fs.lstat(root, {bigint:true}), fs.realpath(cwd)]);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || String(stat.dev)!==physical.binding.dev || String(stat.ino)!==physical.binding.ino) return null;
+  return real===root || real.startsWith(root+path.sep) ? real : null;
+})().then(value=>parentPort.postMessage(value),()=>parentPort.postMessage(null));
+`;
+const observing = new Set<number>();
 async function observe(pid: number, physical: DutyIdentity | undefined): Promise<string | null> {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || physical?.status !== "bound") return null;
-  const read = async () => {
-    let cwd: string;
-    if (nativePlatform === "linux") cwd = await NodeFSP.readlink(`/proc/${pid}/cwd`);
-    else if (nativePlatform === "darwin") {
+  if (
+    !Number.isSafeInteger(pid) ||
+    pid <= 0 ||
+    physical?.status !== "bound" ||
+    observing.has(pid)
+  )
+    return null;
+  observing.add(pid);
+  const started = performance.now();
+  try {
+    let suppliedCwd: string | undefined;
+    if (nativePlatform === "darwin") {
+      // execFile's timeout owns this exact lsof child; its callback waits for
+      // close/drained output before any filesystem worker is admitted.
       const output = await new Promise<string>((resolve, reject) =>
         NodeChildProcess.execFile(
           "/usr/sbin/lsof",
@@ -26,35 +52,46 @@ async function observe(pid: number, physical: DutyIdentity | undefined): Promise
         .filter((line) => line.startsWith("n"))
         .map((line) => line.slice(1));
       if (paths.length !== 1) return null;
-      cwd = paths[0]!;
-    } else return null;
-    if (!NodePath.isAbsolute(cwd) || cwd.includes("\0")) return null;
-    const root = physical.binding.path;
-    const [stat, real] = await Promise.all([
-      NodeFSP.lstat(root, { bigint: true }),
-      NodeFSP.realpath(cwd),
-    ]);
-    if (
-      !stat.isDirectory() ||
-      stat.isSymbolicLink() ||
-      String(stat.dev) !== physical.binding.dev ||
-      String(stat.ino) !== physical.binding.ino
-    )
-      return null;
-    return real === root || real.startsWith(root + NodePath.sep) ? real : null;
-  };
-  let timer: ReturnType<typeof NodeTimers.setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      read(),
-      new Promise<null>((resolve) => {
-        timer = NodeTimers.setTimeout(() => resolve(null), 100);
-      }),
-    ]);
+      suppliedCwd = paths[0]!;
+    } else if (nativePlatform !== "linux") return null;
+    const remaining = 100 - (performance.now() - started);
+    if (remaining <= 0) return null;
+    const worker = new NodeWorker.Worker(PROGRAM, {
+      eval: true,
+      execArgv: [],
+      workerData: { pid, physical, suppliedCwd },
+    });
+    const deadline = new AbortController();
+    return await new Promise<string | null>((resolve) => {
+      let settled = false;
+      const finish = async (value: unknown) => {
+        if (settled) return;
+        settled = true;
+        deadline.abort();
+        // A timeout cannot leave an uncancellable filesystem race/backlog.
+        try {
+          await worker.terminate();
+        } catch {
+          // Already failed/closed is unknown.
+        } finally {
+          worker.removeAllListeners();
+          resolve(typeof value === "string" ? value : null);
+        }
+      };
+      worker.once("message", (value) => void finish(value));
+      worker.once("error", () => void finish(null));
+      worker.once("exit", () => void finish(null));
+      void scheduler.wait(remaining, { signal: deadline.signal, ref: false }).then(
+        () => void finish(null),
+        () => {
+          if (!deadline.signal.aborted) void finish(null);
+        },
+      );
+    });
   } catch {
     return null;
   } finally {
-    if (timer) NodeTimers.clearTimeout(timer);
+    observing.delete(pid);
   }
 }
 export class TerminalCwdObservation extends Context.Reference<{

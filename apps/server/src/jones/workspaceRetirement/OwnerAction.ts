@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import {
   ServerSettingsError,
   type WorkspaceRetirementAction,
@@ -72,7 +73,7 @@ export const make = Effect.gen(function* () {
             });
         }).pipe(
           Effect.mapError((cause) =>
-            cause instanceof RetirementError
+            Schema.is(RetirementError)(cause)
               ? cause
               : new RetirementError({
                   target: item.worktreePath,
@@ -126,7 +127,7 @@ export const make = Effect.gen(function* () {
           Effect.provide(context),
           Effect.catch((error) => {
             const reason =
-              error instanceof RetirementError ? error.reason : "target_observation_unavailable";
+              Schema.is(RetirementError)(error) ? error.reason : "target_observation_unavailable";
             return Effect.succeed({
               state: "held" as const,
               reasons: [reason],
@@ -190,7 +191,7 @@ export const make = Effect.gen(function* () {
       } satisfies StorageCleanupReport;
     },
     Effect.mapError((cause) =>
-      cause instanceof ServerSettingsError
+      Schema.is(ServerSettingsError)(cause)
         ? cause
         : new ServerSettingsError({
             settingsPath: config.settingsPath,

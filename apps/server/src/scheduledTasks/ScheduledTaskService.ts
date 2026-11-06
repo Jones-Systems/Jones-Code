@@ -1,3 +1,4 @@
+import { makeJonesTablePresence } from "../jones/persistence/JonesTablePresence.ts";
 import { assertScheduledTarget } from "../jones/workspaceRetirement/ScheduledTaskAdmission.ts";
 import { RetirementError } from "../jones/workspaceRetirement/Receipts.ts";
 import { backgroundRead } from "../jones/serverParallelism/readClassification.ts";
@@ -582,11 +583,11 @@ export const layer = Layer.effect(
           ${task.title},
           ${task.prompt},
           ${task.enabled ? 1 : 0},
-          ${JSON.stringify(task.schedule)},
+          ${yield* Schema.encodeEffect(Schema.fromJsonString(ScheduledTask.fields.schedule))(task.schedule)},
           ${task.projectId},
           ${task.threadId},
-          ${JSON.stringify(task.workspaceStrategy)},
-          ${JSON.stringify(task.modelSelection)},
+          ${yield* Schema.encodeEffect(Schema.fromJsonString(ScheduledTask.fields.workspaceStrategy))(task.workspaceStrategy)},
+          ${yield* Schema.encodeEffect(Schema.fromJsonString(ScheduledTask.fields.modelSelection))(task.modelSelection)},
           ${task.runtimeMode},
           ${task.interactionMode},
           ${task.createdBy},
@@ -2151,7 +2152,7 @@ export const layer = Layer.effect(
           Effect.onError(() => acceptedRun?.release ?? Effect.void),
           Effect.matchEffect({
             onFailure: (cause) =>
-              isScheduledTaskError(cause) && cause.cause instanceof RetirementError
+              isScheduledTaskError(cause) && Schema.is(RetirementError)(cause.cause)
                 ? Effect.fail(cause)
                 : Effect.logWarning("Could not record webhook delivery; asking for a retry").pipe(
                     Effect.annotateLogs({ taskId: task.id }),
@@ -2177,14 +2178,23 @@ export const layer = Layer.effect(
 
     const dispatchPending = Effect.fn("ScheduledTaskService.dispatchPendingWebhooks")(function* () {
       const now = DateTime.toEpochMillis(yield* localNow);
-      // CASE keeps malformed JSON away from json_extract so the existing decoder
-      // can record failed delivery, release replay admission and remove the row.
-      yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          // Presence and dispatch admission share the same SQLite write transaction.
+          if (yield* makeJonesTablePresence(sql)("jones_workspace_retirement_state")) {
+            // CASE keeps malformed JSON away from extraction and preserves failed-delivery cleanup.
+            yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}
         AND CASE WHEN json_valid(task_json) THEN NOT EXISTS (
           SELECT 1 FROM jones_workspace_retirement_state r
           WHERE r.state='retiring' AND json_extract(task_json,'$.workspaceStrategy.type')='existing_worktree'
           AND r.worktree=json_extract(task_json,'$.workspaceStrategy.worktreePath'))
         ELSE 1 END`;
+          } else {
+            // An unadopted Jones lifecycle has no C7 reservation to consult.
+            yield* sql`UPDATE scheduled_task_webhook_pending SET state = 'dispatching' WHERE state = 'pending' AND due_at <= ${now}`;
+          }
+        }),
+      );
       const tasks = yield* sql<{ task_id: ScheduledTaskId }>`
         SELECT DISTINCT task_id FROM scheduled_task_webhook_pending WHERE state IN ('dispatching', 'running', 'completed', 'failed')
       `.pipe(NodeSqliteClient.readOnly);

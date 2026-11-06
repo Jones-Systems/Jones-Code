@@ -1,8 +1,10 @@
+import * as Schema from "effect/Schema";
+import { NativeDutyOwnerJson } from "./DurableCodecs.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as SqlClient from "effect/sql/SqlClient";
 import type { Receipts } from "./Receipts.ts";
-import { observeNativeOwner, type NativeDutyOwner } from "./NativeDutyOwner.ts";
+import { observeNativeOwner } from "./NativeDutyOwner.ts";
 
 export interface PersistedDuty {
   claim_id: string;
@@ -26,7 +28,7 @@ export class ClaimAbsence extends Context.Reference<{
             status:
               claim.native_owner_json === null
                 ? ("unknown" as const)
-                : await observeNativeOwner(JSON.parse(claim.native_owner_json) as NativeDutyOwner),
+                : await observeNativeOwner(Schema.decodeSync(NativeDutyOwnerJson)(claim.native_owner_json)),
           };
         } catch {
           return { holder: claim.holder_json, status: "unknown" as const };
@@ -35,7 +37,7 @@ export class ClaimAbsence extends Context.Reference<{
   }),
 }) {}
 export const reconcile = Effect.fn("WorkspaceRetirement.reconcileClaims")(function* (
-  sql: SqlClient.SqlClient["Service"],
+  sql: SqlClient.SqlClient,
   store: Receipts["Service"],
 ) {
   const owner = yield* ClaimAbsence;

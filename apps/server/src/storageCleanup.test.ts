@@ -287,12 +287,13 @@ const cleanupFixture = (
     const activated = yield* Deferred.make<void>();
     const lifetime = yield* Effect.scope;
     const fixturePath = yield* Path.Path;
-    // The policy fixture uses the real durable admission owner in a separate
-    // synthetic database; its report queries below retain their lightweight SQL fixture.
+    // The real durable deletion owner shares the retirement database so retained
+    // readbacks compare the actual transaction's retiring row. Report metadata
+    // queries below retain their lightweight synthetic projection adapter.
     const deletionOwner = yield* Effect.cached(
       Effect.gen(function* () {
         const context = yield* Layer.build(
-          Receipts.layer.pipe(Layer.provideMerge(NodeSqliteClient.layer({ filename: ":memory:" }))),
+          Receipts.layer.pipe(Layer.provideMerge(Layer.succeed(SqlClient.SqlClient, retirementSql))),
         );
         return yield* Effect.gen(function* () {
           yield* runMigrations();
@@ -444,6 +445,8 @@ const cleanupFixture = (
               ),
             ),
           readDeletionWorktreeRemovalStart: (id) => withDeletionOwner((owner) => owner.read(id)),
+          checkRetainedDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
+            withDeletionOwner((owner) => owner.checkRetained(start, ordinal, rules, live)),
           revalidateDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
             withDeletionOwner((owner) => owner.revalidate(start, ordinal, rules, live)),
           qualifyDeletionWorktreeRemovalObservation: (observation) =>
@@ -550,6 +553,7 @@ const cleanupFixture = (
         temporaryRoots: [],
       }),
       Effect.provideService(LifecycleRegistry, {
+        resume: () => Effect.die("Cleanup fixtures must not resume or register a workspace"),
         show: (path) =>
           Effect.succeed({
             worktree: path,
@@ -745,7 +749,7 @@ it.live(
         const report = yield* service.runNow;
         expect(report.entries.find((entry) => entry.path === worktree)).toMatchObject({
           outcome: "kept",
-          reason: expect.stringContaining("populated_submodules"),
+          reason: expect.stringContaining("Populated_submodules, submodule_gitdirs"),
         });
         expect(report.counts).toEqual({ removed: 0, kept: 1, failed: 0 });
         for (const retained of [
@@ -838,19 +842,19 @@ it.live("keeps unpushed submodule history after checkout and deinitialization", 
       yield* recordSubmodules();
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("remote-tracking") });
+      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
       expect(yield* fs.readFileString(`${child}/tracked.txt`)).toBe("unpublished work\n");
 
       yield* command(child, ["checkout", "main"]);
       yield* recordSubmodules();
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("remote-tracking") });
+      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
       const childGit = (yield* command(child, ["rev-parse", "--absolute-git-dir"])).stdout.trim();
       yield* command(submodule, ["submodule", "deinit", "child"]);
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("remote-tracking") });
+      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
       expect(
         (yield* command(worktree, [
           "--git-dir",
@@ -866,7 +870,7 @@ it.live("keeps unpushed submodule history after checkout and deinitialization", 
       yield* command(worktree, ["--git-dir", childGit, "branch", "-D", "local-only"]);
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("remote-tracking") });
+      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
       expect(
         (yield* command(worktree, ["--git-dir", childGit, "show", `${local}:tracked.txt`])).stdout,
       ).toBe("unpublished work\n");
@@ -883,7 +887,7 @@ it.live("keeps submodules when stored repository metadata is malformed", () =>
       yield* fs.writeFileString(`${childGit}/HEAD`, "not a ref\n");
       expect(
         (yield* service.runNow).entries.find((entry) => entry.path === worktree),
-      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("inspected") });
+      ).toMatchObject({ outcome: "kept", reason: expect.stringContaining("Populated_submodules, submodule_gitdirs") });
       expect(yield* fs.exists(worktree)).toBe(true);
       expect(yield* fs.readFileString(`${childGit}/HEAD`)).toBe("not a ref\n");
     }),
@@ -1839,8 +1843,8 @@ describe("storage cleanup reports and local file policies", () => {
   );
   it.live.each([
     ["any-local-files", ".env", "kept"],
-    ["uncommitted-changes", ".env", "removed"],
-    ["tracked-changes", ".env", "removed"],
+    ["uncommitted-changes", ".env", "kept"],
+    ["tracked-changes", ".env", "kept"],
     ["any-local-files", "notes.txt", "kept"],
     ["uncommitted-changes", "notes.txt", "kept"],
     ["tracked-changes", "notes.txt", "removed"],
@@ -1850,7 +1854,7 @@ describe("storage cleanup reports and local file policies", () => {
   ] as const)("applies %j", ([policy, file, outcome]) =>
     runCleanupTest(
       Effect.gen(function* () {
-        const { service, fs, worktree, setPolicy } = yield* cleanupFixture();
+        const { service, fs, worktree, setPolicy, removalArgs } = yield* cleanupFixture();
         setPolicy(policy);
         expect(yield* service.latestReport).toBeNull();
         yield* fs.writeFileString(`${worktree}/${file}`, "local data\n");
@@ -1872,9 +1876,15 @@ describe("storage cleanup reports and local file policies", () => {
           },
         ]);
         expect(report.bytesFreed).toBe(outcome === "removed" ? bytes : 0);
+        if (file === ".env" && policy !== "any-local-files") {
+          expect(report.counts.removed).toBe(0);
+          expect(report.entries[0]?.retirement?.reasonCodes).toContain("sensitive_ignored");
+          expect(removalArgs()).toEqual([]);
+          expect(yield* fs.readFileString(`${worktree}/${file}`)).toBe("local data\n");
+        }
         expect(yield* fs.exists(worktree)).toBe(outcome === "kept");
         expect(yield* service.latestReport).toEqual(report);
-        if (outcome === "kept")
+        if (outcome === "kept" && !(file === ".env" && policy !== "any-local-files"))
           expect(report.entries[0]?.reason).toContain(
             file === ".env" ? "ignored files (.env)" : "uncommitted changes (1 file)",
           );
@@ -2088,7 +2098,7 @@ describe("storage cleanup reports and local file policies", () => {
         lockAtRemoval();
         const report = yield* service.runNow;
         expect(report.entries[0]).toMatchObject({ outcome: "failed" });
-        expect(report.entries[0]?.reason).toContain("git worktree remove: fatal:");
+        expect(report.entries[0]?.reason).toContain("Git worktree remove: fatal:");
         expect(report.entries.map((entry) => entry.kind)).toEqual([
           "worktree",
           "browser-artifacts",

@@ -46,6 +46,30 @@ export interface RegistryCommand {
   readonly database: string;
   readonly cwd: string;
 }
+const OutputRecordJson = Schema.Struct({
+  id: Schema.String,
+  path: Schema.String,
+  owner: Schema.String,
+  class: Schema.String,
+  state: Schema.String,
+  worktree: Schema.NullOr(
+    Schema.Struct({
+      path: Schema.String,
+      dev: Schema.Number,
+      ino: Schema.Number,
+      git_dir: Schema.String,
+      git_common_dir: Schema.String,
+    }),
+  ),
+});
+const OutputReplyJson = Schema.fromJsonString(
+  Schema.Struct({
+    schema: Schema.String,
+    outcome: Schema.String,
+    results: Schema.optional(Schema.Array(OutputRecordJson)),
+    result: Schema.optional(Schema.Unknown),
+  }),
+);
 const inventory = Schema.Struct({
   schema: Schema.Literal("workspace-lifecycle-cli/v1"),
   command: Schema.Literal("show"),
@@ -131,16 +155,9 @@ export const layer = (configuration: RegistryCommand, outputs?: RegistryCommand)
             result.stderrTruncated
           )
             return yield* new LifecycleError({ reason: "unknown" });
-          return yield* Effect.try({
-            try: () =>
-              JSON.parse(result.stdout) as {
-                schema: string;
-                outcome: string;
-                results?: OutputRecord[];
-                result?: unknown;
-              },
-            catch: (cause) => new LifecycleError({ reason: "unknown", cause }),
-          });
+          return yield* Schema.decodeEffect(OutputReplyJson)(result.stdout).pipe(
+            Effect.mapError((cause) => new LifecycleError({ reason: "unknown", cause })),
+          );
         },
         Effect.mapError((cause) =>
           Schema.is(LifecycleError)(cause)

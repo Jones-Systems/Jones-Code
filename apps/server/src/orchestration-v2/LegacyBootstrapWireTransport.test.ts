@@ -595,6 +595,7 @@ it("rejects unauthenticated and query-token WebSocket ingress at the actual prod
       generate: denyRpcWork,
     }),
     Layer.succeed(WsStorageCleanup.StorageCleanup, {
+      retirement: denyRpcWork,
       runNow: denyRpcWork(),
       latestReport: denyRpcWork(),
       reports: Stream.fromEffect(denyRpcWork()),
@@ -1386,6 +1387,7 @@ effectIt.layer(NodeServices.layer, { excludeTestServices: true })(
               Effect.die("Legacy bootstrap must not generate a pull request review guide."),
           }),
           Layer.succeed(WsStorageCleanup.StorageCleanup, {
+            retirement: () => Effect.die("Legacy bootstrap must not retire a checkout."),
             runNow: Effect.die("Legacy bootstrap must not run storage cleanup."),
             latestReport: Effect.die("Legacy bootstrap must not read a storage cleanup report."),
             reports: Stream.fromEffect(

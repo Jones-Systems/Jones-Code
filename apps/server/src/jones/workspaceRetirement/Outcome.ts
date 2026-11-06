@@ -18,6 +18,6 @@ export const lookup = Effect.gen(function* () {
       )(rows[0].outcome_json);
       return { retirementObservation: "recorded" as const, retirement };
     },
-    Effect.catch(() => Effect.succeed({ retirementObservation: "unavailable" as const })),
+    Effect.orElseSucceed(() => ({ retirementObservation: "unavailable" as const })),
   );
 });

@@ -156,7 +156,7 @@ export async function nativeServices(
   }
 }
 
-export const nativeWorkloads = (sql: SqlClient.SqlClient["Service"], worktree: string) =>
+export const nativeWorkloads = (sql: SqlClient.SqlClient, worktree: string) =>
   Effect.gen(function* () {
     // Read identifiers/status/bindings only: no prompts, transcript or task payload is loaded.
     const runs = yield* sql<{

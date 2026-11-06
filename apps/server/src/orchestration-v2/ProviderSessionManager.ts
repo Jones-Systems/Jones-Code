@@ -428,7 +428,10 @@ export const layerWithOptions = (
       const agentScope = yield* AgentScope;
       yield* WorkspaceDuty.startup;
       const workspaceDuty = yield* WorkspaceDuty.hooks;
-      const workspaceDuties = new Map<Scope.Closeable, Effect.Effect<void, unknown>>();
+      const workspaceDuties = new Map<
+        Scope.Closeable,
+        Effect.Success<ReturnType<typeof workspaceDuty.hold>>
+      >();
       type OriginalThreadLoad = {
         readonly target: Pick<
           OrchestrationV2ProviderThread,

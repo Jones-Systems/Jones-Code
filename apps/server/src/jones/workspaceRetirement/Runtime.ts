@@ -68,7 +68,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
   const selected =
     config.workspaceLifecycle === undefined
       ? null
-      : yield* Schema.decodeUnknownEffect(Configuration)(config.workspaceLifecycle).pipe(
+      : yield* Schema.decodeEffect(Configuration)(config.workspaceLifecycle).pipe(
           Effect.mapError(
             (cause) =>
               new RetirementError({
@@ -106,7 +106,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
   let firstGeneration: string | null | undefined;
   let outputs: readonly Registry.OutputRecord[] = [];
   const mapError = Effect.mapError((cause: unknown) =>
-    cause instanceof RetirementError
+    Schema.is(RetirementError)(cause)
       ? cause
       : new RetirementError({ target: request.worktree, reason: "observation_failed", cause }),
   );
@@ -447,7 +447,7 @@ export const evaluate = Effect.fn("WorkspaceRetirement.evaluate")(function* (
             matching.push(reference);
         }
         return matching;
-      }).pipe(Effect.catch(() => Effect.succeed([] as string[])));
+      }).pipe(Effect.orElseSucceed(() => []));
       for (const reference of references)
         yield* provenance.value
           .production(request.threadId, reference, request.worktree)

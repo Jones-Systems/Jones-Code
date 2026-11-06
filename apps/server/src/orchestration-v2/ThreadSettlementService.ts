@@ -326,7 +326,10 @@ export const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, retirementSql.value),
       )
     : null;
-  const recordRetirementProposal = (thread: OrchestrationV2ThreadShell, worktreePath: string) =>
+  const recordRetirementProposal = (
+    thread: Pick<OrchestrationV2ThreadShell, "id" | "projectId">,
+    worktreePath: string,
+  ) =>
     Effect.gen(function* () {
       if (Option.isNone(retirementSql) || Option.isNone(retirementConfig)) return;
       const project = yield* projectStore.get(thread.projectId);

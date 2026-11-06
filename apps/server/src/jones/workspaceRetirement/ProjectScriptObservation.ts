@@ -1,5 +1,5 @@
 // @effect-diagnostics nodeBuiltinImport:off -- A bounded optional terminal observer; command issuance remains the native terminal owner's effect.
-import * as NodeTimers from "node:timers";
+import { scheduler } from "node:timers/promises";
 import * as NodeCrypto from "node:crypto";
 import type { TerminalWriteInput } from "@t3tools/contracts";
 import type { PtyProcess } from "@t3tools/shared/PtyAdapter";
@@ -142,9 +142,10 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
       let data = input.data;
       let unsubscribeData = () => {},
         unsubscribeExit = () => {};
-      let timeout: ReturnType<typeof NodeTimers.setTimeout> | undefined;
+      let deadline: AbortController | undefined;
       const detach = () => {
-        if (timeout) NodeTimers.clearTimeout(timeout);
+        deadline?.abort();
+        deadline = undefined;
         try {
           unsubscribeData();
         } catch {
@@ -240,11 +241,19 @@ export function makeProjectScriptObserver(options: ObserverOptions = {}) {
         if (invocation.completed) {
           detach();
           data = input.data;
-        } else
-          timeout = NodeTimers.setTimeout(
+        } else {
+          deadline = new AbortController();
+          // This native timer is owned by the observer. Abort synchronously clears
+          // it on every detach; the rejection branch drains cancellation quietly.
+          const signal = deadline.signal;
+          void scheduler.wait(10 * 60 * 1000, { signal, ref: false }).then(
             () => finish(null, "observer_timeout; observation_unknown"),
-            10 * 60 * 1000,
-          ).unref();
+            () => {
+              if (!signal.aborted)
+                finish(null, "observer_timer_unavailable; observation_unknown");
+            },
+          );
+        }
       } catch {
         detach();
         diagnostic("observer_prewrite_unavailable; ordinary write remains unobserved");

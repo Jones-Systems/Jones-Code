@@ -1,3 +1,4 @@
+import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -21,7 +22,7 @@ export class RemovalGate extends Context.Service<
       RetirementError
     >;
   }
->()("jones/workspaceRetirement/RemovalGate") {}
+>()("t3/jones/workspaceRetirement/RemovalGate") {}
 export const layer = Layer.effect(
   RemovalGate,
   Effect.gen(function* () {
@@ -43,6 +44,8 @@ export const layer = Layer.effect(
             threadId: null,
             rules,
             execute: true,
+            // This is retained-original readback, never the consuming permit.
+            // The producer has already consumed and fenced its original start.
             admit: revalidate,
             revalidate,
           }).pipe(Effect.provide(context));
@@ -54,7 +57,7 @@ export const layer = Layer.effect(
           return { exitCode: 0, completion: "exited" as const };
         },
         Effect.mapError((cause) =>
-          cause instanceof RetirementError
+          Schema.is(RetirementError)(cause)
             ? cause
             : new RetirementError({ target: "deletion", reason: "retirement_unavailable", cause }),
         ),

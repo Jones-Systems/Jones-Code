@@ -229,17 +229,34 @@ it.effect.each(["pending", "running"] as const)(
       }
       assert.isTrue(yield* orchestrator.restartContinuationPending(interrupted));
       const finalized = yield* Queue.unbounded<boolean>();
-      // Transparent instrumentation waits for the real consumer; neither finalization API is stubbed.
-      const signal = <A, E, R>(id: typeof child.id, effect: Effect.Effect<A, E, R>) =>
-        id !== child.id
-          ? effect
-          : effect.pipe(
-              Effect.tap(() =>
-                orchestrator
-                  .restartContinuationPending(interrupted)
-                  .pipe(Effect.flatMap((pending) => Queue.offer(finalized, pending))),
+      const recordedStages = new Set<string>();
+      const stage = (value: string) =>
+        Effect.sync(() => {
+          if (recordedStages.has(value)) return;
+          recordedStages.add(value);
+          console.info("CR-R1", continuationStatus, child.id, interrupted.id, value);
+        });
+      // Transparent instrumentation waits for the real consumer; neither API is stubbed.
+      let finalizerCalls = 0;
+      const signal = <A, E, R>(id: typeof child.id, effect: Effect.Effect<A, E, R>) => {
+        if (id !== child.id) return effect;
+        const call = ++finalizerCalls;
+        const receipt = (phase: string) =>
+          call <= 8 ? stage(`finalizer:${call}:${phase}`) : Effect.void;
+        return receipt("enter").pipe(
+          Effect.andThen(effect),
+          Effect.tap(() => receipt("exit")),
+          Effect.tap(() =>
+            orchestrator.restartContinuationPending(interrupted).pipe(
+              Effect.flatMap((pending) =>
+                receipt(`pending:${pending}`).pipe(
+                  Effect.andThen(Queue.offer(finalized, pending)),
+                ),
               ),
-            );
+            ),
+          ),
+        );
+      };
       const observed = Layer.succeed(Orchestrator.OrchestratorV2, {
         ...orchestrator,
         finalizeDelegatedTask: (id) => signal(id, orchestrator.finalizeDelegatedTask(id)),
@@ -248,8 +265,11 @@ it.effect.each(["pending", "running"] as const)(
       });
       yield* Effect.gen(function* () {
         const reactor = yield* Reactor.DependencyReactor;
+        yield* stage("reactor-start-enter");
         yield* reactor.start();
+        yield* stage("reactor-start-exit");
         // A run update on a child with no dependencies still reaches the reactor.
+        yield* stage("sink-write-enter");
         yield* f.sink.write({
           events: [
             f.event({
@@ -260,7 +280,10 @@ it.effect.each(["pending", "running"] as const)(
             }),
           ],
         });
+        yield* stage("sink-write-exit");
+        yield* stage("first-queue-enter");
         assert.isTrue(yield* Queue.take(finalized));
+        yield* stage("first-queue-exit");
         const pending = yield* f.projection.getThreadRecords(f.receiver.id, [
           "subagents",
           "contextTransfers",
@@ -268,17 +291,23 @@ it.effect.each(["pending", "running"] as const)(
         assert.equal(pending.subagents.find((item) => item.id === taskId)?.result, null);
         assert.isFalse(pending.contextTransfers.some((item) => item.type === "subagent_result"));
         assert.isTrue(yield* orchestrator.delegatedTaskResultPending(child.id));
+        yield* stage("cancel-enter");
         yield* outbox.cancelUnsettled({
           threadId: child.id,
           effectTypes: ["provider-runtime.continue"],
           reason: "Continuation declined",
         });
+        yield* stage("cancel-exit");
         assert.isFalse(yield* orchestrator.restartContinuationPending(interrupted));
+        yield* stage("changes-publish-enter");
         yield* changes.publish({ threadIds: [child.id], sequence: yield* f.store.sequence });
+        yield* stage("changes-publish-exit");
+        yield* stage("second-stream-enter");
         yield* Stream.fromQueue(finalized).pipe(
           Stream.filter((pending) => !pending),
           Stream.runHead,
         );
+        yield* stage("second-stream-exit");
         const settled = yield* f.projection.getThreadRecords(f.receiver.id, [
           "subagents",
           "contextTransfers",

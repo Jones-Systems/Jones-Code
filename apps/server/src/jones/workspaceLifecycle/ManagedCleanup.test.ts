@@ -222,6 +222,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
             temporaryRoots: [],
           }),
           Effect.provideService(LifecycleRegistry, {
+        resume: () => Effect.die("Cleanup fixtures must not resume or register a workspace"),
             show: () => Effect.sync(f.state.view),
             outputs: () => Effect.succeed([]),
           }),
@@ -293,6 +294,7 @@ it.effect.each(["matching", "missing", "head-changed", "native-policy"] as const
             temporaryRoots: [],
           }),
           Effect.provideService(LifecycleRegistry, {
+        resume: () => Effect.die("Cleanup fixtures must not resume or register a workspace"),
             show: () => Effect.sync(f.state.view),
             outputs: () => Effect.succeed([]),
           }),

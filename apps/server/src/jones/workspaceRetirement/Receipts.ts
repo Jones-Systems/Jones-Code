@@ -1,3 +1,5 @@
+import type { ReservationRecord } from "./Reservation.ts";
+import { DutyIdentityJson, NativeDutyOwnerJson, RetirementReceiptJson } from "./DurableCodecs.ts";
 import * as DateTime from "effect/DateTime";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -9,6 +11,15 @@ import type { QualificationResult } from "./Qualification.ts";
 import type { SettlementScriptState } from "./SettlementAdmission.ts";
 import { dutyIdentity, type DutyIdentity } from "./DutyIdentity.ts";
 import { inProcessOwner, unresolvedOwner, type NativeDutyOwner } from "./NativeDutyOwner.ts";
+
+// Internal observation scoped only to the executor's actual acquired reservation.
+// Presence alone is never permission: readbacks compare current durable ownership.
+export class RetirementReservationOwner extends Context.Reference<{
+  readonly worktree: string;
+  readonly record: ReservationRecord;
+} | null>("t3/jones/workspaceRetirement/Receipts/RetirementReservationOwner", {
+  defaultValue: () => null,
+}) {}
 
 export class RetirementError extends Schema.TaggedError<RetirementError>()("RetirementError", {
   reason: Schema.String,
@@ -118,7 +129,7 @@ export class Receipts extends Context.Service<
     ) => Effect.Effect<void, RetirementError>;
     readonly read: (receipt: string) => Effect.Effect<RetirementReceipt | null, RetirementError>;
   }
->()("jones/workspaceRetirement/Receipts") {}
+>()("t3/jones/workspaceRetirement/Receipts") {}
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -170,7 +181,7 @@ const make = Effect.gen(function* () {
             return;
           }
           yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${input.id},${input.worktree},${identity.status === "bound" ? identity.incarnation : null},${input.kind},${input.owner},${input.holder},${DateTime.formatIso(DateTime.nowUnsafe())},NULL)`;
-          yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${input.id},${JSON.stringify(identity)},${JSON.stringify(nativeOwner)})`;
+          yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${input.id},${yield* Schema.encodeEffect(DutyIdentityJson)(identity)},${yield* Schema.encodeEffect(NativeDutyOwnerJson)(nativeOwner)})`;
         }),
       );
       return identity;
@@ -180,7 +191,7 @@ const make = Effect.gen(function* () {
       holder,
       owner,
     ) {
-      yield* sql`UPDATE jones_workspace_duty_identity SET native_owner_json=${JSON.stringify(owner)} WHERE claim_id=${id} AND EXISTS (SELECT 1 FROM jones_workspace_duty_claims c WHERE c.claim_id=${id} AND c.holder_json=${holder} AND c.released_at IS NULL)`;
+      yield* sql`UPDATE jones_workspace_duty_identity SET native_owner_json=${yield* Schema.encodeEffect(NativeDutyOwnerJson)(owner)} WHERE claim_id=${id} AND EXISTS (SELECT 1 FROM jones_workspace_duty_claims c WHERE c.claim_id=${id} AND c.holder_json=${holder} AND c.released_at IS NULL)`;
     }, mapError("workspace")),
     releaseClaim: Effect.fn("WorkspaceRetirement.releaseClaim")(function* (id) {
       yield* sql`UPDATE jones_workspace_duty_claims SET released_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE claim_id=${id} AND released_at IS NULL`;
@@ -231,7 +242,7 @@ const make = Effect.gen(function* () {
       yield* sql`UPDATE jones_workspace_retirement_intents SET script_state=${state},script_exit_code=${exit},script_completed_at=${DateTime.formatIso(DateTime.nowUnsafe())} WHERE event_id=${event} AND script_state='running'`;
     }, mapError("workspace")),
     outcome: Effect.fn("WorkspaceRetirement.outcome")(function* (event, result) {
-      yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${JSON.stringify(result)} WHERE event_id=${event}`;
+      yield* sql`UPDATE jones_workspace_retirement_intents SET outcome_json=${yield* Schema.encodeEffect(Schema.UnknownFromJsonString)(result)} WHERE event_id=${event}`;
     }, mapError("workspace")),
     begin: Effect.fn("WorkspaceRetirement.begin")(function* (receipt) {
       yield* sql.withTransaction(
@@ -253,14 +264,14 @@ const make = Effect.gen(function* () {
             });
           yield* sql`INSERT INTO jones_workspace_retirement_state VALUES (${receipt.binding.path},${receipt.incarnation},'retiring',${receipt.id})
           ON CONFLICT(worktree) DO UPDATE SET incarnation_id=excluded.incarnation_id,state='retiring',receipt_id=excluded.receipt_id WHERE jones_workspace_retirement_state.state='retired'`;
-          yield* sql`INSERT INTO jones_workspace_retirement_receipts VALUES (${receipt.id},${receipt.incarnation},${receipt.binding.path},'intent',${JSON.stringify(receipt)})`;
+          yield* sql`INSERT INTO jones_workspace_retirement_receipts VALUES (${receipt.id},${receipt.incarnation},${receipt.binding.path},'intent',${yield* Schema.encodeEffect(RetirementReceiptJson)(receipt)})`;
         }),
       );
     }, mapError("workspace")),
     finish: Effect.fn("WorkspaceRetirement.finish")(function* (receipt) {
       yield* sql.withTransaction(
         Effect.gen(function* () {
-          yield* sql`UPDATE jones_workspace_retirement_receipts SET state=${receipt.state},receipt_json=${JSON.stringify(receipt)} WHERE receipt_id=${receipt.id} AND (state='intent' OR state=${receipt.state})`;
+          yield* sql`UPDATE jones_workspace_retirement_receipts SET state=${receipt.state},receipt_json=${yield* Schema.encodeEffect(RetirementReceiptJson)(receipt)} WHERE receipt_id=${receipt.id} AND (state='intent' OR state=${receipt.state})`;
           if (receipt.state === "retired") {
             yield* sql`UPDATE jones_workspace_retirement_state SET state='retired' WHERE receipt_id=${receipt.id} AND state='retiring'`;
             yield* sql`UPDATE jones_workspace_disposal_journal SET state='removed_with_checkout' WHERE receipt_id=${receipt.id} AND kind='ignored'`;
@@ -290,7 +301,7 @@ const make = Effect.gen(function* () {
       const rows = yield* sql<{
         receipt_json: string;
       }>`SELECT receipt_json FROM jones_workspace_retirement_receipts WHERE receipt_id=${id}`;
-      return rows[0] ? (JSON.parse(rows[0].receipt_json) as RetirementReceipt) : null;
+      return rows[0] ? yield* Schema.decodeEffect(RetirementReceiptJson)(rows[0].receipt_json) : null;
     }, mapError("workspace")),
   });
 });

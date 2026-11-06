@@ -1,4 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Exact disposable fixtures execute production storage, qualification, reservation and unlink/removal paths.
+import { canonical } from "./Filesystem.ts";
+import * as Schema from "effect/Schema";
+import { SqlError, UnknownError } from "effect/sql/SqlError";
+import { DutyIdentityJson, NativeDutyOwnerJson, RetirementReceiptJson } from "./DurableCodecs.ts";
 import * as NodeAssert from "node:assert/strict";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
@@ -6,7 +10,7 @@ import * as NodeSqlite from "node:sqlite";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { fixture, command } from "./Conformance.testkit.ts";
-import { Receipts, layer, RetirementError } from "./Receipts.ts";
+import { Receipts, layer, RetirementError, RetirementReservationOwner } from "./Receipts.ts";
 import { retire } from "./RetirementExecutor.ts";
 import {
   acquireReservation,
@@ -51,7 +55,7 @@ async function fixtureSql(
           await after?.(query, values);
           return rows;
         },
-        catch: (e) => e,
+        catch: (cause) => new SqlError({ reason: new UnknownError({ cause }) }),
       }),
     {
       withTransaction: <A, E, R>(body: Effect.Effect<A, E, R>) =>
@@ -74,7 +78,7 @@ async function fixtureSql(
           );
         }),
     },
-  ) as unknown as SqlClient.SqlClient["Service"];
+  ) as unknown as SqlClient.SqlClient;
   return { sql, db, close: () => db.close() };
 }
 export const retirementCases: Record<string, () => Promise<void>> = {
@@ -419,8 +423,8 @@ export const retirementCases: Record<string, () => Promise<void>> = {
                   "SELECT identity_json,native_owner_json FROM jones_workspace_duty_identity WHERE claim_id='session'",
                 )
                 .get()!;
-              NodeAssert.equal(JSON.parse(String(facts.identity_json)).status, "bound");
-              NodeAssert.equal(JSON.parse(String(facts.native_owner_json)).type, "unresolved");
+              NodeAssert.equal(Schema.decodeSync(DutyIdentityJson)(String(facts.identity_json)).status, "bound");
+              NodeAssert.equal(Schema.decodeSync(NativeDutyOwnerJson)(String(facts.native_owner_json)).type, "unresolved");
               const rejected = yield* store
                 .reconcileClaim("session", '{"native":"fixture"}', false)
                 .pipe(Effect.result);
@@ -475,6 +479,122 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         f.close();
       }
     }),
+  "executor readbacks carry only the exact live reservation and scope it away after removal": () =>
+    fixture(async ({ base, repo, worktree, input }) => {
+      const f = await fixtureSql(NodePath.join(base, "owned-reservation.sqlite3"));
+      let reads = 0,
+        mutations = 0;
+      try {
+        const result = await Effect.runPromise(
+          retire({
+            cause: "deletion",
+            projectRoot: repo,
+            worktree,
+            maxLevel: "branch-retained",
+            admit: Effect.void,
+            observe: Effect.succeed(input),
+            revalidate: Effect.gen(function* () {
+              const own = yield* RetirementReservationOwner;
+              if (own === null) return;
+              reads++;
+              NodeAssert.equal(own.worktree, worktree);
+              const common = new NodeSqlite.DatabaseSync(
+                NodePath.join(input.expected.git_common_dir, "workspace-lifecycle", "reservations.sqlite3"),
+                { readOnly: true },
+              );
+              try {
+                NodeAssert.equal(
+                  common.prepare("SELECT record FROM reservations WHERE admin_id=?").get(own.record.admin_id)?.record,
+                  canonical(own.record),
+                );
+              } finally {
+                common.close();
+              }
+              const current = f.db
+                .prepare("SELECT incarnation_id,receipt_id FROM jones_workspace_retirement_state WHERE worktree=?")
+                .get(worktree);
+              NodeAssert.equal(current?.incarnation_id, own.record.incarnation);
+              NodeAssert.equal(current?.receipt_id, own.record.receipt);
+            }),
+            remove: Effect.promise(async () => {
+              mutations++;
+              await command(repo, ["worktree", "remove", "--", worktree]);
+            }),
+            finalizeOutputs: () => Effect.void,
+          }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+        );
+        NodeAssert.equal(result.state, "retired");
+        NodeAssert.ok(reads >= 2);
+        NodeAssert.equal(mutations, 1);
+        NodeAssert.equal(
+          await Effect.runPromise(Effect.gen(function* () {
+            return yield* RetirementReservationOwner;
+          })),
+          null,
+        );
+      } finally {
+        f.close();
+      }
+    }),
+  "missing or replaced common-store ownership refuses before any native removal": async () => {
+    for (const mode of ["missing", "different-receipt"] as const)
+      await fixture(async ({ base, repo, worktree, input }) => {
+        const f = await fixtureSql(NodePath.join(base, "lost-reservation.sqlite3"));
+        let altered = false,
+          mutations = 0;
+        try {
+          await NodeAssert.rejects(
+            Effect.runPromise(
+              retire({
+                cause: "deletion",
+                projectRoot: repo,
+                worktree,
+                maxLevel: "branch-retained",
+                admit: Effect.void,
+                observe: Effect.succeed(input),
+                revalidate: Effect.gen(function* () {
+                  const own = yield* RetirementReservationOwner;
+                  if (own === null || altered) return;
+                  altered = true;
+                  const common = new NodeSqlite.DatabaseSync(
+                    NodePath.join(input.expected.git_common_dir, "workspace-lifecycle", "reservations.sqlite3"),
+                  );
+                  try {
+                    if (mode === "missing")
+                      common.prepare("DELETE FROM reservations WHERE admin_id=?").run(own.record.admin_id);
+                    else
+                      common.prepare("UPDATE reservations SET record=? WHERE admin_id=?").run(
+                        canonical({ ...own.record, receipt: "different-receipt" }),
+                        own.record.admin_id,
+                      );
+                  } finally {
+                    common.close();
+                  }
+                }),
+                remove: Effect.sync(() => {
+                  mutations++;
+                }),
+                finalizeOutputs: () => Effect.void,
+              }).pipe(Effect.provide(layer), Effect.provideService(SqlClient.SqlClient, f.sql)),
+            ),
+          );
+          NodeAssert.equal(altered, true);
+          NodeAssert.equal(mutations, 0);
+          const saved = f.db.prepare("SELECT receipt_json FROM jones_workspace_retirement_receipts").get();
+          NodeAssert.deepEqual(
+            Schema.decodeSync(RetirementReceiptJson)(String(saved?.receipt_json)).reasons,
+            ["reservation_ownership_lost"],
+          );
+          NodeAssert.equal((await NodeFSP.lstat(worktree)).isDirectory(), true);
+          NodeAssert.equal(
+            f.db.prepare("SELECT COUNT(*) n FROM jones_workspace_disposal_journal").get()?.n,
+            0,
+          );
+        } finally {
+          f.close();
+        }
+      });
+  },
   "a verified later physical checkout may work and retire without rewriting an older terminal receipt":
     () =>
       fixture(async ({ base, repo, worktree, input }) => {

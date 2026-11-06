@@ -4,7 +4,7 @@ import type * as SqlClient from "effect/sql/SqlClient";
 import { RetirementError } from "./Receipts.ts";
 
 export function guardRetentionSettings<A, E, R>(
-  sql: SqlClient.SqlClient["Service"],
+  sql: SqlClient.SqlClient,
   patch: ServerSettingsPatch,
   effect: Effect.Effect<A, E, R>,
 ) {

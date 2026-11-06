@@ -2628,7 +2628,13 @@
     "apps/server/src/jones/workspaceRetirement/ScriptCompletionProtocol.ts": "jones-owned",
     "apps/server/src/jones/workspaceRetirement/TerminalCwdObservation.ts": "jones-owned",
     "apps/web/src/components/chat/projectScriptObservation.test.ts": "accepted-shared",
-    "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.test.ts": "jones-owned"
+    "apps/server/src/jones/workspaceRetirement/ClaimReconciliation.test.ts": "jones-owned",
+    "apps/web/src/components/settings/scopedSettings.test.ts": "accepted-shared",
+    "apps/web/src/components/terminal/useThreadTerminalActions.ts": "hook",
+    "packages/contracts/src/terminal.test.ts": "accepted-shared",
+    "packages/contracts/src/terminal.ts": "accepted-shared",
+    "packages/shared/src/serverSettings.ts": "accepted-shared",
+    "apps/server/src/jones/workspaceRetirement/DurableCodecs.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

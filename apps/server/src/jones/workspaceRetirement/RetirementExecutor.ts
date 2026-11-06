@@ -1,12 +1,19 @@
 // @effect-diagnostics nodeBuiltinImport:off -- C4 readback observes both Git registration and the filesystem after unforced removal.
+import { RESERVATION_DDL } from "./ParticipantGuard.ts";
+import * as NodeSqlite from "node:sqlite";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeCrypto from "node:crypto";
 import * as Effect from "effect/Effect";
 import * as NodePath from "node:path";
-import { canonical, exists, git } from "./Filesystem.ts";
+import { canonical, exists, openAbsolute, git } from "./Filesystem.ts";
 import { incarnation } from "./OutputAttestation.ts";
 import { finalCheck, qualify, type QualificationInput } from "./Qualification.ts";
-import { Receipts, RetirementError, type RetirementReceipt } from "./Receipts.ts";
+import {
+  Receipts,
+  RetirementError,
+  RetirementReservationOwner,
+  type RetirementReceipt,
+} from "./Receipts.ts";
 import {
   acquireReservation,
   holderIdentity,
@@ -91,10 +98,52 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
           yield* store.finish(receipt);
           terminal = true;
         });
+        const verifyReservation = Effect.tryPromise({
+          try: async () => {
+            const path = NodePath.join(
+              bound.git_common_dir,
+              "workspace-lifecycle",
+              "reservations.sqlite3",
+            );
+            const file = await openAbsolute(path);
+            try {
+              const before = await file.stat();
+              const db = new NodeSqlite.DatabaseSync(path, { readOnly: true });
+              try {
+                const row = db
+                  .prepare("SELECT incarnation,record FROM reservations WHERE admin_id=?")
+                  .get(bound.admin_id);
+                const after = await NodeFSP.lstat(path);
+                if (
+                  db.prepare("PRAGMA user_version").get()?.user_version !== 1 ||
+                  db.prepare("SELECT sql FROM sqlite_master WHERE name='reservations'").get()?.sql !== RESERVATION_DDL ||
+                  !row ||
+                  before.dev !== after.dev ||
+                  before.ino !== after.ino ||
+                  after.isSymbolicLink() ||
+                  row.incarnation !== record.incarnation ||
+                  row.record !== canonical(record)
+                )
+                  throw new Error("reservation_ownership_lost");
+              } finally {
+                db.close();
+              }
+            } finally {
+              await file.close();
+            }
+          },
+          catch: (cause) =>
+            new RetirementError({
+              target: request.worktree,
+              reason: "reservation_ownership_lost",
+              cause,
+            }),
+        });
+        const revalidate = verifyReservation.pipe(Effect.andThen(request.revalidate));
         const execution = Effect.gen(function* () {
           yield* store.begin(receipt);
           began = true;
-          yield* request.revalidate;
+          yield* revalidate;
           const freshInput = yield* request.observe;
           const final = yield* io(request.worktree, () => finalCheck(freshInput, previous));
           if (final.conflict || canonical(freshInput.expected) !== canonical(bound))
@@ -157,7 +206,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
               yield* store.completePath(id, n, "completed");
             }
           yield* io(request.worktree, () => verifyClean(bound, journal));
-          yield* request.revalidate;
+          yield* revalidate;
           const remainingInput = yield* request.observe;
           const remaining = yield* io(request.worktree, () => qualify(remainingInput));
           if (
@@ -223,6 +272,7 @@ export const retire = Effect.fn("WorkspaceRetirement.retire")(function* (
           return receipt;
         });
         return yield* execution.pipe(
+          Effect.provideService(RetirementReservationOwner, { worktree: bound.path, record }),
           Effect.tapError((error) =>
             Effect.sync(() => {
               receipt.reasons = [error.reason];

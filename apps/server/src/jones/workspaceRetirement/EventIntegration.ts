@@ -1,3 +1,5 @@
+import * as Schema from "effect/Schema";
+import { DutyIdentityJson, QueuedHolderJson } from "./DurableCodecs.ts";
 import type { OrchestrationV2DomainEvent } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -8,7 +10,7 @@ import { dutyIdentity } from "./DutyIdentity.ts";
 // Called within EventSink's transaction, before projections change. Read-only native
 // binding performs no optional enrichment and acquires no common-store writer lock.
 export const events = (
-  sql: SqlClient.SqlClient["Service"],
+  sql: SqlClient.SqlClient,
   values: readonly OrchestrationV2DomainEvent[],
 ) =>
   Effect.gen(function* () {
@@ -67,8 +69,8 @@ export const events = (
         const worktree = prior.worktreePath;
         const identity = yield* Effect.promise(() => dutyIdentity(worktree));
         const claim = `queued-turn:${event.payload.id}`;
-        yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${claim},${prior.worktreePath},${identity.status === "bound" ? identity.incarnation : null},'queued-turn',${event.threadId},${JSON.stringify({ runId: event.payload.id, threadId: event.threadId })},${DateTime.formatIso(event.occurredAt)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
-        yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${claim},${JSON.stringify(identity)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
+        yield* sql`INSERT INTO jones_workspace_duty_claims VALUES (${claim},${prior.worktreePath},${identity.status === "bound" ? identity.incarnation : null},'queued-turn',${event.threadId},${yield* Schema.encodeEffect(QueuedHolderJson)({ runId: event.payload.id, threadId: event.threadId })},${DateTime.formatIso(event.occurredAt)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
+        yield* sql`INSERT INTO jones_workspace_duty_identity VALUES (${claim},${yield* Schema.encodeEffect(DutyIdentityJson)(identity)},NULL) ON CONFLICT(claim_id) DO NOTHING`;
       }
       if (
         event.type === "run.updated" &&

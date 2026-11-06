@@ -218,6 +218,12 @@ export interface EventSinkV2Shape {
     currentRules?: DeletionPolicyRead,
     currentLive?: DeletionLiveRead,
   ) => Effect.Effect<void, EventSinkV2Error>;
+  readonly checkRetainedDeletionWorktreeRemovalStart?: (
+    start: DeletionWorktreeRemovalStartV1,
+    ordinal: number,
+    currentRules?: DeletionPolicyRead,
+    currentLive?: DeletionLiveRead,
+  ) => Effect.Effect<void, EventSinkV2Error>;
   readonly qualifyDeletionWorktreeRemovalObservation?: (
     observation: DeletionWorktreeRemovalObservationV1,
   ) => Effect.Effect<void, EventSinkV2Error>;
@@ -2243,6 +2249,10 @@ const layerBase: Layer.Layer<
         deletionAdmission
           .start(input)
           .pipe(Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause }))),
+      checkRetainedDeletionWorktreeRemovalStart: (start, ordinal, rules, live) =>
+        deletionAdmission.checkRetained(start, ordinal, rules, live).pipe(
+          Effect.mapError((cause) => new EventSinkWriteError({ eventCount: 0, cause })),
+        ),
       readDeletionWorktreeRemovalStart: (effectId) =>
         deletionAdmission
           .read(effectId)
