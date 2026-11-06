@@ -1041,7 +1041,7 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
                         if (completed !== null && !pausedCacheHandoff) {
                           pausedCacheHandoff = true;
                           yield* Deferred.succeed(cacheHandoffEntered, undefined);
-                          yield* Effect.never;
+                          return yield* Effect.never;
                         }
                         return completed;
                       }),
