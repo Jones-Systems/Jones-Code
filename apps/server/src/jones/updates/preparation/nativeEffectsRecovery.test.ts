@@ -203,6 +203,41 @@ async function setup(base: string) {
   };
 }
 
+it("inspects owned 0755 shared ancestors without writing proof or changing lifecycle", async () =>
+  fixture(async (f) => {
+    await NodeFSP.chmod(f.base, 0o755);
+    await NodeFSP.chmod(NodePath.join(f.base, "runtime"), 0o755);
+    const lifecycle = await NodeFSP.readFile(f.lifecycle);
+    const effects = await NodeFSP.readFile(f.effects);
+    const inspected = await f.inspect();
+    expect(inspected.state).toBe("eligible");
+    expect(f.passes()).toBe(2);
+    expect(await NodeFSP.readFile(f.lifecycle)).toEqual(lifecycle);
+    expect(await NodeFSP.readFile(f.effects)).toEqual(effects);
+    await expect(NodeFSP.lstat(inspected.proofPath)).rejects.toMatchObject({ code: "ENOENT" });
+  }));
+
+it.each([
+  ["base", 0o775],
+  ["base", 0o777],
+  ["runtime", 0o775],
+  ["runtime", 0o777],
+] as const)("holds a writable %s shared ancestor with mode %s", async (ancestor, mode) =>
+  fixture(async (f) => {
+    const path = ancestor === "base" ? f.base : NodePath.join(f.base, "runtime");
+    await NodeFSP.chmod(path, mode);
+    await expect(f.inspect()).rejects.toThrow();
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+  }),
+);
+
+it("holds a private preparation directory with mode 0755", async () =>
+  fixture(async (f) => {
+    await NodeFSP.chmod(NodePath.join(f.base, "runtime", "jones-preparation"), 0o755);
+    await expect(f.inspect()).rejects.toThrow();
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+  }));
+
 it("leaves the inspected lifecycle intact and releases only after durable proof, preserving native effects and legacy identity", async () =>
   fixture(async (f) => {
     expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe(
