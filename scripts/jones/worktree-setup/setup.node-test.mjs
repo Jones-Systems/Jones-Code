@@ -237,6 +237,7 @@ NodeTest.test(
 function lifecycleHarness(worktree, onCleanup) {
   const children = [];
   const completions = [];
+  const childWaiters = new Map();
   let cleaningUp = false;
   const forwarded = [];
   const dependencies = {
@@ -254,6 +255,7 @@ function lifecycleHarness(worktree, onCleanup) {
         return true;
       };
       children.push({ child, command, args, options });
+      childWaiters.get(children.length - 1)?.(child);
       if (cleaningUp) queueMicrotask(() => child.emit("close", 1, null));
       return child;
     },
@@ -278,7 +280,7 @@ function lifecycleHarness(worktree, onCleanup) {
     completions.push(completion);
     return completion;
   };
-  return { children, forwarded, dependencies, marker, assertRunning, run };
+  return { children, forwarded, dependencies, marker, assertRunning, run, started: (index = 0) => children[index] ? Promise.resolve(children[index].child) : new Promise(resolve => childWaiters.set(index, resolve)) };
 }
 
 NodeTest.test(
@@ -306,6 +308,7 @@ NodeTest.test("install completion waits for output closure and records the failu
   fixture(async ({ project, worktree, onCleanup }) => {
     const harness = lifecycleHarness(worktree, onCleanup);
     const pending = harness.run(["--install", "--warm"], project);
+    await harness.started();
     const { child, options } = harness.children[0];
     NodeAssert.deepEqual(options.stdio, ["ignore", "pipe", "pipe"]);
     harness.assertRunning();
@@ -336,6 +339,7 @@ NodeTest.test(
         const harness = lifecycleHarness(worktree, onCleanup);
         const before = process.listenerCount(signal);
         const pending = harness.run(["--install", "--warm"], project);
+        await harness.started();
         const { child } = harness.children[0];
         process.emit(signal);
         NodeAssert.deepEqual(child.signals, [signal]);
@@ -376,6 +380,7 @@ NodeTest.test("successful install and warm retain running marker until both outp
       return child;
     };
     const pending = harness.run(["--install", "--warm"], project);
+    await harness.started();
     const installer = harness.children[0].child;
     installer.emit("exit", 0, null);
     await Promise.resolve();
@@ -400,7 +405,8 @@ NodeTest.test("spawn errors wait for close and setup exceptions leave a failed m
   fixture(async ({ project, worktree, onCleanup }) => {
     const harness = lifecycleHarness(worktree, onCleanup);
     const pending = harness.run(["--install"], project);
-    const { child } = harness.children[0];
+    await harness.started();
+        const { child } = harness.children[0];
     child.emit("error", new Error("synthetic spawn failure"));
     await Promise.resolve();
     harness.assertRunning();
@@ -415,5 +421,45 @@ NodeTest.test("spawn errors wait for close and setup exceptions leave a failed m
     NodeAssert.equal(NodeFS.existsSync(harness.marker("done")), false);
     NodeAssert.match(NodeFS.readFileSync(harness.marker("failed"), "utf8"), /requires --install/);
     NodeAssert.equal(harness.children.length, 1);
+  }),
+);
+
+NodeTest.test("producer finalization records cheap success, failure and drained cancellation in real Git admin state",()=>
+  fixture(async({project,worktree,onCleanup})=>{
+    const {spawnSync}=await import("node:child_process");
+    function git(args) {
+      const r=spawnSync("git",["-C",worktree,...args],{encoding:"utf8",env:{PATH:process.env.PATH,GIT_CONFIG_NOSYSTEM:"1",GIT_CONFIG_GLOBAL:"/dev/null",GIT_AUTHOR_NAME:"Fixture",GIT_AUTHOR_EMAIL:"fixture@example.invalid",GIT_COMMITTER_NAME:"Fixture",GIT_COMMITTER_EMAIL:"fixture@example.invalid"}});
+      NodeAssert.equal(r.status,0,r.stderr);
+    }
+    git(["init","-b","fixture"]);git(["commit","--allow-empty","-m","fixture"]);
+    const readRecords=()=>NodeFS.readdirSync(NodePath.join(worktree,".git/workspace-completions")).map(name=>JSON.parse(NodeFS.readFileSync(NodePath.join(worktree,".git/workspace-completions",name),"utf8")));
+    const harness=lifecycleHarness(worktree,onCleanup);
+    NodeAssert.equal(await harness.run([],project),0);
+    NodeAssert.equal(readRecords()[0].status,"succeeded");
+    NodeAssert.equal(readRecords()[0].proofStatus,"deferred");
+    NodeAssert.equal("manifest" in readRecords()[0],false);
+    NodeAssert.equal(NodeFS.existsSync(harness.marker("unfinalized")),false);
+    for(const [index,cancel] of [false,true].entries()) {
+      const pending=harness.run(["--install"],project);
+      const child=await harness.started(index);
+      if(cancel) process.emit("SIGTERM");
+      child.emit("exit",1,null);
+      await Promise.resolve();harness.assertRunning();
+      NodeAssert.equal(readRecords().length,index+1);
+      child.emit("close",1,null);NodeAssert.equal(await pending,1);
+      NodeAssert.ok(readRecords().some(r=>r.status===(cancel ? "cancelled" : "failed")));
+    }
+    NodeAssert.equal(NodeFS.existsSync(NodePath.join(worktree,".git/workspace-outputs")),false);
+    NodeAssert.equal(NodeFS.existsSync(harness.marker("unfinalized")),false);
+  }),
+);
+
+NodeTest.test("optional producer metadata failure preserves successful ordinary setup without manufacturing an obligation",()=>
+  fixture(async({project,worktree,onCleanup})=>{
+    const harness=lifecycleHarness(worktree,onCleanup);
+    NodeAssert.equal(await harness.run([],project),0);
+    NodeAssert.equal(NodeFS.existsSync(harness.marker("done")),true);
+    NodeAssert.equal(NodeFS.existsSync(harness.marker("unfinalized")),false);
+    NodeAssert.equal(harness.children.length,0);
   }),
 );
