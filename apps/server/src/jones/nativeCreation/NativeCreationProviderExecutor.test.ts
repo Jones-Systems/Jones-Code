@@ -852,6 +852,14 @@ const scenario = (mode: Mode) =>
         start: () => Effect.void,
         startNative: (input) =>
           Effect.gen(function* () {
+            const receipts = yield* f.sql`SELECT 1 FROM orchestration_command_receipts
+              WHERE command_id=${f.command.commandId} AND aggregate_id=${input.threadId} AND status='accepted'`;
+            assert.lengthOf(receipts, 1);
+            assert.equal(calls, 0);
+            assert.equal(input.threadId, f.command.threadId);
+            assert.equal(input.runId, f.command.runId);
+            assert.equal(original.command.type, "prepared-run.release");
+            assert.equal(verified.proof.baseRef, original.history.intent.binding.baseBranch);
             calls += 1;
             if (mode.startsWith("transport-")) return yield* transport(input.guard);
             yield* Guard.revalidateNativeProviderGuard(input.guard, {
@@ -903,17 +911,10 @@ const scenario = (mode: Mode) =>
               start,
               Layer.mock(WorkspaceProvenance.Provenance)({
                 capture: (input) =>
-                  Effect.gen(function* () {
-                    const receipts = yield* f.sql`SELECT 1 FROM orchestration_command_receipts
-                      WHERE command_id=${f.command.commandId} AND aggregate_id=${input.threadId} AND status='accepted'`;
-                    assert.lengthOf(receipts, 1);
-                    assert.equal(calls, 0);
-                    assert.equal(input.reason, "launch");
-                    assert.equal(input.runId, f.command.runId);
-                    assert.equal(input.baseRef, original.history.intent.binding.baseBranch);
+                  Effect.sync(() => {
                     provenanceCaptures.push(input.threadId);
                     return {} as never;
-                  }).pipe(Effect.orDie),
+                  }),
               }),
               Layer.succeed(Registry.ProviderAdapterRegistryV2, {
                 get: () =>
@@ -935,7 +936,7 @@ const scenario = (mode: Mode) =>
         ),
       ),
     );
-    assert.deepEqual(provenanceCaptures, [f.command.threadId]);
+    assert.deepEqual(provenanceCaptures, []);
     assert.strictEqual(calls, 1);
     if (mode === "success" || mode === "transport-success") {
       assert.isTrue(result._tag === "Success");

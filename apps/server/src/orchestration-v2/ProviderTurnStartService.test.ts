@@ -2162,7 +2162,7 @@ effectIt.effect("terminalizes an unresolved writer retirement before opening its
   }),
 );
 
-it("recreation proceeds without starting unbounded optional provenance", async () => {
+it("recreation skips provenance and preserves the native recovery failure", async () => {
   const captures: Array<{ reason: string; runId: string | undefined }> = [];
   const harness = startWithMissingWorktree(
     `${managedWorktreesDir}/project/provenance`,
@@ -2170,20 +2170,26 @@ it("recreation proceeds without starting unbounded optional provenance", async (
     undefined,
     Layer.mock(WorkspaceProvenance.Provenance)({
       capture: (input) =>
-        Effect.yieldNow.pipe(
-          Effect.andThen(
-            Effect.sync(() => {
-              expect(harness.createWorktree).toHaveBeenCalledTimes(1);
-              expect(harness.startRootRun).not.toHaveBeenCalled();
-              captures.push({ reason: input.reason, runId: input.runId });
-              return {} as never;
-            }),
-          ),
-        ),
+        Effect.sync(() => {
+          captures.push({ reason: input.reason, runId: input.runId });
+          return {} as never;
+        }),
     }),
   );
-  await harness.start;
+  const failure = await harness.start;
   expect(captures).toEqual([]);
   expect(harness.createWorktree).toHaveBeenCalledTimes(1);
-  expect(harness.startRootRun).toHaveBeenCalled();
+  expect(harness.createWorktree).toHaveBeenCalledWith({
+    cwd: "/tmp/provider-turn-start-project",
+    refName: "feature/restore",
+    path: `${managedWorktreesDir}/project/provenance`,
+  });
+  expect(failure).toMatchObject({
+    _tag: "ProviderTurnStartError",
+    cause: {
+      _tag: "ProjectionStoreReadError",
+      cause: "simulated inherited-background projection failure",
+    },
+  });
+  expect(harness.startRootRun).not.toHaveBeenCalled();
 });
