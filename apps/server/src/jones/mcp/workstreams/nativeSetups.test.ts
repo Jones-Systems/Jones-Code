@@ -5,6 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as Schema from "effect/Schema";
+import { McpServer } from "effect/ai";
+import * as Server from "../../../mcp/McpHttpServer.ts";
 import * as Invocation from "../../../mcp/McpInvocationContext.ts";
 import * as Access from "../../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -42,7 +44,16 @@ it("advertises only two fixed closed setup tools", () => {
     Tools.toolkit.tools.jones_workstreams_peer_setup_read.parametersSchema,
   );
   expect(decode(request)).toEqual(request);
-  expect(() => decode({ ...request, tool: "arbitrary" })).toThrow();
+  const intent = { ...request, operation: "source_intent", request_sha256: "a".repeat(64) };
+  expect(decode(intent)).toEqual(intent);
+  for (const invalid of [
+    { ...request, tool: "arbitrary" },
+    { ...request, request_sha256: intent.request_sha256 },
+    { ...request, operation: "source_intent" },
+    { ...intent, request_sha256: "invalid" },
+    { ...intent, tool: "arbitrary" },
+  ])
+    expect(() => decode(invalid)).toThrow();
 });
 it.effect("actual handler passes exact invocation; error mapping excludes protected causes", () =>
   Effect.gen(function* () {
@@ -79,4 +90,32 @@ it.effect("actual handler passes exact invocation; error mapping excludes protec
     expect(JSON.stringify(replies)).toContain("owner_unqualified");
     expect(JSON.stringify(replies)).not.toContain("protected-sentinel");
   }).pipe(Effect.provideService(Invocation.McpInvocationContext, scope), Effect.provide(threads)),
+);
+
+it.effect("registers the setup tools through the actual MCP server", () =>
+  Effect.gen(function* () {
+    const registered = (yield* McpServer.McpServer).tools;
+    expect(registered.map(({ tool }) => tool.name)).toEqual(Object.keys(Tools.toolkit.tools));
+    for (const { tool } of registered) expect(tool.inputSchema.type).toBe("object");
+  }).pipe(
+    Effect.provide(
+      Server.toolkitRegistration(Tools.toolkit, Tools.handlers).pipe(
+        Layer.provide(
+          Layer.succeed(Setup.PeerSetup, {
+            read: () => Effect.die("registration must not invoke setup"),
+            prepare: () => Effect.die("registration must not invoke setup"),
+            apply: () => Effect.die("registration must not invoke setup"),
+            ownerOperation: () => Effect.die("registration must not invoke setup"),
+            homeBind: {
+              setupReadback: () => Effect.die("registration must not invoke setup"),
+              bind: () => Effect.die("registration must not invoke setup"),
+              readback: () => Effect.die("registration must not invoke setup"),
+            },
+          }),
+        ),
+        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provide(threads),
+      ),
+    ),
+  ),
 );
