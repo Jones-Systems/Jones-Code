@@ -543,7 +543,31 @@ it.effect(
             commandId: CommandId.make("settle-before-removal"),
             threadId,
           });
-          yield* f.runGit(["worktree", "remove", f.linked]);
+          const sql = yield* SqlClient.SqlClient;
+          const adminResult = yield* f.runGit(["rev-parse", "--absolute-git-dir"], f.linked);
+          const admin = adminResult.stdout.trim();
+          const reflog = yield* f.fs.readFileString(`${admin}/logs/HEAD`);
+          // Manual deletion retains the exact registration and HEAD reflog that C8 can reconcile.
+          yield* f.fs.remove(f.linked, { recursive: true });
+          expect(yield* f.fs.readFileString(`${admin}/logs/HEAD`)).toBe(reflog);
+          expect((yield* f.runGit(["worktree", "list", "--porcelain"])).stdout).toContain(
+            `worktree ${f.linked}\nHEAD ${prior.head}\nbranch refs/heads/work\n`,
+          );
+          expect(yield* f.fs.exists(f.linked)).toBe(false);
+          let sourceInvalidated = false;
+          f.state.beforeRegistryRead = Effect.gen(function* () {
+            if (!f.calls.includes("git-created") || sourceInvalidated) return;
+            expect(
+              yield* sql`SELECT transition_id FROM jones_workspace_lifecycle_bindings WHERE worktree=${f.linked}`,
+            ).toEqual([]);
+            sourceInvalidated = true;
+            f.calls.push("source-invalidated");
+          }).pipe(Effect.orDie);
+          f.state.beforeProviderUse = Effect.sync(() => {
+            expect(sourceInvalidated).toBe(true);
+            expect(f.state.view().binding!.incarnation_id).not.toBe(prior.incarnation_id);
+            expect(f.state.view().binding!.source_generation).not.toBe(prior.source_generation);
+          });
           yield* f.dispatch({
             type: "message.dispatch",
             commandId: CommandId.make("recreate-work"),
@@ -557,12 +581,31 @@ it.effect(
           });
           expect(f.state.view().binding!.incarnation_id).toBe(prior.incarnation_id);
           yield* (yield* Worker.OrchestrationEffectWorkerV2).drain(20);
+          const effects = yield* (yield* Outbox.EffectOutboxV2).listByCommandId(
+            CommandId.make("recreate-work"),
+          );
+          expect(
+            effects
+              .filter((effect) => effect.request.type === "provider-turn.start")
+              .map((effect) => ({ status: effect.status, lastError: effect.lastError })),
+          ).toEqual([{ status: "succeeded", lastError: null }]);
           expect(f.calls).toContain("provider-send");
           expect(f.calls.indexOf("git-create")).toBeLessThan(f.calls.indexOf("provider-open"));
           expect(f.calls[f.calls.indexOf("git-create") - 1]).toBe("show");
+          expect(f.calls.indexOf("git-created")).toBeLessThan(
+            f.calls.indexOf("source-invalidated"),
+          );
+          expect(f.calls.indexOf("source-invalidated")).toBeLessThan(
+            f.calls.indexOf("provider-open"),
+          );
           expect(f.state.view().binding!.incarnation_id).not.toBe(prior.incarnation_id);
           expect(f.state.view().binding!.head).toBe(prior.head);
           expect(yield* f.fs.exists(f.linked)).toBe(true);
+          expect((yield* f.runGit(["rev-parse", "HEAD"], f.linked)).stdout.trim()).toBe(prior.head);
+          yield* (yield* Worker.OrchestrationEffectWorkerV2).drain(20);
+          expect(f.calls.filter((call) => call === "git-create")).toHaveLength(1);
+          expect(f.calls.filter((call) => call === "git-created")).toHaveLength(1);
+          expect(f.calls.filter((call) => call === "provider-send")).toHaveLength(1);
         }).pipe(Effect.provide(f.layer));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

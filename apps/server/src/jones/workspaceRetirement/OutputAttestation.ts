@@ -3,6 +3,7 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 import * as NodeFS from "node:fs";
 import * as NodeCrypto from "node:crypto";
+import { readBreadcrumb } from "../workspaceRecreation/Native.ts";
 import {
   canonical,
   exists,
@@ -112,6 +113,11 @@ export async function binding(worktree: string): Promise<Binding> {
       breadcrumb_id = value.breadcrumb_id ?? value.incarnation_id;
       if (typeof breadcrumb_id !== "string" || !breadcrumb_id) throw new Error("identity_mismatch");
     }
+    const recreated = await readBreadcrumb(git_dir);
+    if (recreated !== null)
+      breadcrumb_id = sha256(
+        canonical({ provenance: breadcrumb_id, recreation: recreated.breadcrumb }),
+      );
     return {
       path,
       dev: safeNumber(rs.dev),

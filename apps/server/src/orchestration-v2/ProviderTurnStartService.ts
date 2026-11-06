@@ -1,3 +1,4 @@
+import * as CheckoutRecreation from "../jones/workspaceRecreation/Runtime.ts";
 import * as WorkspaceDuty from "../jones/workspaceRetirement/Duty.ts";
 import * as ConversationPolicy from "../jones/conversationWorkspace/ConversationPolicy.ts";
 import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
@@ -55,7 +56,6 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -67,7 +67,6 @@ import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
-import * as GitWorkflowService from "../git/GitWorkflowService.ts";
 import * as ProjectService from "../project/ProjectService.ts";
 import * as ProviderAuthService from "../provider/ProviderAuthService.ts";
 import * as ServerSettings from "../serverSettings.ts";
@@ -178,7 +177,6 @@ export const layer: Layer.Layer<
   | FileSystem.FileSystem
   | Path.Path
   | ServerConfig.ServerConfig
-  | GitWorkflowService.GitWorkflowService
   | ProjectService.ProjectService
   | ProviderAuthService.ProviderAuthService
   | ProjectionStore.ProjectionStoreV2
@@ -204,7 +202,6 @@ export const layer: Layer.Layer<
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const gitWorkflow = yield* GitWorkflowService.GitWorkflowService;
     const projects = yield* ProjectService.ProjectService;
     const providerAuth = yield* ProviderAuthService.ProviderAuthService;
     const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
@@ -875,66 +872,61 @@ export const layer: Layer.Layer<
         }
       }
       let recreatedWorkspace = false;
-      const { worktreePath, branch } = projection.thread;
-      if (worktreePath !== null && branch !== null) {
-        const existence = fileSystem.exists(worktreePath);
-        const exists = yield* input.nativeCreationGuard === undefined
-          ? existence.pipe(Effect.orElseSucceed(() => true))
-          : existence;
-        if (!exists && input.nativeCreationGuard !== undefined)
+      const { worktreePath } = projection.thread;
+      if (worktreePath !== null) {
+        if (input.nativeCreationGuard !== undefined && !(yield* fileSystem.exists(worktreePath)))
           return yield* new ProviderTurnStartError({
             runId,
             cause: "Native verified workspace disappeared; ordinary recreation is unavailable.",
           });
-        if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
-          yield* WorkspaceLifecycle.beforeUse({
+        const project = yield* projects
+          .getById(projection.thread.projectId)
+          .pipe(Effect.map(Option.getOrUndefined));
+        if (project !== undefined) {
+          const recreated = yield* CheckoutRecreation.prepareTurn({
             threadId: input.threadId,
-            boundary: "recreate",
-            fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
+            runId,
+            projectRoot: project.workspaceRoot,
+            worktree: worktreePath,
+            managed: yield* isManagedWorktreePath(worktreePath),
+            nativeGuarded: input.nativeCreationGuard !== undefined,
+            ...(message.context?.checkoutRecreation === undefined
+              ? {}
+              : { detached: message.context.checkoutRecreation }),
           }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
-          const project = yield* projects.getById(projection.thread.projectId).pipe(
-            Effect.map(Option.getOrUndefined),
-            Effect.orElseSucceed(() => undefined),
-          );
-          if (project !== undefined) {
-            yield* Effect.logWarning("provider turn start recreating missing worktree", {
-              threadId: projection.thread.id,
-              worktreePath,
-              branch,
-            });
-            yield* gitWorkflow.pruneWorktrees({ cwd: project.workspaceRoot }).pipe(
-              Effect.andThen(
-                WorkspaceLifecycle.beforeUse({
+          if (recreated !== null) {
+            const now = yield* DateTime.now;
+            yield* eventSink.writeIfRunCurrent({
+              threadId: input.threadId,
+              runId,
+              activeAttemptId: attempt.id,
+              expectedStatus: "starting",
+              checkoutRecreation: { worktreePath, branch: projection.thread.branch },
+              events: [
+                {
+                  type: "thread.metadata-updated",
+                  id: yield* idAllocator.allocate.event({ threadId: input.threadId }),
                   threadId: input.threadId,
-                  boundary: "recreate",
-                  fallback: {
-                    id: `turn-start:${runId}`,
-                    request: { runId, threadId: input.threadId },
+                  occurredAt: now,
+                  payload: {
+                    ...projection.thread,
+                    worktreePath: recreated.path,
+                    branch: recreated.branch?.replace(/^refs\/heads\//, "") ?? null,
+                    updatedAt: now,
                   },
-                }),
-              ),
-              Effect.andThen(
-                gitWorkflow.createWorktree({
-                  cwd: project.workspaceRoot,
-                  refName: branch,
-                  path: worktreePath,
-                }),
-              ),
-              Effect.tap(() =>
-                Effect.sync(() => {
-                  recreatedWorkspace = true;
-                }),
-              ),
-              Effect.catchCause((cause) =>
-                Cause.hasInterruptsOnly(cause)
-                  ? Effect.failCause(cause)
-                  : Effect.logWarning("provider turn start failed to recreate worktree", {
-                      threadId: projection.thread.id,
-                      worktreePath,
-                      cause: Cause.pretty(cause),
-                    }),
-              ),
-            );
+                },
+              ],
+            });
+            projection = yield* projectionStore.getTurnStartContext(input.threadId, runId);
+            if (
+              projection.thread.worktreePath !== recreated.path ||
+              projection.thread.branch !== (recreated.branch?.replace(/^refs\/heads\//, "") ?? null)
+            )
+              return yield* new ProviderTurnStartError({
+                runId,
+                cause: "Checkout recreation binding changed before use.",
+              });
+            recreatedWorkspace = true;
           }
         }
       }
@@ -2328,18 +2320,21 @@ export const layer: Layer.Layer<
             input.runId,
           );
           const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
-          yield* WorkspaceDuty.withDuty(
-            thread.worktreePath,
-            "turn",
+          yield* CheckoutRecreation.withTurnClaims(
             input.runId,
-            Effect.gen(function* () {
-              const providerTurn = yield* start({
-                threadId: input.threadId,
-                runId: input.runId,
-                nativeCreationGuard: input.guard,
-              });
-              if (providerTurn !== undefined) yield* providerTurn;
-            }),
+            WorkspaceDuty.withDuty(
+              thread.worktreePath,
+              "turn",
+              input.runId,
+              Effect.gen(function* () {
+                const providerTurn = yield* start({
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  nativeCreationGuard: input.guard,
+                });
+                if (providerTurn !== undefined) yield* providerTurn;
+              }),
+            ),
           );
           const evidence = NativeProvider.readNativeProviderAcknowledgement(input.guard);
           if (evidence === undefined)
@@ -2370,16 +2365,19 @@ export const layer: Layer.Layer<
           // Storage cleanup removes worktrees under the same lease. Only startup
           // holds it; the provider turn runs after it is released.
           const { thread } = yield* projectionStore.getThreadRecords(input.threadId, []);
-          yield* WorkspaceDuty.withDuty(
-            thread.worktreePath,
-            "turn",
+          yield* CheckoutRecreation.withTurnClaims(
             input.runId,
-            Effect.gen(function* () {
-              const providerTurn = yield* thread.worktreePath === null
-                ? start(input)
-                : withWorkspaceLease(path.resolve(thread.worktreePath), start(input));
-              if (providerTurn !== undefined) yield* providerTurn;
-            }),
+            WorkspaceDuty.withDuty(
+              thread.worktreePath,
+              "turn",
+              input.runId,
+              Effect.gen(function* () {
+                const providerTurn = yield* thread.worktreePath === null
+                  ? start(input)
+                  : withWorkspaceLease(path.resolve(thread.worktreePath), start(input));
+                if (providerTurn !== undefined) yield* providerTurn;
+              }),
+            ),
           );
         },
         (effect, input) =>

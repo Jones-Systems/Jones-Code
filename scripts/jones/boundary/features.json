@@ -4,6 +4,33 @@
   "baseline": "0a3b561bc0901d8fa47e430fc9d8593918cde978",
   "features": [
     {
+      "id": "workspace-recreation",
+      "tests": [
+        "apps/server/src/jones/workspaceRecreation/Native.test.ts",
+        "apps/server/src/jones/workspaceRecreation/Runtime.test.ts",
+        "apps/server/src/jones/workspaceRecreation/BindingCommit.test.ts",
+        "packages/contracts/src/jones/workspaceRecreation.test.ts",
+        "apps/server/src/jones/settlementRestore/SettlementRestore.integration.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/NativeSource.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/NativeStart.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ManagedConsumers.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/RuntimeIntegration.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/ManagedCleanup.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/WorkspaceLifecycle.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/Provenance.test.ts",
+        "apps/server/src/jones/workspaceLifecycle/Provenance.integration.test.ts",
+        "apps/server/src/orchestration-v2/ProviderTurnStartService.test.ts",
+        "apps/server/src/orchestration-v2/ProviderSessionManager.test.ts",
+        "apps/server/src/orchestration-v2/ThreadLaunchService.test.ts",
+        "apps/server/src/storageCleanup.test.ts",
+        "packages/contracts/src/composerContext.test.ts",
+        "packages/contracts/src/environment.test.ts",
+        "packages/contracts/src/settings.test.ts",
+        "packages/shared/src/projectSettings.test.ts"
+      ],
+      "scope": "C8 claim-held recreation from terminal receipts, exact stale registration removal with reflog refs, typed branch holds, explicit receipt-bound detached requests, new breadcrumbs and source-generation invalidation, and settlement restore deferring checkout work to the next turn. V3 branch-only registry wire schema remains unchanged; detached recreation has native duty exclusion and provenance without claiming branch-only registry registration."
+    },
+    {
       "id": "workspace-retirement-settlement",
       "tests": [
         "apps/server/scripts/jones/currentFixtures.test.ts",
