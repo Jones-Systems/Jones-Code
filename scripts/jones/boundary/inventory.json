@@ -2235,7 +2235,9 @@
     "apps/server/src/jones/workstreams/native/runtime/descriptor.ts": "jones-owned",
     "packages/shared/src/atomicWrite.ts": "accepted-shared",
     "packages/shared/src/atomicWrite.test.ts": "accepted-shared",
-    "apps/server/src/serverRuntimeState.ts": "hook"
+    "apps/server/src/serverRuntimeState.ts": "hook",
+    "apps/server/src/jones/workstreams/operations/cliSession.ts": "jones-owned",
+    "apps/server/src/jones/workstreams/operations/cliSession.test.ts": "jones-owned"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",

@@ -1,25 +1,19 @@
-import {
-  AuthStandardClientScopes,
-  EnvironmentHttpApi,
-  T3WorkstreamListResult,
-} from "@t3tools/contracts";
+import { EnvironmentHttpApi, T3WorkstreamListResult } from "@t3tools/contracts";
 import * as Operations from "@t3tools/contracts/jones/workstreamOperations";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 import { FetchHttpClient, HttpClientError } from "effect/http";
 import * as HttpApiClient from "effect/http-api/HttpApiClient";
-import * as EnvironmentAuth from "../../../auth/EnvironmentAuth.ts";
-import * as ServerConfig from "../../../config.ts";
 import {
   projectLocationFlags,
   resolveCliAuthConfig,
   type CliAuthLocationFlags,
 } from "../../../cli/config.ts";
-import { readPersistedServerRuntimeState } from "../../../serverRuntimeState.ts";
+import { withSelectedCliResources } from "../native/runtime/peerSetupCli.ts";
+import { withWorkstreamCliSession } from "./cliSession.ts";
 
 export class WorkstreamCliError extends Schema.TaggedError<WorkstreamCliError>()(
   "WorkstreamCliError",
@@ -56,6 +50,17 @@ export class WorkstreamCliError extends Schema.TaggedError<WorkstreamCliError>()
     return `${advice}${this.operation_id === undefined ? "" : ` Operation ${this.operation_id}: read status, then retry the identical request with the SAME ID. Do not assume no change occurred.`}`;
   }
 }
+
+const decodeSubmit = Schema.decodeUnknownEffect(Operations.WorkstreamOperationSubmitRequest);
+const isOperationResult = Schema.is(Operations.WorkstreamOperationResult);
+const isSetupStatus = Schema.is(Operations.WorkstreamSetupStatus);
+const isOperationConflict = Schema.is(Operations.EnvironmentWorkstreamOperationConflictError);
+const encodeJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const isCliError = Schema.is(WorkstreamCliError);
+const decodeRequestJson = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Operations.WorkstreamOperationRequest),
+);
+const decodeRead = Schema.decodeUnknownEffect(Operations.WorkstreamOperationReadRequest);
 
 export interface WorkstreamCliPort {
   readonly list: (input: {
@@ -108,9 +113,10 @@ export const dispatchWorkstreamCli = (
       });
     default:
       return Effect.gen(function* () {
-        const payload = yield* Schema.decodeUnknownEffect(
-          Operations.WorkstreamOperationSubmitRequest,
-        )({ request: input.request, wait_ms: input.wait_ms }).pipe(
+        const payload = yield* decodeSubmit({
+          request: input.request,
+          wait_ms: input.wait_ms,
+        }).pipe(
           Effect.mapError((cause) => new WorkstreamCliError({ code: "invalid_request", cause })),
         );
         const request = payload.request;
@@ -130,7 +136,7 @@ export const dispatchWorkstreamCli = (
 
 export const formatWorkstreamCliResult = (result: unknown): string => {
   const json = JSON.stringify(result, null, 2);
-  if (Schema.is(Operations.WorkstreamOperationResult)(result)) {
+  if (isOperationResult(result)) {
     const done = result.state === "committed" || result.state === "already_satisfied";
     const next = done
       ? "Confirmed."
@@ -150,14 +156,14 @@ export const formatWorkstreamCliResult = (result: unknown): string => {
             : "Not confirmed. This failure is sealed. Resubmit the identical request with the same ID to refresh it, or start a new operation.";
     return `${result.state}${result.reason === null ? "" : ` (${result.reason})`}: ${result.operation_id}\n${next}\n${json}`;
   }
-  if (Schema.is(Operations.WorkstreamSetupStatus)(result)) {
+  if (isSetupStatus(result)) {
     return `Activation: ${result.activation.state}; registry: ${result.registry.state}; source: ${result.t3_source.reason ?? "ready"}; placements: ${result.placements.readiness}\n${result.next_steps.map((step) => `${step.code}: ${step.doc}`).join("\n")}\n${json}`;
   }
   return json;
 };
 
 export const workstreamCliRequestError = (cause: unknown, operation_id?: string) => {
-  if (Schema.is(Operations.EnvironmentWorkstreamOperationConflictError)(cause))
+  if (isOperationConflict(cause))
     return new WorkstreamCliError({
       ...cause,
       ...(operation_id === undefined ? {} : { operation_id }),
@@ -213,33 +219,22 @@ const runLive = Effect.fn("WorkstreamCli.runLive")(function* (
   json: boolean,
 ) {
   const config = yield* resolveCliAuthConfig(flags, yield* GlobalFlag.LogLevel);
-  // Follow the existing project CLI's local instance and short-lived auth session conventions.
-  const runtime = yield* readPersistedServerRuntimeState(config.serverRuntimeStatePath);
-  if (Option.isNone(runtime)) return yield* new WorkstreamCliError({ code: "offline" });
-  return yield* Effect.gen(function* () {
-    const auth = yield* EnvironmentAuth.EnvironmentAuth;
-    return yield* Effect.acquireUseRelease(
-      auth.issueSession({ scopes: AuthStandardClientScopes, label: "t3 workstream cli" }),
-      (issued) =>
-        Effect.gen(function* () {
-          const port = yield* makeWorkstreamCliHttpPort(runtime.value.origin, {
-            authorization: `Bearer ${issued.token}`,
-          });
-          const result = yield* dispatchWorkstreamCli(port, input);
-          const output = json
-            ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result)
-            : formatWorkstreamCliResult(result);
-          yield* Console.log(output);
-        }),
-      (issued) => auth.revokeSession(issued.sessionId).pipe(Effect.ignore({ log: true })),
-    );
-  }).pipe(
+  return yield* withSelectedCliResources(config.baseDir, (origin) =>
+    withWorkstreamCliSession(input.command !== "list" && input.command !== "status", (issued) =>
+      Effect.gen(function* () {
+        const port = yield* makeWorkstreamCliHttpPort(origin, {
+          authorization: `Bearer ${issued.token}`,
+        });
+        const result = yield* dispatchWorkstreamCli(port, input);
+        const output = json ? yield* encodeJson(result) : formatWorkstreamCliResult(result);
+        yield* Console.log(output);
+      }),
+    ),
+  ).pipe(
+    Effect.provide(FetchHttpClient.layer),
     Effect.scoped,
-    Effect.provide(
-      EnvironmentAuth.layerRuntime.pipe(
-        Layer.provideMerge(FetchHttpClient.layer),
-        Layer.provide(ServerConfig.layer(config)),
-      ),
+    Effect.mapError((cause) =>
+      isCliError(cause) ? cause : new WorkstreamCliError({ code: "request_failed", cause }),
     ),
   );
 });
@@ -276,9 +271,7 @@ const mutationCommand = <E, R>(
     ),
     Command.withHandler((flags) =>
       Effect.gen(function* () {
-        const request = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(Operations.WorkstreamOperationRequest),
-        )(flags.request).pipe(
+        const request = yield* decodeRequestJson(flags.request).pipe(
           Effect.mapError((cause) => new WorkstreamCliError({ code: "invalid_request", cause })),
         );
         return yield* run(flags, { command, request, wait_ms: flags.waitMs }, flags.json);
@@ -341,9 +334,7 @@ export const makeWorkstreamOperationCommands = <E, R>(run: WorkstreamCliRunner<E
         const query =
           raw === undefined
             ? undefined
-            : yield* Schema.decodeUnknownEffect(Operations.WorkstreamOperationReadRequest)(
-                raw,
-              ).pipe(
+            : yield* decodeRead(raw).pipe(
                 Effect.mapError(
                   (cause) => new WorkstreamCliError({ code: "invalid_request", cause }),
                 ),

@@ -63,6 +63,15 @@ prove absence. Open operations and external reservations must be reconciled at
 their original destination; never retarget them or dispatch settlement blindly.
 Retained terminal records have no automatic deletion path.
 
+Ordinary local `workstream create`, `assign` and `unassign` commands retain one
+bounded Workstreams CLI client session in the selected server. Later `status`
+and identical retries use that same current client; the token is held only in
+memory. Its original expiry is not extended. Revoking that client in Access or
+letting it expire also removes its permission to inspect or retry its accepted
+operations. A new client does not inherit them. Read-only commands alone create
+only a temporary read session. Keep the same base directory, operation ID and
+exact request when recovering an unknown outcome.
+
 Qualified member forwarding also accepts raw linked-PR refresh commands. The home
 uses its configured GitHub observer for the reference's original source and
 locator; it does not relay the request through another source. Missing GitHub

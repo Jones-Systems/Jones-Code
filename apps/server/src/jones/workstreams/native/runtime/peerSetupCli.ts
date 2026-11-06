@@ -373,10 +373,19 @@ export const existingReadExportCliSessionsLayer = makeExistingCliSessionsLayer("
 
 /** An explicit local command reuses only the selected live runtime and existing signing key.
  * No resolver, migration, key creation, runtime start or caller-selected URL is involved. */
-export const withSelectedCliSessions = Effect.fn("NativeCli.selectedSessions")(function* <A, E, R>(
+export const withSelectedCliResources = Effect.fn("NativeCli.selectedResources")(function* <
+  A,
+  E,
+  R,
+>(
   home: string,
-  purpose: "peer-setup" | "read-export",
-  use: (origin: string, sessions: PeerSetupCliSessions["Service"]) => Effect.Effect<A, E, R>,
+  use: (
+    origin: string,
+  ) => Effect.Effect<
+    A,
+    E,
+    R | SqlClient.SqlClient | AuthRows.AuthSessionRepository | Secrets.ServerSecretStore
+  >,
 ) {
   const stateDir = NodePath.join(home, "userdata"),
     dbPath = NodePath.join(stateDir, "statev2.sqlite");
@@ -439,19 +448,32 @@ export const withSelectedCliSessions = Effect.fn("NativeCli.selectedSessions")(f
       });
     }).pipe(Effect.scoped),
   );
-  const sessionLayer = (
-    purpose === "peer-setup" ? existingCliSessionsLayer : existingReadExportCliSessionsLayer
-  ).pipe(
-    Layer.provideMerge(selected),
+  const resources = selected.pipe(
     Layer.provideMerge(AuthRows.layer),
     Layer.provideMerge(NodeSqlite.layer(sqlite)),
-    Layer.provide(secrets),
-    Layer.catch(() => Layer.effect(PeerSetupCliSessions, Effect.fail(unavailable()))),
+    Layer.provideMerge(secrets),
   );
-  return yield* Effect.flatMap(PeerSetupCliSessions, (sessions) =>
-    use("http://127.0.0.1:" + runtime.port, sessions),
-  ).pipe(Effect.provide(sessionLayer), Effect.scoped);
+  return yield* use("http://127.0.0.1:" + runtime.port).pipe(
+    Effect.provide(resources),
+    Effect.scoped,
+  );
 });
+
+/** Purpose-specific short-lived setup/export sessions retain their existing lifecycle. */
+export const withSelectedCliSessions = Effect.fn("NativeCli.selectedSessions")(
+  <A, E, R>(
+    home: string,
+    purpose: "peer-setup" | "read-export",
+    use: (origin: string, sessions: PeerSetupCliSessions["Service"]) => Effect.Effect<A, E, R>,
+  ) =>
+    withSelectedCliResources(home, (origin) =>
+      Effect.flatMap(PeerSetupCliSessions, (sessions) => use(origin, sessions)).pipe(
+        Effect.provide(
+          purpose === "peer-setup" ? existingCliSessionsLayer : existingReadExportCliSessionsLayer,
+        ),
+      ),
+    ),
+);
 const runLive = Effect.fn("PeerSetupCli.live")(
   (home: string, input: W.WorkstreamsPeerSetupOwnerRequest) =>
     withSelectedCliSessions(home, "peer-setup", (origin, sessions) =>
