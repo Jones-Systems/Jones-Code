@@ -522,13 +522,11 @@ describe("jones-sqlite-health — closed fixture integration", () => {
         status: "completed",
         count: "21",
       });
-      expect(
-        report.results.counts.data?.find((row) => row.name === "commandReceipts")?.count,
-      ).toBe("9");
+      expect(report.results.counts.data?.find((row) => row.name === "commandReceipts")?.count).toBe(
+        "9",
+      );
       expect(report.results.counts.data?.find((row) => row.name === "threads")?.count).toBe("2");
-      expect(
-        report.results.counts.data?.find((row) => row.name === "messages")?.count,
-      ).toBe("12");
+      expect(report.results.counts.data?.find((row) => row.name === "messages")?.count).toBe("12");
       expect(report.results.counts.data?.find((row) => row.name === "runs")?.count).toBe("6");
       expect(report.results.integrity.data?.passed).toBe(true);
       expect(report.results.foreignKeys.data?.passed).toBe(true);
