@@ -18,6 +18,7 @@ import {
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as CodexClient from "effect-codex-app-server/client";
 import * as Replay from "effect-codex-app-server/replay";
+import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -26,10 +27,12 @@ import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -1089,6 +1092,35 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const traceRecovery = Effect.fn("CodexStartupTest.traceCacheHandoff")(
+          function* (stage: string, failure?: string) {
+            if (!cancelledHandoff) return "";
+            const projection = yield* orchestrator.getThreadProjection(threadId);
+            const replayState = yield* Ref.get(replay.state);
+            const diagnostic = yield* Schema.encodeEffect(
+              Schema.fromJsonString(Schema.Unknown),
+            )({
+              stage,
+              failure,
+              runs: projection.runs,
+              errors: projection.turnItems.flatMap((item) =>
+                item.type === "error" ? [{ title: item.title, failure: item.failure }] : [],
+              ),
+              publicationLookups,
+              requests,
+              replay: {
+                cursor: replayState.cursor,
+                failureMessage: replayState.failure?.message ?? null,
+                entries: replay.transcript.entries.length,
+              },
+            });
+            yield* Effect.logInfo("Synthetic cache handoff checkpoint", diagnostic).pipe(
+              Effect.provideService(References.MinimumLogLevel, "Info"),
+              Effect.withLogger(Logger.consoleLogFmt),
+            );
+            return diagnostic;
+          },
+        );
         const selection = { instanceId, model: "gpt-5.4" };
         yield* orchestrator.dispatch({
           type: "thread.create",
@@ -1130,7 +1162,9 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
               })
             : undefined;
         yield* send("failed-original", originalPrompt);
+        yield* traceRecovery("before-original-drain");
         yield* worker.drain();
+        yield* traceRecovery("after-original-drain");
         const failed = yield* orchestrator.getThreadProjection(threadId);
         assert.equal(publicationFailures, 1);
         assert.equal(failed.runs[0]?.status, "failed");
@@ -1163,10 +1197,25 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
           const cancelled = yield* withActiveEffectClaim(outbox, claimed, 30_000, true, (claim) =>
             Deferred.succeed(capturedClaim, claim).pipe(Effect.andThen(executor.execute(claimed))),
           ).pipe(Effect.exit, Effect.forkScoped({ startImmediately: true }));
-          yield* Deferred.await(cacheHandoffEntered);
+          yield* traceRecovery("waiting-for-completed-handoff");
+          yield* Effect.raceFirst(
+            Deferred.await(cacheHandoffEntered),
+            Fiber.join(cancelled).pipe(
+              Effect.flatMap((exit) =>
+                traceRecovery(
+                  "claimed-executor-exited-before-handoff",
+                  Exit.isFailure(exit) ? Cause.pretty(exit.cause).slice(0, 8_000) : "Success",
+                ),
+              ),
+              Effect.flatMap((diagnostic) => Effect.die(diagnostic)),
+            ),
+          );
+          yield* traceRecovery("completed-handoff-entered");
           const claim = yield* Deferred.await(capturedClaim);
           yield* claim.invalidate("synthetic claim loss after completed publication");
+          yield* traceRecovery("claim-invalidated");
           const cancelledExit = yield* Fiber.join(cancelled);
+          yield* traceRecovery("cancelled-executor-exited");
           assert.isTrue(Exit.isFailure(cancelledExit));
           if (Exit.isFailure(cancelledExit))
             assert.isDefined(findEffectClaimLost(cancelledExit.cause));
@@ -1204,8 +1253,10 @@ it.effect.each(["local-recovery", "unknown-steer", "cancelled-cache-handoff"] as
             : undefined;
         yield* send("new-owner", newPrompt);
         yield* worker.drain();
+        yield* traceRecovery("final-start-drained");
         if (terminal !== undefined) {
           yield* Fiber.join(terminal);
+          yield* traceRecovery("final-terminal-observed");
           yield* worker.drain();
         }
         const recovered = yield* orchestrator.getThreadProjection(threadId);
