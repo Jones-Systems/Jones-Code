@@ -548,7 +548,11 @@ async function recreateNative(input: RecreationInput): Promise<RecreationResult>
     )) !== source.binding.git_common_dir
   )
     throw hold("unknown", "receipt common-store identity unavailable");
-  const directory = NodePath.join(source.binding.git_common_dir, "workspace-lifecycle", "recreations");
+  const directory = NodePath.join(
+    source.binding.git_common_dir,
+    "workspace-lifecycle",
+    "recreations",
+  );
   await NodeFSP.mkdir(directory, { recursive: true });
   const journal = journalPath(source);
   const journalExists = await exists(journal);

@@ -29,7 +29,10 @@ const commit = (cwd: string, message: string) =>
     message,
   ]);
 export async function partialSource(repo: string, checkout: string) {
-  await NodeFSP.writeFile(NodePath.join(checkout, ".gitattributes"), "tracked filter=fixture-failure\n");
+  await NodeFSP.writeFile(
+    NodePath.join(checkout, ".gitattributes"),
+    "tracked filter=fixture-failure\n",
+  );
   await g(checkout, ["add", ".gitattributes"]);
   await commit(checkout, "required population filter");
   await g(repo, ["config", "filter.fixture-failure.smudge", "false"]);
@@ -84,7 +87,12 @@ export async function acquireNativeFixture(): Promise<NativeFixture> {
       repo,
       checkout,
       source,
-      input: { cwd: repo, source, owner: "turn-j4", alternatePath: NodePath.join(root, "alternate") },
+      input: {
+        cwd: repo,
+        source,
+        owner: "turn-j4",
+        alternatePath: NodePath.join(root, "alternate"),
+      },
     };
     fixtureOwners.set(fixture, identity);
     return fixture;
@@ -103,7 +111,7 @@ export async function releaseNativeFixture(fixture: NativeFixture) {
   await cleanupFixture(fixture.root, identity);
   fixtureOwners.delete(fixture);
 }
-export async function withNativeFixture<A>(action: (f: NativeFixture) => Promise<A>) {
+async function withNativeFixture<A>(action: (f: NativeFixture) => Promise<A>) {
   const fixture = await acquireNativeFixture();
   try {
     return await action(fixture);
@@ -115,32 +123,33 @@ const fixture = withNativeFixture;
 const held = (reason: RecreationHold["reason"]) => (cause: unknown) =>
   cause instanceof RecreationHold && cause.reason === reason;
 export const nativeCases: Record<string, () => Promise<void>> = {
-  "acknowledged manual recreation allows the next descendant commit only in the same incarnation": () =>
-    fixture(async ({ repo, checkout, input, root }) => {
-      await NodeFSP.rm(checkout, { recursive: true });
-      const source = await missingSource(repo, checkout);
-      const result = await recreate({ ...input, source });
-      const physical = incarnation(await binding(checkout));
-      await acknowledgeInvalidation(result);
-      await commit(checkout, "ordinary next commit");
-      const head = await g(checkout, ["rev-parse", "HEAD"]);
-      NodeAssert.notEqual(head, result.head);
-      const before = await g(repo, ["worktree", "list", "--porcelain", "-z"]);
-      NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
-      NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
-      NodeAssert.equal(incarnation(await binding(checkout)), physical);
-      NodeAssert.equal(await g(checkout, ["rev-parse", "HEAD"]), head);
-      NodeAssert.equal(await g(repo, ["worktree", "list", "--porcelain", "-z"]), before);
-      NodeAssert.equal(await exists(input.alternatePath), false);
-      await NodeAssert.rejects(recreate({ ...input, source }), held("unknown"));
-      const moved = NodePath.join(root, "original-incarnation");
-      await NodeFSP.rename(checkout, moved);
-      await NodeFSP.mkdir(checkout);
-      await NodeFSP.copyFile(NodePath.join(moved, ".git"), NodePath.join(checkout, ".git"));
-      await NodeAssert.rejects(knownRecreation(repo, checkout), held("unknown"));
-      NodeAssert.equal(await g(repo, ["rev-parse", "refs/heads/task"]), head);
-      NodeAssert.equal(await exists(input.alternatePath), false);
-    }),
+  "acknowledged manual recreation allows the next descendant commit only in the same incarnation":
+    () =>
+      fixture(async ({ repo, checkout, input, root }) => {
+        await NodeFSP.rm(checkout, { recursive: true });
+        const source = await missingSource(repo, checkout);
+        const result = await recreate({ ...input, source });
+        const physical = incarnation(await binding(checkout));
+        await acknowledgeInvalidation(result);
+        await commit(checkout, "ordinary next commit");
+        const head = await g(checkout, ["rev-parse", "HEAD"]);
+        NodeAssert.notEqual(head, result.head);
+        const before = await g(repo, ["worktree", "list", "--porcelain", "-z"]);
+        NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
+        NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
+        NodeAssert.equal(incarnation(await binding(checkout)), physical);
+        NodeAssert.equal(await g(checkout, ["rev-parse", "HEAD"]), head);
+        NodeAssert.equal(await g(repo, ["worktree", "list", "--porcelain", "-z"]), before);
+        NodeAssert.equal(await exists(input.alternatePath), false);
+        await NodeAssert.rejects(recreate({ ...input, source }), held("unknown"));
+        const moved = NodePath.join(root, "original-incarnation");
+        await NodeFSP.rename(checkout, moved);
+        await NodeFSP.mkdir(checkout);
+        await NodeFSP.copyFile(NodePath.join(moved, ".git"), NodePath.join(checkout, ".git"));
+        await NodeAssert.rejects(knownRecreation(repo, checkout), held("unknown"));
+        NodeAssert.equal(await g(repo, ["rev-parse", "refs/heads/task"]), head);
+        NodeAssert.equal(await exists(input.alternatePath), false);
+      }),
   "an advanced HEAD without invalidation acknowledgement keeps strict creation readback": () =>
     fixture(async ({ repo, checkout, input }) => {
       await NodeFSP.rm(checkout, { recursive: true });
@@ -160,7 +169,10 @@ export const nativeCases: Record<string, () => Promise<void>> = {
       NodeAssert.equal(result.path, checkout);
       NodeAssert.equal(result.head, source.head);
       NodeAssert.equal(result.branch, source.branch);
-      NodeAssert.equal(await NodeFSP.readFile(NodePath.join(checkout, "tracked"), "utf8"), "retained source\n");
+      NodeAssert.equal(
+        await NodeFSP.readFile(NodePath.join(checkout, "tracked"), "utf8"),
+        "retained source\n",
+      );
       NodeAssert.notEqual(incarnation(await binding(checkout)), source.incarnation);
       NodeAssert.deepEqual(await readBreadcrumb((await binding(checkout)).git_dir), result);
       NodeAssert.deepEqual(await knownRecreation(repo, checkout), result);
@@ -246,7 +258,10 @@ export const nativeCases: Record<string, () => Promise<void>> = {
       await NodeFSP.writeFile(NodePath.join(checkout, "owner-data"), "untouched");
       const result = await recreate(input);
       NodeAssert.equal(result.path, input.alternatePath);
-      NodeAssert.equal(await NodeFSP.readFile(NodePath.join(checkout, "owner-data"), "utf8"), "untouched");
+      NodeAssert.equal(
+        await NodeFSP.readFile(NodePath.join(checkout, "owner-data"), "utf8"),
+        "untouched",
+      );
     }),
   "branch in another checkout holds without changing its HEAD or the missing path": () =>
     fixture(async ({ repo, checkout, input, root, source }) => {
@@ -310,7 +325,10 @@ export const nativeCases: Record<string, () => Promise<void>> = {
   "an interrupted recreation intent fences later turns instead of creating another checkout": () =>
     fixture(async ({ repo, checkout, source, input }) => {
       await g(repo, ["worktree", "remove", checkout]);
-      const directory = NodePath.join(source.binding.git_common_dir, "workspace-lifecycle/recreations");
+      const directory = NodePath.join(
+        source.binding.git_common_dir,
+        "workspace-lifecycle/recreations",
+      );
       await NodeFSP.mkdir(directory, { recursive: true });
       await NodeFSP.writeFile(
         NodePath.join(directory, sha256(source.id) + ".json"),
@@ -338,7 +356,10 @@ export const nativeCases: Record<string, () => Promise<void>> = {
       NodeAssert.equal(source.capturedConfig?.["core.sparsecheckout"], "true");
       const result = await recreate({ ...input, source });
       NodeAssert.equal(result.head, source.head);
-      NodeAssert.equal(await NodeFSP.readFile(NodePath.join(checkout, "included/file"), "utf8"), "retained\n");
+      NodeAssert.equal(
+        await NodeFSP.readFile(NodePath.join(checkout, "included/file"), "utf8"),
+        "retained\n",
+      );
       NodeAssert.equal(await exists(NodePath.join(checkout, "excluded/file")), false);
       NodeAssert.equal(await g(repo, ["rev-parse", "task"]), source.head);
     }),

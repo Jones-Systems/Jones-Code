@@ -369,7 +369,9 @@ export const fixture = Effect.gen(function* () {
     Layer.provide(platform),
   );
   const workflows = GitWorkflow.layer.pipe(
-    Layer.provide(Layer.mock(GitManager.GitManager)({ createWorktree: observedGit.createWorktree })),
+    Layer.provide(
+      Layer.mock(GitManager.GitManager)({ createWorktree: observedGit.createWorktree }),
+    ),
     Layer.provide(vcs),
     Layer.provide(Layer.succeed(Git.GitVcsDriver, observedGit)),
     Layer.provide(platform),

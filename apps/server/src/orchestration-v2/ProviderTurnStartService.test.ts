@@ -30,6 +30,7 @@ import {
   type ServerProvider,
   type OrchestrationV2ThreadProjection,
   OrchestrationV2DomainEvent,
+  OrchestrationV2AppThread,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as DateTime from "effect/DateTime";
@@ -133,10 +134,19 @@ const observedRecreationLayer = (
         Layer.provide(NodeServices.layer),
       );
 
+class NativeTurnStartFixtureError extends Schema.TaggedError<NativeTurnStartFixtureError>()(
+  "NativeTurnStartFixtureError",
+  { cause: Schema.Defect() },
+) {
+  override get message() {
+    return "Native turn-start fixture operation failed";
+  }
+}
+
 const nativeFixtureOperation = <A>(action: () => Promise<A>) =>
   Effect.tryPromise({
     try: action,
-    catch: (cause) => new Error("Native turn-start fixture operation failed", { cause }),
+    catch: (cause) => new NativeTurnStartFixtureError({ cause }),
   }).pipe(Effect.uninterruptible);
 const startRecreationFixture = Effect.gen(function* () {
   const fixture = yield* Effect.acquireRelease(
@@ -344,7 +354,11 @@ effectIt.effect(
       const hold = Layer.mock(WorkspaceLifecycle.WorkspaceLifecycle)({
         resume: () => Effect.fail(new LifecycleError({ reason: "unavailable" })),
       });
-      const harness = startWithMissingWorktree(`${managedWorktreesDir}/project/held`, undefined, hold);
+      const harness = startWithMissingWorktree(
+        `${managedWorktreesDir}/project/held`,
+        undefined,
+        hold,
+      );
       yield* harness.start;
       expect(harness.recreateCheckout).not.toHaveBeenCalled();
       expect(harness.startRootRun).not.toHaveBeenCalled();
@@ -425,7 +439,9 @@ effectIt.effect.each([
       yield* nativeFixtureOperation(() =>
         nativeGit(f.repo, ["worktree", "move", f.checkout, worktreePath]),
       );
-      prior = checkoutIncarnation(yield* nativeFixtureOperation(() => checkoutBinding(worktreePath)));
+      prior = checkoutIncarnation(
+        yield* nativeFixtureOperation(() => checkoutBinding(worktreePath)),
+      );
       yield* f.fs.remove(worktreePath, { recursive: true });
     }
     const harness = startWithMissingWorktree(worktreePath, realPaths, undefined, undefined, {
@@ -631,9 +647,25 @@ function makeLocalCommandHarness(input: {
       id: threadId,
       activeProviderThreadId: providerThreadId,
       projectId: ProjectId.make("project-native-account-command"),
+      title: "Native account command fixture",
+      createdBy: "user",
+      creationSource: "web",
+      providerInstanceId: run.providerInstanceId,
+      modelSelection: run.modelSelection,
+      runtimeMode: "full-access",
+      interactionMode: "default",
       branch: input.worktreePath === undefined ? null : "feature/restore",
       worktreePath: input.worktreePath ?? null,
-    } as OrchestrationV2ThreadProjection["thread"],
+      lineage: { rootThreadId: threadId, parentThreadId: null, relationshipToParent: null },
+      forkedFrom: null,
+      createdAt: now,
+      updatedAt: now,
+      archivedAt: null,
+      settledOverride: null,
+      settledAt: null,
+      lastVisitedAt: now,
+      deletedAt: null,
+    },
     runs: [
       ...(input.previousNativeSession
         ? [
@@ -1444,16 +1476,19 @@ effectIt.effect.each(["cleanup-first", "startup-first"])(
         },
         failReadsAfterRunning: true,
       });
+      expect(Schema.is(OrchestrationV2AppThread)(harness.projection().thread)).toBe(true);
       const open = harness.open.getMockImplementation()!;
       harness.open.mockImplementation((input) =>
         Effect.gen(function* () {
           expect(yield* fileSystem.exists(worktreePath).pipe(Effect.orDie)).toBe(true);
           const head = yield* nativeFixtureOperation(() =>
             nativeGit(worktreePath, ["rev-parse", "HEAD"]),
-          );
+          ).pipe(Effect.orDie);
           expect(head.toString().trim()).toBe(f.source.head);
           if (order === "cleanup-first") {
-            const current = yield* nativeFixtureOperation(() => checkoutBinding(worktreePath));
+            const current = yield* nativeFixtureOperation(() =>
+              checkoutBinding(worktreePath),
+            ).pipe(Effect.orDie);
             expect(checkoutIncarnation(current)).not.toBe(checkoutIncarnation(prior));
           }
           yield* Deferred.succeed(openEntered, undefined);
