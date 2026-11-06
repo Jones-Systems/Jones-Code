@@ -80,6 +80,8 @@ export type WorkstreamCliInput =
   | { readonly command: "status"; readonly query?: Operations.WorkstreamOperationReadRequest };
 
 /** No generated IDs, hidden retries, or client-side register/verify/mutate sequence. */
+const compiledDecodeEffect1 = Schema.decodeEffect(Operations.WorkstreamOperationSubmitRequest);
+
 export const dispatchWorkstreamCli = (
   port: WorkstreamCliPort,
   input: WorkstreamCliInput,
@@ -108,7 +110,7 @@ export const dispatchWorkstreamCli = (
       });
     default:
       return Effect.gen(function* () {
-        const payload = yield* Schema.decodeEffect(Operations.WorkstreamOperationSubmitRequest)({
+        const payload = yield* compiledDecodeEffect1({
           request: input.request,
           wait_ms: input.wait_ms,
         }).pipe(
@@ -129,9 +131,12 @@ export const dispatchWorkstreamCli = (
   }
 };
 
+const compiledIs2 = Schema.is(Operations.WorkstreamOperationResult);
+const compiledIs3 = Schema.is(Operations.WorkstreamSetupStatus);
+
 export const formatWorkstreamCliResult = (result: unknown): string => {
   const json = JSON.stringify(result, null, 2);
-  if (Schema.is(Operations.WorkstreamOperationResult)(result)) {
+  if (compiledIs2(result)) {
     const done = result.state === "committed" || result.state === "already_satisfied";
     const next = done
       ? "Confirmed."
@@ -151,14 +156,16 @@ export const formatWorkstreamCliResult = (result: unknown): string => {
             : "Not confirmed. This failure is sealed. Resubmit the identical request with the same ID to refresh it, or start a new operation.";
     return `${result.state}${result.reason === null ? "" : ` (${result.reason})`}: ${result.operation_id}\n${next}\n${json}`;
   }
-  if (Schema.is(Operations.WorkstreamSetupStatus)(result)) {
+  if (compiledIs3(result)) {
     return `Activation: ${result.activation.state}; registry: ${result.registry.state}; source: ${result.t3_source.reason ?? "ready"}; placements: ${result.placements.readiness}\n${result.next_steps.map((step) => `${step.code}: ${step.doc}`).join("\n")}\n${json}`;
   }
   return json;
 };
 
+const compiledIs4 = Schema.is(Operations.EnvironmentWorkstreamOperationConflictError);
+
 export const workstreamCliRequestError = (cause: unknown, operation_id?: string) => {
-  if (Schema.is(Operations.EnvironmentWorkstreamOperationConflictError)(cause))
+  if (compiledIs4(cause))
     return new WorkstreamCliError({
       ...cause,
       ...(operation_id === undefined ? {} : { operation_id }),
@@ -208,6 +215,8 @@ export const makeWorkstreamCliHttpPort = Effect.fn("WorkstreamCli.makeWorkstream
   },
 );
 
+const compiledEncodeEffect5 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 const runLive = Effect.fn("WorkstreamCli.runLive")(function* (
   flags: CliAuthLocationFlags,
   input: WorkstreamCliInput,
@@ -228,7 +237,7 @@ const runLive = Effect.fn("WorkstreamCli.runLive")(function* (
           });
           const result = yield* dispatchWorkstreamCli(port, input);
           const output = json
-            ? yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(result)
+            ? yield* compiledEncodeEffect5(result)
             : formatWorkstreamCliResult(result);
           yield* Console.log(output);
         }),
@@ -267,6 +276,10 @@ type WorkstreamCliRunner<E, R> = (
   json: boolean,
 ) => Effect.Effect<void, E, R>;
 
+const compiledDecodeEffect6 = Schema.decodeEffect(
+  Schema.fromJsonString(Operations.WorkstreamOperationRequest),
+);
+
 const mutationCommand = <E, R>(
   run: WorkstreamCliRunner<E, R>,
   command: "create" | "assign" | "unassign",
@@ -277,15 +290,17 @@ const mutationCommand = <E, R>(
     ),
     Command.withHandler((flags) =>
       Effect.gen(function* () {
-        const request = yield* Schema.decodeEffect(
-          Schema.fromJsonString(Operations.WorkstreamOperationRequest),
-        )(flags.request).pipe(
+        const request = yield* compiledDecodeEffect6(flags.request).pipe(
           Effect.mapError((cause) => new WorkstreamCliError({ code: "invalid_request", cause })),
         );
         return yield* run(flags, { command, request, wait_ms: flags.waitMs }, flags.json);
       }),
     ),
   );
+const compiledDecodeUnknownEffect7 = Schema.decodeUnknownEffect(
+  Operations.WorkstreamOperationReadRequest,
+);
+
 export const makeWorkstreamOperationCommands = <E, R>(run: WorkstreamCliRunner<E, R>) => [
   Command.make("list", {
     ...common,
@@ -342,9 +357,7 @@ export const makeWorkstreamOperationCommands = <E, R>(run: WorkstreamCliRunner<E
         const query =
           raw === undefined
             ? undefined
-            : yield* Schema.decodeUnknownEffect(Operations.WorkstreamOperationReadRequest)(
-                raw,
-              ).pipe(
+            : yield* compiledDecodeUnknownEffect7(raw).pipe(
                 Effect.mapError(
                   (cause) => new WorkstreamCliError({ code: "invalid_request", cause }),
                 ),

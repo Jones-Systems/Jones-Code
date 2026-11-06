@@ -117,6 +117,8 @@ it.effect.each(["codex", "opencode"] as const)(
         Layer.mergeAll(
           layer,
           Layer.mock(Sessions.ProviderSessionManagerV2)({
+            awaitThreadRetirement: () => Effect.void,
+            hasRetiredWriter: () => Effect.succeed(false),
             detach: () =>
               Effect.die("An unchanged shared conversation must not retire its writer."),
           }),

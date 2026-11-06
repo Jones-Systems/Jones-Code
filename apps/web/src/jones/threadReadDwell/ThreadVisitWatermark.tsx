@@ -20,7 +20,7 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
   const shouldRecordOpenRef = useRef(false);
   const controllerRef = useRef<ReturnType<typeof createThreadReadDwell> | null>(null);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the dwell controller and browser focus/visibility listeners for the mounted thread view.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the dwell controller and browser focus/visibility listeners for the mounted thread view.
   useEffect(() => {
     const controller = createThreadReadDwell();
     controllerRef.current = controller;
@@ -39,7 +39,7 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
     };
   }, []);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Record an open claim once the selected server thread becomes available after asynchronous loading.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Record an open claim once the selected server thread becomes available after asynchronous loading.
   useEffect(() => {
     if (!serverThread || openedThreadRef.current === threadKey) return;
     openedThreadRef.current = threadKey;
@@ -50,7 +50,7 @@ export function ThreadVisitWatermark(props: { readonly threadRef: ScopedThreadRe
     );
   }, [serverThread, threadKey]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- Synchronize the dwell controller with committed thread watermarks and unread state.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Synchronize the dwell controller with committed thread watermarks and unread state.
   useEffect(() => {
     controllerRef.current?.update(
       serverThread === null

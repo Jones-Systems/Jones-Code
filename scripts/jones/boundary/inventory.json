@@ -676,8 +676,8 @@
     "apps/server/src/jones/persistence/Migrations/134_JonesGoalContinuity.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.test.ts": "jones-owned",
     "apps/server/src/jones/persistence/Migrations/135_JonesIdleWorktreeAdmission.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/139_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
-    "apps/server/src/jones/persistence/Migrations/139_JonesWorkspaceRuntimeUses.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/140_JonesWorkspaceRuntimeUses.test.ts": "jones-owned",
+    "apps/server/src/jones/persistence/Migrations/140_JonesWorkspaceRuntimeUses.ts": "jones-owned",
     "apps/server/src/jones/persistence/UpstreamIsolation.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/OrchestratorMcpService.test.ts": "jones-owned",
     "apps/server/src/jones/platformCompatibility/mcp/ThreadMetadataMcpService.test.ts": "jones-owned",
@@ -2701,7 +2701,20 @@
     "scripts/jones/boundary/fragments/dev-proxy-cookie-auth.json": "jones-owned",
     "packages/shared/src/devProxy.ts": "accepted-shared",
     "apps/server/src/jones/mcp/threadContentEvidence.test.ts": "jones-owned",
-    "scripts/jones/updates/packaged-desktop-pair.node-test.mjs": "jones-owned"
+    "scripts/jones/updates/packaged-desktop-pair.node-test.mjs": "jones-owned",
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/accountTransferRetirement.test.ts": "jones-owned",
+    "apps/server/src/jones/providerRetirement/AccountTransferRetirement.integration.test.ts": "jones-owned",
+    "packages/contracts/src/worktreeMcp.ts": "accepted-shared",
+    "apps/web/src/jones/markdownTables/useMarkdownTableExpansion.tsx": "jones-owned",
+    "apps/web/src/jones/markdownTables/markdownTables.css": "jones-owned",
+    "apps/mobile/src/state/threads.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/peer/PeerLinkRequests.test.ts": "jones-tests-in-upstream",
+    "apps/server/src/provider/acp/AcpJsonRpcConnection.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/ProviderUpdatesAction.browser.test.tsx": "jones-tests-in-upstream",
+    "apps/web/src/hooks/useThreadActions.permissions.test.ts": "jones-tests-in-upstream",
+    "packages/client-runtime/src/state/threadRequests.test.ts": "jones-tests-in-upstream",
+    "apps/web/src/components/chat/ThreadVisitWatermark.browser.test.tsx": "jones-tests-in-upstream"
   },
   "jonesOwnedPaths": [
     "apps/desktop/scripts/ui-evidence/",
@@ -3669,6 +3682,14 @@
     {
       "from": "apps/server/src/mcp/OrchestratorMcpService.ts",
       "to": "apps/server/src/jones/mcp/threadContentEvidence.ts"
+    },
+    {
+      "from": "apps/web/src/components/chat/MarkdownTable.tsx",
+      "to": "apps/web/src/jones/markdownTables/useMarkdownTableExpansion.tsx"
+    },
+    {
+      "from": "apps/server/src/peer/PeerLinkRequests.test.ts",
+      "to": "apps/server/src/jones/peerPersistence/table.ts"
     }
   ]
 }

@@ -41,8 +41,11 @@ export interface ImportedHistoryContext {
   readonly principal: EnvironmentSessionPrincipalShape;
   readonly targetCapabilities: unknown;
 }
+const compiledDecodeEffect1 = Schema.decodeEffect(ImportedHistoryStart);
+const compiledEncodeEffect2 = Schema.encodeEffect(ImportedHistoryStart);
+
 export const commandIdentity = Effect.fnUntraced(function* (context: ImportedHistoryContext) {
-  const command = yield* Schema.decodeEffect(ImportedHistoryStart)(context.command, {
+  const command = yield* compiledDecodeEffect1(context.command, {
     onExcessProperty: "error",
   });
   if (
@@ -52,7 +55,7 @@ export const commandIdentity = Effect.fnUntraced(function* (context: ImportedHis
       command.delivery.command.threadId !== command.threadId)
   )
     return yield* deny("delivery_identity_conflict");
-  const encoded = yield* Schema.encodeEffect(ImportedHistoryStart)(command);
+  const encoded = yield* compiledEncodeEffect2(command);
   return {
     command,
     canonicalCommand: canonical(encoded),
@@ -69,6 +72,10 @@ export const commandIdentity = Effect.fnUntraced(function* (context: ImportedHis
     ),
   };
 });
+const compiledDecodeOption3 = Schema.decodeOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+
 const currentActor = Effect.fnUntraced(function* (principal: EnvironmentSessionPrincipalShape) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
@@ -90,9 +97,7 @@ const currentActor = Effect.fnUntraced(function* (principal: EnvironmentSessionP
     Date.parse(row.expires_at) <= DateTime.toEpochMillis(yield* DateTime.now)
   )
     return yield* deny("actor_changed");
-  const scopes = Schema.decodeOption(Schema.fromJsonString(Schema.Array(Schema.String)))(
-    row.scopes,
-  );
+  const scopes = compiledDecodeOption3(row.scopes);
   if (
     Option.isNone(scopes) ||
     !scopes.value.includes(AuthOrchestrationOperateScope) ||
@@ -104,6 +109,29 @@ const currentActor = Effect.fnUntraced(function* (principal: EnvironmentSessionP
     UNION ALL SELECT session_id FROM workstreams_native_enrollments WHERE session_id = ${principal.sessionId}`;
   if (native.length !== 0) return yield* deny("qualified_native_imported_authority_unavailable");
 });
+const compiledDecodeUnknownOption4 = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({
+      historyOrigin: Schema.Literal("v1_import"),
+      deletedAt: Schema.Null,
+      archivedAt: Schema.Null,
+    }),
+  ),
+);
+const compiledDecodeEffect5 = Schema.decodeEffect(Schema.fromJsonString(RecordedRunJson));
+const compiledDecodeEffect6 = Schema.decodeEffect(
+  Schema.fromJsonString(OrchestrationV2ConversationMessageJson),
+);
+const compiledDecodeUnknownOption7 = Schema.decodeUnknownOption(
+  Schema.Struct({
+    context: Schema.Struct({
+      canConsumeHandoffSummaries: Schema.Literal(true),
+      supportsFullThreadHandoff: Schema.Literal(true),
+    }),
+  }),
+);
+const compiledEncodeEffect8 = Schema.encodeEffect(ImportedHistoryStart.fields.delivery);
+
 export const reviewImportedHistory = Effect.fnUntraced(function* (input: {
   readonly threadId: ThreadId;
   readonly principal: EnvironmentSessionPrincipalShape;
@@ -122,15 +150,7 @@ export const reviewImportedHistory = Effect.fnUntraced(function* (input: {
   const threads = yield* sql<{
     payload_json: string;
   }>`SELECT payload_json FROM orchestration_v2_projection_threads WHERE thread_id = ${input.threadId}`;
-  const thread = Schema.decodeUnknownOption(
-    Schema.fromJsonString(
-      Schema.Struct({
-        historyOrigin: Schema.Literal("v1_import"),
-        deletedAt: Schema.Null,
-        archivedAt: Schema.Null,
-      }),
-    ),
-  )(threads[0]?.payload_json);
+  const thread = compiledDecodeUnknownOption4(threads[0]?.payload_json);
   if (threads.length !== 1 || Option.isNone(thread))
     return unavailable("imported_thread_unavailable");
   const workspace =
@@ -187,12 +207,10 @@ export const reviewImportedHistory = Effect.fnUntraced(function* (input: {
     yield* sql`SELECT * FROM orchestration_v2_projection_provider_sessions WHERE thread_id = ${input.threadId} ORDER BY provider_session_id`;
   if (input.delivery.type === "queued_run") {
     const decodedRuns = yield* Effect.forEach(queuedRuns, (row) =>
-      Schema.decodeEffect(Schema.fromJsonString(RecordedRunJson))(row.payload_json),
+      compiledDecodeEffect5(row.payload_json),
     );
     const decodedMessages = yield* Effect.forEach(queuedMessages, (row) =>
-      Schema.decodeEffect(Schema.fromJsonString(OrchestrationV2ConversationMessageJson))(
-        row.payload_json,
-      ),
+      compiledDecodeEffect6(row.payload_json),
     );
     const first = queuedRunsInDeliveryOrder({ runs: decodedRuns, messages: decodedMessages })[0];
     const delivery = input.delivery;
@@ -218,18 +236,9 @@ export const reviewImportedHistory = Effect.fnUntraced(function* (input: {
   const effects =
     yield* sql`SELECT effect_id FROM orchestration_v2_effect_outbox WHERE thread_id = ${input.threadId} AND status IN ('pending', 'running')`;
   if (effects.length !== 0) return unavailable("unresolved_effects");
-  const capabilities = Schema.decodeUnknownOption(
-    Schema.Struct({
-      context: Schema.Struct({
-        canConsumeHandoffSummaries: Schema.Literal(true),
-        supportsFullThreadHandoff: Schema.Literal(true),
-      }),
-    }),
-  )(input.targetCapabilities);
+  const capabilities = compiledDecodeUnknownOption7(input.targetCapabilities);
   if (Option.isNone(capabilities)) return unavailable("target_handoff_unavailable");
-  const encodedDelivery = yield* Schema.encodeEffect(ImportedHistoryStart.fields.delivery)(
-    input.delivery,
-  );
+  const encodedDelivery = yield* compiledEncodeEffect8(input.delivery);
   const basis = {
     domain: "jones.imported-history.review/v1",
     birth,
@@ -296,6 +305,8 @@ export const reserveImportedHistoryChoice = Effect.fnUntraced(function* (
       ${identity.deliveryDigest}, ${identity.command.reviewedBasis}, ${identity.canonicalCommand}, ${canonical(facts.basis ?? facts.review)})`;
   return { duplicate: false, identity, rejectionReason };
 });
+const compiledDecodeEffect9 = Schema.decodeEffect(Schema.fromJsonString(ImportedHistoryOutcome));
+
 export const readImportedHistoryChoice = Effect.fnUntraced(function* (input: {
   threadId: ThreadId;
   commandId: CommandId;
@@ -312,9 +323,7 @@ export const readImportedHistoryChoice = Effect.fnUntraced(function* (input: {
   if (rows.length === 0) return null;
   if (rows.length !== 1 || rows[0]!.actor_session_id !== input.principal.sessionId)
     return yield* deny("actor_conflict");
-  const outcome = yield* Schema.decodeEffect(Schema.fromJsonString(ImportedHistoryOutcome))(
-    rows[0]!.outcome_json,
-  );
+  const outcome = yield* compiledDecodeEffect9(rows[0]!.outcome_json);
   if (
     outcome.commandId !== input.commandId ||
     outcome.threadId !== input.threadId ||
@@ -333,11 +342,13 @@ export const readImportedHistoryChoice = Effect.fnUntraced(function* (input: {
   }
   return outcome;
 });
+const compiledEncodeEffect10 = Schema.encodeEffect(ImportedHistoryOutcome);
+
 export const recordImportedHistoryOutcome = Effect.fnUntraced(function* (
   outcome: ImportedHistoryOutcome,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const encoded = yield* Schema.encodeEffect(ImportedHistoryOutcome)(outcome);
+  const encoded = yield* compiledEncodeEffect10(outcome);
   yield* sql`INSERT INTO jones_imported_history_outcomes (command_id, receipt_command_id, outcome_json)
     VALUES (${outcome.commandId}, ${outcome.commandId}, ${canonical(encoded)})`;
 });
@@ -353,6 +364,15 @@ export const assertOrdinaryCommandUnreserved = Effect.fnUntraced(function* (
   if (reserved.length !== 0)
     return yield* new ImportedHistoryChoiceError({ code: "private_imported_lineage_required" });
 });
+
+const compiledDecodeUnknownOption11 = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(Schema.String)),
+);
+const compiledDecodeUnknownOption12 = Schema.decodeUnknownOption(
+  Schema.fromJsonString(
+    Schema.Struct({ activeAttemptId: Schema.String, providerThreadId: Schema.String }),
+  ),
+);
 
 export const claimImportedHistoryStart = Effect.fnUntraced(function* (
   input: {
@@ -399,9 +419,7 @@ export const claimImportedHistoryStart = Effect.fnUntraced(function* (
     expires_at: string;
     scopes: string;
   }>`SELECT revoked_at, expires_at, scopes FROM auth_sessions WHERE session_id = ${choice[0]!.actor_session_id}`;
-  const scopes = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array(Schema.String)))(
-    session[0]?.scopes,
-  );
+  const scopes = compiledDecodeUnknownOption11(session[0]?.scopes);
   if (
     session.length !== 1 ||
     session[0]!.revoked_at !== null ||
@@ -417,11 +435,7 @@ export const claimImportedHistoryStart = Effect.fnUntraced(function* (
   const runs = yield* sql<{
     payload_json: string;
   }>`SELECT payload_json FROM orchestration_v2_projection_runs WHERE thread_id = ${input.threadId} AND run_id = ${input.runId}`;
-  const run = Schema.decodeUnknownOption(
-    Schema.fromJsonString(
-      Schema.Struct({ activeAttemptId: Schema.String, providerThreadId: Schema.String }),
-    ),
-  )(runs[0]?.payload_json);
+  const run = compiledDecodeUnknownOption12(runs[0]?.payload_json);
   if (
     runs.length !== 1 ||
     Option.isNone(run) ||

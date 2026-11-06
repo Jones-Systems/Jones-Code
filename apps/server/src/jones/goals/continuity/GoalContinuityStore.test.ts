@@ -143,6 +143,8 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(ContinuityReceipt));
+
 it.effect(
   "snapshot and durable refusal receipt commit together without changing refused-close bytes",
   () =>
@@ -179,9 +181,7 @@ it.effect(
       };
       yield* store.transaction(store.writeRow(key, null, receipt));
       const row = yield* store.readOnly(store.row(key));
-      expect(
-        yield* Schema.decodeEffect(Schema.fromJsonString(ContinuityReceipt))(row!.payload),
-      ).toEqual(receipt);
+      expect(yield* compiledDecodeEffect1(row!.payload)).toEqual(receipt);
       const current = yield* store.readOnly(store.current(owner.environmentId, owner.threadId));
       expect(canonicalJson(current!.snapshot)).toBe(canonicalJson(snapshot));
       expect(current!.snapshot.generation).toBe("0");

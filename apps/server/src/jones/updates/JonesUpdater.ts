@@ -176,6 +176,8 @@ class PreparationSuperseded extends Error {
 }
 
 /** One checker belongs to the host. Connected clients observe the same fixed staging handle. */
+const compiledIs1 = Schema.is(JonesCheckClassification);
+
 export class JonesUpdater {
   private state: JonesUpdateState;
   private revision = 0;
@@ -501,7 +503,7 @@ export class JonesUpdater {
         ...(targetSource === undefined ? {} : { targetSource }),
       });
       const checkedAt = new Date().toISOString();
-      if ("classification" in result && Schema.is(JonesCheckClassification)(result.classification))
+      if ("classification" in result && compiledIs1(result.classification))
         this.publish({ checkClassification: result.classification });
       if (result.state === "available") {
         const candidate = result.candidate;

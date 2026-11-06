@@ -41,13 +41,14 @@ const runExecutable = Effect.fn("runExecutable")(function* (
   executable: string,
   args: ReadonlyArray<string>,
   cwd: string,
+  environment: Readonly<Record<string, string>> = {},
 ) {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const child = yield* spawner.spawn(
     ChildProcess.make(executable, args, {
       cwd,
       // Isolate system Node and inherited launcher context from the archive smoke check.
-      env: { PATH: "", HOME: cwd, USERPROFILE: cwd, TMPDIR: cwd, TEMP: cwd },
+      env: { PATH: "", HOME: cwd, USERPROFILE: cwd, TMPDIR: cwd, TEMP: cwd, ...environment },
       extendEnv: false,
     }),
   );
@@ -66,16 +67,17 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
   const path = yield* Path.Path;
   const platform = yield* HostProcess.Platform;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const scratch = yield* fs.makeTempDirectory({ prefix: "t3-cli-smoke-" });
+  const createdScratch = yield* fs.makeTempDirectory({ prefix: "t3-cli-smoke-" });
   // Windows can briefly retain executable locks; cleanup retries but must not fail a successful smoke check.
   yield* Effect.addFinalizer(() =>
-    fs.remove(scratch, { recursive: true }).pipe(
+    fs.remove(createdScratch, { recursive: true }).pipe(
       Effect.retry({ times: 10, schedule: Schedule.spaced("500 millis") }),
       Effect.catch((error) =>
-        Effect.logWarning(`[cli-smoke] could not remove ${scratch}: ${error.message}`),
+        Effect.logWarning(`[cli-smoke] could not remove ${createdScratch}: ${error.message}`),
       ),
     ),
   );
+  const scratch = yield* fs.realPath(createdScratch);
 
   // Windows bsdtar reads zip; Git Bash's GNU tar does not.
   const tar = platform === "win32" ? windowsSystemTar() : "tar";
@@ -132,6 +134,26 @@ const smokeCliArchive = Effect.fn("smokeCliArchive")(function* (input: {
     return yield* new CliArchiveSmokeError({
       step: "running --version",
       detail: `exit ${String(version.exitCode)}\n${version.stdout}${version.stderr}`,
+    });
+  }
+
+  const maintenanceHome = path.join(scratch, "maintenance-home");
+  const maintenance = yield* runExecutable(
+    executable,
+    ["__jones-reconcile-preparation", "--probe"],
+    contentDir,
+    { T3CODE_HOME: maintenanceHome },
+  ).pipe(Effect.timeout(Duration.seconds(5)));
+  if (
+    maintenance.exitCode !== 0 ||
+    maintenance.stderr !== "" ||
+    maintenance.stdout.trim() !==
+      '{"schema":1,"command":"__jones-reconcile-preparation","maintenanceOnly":true}' ||
+    (yield* fs.exists(maintenanceHome))
+  ) {
+    return yield* new CliArchiveSmokeError({
+      step: "probing standalone preparation maintenance",
+      detail: "the private command did not exit cleanly without server initialization",
     });
   }
 

@@ -261,6 +261,8 @@ function lifecycleEffect<A, E>(
   });
 }
 
+const compiledEncodeSync1 = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 describe("fixed release decision collector", () => {
   it.each(["success", "failure", "cancel"] as const)(
     "removes only its captured scratch root after %s",
@@ -638,7 +640,7 @@ if __name__ == '__main__':
   it("bounds the actual composer and usage lifecycle through delayed startup, nested cleanup and a concurrent loser", async () => {
     await lifecycleRelease(async (binding) => {
       const scratch = NodePath.dirname(binding.releaseDirectory);
-      const native = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown))({
+      const native = compiledEncodeSync1({
         schema: "codex.decision-snapshot-native/v1",
         authority_effect: "none",
         provenance: "fixture",

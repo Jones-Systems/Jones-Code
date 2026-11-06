@@ -110,7 +110,9 @@
     "apps/server/src/jones/updates/trialGate.testFixtures.ts",
     "apps/server/src/jones/cloud/qualifiedLauncher.testFixtures.ts",
     "apps/server/src/jones/updates/recoverQualifiedStage.ts",
-    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts"
+    "apps/server/src/jones/updates/recoverQualifiedStage.test.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts",
+    "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.test.ts"
   ],
   "hookPaths": [
     "apps/server/src/orchestration-v2/RestartContinuation.ts",
@@ -157,7 +159,8 @@
     "scripts/tsconfig.json",
     "apps/desktop/tsconfig.json",
     "apps/desktop/src/backend/DesktopBackendConfiguration.ts",
-    "apps/server/src/background/BackgroundPolicy.ts"
+    "apps/server/src/background/BackgroundPolicy.ts",
+    "scripts/smoke-cli-archive.ts"
   ],
   "tombstones": [
     "apps/desktop/src/jones/updates/jonesColdOwnerSource.test.ts",
@@ -487,6 +490,10 @@
     {
       "from": "apps/server/src/resourceTelemetry/DesktopTelemetryReceiver.ts",
       "to": "packages/shared/src/jones/workstreamShellActivation.ts"
+    },
+    {
+      "from": "apps/server/src/bin.ts",
+      "to": "apps/server/src/jones/updates/preparation/nativeEffectsRecovery.ts"
     }
   ]
 }

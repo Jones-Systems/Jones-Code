@@ -10,6 +10,7 @@ import * as Layer from "effect/Layer";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -312,6 +313,31 @@ describe("AcpSessionRuntime", () => {
       );
       expect(events[0]?.error).toBe(failure);
       expect(yield* runtime.initialize().pipe(Effect.flip)).toBe(failure);
+    }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+  );
+
+  it.effect("preserves caller cancellation while initialize is consumed by a live child", () =>
+    Effect.gen(function* () {
+      const observed = yield* Deferred.make<void>();
+      const runtime = yield* AcpSessionRuntime.make({
+        ...mockRuntimeOptions,
+        spawn: {
+          command: process.execPath,
+          args: [
+            "-e",
+            "process.stdin.once('data', () => { process.stderr.write('initialize-consumed\\n'); }); process.stdin.resume();",
+          ],
+        },
+        onStderr: (chunk) =>
+          chunk.includes("initialize-consumed")
+            ? Deferred.succeed(observed, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+      });
+      const caller = yield* runtime.initialize().pipe(Effect.forkChild);
+      yield* Deferred.await(observed);
+      yield* Fiber.interrupt(caller);
+      const result = yield* Fiber.await(caller);
+      expect(Exit.isFailure(result) && Cause.hasInterruptsOnly(result.cause)).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
   );
 

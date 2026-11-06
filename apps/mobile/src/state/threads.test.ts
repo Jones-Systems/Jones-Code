@@ -19,6 +19,13 @@ const loads = vi.hoisted(() => [] as string[]);
 vi.mock("../connection/runtime", () => ({ connectionAtomRuntime: {} }));
 vi.mock("../connection/catalog", () => ({ environmentCatalog: {} }));
 vi.mock("./shell", () => ({ environmentShell: {} }));
+vi.mock("./server", () => ({
+  serverEnvironment: {
+    hiddenThreadTagsAtom: () => {
+      throw new Error("unexpected server config read");
+    },
+  },
+}));
 vi.mock("@t3tools/client-runtime/state/threads", async (importOriginal) => {
   const { Atom } = await import("effect/reactivity");
   const stateAtom = Atom.family((key: string) =>

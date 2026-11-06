@@ -6,6 +6,7 @@ import * as NodePath from "node:path";
 import * as NodeTest from "node:test";
 import {
   bindPackagedDesktopPair,
+  validatePackagedDesktopGuiSession,
   bindPackagedDesktopPreparedIntent,
   validatePackagedDesktopPreEffect,
   validatePackagedDesktopMainWindow,
@@ -617,6 +618,38 @@ NodeTest.test(
       const changed = structuredClone(receipt);
       mutate(changed);
       NodeAssert.throws(() => validatePackagedDesktopProcessIdentity(changed, expected));
+    }
+  },
+);
+
+NodeTest.test(
+  "GUI admission rejects locked, unavailable and unproved sessions before packaged work",
+  () => {
+    const ready = {
+      schema: "jones-packaged-desktop-gui-session/v1",
+      sessionAvailable: true,
+      onConsole: true,
+      loginDone: true,
+      screenLocked: false,
+      sessionUid: 501,
+    };
+    const accepted = validatePackagedDesktopGuiSession(ready, { uid: 501 });
+    NodeAssert.deepEqual(accepted, ready);
+    NodeAssert.ok(Object.isFrozen(accepted));
+    for (const [change, message] of [
+      [{ screenLocked: true }, /screen is locked/],
+      [{ screenLocked: null }, /state is unknown/],
+      [{ screenLocked: undefined }, /state is unknown/],
+      [{ screenLocked: "false" }, /state is unknown/],
+      [{ sessionAvailable: false }, /unavailable/],
+      [{ sessionUid: 502 }, /another user/],
+      [{ onConsole: false }, /not on console/],
+      [{ loginDone: false }, /login is incomplete/],
+    ]) {
+      NodeAssert.throws(
+        () => validatePackagedDesktopGuiSession({ ...ready, ...change }, { uid: 501 }),
+        message,
+      );
     }
   },
 );

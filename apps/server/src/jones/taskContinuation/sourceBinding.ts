@@ -145,12 +145,14 @@ export function continuationAncestry(
   return new TaskContinuationError({ reason: "ancestry_invalid" });
 }
 
+const compiledIs1 = Schema.is(TaskContinuationError);
+
 export function continuationRoot(
   runs: ReadonlyArray<OrchestrationV2Run>,
   run: OrchestrationV2Run,
 ): OrchestrationV2Run | TaskContinuationError {
   const ancestry = continuationAncestry(runs, run);
-  if (Schema.is(TaskContinuationError)(ancestry)) return ancestry;
+  if (compiledIs1(ancestry)) return ancestry;
   for (const current of ancestry) {
     if (
       current.delegatedTaskId !== run.delegatedTaskId ||
@@ -239,12 +241,12 @@ function sourceRuns(
     if (tagged.length === 0)
       return new TaskContinuationError({ reason: "source_link_unavailable" });
     const candidate = continuationRoot(child.runs, tagged[0]!);
-    if (Schema.is(TaskContinuationError)(candidate)) return candidate;
+    if (compiledIs1(candidate)) return candidate;
     root = candidate;
     if (
       tagged.some((run) => {
         const ancestor = continuationRoot(child.runs, run);
-        return Schema.is(TaskContinuationError)(ancestor) || ancestor.id !== candidate.id;
+        return compiledIs1(ancestor) || ancestor.id !== candidate.id;
       })
     )
       return new TaskContinuationError({ reason: "source_link_unavailable" });
@@ -263,7 +265,7 @@ function sourceRuns(
     if (descendants.length === 0) return chain.toSorted((a, b) => a.ordinal - b.ordinal);
     for (const run of descendants) {
       const ancestor = continuationRoot(child.runs, run);
-      if (Schema.is(TaskContinuationError)(ancestor) || ancestor.id !== root.id)
+      if (compiledIs1(ancestor) || ancestor.id !== root.id)
         return new TaskContinuationError({ reason: "native_source_conflict" });
       ids.add(run.id);
       chain.push(run);
@@ -287,7 +289,7 @@ export function sourceBinding(
   if (task.status !== "completed" || task.result === null || task.completedAt === null)
     return new TaskContinuationError({ reason: "source_not_completed" });
   const runs = sourceRuns(task, child);
-  if (Schema.is(TaskContinuationError)(runs)) return runs;
+  if (compiledIs1(runs)) return runs;
   const last = runs.at(-1);
   if (last === undefined || last.status !== "completed")
     return new TaskContinuationError({ reason: "native_source_unavailable" });

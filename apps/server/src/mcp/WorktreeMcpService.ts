@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import {
   CommandId,
   MessageId,
@@ -56,6 +57,8 @@ const asOperationFailed = (prefix: string) =>
 
 const make = Effect.gen(function* () {
   const random = yield* SecureRandom.SecureRandom;
+  const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
+  const lookupProvenance = yield* WorkspaceProvenance.optionalLookup;
   const threadManagement = yield* ThreadManagementService.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -221,6 +224,11 @@ const make = Effect.gen(function* () {
       }
     }
 
+    yield* captureProvenance({
+      threadId: scope.thread.threadId,
+      reason: "reference",
+      createdBy: "agent",
+    });
     const ids = yield* handoffIds(scope);
 
     // Mask interruption after worktree creation through setup; binding can detach and interrupt the caller.
@@ -329,7 +337,18 @@ const make = Effect.gen(function* () {
                   ),
           );
 
-        const continuation = yield* recheckAndBind.pipe(Effect.andThen(queueContinuation));
+        const continuation = yield* recheckAndBind.pipe(
+          Effect.andThen(
+            captureProvenance({
+              threadId: scope.thread.threadId,
+              reason: "handoff",
+              createdBy: "agent",
+              baseRef: baseRefName,
+              baseIsCurrentHead: true,
+            }),
+          ),
+          Effect.andThen(queueContinuation),
+        );
 
         yield* vcsStatusBroadcaster
           .refreshStatus(worktreePath)
@@ -417,12 +436,16 @@ const make = Effect.gen(function* () {
 
       const defaultStartFromOrigin = yield* readDefaultStartFromOrigin;
 
+      const provenance = yield* lookupProvenance({ threadId: scope.thread.threadId }).pipe(
+        asOperationFailed("Unable to read workspace provenance"),
+      );
       const result: WorktreeMcpStatusResult = {
         attached: projection.thread.worktreePath !== null,
         worktreePath: projection.thread.worktreePath,
         branch: projection.thread.branch,
         projectWorkspaceRoot: project.workspaceRoot,
         defaultStartFromOrigin,
+        ...(provenance === undefined ? {} : { provenance }),
       };
       return result;
     },

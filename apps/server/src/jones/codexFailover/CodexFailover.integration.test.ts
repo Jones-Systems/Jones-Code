@@ -261,7 +261,7 @@ const scenario = (mode: "chain" | "all-unavailable") =>
       {
         serverConfigLayer: Layer.succeed(ServerConfig.ServerConfig, { ...config, cwd }),
         databaseLayer: database,
-        runEffectWorker: false,
+        runEffectWorker: true,
         runContinuationWorker: true,
       },
     ).pipe(

@@ -20,7 +20,7 @@ import {
   runtimeUseCoverageSource,
 } from "./RuntimeUseInstallation.ts";
 
-const prior = jonesMigrationEntries.filter(([id]) => id < 139);
+const prior = jonesMigrationEntries.filter(([id]) => id < 140);
 const fixture = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.gen(function* () {
     yield* runMigrations({ toMigrationInclusive: migrationManifest.at(-1)![0] });
@@ -144,7 +144,7 @@ it.effect(
         const basis = yield* readRuntimeUseInstallation();
         assert.isNotNull(basis);
         assert.deepStrictEqual(basis?.globalEventWatermark, { kind: "empty" });
-        assert.deepStrictEqual(basis?.migration, { id: 139, name: "WorkspaceRuntimeUses" });
+        assert.deepStrictEqual(basis?.migration, { id: 140, name: "WorkspaceRuntimeUses" });
         assert.strictEqual(basis?.coverageSourceSha256, digest(runtimeUseCoverageSource));
         const rows =
           yield* sql`SELECT id,basis_json,basis_sha256 FROM jones_workspace_runtime_installation`;
@@ -210,14 +210,14 @@ it.effect(
 );
 
 it.effect(
-  "an already-applied139 without its atomic basis stays ineligible without schema or history repair",
+  "an already-applied140 without its atomic basis stays ineligible without schema or history repair",
   () =>
     fixture(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* runJonesMigrations([
           ...prior,
-          [139, "WorkspaceRuntimeUses", createRuntimeUseSchema],
+          [140, "WorkspaceRuntimeUses", createRuntimeUseSchema],
         ]);
         const before = yield* sql`SELECT type,name,sql FROM sqlite_master ORDER BY name`;
         yield* appendSyntheticEvent(25, 2, "thread");
@@ -263,7 +263,7 @@ it.effect("unexpected journal-prefix objects abort the entire original migration
         before,
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=139`,
+        yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=140`,
         [],
       );
     }),

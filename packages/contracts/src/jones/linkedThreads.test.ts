@@ -10,6 +10,10 @@ const decodeLink = Schema.decodeUnknownSync(ThreadLinkToolInput);
 const encodeLink = Schema.encodeSync(ThreadLinkToolInput);
 const isLink = Schema.is(ThreadLinkToolInput);
 
+const compiledIs1 = Schema.is(LinkedThreadId);
+const compiledIs2 = Schema.is(LinkedThreadsListInput);
+const compiledIs3 = Schema.is(ThreadHandoffToolInput);
+
 describe("linked thread wire contracts", () => {
   it("retains legacy manual input and the optional handoff mirror basis on the wire", () => {
     const manual = {
@@ -24,16 +28,16 @@ describe("linked thread wire contracts", () => {
     expect(isLink({ ...manual, basis: "launch" })).toBe(false);
   });
   it("rejects invalid link IDs and bounded input overflow", () => {
-    expect(Schema.is(LinkedThreadId)("tl1:" + "a".repeat(64))).toBe(true);
-    expect(Schema.is(LinkedThreadId)("tl1:" + "g".repeat(64))).toBe(false);
+    expect(compiledIs1("tl1:" + "a".repeat(64))).toBe(true);
+    expect(compiledIs1("tl1:" + "g".repeat(64))).toBe(false);
     expect(
-      Schema.is(LinkedThreadsListInput)({
+      compiledIs2({
         thread: { environmentId: "env", threadId: "thread" },
         limit: 201,
       }),
     ).toBe(false);
     expect(
-      Schema.is(ThreadHandoffToolInput)({
+      compiledIs3({
         to: { type: "portable" },
         goal: "g",
         scope: "s",

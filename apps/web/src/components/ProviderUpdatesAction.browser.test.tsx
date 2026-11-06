@@ -1,3 +1,4 @@
+import { BearerConnectionTarget } from "@t3tools/client-runtime/connection";
 import { RegistryContext } from "@effect/atom-react";
 import {
   AuthProvidersManageScope,
@@ -18,6 +19,7 @@ const state = vi.hoisted(() => ({
     environmentId: EnvironmentId;
     label: string;
     connection: { phase: "connected" | "disconnected" };
+    entry: { enabled: boolean; target: BearerConnectionTarget };
   }[],
   providers: new Map<EnvironmentId, ReadonlyArray<ServerProvider>>(),
   requests: [] as EnvironmentId[],
@@ -40,6 +42,23 @@ vi.mock(import("@t3tools/client-runtime/state/session"), async (original) => {
     })) as typeof actual.createEnvironmentSessionAtoms,
   };
 });
+vi.mock(
+  import("~/state/presentation"),
+  () =>
+    ({
+      environmentPresentations: {
+        presentationAtom: Atom.family((environmentId: EnvironmentId) =>
+          Atom.make(
+            () =>
+              state.environments.find(
+                (environment) => environment.environmentId === environmentId,
+              ) ?? null,
+          ),
+        ),
+        providersByEnvironmentAtom: Atom.make(() => state.providers),
+      },
+    }) as never,
+);
 vi.mock(import("~/state/server"), () => ({
   serverEnvironment: { updateProvider: {} } as never,
 }));
@@ -47,7 +66,7 @@ vi.mock(import("~/state/use-atom-command"), () => ({
   useAtomCommand: (() =>
     async ({ environmentId }: { environmentId: EnvironmentId }) => {
       state.requests.push(environmentId);
-      return AsyncResult.success(undefined);
+      return AsyncResult.success({ providers: state.providers.get(environmentId) ?? [] });
     }) as never,
 }));
 
@@ -97,7 +116,17 @@ function setup() {
     { environmentId: EnvironmentId.make("read-only"), label: "Read only" },
     { environmentId: EnvironmentId.make("writable"), label: "Writable" },
     { environmentId: EnvironmentId.make("unresolved"), label: "Unresolved" },
-  ].map((environment) => ({ ...environment, connection: { phase: "connected" } }));
+  ].map((environment) => ({
+    ...environment,
+    connection: { phase: "connected" },
+    entry: {
+      enabled: true,
+      target: new BearerConnectionTarget({
+        ...environment,
+        connectionId: String(environment.environmentId),
+      }),
+    },
+  }));
   state.providers = new Map(
     state.environments.map(({ environmentId }) => [environmentId, [provider]]),
   );

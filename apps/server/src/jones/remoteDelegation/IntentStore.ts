@@ -82,6 +82,8 @@ const decode = (row: Row): Intent => ({
 });
 
 /** The intent commits before any remote mutation. Replays retain the original scope and payload. */
+const compiledIs1 = Schema.is(OrchestratorMcpFailure);
+
 export const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const read = (commandId: CommandId) =>
@@ -121,11 +123,7 @@ export const make = Effect.gen(function* () {
           } satisfies Intent;
         }),
       )
-      .pipe(
-        Effect.mapError((error) =>
-          Schema.is(OrchestratorMcpFailure)(error) ? error : storageFailure(),
-        ),
-      );
+      .pipe(Effect.mapError((error) => (compiledIs1(error) ? error : storageFailure())));
   return {
     find,
     get: (commandId: CommandId) =>

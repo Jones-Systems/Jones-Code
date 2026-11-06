@@ -91,6 +91,10 @@
       "to": "apps/desktop/src/jones/installPlan/coordinator.ts"
     },
     {
+      "from": "apps/desktop/src/updates/DesktopUpdates.ts",
+      "to": "apps/desktop/src/jones/updates/jonesNativeStartup.ts"
+    },
+    {
       "from": "apps/web/src/AppRoot.tsx",
       "to": "apps/web/src/jones/installStatus/InstallPlanController.tsx"
     },

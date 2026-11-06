@@ -20,6 +20,7 @@ export interface Retirement {
   readonly threadIds: ReadonlySet<ThreadId>;
   readonly kind: "session" | "opening" | "transfer";
   readonly sessionWide: boolean;
+  readonly conversationKey?: string;
   readonly bindings: ReadonlyArray<ProviderRuntimeBinding>;
   readonly completion: Deferred.Deferred<void, WriterRetirementError>;
 }
@@ -35,7 +36,14 @@ export function receiptMatches(
 
 export function makeRetirementLedger() {
   const pending = new Set<Retirement>();
+  // Completion releases pending proof, but a transferred producer/thread incarnation stays fenced.
+  const retiredWriters = new WeakMap<object, Set<ThreadId>>();
   const retain = (input: Omit<Retirement, "completion">): Retirement => {
+    if (input.kind === "transfer") {
+      const threads = retiredWriters.get(input.source) ?? new Set<ThreadId>();
+      for (const threadId of input.threadIds) threads.add(threadId);
+      retiredWriters.set(input.source, threads);
+    }
     const existing = [...pending].find(
       (record) =>
         record.source === input.source &&
@@ -61,6 +69,15 @@ export function makeRetirementLedger() {
   return {
     retain,
     complete,
+    retiredWriter: (source: object, threadId: ThreadId) =>
+      retiredWriters.get(source)?.has(threadId) === true,
+    pendingConversation: (threadId: ThreadId, destinationKey: string | undefined) =>
+      [...pending].filter(
+        (record) =>
+          record.conversationKey !== undefined &&
+          record.threadIds.has(threadId) &&
+          (destinationKey === undefined || destinationKey === record.conversationKey),
+      ),
     completeScope: (scope: Scope.Closeable) =>
       Effect.forEach(
         [...pending].filter((record) => record.scope === scope),
@@ -78,10 +95,14 @@ export function makeRetirementLedger() {
       readonly providerSessionId: ProviderSessionId;
       readonly threadId: ThreadId;
       readonly source?: object | undefined;
+      readonly destinationKey?: string | undefined;
     }) =>
       [...pending].some(
         (record) =>
-          record.threadIds.has(input.threadId) ||
+          (record.threadIds.has(input.threadId) &&
+            (record.conversationKey === undefined ||
+              input.destinationKey === undefined ||
+              input.destinationKey === record.conversationKey)) ||
           (record.providerSessionId === input.providerSessionId &&
             (record.sessionWide || record.source !== input.source)),
       ),

@@ -73,6 +73,15 @@ decisions after native runtime recovery and before delegated-result recovery and
 evidence older than 24 hours cannot start an automatic continuation. Rejected command receipts
 are terminal and never become retry permission.
 
+Loaded Codex account transfers must retain the previous writer until its exact producer exits
+or its thread closes; an unsubscribe acknowledgement alone does not prove release. The detach
+outbox effect finishes after capturing that obligation, so unrelated destinations can proceed;
+normal preparation and manager admission still fence destinations sharing the native history
+(and unknown destinations). A retired runtime remains unusable for that thread even after
+cancellation, so returning to that account requires a fresh logical session behind the same
+proof barrier. Sources already idle-unloaded keep the existing ordinary rejoin behavior; this
+mechanism neither identifies nor clears a foreign writer.
+
 ## Setup must not happen as a health-check side effect
 
 Opening a provider session can start MCP servers, run hooks, or launch a login browser.

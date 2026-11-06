@@ -72,6 +72,8 @@ const fixture = Effect.acquireRelease(
     }),
 );
 
+const compiledEncodeEffect1 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 it.effect(
   "enrolls and prepares/plans/applies/readbacks the actual desktop-bound store without launcher files",
   () =>
@@ -142,7 +144,7 @@ it.effect(
         expectedCredentialSha256: applied.file_post_sha256,
       });
       expect(readback).toMatchObject({ state: "unchanged", reason: "complete" });
-      const receiptJson = yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))([
+      const receiptJson = yield* compiledEncodeEffect1([
         enrolled,
         prepared,
         plan,

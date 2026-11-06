@@ -32,6 +32,10 @@ class PreflightValidationFailure extends Schema.TaggedError<PreflightValidationF
   { detail: Schema.String },
 ) {}
 
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand));
+const compiledIs2 = Schema.is(PreflightValidationFailure);
+const compiledIs3 = Schema.is(GitCommandError);
+
 export const makeLegacyPreflight = Effect.gen(function* () {
   const git = yield* GitWorkflow.GitWorkflowService;
   const projects = yield* Projects.ProjectService;
@@ -93,9 +97,7 @@ export const makeLegacyPreflight = Effect.gen(function* () {
           "Accepted preflight intent has no durable outcome; fetch may already have executed.",
       } satisfies LegacyPreflightOutcome;
 
-    const payload = yield* Schema.decodeEffect(Schema.fromJsonString(QueueDispatchCommand))(
-      binding.canonicalPayload,
-    );
+    const payload = yield* compiledDecodeEffect1(binding.canonicalPayload);
     const work = Effect.gen(function* () {
       if (payload.type !== "thread.turn.start" || payload.bootstrap?.prepareWorktree === undefined)
         return yield* new PreflightValidationFailure({
@@ -151,15 +153,13 @@ export const makeLegacyPreflight = Effect.gen(function* () {
       };
     else {
       const cause = Cause.squash(result.cause);
-      const known =
-        Schema.is(PreflightValidationFailure)(cause) ||
-        (Schema.is(GitCommandError)(cause) && cause.exitCode !== undefined);
+      const known = compiledIs2(cause) || (compiledIs3(cause) && cause.exitCode !== undefined);
       outcome = {
         binding,
         intentCommandId: intentId,
         intentSequence: intent.receipt.resultSequence,
         status: known ? "known_failed" : "unknown",
-        detail: Schema.is(PreflightValidationFailure)(cause)
+        detail: compiledIs2(cause)
           ? cause.detail
           : cause instanceof Error
             ? cause.message

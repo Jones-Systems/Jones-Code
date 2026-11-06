@@ -361,10 +361,11 @@ it.effect(
         [133, "ThreadResultDependencies"],
         [134, "GoalContinuity"],
         [135, "IdleWorktreeAdmission"],
-        [136, "NativeExecutionProcessCustody"],
-        [137, "OrdinaryCheckoutProcessCustody"],
-        [138, "AuthSessionClientMetadata"],
-        [139, "WorkspaceRuntimeUses"],
+        [136, "WorkspaceProvenance"],
+        [137, "NativeExecutionProcessCustody"],
+        [138, "OrdinaryCheckoutProcessCustody"],
+        [139, "AuthSessionClientMetadata"],
+        [140, "WorkspaceRuntimeUses"],
       ]);
       assert.deepStrictEqual(
         yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id <= 107 ORDER BY migration_id`,

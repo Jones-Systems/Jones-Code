@@ -41,6 +41,9 @@ const same = (a: NativeRecoveryBinding, b: NativeRecoveryBinding) =>
   a.input.expectedInstalledSource === b.input.expectedInstalledSource;
 
 /** Native memory only: a renderer cannot supply measurements or mint policy authority. */
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(NativeRecoveryMeasurement);
+const compiledDecodeSync2 = Schema.decodeSync(JonesRecoveryPreflight);
+
 export class NativeRecoveryPreflights {
   #proof: { binding: NativeRecoveryBinding; value: JonesRecoveryPreflight } | undefined;
 
@@ -50,7 +53,7 @@ export class NativeRecoveryPreflights {
     now: number,
     id: string,
   ): JonesRecoveryPreflight {
-    const measurement = Schema.decodeUnknownSync(NativeRecoveryMeasurement)(raw);
+    const measurement = compiledDecodeUnknownSync1(raw);
     if (
       !Number.isFinite(now) ||
       !Number.isSafeInteger(measurement.stateBytes) ||
@@ -75,7 +78,7 @@ export class NativeRecoveryPreflights {
       !measurement.firstInstall &&
       measurement.clone.status === "proved" &&
       measurement.volumes.every((v) => v.availableBytes >= v.cloneRequiredBytes);
-    const value = Schema.decodeSync(JonesRecoveryPreflight)({
+    const value = compiledDecodeSync2({
       ...measurement,
       preflightId: id,
       measuredAt: new Date(now).toISOString(),

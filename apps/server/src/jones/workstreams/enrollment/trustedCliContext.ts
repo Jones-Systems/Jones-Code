@@ -160,6 +160,8 @@ const desktopDatabaseIdentity = (dbPath: string) => {
   return { device: stat.dev, inode: stat.ino };
 };
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(WorkstreamsNativeBuild);
+
 const capture = async (
   location: NativeEnrollmentCliLocation,
   access: NativeEnrollmentSqliteAccess,
@@ -203,7 +205,7 @@ const capture = async (
     authority.environment_id !== environmentId
   )
     fail("authority_unavailable");
-  const build = Schema.decodeUnknownSync(WorkstreamsNativeBuild)(
+  const build = compiledDecodeUnknownSync1(
     (packageJson as { readonly jonesSource?: unknown }).jonesSource,
   );
   const installed = await currentQualifiedRuntimeBinding(baseDir, launcher.activeVersion);
@@ -242,6 +244,8 @@ const capture = async (
   };
 };
 
+const compiledIs2 = Schema.is(NativeEnrollmentCliContextError);
+
 const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmentContext")(
   function* (
     location: NativeEnrollmentCliLocation,
@@ -255,7 +259,7 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
           Effect.tryPromise({
             try: () => captureContext(location, access, phase),
             catch: (error) =>
-              Schema.is(NativeEnrollmentCliContextError)(error)
+              compiledIs2(error)
                 ? error
                 : new NativeEnrollmentCliContextError({
                     code:
@@ -323,7 +327,7 @@ const makeTrustedNativeEnrollmentContext = Effect.fn("makeTrustedNativeEnrollmen
         }).pipe(
           Effect.scoped,
           Effect.mapError((error) =>
-            Schema.is(NativeEnrollmentCliContextError)(error)
+            compiledIs2(error)
               ? error
               : new NativeEnrollmentCliContextError({ code: "database_unavailable" }),
           ),
@@ -389,7 +393,7 @@ export const makeTrustedNativeEnrollmentDesktopContext = (
       authority.environment_id !== owner.binding.environmentId
     )
       return fail("authority_unavailable");
-    const build = Schema.decodeUnknownSync(WorkstreamsNativeBuild)(
+    const build = compiledDecodeUnknownSync1(
       (packageJson as { readonly jonesSource?: unknown }).jonesSource,
     );
     if (

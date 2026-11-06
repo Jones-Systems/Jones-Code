@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import { nativeConversationMustBePreserved } from "../jones/goals/preserveGoalConversation.ts";
 import * as GoalContinuity from "../jones/goals/continuity/GoalContinuity.ts";
 import {
@@ -206,6 +207,7 @@ export const layer: Layer.Layer<
 > = Layer.effect(
   ProviderTurnStartServiceV2,
   Effect.gen(function* () {
+    const captureProvenance = yield* WorkspaceProvenance.optionalCapture;
     const eventSink = yield* EventSink.EventSinkV2;
     const goalContinuity = yield* GoalContinuity.GoalContinuity;
     const environment = yield* ServerEnvironment.ServerEnvironmentIdentity;
@@ -853,6 +855,7 @@ export const layer: Layer.Layer<
           return;
         }
       }
+      let recreatedWorkspace = false;
       const { worktreePath, branch } = projection.thread;
       if (worktreePath !== null && branch !== null) {
         const existence = fileSystem.exists(worktreePath);
@@ -921,6 +924,7 @@ export const layer: Layer.Layer<
               });
               return;
             }
+            recreatedWorkspace = true;
           }
         }
       }
@@ -929,6 +933,12 @@ export const layer: Layer.Layer<
         boundary: "start",
         fallback: { id: `turn-start:${runId}`, request: { runId, threadId: input.threadId } },
       }).pipe(Effect.mapError((cause) => new ProviderTurnStartError({ runId, cause })));
+      yield* captureProvenance({
+        threadId: input.threadId,
+        reason: recreatedWorkspace ? "recreate" : "reference",
+        createdBy: "system",
+        runId,
+      });
       const selectInheritedBackgroundItems = (
         current: ProjectionStore.ProjectionRuntimeRecoveryState,
       ): ReturnType<typeof RunExecutionService.selectInheritedBackgroundTurnItems> =>

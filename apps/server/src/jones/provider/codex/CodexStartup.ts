@@ -43,6 +43,8 @@ class CodexStartupNotDispatched extends Schema.TaggedError<CodexStartupNotDispat
   }
 }
 
+const compiledIs1 = Schema.is(CodexErrors.CodexAppServerRequestError);
+
 export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
   const uncertain = new WeakSet<StartupProducer>();
   const abandon = (attempt: StartupAttempt) =>
@@ -135,7 +137,7 @@ export function makeCodexStartup(budgetMs = CODEX_STARTUP_BUDGET_MS) {
                 : Effect.void,
             ),
             Effect.tapError((error) =>
-              Schema.is(CodexErrors.CodexAppServerRequestError)(error)
+              compiledIs1(error)
                 ? Effect.sync(() => {
                     attempt.mayHaveIssued = false;
                   })

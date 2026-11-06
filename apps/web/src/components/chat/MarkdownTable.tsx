@@ -9,12 +9,13 @@ import {
 import { MorphIcon } from "../MorphIcon";
 import { Button } from "../ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../ui/menu";
-import { ScrollArea } from "../ui/scroll-area";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
+import { MarkdownTableExpansion } from "../../jones/markdownTables/useMarkdownTableExpansion";
 import { reportMarkdownActionFailure } from "./markdownActionFailure";
 
 export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+
   const { copyToClipboard, isCopied: copied } = useCopyToClipboard<"markdown" | "csv">({
     timeout: 1200,
     onError: (cause, format) =>
@@ -34,12 +35,9 @@ export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
   };
 
   return (
-    <div ref={containerRef} className="chat-markdown-table-container">
-      <ScrollArea radius="none" chainVerticalScroll scrollFade className="w-full max-w-full">
-        <table {...props}>{children}</table>
-      </ScrollArea>
-      {/* Stays within the row's px-1: the chat lane clips sideways overflow. */}
-      <div className="mt-0.5 -mx-1 flex items-center justify-end select-none">
+    <MarkdownTableExpansion
+      containerRef={containerRef}
+      controls={
         <Menu>
           <Tooltip>
             <TooltipTrigger
@@ -65,7 +63,9 @@ export function MarkdownTable({ children, ...props }: ComponentProps<"table">) {
             <MenuItem onClick={() => handleCopy("csv")}>Copy as CSV</MenuItem>
           </MenuPopup>
         </Menu>
-      </div>
-    </div>
+      }
+    >
+      <table {...props}>{children}</table>
+    </MarkdownTableExpansion>
   );
 }

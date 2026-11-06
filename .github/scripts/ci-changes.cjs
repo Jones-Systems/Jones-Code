@@ -14,7 +14,7 @@ const INERT = [
 
 // Shared test setup and vendored mobile dependencies affect every package.
 const RUNS_EVERYTHING = [
-  /^packages\/shared\/src\/(HostProcess|testing\/longTempDir)\.ts$/,
+  /^packages\/shared\/src\/(HostProcess|testing\/(longTempDir|providerEnv))\.ts$/,
   /^apps\/mobile\/deps\//,
 ];
 
@@ -90,6 +90,7 @@ function readWorkspace() {
 
 // [] means inert; null means unknown and requires every job.
 function ownersOf(file, packages) {
+  if (file === "docs/user/t3-connect-troubleshooting.md") return ["t3"];
   if (INERT.some((pattern) => pattern.test(file))) return [];
   // A manifest can change dependencies or versions other packages read.
   if (path.posix.basename(file) === "package.json") return null;

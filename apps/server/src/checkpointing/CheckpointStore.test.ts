@@ -526,8 +526,8 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
     );
     it.effect("reads repository paths from a subdirectory workspace under diff.relative", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         yield* git(tmp, ["config", "diff.relative", "true"]);
         const fileSystem = yield* FileSystem.FileSystem;
         const cwd = NodePath.join(tmp, "app");
@@ -644,8 +644,8 @@ it.layer(layerTest)("CheckpointStore.layer", (it) => {
 
     it.effect("keeps paths from signed commits under log.showSignature", () =>
       Effect.gen(function* () {
-        const tmp = yield* makeTmpDir();
-        yield* initRepoWithCommit(tmp);
+        const root = yield* makeTmpDir();
+        const tmp = yield* initLinkedWorktree(root);
         const signingKey = NodePath.join(yield* makeTmpDir("checkpoint-signing-key-"), "key");
         yield* (yield* VcsProcess.VcsProcess).run({
           operation: "CheckpointStore.test.sshKeygen",

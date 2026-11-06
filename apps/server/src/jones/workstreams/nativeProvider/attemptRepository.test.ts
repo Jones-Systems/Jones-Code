@@ -159,6 +159,8 @@ it.effect(
     }).pipe(Effect.provide(memory)),
 );
 
+const compiledEncodeEffect1 = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 it.effect(
   "reads legacy 005 rows with typed enrollment and rejects malformed persisted bindings",
   () =>
@@ -193,9 +195,7 @@ it.effect(
         const commandId = `invalid-binding-command-${index}`;
         const invalidRequest = { ...request, command_id: commandId };
         const invalidRequestJson = yield* encodeRequest(invalidRequest);
-        const invalidBindingJson = yield* Schema.encodeEffect(
-          Schema.fromJsonString(Schema.Unknown),
-        )(binding);
+        const invalidBindingJson = yield* compiledEncodeEffect1(binding);
         yield* sql`INSERT INTO workstreams_native_attempts
         (owner_id, principal_id, command_id, request_json, request_bytes_sha256, enrollment_sha256,
           enrollment_json, native_command_id, created_at, dispatch_started_at)

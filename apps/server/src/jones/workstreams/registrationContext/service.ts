@@ -97,6 +97,8 @@ const withinDepth = (value: Schema.Json): boolean => {
   return true;
 };
 
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(Schema.Json));
+
 const decodeResponse = Effect.fn("RegistrationContext.decodeResponse")(function* (
   text: string,
   version: WorkstreamsRegistrationContextVersion,
@@ -109,7 +111,7 @@ const decodeResponse = Effect.fn("RegistrationContext.decodeResponse")(function*
   ) {
     return yield* new RegistrationContextError({ reason: "response_too_large" });
   }
-  const json = yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Json))(text).pipe(
+  const json = yield* compiledDecodeEffect1(text).pipe(
     Effect.mapError(() => new RegistrationContextError({ reason: "invalid_response" })),
   );
   if (!withinDepth(json))

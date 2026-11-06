@@ -18,7 +18,7 @@ function ReconcileThread(props: { environmentId: EnvironmentId; threadId: Thread
   );
   const projection = Option.getOrNull(state.data);
   usePendingPreviewRelease(props.environmentId, props.threadId, projection);
-  // oxlint-disable-next-line t3code/react-effect-budget -- Reconcile delivery lifetime with authoritative subscriptions, including inactive routes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Reconcile delivery lifetime with authoritative subscriptions, including inactive routes.
   useEffect(() => {
     if (projection && state.status === "live")
       pendingSends.reconcile(props.environmentId, props.threadId, projection);

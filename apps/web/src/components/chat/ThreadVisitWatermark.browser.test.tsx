@@ -3,7 +3,7 @@ import { EnvironmentId, type ScopedThreadRef, ThreadId } from "@t3tools/contract
 import { AsyncResult, Atom } from "effect/reactivity";
 import { expect, it, vi } from "vite-plus/test";
 
-import { fakeTimers, render } from "../../../test/render";
+import { act, fakeTimers, render } from "../../../test/render";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../../rpc/atomRegistry";
 
 const mocks = vi.hoisted(() => ({
@@ -53,30 +53,61 @@ function visitedThreadIds() {
   );
 }
 
-it("records the visit of the next thread at once after switching threads", async () => {
+it("records each thread after its own visible focused dwell when switching threads", async () => {
   mocks.visitRun.mockReset();
   mocks.visitRun.mockResolvedValue(AsyncResult.success(undefined));
   setShell(threadA, "2026-01-02T00:00:00.000Z");
   setShell(threadB, "2026-01-03T00:00:00.000Z");
   using _timers = fakeTimers();
   vi.setSystemTime(NOW);
-  // A palette pick already sent B's open with its query, so B's visit is a plain watermark advance.
-  claimThreadOpen(threadB.environmentId, threadB.threadId, NOW);
+  const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const focus = vi.spyOn(document, "hasFocus").mockReturnValue(true);
+  try {
+    // A palette pick already sent B's open with its query, so B's visit is a plain watermark advance.
+    claimThreadOpen(threadB.environmentId, threadB.threadId, NOW);
 
-  await using screen = await render(
-    <AppAtomRegistryProvider>
-      <ThreadVisitWatermark threadRef={threadA} />
-    </AppAtomRegistryProvider>,
-  );
-  expect(visitedThreadIds()).toEqual(["a"]);
+    await using screen = await render(
+      <AppAtomRegistryProvider>
+        <ThreadVisitWatermark threadRef={threadA} />
+      </AppAtomRegistryProvider>,
+    );
+    expect(visitedThreadIds()).toEqual([]);
+    await act(async () => vi.advanceTimersByTime(2999));
+    expect(visitedThreadIds()).toEqual([]);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(visitedThreadIds()).toEqual(["a"]);
+    expect(mocks.visitRun.mock.calls.map(([, input]) => input)).toEqual([
+      {
+        environmentId: ENVIRONMENT,
+        input: { threadId: threadA.threadId, visitedAt: "2026-01-02T00:00:00.000Z", opened: true },
+      },
+    ]);
 
-  await screen.rerender(
-    <AppAtomRegistryProvider>
-      <ThreadVisitWatermark threadRef={threadB} />
-    </AppAtomRegistryProvider>,
-  );
+    await screen.rerender(
+      <AppAtomRegistryProvider>
+        <ThreadVisitWatermark threadRef={threadB} />
+      </AppAtomRegistryProvider>,
+    );
 
-  // Thread A's throttle must not hold back B's first watermark: leaving B
-  // within the throttle window would otherwise keep it unread.
-  expect(visitedThreadIds()).toEqual(["a", "b"]);
+    // Thread A's throttle must not hold back B's first watermark: leaving B
+    // within the throttle window would otherwise keep it unread.
+    await act(async () => vi.advanceTimersByTime(2999));
+    expect(visitedThreadIds()).toEqual(["a"]);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(visitedThreadIds()).toEqual(["a", "b"]);
+    expect(mocks.visitRun).toHaveBeenCalledTimes(2);
+    expect(mocks.visitRun.mock.calls.map(([, input]) => input)).toEqual([
+      {
+        environmentId: ENVIRONMENT,
+        input: { threadId: threadA.threadId, visitedAt: "2026-01-02T00:00:00.000Z", opened: true },
+      },
+      {
+        environmentId: ENVIRONMENT,
+        input: { threadId: threadB.threadId, visitedAt: "2026-01-03T00:00:00.000Z" },
+      },
+    ]);
+  } finally {
+    visibility.mockRestore();
+    focus.mockRestore();
+  }
 });

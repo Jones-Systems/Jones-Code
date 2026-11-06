@@ -64,6 +64,10 @@ function decode(fixture: Fixture): unknown {
   return decoder(fixture.value);
 }
 
+const compiledDecodeUnknownSync1 = Schema.decodeUnknownSync(
+  Provider.WorkstreamsNativeSettlementResponse,
+);
+
 describe("workstreams-t3-provider/1.0.0 native contract", () => {
   it.each(manifest.files)("preserves manifest-pinned bytes for $path", ({ path, sha256 }) => {
     const bytes = rawFiles[path];
@@ -99,9 +103,7 @@ describe("workstreams-t3-provider/1.0.0 native contract", () => {
       (candidate) => candidate.name === "association mismatch requires adapter evaluation",
     );
     if (fixture === undefined) throw new Error("Missing association mismatch fixture");
-    const response = Schema.decodeUnknownSync(Provider.WorkstreamsNativeSettlementResponse)(
-      fixture.value,
-    );
+    const response = compiledDecodeUnknownSync1(fixture.value);
     expect(response.state).toBe("terminal");
     if (response.state !== "terminal") throw new Error("Expected terminal fixture");
     expect(response.result.native_evidence.principal_id).not.toBe(response.request.principal_id);
@@ -144,6 +146,10 @@ const decodeV2 = (fixture: Fixture) => {
   if (!decoder) throw new Error(`Uncovered v2 fixture schema: ${name}`);
   return decoder(fixture.value);
 };
+const compiledDecodeUnknownSync2 = Schema.decodeUnknownSync(
+  Provider.WorkstreamsNativeContextResponseV2,
+);
+
 describe("workstreams-t3-provider/2.0.0 additive native contract", () => {
   it.each(v2Manifest.files)("preserves producer bytes for $path", ({ path, sha256 }) => {
     expect(NodeCrypto.createHash("sha256").update(v2File(path)).digest("hex")).toBe(sha256);
@@ -165,9 +171,7 @@ describe("workstreams-t3-provider/2.0.0 additive native contract", () => {
       }
     ).cases,
   )("preserves the full $name for consumer qualification", (fixture) => {
-    const response = Schema.decodeUnknownSync(Provider.WorkstreamsNativeContextResponseV2)(
-      fixture.value,
-    );
+    const response = compiledDecodeUnknownSync2(fixture.value);
     expect(response.state).toBe("ready");
     if (response.state === "ready")
       expect(response.enrollment).not.toEqual(fixture.expected_enrollment);

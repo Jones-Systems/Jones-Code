@@ -27,7 +27,7 @@ export const runtimeUseCoverageSource = {
 export const RuntimeUseInstallation = Schema.Struct({
   schema: Schema.Literal("jones.workspace-runtime-installation/v1"),
   migration: Schema.Struct({
-    id: Schema.Literal(139),
+    id: Schema.Literal(140),
     name: Schema.Literal("WorkspaceRuntimeUses"),
   }),
   coverageSourceSha256: hash,
@@ -103,7 +103,7 @@ export const withRuntimeUseInstallationAdmission = Effect.fn(
   const prior =
     ledger.length === 0
       ? []
-      : yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id>=139`;
+      : yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id>=140`;
   if (prior.length !== 0) return yield* effect;
   const fiberId = yield* Effect.fiberId;
   let active = true;
@@ -136,7 +136,7 @@ const schemaIdentity = Effect.fn("RuntimeUseInstallation.schemaIdentity")(functi
 });
 
 /** Migration-only. The original migration transaction captures the global
- * committed event boundary once; it cannot retrofit an already-applied139. */
+ * committed event boundary once; it cannot retrofit an already-applied140. */
 export const createRuntimeUseInstallation = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   if (Option.isNone(yield* Effect.serviceOption(sql.transactionService)))
@@ -164,7 +164,7 @@ export const createRuntimeUseInstallation = Effect.gen(function* () {
     basis_json TEXT NOT NULL CHECK(json_valid(basis_json)),
     basis_sha256 TEXT NOT NULL CHECK(length(basis_sha256)=64 AND basis_sha256 NOT GLOB '*[^a-f0-9]*'),
     CHECK(json_extract(basis_json,'$.schema') IS 'jones.workspace-runtime-installation/v1'
-      AND json_extract(basis_json,'$.migration.id') IS 139
+      AND json_extract(basis_json,'$.migration.id') IS 140
       AND json_extract(basis_json,'$.migration.name') IS 'WorkspaceRuntimeUses'
       AND ((json_extract(basis_json,'$.globalEventWatermark.kind') IS 'empty'
         AND json_type(basis_json,'$.globalEventWatermark.sequence') IS NULL)
@@ -184,7 +184,7 @@ export const createRuntimeUseInstallation = Effect.gen(function* () {
     BEGIN SELECT RAISE(ABORT,'runtime coverage installation cannot be replaced'); END`;
   const basis: RuntimeUseInstallation = {
     schema: "jones.workspace-runtime-installation/v1",
-    migration: { id: 139, name: "WorkspaceRuntimeUses" },
+    migration: { id: 140, name: "WorkspaceRuntimeUses" },
     coverageSourceSha256: digest(runtimeUseCoverageSource),
     journalSchemaSha256: yield* schemaIdentity(true),
     globalEventWatermark:

@@ -1,3 +1,4 @@
+import * as WorkspaceProvenance from "../workspaceLifecycle/Provenance.ts";
 import * as ControlAdmission from "../orchestration/ControlAdmission.ts";
 import { materializeCodexReplayAppIdentity } from "../runtimeIdentity/CodexReplayIdentity.ts";
 import * as Guard from "./NativeCreationProviderGuard.ts";
@@ -579,6 +580,7 @@ const scenario = (mode: Mode) =>
     yield* f.enqueue;
     const context = yield* f.issue;
     let calls = 0;
+    const provenanceCaptures: string[] = [];
     const original = yield* f.repository.readExecutionReference!(f.reference);
     const resources = original.history.intent.resources;
     const verified = yield* decodeEffectNativeWorkspaceVerified({
@@ -943,6 +945,20 @@ const scenario = (mode: Mode) =>
             Layer.mergeAll(
               repository,
               start,
+              Layer.mock(WorkspaceProvenance.Provenance)({
+                capture: (input) =>
+                  Effect.gen(function* () {
+                    const receipts = yield* f.sql`SELECT 1 FROM orchestration_command_receipts
+                      WHERE command_id=${f.command.commandId} AND aggregate_id=${input.threadId} AND status='accepted'`;
+                    assert.lengthOf(receipts, 1);
+                    assert.equal(calls, 0);
+                    assert.equal(input.reason, "launch");
+                    assert.equal(input.runId, f.command.runId);
+                    assert.equal(input.baseRef, original.history.intent.binding.baseBranch);
+                    provenanceCaptures.push(input.threadId);
+                    return {} as never;
+                  }).pipe(Effect.orDie),
+              }),
               Layer.succeed(Registry.ProviderAdapterRegistryV2, {
                 get: () =>
                   Effect.succeed(
@@ -963,6 +979,7 @@ const scenario = (mode: Mode) =>
         ),
       ),
     );
+    assert.deepEqual(provenanceCaptures, [f.command.threadId]);
     assert.strictEqual(calls, 1);
     if (mode === "success" || mode === "transport-success") {
       assert.isTrue(result._tag === "Success");

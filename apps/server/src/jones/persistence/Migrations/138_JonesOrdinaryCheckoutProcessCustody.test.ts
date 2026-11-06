@@ -9,10 +9,10 @@ import { jonesMigrationEntries } from "../JonesMigrations.ts";
 import upgrade, {
   releasedOwnerTrigger,
   processOwnerTrigger,
-} from "./137_JonesOrdinaryCheckoutProcessCustody.ts";
+} from "./138_JonesOrdinaryCheckoutProcessCustody.ts";
 
 const memory = NodeSqliteClient.layer({ filename: ":memory:" });
-const beforeUpgrade = jonesMigrationEntries.filter(([id]) => id < 137);
+const beforeUpgrade = jonesMigrationEntries.filter(([id]) => id < 138);
 
 it.effect("fresh migration installs store-qualified views and preserves the released ledger", () =>
   Effect.gen(function* () {
@@ -31,14 +31,15 @@ it.effect("fresh migration installs store-qualified views and preserves the rele
       readonly name: string;
     }>`SELECT migration_id,name FROM jones_sql_migrations WHERE migration_id>=136 ORDER BY migration_id`;
     assert.deepStrictEqual(ledger, [
-      { migration_id: 136, name: "NativeExecutionProcessCustody" },
-      { migration_id: 137, name: "OrdinaryCheckoutProcessCustody" },
-      { migration_id: 138, name: "AuthSessionClientMetadata" },
-      { migration_id: 139, name: "WorkspaceRuntimeUses" },
+      { migration_id: 136, name: "WorkspaceProvenance" },
+      { migration_id: 137, name: "NativeExecutionProcessCustody" },
+      { migration_id: 138, name: "OrdinaryCheckoutProcessCustody" },
+      { migration_id: 139, name: "AuthSessionClientMetadata" },
+      { migration_id: 140, name: "WorkspaceRuntimeUses" },
     ]);
     yield* runUpstreamMigrations();
     assert.strictEqual(
-      (yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=137`).length,
+      (yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=138`).length,
       1,
     );
   }).pipe(Effect.provide(memory)),
@@ -63,7 +64,7 @@ it.effect(
       );
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [137, "OrdinaryCheckoutProcessCustody", failAfterReplacement],
+        [138, "OrdinaryCheckoutProcessCustody", failAfterReplacement],
       ]).pipe(Effect.flip);
       const [after] = yield* sql<{
         readonly sql: string;
@@ -75,12 +76,12 @@ it.effect(
         0,
       );
       assert.strictEqual(
-        (yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=137`).length,
+        (yield* sql`SELECT migration_id FROM jones_sql_migrations WHERE migration_id=138`).length,
         0,
       );
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [137, "OrdinaryCheckoutProcessCustody", upgrade],
+        [138, "OrdinaryCheckoutProcessCustody", upgrade],
       ]);
     }).pipe(Effect.provide(memory)),
 );
@@ -98,7 +99,7 @@ it.effect(
       }>`SELECT sql FROM sqlite_master WHERE name='jones_ordinary_checkout_owner_identity'`;
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [137, "OrdinaryCheckoutProcessCustody", upgrade],
+        [138, "OrdinaryCheckoutProcessCustody", upgrade],
       ]).pipe(Effect.flip);
       const [after] = yield* sql<{
         readonly sql: string;
@@ -156,7 +157,7 @@ it.effect(
       const oldLedger = yield* sql`SELECT * FROM jones_sql_migrations ORDER BY migration_id`;
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [137, "OrdinaryCheckoutProcessCustody", upgrade],
+        [138, "OrdinaryCheckoutProcessCustody", upgrade],
       ]);
       assert.deepEqual(yield* sql`SELECT * FROM jones_ordinary_checkout_uses`, oldUses);
       assert.deepEqual(
@@ -164,7 +165,7 @@ it.effect(
         oldEvents,
       );
       assert.deepEqual(
-        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id<137 ORDER BY migration_id`,
+        yield* sql`SELECT * FROM jones_sql_migrations WHERE migration_id<138 ORDER BY migration_id`,
         oldLedger,
       );
       for (const row of [
@@ -214,7 +215,7 @@ it.effect(
       );
       yield* runJonesMigrations([
         ...beforeUpgrade,
-        [137, "OrdinaryCheckoutProcessCustody", upgrade],
+        [138, "OrdinaryCheckoutProcessCustody", upgrade],
       ]);
     }).pipe(Effect.provide(memory)),
 );
@@ -225,7 +226,7 @@ it.effect(
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runJonesMigrations(beforeUpgrade);
-      yield* sql`INSERT INTO jones_sql_migrations(migration_id,name) VALUES(137,'UnexpectedReceivingMigration')`;
+      yield* sql`INSERT INTO jones_sql_migrations(migration_id,name) VALUES(138,'UnexpectedReceivingMigration')`;
       yield* runJonesMigrations(jonesMigrationEntries).pipe(Effect.flip);
       assert.deepEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE name='jones_ordinary_checkout_process_uses'`,

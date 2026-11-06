@@ -1,4 +1,5 @@
 import * as Redacted from "effect/Redacted";
+import * as WorkspaceProvenance from "../jones/workspaceLifecycle/Provenance.ts";
 import * as DocumentText from "../provider/DocumentText.ts";
 import * as ThreadMetadataReads from "../jones/orchestration/threadMetadataReads.ts";
 import * as IdleWorktreeAdmission from "../jones/orchestration/IdleWorktreeAdmission.ts";
@@ -160,6 +161,11 @@ const claudeAdapter = {
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 
 interface HarnessOptions {
+  readonly provenanceLayer?: Layer.Layer<
+    WorkspaceProvenance.Provenance,
+    never,
+    SqlClient.SqlClient
+  >;
   readonly idleAdmission?: (store: IdleWorktreeAdmission.Store) => IdleWorktreeAdmission.Store;
   readonly serverConfigLayer?: Layer.Layer<ServerConfig.ServerConfig>;
   readonly closeTerminal?: TerminalManager.TerminalManager["Service"]["close"];
@@ -333,6 +339,7 @@ function makeHarness(options: HarnessOptions = {}) {
           }),
         ).pipe(Layer.provide(layerOrchestrator));
   const layerLaunch = ThreadLaunch.layer.pipe(
+    Layer.provide(options.provenanceLayer?.pipe(Layer.provide(layerDatabase)) ?? Layer.empty),
     Layer.provide(layerLaunchSink),
     Layer.provide(ThreadMetadataReads.layer.pipe(Layer.provide(layerDatabase))),
     Layer.provide(
@@ -5299,3 +5306,47 @@ it.effect("retries a failed workspace preparation on the same run", () => {
     assert.equal(rejected._tag, "OrchestratorDispatchError");
   }).pipe(Effect.provide(harness.layer));
 });
+it.effect("launch captures provenance from the committed workspace assignment before setup", () =>
+  Effect.gen(function* () {
+    const captures: Array<{ threadId: string; path: string | null }> = [];
+    const provenanceLayer = Layer.unwrap(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return Layer.mock(WorkspaceProvenance.Provenance)({
+          capture: (input) =>
+            Effect.gen(function* () {
+              const rows = yield* sql<{
+                path: string | null;
+              }>`SELECT json_extract(payload_json, '$.worktreePath') AS path
+                FROM orchestration_v2_projection_threads WHERE thread_id=${input.threadId}`;
+              assert.equal(rows[0]?.path, "/repo-worktrees/feature");
+              const receipts = yield* sql`SELECT 1 FROM orchestration_command_receipts
+                WHERE command_id='provenance-launch' AND status='accepted'`;
+              assert.lengthOf(receipts, 1);
+              captures.push({ threadId: input.threadId, path: rows[0]!.path });
+              return {} as never;
+            }).pipe(Effect.orDie),
+        });
+      }),
+    );
+    const harness = makeIdleHarness({
+      provenanceLayer,
+      runSetup: () =>
+        Effect.sync(() => {
+          assert.lengthOf(captures, 1);
+          return { status: "no-script" as const };
+        }),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const input = launchInput({
+        command: "provenance-launch",
+        thread: "provenance-launch",
+        workspace: { type: "worktree", baseRef: "main", branch: "feature", startFromOrigin: false },
+      });
+      yield* launches.launch(input);
+      yield* awaitIdleAgentReady(input.threadId);
+      assert.deepEqual(captures, [{ threadId: input.threadId, path: "/repo-worktrees/feature" }]);
+    }).pipe(Effect.provide(harness.layer));
+  }),
+);

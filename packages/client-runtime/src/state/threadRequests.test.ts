@@ -520,8 +520,100 @@ describe("question history through exact row replacements", () => {
       (rows[index]!.item as { readonly questionAnswer?: { readonly answers: unknown } })
         .questionAnswer?.answers;
 
+    const inheritedRow = (rows: OrchestrationV2ThreadProjection["visibleTurnItems"]) => {
+      const matches = rows.filter(
+        (row) =>
+          row.visibility === "inherited" &&
+          row.sourceThreadId === inherited.sourceThreadId &&
+          row.sourceItemId === inherited.sourceItemId,
+      );
+      expect(matches).toHaveLength(1);
+      return matches[0]!;
+    };
+
+    const explicitRow = (rows: OrchestrationV2ThreadProjection["visibleTurnItems"]) => {
+      const matches = rows.filter(
+        (row) =>
+          row.visibility === "local" &&
+          row.sourceThreadId === explicit.threadId &&
+          row.sourceItemId === explicit.id,
+      );
+      expect(matches).toHaveLength(1);
+      return matches[0]!;
+    };
+    const expectAfterExplicitUpdateOrder = (
+      rows: OrchestrationV2ThreadProjection["visibleTurnItems"],
+    ) => {
+      expect(
+        rows.map((row) => ({
+          visibility: row.visibility,
+          sourceThreadId: row.sourceThreadId,
+          sourceItemId: row.sourceItemId,
+          position: row.position,
+        })),
+      ).toEqual([
+        {
+          visibility: "local",
+          sourceThreadId: question.threadId,
+          sourceItemId: question.id,
+          position: 0,
+        },
+        {
+          visibility: "inherited",
+          sourceThreadId: inherited.sourceThreadId,
+          sourceItemId: inherited.sourceItemId,
+          position: 1,
+        },
+        {
+          visibility: "local",
+          sourceThreadId: explicit.threadId,
+          sourceItemId: explicit.id,
+          position: 2,
+        },
+        {
+          visibility: "local",
+          sourceThreadId: stream.threadId,
+          sourceItemId: stream.id,
+          position: 3,
+        },
+      ]);
+    };
+
     expect(step(current)).toBe(current.visibleTurnItems);
     expect(step(updated(current, assistantItem(2, "Hello")))).toBe(current.visibleTurnItems);
+    expect(
+      current.visibleTurnItems.map((row) => ({
+        visibility: row.visibility,
+        sourceThreadId: row.sourceThreadId,
+        sourceItemId: row.sourceItemId,
+        position: row.position,
+      })),
+    ).toEqual([
+      {
+        visibility: "local",
+        sourceThreadId: question.threadId,
+        sourceItemId: question.id,
+        position: 0,
+      },
+      {
+        visibility: "local",
+        sourceThreadId: explicit.threadId,
+        sourceItemId: explicit.id,
+        position: 1,
+      },
+      {
+        visibility: "inherited",
+        sourceThreadId: inherited.sourceThreadId,
+        sourceItemId: inherited.sourceItemId,
+        position: 2,
+      },
+      {
+        visibility: "local",
+        sourceThreadId: stream.threadId,
+        sourceItemId: stream.id,
+        position: 3,
+      },
+    ]);
 
     // The last duplicate request wins, and every row asking it gets the answer.
     const answered = step({
@@ -534,11 +626,11 @@ describe("question history through exact row replacements", () => {
     });
     expect(answerOf(answered, 0)).toEqual({ next: "Continue" });
     expect(answerOf(answered, 1)).toEqual({ next: "Explicit" });
-    expect(answerOf(answered, 3)).toEqual({ next: "Continue" });
+    expect(answerOf([inheritedRow(answered)], 0)).toEqual({ next: "Continue" });
 
     const whileOverlaid = step(updated(current, assistantItem(2, "Hello there")));
     expect(whileOverlaid[0]).toBe(answered[0]);
-    expect(whileOverlaid[3]).toBe(answered[3]);
+    expect(inheritedRow(whileOverlaid)).toBe(inheritedRow(answered));
 
     const changedAnswer = step({
       ...current,
@@ -554,14 +646,16 @@ describe("question history through exact row replacements", () => {
 
     // Dropping an explicit answer falls back to its resolved request.
     const restored = step(updated(current, unanswered));
-    expect(answerOf(restored, 1)).toEqual({ next: "From request" });
+    expectAfterExplicitUpdateOrder(restored);
+    expect(answerOf([explicitRow(restored)], 0)).toEqual({ next: "From request" });
 
     const retitled: QuestionItem = {
       ...unanswered,
       questions: [{ ...question.questions[0]!, question: "Now what?" }],
     };
     const retitledRows = step(updated(current, retitled));
-    expect(retitledRows[1]!.item).toMatchObject({
+    expectAfterExplicitUpdateOrder(retitledRows);
+    expect(explicitRow(retitledRows).item).toMatchObject({
       questionAnswer: { questionTextById: { next: "Now what?" } },
     });
   });

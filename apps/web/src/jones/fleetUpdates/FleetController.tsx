@@ -10,7 +10,7 @@ import {
 
 /** Native proof gates activation; ordinary app startup and source equality do not. */
 export function FleetController() {
-  // oxlint-disable-next-line t3code/react-effect-budget -- Own the desktop fleet campaign advancement loop and cancel its timer when the controller unmounts.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- Own the desktop fleet campaign advancement loop and cancel its timer when the controller unmounts.
   useEffect(() => {
     const bridge = window.desktopBridge?.fleetUpdates;
     if (bridge === undefined) return;
@@ -52,6 +52,9 @@ export async function readFleetPublicationSource() {
   const bridge = window.desktopBridge;
   if (bridge?.installPlan === undefined)
     return (await bridge?.getUpdateState())?.jones?.installedSource;
-  const result = await bridge.installPlan({ type: "publication" });
-  return result.publication?.kind === "committed" ? result.publication.source : undefined;
+  const result = await bridge.installPlan({ type: "publication", acceptOrdinaryRecovery: 1 });
+  return result.publication?.kind === "committed" ||
+    result.publication?.kind === "ordinary-verified"
+    ? result.publication.source
+    : undefined;
 }

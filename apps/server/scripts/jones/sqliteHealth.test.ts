@@ -442,15 +442,27 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       profile: "health-offline-delete" as const,
       recipe: { kind: "coherent-v2" as const, threads: 2, historyTurns: 3, payloadBytes: 256 },
     };
-    let measuredSchemaRecords: number | null = null;
+    const schemaObservations = new Map<
+      string,
+      {
+        readonly total: number;
+        readonly prefix: ReadonlyArray<{ readonly name: unknown; readonly type: unknown }>;
+      }
+    >();
     const readHealth = (context: ClosedSyntheticFixture) => {
       const database = new NodeSqlite.DatabaseSync(context.fixture.canonicalPath, {
         readOnly: true,
       });
       try {
-        measuredSchemaRecords = Number(
+        const total = Number(
           database.prepare("SELECT COUNT(*) AS count FROM sqlite_schema").get()?.count,
         );
+        const prefix = database
+          .prepare("SELECT name, type FROM sqlite_schema ORDER BY type, name LIMIT 512")
+          .all()
+          .map((row) => ({ name: row.name, type: row.type }));
+        expect(schemaObservations.has(context.receiptSha256)).toBe(false);
+        schemaObservations.set(context.receiptSha256, { total, prefix });
       } finally {
         database.close();
       }
@@ -469,6 +481,23 @@ describe("jones-sqlite-health — closed fixture integration", () => {
         ]),
         { receipt: context.fixture.receipt, expectedBinding: binding },
       );
+    };
+    const assertBoundedPartial = (report: HealthEnvelope, fixturePin: string) => {
+      const observed = schemaObservations.get(fixturePin);
+      expect(observed).toBeDefined();
+      expect(observed!.total).toBeGreaterThan(512);
+      expect(observed!.prefix).toHaveLength(512);
+      expect(report.status).toBe("partial");
+      expect(report.reason).toBe("record_limit");
+      expect(report.limits.maxRecords).toBe(512);
+      expect(report.results.metadata.status).toBe("truncated");
+      expect(report.results.metadata.reason).toBe("record_limit");
+      expect(report.results.metadata.data?.schema).toHaveLength(512);
+      expect(report.results.metadata.data?.schema).toEqual(observed!.prefix);
+      expect(report.results.counts.status).toBe("completed");
+      expect(report.results.integrity.status).toBe("completed");
+      expect(report.results.foreignKeys.status).toBe("completed");
+      expect(report.results.readonly.status).toBe("completed");
     };
     const consumerClosed = (report: HealthEnvelope) =>
       report.child.closed &&
@@ -513,12 +542,8 @@ describe("jones-sqlite-health — closed fixture integration", () => {
             supervisorRetained: accepted.value.cleanup.supervisorRoot !== null,
           },
         }),
-      ).toBe("completed");
-      expect(accepted.value.limits.maxRecords).toBe(512);
-      expect(accepted.value.results.metadata.status).toBe("completed");
-      expect(measuredSchemaRecords).toBeGreaterThan(256);
-      expect(measuredSchemaRecords).toBeLessThanOrEqual(512);
-      expect(accepted.value.results.metadata.data?.schema.length).toBe(measuredSchemaRecords);
+      ).toBe("partial");
+      assertBoundedPartial(accepted.value, accepted.receiptSha256);
       const custodyPin = syntheticFixtureReceiptSha256(fixtureCustodyReceipt(accepted.receipt));
       expect(accepted.receipt.schema).toBe("jones-performance-fixture/v2");
       expect(accepted.receiptSha256).not.toBe(custodyPin);
@@ -587,7 +612,9 @@ describe("jones-sqlite-health — closed fixture integration", () => {
       expect((rejected as SyntheticFixtureError).code).toBe("invalid_consumer_outcome");
       expect(evidence?.cleanup.outcome).toBe("retained");
       expect(NodeFS.existsSync(NodePath.join(root, "raw"))).toBe(true);
-      expect(raw.report?.status).toBe("completed");
+      if (!raw.report || !raw.context) throw new Error("raw fixture observation missing");
+      assertBoundedPartial(raw.report, raw.context.receiptSha256);
+      expect(schemaObservations.size).toBe(2);
       expect(raw.report?.results.readonly.data?.unchanged).toBe(true);
       expect(evidence).not.toHaveProperty("value");
       expect(safeToClean).toBe(true);

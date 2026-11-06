@@ -6,6 +6,8 @@ import {
 } from "../orchestratorMcp.ts";
 import { RemoteChildProgress } from "./remoteTaskObservation.ts";
 
+const compiledDecodeSync1 = Schema.decodeSync(OrchestratorMcpThreadWaitInput);
+
 it("keeps legacy waits decodable and negotiates exact versioned observations", () => {
   const decode = Schema.decodeUnknownSync(OrchestratorMcpThreadWaitResult);
   const legacy = {
@@ -35,7 +37,7 @@ it("keeps legacy waits decodable and negotiates exact versioned observations", (
     decode({ ...legacy, remoteObservation: { ...remoteObservation, schemaVersion: "v2" } }),
   ).toThrow();
   expect(
-    Schema.decodeSync(OrchestratorMcpThreadWaitInput)({
+    compiledDecodeSync1({
       threadId: "thread:remote",
       observeBlockingQuestions: true,
       questionResumeToken: "resume",

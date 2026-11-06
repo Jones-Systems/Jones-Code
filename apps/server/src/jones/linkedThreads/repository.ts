@@ -69,8 +69,11 @@ export const insert = Effect.fn("LinkedThreadsRepository.insert")(function* (r: 
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT OR IGNORE INTO jones_thread_links ${sql.insert({ ...r })}`;
 }, Effect.mapError(storageFailure));
+const compiledDecodeSync1 = Schema.decodeSync(LinkedThreadLink);
+const compiledDecodeSync2 = Schema.decodeSync(Schema.fromJsonString(LinkedThreadHandoff));
+
 export const project = (r: LinkRow, here: EnvironmentId): LinkedThreadLink =>
-  Schema.decodeSync(LinkedThreadLink)({
+  compiledDecodeSync1({
     linkId: r.link_id,
     kind: r.kind,
     from: { environmentId: r.from_environment_id, threadId: r.from_thread_id },
@@ -88,10 +91,7 @@ export const project = (r: LinkRow, here: EnvironmentId): LinkedThreadLink =>
               : "client",
     reverse: r.reverse_state,
     acceptance: r.acceptance,
-    handoff:
-      r.handoff_json === null
-        ? null
-        : Schema.decodeSync(Schema.fromJsonString(LinkedThreadHandoff))(r.handoff_json),
+    handoff: r.handoff_json === null ? null : compiledDecodeSync2(r.handoff_json),
     remote:
       r.from_environment_id === r.to_environment_id
         ? null

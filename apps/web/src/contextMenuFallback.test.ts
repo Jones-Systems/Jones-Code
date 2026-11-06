@@ -66,6 +66,26 @@ class FakeElement {
     this.listeners.set(type, existing);
   }
 
+  matches(selector: string): boolean {
+    return selector.split(",").some((part) => {
+      const current = part.trim();
+      if (current === ":focus-visible") return this.focused;
+      if (current === '[contenteditable="true"]')
+        return this.attributes.get("contenteditable") === "true";
+      return this.tagName.toLowerCase() === current.toLowerCase();
+    });
+  }
+
+  querySelector(selector: string): FakeElement | null {
+    for (const child of this.children) {
+      if (selector === "button:not(:disabled)" && child.tagName === "button" && !child.disabled)
+        return child;
+      const descendant = child.querySelector(selector);
+      if (descendant) return descendant;
+    }
+    return null;
+  }
+
   setAttribute(name: string, value: string) {
     this.attributes.set(name, value);
   }

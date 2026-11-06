@@ -78,6 +78,8 @@ export const decodeJsonReply = <S extends Schema.Top>(
   );
 };
 
+const compiledDecodeUnknownEffect1 = Schema.decodeUnknownEffect(RemoteRequestEvaluationResult);
+
 export function fromRunner(
   name: string,
   run: Runner,
@@ -97,7 +99,7 @@ export function fromRunner(
       modelSelection: input.modelSelection,
       ...prompt,
     });
-    return yield* Schema.decodeUnknownEffect(RemoteRequestEvaluationResult)(generated).pipe(
+    return yield* compiledDecodeUnknownEffect1(generated).pipe(
       Effect.mapError(
         (cause) =>
           new TextGenerationError({

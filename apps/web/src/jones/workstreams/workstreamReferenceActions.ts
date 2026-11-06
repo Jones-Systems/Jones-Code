@@ -84,6 +84,8 @@ export function createSnapshotSequence(
   };
 }
 
+const compiledDecodeSync1 = Schema.decodeSync(WorkstreamPrLocator);
+
 export function parseWorkstreamPrUrl(input: string): WorkstreamPrLocator {
   try {
     const url = new URL(input.trim());
@@ -99,7 +101,7 @@ export function parseWorkstreamPrUrl(input: string): WorkstreamPrLocator {
       throw new WorkstreamActionError("invalid-pr");
     const match = /^\/([^/]+)\/([^/]+)\/pull\/([1-9][0-9]*)\/?$/.exec(url.pathname);
     if (!match) throw new WorkstreamActionError("invalid-pr");
-    return Schema.decodeSync(WorkstreamPrLocator)({
+    return compiledDecodeSync1({
       host: "github.com",
       repository_owner: match[1]!.toLowerCase(),
       repository_name: match[2]!.toLowerCase(),

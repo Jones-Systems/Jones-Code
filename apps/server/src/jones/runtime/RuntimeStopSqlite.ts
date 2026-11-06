@@ -35,6 +35,8 @@ export interface RuntimeStopCommitContext {
   readonly revalidate: Effect.Effect<void, RuntimeStopError>;
 }
 // These methods use EventSink's existing transaction and command receipt owner.
+const compiledDecodeEffect1 = Schema.decodeEffect(Schema.fromJsonString(RuntimeStopIdentity));
+
 export const makeRuntimeStopMethods = (
   sql: SqlClient.SqlClient,
   presence: JonesTablePresence = makeJonesTablePresence(sql),
@@ -48,9 +50,9 @@ export const makeRuntimeStopMethods = (
     if (rows.length === 0) return null;
     if (rows.length !== 1)
       return yield* new RuntimeStopError({ reason: "ambiguous_stop_identity" });
-    return yield* Schema.decodeEffect(Schema.fromJsonString(RuntimeStopIdentity))(
-      rows[0]!.identity_json,
-    ).pipe(Effect.mapError(() => new RuntimeStopError({ reason: "invalid_stop_identity" })));
+    return yield* compiledDecodeEffect1(rows[0]!.identity_json).pipe(
+      Effect.mapError(() => new RuntimeStopError({ reason: "invalid_stop_identity" })),
+    );
   });
   const assertIdentity = Effect.fnUntraced(function* (
     commandId: CommandId,

@@ -34,6 +34,19 @@ const handlers = () => {
   };
 };
 
+const compiledDecodeEffect1 = Schema.decodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeContextResponse),
+);
+const compiledEncodeEffect2 = Schema.encodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeAttestationRequest),
+);
+const compiledDecodeEffect3 = Schema.decodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeAttestationResponse),
+);
+const compiledDecodeEffect4 = Schema.decodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
+);
+
 it.effect(
   "four HTTP handlers return only closed provider metadata and exact terminal evidence",
   () =>
@@ -41,26 +54,18 @@ it.effect(
       const { fixture, http } = handlers();
       const context = yield* http.handle("context", binding.session_id, Stream.empty);
       assert.strictEqual(context.status, 200);
-      const parsedContext = yield* Schema.decodeEffect(
-        Schema.fromJsonString(WorkstreamsNativeContextResponse),
-      )(responseText(context));
+      const parsedContext = yield* compiledDecodeEffect1(responseText(context));
       assert.strictEqual(parsedContext.state, "ready");
-      const attestationText = yield* Schema.encodeEffect(
-        Schema.fromJsonString(WorkstreamsNativeAttestationRequest),
-      )(attestationRequest);
+      const attestationText = yield* compiledEncodeEffect2(attestationRequest);
       const attested = yield* http.handle(
         "attestations",
         binding.session_id,
         body(attestationText),
       );
-      const attestation = yield* Schema.decodeEffect(
-        Schema.fromJsonString(WorkstreamsNativeAttestationResponse),
-      )(responseText(attested));
+      const attestation = yield* compiledDecodeEffect3(responseText(attested));
       assert.strictEqual(attestation.state, "attested");
       const settled = yield* http.handle("settlements", binding.session_id, body(requestText));
-      const result = yield* Schema.decodeEffect(
-        Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
-      )(responseText(settled));
+      const result = yield* compiledDecodeEffect4(responseText(settled));
       assert.strictEqual(result.state, "terminal");
       const lookup = yield* http.handle(
         "settlements/lookup",
@@ -73,6 +78,10 @@ it.effect(
       assert.strictEqual(responseText(context).includes("registry_origin"), false);
       assert.strictEqual(responseText(context).includes("session_id"), false);
     }),
+);
+
+const compiledDecodeEffect5 = Schema.decodeEffect(
+  Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
 );
 
 it.effect("settlement timeout retains dispatch-start and lookup never resubmits", () =>
@@ -100,9 +109,7 @@ it.effect("settlement timeout retains dispatch-start and lookup never resubmits"
     yield* Deferred.await(started);
     yield* TestClock.adjust("15 seconds");
     const response = yield* Fiber.join(pending);
-    const result = yield* Schema.decodeEffect(
-      Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
-    )(responseText(response));
+    const result = yield* compiledDecodeEffect5(responseText(response));
     assert.strictEqual(result.state, "unknown");
     if (result.state === "unknown") assert.strictEqual(result.reason, "provider_unavailable");
     const lookedUp = yield* http.handle(
@@ -110,9 +117,7 @@ it.effect("settlement timeout retains dispatch-start and lookup never resubmits"
       binding.session_id,
       body(requestText),
     );
-    const observation = yield* Schema.decodeEffect(
-      Schema.fromJsonString(WorkstreamsNativeSettlementResponse),
-    )(responseText(lookedUp));
+    const observation = yield* compiledDecodeEffect5(responseText(lookedUp));
     assert.strictEqual(observation.state, "unknown");
     if (observation.state === "unknown") assert.strictEqual(observation.reason, "receipt_missing");
     assert.strictEqual(calls, 1);
@@ -179,6 +184,8 @@ it.effect("context rejects a body and settlement duplicate changed wire bytes co
   }),
 );
 
+const compiledDecodeEffect6 = Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown));
+
 it.effect(
   "historic unrepresentable event IDs return no-store invalid_request without redispatch",
   () =>
@@ -201,14 +208,11 @@ it.effect(
       for (const operation of ["settlements/lookup", "settlements"] as const) {
         const response = yield* http.handle(operation, binding.session_id, body(requestText));
         assert.strictEqual(response.status, 500);
-        assert.deepEqual(
-          yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(responseText(response)),
-          {
-            protocol: binding.protocol,
-            state: "rejected",
-            reason: "invalid_request",
-          },
-        );
+        assert.deepEqual(yield* compiledDecodeEffect6(responseText(response)), {
+          protocol: binding.protocol,
+          state: "rejected",
+          reason: "invalid_request",
+        });
         assert.strictEqual(response.headers["cache-control"], "no-store");
       }
       assert.strictEqual(fixture.calls.length, 1);

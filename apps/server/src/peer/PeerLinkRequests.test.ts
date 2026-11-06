@@ -57,6 +57,7 @@ import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as PeerForwarding from "./PeerForwarding.ts";
 import * as PeerLinkRequests from "./PeerLinkRequests.ts";
 import * as PeerLinks from "./PeerLinks.ts";
+import { peerEnvironmentLinksTable } from "../jones/peerPersistence/table.ts";
 import {
   descriptorOf,
   layerLinkingEnvironment,
@@ -1008,7 +1009,7 @@ it.live("a link made before links were fenced goes through the card, as an expir
     Effect.gen(function* () {
       yield* seedThread(a);
       yield* linkTo(a.links, b);
-      yield* a.linksSql`UPDATE peer_environment_links SET fenced = 0`;
+      yield* a.linksSql`UPDATE ${a.linksSql(peerEnvironmentLinksTable)} SET fenced = 0`;
       const asked = yield* a.call({ environmentId: box.environmentId });
       expect(asked.structuredContent).toMatchObject({ status: "pending" });
       yield* pendingCard(a);

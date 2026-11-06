@@ -130,11 +130,13 @@ it.effect("rejects unassign with an assign target before calling the server", ()
   }),
 );
 
+const compiledIs1 = Schema.is(Operations.WorkstreamSetupStatus);
+
 it("shows pending and setup reasons without claiming success", () => {
   expect(formatWorkstreamCliResult(result)).toContain("Not confirmed");
   expect(formatWorkstreamCliResult(result)).toContain(result.operation_id);
   for (const item of corpus.cases) {
-    if (Schema.is(Operations.WorkstreamSetupStatus)(item.value)) {
+    if (compiledIs1(item.value)) {
       expect(formatWorkstreamCliResult(item.value)).toContain(
         item.value.t3_source.reason ?? "ready",
       );
