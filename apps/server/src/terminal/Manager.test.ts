@@ -654,8 +654,9 @@ it.layer(
         // Known non-Git directories retain ordinary terminal behavior without inventing a checkout claim.
         yield* manager.open(openInput({ terminalId: "outside", cwd: baseDir }));
         assert.lengthOf(ptyAdapter.spawnInputs, 2);
-        const claimCount =
-          yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims`;
+        const claimCount = yield* sql<{
+          n: number;
+        }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims`;
         assert.equal(claimCount[0]!.n, 1);
       }).pipe(
         Effect.provide(SqlitePersistence.layerMemory),
@@ -664,37 +665,35 @@ it.layer(
         }),
       ),
   );
-  it.effect(
-    "a retiring root excludes terminal admission from a subdirectory before spawn",
-    () =>
-      Effect.gen(function* () {
-        yield* runMigrations();
-        const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
-          shellResolver: () => "/bin/sh",
-        });
-        const fs = yield* FileSystem.FileSystem;
-        const runner = yield* ProcessRunner.ProcessRunner;
-        const repo = `${baseDir}/root`,
-          child = `${repo}/subdir`;
-        yield* fs.makeDirectory(child, { recursive: true });
-        const initialized = yield* runner.run({
-          command: "git",
-          args: ["init", "-b", "terminal-root"],
-          cwd: repo,
-        });
-        assert.equal(initialized.code, 0);
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO jones_workspace_retirement_state VALUES(${repo},'fixture-incarnation','retiring','fixture-receipt')`;
-        const opening = yield* manager.open(openInput({ cwd: child })).pipe(
-          Effect.exit,
-          Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
-        );
-        assert.isTrue(Exit.isFailure(opening));
-        assert.lengthOf(ptyAdapter.spawnInputs, 0);
-        const claimCount =
-          yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims`;
-        assert.equal(claimCount[0]!.n, 0);
-      }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
+  it.effect("a retiring root excludes terminal admission from a subdirectory before spawn", () =>
+    Effect.gen(function* () {
+      yield* runMigrations();
+      const { manager, ptyAdapter, baseDir } = yield* createManager(5, {
+        shellResolver: () => "/bin/sh",
+      });
+      const fs = yield* FileSystem.FileSystem;
+      const runner = yield* ProcessRunner.ProcessRunner;
+      const repo = `${baseDir}/root`,
+        child = `${repo}/subdir`;
+      yield* fs.makeDirectory(child, { recursive: true });
+      const initialized = yield* runner.run({
+        command: "git",
+        args: ["init", "-b", "terminal-root"],
+        cwd: repo,
+      });
+      assert.equal(initialized.code, 0);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO jones_workspace_retirement_state VALUES(${repo},'fixture-incarnation','retiring','fixture-receipt')`;
+      const opening = yield* manager
+        .open(openInput({ cwd: child }))
+        .pipe(Effect.exit, Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()));
+      assert.isTrue(Exit.isFailure(opening));
+      assert.lengthOf(ptyAdapter.spawnInputs, 0);
+      const claimCount = yield* sql<{
+        n: number;
+      }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims`;
+      assert.equal(claimCount[0]!.n, 0);
+    }).pipe(Effect.provide(SqlitePersistence.layerMemory)),
   );
   it.effect.each(["child-survives", "unknown", "verified-absent"] as const)(
     "terminal duty uses owned-session observation after parent exit (%s)",
@@ -749,8 +748,9 @@ it.layer(
           yield* duty.bindNative(release, ptyAdapter.processes[0]!.pid);
           yield* duty.observeParentExit(release);
           const sql = yield* SqlClient.SqlClient;
-          const live =
-            yield* sql<{ owner: string }>`SELECT owner FROM jones_workspace_duty_claims WHERE released_at IS NULL`;
+          const live = yield* sql<{
+            owner: string;
+          }>`SELECT owner FROM jones_workspace_duty_claims WHERE released_at IS NULL`;
           assert.equal(
             live.some((row) => row.owner === "controlled-drain"),
             mode !== "verified-absent",
@@ -758,8 +758,9 @@ it.layer(
           ptyAdapter.processes[0]!.emitExit({ exitCode: 0, signal: null });
           yield* Deferred.await(parentObserved);
           if (mode !== "verified-absent") {
-            const retained =
-              yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims WHERE released_at IS NULL`;
+            const retained = yield* sql<{
+              n: number;
+            }>`SELECT COUNT(*) AS n FROM jones_workspace_duty_claims WHERE released_at IS NULL`;
             assert.equal(retained[0]!.n, 2);
           }
           assert.equal(observations, 2);

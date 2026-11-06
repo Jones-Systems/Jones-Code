@@ -67,7 +67,7 @@ export const hooks = Effect.gen(function* () {
         : yield* Effect.tryPromise({
             try: () => observation.observe(native),
             catch: () => "unknown" as const,
-          }).pipe(Effect.catch(() => Effect.succeed("unknown" as const)));
+          }).pipe(Effect.orElseSucceed(() => "unknown" as const));
     if (status === "verified_absent") {
       yield* store.reconcileClaim(claim.id, claim.holder, true);
       return;
@@ -129,14 +129,16 @@ export const hooks = Effect.gen(function* () {
                 }),
             }).pipe(
               Effect.flatMap((native) =>
-                store.bindNativeOwner(id, holder, native).pipe(
-                  Effect.andThen(Effect.sync(() => owners.set(release, native))),
-                  Effect.andThen(
-                    Effect.suspend(() =>
-                      parentExits.has(release) ? observeParentExit(release) : Effect.void,
+                store
+                  .bindNativeOwner(id, holder, native)
+                  .pipe(
+                    Effect.andThen(Effect.sync(() => owners.set(release, native))),
+                    Effect.andThen(
+                      Effect.suspend(() =>
+                        parentExits.has(release) ? observeParentExit(release) : Effect.void,
+                      ),
                     ),
                   ),
-                ),
               ),
             ),
           );

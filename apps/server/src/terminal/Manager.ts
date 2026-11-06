@@ -2456,9 +2456,8 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
     yield* modifyManagerState((state) => {
       session.status = "starting";
       session.cwd = input.cwd;
-      session.worktreePath = workspaceAdmission === null
-        ? input.worktreePath ?? null
-        : workspaceAdmission.worktree;
+      session.worktreePath =
+        workspaceAdmission === null ? (input.worktreePath ?? null) : workspaceAdmission.worktree;
       session.cols = input.cols;
       session.rows = input.rows;
       session.exitCode = null;
@@ -2616,7 +2615,7 @@ export const makeWithOptions = Effect.fn("TerminalManager.makeWithOptions")(func
             const releaseWorkspaceDuty = yield* workspaceDuty
               .hold(
                 workspaceAdmission === null
-                  ? input.worktreePath ?? input.cwd
+                  ? (input.worktreePath ?? input.cwd)
                   : workspaceAdmission.worktree,
                 session.terminalId.startsWith("settle-")
                   ? "settle-script"

@@ -36,9 +36,7 @@ export const events = (sql: SqlClient.SqlClient, values: readonly RecordedEvent[
       }
       const paths = [
         ...new Set(
-          [prior?.worktreePath, nextPath].filter(
-            (p): p is string => typeof p === "string",
-          ),
+          [prior?.worktreePath, nextPath].filter((p): p is string => typeof p === "string"),
         ),
       ];
       // Binding changes, queue delivery, restore and owner metadata writes all conflict in this same transaction.

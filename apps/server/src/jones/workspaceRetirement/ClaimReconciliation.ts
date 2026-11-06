@@ -24,9 +24,9 @@ export class ClaimAbsence extends Context.Reference<{
       Effect.gen(function* () {
         if (claim.native_owner_json === null)
           return { holder: claim.holder_json, status: "unknown" as const };
-        const owner = yield* Schema.decodeEffect(NativeDutyOwnerJson)(
-          claim.native_owner_json,
-        ).pipe(Effect.result);
+        const owner = yield* Schema.decodeEffect(NativeDutyOwnerJson)(claim.native_owner_json).pipe(
+          Effect.result,
+        );
         // Invalid durable facts remain unknown; a decode failure never proves absence.
         if (owner._tag === "Failure")
           return { holder: claim.holder_json, status: "unknown" as const };

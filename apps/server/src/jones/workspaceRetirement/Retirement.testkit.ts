@@ -84,49 +84,50 @@ async function fixtureSql(
   return { sql, db, close: () => db.close() };
 }
 export const retirementCases: Record<string, () => Promise<void>> = {
-  "receipt codecs retain absent hold/unknown qualification evidence and reject invalid authority fields": () =>
-    fixture(async ({ input }) => {
-      for (const outcome of ["hold", "unknown"] as const) {
-        const receipt: RetirementReceipt = {
-          schema: "worktree-retirement/v1",
-          id: "codec-fixture",
-          cause: "sweep",
-          state: "not_retired",
-          binding: input.expected,
-          incarnation: incarnation(input.expected),
-          qualification: {
-            schema: "workspace-qualification/v1",
-            authority_effect: "none",
-            outcome,
-            level: null,
+  "receipt codecs retain absent hold/unknown qualification evidence and reject invalid authority fields":
+    () =>
+      fixture(async ({ input }) => {
+        for (const outcome of ["hold", "unknown"] as const) {
+          const receipt: RetirementReceipt = {
+            schema: "worktree-retirement/v1",
+            id: "codec-fixture",
+            cause: "sweep",
+            state: "not_retired",
+            binding: input.expected,
+            incarnation: incarnation(input.expected),
+            qualification: {
+              schema: "workspace-qualification/v1",
+              authority_effect: "none",
+              outcome,
+              level: null,
+              reasons: ["native_binding_unavailable"],
+              decision: outcome,
+              observationMs: 0,
+            },
+            coverage: {},
+            preservationRefs: [],
+            journal: "codec-fixture",
+            disposed: [],
             reasons: ["native_binding_unavailable"],
-            decision: outcome,
-            observationMs: 0,
-          },
-          coverage: {},
-          preservationRefs: [],
-          journal: "codec-fixture",
-          disposed: [],
-          reasons: ["native_binding_unavailable"],
-          limits: [],
-          bytes: { logical: null, allocated: null, statvfs_delta: null },
-        };
-        const encoded = await Effect.runPromise(
-          Schema.encodeEffect(RetirementReceiptJson)(receipt),
-        );
-        const decoded = await Effect.runPromise(
-          Schema.decodeEffect(RetirementReceiptJson)(encoded),
-        );
-        NodeAssert.deepEqual(decoded, receipt);
-        NodeAssert.equal(Object.hasOwn(decoded.qualification, "binding"), false);
-        NodeAssert.equal(Object.hasOwn(decoded.qualification, "head"), false);
-        await NodeAssert.rejects(
-          Effect.runPromise(
-            Schema.decodeEffect(RetirementReceiptJson)(canonical({ ...receipt, binding: null })),
-          ),
-        );
-      }
-    }),
+            limits: [],
+            bytes: { logical: null, allocated: null, statvfs_delta: null },
+          };
+          const encoded = await Effect.runPromise(
+            Schema.encodeEffect(RetirementReceiptJson)(receipt),
+          );
+          const decoded = await Effect.runPromise(
+            Schema.decodeEffect(RetirementReceiptJson)(encoded),
+          );
+          NodeAssert.deepEqual(decoded, receipt);
+          NodeAssert.equal(Object.hasOwn(decoded.qualification, "binding"), false);
+          NodeAssert.equal(Object.hasOwn(decoded.qualification, "head"), false);
+          await NodeAssert.rejects(
+            Effect.runPromise(
+              Schema.decodeEffect(RetirementReceiptJson)(canonical({ ...receipt, binding: null })),
+            ),
+          );
+        }
+      }),
   "default absence decoding retains malformed and missing native holder proof": async () => {
     await Effect.runPromise(
       Effect.gen(function* () {
@@ -325,7 +326,8 @@ export const retirementCases: Record<string, () => Promise<void>> = {
       const observed = await terminalWorkspace(subdir);
       NodeAssert.equal(observed.worktree, worktree);
       NodeAssert.equal(observed.identity?.status, "bound");
-      if (observed.identity?.status === "bound") NodeAssert.equal(observed.identity.binding.path, worktree);
+      if (observed.identity?.status === "bound")
+        NodeAssert.equal(observed.identity.binding.path, worktree);
       await revalidateTerminalWorkspace(observed);
       await NodeAssert.rejects(terminalWorkspace(subdir, base), /terminal_worktree_hint_mismatch/);
       const ordinary = await terminalWorkspace(base);
@@ -333,7 +335,10 @@ export const retirementCases: Record<string, () => Promise<void>> = {
       NodeAssert.equal(ordinary.identity, null);
       await NodeFSP.rename(subdir, NodePath.join(worktree, "old-subdir"));
       await NodeFSP.symlink(NodePath.join(worktree, "old-subdir"), subdir);
-      await NodeAssert.rejects(revalidateTerminalWorkspace(observed), /terminal_cwd_identity_changed/);
+      await NodeAssert.rejects(
+        revalidateTerminalWorkspace(observed),
+        /terminal_cwd_identity_changed/,
+      );
     }),
   "native owner reconciliation retains children after launcher/server exit and never clears unknown":
     async () => {
@@ -510,7 +515,8 @@ export const retirementCases: Record<string, () => Promise<void>> = {
                 "bound",
               );
               NodeAssert.equal(
-                (yield* Schema.decodeEffect(NativeDutyOwnerJson)(String(facts.native_owner_json))).type,
+                (yield* Schema.decodeEffect(NativeDutyOwnerJson)(String(facts.native_owner_json)))
+                  .type,
                 "unresolved",
               );
               const rejected = yield* store
@@ -622,10 +628,7 @@ export const retirementCases: Record<string, () => Promise<void>> = {
         NodeAssert.equal(result.state, "retired");
         NodeAssert.ok(reads >= 2);
         NodeAssert.equal(mutations, 1);
-        NodeAssert.equal(
-          await Effect.runPromise(RetirementReservationOwner),
-          null,
-        );
+        NodeAssert.equal(await Effect.runPromise(RetirementReservationOwner), null);
       } finally {
         f.close();
       }
