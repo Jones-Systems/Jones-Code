@@ -2378,6 +2378,7 @@ effectIt.effect.each([
         state: "conversation",
       };
       const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+        ownsPath: (path) => path === binding.path,
         lookup: () => Effect.succeed(null),
         startTurn: () => Effect.succeed({ binding, context: "Recorded source context" }),
         fallback: () =>

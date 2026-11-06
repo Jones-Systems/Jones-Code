@@ -5224,92 +5224,89 @@ it.effect.each([
   "capability-unavailable",
   "explicit",
   "unsupported",
-] as const)(
-  "conversation launch %s selects allocation without idle preparation",
-  (kind) =>
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "c9-launch-seam-" });
-      let allocated = 0;
-      let fallback = 0;
-      const bindings = new Map<string, ConversationPolicy.Binding>();
-      const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
-        ownsPath: (path) => path === cwd,
-        allocate: (input) =>
-          Effect.sync(() => {
-            allocated++;
-            const binding: ConversationPolicy.Binding = {
-              threadId: input.threadId,
-              projectId: input.projectId,
-              ownerThreadId: input.threadId,
-              path: cwd,
-              device: "fixture",
-              inode: "fixture",
-              state: "conversation",
-              commonDirectory: "/objects",
-              commit: "a".repeat(40),
-              baseRef: "main",
-            };
-            bindings.set(input.threadId, binding);
-            return binding;
-          }),
-        lookup: (threadId) => Effect.succeed(bindings.get(threadId) ?? null),
-        fallback: () =>
-          Effect.sync(() => {
-            fallback++;
-          }),
-      });
-      const projectSettings: HarnessOptions["serverSettings"] =
-        kind === "project-eager" || kind === "project-on-write"
-          ? {
-              worktreeAllocation: "eager",
-              projectSettingsOverrides: {
-                [projectId]: {
-                  worktreeAllocation: kind === "project-eager" ? "eager" : "on-write",
-                },
+] as const)("conversation launch %s selects allocation without idle preparation", (kind) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "c9-launch-seam-" });
+    let allocated = 0;
+    let fallback = 0;
+    const bindings = new Map<string, ConversationPolicy.Binding>();
+    const conversationLayer = Layer.mock(ConversationPolicy.ConversationPolicy)({
+      ownsPath: (path) => path === cwd,
+      allocate: (input) =>
+        Effect.sync(() => {
+          allocated++;
+          const binding: ConversationPolicy.Binding = {
+            threadId: input.threadId,
+            projectId: input.projectId,
+            ownerThreadId: input.threadId,
+            path: cwd,
+            device: "fixture",
+            inode: "fixture",
+            state: "conversation",
+            commonDirectory: "/objects",
+            commit: "a".repeat(40),
+            baseRef: "main",
+          };
+          bindings.set(input.threadId, binding);
+          return binding;
+        }),
+      lookup: (threadId) => Effect.succeed(bindings.get(threadId) ?? null),
+      fallback: () =>
+        Effect.sync(() => {
+          fallback++;
+        }),
+    });
+    const projectSettings: HarnessOptions["serverSettings"] =
+      kind === "project-eager" || kind === "project-on-write"
+        ? {
+            worktreeAllocation: "eager",
+            projectSettingsOverrides: {
+              [projectId]: {
+                worktreeAllocation: kind === "project-eager" ? "eager" : "on-write",
               },
-            }
-          : undefined;
-      const harness = makeHarness({
-        ...(kind === "capability-unavailable" ? {} : { conversationLayer }),
-        ...(projectSettings === undefined ? {} : { serverSettings: projectSettings }),
-        ...(kind === "eager" ? { serverSettings: { worktreeAllocation: "eager" } } : {}),
-        ...(kind === "unsupported" ? { conversationDriver: "cursor" } : {}),
-      });
-      yield* Effect.gen(function* () {
-        const launches = yield* ThreadLaunch.ThreadLaunchService;
-        const result = yield* launches.launch(
-          launchInput({
-            command: `command:c9:${kind}`,
-            thread: `thread:c9:${kind}`,
-            workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" },
-            ...(kind === "empty" ? {} : { message: "Inspect the source." }),
-          }),
+            },
+          }
+        : undefined;
+    const harness = makeHarness({
+      ...(kind === "capability-unavailable" ? {} : { conversationLayer }),
+      ...(projectSettings === undefined ? {} : { serverSettings: projectSettings }),
+      ...(kind === "eager" ? { serverSettings: { worktreeAllocation: "eager" } } : {}),
+      ...(kind === "unsupported" ? { conversationDriver: "cursor" } : {}),
+    });
+    yield* Effect.gen(function* () {
+      const launches = yield* ThreadLaunch.ThreadLaunchService;
+      const result = yield* launches.launch(
+        launchInput({
+          command: `command:c9:${kind}`,
+          thread: `thread:c9:${kind}`,
+          workspace: kind === "explicit" ? { type: "root" } : { type: "auto", baseRef: "main" },
+          ...(kind === "empty" ? {} : { message: "Inspect the source." }),
+        }),
+      );
+      if (kind !== "empty") yield* preparationSettled(result.threadId);
+      const isConversation = kind === "empty" || kind === "message" || kind === "project-on-write";
+      assert.equal(allocated, isConversation ? 1 : 0);
+      assert.equal(fallback, 0);
+      assert.equal(
+        harness.createWorktree.mock.calls.length,
+        kind === "eager" ||
+          kind === "project-eager" ||
+          kind === "capability-unavailable" ||
+          kind === "unsupported"
+          ? 1
+          : 0,
+      );
+      if (isConversation) {
+        assert.equal(harness.runSetup.mock.calls.length, 0);
+        const sql = yield* SqlClient.SqlClient;
+        assert.lengthOf(
+          yield* sql`SELECT 1 FROM jones_idle_worktree_admission WHERE thread_id=${result.threadId}`,
+          0,
         );
-        if (kind !== "empty") yield* preparationSettled(result.threadId);
-        const isConversation =
-          kind === "empty" || kind === "message" || kind === "project-on-write";
-        assert.equal(allocated, isConversation ? 1 : 0);
-        assert.equal(fallback, 0);
-        assert.equal(
-          harness.createWorktree.mock.calls.length,
-          kind === "eager" ||
-            kind === "project-eager" ||
-            kind === "capability-unavailable" ||
-            kind === "unsupported"
-            ? 1
-            : 0,
-        );
-        if (isConversation) {
-          assert.equal(harness.runSetup.mock.calls.length, 0);
-          const sql = yield* SqlClient.SqlClient;
-          assert.lengthOf(
-            yield* sql`SELECT 1 FROM jones_idle_worktree_admission WHERE thread_id=${result.threadId}`,
-            0,
-          );
-        }
-      }).pipe(Effect.provide(harness.layer));
-    }).pipe(Effect.provide(NodeServices.layer)),
+      }
+    }).pipe(Effect.provide(harness.layer));
+  }).pipe(Effect.provide(NodeServices.layer)),
 );
 
 it.effect.each(["failure", "stalled", "diagnostic-failure"] as const)(
@@ -5375,12 +5372,14 @@ it.effect.each(["failure", "stalled", "diagnostic-failure"] as const)(
         const projection = yield* threads.getThreadProjection(result.threadId);
         assert.equal(projection.thread.worktreePath, "/repo-worktrees/feature");
         assert.equal(
-          projection.messages.filter((message) => message.text === input.initialMessage?.text).length,
+          projection.messages.filter((message) => message.text === input.initialMessage?.text)
+            .length,
           1,
         );
       }).pipe(
-        Effect.provide(harness.layer),
-        Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
+        Effect.provide(
+          Layer.mergeAll(harness.layer, Logger.layer([logger], { mergeWithExisting: false })),
+        ),
       );
     }),
 );
@@ -5421,9 +5420,9 @@ it.effect("optional fallback recording never masks an eager checkout failure", (
       );
       const threads = yield* ThreadManagement.ThreadManagementService;
       yield* waitUntil(result.threadId, () =>
-        threads.getThreadProjection(result.threadId).pipe(
-          Effect.map((projection) => projection.runs[0]?.status === "failed"),
-        ),
+        threads
+          .getThreadProjection(result.threadId)
+          .pipe(Effect.map((projection) => projection.runs[0]?.status === "failed")),
       );
       const projection = yield* threads.getThreadProjection(result.threadId);
       assert.equal(projection.runs[0]?.status, "failed");
