@@ -14,7 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as AuthRows from "../../../persistence/AuthSessions.ts";
 import * as Sessions from "../../../auth/SessionStore.ts";
 
-export const WORKSTREAM_CLI_RECOVERY_LABEL = "Jones Workstreams CLI recovery v1";
+const WORKSTREAM_CLI_RECOVERY_LABEL = "Jones Workstreams CLI recovery v1";
 const scopes: ReadonlyArray<AuthEnvironmentScope> = [
   AuthOrchestrationReadScope,
   AuthOrchestrationOperateScope,
