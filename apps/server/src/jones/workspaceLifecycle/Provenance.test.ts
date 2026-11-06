@@ -467,20 +467,30 @@ it.effect("unavailable provenance lookup remains absent for older compositions",
   }),
 );
 
-it.effect("producer facts use the existing incarnation and refuse a different worktree",()=>
-  Effect.gen(function*(){
-    const f=yield* fixture;
-    yield* Effect.gen(function*(){
-      const p=yield* Provenance.Provenance;
-      const initial=yield* p.capture({threadId:"thread",reason:"launch",createdBy:"agent"});
-      yield* p.production!("thread","/admin/output-obligation.json","/linked");
-      yield* p.production!("thread","/admin/output-obligation.json","/linked");
-      const entries=yield* p.lookup({threadId:"thread"});
+it.effect("producer facts use the existing incarnation and refuse a different worktree", () =>
+  Effect.gen(function* () {
+    const f = yield* fixture;
+    yield* Effect.gen(function* () {
+      const p = yield* Provenance.Provenance;
+      const initial = yield* p.capture({
+        threadId: "thread",
+        reason: "launch",
+        createdBy: "agent",
+      });
+      yield* p.production!("thread", "/admin/output-obligation.json", "/linked");
+      yield* p.production!("thread", "/admin/output-obligation.json", "/linked");
+      const entries = yield* p.lookup({ threadId: "thread" });
       expect(entries[0]?.provenance.incarnation_id).toBe(initial.incarnation_id);
-      expect(entries[0]?.facts.filter(fact=>fact.kind==="production")).toHaveLength(1);
-      const refused=yield* Effect.exit(p.production!("thread","/old-admin/obligation.json","/old-checkout"));
+      expect(entries[0]?.facts.filter((fact) => fact.kind === "production")).toHaveLength(1);
+      const refused = yield* Effect.exit(
+        p.production!("thread", "/old-admin/obligation.json", "/old-checkout"),
+      );
       expect(Exit.isFailure(refused)).toBe(true);
-      expect((yield* p.lookup({threadId:"thread"}))[0]?.facts.filter(fact=>fact.kind==="production")).toHaveLength(1);
+      expect(
+        (yield* p.lookup({ threadId: "thread" }))[0]?.facts.filter(
+          (fact) => fact.kind === "production",
+        ),
+      ).toHaveLength(1);
     }).pipe(Effect.provide(f.layer));
-  }).pipe(Effect.provide(memory),Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(memory), Effect.provide(NodeServices.layer)),
 );

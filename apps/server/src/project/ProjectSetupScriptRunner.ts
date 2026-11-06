@@ -607,7 +607,8 @@ export const make = Effect.gen(function* () {
       // Before client attachment, truecolor probes wait for terminal replies nobody can send.
       COLORTERM: "",
     };
-    const observeRequested = input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
+    const observeRequested =
+      input.observeCompletion !== undefined || legacy !== undefined || native !== undefined;
     const observe = input.observeCompletion ?? {};
     const completionToken =
       captured?.completionToken ??
@@ -754,7 +755,12 @@ export const make = Effect.gen(function* () {
             onOutputLine: observe.onOutputLine,
           })
         : undefined;
-    const finishProduction = yield* ProjectProduction.begin({threadId:input.threadId,worktreePath:input.worktreePath,trigger,projectId:project.id});
+    const finishProduction = yield* ProjectProduction.begin({
+      threadId: input.threadId,
+      worktreePath: input.worktreePath,
+      trigger,
+      projectId: project.id,
+    });
     const lifetime = preparationLifetime ?? serviceScope;
     yield* Scope.addFinalizer(lifetime, finishProduction("cancelled"));
     // Subscribe before opening; owned hooks may resolve a shell different from the host default.
@@ -779,7 +785,11 @@ export const make = Effect.gen(function* () {
           readiness?.unsubscribe();
         }),
       ),
-      Effect.onExit(exit => Exit.isFailure(exit) ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed") : Effect.void),
+      Effect.onExit((exit) =>
+        Exit.isFailure(exit)
+          ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed")
+          : Effect.void,
+      ),
     );
     const write = Effect.suspend(() => {
       const writeInput = {
@@ -848,7 +858,11 @@ export const make = Effect.gen(function* () {
       Effect.onExit((exit) =>
         (Exit.isFailure(exit) ? cleanupObservation : Effect.void).pipe(
           Effect.andThen(Deferred.done(written, exit)),
-          Effect.andThen(Exit.isFailure(exit) ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed") : Effect.void),
+          Effect.andThen(
+            Exit.isFailure(exit)
+              ? finishProduction(Cause.hasInterruptsOnly(exit.cause) ? "cancelled" : "failed")
+              : Effect.void,
+          ),
         ),
       ),
       Effect.catchCause((cause) =>
@@ -871,7 +885,11 @@ export const make = Effect.gen(function* () {
     );
 
     const observedCompletion = observed?.completion.pipe(
-      Effect.tap(result => finishProduction(result.exitCode === null ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed")),
+      Effect.tap((result) =>
+        finishProduction(
+          result.exitCode === null ? "cancelled" : result.exitCode === 0 ? "succeeded" : "failed",
+        ),
+      ),
       Effect.tap((result) =>
         native !== undefined
           ? native.afterCompletion(result).pipe(
@@ -905,13 +923,18 @@ export const make = Effect.gen(function* () {
       observedCompletion === undefined
         ? undefined
         : yield* Effect.cached(
-              writeCompletion.pipe(
-                Effect.andThen(observedCompletion),
-                Effect.onInterrupt(() => cancelPendingWrite),
-              ),
-            )
-          ;
-    if(!owned && completion) yield* completion.pipe(Effect.catchCause(()=>Effect.void),Effect.forkIn(lifetime));
+            owned
+              ? writeCompletion.pipe(
+                  Effect.andThen(observedCompletion),
+                  Effect.onInterrupt(() => cancelPendingWrite),
+                )
+              : observedCompletion,
+          );
+    if (!owned && completion)
+      yield* completion.pipe(
+        Effect.catchCause(() => Effect.void),
+        Effect.forkIn(lifetime),
+      );
 
     return {
       status: "started",

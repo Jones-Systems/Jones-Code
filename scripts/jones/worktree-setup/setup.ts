@@ -2,7 +2,11 @@
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
-import { availableLineage, completionObservation, recordCompletion } from "../../../apps/server/src/jones/workspaceRetirement/CompletionObservation.ts";
+import {
+  availableLineage,
+  completionObservation,
+  recordCompletion,
+} from "../../../apps/server/src/jones/workspaceRetirement/CompletionObservation.ts";
 
 const GIB = 1024n ** 3n;
 type Options = { install: boolean; warm: boolean; reserve: bigint; peak: bigint };
@@ -198,8 +202,11 @@ export async function runSetupWorktree(
   NodeFS.mkdirSync(markerDir, { recursive: true });
   NodeFS.writeFileSync(runningMarker, `${process.pid}\n`);
   // This small obligation survives abrupt exit; optional metadata must not fail setup.
-  try { NodeFS.writeFileSync(unfinalizedMarker, "setup_unfinalized\n"); }
-  catch { dependencies.report("Setup finalization marker unavailable."); }
+  try {
+    NodeFS.writeFileSync(unfinalizedMarker, "setup_unfinalized\n");
+  } catch {
+    dependencies.report("Setup finalization marker unavailable.");
+  }
   let failureDetail = "";
   const recordException = (error: Error) => {
     failureDetail = error.stack ?? String(error);
@@ -227,7 +234,10 @@ export async function runSetupWorktree(
   signals.forEach((signal, index) => process.on(signal, handlers[index]!));
   let status = 1;
   try {
-    if(cancelSignal) {failureDetail=`Cancelled by ${cancelSignal}.`;return status;}
+    if (cancelSignal) {
+      failureDetail = `Cancelled by ${cancelSignal}.`;
+      return status;
+    }
     status = await setupWorktree(args, projectRoot, worktree, {
       available: dependencies.available,
       report: dependencies.report,
@@ -274,18 +284,35 @@ export async function runSetupWorktree(
     finish(status);
     // Known terminal state and child drain resolve the operation marker even if
     // the optional metadata sink is unavailable. Unknown exit keeps the marker.
-    try { NodeFS.rmSync(unfinalizedMarker, { force: true }); }
-    catch { dependencies.report("Setup finalization marker could not be cleared; known outcome recorded by the completion marker."); }
+    try {
+      NodeFS.rmSync(unfinalizedMarker, { force: true });
+    } catch {
+      dependencies.report(
+        "Setup finalization marker could not be cleared; known outcome recorded by the completion marker.",
+      );
+    }
     const outcome = cancelSignal ? "cancelled" : status === 0 ? "succeeded" : "failed";
-    const result = recordCompletion(completionObservation({
-      producer: "jones-setup", owner: "jones-setup", worktree, status: outcome,
-      roots: [status === 0 ? doneMarker : failedMarker,
-        ...(args.includes("--install") ? [NodePath.join(worktree,"node_modules")] : []),
-        ...(args.includes("--warm") ? [NodePath.join(worktree,"apps/web/node_modules/.vite")] : [])],
-      lineage: availableLineage(process.env),
-      omittedEnrichment: ["package_local_output_roots_not_enumerated"],
-    }));
-    if (result.status !== "recorded") dependencies.report(`Setup completion metadata unavailable: ${result.reason}; outcome=${outcome}.`);
+    const result = recordCompletion(
+      completionObservation({
+        producer: "jones-setup",
+        owner: "jones-setup",
+        worktree,
+        status: outcome,
+        roots: [
+          status === 0 ? doneMarker : failedMarker,
+          ...(args.includes("--install") ? [NodePath.join(worktree, "node_modules")] : []),
+          ...(args.includes("--warm")
+            ? [NodePath.join(worktree, "apps/web/node_modules/.vite")]
+            : []),
+        ],
+        lineage: availableLineage(process.env),
+        omittedEnrichment: ["package_local_output_roots_not_enumerated"],
+      }),
+    );
+    if (result.status !== "recorded")
+      dependencies.report(
+        `Setup completion metadata unavailable: ${result.reason}; outcome=${outcome}.`,
+      );
     process.removeListener("uncaughtExceptionMonitor", recordException);
     process.removeListener("exit", finish);
     signals.forEach((signal, index) => process.removeListener(signal, handlers[index]!));

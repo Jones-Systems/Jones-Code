@@ -120,20 +120,32 @@ finally:
     if root is not None: os.close(root)
 `;
 
-export function darwinFilesystem(request: { operation: "metadata" | "content" | "read"; path: string; limits?: { entries: number; bytes: number; seconds: number }; limit?: number }): Promise<unknown> {
+export function darwinFilesystem(request: {
+  operation: "metadata" | "content" | "read";
+  path: string;
+  limits?: { entries: number; bytes: number; seconds: number };
+  limit?: number;
+}): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    execFile("/usr/bin/python3", ["-B", "-c", PROGRAM, JSON.stringify(request)], {
-      timeout: Math.ceil((request.limits?.seconds ?? 10) * 1000) + 1000,
-      maxBuffer: 256 * 1024 * 1024,
-      encoding: "utf8",
-      env: { PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
-    }, (error, stdout) => {
-      if (error) return reject(new Error("darwin_descriptor_adapter_unavailable"));
-      try {
-        const value = JSON.parse(stdout);
-        if (value.error) reject(new Error(value.error));
-        else resolve(value);
-      } catch { reject(new Error("observation_failed")); }
-    });
+    execFile(
+      "/usr/bin/python3",
+      ["-B", "-c", PROGRAM, JSON.stringify(request)],
+      {
+        timeout: Math.ceil((request.limits?.seconds ?? 10) * 1000) + 1000,
+        maxBuffer: 256 * 1024 * 1024,
+        encoding: "utf8",
+        env: { PATH: "/usr/bin:/bin", PYTHONDONTWRITEBYTECODE: "1" },
+      },
+      (error, stdout) => {
+        if (error) return reject(new Error("darwin_descriptor_adapter_unavailable"));
+        try {
+          const value = JSON.parse(stdout);
+          if (value.error) reject(new Error(value.error));
+          else resolve(value);
+        } catch {
+          reject(new Error("observation_failed"));
+        }
+      },
+    );
   });
 }
