@@ -26,7 +26,7 @@ export interface InstallPlanDriver {
   }>;
   readonly operation: (
     environmentId: EnvironmentId,
-    request: Exclude<JonesOperationCommand, { action: "recoveryPreflight" }>,
+    request: Exclude<JonesOperationCommand, { action: "recoveryPreflight" | "recoverCleanup" }>,
   ) => Promise<JonesOperationReceipt | JonesOperationReadResult>;
   readonly host: (
     environmentId: EnvironmentId,
