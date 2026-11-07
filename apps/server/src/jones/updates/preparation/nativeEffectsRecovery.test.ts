@@ -245,9 +245,10 @@ it("derives read-only native proof only for the exact held operation", async () 
     } as const;
     const inspect = (receipt: typeof held) =>
       inspectHeldPreparationCleanup(f.base, receipt, f.dependencies);
-    expect(await inspect({ ...held, action: { ...held.action, artifactId: 5 } })).toBe(false);
+    expect(await inspect({ ...held, action: { ...held.action, artifactId: 5 } })).toBeUndefined();
     expect(commands).toEqual([]);
-    expect(await inspect(held)).toBe(true);
+    const recover = await inspect(held);
+    expect(recover).toBeTypeOf("function");
     expect(commands).toEqual([
       "hdiutil imageinfo",
       "hdiutil info",
@@ -262,6 +263,18 @@ it("derives read-only native proof only for the exact held operation", async () 
     await expect(
       NodeFSP.lstat(NodePath.join(f.base, "runtime", "jones-preparation-recovery")),
     ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      await recover!(() => {
+        throw new Error("Consent expired.");
+      }),
+    ).toBe(false);
+    expect(await NodeFSP.readFile(f.lifecycle)).toEqual(lifecycle);
+    f.dependencies.checkpoint = async (phase) => {
+      if (phase === "release-durable") throw new Error("Lost release response.");
+    };
+    expect(await recover!(() => {})).toBe(true);
+    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("released");
+    expect(await NodeFSP.readFile(f.effects)).toEqual(effects);
   }));
 
 it.each([

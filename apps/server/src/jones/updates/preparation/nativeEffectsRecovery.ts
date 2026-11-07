@@ -196,6 +196,7 @@ export interface NativeEffectsRecoveryDependencies {
   readonly plist?: typeof plist;
   readonly validateArtifact?: typeof validateJonesStagedArtifact;
   readonly syncFile?: (file: string, descriptor: NodeFSP.FileHandle) => Promise<void>;
+  readonly beforeApply?: () => void;
   readonly checkpoint?: (
     phase: "proof-durable" | "release-prepared" | "release-durable",
   ) => Promise<void>;
@@ -259,7 +260,7 @@ async function createProof(
 /** Maintenance proves disjoint geometry; it never claims that the worker cleaned native effects. */
 export async function recoverNativeEffects(
   value: unknown,
-  mode: "inspect" | "apply",
+  mode: "inspect" | "apply" | "read-release",
   expectedProof?: string,
   dependencies: NativeEffectsRecoveryDependencies = {},
 ) {
@@ -312,14 +313,18 @@ export async function recoverNativeEffects(
           saved.schema !== 1 ||
           saved.planSha256 !== planSha256 ||
           saved.releasedSha256 !== lifecycle.sha256 ||
-          (mode === "apply" && saved.proofSha256 !== expectedProof)
+          (mode !== "inspect" && saved.proofSha256 !== expectedProof)
         )
           return fail();
         const { proofSha256, ...evidence } = saved;
         if (digest(JSON.stringify(evidence)) !== proofSha256) return fail();
         return { schema: 1, state: "released", proofSha256, proofPath };
       }
-      if (launch.state !== "started" || lifecycle.sha256 !== input.expected.lifecycle)
+      if (
+        mode === "read-release" ||
+        launch.state !== "started" ||
+        lifecycle.sha256 !== input.expected.lifecycle
+      )
         return fail();
       const jobDir = NodePath.join(preparationJobsDirectory(input.baseDir), input.jobId);
       const requestFile = NodePath.join(jobDir, "request.json");
@@ -578,6 +583,7 @@ export async function recoverNativeEffects(
       if (mode === "inspect")
         return { schema: 1, state: "eligible", proofSha256, proofPath, evidence };
       if (expectedProof !== proofSha256) return fail();
+      dependencies.beforeApply?.();
       await NodeFSP.mkdir(proofRoot, { mode: 0o700 }).catch((error: NodeJS.ErrnoException) => {
         if (error.code !== "EEXIST") throw error;
       });
@@ -610,7 +616,7 @@ export async function inspectHeldPreparationCleanup(
     "phase" | "code" | "jobId" | "action" | "expectedInstalledSource"
   >,
   dependencies: NativeEffectsRecoveryDependencies = {},
-): Promise<boolean> {
+): Promise<((authorize: () => void) => Promise<boolean>) | undefined> {
   const { phase, code, jobId, action, expectedInstalledSource } = receipt;
   if (
     (dependencies.platform ?? process.platform) !== "darwin" ||
@@ -620,12 +626,20 @@ export async function inspectHeldPreparationCleanup(
     jobId === undefined ||
     action.kind === "install"
   )
-    return false;
-  const deadline = performance.now() + 25_000;
-  const remaining = () => {
-    const ms = Math.floor(deadline - performance.now());
-    return ms > 0 ? ms : fail();
+    return undefined;
+  const bounded = (): NativeEffectsRecoveryDependencies => {
+    const deadline = performance.now() + 25_000;
+    const remaining = () => {
+      const ms = Math.floor(deadline - performance.now());
+      return ms > 0 ? ms : fail();
+    };
+    return {
+      ...dependencies,
+      plist: dependencies.plist ?? ((executable, args) => plist(executable, args, remaining)),
+      beforeApply: () => void remaining(),
+    };
   };
+  const inspection = bounded();
   try {
     const {
       decodePreparationRequest,
@@ -633,7 +647,7 @@ export async function inspectHeldPreparationCleanup(
       isPreparationJobId,
       preparationJobsDirectory,
     } = await import("./protocol.ts");
-    if (!isPreparationJobId(jobId) || !absolute(baseDir)) return false;
+    if (!isPreparationJobId(jobId) || !absolute(baseDir)) return undefined;
     const runtime = NodePath.join(baseDir, "runtime");
     const root = NodePath.join(runtime, "jones-preparation");
     const lifecycleDir = NodePath.join(root, "lifecycle");
@@ -646,13 +660,13 @@ export async function inspectHeldPreparationCleanup(
     const launch = record(lifecycle.value);
     const worker = record(launch.worker);
     if (launch.state !== "started" || !positive(worker.pid) || worker.processGroup !== worker.pid)
-      return false;
+      return undefined;
     const request = await read(NodePath.join(jobDir, "request.json"), 64 * 1024);
     const result = await read(NodePath.join(jobDir, "result.json"), 256 * 1024);
     const effects = await read(NodePath.join(lifecycleDir, `${jobId}.effects.json`), 4096);
     const job = decodePreparationRequest(request.value, jobDir);
     const outcome = decodePreparationResult(result.value, jobId, "stage");
-    if (job?.job.kind !== "stage" || outcome?.ok !== false) return false;
+    if (job?.job.kind !== "stage" || outcome?.ok !== false) return undefined;
     const { candidate, cacheRoot } = job.job;
     if (
       cacheRoot !== NodePath.join(runtime, "jones-actions") ||
@@ -660,52 +674,68 @@ export async function inspectHeldPreparationCleanup(
       candidate.source !== (action.kind === "download" ? action.sourceSha : action.targetSource) ||
       (action.kind === "download" && candidate.artifactId !== action.artifactId)
     )
-      return false;
+      return undefined;
     const mountPath =
       /^DMG mount ownership needs reconciliation at (.+); its directory was retained\.(?: |$)/.exec(
         outcome.error.message,
       )?.[1];
-    if (mountPath === undefined) return false;
+    if (mountPath === undefined) return undefined;
     const handle = jonesCandidateHandle(candidate);
     await directory(cacheRoot);
     await directory(NodePath.join(cacheRoot, "completed"));
     const index = await read(NodePath.join(cacheRoot, "completed", `${handle}.json`), 4096, 2);
     const selection = record(index.value);
-    if (!absolute(selection.directory)) return false;
+    if (!absolute(selection.directory)) return undefined;
     const stage = await requireJonesStageDirectory(cacheRoot, handle, selection.directory);
     await directory(stage);
     const staged = await read(NodePath.join(stage, "jones-actions-stage.json"), 128 * 1024);
     const payload = record(record(staged.value).receipt).sha256;
-    if (typeof payload !== "string") return false;
-    const proof = await recoverNativeEffects(
-      {
-        schema: 1,
-        baseDir,
-        jobId,
-        worker: { pid: worker.pid, processGroup: worker.pid },
-        mountPath,
-        expected: {
-          request: request.sha256,
-          result: result.sha256,
-          lifecycle: lifecycle.sha256,
-          effects: effects.sha256,
-          index: index.sha256,
-          receipt: staged.sha256,
-          payload,
-          archive: candidate.artifactDigest,
-        },
-      } satisfies NativeEffectsRecoveryRequest,
-      "inspect",
-      undefined,
-      {
-        ...dependencies,
-        plist: dependencies.plist ?? ((executable, args) => plist(executable, args, remaining)),
+    if (typeof payload !== "string") return undefined;
+    const input: NativeEffectsRecoveryRequest = {
+      schema: 1,
+      baseDir,
+      jobId,
+      worker: { pid: worker.pid, processGroup: worker.pid },
+      mountPath,
+      expected: {
+        request: request.sha256,
+        result: result.sha256,
+        lifecycle: lifecycle.sha256,
+        effects: effects.sha256,
+        index: index.sha256,
+        receipt: staged.sha256,
+        payload,
+        archive: candidate.artifactDigest,
       },
-    );
-    remaining();
-    return proof.state === "eligible";
+    };
+    const proof = await recoverNativeEffects(input, "inspect", undefined, inspection);
+    inspection.beforeApply?.();
+    if (proof.state !== "eligible" || typeof proof.proofSha256 !== "string") return undefined;
+    const expectedProof = proof.proofSha256;
+    return async (authorize) => {
+      const application = bounded();
+      try {
+        const outcome = await recoverNativeEffects(input, "apply", expectedProof, {
+          ...application,
+          beforeApply: () => {
+            application.beforeApply?.();
+            authorize();
+          },
+        });
+        return outcome.state === "released";
+      } catch {
+        // A failed response may follow the atomic release. Re-read only its exact durable proof.
+        const outcome = await recoverNativeEffects(
+          input,
+          "read-release",
+          expectedProof,
+          application,
+        ).catch(() => undefined);
+        return outcome?.state === "released";
+      }
+    };
   } catch {
-    return false;
+    return undefined;
   }
 }
 

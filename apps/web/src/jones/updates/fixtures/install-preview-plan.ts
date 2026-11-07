@@ -535,6 +535,7 @@ export function createScriptedInstallPlan(input: {
             receipt: receipts.get(operationId) ?? null,
           })),
         };
+      if (command.action === "recoverCleanup") return { recoveredCleanup: null };
       if (command.action === "recoveryPreflight")
         throw new Error("Fixture recovery is unsupported.");
       const previous = receipts.get(command.input.operationId);

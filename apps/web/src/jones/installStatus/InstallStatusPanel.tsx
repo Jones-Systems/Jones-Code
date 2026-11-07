@@ -18,7 +18,13 @@ import { installStatusStore, type InstallStatusStore } from "./panelUi";
 import { panelPresentation } from "./presentation";
 import { selectionFor } from "./entrypoints";
 import { installPlanServices, requestInstallPlan } from "./services";
-import { inspectPanelCleanup, performPanelAction, type PanelAction } from "./actions";
+import {
+  inspectPanelCleanup,
+  performPanelAction,
+  recoverPanelCleanup,
+  type CleanupInspection,
+  type PanelAction,
+} from "./actions";
 import {
   INSTALL_PLAN_GO,
   INSTALL_PLAN_INFO,
@@ -44,7 +50,8 @@ export function InstallStatusPanel({
   const [pending, setPending] = useState<ReadonlySet<string>>(new Set());
   const [cleanupInspection, setCleanupInspection] = useState<{
     readonly key: string;
-    readonly status: "eligible" | "unproved";
+    readonly inspection: CleanupInspection;
+    readonly recovery?: "released" | "unproved";
   } | null>(null);
   const descriptionId = useId();
   const view = panelPresentation(snapshot, snapshot.updatedAt);
@@ -417,6 +424,7 @@ export function InstallStatusPanel({
                 receipt.action.kind !== "install"
                   ? `${plan.planId}:${environmentId}:${receipt.operationId}:${receipt.updatedAt}:cleanup`
                   : null;
+              const cleanup = cleanupInspection?.key === inspectKey ? cleanupInspection : null;
               return (
                 <li key={environmentId}>
                   <div className="flex min-w-0 items-center gap-1">
@@ -510,11 +518,15 @@ export function InstallStatusPanel({
                           this host.
                         </p>
                       ) : null}
-                      {inspectKey !== null && cleanupInspection?.key === inspectKey ? (
+                      {cleanup !== null ? (
                         <p role="status">
-                          {cleanupInspection.status === "eligible"
-                            ? "Inspection confirmed the prior disk image is absent. The update remains on hold."
-                            : "Inspection could not confirm cleanup. The update remains on hold."}
+                          {cleanup.recovery === "unproved"
+                            ? "Cleanup release is unconfirmed. Check the update outcome before trying again."
+                            : cleanup.recovery === "released"
+                              ? "The cleanup hold was released."
+                              : cleanup.inspection.status === "eligible"
+                                ? "Inspection confirmed the prior disk image is absent. The update remains on hold."
+                                : "Inspection could not confirm cleanup. The update remains on hold."}
                         </p>
                       ) : null}
                       {!view.readOnly ? (
@@ -527,15 +539,44 @@ export function InstallStatusPanel({
                               onClick={() =>
                                 void perform(inspectKey, async () => {
                                   setCleanupInspection(null);
-                                  const status = await inspectPanelCleanup(
+                                  const inspection = await inspectPanelCleanup(
                                     environmentId,
                                     receipt.operationId,
                                   );
-                                  setCleanupInspection({ key: inspectKey, status });
+                                  setCleanupInspection({ key: inspectKey, inspection });
                                 })
                               }
                             >
                               {pending.has(inspectKey) ? "Inspecting cleanup…" : "Inspect cleanup"}
+                            </Button>
+                          ) : null}
+                          {inspectKey !== null &&
+                          receipt !== undefined &&
+                          device?.canOperate &&
+                          cleanup?.inspection.recoveryToken !== undefined ? (
+                            <Button
+                              variant="outline"
+                              size="micro"
+                              disabled={pending.has(inspectKey)}
+                              onClick={() => {
+                                const token = cleanup.inspection.recoveryToken;
+                                if (token === undefined) return;
+                                void perform(inspectKey, async () => {
+                                  const recovery = await recoverPanelCleanup(
+                                    environmentId,
+                                    receipt,
+                                    token,
+                                  );
+                                  if (recovery !== "cancelled")
+                                    setCleanupInspection({
+                                      key: inspectKey,
+                                      inspection: { status: "eligible" },
+                                      recovery,
+                                    });
+                                });
+                              }}
+                            >
+                              Recover cleanup
                             </Button>
                           ) : null}
                           {row?.actions.remove ? (

@@ -142,6 +142,7 @@ export const JonesOperationReadResult = Schema.Struct({
     Schema.Struct({
       operationId: JonesOperationId,
       status: Schema.Literals(["eligible", "unproved"]),
+      recoveryToken: Schema.optionalKey(JonesOperationId),
     }),
   ),
   receipts: Schema.Array(
@@ -149,6 +150,20 @@ export const JonesOperationReadResult = Schema.Struct({
   ).check(Schema.isMaxLength(32)),
 });
 export type JonesOperationReadResult = typeof JonesOperationReadResult.Type;
+
+export const JonesRecoverCleanupInput = Schema.Struct({
+  environmentId: EnvironmentId,
+  operationId: JonesOperationId,
+  jobId: JonesOperationId,
+  recoveryToken: JonesOperationId,
+  confirmed: Schema.Literal(true),
+});
+export type JonesRecoverCleanupInput = typeof JonesRecoverCleanupInput.Type;
+
+export const JonesRecoverCleanupResult = Schema.Struct({
+  recoveredCleanup: Schema.NullOr(JonesOperationReceipt),
+});
+export type JonesRecoverCleanupResult = typeof JonesRecoverCleanupResult.Type;
 
 export const JonesRecoveryPreflightInput = Schema.Struct({
   environmentId: EnvironmentId,

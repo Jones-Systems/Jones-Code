@@ -9,6 +9,8 @@ import type {
   JonesOperationReadResult,
   JonesOperationReceipt,
   JonesRecoveryPreflightInput,
+  JonesRecoverCleanupInput,
+  JonesRecoverCleanupResult,
 } from "@t3tools/contracts/jones/jonesOperations";
 import type { JonesUpdateState } from "@t3tools/contracts/jones/jonesUpdates";
 import {
@@ -64,6 +66,15 @@ export function createTargetOperations(options: {
   const { ledger, updater, preparation } = options;
   const active = new Map<string, AbortController>();
   const lifecycleHolds = new Set<string>();
+  const cleanupReviews = new Map<
+    string,
+    {
+      readonly token: string;
+      readonly expires: number;
+      readonly receipt: JonesOperationReceipt;
+      readonly apply: NonNullable<Awaited<ReturnType<typeof inspectHeldPreparationCleanup>>>;
+    }
+  >();
   let recoveryFailed = false;
   const gate = <A>(f: () => Promise<A>) => serialized(`target-operations:${options.key}`, f);
   const publish = (receipt: JonesOperationReceipt) => {
@@ -531,19 +542,73 @@ export function createTargetOperations(options: {
       const operationId = input.inspectCleanup;
       if (operationId === undefined) return { receipts };
       const receipt = receipts[0]?.receipt;
-      const eligible =
+      const apply =
         receipts.length === 1 &&
         receipts[0]?.operationId === operationId &&
         receipt?.operationId === operationId &&
-        receipt.environmentId === input.environmentId &&
-        (await inspectHeldPreparationCleanup(options.key, receipt));
-      const current = eligible ? await ledger.read(operationId) : null;
-      const unchanged = current !== null && JSON.stringify(current) === JSON.stringify(receipt);
+        receipt.environmentId === input.environmentId
+          ? await inspectHeldPreparationCleanup(options.key, receipt)
+          : undefined;
+      const current = apply === undefined ? null : await ledger.read(operationId);
+      if (
+        receipt == null ||
+        apply === undefined ||
+        JSON.stringify(current) !== JSON.stringify(receipt)
+      )
+        return { receipts, cleanupInspection: { operationId, status: "unproved" } };
+      const now = performance.now();
+      for (const [id, review] of cleanupReviews)
+        if (review.expires <= now) cleanupReviews.delete(id);
+      const token = NodeCrypto.randomUUID();
+      cleanupReviews.delete(operationId);
+      if (cleanupReviews.size >= 16) {
+        const oldest = cleanupReviews.keys().next().value;
+        if (oldest !== undefined) cleanupReviews.delete(oldest);
+      }
+      cleanupReviews.set(operationId, { token, expires: now + 120_000, receipt, apply });
       return {
         receipts,
-        cleanupInspection: { operationId, status: unchanged ? "eligible" : "unproved" },
+        cleanupInspection: { operationId, status: "eligible", recoveryToken: token },
       };
     },
+    recoverCleanup: (input: JonesRecoverCleanupInput): Promise<JonesRecoverCleanupResult> =>
+      gate(async () => {
+        const refused = { recoveredCleanup: null };
+        const { operationId, environmentId, jobId, recoveryToken } = input;
+        const review = cleanupReviews.get(operationId);
+        if (
+          input.confirmed !== true ||
+          environmentId !== updater.snapshot().environmentId ||
+          active.has(operationId) ||
+          review === undefined ||
+          review.token !== recoveryToken ||
+          review.expires <= performance.now() ||
+          review.receipt.environmentId !== environmentId ||
+          review.receipt.jobId !== jobId
+        )
+          return refused;
+        const unchanged = (receipt: JonesOperationReceipt | null) =>
+          JSON.stringify(receipt) === JSON.stringify(review.receipt);
+        if (!unchanged(await ledger.read(operationId))) return refused;
+        cleanupReviews.delete(operationId);
+        if (
+          !(await review.apply(() => {
+            if (performance.now() >= review.expires) throw new Error("Cleanup review expired.");
+          }))
+        )
+          return refused;
+        const recoveredCleanup = await change(operationId, (old) => {
+          if (!unchanged(old)) throw new Error("Cleanup operation binding changed.");
+          return {
+            ...finishStop(old, old.stop === undefined ? "interrupted" : "stopped", "stopped"),
+            code: "cleanup-recovered",
+            message: "Cleanup was verified and the preparation hold was released.",
+          };
+        });
+        lifecycleHolds.delete(jobId);
+        updater.releaseHeldJob(jobId);
+        return { recoveredCleanup };
+      }),
     reconcile,
     sweep: async () => {
       try {
@@ -572,5 +637,8 @@ export const unsupportedTargetOperations = {
   }),
   read: async (input: JonesOperationReadInput): Promise<JonesOperationReadResult> => ({
     receipts: input.operationIds.map((operationId) => ({ operationId, receipt: null })),
+  }),
+  recoverCleanup: async (_input: JonesRecoverCleanupInput): Promise<JonesRecoverCleanupResult> => ({
+    recoveredCleanup: null,
   }),
 };

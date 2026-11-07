@@ -56,7 +56,9 @@ function initialDesktop(): DesktopUpdateState {
     },
   };
 }
-async function setup(options: { refuseFirstDownload?: boolean } = {}) {
+const fixtureRecoveryToken = "22222222-2222-4222-8222-222222222222";
+
+async function setup(options: { refuseFirstDownload?: boolean; loseCleanupReply?: boolean } = {}) {
   let desktop = initialDesktop();
   const updates = new Set<(value: DesktopUpdateState) => void>();
   const calls: { action: string; input?: unknown }[] = [];
@@ -82,6 +84,7 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
   };
   const services = fixture.services(bridge);
   let refused: JonesOperationReceipt | undefined;
+  let released: JonesOperationReceipt | undefined;
   let readObserved!: () => void;
   const receiptRead = new Promise<void>((resolve) => (readObserved = resolve));
   const controller = startInstallPlanController(
@@ -109,6 +112,25 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
           return refused;
         }
         const result = await services.operation(id, command);
+        if (command.action === "recoverCleanup" && options.loseCleanupReply) {
+          const held = fixture
+            .snapshot()
+            .current?.devices.find((d) => d.environmentId === id)
+            ?.operations.at(-1)?.receipt;
+          if (
+            held?.operationId !== command.input.operationId ||
+            held.jobId !== command.input.jobId ||
+            command.input.recoveryToken !== fixtureRecoveryToken
+          )
+            throw new Error("Fixture recovery binding changed.");
+          released = {
+            ...held,
+            phase: "interrupted",
+            code: "cleanup-recovered",
+            message: "Cleanup was verified and the preparation hold was released.",
+          };
+          throw new Error("Fixture lost the recovery response.");
+        }
         if (command.action === "operationRead" && "receipts" in result) {
           readObserved();
           return {
@@ -118,12 +140,15 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
                   cleanupInspection: {
                     operationId: command.input.inspectCleanup,
                     status: "eligible" as const,
+                    ...(options.loseCleanupReply ? { recoveryToken: fixtureRecoveryToken } : {}),
                   },
                 }),
             receipts: result.receipts.map((entry) =>
               refused !== undefined && entry.operationId === refused.operationId
                 ? { ...entry, receipt: refused }
-                : entry,
+                : released !== undefined && entry.operationId === released.operationId
+                  ? { ...entry, receipt: released }
+                  : entry,
             ),
           };
         }
@@ -456,8 +481,8 @@ describe("Install status receipt fixture", () => {
     expect(visibleDone(screen)).toHaveLength(1);
   });
 
-  it("inspects the exact held Mini cleanup without applying or starting another operation", async () => {
-    await using world = await setup();
+  it("inspects and confirms the exact Mini recovery, then reads back a lost reply without retrying", async () => {
+    await using world = await setup({ loseCleanupReply: true });
     const { screen, fixture, controller, calls } = world;
     await click(screen, "Edit");
     await screen.getByRole("checkbox", { name: "Include Mini" }).click();
@@ -494,6 +519,41 @@ describe("Install status receipt fixture", () => {
       },
     ]);
     expect(fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt).toEqual(held);
+    const confirmStart = calls.length;
+    await click(screen, "Recover cleanup");
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt)
+      .toMatchObject({
+        operationId: held.operationId,
+        jobId: held.jobId,
+        phase: "interrupted",
+        code: "cleanup-recovered",
+      });
+    const recoveryCalls = calls
+      .slice(confirmStart)
+      .filter(({ action }) => action === "fixture-review" || action.startsWith("fixture-host-"));
+    expect(recoveryCalls.map(({ action }) => action)).toEqual([
+      "fixture-review",
+      "fixture-host-recoverCleanup",
+      "fixture-host-operationRead",
+    ]);
+    expect(recoveryCalls[0]?.input).toMatchObject({
+      message: expect.stringContaining(held.operationId),
+    });
+    expect(recoveryCalls[1]?.input).toEqual({
+      environmentId: held.environmentId,
+      input: {
+        environmentId: held.environmentId,
+        operationId: held.operationId,
+        jobId: held.jobId,
+        recoveryToken: fixtureRecoveryToken,
+        confirmed: true,
+      },
+    });
+    expect(recoveryCalls[2]?.input).toEqual({
+      environmentId: held.environmentId,
+      input: { environmentId: held.environmentId, operationIds: [held.operationId] },
+    });
   });
 
   it("keeps unsupported devices out and uses a neutral dashed separator before and after Laptop verification", async () => {
