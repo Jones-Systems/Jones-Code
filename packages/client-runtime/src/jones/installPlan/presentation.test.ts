@@ -188,7 +188,11 @@ it.each(["refused", "failed", "interrupted", "stopped"] as const)(
     expect(observe(live, "stale").actions.download).toBe(false);
     expect(observe(live, "fresh", false).actions.download).toBe(false);
     if (phase === "interrupted") {
-      const installedSource = { repository: "Jones-Systems/Jones-Code", sha: source, tree };
+      const installedSource = {
+        repository: "Jones-Systems/Jones-Code",
+        sha: source,
+        tree,
+      } as const;
       const running = { ...live, installedSource };
       expect(observe(running)).toMatchObject({
         phase: "not-updated",
@@ -199,11 +203,15 @@ it.each(["refused", "failed", "interrupted", "stopped"] as const)(
       expect(observe(running, "stale").targetBuildRunning).toBe(false);
       expect(observe({ ...running, environmentId: env }).targetBuildRunning).toBe(false);
       for (const wrong of [
-        { ...installedSource, repository: "wrong/repo" },
         { ...installedSource, sha: "c".repeat(40) },
         { ...installedSource, tree: "c".repeat(40) },
       ])
         expect(observe({ ...running, installedSource: wrong }).targetBuildRunning).toBe(false);
+      const foreign = { ...installedSource, repository: "wrong/repo" };
+      expect(
+        observe({ ...running, installedSource: foreign as unknown as typeof installedSource })
+          .targetBuildRunning,
+      ).toBe(false);
 
       const installId = "22222222-2222-4222-8222-222222222222";
       const install: JonesOperationReceipt = {
