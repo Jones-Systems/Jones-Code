@@ -18,16 +18,19 @@ const jobId = "99999999-9999-4999-8999-999999999999";
 const worker = { pid: 54321, processGroup: 54321 };
 const hash = (value: string) => NodeCrypto.createHash("sha256").update(value).digest("hex");
 
-async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
+async function fixture(
+  run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>,
+  installedSource = "317c4df82c77d06922a6723e318e09b0de20ff99",
+) {
   const created = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "jones-native-recovery-"));
   try {
-    await run(await setup(await NodeFSP.realpath(created)));
+    await run(await setup(await NodeFSP.realpath(created), installedSource));
   } finally {
     await NodeFSP.rm(created, { recursive: true, force: true });
   }
 }
 
-async function setup(base: string) {
+async function setup(base: string, installedSource: string) {
   const runtime = NodePath.join(base, "runtime");
   const root = NodePath.join(runtime, "jones-preparation");
   const jobDir = NodePath.join(root, "jobs", jobId);
@@ -38,7 +41,7 @@ async function setup(base: string) {
     repository: "Jones-Systems/Jones-Code",
     source: "1".repeat(40),
     tree: "2".repeat(40),
-    installedSource: "317c4df82c77d06922a6723e318e09b0de20ff99",
+    installedSource,
     workflow: ".github/workflows/artifact-desktop-mac.yml",
     workflowId: 1,
     runId: 2,
@@ -238,33 +241,39 @@ it("holds a private preparation directory with mode 0755", async () =>
     expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
   }));
 
-it("leaves the inspected lifecycle intact and releases only after durable proof, preserving native effects and legacy identity", async () =>
-  fixture(async (f) => {
-    expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe(
-      "cleanup-unconfirmed",
-    );
-    await NodeFSP.link(
-      NodePath.join(f.cache, "completed", `${f.handle}.json`),
-      NodePath.join(f.base, "index-link"),
-    );
-    const inspected = await f.inspect();
-    expect(inspected.state).toBe("eligible");
-    expect(f.passes()).toBe(2);
-    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
-    const proof = String(inspected.proofSha256);
-    expect((await f.apply(proof)).state).toBe("released");
-    expect(await preparationLifecycle(f.base, jobId).release(() => false)).toBe("released");
-    expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8"))).toEqual({
-      schema: 1,
-      jobId,
-      kind: "stage",
-      state: "released",
-      worker,
-    });
-    expect(JSON.parse(await NodeFSP.readFile(f.effects, "utf8")).phase).toBe("native-effects");
-    expect((await f.apply(proof)).state).toBe("released");
-    expect(await NodeFSP.readFile(f.payload, "utf8")).toBe("payload");
-  }));
+it.each(["317c4df82c77d06922a6723e318e09b0de20ff99", "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b"])(
+  "releases producer %s only after durable proof, preserving native effects and identity",
+  async (installedSource) =>
+    fixture(async (f) => {
+      expect(await preparationLifecycle(f.base, jobId).release(() => true)).toBe(
+        "cleanup-unconfirmed",
+      );
+      await NodeFSP.link(
+        NodePath.join(f.cache, "completed", `${f.handle}.json`),
+        NodePath.join(f.base, "index-link"),
+      );
+      const inspected = await f.inspect();
+      expect(inspected).toMatchObject({
+        state: "eligible",
+        evidence: { producerContract: { source: installedSource } },
+      });
+      expect(f.passes()).toBe(2);
+      expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8")).state).toBe("started");
+      const proof = String(inspected.proofSha256);
+      expect((await f.apply(proof)).state).toBe("released");
+      expect(await preparationLifecycle(f.base, jobId).release(() => false)).toBe("released");
+      expect(JSON.parse(await NodeFSP.readFile(f.lifecycle, "utf8"))).toEqual({
+        schema: 1,
+        jobId,
+        kind: "stage",
+        state: "released",
+        worker,
+      });
+      expect(JSON.parse(await NodeFSP.readFile(f.effects, "utf8")).phase).toBe("native-effects");
+      expect((await f.apply(proof)).state).toBe("released");
+      expect(await NodeFSP.readFile(f.payload, "utf8")).toBe("payload");
+    }, installedSource),
+);
 
 it.each(["proof-durable", "release-prepared", "release-durable"] as const)(
   "retries a crash at %s with the same exact proof",

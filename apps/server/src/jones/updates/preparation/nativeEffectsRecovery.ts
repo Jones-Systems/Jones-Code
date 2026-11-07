@@ -14,8 +14,11 @@ import {
 const HASH = /^[a-f0-9]{64}$/;
 const LIMIT = 1024 * 1024;
 const COMMAND = "__jones-reconcile-preparation";
-// Geometry proves absence only for this producer's fixed, readonly, whole-image attachment contract.
-const PRODUCER_SOURCE = "317c4df82c77d06922a6723e318e09b0de20ff99";
+// Both revisions use the same fixed, read-only, whole-image attachment contract.
+const QUALIFIED_PRODUCER_SOURCES = new Set([
+  "317c4df82c77d06922a6723e318e09b0de20ff99",
+  "8dd90ff9e3d41e7ba9ac1c81bceb4f973734314b",
+]);
 const digest = (value: string | Buffer) =>
   NodeCrypto.createHash("sha256").update(value).digest("hex");
 const fail = (): never => {
@@ -342,7 +345,7 @@ export async function recoverNativeEffects(
       const requestKeys = Object.keys(record(record(request.value).job)).sort();
       if (
         job.job.cacheRoot !== NodePath.join(runtime, "jones-actions") ||
-        job.job.candidate.installedSource !== PRODUCER_SOURCE ||
+        !QUALIFIED_PRODUCER_SOURCES.has(job.job.candidate.installedSource) ||
         JSON.stringify(requestKeys) !==
           JSON.stringify(["activeVersion", "cacheRoot", "candidate", "dbPath", "host", "kind"])
       )
@@ -537,7 +540,7 @@ export async function recoverNativeEffects(
         virtualBytes,
         inventory: first,
         producerContract: {
-          source: PRODUCER_SOURCE,
+          source: job.job.candidate.installedSource,
           command: "/usr/bin/hdiutil",
           attachArguments: [
             "attach",
