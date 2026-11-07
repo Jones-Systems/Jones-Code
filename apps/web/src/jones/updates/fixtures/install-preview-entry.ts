@@ -34,5 +34,15 @@ void start().catch((error: unknown) => {
   root.dataset.fixtureStartupPhase = startupPhase;
   root.dataset.fixtureStartupError =
     error instanceof TypeError ? "type" : error instanceof ReferenceError ? "reference" : "other";
-  root.textContent = `Fixture startup failed: ${error instanceof Error ? error.message : String(error)}`;
+  if (error instanceof Error) {
+    for (const line of error.stack?.split("\n").slice(1) ?? []) {
+      const match = /(https?:\/\/[^\s)]+\/assets\/[a-zA-Z0-9_.-]+\.js):(\d+):(\d+)\)?$/.exec(line);
+      if (!match) continue;
+      const url = new URL(match[1]!);
+      if (url.origin !== window.location.origin) continue;
+      root.dataset.fixtureStartupPosition = `${url.pathname.slice(1)}:${match[2]}:${match[3]}`;
+      break;
+    }
+  }
+  root.textContent = "Fixture startup failed.";
 });

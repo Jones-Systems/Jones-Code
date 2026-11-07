@@ -2,6 +2,7 @@ import * as NodeAssert from "node:assert/strict";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeHttp from "node:http";
+import { SourceMap } from "node:module";
 import * as NodeNet from "node:net";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
@@ -1982,6 +1983,30 @@ export async function readBuildReceipt(source, buildReceipt, rendererDir) {
   return expected;
 }
 
+async function locateFixtureStartupFailure(rendererDir, startup) {
+  const position = /^((?:assets\/)[a-zA-Z0-9_.-]{1,96}\.js):([1-9]\d{0,6}):([1-9]\d{0,6})$/.exec(
+    startup?.position ?? "",
+  );
+  if (!rendererDir || !position) return;
+  try {
+    const payload = JSON.parse(
+      await NodeFSP.readFile(NodePath.join(rendererDir, `${position[1]}.map`), "utf8"),
+    );
+    const entry = new SourceMap(payload).findEntry(
+      Number(position[2]) - 1,
+      Number(position[3]) - 1,
+    );
+    const source =
+      /(?:^|\/)((?:apps\/web|packages\/[a-z0-9-]+)\/src\/[a-zA-Z0-9_./-]+\.(?:ts|tsx|js|mjs))$/.exec(
+        entry.originalSource ?? "",
+      )?.[1];
+    if (source && !source.includes(".."))
+      startup.source = `${source}:${entry.originalLine + 1}:${entry.originalColumn + 1}`;
+  } catch {
+    // Preserve the generated position when the source map is unavailable.
+  }
+}
+
 export async function qualify({ source, buildReceipt, out, scratchParent, rendererDir, signal }) {
   NodeAssert.equal(nativePlatform, "linux", "This qualification runs on an isolated Linux CI host");
   await NodeFSP.mkdir(out, { recursive: false });
@@ -2203,6 +2228,7 @@ export async function qualify({ source, buildReceipt, out, scratchParent, render
               if (error.code !== "ENOENT") throw error;
               result = JSON.parse(await NodeFSP.readFile(job.reportFile, "utf8"));
             }
+            await locateFixtureStartupFailure(rendererDir, result.failurePageState?.fixtureStartup);
             evidence.scenarios.push({
               threadId: job.threadId,
               nativeInactiveReadback: job.nativeInactiveReadback === true,

@@ -1582,8 +1582,18 @@ NodeTest.test("failure page state retains only bounded counts, enum and fixed UI
       onFixtureRoute: true,
       fixtureStartupPhase: "renderer-import",
       fixtureStartupError: "type",
+      fixtureStartupPosition: "assets/InstallPreview-A12.js:1:99",
     }).fixtureStartup,
-    { phase: "renderer-import", error: "type" },
+    { phase: "renderer-import", error: "type", position: "assets/InstallPreview-A12.js:1:99" },
+  );
+  NodeAssert.equal(
+    sanitizeFailurePageState({
+      onFixtureRoute: true,
+      fixtureStartupPhase: "renderer-import",
+      fixtureStartupError: "type",
+      fixtureStartupPosition: `https://fixture.invalid/assets/owned.js:1:2?pairing=${secret}`,
+    }).fixtureStartup?.position,
+    undefined,
   );
 });
 
