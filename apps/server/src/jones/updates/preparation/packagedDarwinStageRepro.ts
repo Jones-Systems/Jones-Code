@@ -38,6 +38,7 @@ const producer = {
   runId: 42147193520,
   artifactId: 13471135731,
   artifactDigest: "eb84d344bf4e2fcf25189674bdbb58369a62ba567aa762ceef646ac0c6a9358a",
+  dmgSha256: "7f5e43ae5a85eec771bbb12e155c481d74e78a4d33a4b99f664b42581792b178",
 };
 const target = {
   source: "245409b7feefd2509b12f2fb7e48e6ec5e8d0b50",
@@ -45,6 +46,7 @@ const target = {
   runId: 42315079345,
   artifactId: 13550452169,
   artifactDigest: "6e8148eed1312da02cba33c8bededee24ecee8ef0dad4fcd5e2f811da853fe67",
+  dmgSha256: "f11c6aa5aeb6e1d2454b954d7e4cd5acc476e30df0a0063cb619eae895d550ca",
 };
 const host = { platform: "darwin", architecture: "arm64" } as const;
 
@@ -146,6 +148,8 @@ async function main() {
   let releaseProved = true;
   try {
     const baseline = await client.stage(sourceCandidate, NodePath.join(root, "baseline"));
+    if (baseline.receipt.sha256 !== producer.dmgSha256)
+      throw new ReproError("The original DMG digest did not match.");
     image = await NodeFSP.realpath(values["worker-dmg"] ?? baseline.payloadPath);
     await NodeFSP.mkdir(mount);
     await confirmImageAbsent(image, mount);
@@ -287,7 +291,7 @@ async function main() {
       if (sweep.failed !== 0 || (sweep.retainedJobIds?.length ?? 0) !== 0)
         throw new ReproError("The hosted preparation sweep could not confirm cleanup.");
       releaseProved = true;
-      if (!isolated || !phases.has("verifying") || payload === undefined)
+      if (!isolated || !phases.has("verifying") || payload?.receipt.sha256 !== target.dmgSha256)
         throw new ReproError("The packaged stage and exact download receipt were not observed.");
       if ("outcome" in result) {
         const receipt = result.outcome.staged.receipt;
