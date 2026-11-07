@@ -2479,15 +2479,20 @@ NodeTest.test("renderer qualification explicitly covers legacy and plan-capable 
   const plan = pages.filter((page) => page.searchParams.get("run").endsWith("-install-plan"));
   NodeAssert.equal(plan.length, 1);
   NodeAssert.equal(plan[0].searchParams.get("installPlans"), null);
+  const review = pages.filter((page) => page.searchParams.get("run").endsWith("-build-review"));
+  NodeAssert.equal(review.length, 1);
+  NodeAssert.equal(review[0].searchParams.get("installPlans"), null);
   NodeAssert.ok(
     pages
-      .filter((page) => page !== plan[0])
+      .filter((page) => page !== plan[0] && page !== review[0])
       .every((page) => page.searchParams.get("installPlans") === "legacy"),
   );
   const labels = steps
     .filter((step) => step.action === "assert-evaluate")
     .map((step) => step.label);
   for (const label of [
+    "The qualified build review has two choices and opening it sends no update",
+    "The reviewed artifact reaches the Laptop plan before any install",
     "Plan download records one Laptop operation and no host dispatch",
     "Plan review cancellation never dispatches installation or opens the gate",
     "Accepted plan installation still holds followers until native commit verification",
