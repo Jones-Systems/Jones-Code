@@ -109,14 +109,12 @@ export function createTargetOperations(options: {
       ...(r.stop === undefined ? {} : { stop: { ...r.stop, result } }),
     };
   };
+  const clearLauncherHold = (receipt: JonesOperationReceipt) => {
+    const { code, message: _message, ...confirmed } = receipt;
+    return code === "launcher-unconfirmed" || code === "launcher-unreadable" ? confirmed : receipt;
+  };
   const confirmInstall = (id: string, fields: Partial<JonesOperationReceipt>) =>
-    change(id, (old) => {
-      const { code, message: _message, ...confirmed } = old;
-      return {
-        ...(code === "launcher-unconfirmed" || code === "launcher-unreadable" ? confirmed : old),
-        ...fields,
-      };
-    });
+    change(id, (old) => ({ ...clearLauncherHold(old), ...fields }));
   const held = (
     r: JonesOperationReceipt,
     code: "unreaped" | "cleanup-unconfirmed" = "unreaped",
@@ -147,6 +145,77 @@ export function createTargetOperations(options: {
       ...(p.version === undefined ? {} : { version: p.version }),
     };
   };
+  const nativeInstallMatches = (r: JonesOperationReceipt, native: OperationReconciliation) => {
+    const a = r.action;
+    const b = native.binding;
+    return (
+      a.kind === "install" &&
+      native.operationId === r.operationId &&
+      b !== undefined &&
+      b.environmentId === r.environmentId &&
+      b.currentVersion === a.currentVersion &&
+      b.expectedInstalledSource === r.expectedInstalledSource &&
+      b.targetSource === a.targetSource &&
+      b.stagedHandle === a.stagedHandle
+    );
+  };
+  const refreshExactInstallOutcome = (
+    environmentId: JonesOperationReadInput["environmentId"],
+    id: string,
+  ) =>
+    gate(async () => {
+      const r = await ledger.read(id);
+      if (
+        r?.environmentId !== environmentId ||
+        r.action.kind !== "install" ||
+        active.has(id) ||
+        (!["running", "handed-off", "held"].includes(r.phase) &&
+          !(r.phase === "completed" && r.outcome === undefined))
+      )
+        return r;
+      const native = await options.reconcileNative(id);
+      if (!nativeInstallMatches(r, native)) return r;
+      const { outcome } = native;
+      const fields: Partial<JonesOperationReceipt> | undefined =
+        native.state === "rejected"
+          ? { phase: "refused", code: "launcher-rejected" }
+          : native.updateId === id && outcome !== undefined && outcome.status === native.state
+            ? {
+                phase: outcome.status === "committed" ? "completed" : outcome.status,
+                updateId: id,
+                outcome,
+              }
+            : undefined;
+      if (fields === undefined || (terminal(r) && fields.phase !== r.phase)) return r;
+      const requested = r.action.recovery?.policy;
+      const recovery =
+        requested !== undefined && r.recovery === undefined && native.state !== "rejected"
+          ? { requested, observed: await options.recovery?.observed(id) }
+          : undefined;
+      const changed = new Error("Install receipt changed during native readback.");
+      try {
+        const receipt = await change(id, (old) => {
+          if (JSON.stringify(old) !== JSON.stringify(r)) throw changed;
+          return {
+            ...clearLauncherHold(old),
+            ...fields,
+            ...(recovery === undefined
+              ? {}
+              : {
+                  recovery: {
+                    requested: recovery.requested,
+                    ...(recovery.observed === undefined ? {} : { observed: recovery.observed }),
+                  },
+                }),
+          };
+        });
+        updater.releaseHeldJob(id);
+        return receipt;
+      } catch (error) {
+        if (error !== changed) throw error;
+        return ledger.read(id);
+      }
+    });
   const reconcileInstall = async (
     r: JonesOperationReceipt,
     refusal?: JonesInstallBeforeDispatchRefusal,
@@ -178,18 +247,11 @@ export function createTargetOperations(options: {
         message: "Native acceptance is unknown. This operation will not be sent again.",
       });
     }
-    const b = native.binding;
     const a = r.action;
-    const bound =
-      a.kind === "install" &&
-      native.operationId === r.operationId &&
-      b !== undefined &&
-      b.environmentId === r.environmentId &&
-      b.currentVersion === a.currentVersion &&
-      b.expectedInstalledSource === r.expectedInstalledSource &&
-      b.targetSource === a.targetSource &&
-      b.stagedHandle === a.stagedHandle;
-    if (!bound || (native.state === "blocked" && native.updateId !== r.operationId)) {
+    if (
+      !nativeInstallMatches(r, native) ||
+      (native.state === "blocked" && native.updateId !== r.operationId)
+    ) {
       updater.setHeldJobs([r.operationId]);
       return patch(r.operationId, {
         code: "launcher-unreadable",
@@ -210,7 +272,8 @@ export function createTargetOperations(options: {
       });
     }
     const snapshot = updater.snapshot();
-    const outcome = snapshot.updateId === r.operationId ? snapshot.outcome : undefined;
+    const outcome =
+      native.outcome ?? (snapshot.updateId === r.operationId ? snapshot.outcome : undefined);
     return confirmInstall(r.operationId, {
       phase: native.state === "committed" ? "completed" : native.state,
       updateId: r.operationId,
@@ -533,6 +596,22 @@ export function createTargetOperations(options: {
     read: async (input: JonesOperationReadInput): Promise<JonesOperationReadResult> => {
       if (input.environmentId !== updater.snapshot().environmentId)
         throw new Error("Read environment binding changed.");
+      const refresh = input.refreshInstallOutcome;
+      if (refresh !== undefined && input.inspectCleanup !== undefined)
+        throw new Error("Choose one exact update readback mode.");
+      if (
+        refresh !== undefined &&
+        input.operationIds.length === 1 &&
+        input.operationIds[0] === refresh
+      )
+        return {
+          receipts: [
+            {
+              operationId: refresh,
+              receipt: await refreshExactInstallOutcome(input.environmentId, refresh),
+            },
+          ],
+        };
       const receipts = await Promise.all(
         input.operationIds.map(async (operationId) => ({
           operationId,

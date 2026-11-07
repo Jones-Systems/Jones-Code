@@ -925,7 +925,26 @@ describe("native update operation receipts", () => {
       const terminal = { ...pending, status };
       await archiveUpdateOperation(baseDir, terminal);
       await archiveUpdateOperation(baseDir, terminal);
-      expect((await reconcileUpdateOperation(baseDir, operationId, undefined)).state).toBe(status);
+      const outcome = {
+        status,
+        fromVersion: pending.fromVersion,
+        targetVersion: pending.targetVersion,
+      };
+      expect(await reconcileUpdateOperation(baseDir, operationId, terminal)).toMatchObject({
+        state: status,
+        outcome,
+      });
+      expect(await reconcileUpdateOperation(baseDir, operationId, undefined)).toMatchObject({
+        state: status,
+        outcome,
+      });
+      const invalid = await reconcileUpdateOperation(baseDir, operationId, {
+        ...terminal,
+        targetVersion: "other",
+      });
+      expect(invalid.state).toBe("blocked");
+      expect(invalid.updateId).toBeUndefined();
+      expect(invalid.outcome).toBeUndefined();
       await assertNoUnreconciledUpdateOperations(baseDir, undefined);
       await expect(
         archiveUpdateOperation(baseDir, { ...terminal, status: "failed" }),

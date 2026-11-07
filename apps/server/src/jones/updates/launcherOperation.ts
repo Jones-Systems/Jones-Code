@@ -27,6 +27,11 @@ export interface OperationReconciliation {
   readonly operationId: string;
   readonly binding?: OperationBinding;
   readonly updateId?: string;
+  readonly outcome?: {
+    readonly status: "committed" | "rolled-back" | "blocked";
+    readonly fromVersion: string;
+    readonly targetVersion: string;
+  };
   readonly reason?: string;
   readonly settlement?: {
     readonly basis: UpdateSettlementBasis;
@@ -413,9 +418,16 @@ export async function reconcileUpdateOperation(
         : { state: "absent", operationId };
     }
     const binding = reserved.binding;
+    const boundOutcome = (status: "committed" | "rolled-back" | "failed") => ({
+      status: status === "failed" ? ("blocked" as const) : status,
+      fromVersion: binding.currentVersion,
+      targetVersion: binding.targetVersion,
+    });
     if (current?.id === operationId) {
       if (
         current.qualified === undefined ||
+        current.fromVersion !== binding.currentVersion ||
+        current.targetVersion !== binding.targetVersion ||
         !sameOperationBinding(binding, operationBinding(current.qualified))
       )
         throw new Error("Native state differs from the reserved update operation.");
@@ -424,6 +436,7 @@ export async function reconcileUpdateOperation(
         operationId,
         binding: publicBinding(binding),
         updateId: operationId,
+        ...(current.status === "pending" ? {} : { outcome: boundOutcome(current.status) }),
       });
     }
     const outcome = await readOperationOutcome(baseDir, reserved);
@@ -440,6 +453,7 @@ export async function reconcileUpdateOperation(
         operationId,
         binding: publicBinding(binding),
         updateId: operationId,
+        outcome: boundOutcome(outcome.status),
       });
     return {
       state: "blocked",

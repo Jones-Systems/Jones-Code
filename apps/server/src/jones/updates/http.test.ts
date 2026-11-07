@@ -900,6 +900,34 @@ describe("durable operation HTTP scopes", () => {
     }
   });
 
+  test("requires operate as well as read for exact install refresh", async () => {
+    const input = {
+      environmentId,
+      operationIds: [operationId],
+      refreshInstallOutcome: operationId,
+    };
+    for (const scopes of [
+      ["orchestration:read"],
+      ["orchestration:operate"],
+      ["orchestration:read", "orchestration:operate"],
+    ] as const) {
+      const app = fixture(scopes);
+      try {
+        const response = await app.handler(
+          new Request("http://fixture/api/jones-updates/operations/read", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(input),
+          }),
+        );
+        expect(response.status).toBe(scopes.length === 2 ? 200 : 403);
+        expect(app.calls).toEqual(scopes.length === 2 ? [{ action: "operationRead", input }] : []);
+      } finally {
+        await app.dispose();
+      }
+    }
+  });
+
   test("requires read and operate scopes plus explicit recovery confirmation", async () => {
     const input = {
       environmentId,
