@@ -65,6 +65,7 @@ export type JonesOperationFenceInput = typeof JonesOperationFenceInput.Type;
 export const JonesOperationReadInput = Schema.Struct({
   environmentId: EnvironmentId,
   operationIds: Schema.Array(JonesOperationId).check(Schema.isMaxLength(32)),
+  inspectCleanup: Schema.optionalKey(JonesOperationId),
 });
 export type JonesOperationReadInput = typeof JonesOperationReadInput.Type;
 
@@ -137,6 +138,12 @@ export const JonesOperationReceipt = Schema.Struct({
 export type JonesOperationReceipt = typeof JonesOperationReceipt.Type;
 
 export const JonesOperationReadResult = Schema.Struct({
+  cleanupInspection: Schema.optionalKey(
+    Schema.Struct({
+      operationId: JonesOperationId,
+      status: Schema.Literals(["eligible", "unproved"]),
+    }),
+  ),
   receipts: Schema.Array(
     Schema.Struct({ operationId: JonesOperationId, receipt: Schema.NullOr(JonesOperationReceipt) }),
   ).check(Schema.isMaxLength(32)),

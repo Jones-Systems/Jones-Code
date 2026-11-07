@@ -19,6 +19,7 @@ import {
 } from "../JonesUpdater.ts";
 import { followerTargetRefusal } from "../followerPolicy.ts";
 import type { OperationReconciliation } from "../launcherOperation.ts";
+import { inspectHeldPreparationCleanup } from "../preparation/nativeEffectsRecovery.ts";
 import type { PreparationSupervisor } from "../preparation/supervisor.ts";
 import { serialized } from "../../fleetUpdates/store.ts";
 import { type OperationLedger, operationReceipt, operationTombstone } from "./ledger.ts";
@@ -521,13 +522,26 @@ export function createTargetOperations(options: {
     read: async (input: JonesOperationReadInput): Promise<JonesOperationReadResult> => {
       if (input.environmentId !== updater.snapshot().environmentId)
         throw new Error("Read environment binding changed.");
+      const receipts = await Promise.all(
+        input.operationIds.map(async (operationId) => ({
+          operationId,
+          receipt: await ledger.read(operationId),
+        })),
+      );
+      const operationId = input.inspectCleanup;
+      if (operationId === undefined) return { receipts };
+      const receipt = receipts[0]?.receipt;
+      const eligible =
+        receipts.length === 1 &&
+        receipts[0]?.operationId === operationId &&
+        receipt?.operationId === operationId &&
+        receipt.environmentId === input.environmentId &&
+        (await inspectHeldPreparationCleanup(options.key, receipt));
+      const current = eligible ? await ledger.read(operationId) : null;
+      const unchanged = current !== null && JSON.stringify(current) === JSON.stringify(receipt);
       return {
-        receipts: await Promise.all(
-          input.operationIds.map(async (operationId) => ({
-            operationId,
-            receipt: await ledger.read(operationId),
-          })),
-        ),
+        receipts,
+        cleanupInspection: { operationId, status: unchanged ? "eligible" : "unproved" },
       };
     },
     reconcile,

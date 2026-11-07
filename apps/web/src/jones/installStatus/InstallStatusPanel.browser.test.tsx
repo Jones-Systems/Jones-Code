@@ -112,6 +112,14 @@ async function setup(options: { refuseFirstDownload?: boolean } = {}) {
         if (command.action === "operationRead" && "receipts" in result) {
           readObserved();
           return {
+            ...(command.input.inspectCleanup === undefined
+              ? {}
+              : {
+                  cleanupInspection: {
+                    operationId: command.input.inspectCleanup,
+                    status: "eligible" as const,
+                  },
+                }),
             receipts: result.receipts.map((entry) =>
               refused !== undefined && entry.operationId === refused.operationId
                 ? { ...entry, receipt: refused }
@@ -446,6 +454,46 @@ describe("Install status receipt fixture", () => {
     await act(() => fixture.settleHost("VPS", "stopped"));
     expect(screen.container.textContent).toContain("Stopped · nothing installed");
     expect(visibleDone(screen)).toHaveLength(1);
+  });
+
+  it("inspects the exact held Mini cleanup without applying or starting another operation", async () => {
+    await using world = await setup();
+    const { screen, fixture, controller, calls } = world;
+    await click(screen, "Edit");
+    await screen.getByRole("checkbox", { name: "Include Mini" }).click();
+    await click(screen, "Done");
+    await click(screen, "Download on Laptop");
+    await world.stageLaptop();
+    await click(screen, "Install on Laptop");
+    await world.commitLaptop();
+    controller.wake();
+    await expect
+      .poll(() => fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt?.phase)
+      .toBe("running");
+    await act(() => fixture.settleHost("Mini", "held", "cleanup-unconfirmed"));
+    await click(screen, "Mini update details");
+    const held = fixture.snapshot().current!.devices[0]!.operations.at(-1)!.receipt!;
+    const first = calls.length;
+    await click(screen, "Inspect cleanup");
+    await expect
+      .poll(() => screen.container.textContent)
+      .toContain(
+        "Inspection confirmed the prior disk image is absent. The update remains on hold.",
+      );
+    expect(calls.slice(first).filter(({ action }) => action.startsWith("fixture-host-"))).toEqual([
+      {
+        action: "fixture-host-operationRead",
+        input: {
+          environmentId: held.environmentId,
+          input: {
+            environmentId: held.environmentId,
+            operationIds: [held.operationId],
+            inspectCleanup: held.operationId,
+          },
+        },
+      },
+    ]);
+    expect(fixture.snapshot().current?.devices[0]?.operations.at(-1)?.receipt).toEqual(held);
   });
 
   it("keeps unsupported devices out and uses a neutral dashed separator before and after Laptop verification", async () => {

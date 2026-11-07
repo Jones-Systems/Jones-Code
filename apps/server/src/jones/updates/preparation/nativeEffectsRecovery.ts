@@ -5,6 +5,7 @@ import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
+import type { JonesOperationReceipt } from "@t3tools/contracts/jones/jonesOperations";
 import {
   jonesCandidateHandle,
   requireJonesStageDirectory,
@@ -148,6 +149,7 @@ async function command(
   executable: string,
   args: readonly string[],
   stdin?: string,
+  timeout = 30_000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = NodeChildProcess.execFile(
@@ -155,7 +157,7 @@ async function command(
       [...args],
       {
         encoding: "buffer",
-        timeout: 30_000,
+        timeout,
         maxBuffer: 8 * LIMIT,
         killSignal: "SIGKILL",
       },
@@ -176,10 +178,14 @@ async function command(
   });
 }
 
-async function plist(executable: string, args: readonly string[]): Promise<unknown> {
-  const xml = await command(executable, args);
+async function plist(
+  executable: string,
+  args: readonly string[],
+  timeout?: () => number,
+): Promise<unknown> {
+  const xml = await command(executable, args, undefined, timeout?.());
   return JSON.parse(
-    await command("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], xml),
+    await command("/usr/bin/plutil", ["-convert", "json", "-o", "-", "-"], xml, timeout?.()),
   ) as unknown;
 }
 
@@ -594,6 +600,113 @@ export async function recoverNativeEffects(
       return { schema: 1, state: "released", proofSha256, proofPath };
     }),
   );
+}
+
+/** Bind proof to the host ledger's held stage job. No proof is persisted by inspection. */
+export async function inspectHeldPreparationCleanup(
+  baseDir: string,
+  receipt: Pick<
+    JonesOperationReceipt,
+    "phase" | "code" | "jobId" | "action" | "expectedInstalledSource"
+  >,
+  dependencies: NativeEffectsRecoveryDependencies = {},
+): Promise<boolean> {
+  const { phase, code, jobId, action, expectedInstalledSource } = receipt;
+  if (
+    (dependencies.platform ?? process.platform) !== "darwin" ||
+    (dependencies.architecture ?? process.arch) !== "arm64" ||
+    phase !== "held" ||
+    code !== "cleanup-unconfirmed" ||
+    jobId === undefined ||
+    action.kind === "install"
+  )
+    return false;
+  const deadline = performance.now() + 25_000;
+  const remaining = () => {
+    const ms = Math.floor(deadline - performance.now());
+    return ms > 0 ? ms : fail();
+  };
+  try {
+    const {
+      decodePreparationRequest,
+      decodePreparationResult,
+      isPreparationJobId,
+      preparationJobsDirectory,
+    } = await import("./protocol.ts");
+    if (!isPreparationJobId(jobId) || !absolute(baseDir)) return false;
+    const runtime = NodePath.join(baseDir, "runtime");
+    const root = NodePath.join(runtime, "jones-preparation");
+    const lifecycleDir = NodePath.join(root, "lifecycle");
+    const jobsDir = preparationJobsDirectory(baseDir);
+    const jobDir = NodePath.join(jobsDir, jobId);
+    await directory(baseDir, "shared-ancestor");
+    await directory(runtime, "shared-ancestor");
+    for (const path of [root, lifecycleDir, jobsDir, jobDir]) await directory(path);
+    const lifecycle = await read(NodePath.join(lifecycleDir, `${jobId}.json`), 4096);
+    const launch = record(lifecycle.value);
+    const worker = record(launch.worker);
+    if (launch.state !== "started" || !positive(worker.pid) || worker.processGroup !== worker.pid)
+      return false;
+    const request = await read(NodePath.join(jobDir, "request.json"), 64 * 1024);
+    const result = await read(NodePath.join(jobDir, "result.json"), 256 * 1024);
+    const effects = await read(NodePath.join(lifecycleDir, `${jobId}.effects.json`), 4096);
+    const job = decodePreparationRequest(request.value, jobDir);
+    const outcome = decodePreparationResult(result.value, jobId, "stage");
+    if (job?.job.kind !== "stage" || outcome?.ok !== false) return false;
+    const { candidate, cacheRoot } = job.job;
+    if (
+      cacheRoot !== NodePath.join(runtime, "jones-actions") ||
+      candidate.installedSource !== expectedInstalledSource ||
+      candidate.source !== (action.kind === "download" ? action.sourceSha : action.targetSource) ||
+      (action.kind === "download" && candidate.artifactId !== action.artifactId)
+    )
+      return false;
+    const mountPath =
+      /^DMG mount ownership needs reconciliation at (.+); its directory was retained\.(?: |$)/.exec(
+        outcome.error.message,
+      )?.[1];
+    if (mountPath === undefined) return false;
+    const handle = jonesCandidateHandle(candidate);
+    await directory(cacheRoot);
+    await directory(NodePath.join(cacheRoot, "completed"));
+    const index = await read(NodePath.join(cacheRoot, "completed", `${handle}.json`), 4096, 2);
+    const selection = record(index.value);
+    if (!absolute(selection.directory)) return false;
+    const stage = await requireJonesStageDirectory(cacheRoot, handle, selection.directory);
+    await directory(stage);
+    const staged = await read(NodePath.join(stage, "jones-actions-stage.json"), 128 * 1024);
+    const payload = record(record(staged.value).receipt).sha256;
+    if (typeof payload !== "string") return false;
+    const proof = await recoverNativeEffects(
+      {
+        schema: 1,
+        baseDir,
+        jobId,
+        worker: { pid: worker.pid, processGroup: worker.pid },
+        mountPath,
+        expected: {
+          request: request.sha256,
+          result: result.sha256,
+          lifecycle: lifecycle.sha256,
+          effects: effects.sha256,
+          index: index.sha256,
+          receipt: staged.sha256,
+          payload,
+          archive: candidate.artifactDigest,
+        },
+      } satisfies NativeEffectsRecoveryRequest,
+      "inspect",
+      undefined,
+      {
+        ...dependencies,
+        plist: dependencies.plist ?? ((executable, args) => plist(executable, args, remaining)),
+      },
+    );
+    remaining();
+    return proof.state === "eligible";
+  } catch {
+    return false;
+  }
 }
 
 export async function runNativeEffectsRecoveryCommand(args: readonly string[]): Promise<void> {
