@@ -317,6 +317,10 @@ it("retains the exact mount and both staging and cleanup failures when forced de
     const blocked = result.failure as QualifiedRuntimeBlockedError;
     assert.equal(blocked.reason, "busy");
     assert.include(blocked.message, result.mount);
+    assert.include(blocked.message, "cleanup=after-forced-detach/attachment-remains");
+    assert.include(blocked.message, "failed-detach=ordinary,forced");
+    assert.notInclude(blocked.message, ordinary.message);
+    assert.notInclude(blocked.message, forced.message);
     assert.instanceOf(blocked.cause, AggregateError);
     const [primary, cleanup] = (blocked.cause as AggregateError).errors;
     assert.equal(primary, result.primary);
@@ -540,7 +544,16 @@ it.each([
       const primary = retained ? ((failure as Error).cause as AggregateError).errors[0] : failure;
       assert.include((primary as Error).message, "primary attach diagnostic");
       if (retained) {
-        assert.equal((failure as QualifiedRuntimeBlockedError).reason, "busy");
+        const blocked = failure as QualifiedRuntimeBlockedError;
+        assert.equal(blocked.reason, "busy");
+        assert.include(blocked.message, "Staging=attach");
+        assert.notInclude(blocked.message, "primary attach diagnostic");
+        if (scenario === "inventory lost after detach")
+          assert.include(blocked.message, "cleanup=after-ordinary-detach/hdiutil-info");
+        if (scenario === "malformed inventory")
+          assert.include(blocked.message, "cleanup=before-detach/inventory-shape");
+        if (scenario === "ambiguous images")
+          assert.include(blocked.message, "cleanup=before-detach/ownership");
         assert.isTrue((await NodeFSP.lstat(mount)).isDirectory());
       } else await NodeAssert.rejects(NodeFSP.lstat(NodePath.dirname(mount)), { code: "ENOENT" });
     });
