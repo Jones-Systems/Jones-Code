@@ -3,7 +3,7 @@ import * as NodeHttp from "node:http";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
-import { expect } from "vite-plus/test";
+import { expect, vi } from "vite-plus/test";
 import {
   DESKTOP_BOOTSTRAP_TOKEN_WINDOW_MS,
   currentDesktopBootstrapToken,
@@ -140,6 +140,7 @@ it("sends the durable attempt independently of the staged artifact to the native
     body: string;
     authorization: string | undefined;
   }> = [];
+  using socketTimeout = vi.spyOn(NodeHttp.ClientRequest.prototype, "setTimeout");
   const server = NodeHttp.createServer((request, response) => {
     let body = "";
     request.setEncoding("utf8");
@@ -194,6 +195,7 @@ it("sends the durable attempt independently of the staged artifact to the native
       currentVersion: "1.0.0",
     });
     expect(requests[1]!.authorization).toBe("Bearer fixture-access");
+    expect(socketTimeout.mock.calls.map(([ms]) => ms)).toEqual([30_000, 60_000]);
   } finally {
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
