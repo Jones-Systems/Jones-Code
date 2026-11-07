@@ -7,7 +7,13 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeUtil from "node:util";
-import { JonesActionsClient } from "@t3tools/shared/jones/jonesActions";
+import {
+  findJonesCompletedStage,
+  JONES_ACTIONS_RECEIPT_FILE,
+  JonesActionsClient,
+  jonesCandidateHandle,
+  validateJonesStagedArtifact,
+} from "@t3tools/shared/jones/jonesActions";
 import { qualifiedRuntimeArtifactFromJonesStage } from "../../cloud/qualifiedRuntime.ts";
 import {
   decodePreparationResult,
@@ -111,7 +117,9 @@ async function main() {
   if (
     process.env.GITHUB_ACTIONS !== "true" ||
     process.env.RUNNER_ENVIRONMENT !== "github-hosted" ||
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- The standalone hosted harness checks its actual execution platform.
     process.platform !== host.platform ||
+    // oxlint-disable-next-line t3code/no-global-process-runtime -- The harness must reject execution under translation.
     process.arch !== host.architecture
   )
     throw new ReproError("The exact stage reproduction requires a hosted Apple Silicon runner.");
@@ -173,7 +181,6 @@ async function main() {
       qualifiedRuntimeArtifactFromJonesStage(baseline, root);
     const home = await makePreparationHome({ protocol: 1, ...binding });
     try {
-      const payload = await client.stage(candidate, home.cacheRoot);
       const jobId = NodeCrypto.randomUUID();
       const phases = new Set<PreparationPhase>();
       const observation: { exit?: PreparationWorkerExit } = {};
@@ -228,6 +235,15 @@ async function main() {
           message,
         );
       const reason = failure && "reason" in failure ? failure.reason : undefined;
+      const download = await findJonesCompletedStage(
+        home.cacheRoot,
+        jonesCandidateHandle(candidate),
+        JONES_ACTIONS_RECEIPT_FILE,
+      ).catch(() => undefined);
+      const payload =
+        download === undefined
+          ? undefined
+          : await validateJonesStagedArtifact(download, candidate).catch(() => undefined);
       const observed = observation.exit;
       const isolated =
         observed?.reaped === true &&
@@ -241,7 +257,7 @@ async function main() {
           host: { ...host, release: NodeOS.release() },
           target,
           runAttempt: 1,
-          dmgSha256: payload.receipt.sha256,
+          dmgSha256: payload?.receipt.sha256,
           producerDmgSha256: baseline.receipt.sha256,
           jobId,
           phases: [...phases],
@@ -271,8 +287,8 @@ async function main() {
       if (sweep.failed !== 0 || (sweep.retainedJobIds?.length ?? 0) !== 0)
         throw new ReproError("The hosted preparation sweep could not confirm cleanup.");
       releaseProved = true;
-      if (!isolated || !phases.has("verifying"))
-        throw new ReproError("The packaged stage was not observed.");
+      if (!isolated || !phases.has("verifying") || payload === undefined)
+        throw new ReproError("The packaged stage and exact download receipt were not observed.");
       if ("outcome" in result) {
         const receipt = result.outcome.staged.receipt;
         if (receipt.sourceSha !== target.source || receipt.archiveSha256 !== payload.receipt.sha256)

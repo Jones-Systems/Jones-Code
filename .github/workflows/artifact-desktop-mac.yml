@@ -43,7 +43,7 @@ concurrency:
 
 jobs:
   reproduce_original_stage:
-    name: Reproduce #873 with the original packaged worker
+    name: "Reproduce #873 with the original packaged worker"
     if: >-
       github.repository == 'Jones-Systems/Jones-Code' &&
       github.event_name == 'pull_request' &&
@@ -78,7 +78,7 @@ jobs:
           cache: true
           run-install: true
 
-      - name: Stage exact #873 payload through the original packaged server
+      - name: "Stage exact #873 payload through the original packaged server"
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -276,7 +276,7 @@ jobs:
             --worker "$app/Contents/MacOS/$executable" \
             --worker-entry "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs"
 
-      - name: Stage exact #873 payload through the diagnostic packaged server
+      - name: "Stage exact #873 payload through the diagnostic packaged server"
         if: >-
           github.event_name == 'pull_request' &&
           contains(github.event.pull_request.body, '<!-- jones-reproduce-native-stage-873 -->')
