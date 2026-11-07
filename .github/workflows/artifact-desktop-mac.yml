@@ -42,6 +42,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  reproduce_original_stage:
+    name: Reproduce #873 with the original packaged worker
+    if: >-
+      github.repository == 'Jones-Systems/Jones-Code' &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.body, '<!-- jones-reproduce-native-stage-873 -->')
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - name: Checkout public reproduction source
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+          GIT_CONFIG_NOSYSTEM: "1"
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_TERMINAL_PROMPT: "0"
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          git init .
+          git remote add origin https://github.com/Jones-Systems/Jones-Code.git
+          git sparse-checkout init --no-cone
+          printf '%s\n' '/*' '!/.repos/' | git sparse-checkout set --no-cone --stdin
+          git -c protocol.version=2 fetch --no-tags --depth=1 origin "$SOURCE_COMMIT"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(uname -m)" = arm64
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@8a7496fd44e8a1b0a88a7459e36213b2fefc1d15
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: true
+
+      - name: Stage exact #873 payload through the original packaged server
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sw_vers
+          node apps/server/src/jones/updates/preparation/packagedDarwinStageRepro.ts
+
   build:
     name: Unsigned Apple Silicon DMG
     if: >-
@@ -232,6 +275,21 @@ jobs:
           ELECTRON_RUN_AS_NODE=1 node apps/server/src/jones/updates/preparation/packagedWorkerSmoke.ts \
             --worker "$app/Contents/MacOS/$executable" \
             --worker-entry "$app/Contents/Resources/app.asar/apps/server/dist/bin.mjs"
+
+      - name: Stage exact #873 payload through the diagnostic packaged server
+        if: >-
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.body, '<!-- jones-reproduce-native-stage-873 -->')
+        env:
+          BUILD_VERSION: ${{ steps.version.outputs.value }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD:apps/server/src/jones/cloud/qualifiedDarwinRuntime.ts)" = e8f0b03e72b8e2a4ec38b3b1953e04a911d7f72f
+          sw_vers
+          TMPDIR="$RUNNER_TEMP" node apps/server/src/jones/updates/preparation/packagedDarwinStageRepro.ts \
+            --worker-dmg "artifacts/desktop-mac/T3-Code-${BUILD_VERSION}-arm64.dmg"
 
       - name: Qualify packaged desktop staging worker
         id: desktop_worker
